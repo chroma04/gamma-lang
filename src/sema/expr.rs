@@ -6,7 +6,7 @@ use super::func::{FnCx, LocalBinding, Obligation, PendingCoercion, error_expr, u
 use super::infer::{Fallback, VarKind};
 use super::untyped::Untyped;
 use crate::source::Span;
-use crate::syntax::ast::{self, ExprKind};
+use crate::syntax::ast::{self, Expr as Expr0, ExprKind};
 use crate::tir::{self, Coercion, Expr, Target};
 use crate::types::{FnTy, Ty, TyKind};
 use num_bigint::BigInt;
@@ -158,10 +158,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, "`for` is not supported as a value yet; use it as a statement");
                 error_expr(span)
             }
-            ExprKind::Intrinsic { name, .. } => {
-                self.error(span, format!("intrinsic `@{}` is not supported yet", name.name));
-                error_expr(span)
-            }
+            ExprKind::Intrinsic { name, args } => self.intrinsic(*name, args.as_deref().unwrap_or(&[]), span),
             ExprKind::DotIdent(name) => match expect.map(|t| self.infer.resolve(t)) {
                 Some(t) => self.construct_variant(super::call::strip_wrappers(t), *name, None, span),
                 None => {
@@ -604,6 +601,54 @@ impl<'a, 's> FnCx<'a, 's> {
         let first = fields[0].ty;
         let inner = mk(first, tir::ExprKind::Field { base: Box::new(b), index: 0 }, span);
         self.struct_field(inner, name, span)
+    }
+
+    /// Intrinsics that are compile-time constants (§20.3).
+    fn intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let type_arg = |cx: &mut Self, i: usize| -> Option<Ty> {
+            match args.get(i).map(|a| &a.kind) {
+                Some(ast::ArgKind::Positional(e)) => {
+                    let t = cx.resolve_type(e);
+                    (!t.is_error()).then_some(t)
+                }
+                _ => {
+                    cx.error(span, format!("`@{}` needs a type argument", name.name));
+                    None
+                }
+            }
+        };
+        let usize_const = |v: u64| mk(Ty::usize(), tir::ExprKind::Int(v.into()), span);
+        match name.name.as_str() {
+            "size_of" | "align_of" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
+                usize_const(if name.name.as_str() == "size_of" { size } else { align })
+            }
+            "offset_of" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let field = match args.get(1).map(|a| &a.kind) {
+                    Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
+                    _ => {
+                        self.error(span, "`@offset_of(S, field)` needs a struct type and a field name");
+                        return error_expr(span);
+                    }
+                };
+                let Some(i) = self.sema.struct_fields(t).and_then(|fs| fs.iter().position(|f| f.name == field)) else {
+                    self.error(span, format!("`{}` has no field `{}`", t, field));
+                    return error_expr(span);
+                };
+                let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
+                usize_const(off)
+            }
+            "type_name" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
+            }
+            other => {
+                self.error(span, format!("intrinsic `@{}` is not supported yet", other));
+                error_expr(span)
+            }
+        }
     }
 
     // --- optionals and results (§10) ---
