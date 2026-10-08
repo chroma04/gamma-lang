@@ -152,12 +152,20 @@ lowers each function body to TIR.
 
 ### The core prelude and the entry point
 
-The core prelude (`lib/core/prelude.gm`) is ordinary Gamma source that every
-module sees. It declares the ambient effects (`Out`, `Err`, `Env`, `Alloc`), the
-standard iterators, allocation (`Allocator`, `new`, `make`, `free`, …) and
-`List`. A few intrinsics that reach the host, such as `@heap_alloc` and
-`@heap_free`, may only be used in the prelude. The whole prelude is checked on
-every compilation, so mistakes in it surface immediately.
+The core library is ordinary Gamma source in `lib/core/`, compiled into the
+tool. The prelude (`prelude.gm`) is visible in every module: it declares the
+ambient effects (`Out`, `Err`, `Env`, `Alloc`), the standard iterators and
+allocation (`Allocator`, `new`, `make`, `free`, …). The containers live in
+their own core modules, `list.gm` and `map.gm`; only their types and
+constructors (`List`, `list`, `HashMap`, `map`, `map_with`) are re-exported to
+the universe scope, and their other functions are reached as methods, which
+resolve in the receiver type's module (§21.5).
+
+Core modules see the prelude's private declarations and may use a few
+host-facing intrinsics (`@heap_alloc`, `@heap_free`). They may also use `is`
+and `@hash` on unconstrained type parameters: the map's public constructors
+require `Eq` exactly when the default hashing is used. The whole core library
+is checked on every compilation, so mistakes in it surface immediately.
 
 The program's entry is a synthesized function that calls `main`. When `main`
 performs `Alloc`, the entry installs the heap allocator around the call:

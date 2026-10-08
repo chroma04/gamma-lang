@@ -158,6 +158,8 @@ map_demo :: fn() -> AllocError!() \ {Alloc, Out} {
 
 The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `map_with`; see [chapter 10](10-generics.md).
 
+Besides `put`, `get` and `remove`, a map has `contains(k)`, `len()`, `clear()` (which keeps the storage) and `entries()`, an iterator over `(key, value)` pairs in an unspecified order: `for e in ages.entries() { print("{} {}\n", (e.key, e.value)) }`.
+
 Because maps compare with `is`, a float key never finds a NaN, as `nan is nan` is false. Key such maps by `x.bits(u64)` instead.
 
 ## Nothing allocates behind your back

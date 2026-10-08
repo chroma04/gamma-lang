@@ -18,7 +18,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for i in 0..10 {
         try l.push(i * i)
     }
-    print("len {} cap {}\n", (l.items.len, l.cap))
+    print("len {}\n", l.items.len)
     total: i64 = 0
     for x in each(l.items) { total += x }
     print("sum {}\n", total)

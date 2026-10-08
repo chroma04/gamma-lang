@@ -360,6 +360,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 let t = Ty::ptr(true, *p2);
                 self.coerce(recv, t)
             }
+            (TyKind::Ptr { is_const: false, pointee }, TyKind::Ptr { is_const: false, pointee: p2 })
+                if fits(*pointee, *p2) =>
+            {
+                recv
+            }
             (_, TyKind::Ptr { pointee, .. }) if fits(first.ty, *pointee) => {
                 mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span)
             }

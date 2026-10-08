@@ -1,0 +1,168 @@
+// core/map: the hash map (§21.5). `HashMap`, `map` and `map_with` are
+// re-exported to the universe scope; the other functions are reached as methods.
+//
+// The table uses open addressing with linear probing over a power-of-two
+// number of slots. Removed entries leave a tombstone until the next growth.
+
+/// One slot of the table: empty, full, or a tombstone.
+Slot :: struct(K, V: type) {
+    state: u8
+    key: K
+    value: V
+}
+
+EMPTY :: 0
+FULL :: 1
+REMOVED :: 2
+
+/// The seed every map starts with (any fixed odd constant spreads well).
+SEED :: 0x9e3779b97f4a7c15
+
+/// A map from `K` to `V`. `hash` and `eq` default to `@hash` and `is`.
+pub HashMap :: struct(K, V: type,
+                      hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,
+                      eq: ?^fn(a, b: ^const K) -> bool = null) {
+    slots: []Slot(K, V)
+    count: usize
+    used: usize
+    seed: u64
+    alloc: Allocator
+}
+
+/// An empty map using `@hash` and `is`, and the current allocator.
+pub map :: fn(K, V: type) -> HashMap(K, V) \ {Alloc} where Eq(K) {
+    return HashMap(K, V)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
+}
+
+/// An empty map using the given hash and equality functions, and the current allocator.
+pub map_with :: fn(K, V: type,
+                   hash :: ^fn(key: ^const K, seed: u64) -> u64,
+                   eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc} {
+    return HashMap(K, V, hash, eq)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
+}
+
+key_hash :: fn(K: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, k: ^const K, seed: u64) -> u64 {
+    if f := hash { return f(k, seed) }
+    return @hash(k^, seed)
+}
+
+key_eq :: fn(K: type, eq :: ?^fn(a, b: ^const K) -> bool, a, b: ^const K) -> bool {
+    if f := eq { return f(a, b) }
+    return a^ is b^
+}
+
+/// The index of the slot holding `k`.
+find :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+           m: ^const HashMap(K, V, hash, eq), k: ^const K) -> ?usize {
+    n := m.slots.len
+    if n is 0 { return null }
+    i := key_hash(K, hash, k, m.seed).trunc(usize) & (n - 1)
+    while true {
+        s := m.slots[i]
+        if s.state is EMPTY { return null }
+        if s.state is FULL and key_eq(K, eq, &s.key, k) { return i }
+        i = (i + 1) & (n - 1)
+    }
+}
+
+/// Stores a key known to be absent; there must be a free slot.
+insert_new :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                 m: ^HashMap(K, V, hash, eq), k: K, v: V) {
+    n := m.slots.len
+    i := key_hash(K, hash, &k, m.seed).trunc(usize) & (n - 1)
+    while m.slots[i].state is FULL { i = (i + 1) & (n - 1) }
+    if m.slots[i].state is EMPTY { m.used += 1 }
+    m.slots[i] = Slot(K, V)(state: FULL, key: k, value: v)
+    m.count += 1
+}
+
+/// Doubles the table (or creates it) and drops tombstones.
+grow :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+           m: ^HashMap(K, V, hash, eq)) -> AllocError!() {
+    old := m.slots
+    n := if old.len is 0 { 8 } else { old.len * 2 }
+    size := @size_of(Slot(K, V))
+    align := @align_of(Slot(K, V))
+    raw := m.alloc.vt.alloc(m.alloc.data, size * n, align) else return !.OutOfMemory
+    slots := raw.cast([^]Slot(K, V))[0..n]
+    for i in 0..n { slots[i].state = EMPTY }
+    m.slots = slots
+    m.count = 0
+    m.used = 0
+    for i in 0..old.len {
+        if old[i].state is FULL { m.insert_new(old[i].key, old[i].value) }
+    }
+    if old.len > 0 {
+        m.alloc.vt.free(m.alloc.data, old.ptr.cast([^]u8), size * old.len, align)
+    }
+    return ()
+}
+
+/// Sets the value of `k`, adding it if absent.
+pub put :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+              m: ^HashMap(K, V, hash, eq), k: K, v: V) -> AllocError!() {
+    if i := m.find(&k) {
+        m.slots[i].value = v
+        return ()
+    }
+    if (m.used + 1) * 4 > m.slots.len * 3 { try m.grow() }
+    m.insert_new(k, v)
+    return ()
+}
+
+/// The value of `k`, if present.
+pub get :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+              m: ^const HashMap(K, V, hash, eq), k: K) -> ?V {
+    i := m.find(&k) else return null
+    return m.slots[i].value
+}
+
+/// Whether `k` is present.
+pub contains :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                   m: ^const HashMap(K, V, hash, eq), k: K) -> bool {
+    return m.find(&k) is not null
+}
+
+/// Removes `k`, returning its value if it was present.
+pub remove :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                 m: ^HashMap(K, V, hash, eq), k: K) -> ?V {
+    i := m.find(&k) else return null
+    m.slots[i].state = REMOVED
+    m.count -= 1
+    return m.slots[i].value
+}
+
+/// The number of entries.
+pub len :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+              m: ^const HashMap(K, V, hash, eq)) -> usize {
+    return m.count
+}
+
+/// The entries, in an unspecified order. The map must not change during the iteration.
+pub entries :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                  m: ^const HashMap(K, V, hash, eq)) \ {Yield((key: K, value: V))} {
+    for i in 0..m.slots.len {
+        s := m.slots[i]
+        if s.state is FULL { yield((key: s.key, value: s.value)) }
+    }
+}
+
+/// Removes every entry, keeping the storage.
+pub clear :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                m: ^HashMap(K, V, hash, eq)) {
+    for i in 0..m.slots.len { m.slots[i].state = EMPTY }
+    m.count = 0
+    m.used = 0
+}
+
+/// Frees the map's storage through its own allocator.
+pub deinit :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                 m: ^HashMap(K, V, hash, eq)) {
+    if m.slots.len > 0 {
+        size := @size_of(Slot(K, V))
+        m.alloc.vt.free(m.alloc.data, m.slots.ptr.cast([^]u8), size * m.slots.len, @align_of(Slot(K, V)))
+    }
+    m.slots = empty_slice(Slot(K, V))
+    m.count = 0
+    m.used = 0
+}

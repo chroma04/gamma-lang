@@ -285,6 +285,13 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.error(path.span, format!("`{}` is not a struct type", n.name));
                     return pat(ty, PatKind::Wild, span);
                 };
+                if let Some(f) = self.hidden_field(t) {
+                    self.error(
+                        span,
+                        format!("`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)", t, f),
+                    );
+                    return pat(ty, PatKind::Wild, span);
+                }
                 let names: Vec<Symbol> = fields.iter().map(|f| f.name).collect();
                 let tys: Vec<Ty> = fields.iter().map(|f| f.ty).collect();
                 // A bare name `x` in a struct pattern is shorthand for `x: x`.

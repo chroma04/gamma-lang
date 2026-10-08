@@ -14,6 +14,13 @@ fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
 impl<'a, 's> FnCx<'a, 's> {
     /// `S(f: v, …, ..spread)` for a struct type `S`.
     pub fn construct_struct(&mut self, ty: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        if let Some(f) = self.hidden_field(ty) {
+            self.error(
+                span,
+                format!("`{}` cannot be constructed outside its module: its field `{}` is private (§3.3)", ty, f),
+            );
+            return error_expr(span);
+        }
         let fields: Vec<(Symbol, Ty)> =
             self.sema.struct_fields(ty).unwrap_or(&[]).iter().map(|f| (f.name, f.ty)).collect();
         let n = fields.len();

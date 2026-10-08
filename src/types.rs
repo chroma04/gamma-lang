@@ -270,6 +270,9 @@ impl Ty {
     pub fn u32() -> Ty {
         Ty::int(false, 32)
     }
+    pub fn u64() -> Ty {
+        Ty::int(false, 64)
+    }
     pub fn i32() -> Ty {
         Ty::int(true, 32)
     }

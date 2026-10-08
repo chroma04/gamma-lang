@@ -312,7 +312,8 @@ impl<'s> Sema<'s> {
             && let Some(&(_, pid)) = self.value_scope.iter().rev().find(|(n, _)| *n == id.name)
         {
             let have = self.value_params[&pid];
-            if have != ty {
+            // A function parameter may be passed where an optional one is expected.
+            if have != ty && ty != Ty::optional(have) {
                 self.error(e.span, format!("expected a compile-time `{}`, found `{}` of type `{}`", ty, id.name, have));
                 return None;
             }

@@ -20,3 +20,4 @@
 - `@write` float display format defined precisely (§21.6.1).
 - §16.5: value-param types restricted (plain data w/o pointers, string, fn ptrs); `[N]T` only with
   the bare param as length; `[N]T` built with `fill:`/`---`. §16.4 refers to §16.5 for value types.
+- §21.5: HashMap interface gained contains/len/entries/clear.

@@ -1,7 +1,7 @@
 new: 6
 make_fill: 7 9 4
 empty: 0
-len 10 cap 16
+len 10
 sum 285
 pop 81 len 9
 cleared 0

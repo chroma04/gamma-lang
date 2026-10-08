@@ -2410,7 +2410,11 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
+contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
+len      :: fn(m: ^const HashMap(…)) -> usize
+entries  :: fn(m: ^const HashMap(…)) \ {Yield((key: K, value: V))}   // unspecified order
+clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
 deinit   :: fn(m: ^HashMap(…))
 ```
 

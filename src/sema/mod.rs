@@ -149,6 +149,8 @@ pub struct Sema<'s> {
     /// Stack of declarations being resolved, for cycle reports.
     resolving: Vec<DeclId>,
     pub prelude: Option<ModuleId>,
+    /// The core modules other than the prelude (`core/list`, `core/map`).
+    pub core_modules: Vec<ModuleId>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
@@ -213,6 +215,7 @@ impl<'s> Sema<'s> {
             checking: vec![],
             resolving: vec![],
             prelude: None,
+            core_modules: vec![],
             type_params: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
@@ -251,9 +254,10 @@ impl<'s> Sema<'s> {
         for id in ids {
             self.resolve_decl(id);
         }
-        // The core prelude is checked in full, so its errors surface even when unused.
-        if let Some(p) = self.prelude {
-            let mut ids: Vec<DeclId> = self.modules[p.0 as usize].scope.values().copied().collect();
+        // The core library is checked in full, so its errors surface even when unused.
+        let core: Vec<ModuleId> = self.prelude.into_iter().chain(self.core_modules.iter().copied()).collect();
+        for m in core {
+            let mut ids: Vec<DeclId> = self.modules[m.0 as usize].scope.values().copied().collect();
             ids.sort();
             for id in ids {
                 self.resolve_decl(id);

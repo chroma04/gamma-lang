@@ -10,12 +10,35 @@ use std::rc::Rc;
 
 const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
 
+/// The other core modules (§21.5): name, source, and the names re-exported to
+/// the universe scope. Their remaining functions are reached as methods.
+const CORE_MODULES: &[(&str, &str, &[&str])] = &[
+    ("list", include_str!("../../lib/core/list.gm"), &["List", "list"]),
+    ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "map", "map_with"]),
+];
+
 impl<'s> Sema<'s> {
     pub(super) fn load_prelude(&mut self) {
         let file = self.sess.sources.add("<core>/prelude.gm", PRELUDE_SRC.to_string());
         let ast = self.sess.parse(file);
         let id = self.add_module(Symbol::intern("core"), vec![ast], true);
         self.prelude = Some(id);
+        for (name, src, exports) in CORE_MODULES {
+            let file = self.sess.sources.add(format!("<core>/{}.gm", name), src.to_string());
+            let ast = self.sess.parse(file);
+            let m = self.add_module(Symbol::intern(&format!("core/{}", name)), vec![ast], true);
+            self.core_modules.push(m);
+            for e in exports.iter() {
+                let e = Symbol::intern(e);
+                let d = self.modules[m.0 as usize].scope.get(&e).copied();
+                match d {
+                    Some(d) => {
+                        self.modules[id.0 as usize].scope.insert(e, d);
+                    }
+                    None => self.error(Span::DUMMY, format!("core module `{}` does not declare `{}`", name, e)),
+                }
+            }
+        }
         // Resolve the ambient effects eagerly so their ids are known.
         if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern("Yield"))
             && let super::DeclValue::Effect(e) = self.resolve_decl(d)
@@ -148,13 +171,14 @@ impl<'s> Sema<'s> {
     }
 
     /// Looks up a name at module level: the module's own declarations, then the
-    /// prelude's public declarations.
+    /// prelude's public declarations (all of them, for the other core modules).
     pub fn lookup_module_name(&mut self, module: ModuleId, name: Symbol) -> Option<DeclId> {
         if let Some(&d) = self.modules[module.0 as usize].scope.get(&name) {
             return Some(d);
         }
         let prelude = self.prelude?;
         let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
-        if self.decls[d.0 as usize].item.is_pub { Some(d) } else { None }
+        let core = self.modules[module.0 as usize].is_prelude;
+        if core || self.decls[d.0 as usize].item.is_pub { Some(d) } else { None }
     }
 }

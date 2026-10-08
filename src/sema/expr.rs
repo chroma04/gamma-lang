@@ -511,7 +511,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Makes two operands of `is` the same type: unify, or coerce one to the other.
     fn equalize(&mut self, l: Expr, r: Expr, span: Span) -> (Expr, Expr) {
         let (lt, rt) = (self.infer.resolve(l.ty), self.infer.resolve(r.ty));
-        if !lt.has_infer() && !lt.is_error() && !self.sema.has_eq(lt) {
+        if !lt.has_infer() && !lt.is_error() && !self.eq_allowed(lt) {
             self.error(span, format!("`is` is not defined for `{}` (§7.6)", lt));
         }
         if lt.has_infer() || rt.has_infer() || lt == rt {
@@ -639,6 +639,10 @@ impl<'a, 's> FnCx<'a, 's> {
         let fields = self.sema.struct_fields(b.ty)?;
         if let Some(i) = fields.iter().position(|f| f.name == name) {
             let ty = fields[i].ty;
+            if !fields[i].is_pub && !self.sees_private(b.ty) {
+                let bt = b.ty;
+                self.error(span, format!("the field `{}` of `{}` is private to its module (§3.3)", name, bt));
+            }
             return Some(mk(ty, tir::ExprKind::Field { base: Box::new(b), index: i as u32 }, span));
         }
         let TyKind::Adt(id, _) = b.ty.kind() else { return None };
@@ -715,6 +719,25 @@ impl<'a, 's> FnCx<'a, 's> {
                     (tir::Builtin::HeapFree, Ty::unit())
                 };
                 mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+            }
+            "hash" => {
+                let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =
+                    (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind), args.get(2))
+                else {
+                    self.error(span, "`@hash(x, seed)` takes a value and a `u64` seed");
+                    return error_expr(span);
+                };
+                let x = self.expr(x, None);
+                let xt = self.infer.resolve(x.ty);
+                if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
+                    self.error(
+                        span,
+                        format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt),
+                    );
+                }
+                let seed = self.expr(seed, Some(Ty::u64()));
+                let seed = self.coerce(seed, Ty::u64());
+                mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
             }
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
@@ -1275,4 +1298,31 @@ enum Jump {
     InstallingWith,
     /// Finish the clause `levels` frames up, producing `()`.
     ClauseReturn { levels: u32 },
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// Whether `is` and `@hash` may be used at type `t` here. The core library's
+    /// containers use them on unconstrained parameters: their public
+    /// constructors require `Eq` exactly when the default hash and equality are
+    /// used (§21.5).
+    /// Whether the private fields of struct type `t` are visible here: only in
+    /// the module that declares it (§3.3).
+    pub fn sees_private(&self, t: Ty) -> bool {
+        match t.kind() {
+            TyKind::Adt(id, _) => self.sema.adts.get(id).is_none_or(|a| a.module == self.module),
+            _ => true,
+        }
+    }
+
+    /// The first private field of struct type `t` if it is not visible here.
+    pub fn hidden_field(&self, t: Ty) -> Option<crate::symbol::Symbol> {
+        if self.sees_private(t) {
+            return None;
+        }
+        self.sema.struct_fields(t)?.iter().find(|f| !f.is_pub).map(|f| f.name)
+    }
+
+    pub fn eq_allowed(&self, t: Ty) -> bool {
+        self.sema.has_eq(t) || (self.sema.modules[self.module.0 as usize].is_prelude && super::generics::has_param(t))
+    }
 }
