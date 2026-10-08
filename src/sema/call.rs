@@ -27,6 +27,9 @@ enum CalleeKind {
 
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
+        if let ExprKind::Field { base, name } = &callee.kind {
+            return self.method_call(base, *name, args, span);
+        }
         let Some(kind) = self.classify_callee(callee, expect) else { return error_expr(span) };
         match kind {
             CalleeKind::Fn(f) => {
@@ -125,7 +128,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// Binds call arguments to parameters (§11.3) and coerces each to its type.
-    fn bind_args(
+    pub fn bind_args(
         &mut self,
         params: &[ParamInfo],
         callee_module: ModuleId,
@@ -425,7 +428,6 @@ fn is_type_syntax(e: &ast::Expr) -> bool {
             | ExprKind::FnType(_)
     )
 }
-
 
 /// The type inside optional and result wrappers, where a variant shorthand's
 /// union type is found (`x: ?Shape = .Empty`).

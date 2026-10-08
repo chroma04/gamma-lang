@@ -18,8 +18,10 @@ mod finalize;
 mod func;
 mod infer;
 mod matching;
+mod methods;
 mod modules;
 mod pattern;
+mod seq;
 mod ty_expr;
 mod untyped;
 

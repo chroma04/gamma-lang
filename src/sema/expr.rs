@@ -86,6 +86,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
             ExprKind::Index { base, index } => self.index(base, index, span),
+            ExprKind::Slice { base, lo, hi, inclusive } => {
+                self.slice_expr(base, lo.as_deref(), hi.as_deref(), *inclusive, span)
+            }
             ExprKind::Field { base, name } => self.field(base, *name, span),
             ExprKind::TupleField { base, index, .. } => {
                 let b = self.expr(base, None);
@@ -418,13 +421,7 @@ impl<'a, 's> FnCx<'a, 's> {
             B::Lt | B::Le | B::Gt | B::Ge => {
                 let r = self.expr(rhs, Some(lhs.ty));
                 let ty = self.unify_operands(lhs.ty, r.ty, span, "the operands of a comparison");
-                self.obligations.push(Obligation::Numeric {
-                    ty,
-                    span,
-                    op: op.as_str(),
-                    int_only: false,
-                    signed_only: false,
-                });
+                self.obligations.push(Obligation::Ord { ty, span });
                 let top = match op {
                     B::Lt => tir::BinOp::Lt,
                     B::Le => tir::BinOp::Le,
@@ -480,10 +477,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(ty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
             }
-            B::In | B::NotIn => {
-                self.error(span, "`in` is not supported yet");
-                error_expr(span)
-            }
+            B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
             B::Range | B::RangeIncl => {
                 self.error(span, "ranges are supported only in `for` loops so far");
                 error_expr(span)

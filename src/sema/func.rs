@@ -44,6 +44,8 @@ pub enum Obligation {
     UnitStatement { ty: Ty, span: Span },
     /// A lossless conversion `T(x)` (§6.5).
     Conversion { from: Ty, to: Ty, span: Span },
+    /// Comparison operands must be ordered (§7.5).
+    Ord { ty: Ty, span: Span },
     /// An operator operand must be a numeric type (and, if `int_only`, an integer).
     Numeric { ty: Ty, span: Span, op: &'static str, int_only: bool, signed_only: bool },
 }
@@ -563,7 +565,13 @@ impl<'a, 's> FnCx<'a, 's> {
     fn for_loop(&mut self, f: &ast::ForExpr) -> Expr {
         let span = f.span;
         let ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } = &f.iter.kind else {
-            self.error(f.iter.span, "only `for` over ranges is supported yet");
+            if let Some(e) = self.for_each_loop(f) {
+                return e;
+            }
+            self.error(
+                f.iter.span,
+                "`for` over iterator calls is not supported yet; iterate over a range, array or slice",
+            );
             return error_expr(span);
         };
         let inclusive = *op == ast::BinOp::RangeIncl;
@@ -578,9 +586,6 @@ impl<'a, 's> FnCx<'a, 's> {
             int_only: true,
             signed_only: false,
         });
-        if f.pats.len() != 1 {
-            self.error(f.span, "a range yields integers; use a single pattern");
-        }
         // { lo_t := lo; hi_t := hi; i := lo_t; going := lo_t <(=) hi_t;
         //   loop going { p :: i; body } step { if i is hi_t { going = false } else { i += 1 } } }
         // The half-open form uses `i < hi_t` as the condition and `i += 1` as the step.
@@ -650,37 +655,8 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             (vec![tir::CondPart::Bool(lt)], block_of(vec![incr], span))
         };
-        self.push_scope();
-        if let Some(l) = f.label {
-            self.declare(l.name, LocalBinding::Label, l.span);
-        }
-        let mut body_stmts = vec![];
-        if let Some(p) = f.pats.first() {
-            match &p.kind {
-                ast::PatternKind::Bind(n) => {
-                    let v = self.new_local(n.name, elem, false, n.span);
-                    self.declare(n.name, LocalBinding::Var(v), n.span);
-                    body_stmts.push(Stmt::Let { local: v, init: Some(local(i, elem)) });
-                }
-                ast::PatternKind::Wildcard => {}
-                _ => self.error(p.span, "this pattern is not supported in `for` yet"),
-            }
-        }
-        let id = self.new_label(f.label.map(|l| l.name), true);
-        let body = self.block(&f.body, false);
-        self.labels.pop();
-        self.pop_scope();
-        body_stmts.push(Stmt::Expr(body));
-        let lp = Expr {
-            ty: Ty::unit(),
-            kind: tir::ExprKind::Loop {
-                label: id,
-                cond,
-                body: Box::new(tir::Block { stmts: body_stmts, tail: None, span }),
-                step: Some(Box::new(step)),
-            },
-            span,
-        };
+        let item = local(i, elem);
+        let lp = self.loop_with_pattern(f, elem, item, cond, step);
         stmts.push(Stmt::Expr(lp));
         block_of(stmts, span)
     }

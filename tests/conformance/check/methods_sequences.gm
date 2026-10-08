@@ -1,0 +1,48 @@
+//! stage: check
+// Builtin methods (§21.3), conversions (§6.6), slicing (§7.9), `in` (§7.7),
+// `for` over arrays and slices (§13.2) and method calls (§7.10).
+Dir :: union { N, E, S, W }
+Counter :: struct { n: u32 }
+
+bump :: fn(c: ^Counter, by: u32) { c.n += by }
+value :: fn(c: ^const Counter) -> u32 => c.n
+twice :: fn(c: Counter) -> u32 => c.n * 2
+
+f :: fn(xs: []const i32, b: u8, x: f64) -> i32 {
+    lo := b.trunc(u4)
+    w := 300u16.checked(u8) else 0
+    s := x.round(i64)
+    m := b.max(10)
+    c := b.clamp(1, 5)
+    d := (-5i8).abs()
+    u := 3i32.abs_diff(-4)
+    p := 2u32.pow(10)
+    nan := x.is_nan()
+    bits := x.bits(u64)
+    bad := x.bits(u32)                     //~ ERROR needs equal sizes
+    first := xs.first() else 0
+    g := xs.get(3) else -1
+    tag := Dir.S.tag()
+    dir := Dir.from_tag(2) else .N
+    head := xs[0..2]
+    rest := xs[1..]
+    total := 0
+    for v in xs { total += v }
+    arr := [4]u8(1, 2, 3, 4)
+    for v in arr { total += i32(v) }
+    pairs := [2](u8, u8)((1, 2), (3, 4))
+    for i, j in pairs { total += i32(i) }
+    for v in [2]u8(1, 2) { }               //~ ERROR not a temporary array
+    if 3 in 0..10 and b not in (0, 1, 2) and 'x' in "xyz" { }
+    if Dir.N < Dir.S and "ab" < "b" { }
+    if xs < xs { }
+    if dir < 3 { }                         //~ ERROR different types
+    cnt := Counter(n: 1)
+    cnt.bump(2)
+    v := cnt.value()
+    t := cnt.twice()
+    Counter(n: 0).bump(1)                  //~ ERROR must be a variable
+    return total
+}
+
+main :: fn() {}

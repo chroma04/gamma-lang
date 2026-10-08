@@ -73,6 +73,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     );
                 }
             }
+            Obligation::Ord { ty, span } => {
+                let t = self.infer.resolve(ty);
+                if !t.is_error() && !self.is_ord(t) {
+                    self.error(span, format!("values of type `{}` are not ordered (§7.5)", t));
+                }
+            }
             Obligation::Numeric { ty, span, op, int_only, signed_only } => {
                 let t = self.infer.resolve(ty);
                 if t.is_error() {
@@ -136,6 +142,20 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
             }
             _ => {}
+        }
+    }
+
+    /// The types `< <= > >=` apply to (§7.5).
+    pub fn is_ord(&self, t: Ty) -> bool {
+        match t.kind() {
+            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) => true,
+            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.is_ord(*e)),
+            TyKind::Array { elem, .. } | TyKind::Slice { elem, .. } => self.is_ord(*elem),
+            TyKind::ManyPtr { .. } => true,
+            TyKind::Adt(..) => {
+                self.sema.union_variants(t).is_some_and(|(vs, _)| vs.iter().all(|v| v.payload.is_none()))
+            }
+            _ => false,
         }
     }
 

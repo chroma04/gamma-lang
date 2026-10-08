@@ -745,6 +745,13 @@ pub enum Builtin {
     Get,
     /// `a.get_ptr(i)` → `?^T`.
     GetPtr,
+    /// `a.first()` → `?T`.
+    First,
+    /// `a.last()` → `?T`.
+    Last,
+    /// `r.len()` of a range: the number of values it contains (0 if empty).
+    RangeLen,
+
     /// `s.cstr_len()`.
     CstrLen,
     /// `assert(cond, msg, loc)`: checked (removed in Fast builds).
