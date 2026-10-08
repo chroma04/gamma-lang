@@ -1,0 +1,36 @@
+(file
+  (item pub
+    (doc "First line.\n  second line, indented")
+    (attr inline)
+    (binding const a (fn (params) (block))))
+  (item
+    (binding const b (int 1)))
+  (item
+    (binding const c (int 2)))
+  (item
+    (doc "Docs for a when.")
+    (when-items
+      (ident X)
+      (then
+        (item
+          (doc "Docs inside.")
+          (binding const d (int 3)))
+        (item
+          (binding const e (int 4))))))
+  (item
+    (attr global)
+    (binding var x (ty (ident i32)) (int 0)))
+  (item
+    (binding const f (int 5)))
+  (item
+    (attr export (args (str "sym")))
+    (attr callconv (args (dot C)))
+    (binding const g (fn (params) (block))))
+  (item
+    (doc "Docs for a test.")
+    (test (str "t") (block)))
+  (item
+    (doc "Docs for a handler.")
+    (handler-decl
+      (ident Log)
+      (for (ident T)))))

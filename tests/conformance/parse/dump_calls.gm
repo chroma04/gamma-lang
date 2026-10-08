@@ -1,0 +1,36 @@
+//! stage: parse
+//! dump
+// 11.3-11.4, A.7 rule 7: arguments, spreads, indexing and slicing.
+
+c1 :: f()
+c2 :: f(a)
+c3 :: f(a,)
+c4 :: f(a, b: 1, c: 2)
+c5 :: f(..t)
+c6 :: f(..t, b: 3)
+c7 :: f(---)
+c8 :: Buf(len: 0, data: ---)
+c9 :: f(a)(b)(c)
+c10 :: o.m(a).n[1].p
+c11 :: a[i]
+c12 :: a[1..]
+c13 :: a[..2]
+c14 :: a[..]
+c15 :: a[1..2]
+c16 :: a[1..=2]
+c17 :: a[..=2]
+c18 :: a[(1..2)]
+c19 :: a[b[1..]..]
+c20 :: t.0.1
+c21 :: @size_of(T)
+c22 :: @min_stack
+c23 :: @foo()
+c24 :: @write(sink, "{}", x)
+c25 :: (a, b)
+c26 :: (a,)
+c27 :: (x: 1, y: 2)
+c28 :: ()
+c29 :: ((a))
+c30 :: .V
+c31 :: .V(1)
+c32 :: .V(x: 1)

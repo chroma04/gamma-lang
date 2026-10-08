@@ -1,0 +1,46 @@
+(file
+  (item
+    (binding const a1
+      (binary - (binary + (ident a) (binary * (ident b) (ident c))) (ident d))))
+  (item
+    (binding const a2 (binary - (binary - (ident a) (ident b)) (ident c))))
+  (item
+    (binding const a3 (binary * (unary neg (ident a)) (ident b))))
+  (item
+    (binding const a4 (binary + (unary make-err (ident a)) (unary try (ident b)))))
+  (item
+    (binding const a5 (binary - (paren (binary << (int 1) (ident n))) (int 1))))
+  (item
+    (binding const a6 (binary << (int 1) (paren (binary - (ident n) (int 1))))))
+  (item
+    (binding const a7 (binary & (binary & (ident a) (ident b)) (ident c))))
+  (item
+    (binding const a8 (binary | (binary | (ident a) (ident b)) (ident c))))
+  (item
+    (binding const a9 (binary .. (ident lo) (ident hi))))
+  (item
+    (binding const a10 (binary ..= (ident lo) (binary + (ident hi) (int 1)))))
+  (item
+    (binding const a11 (binary < (ident a) (ident b))))
+  (item
+    (binding const a12
+      (binary and
+        (binary and (binary is-not (ident a) (ident b)) (binary in (ident c) (ident xs)))
+        (binary not-in (ident d) (ident ys)))))
+  (item
+    (binding const a13 (binary and (unary not (ident a)) (unary not (ident b)))))
+  (item
+    (binding const a14 (binary or (binary or (ident a) (ident b)) (ident c))))
+  (item
+    (binding const a15 (else (ident x) (else (ident y) (ident z)))))
+  (item
+    (binding const a16 (else (binary and (ident a) (ident b)) (ident c))))
+  (item
+    (binding const a17 (opt-unwrap (index (field (field (deref (ident p)) f) g) (int 0)))))
+  (item
+    (binding const a18 (unary addr-of (field (ident x) y))))
+  (item
+    (binding const a19 (unary neg (opt-unwrap (ident x)))))
+  (item
+    (binding const a20
+      (binary -% (binary +? (ident a) (ident b)) (binary *| (ident c) (ident d))))))

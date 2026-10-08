@@ -1,0 +1,10 @@
+//! stage: parse
+// 10.5: unparenthesized `try x else d` is an error.
+
+f :: fn() {
+    a := try parse(s) else 0 //~ ERROR `try x else d` is ambiguous
+    b := try parse(s) else e => 0 //~ ERROR `try x else d` is ambiguous
+    c := try (parse(s) else 0)
+    d := (try parse(s)) else 0
+    e := try parse(s)
+}

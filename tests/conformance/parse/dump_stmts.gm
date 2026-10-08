@@ -1,0 +1,49 @@
+//! stage: parse
+//! dump
+// A.4 statements and A.7 rule 1.
+
+f :: fn() {
+    a :: 1
+    b := 2
+    c: u8 : 3
+    d: u8 = 4
+    e: [4]u8 = ---
+    f, g := pair()
+    h, i :: pair()
+    j, k: (u8, u8) = pair()
+    _, l := pair()
+    _ = call()
+    n = 1
+    n += 1
+    n -= 1
+    n *= 1
+    n /= 1
+    n %= 1
+    n <<= 1
+    n >>= 1
+    n &= 1
+    n |= 1
+    n ~= 1
+    n +%= 1
+    n -%= 1
+    n *%= 1
+    n <<%= 1
+    n +|= 1
+    n -|= 1
+    n *|= 1
+    n <<|= 1
+    a, b = (b, a)
+    p^.x[0] = 1
+    defer cleanup()
+    errdefer x = 0
+    defer { a(); b() }
+    discard k
+    { nested := 1 }
+    when A { a() } else when B { b() } else { c() }
+    lbl: while true { break lbl }
+    #inline
+    helper :: fn() { }
+    foo
+    return
+    return 1
+}

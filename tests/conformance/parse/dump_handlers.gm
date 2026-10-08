@@ -1,0 +1,29 @@
+//! stage: parse
+//! dump
+// 12.5, 12.6, 14.3: handlers and resume.
+
+handler Log for ^FileLogger \ {Fs} {
+    log(self, level, msg) => if level >= self.min { _ = fs.write(self.fd, msg) }
+}
+handler Yield(i32) for ^Collector { yield(self, x) => self.items.push(x) }
+handler m.Net for T {}
+handler Async for ^Scheduler \ {Sys} {
+    wait(self, k) => {
+        r := self.next()
+        resume r()
+    }
+    spawn(self, k) => resume k()
+    exit(self, v, k) => resume k(v + 1)
+    done(self, k) => {
+        discard k
+        break
+    }
+}
+
+f :: fn() {
+    q :: handler Log {
+        log(level, msg) => if level is .Warn { warnings += 1 }
+    }
+    r := with q { save(doc) }
+    h := handler Abort { abort() => break }
+}

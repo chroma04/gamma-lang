@@ -1,0 +1,42 @@
+(file
+  (item
+    (binding const t1 (optional-type (call (ident List) (ident u8)))))
+  (item
+    (binding const t2 (optional-type (call (ident i32) (int 5)))))
+  (item
+    (binding const t3 (array-type (int 3) (call (ident u8) (int 1) (int 2) (int 3)))))
+  (item
+    (binding const t4 (array-type _ (call (ident u8) (int 1) (int 2)))))
+  (item
+    (binding const t5 (array-type (ident N) (ident T))))
+  (item
+    (binding const t6 (array-type (binary * (ident N) (int 2)) (field (ident m) T))))
+  (item
+    (binding const t7 (slice-type const (ident u8))))
+  (item
+    (binding const t8 (many-ptr-type const (ident u8))))
+  (item
+    (binding const t9 (ptr-type const (ident T))))
+  (item
+    (binding const t10 (ptr-type (ptr-type (ident T)))))
+  (item
+    (binding const t11 (optional-type (ptr-type (slice-type (ident T))))))
+  (item
+    (binding const t12 (slice-type (optional-type (ident u8)))))
+  (item
+    (binding const t13
+      (ptr-type (fn-type (params (param (names) (ty (ident i32)))) (ret (ident i32))))))
+  (item
+    (binding const t14 (optional-type (ptr-type (fn-type (params))))))
+  (item
+    (binding const t15 (array-type (int 4) (array-type (int 4) (ident f32)))))
+  (item
+    (binding const t16 (optional-type (optional-type (ident i32)))))
+  (item
+    (binding const t17 (cont-type (ident i32))))
+  (item
+    (binding const t18 (ptr-type (field (call (ident List) (ident T)) Item))))
+  (item
+    (binding const t19 (array-type (int 3) (call (ident u8) (named fill (int 0))))))
+  (item
+    (binding const t20 (optional-type (call (call (ident G) (ident a) (ident b)) (ident c))))))

@@ -1,0 +1,51 @@
+(file
+  (item
+    (binding const l1 (int 0)))
+  (item
+    (binding const l2 (int 1000000)))
+  (item
+    (binding const l3 (int 255)))
+  (item
+    (binding const l4 (int 170 u8)))
+  (item
+    (binding const l5 (int 511 i32)))
+  (item
+    (binding const l6 (int 100 usize)))
+  (item
+    (binding const l7 (float 157/50)))
+  (item
+    (binding const l8 (float 1500 f32)))
+  (item
+    (binding const l9 (float 1/2 f64)))
+  (item
+    (binding const l10 (char 97)))
+  (item
+    (binding const l11 (char 10)))
+  (item
+    (binding const l12 (char 128512)))
+  (item
+    (binding const l13 (str "tab\there")))
+  (item
+    (binding const l14 (str "A\x00\xff")))
+  (item
+    (binding const l15 (raw-str "raw\\n")))
+  (item
+    (binding const l16 (c-str "hello")))
+  (item
+    (binding const l17 (bool true)))
+  (item
+    (binding const l18 (bool false)))
+  (item
+    (binding const l19 null))
+  (item
+    (binding const l20 uninit))
+  (item
+    (binding const l21 underscore))
+  (item
+    (binding const l22 (unary neg (int 128 i8))))
+  (item
+    (binding const l23 (int 340282366920938463463374607431768211456)))
+  (item
+    (binding const l24 (str "")))
+  (item
+    (binding const l25 (str "\xc3\xa9"))))

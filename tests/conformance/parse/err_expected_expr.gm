@@ -1,0 +1,17 @@
+//! stage: parse
+// Missing operands are reported once, and parsing resumes at the next statement.
+
+f :: fn() {
+    a := 1 +
+} //~ ERROR expected an expression, found `}`
+
+g :: fn() {
+    b := (1 + ) //~ ERROR expected an expression, found `)`
+    c := 5
+    d := not //~ ERROR expected an expression
+}
+
+h :: fn() {
+    e := foo(1, 2 3) //~ ERROR expected `)` to close the argument list, found integer literal
+    ok := 1
+}

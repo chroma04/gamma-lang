@@ -1,0 +1,57 @@
+//! stage: parse
+// Spec 3.2 imports, 3.4 declarations, 3.6 conditional compilation, 3.7 entry
+// point, 3.8 tests, 17.7 static assertions.
+
+io   :: import "std/io"
+util :: import "./util"
+cfg  :: import "../config"
+
+when target.os is .Linux {
+    sys :: import "./sys_linux"
+} else when target.os is .Windows {
+    sys :: import "./sys_windows"
+} else {
+    sys :: import "./sys_other"
+}
+
+when target.ptr_bits is 64 {
+    Word :: u64
+}
+
+Header :: struct {
+    magic: u32
+    version: u16
+    flags: u16
+    length: u64
+}
+
+@static_assert(@size_of(Header) is 16, "Header must match the on-disk format")
+
+BLOCK :: 4096
+MASK: u32 : 0xFF_FF
+LIMIT: usize : BLOCK * 2
+
+main :: fn() -> u8 \ {Out} {
+    print("hello, world\n")
+    return 0
+}
+
+main2 :: fn() -> E!() \ {Out, Err} {
+    try run()
+}
+
+main3 :: fn() \ {Alloc, Out, Err, In, Clock, Rand, Fs, Net, Env, Sys} {
+}
+
+test "parse rejects letters" {
+    expect(parse_u16("12a") is !.BadDigit(at: 2))
+}
+
+test "arithmetic" {
+    x := 1 + 2
+    expect(x is 3)
+    expect(255u8 +% 1u8 is 0u8)
+}
+
+// A binding named `test` is still an ordinary binding.
+test :: 5

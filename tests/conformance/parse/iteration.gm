@@ -1,0 +1,47 @@
+//! stage: parse
+// Spec 13: iteration, iterators and cursors.
+
+Yield :: effect(T: type) { yield: esc(x: T) }
+
+evens :: fn(xs: []const i32) \ {Yield(i32)} {
+    for x in xs { if x % 2 is 0 { yield(x) } }   // yield goes to evens's caller
+}
+
+use_evens :: fn(data: []const i32) {
+    for e in evens(data) {
+        if e > 100 { break }
+        print("{}\n", e)
+    }
+}
+
+tokenize :: fn(src: string) -> LexError!() \ {Yield(Token)} {
+    return ()
+}
+
+lockstep :: fn(a, b: []const i32) {
+    ca, cb := (a.cursor(), b.cursor())
+    while x := ca.next() {
+        y := cb.next() else break
+        combine(x, y)
+    }
+}
+
+range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) { }
+range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) { }
+each       :: fn(T: type, xs: []const T) \ {Yield(T)} { }
+each_ptr   :: fn(T: type, xs: []T) \ {Yield(^T)} { }
+enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} { }
+reversed   :: fn(T: type, xs: []const T) \ {Yield(T)} { }
+bytes      :: fn(s: string) \ {Yield(u8)} { }
+runes      :: fn(s: string) \ {Yield(rune)} { }
+
+loops :: fn(scores: []u32, names: []string) {
+    for p in each_ptr(scores) { p^ = p^ +| 10 }
+    for i, x in enumerate(names) { print("{} {}\n", (i, x)) }
+    for i in 0..n { }
+    for i in 0..=n { }
+    for x in xs { }
+    for c in bytes(s) { }
+    for r in results() { }
+    for x in l.items { }
+}

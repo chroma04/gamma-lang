@@ -1,0 +1,10 @@
+//! stage: parse
+// 7.4.4: a chain may use only one of `&`, `|`, `~`.
+
+f :: fn() {
+    a := x & y | z //~ ERROR cannot mix `&`, `|` and `~`
+    b := x | y ~ z //~ ERROR cannot mix `&`, `|` and `~`
+    c := (x & y) | z
+    d := x & y & z
+    e := x ~ y ~ z
+}

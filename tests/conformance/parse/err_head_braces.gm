@@ -1,0 +1,13 @@
+//! stage: parse
+// A.7 rule 4: constructs containing `{` must be parenthesized in heads.
+
+T :: struct { a: i32 }
+
+f :: fn() {
+    if x is struct { a: i32 } { } //~ ERROR a struct literal must be parenthesized
+    while handler Log { } { } //~ ERROR a handler literal must be parenthesized
+    for i in if a { b } else { c } { } //~ ERROR an `if` expression must be parenthesized
+    match match a { _ => 1 } { _ => 2 } //~ ERROR a `match` expression must be parenthesized
+    ok1 := if (x is struct { a: i32 }) { 1 } else { 2 }
+    ok2 := match (if a { 1 } else { 2 }) { _ => 3 }
+}

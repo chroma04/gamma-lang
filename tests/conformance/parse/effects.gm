@@ -1,0 +1,46 @@
+//! stage: parse
+// Spec 12.1-12.3: effect declarations, operation kinds, effect sets.
+
+Log :: effect {
+    log: fn(level: Level, msg: string)
+}
+Yield :: effect(T: type) {
+    yield: esc(x: T)
+}
+Abort :: effect {
+    abort: esc() -> never
+}
+Async :: effect {
+    suspend: ctl(what: Waitable)
+    spawn:   ctl(task: Task)
+}
+Async2 :: effect {
+    wait:  ctl(fd: Fd, events: Events)
+    spawn: ctl(entry: ^fn(arg: rawptr) -> never \ {Async2}, arg: rawptr, stack: []u8)
+    exit:  ctl() -> never
+    join:  ctl()                      // wait until every spawned task has exited
+}
+Out   :: effect { write_out: fn(bytes: []const u8) }
+Err   :: effect { write_err: fn(bytes: []const u8) }
+In    :: effect { read: fn(buf: []u8) -> IoError!usize }      // 0 at end of input
+Clock :: effect { now: fn() -> Instant; wall: fn() -> i64; sleep: fn(d: Duration) }
+Rand  :: effect { fill: fn(buf: []u8) }
+Env   :: effect {
+    args: fn() -> []const string
+    var:  fn(name: string) -> ?string
+    exit: esc(code: u8) -> never
+}
+Alloc :: effect { current: fn() -> Allocator }
+Generic :: effect(K, V: type) {
+    get: fn(key: K) -> ?V
+    put: esc(key: K, value: V) -> V!()
+}
+Empty :: effect {}
+
+sets :: fn() \ {Yield(i32), Yield(u8), m.Net, Log} { }
+sets2 :: fn() \ {
+    Alloc,
+    Out,
+} { }
+sets3 :: fn() \ {} { }
+sets4 :: fn(T: type) -> ?T \ {Yield((i: usize, x: T))} { return null }

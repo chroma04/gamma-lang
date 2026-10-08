@@ -1,0 +1,92 @@
+//! stage: parse
+// Spec 7.3-7.9: operator levels and their associativity.
+
+f :: fn() {
+    // levels 3 and 4
+    a := b + c * d - e / f % g
+    a = b +% c -| d *? e -? f +? g *% h *| i
+    // level 5
+    s := 1 << n
+    t := (1 << n) - 1
+    u := 1 << (n - 1)
+    v := x >> 2
+    w := x <<% 3
+    y := x <<| 3
+    z := x <<? 3
+    // level 6
+    m := a & b & c
+    n := a | b | c
+    o := a ~ b ~ c
+    p := (a & b) | c
+    q := ~a
+    // level 7
+    r1 := 0..n
+    r2 := 0..=n
+    r3 := (a + 1)..(b - 1)
+    // level 8
+    c1 := a is b
+    c2 := a is not b
+    c3 := x in xs
+    c4 := x not in xs
+    c5 := a < b
+    c6 := a <= b
+    c7 := a > b
+    c8 := a >= b
+    // level 9 and 10
+    l1 := not a
+    l2 := a and b and c
+    l3 := a or b or c
+    l4 := (a and b) or c
+    l5 := not a and b
+    l6 := x < y and y < z
+    l7 := c in ('\n', '\r')
+    l8 := d in (.N, .S)
+    // level 11
+    e1 := x else 0
+    e2 := a else b else c
+    e3 := lookup(k) else e => handle(e)
+    // level 2 and 1
+    n1 := -x
+    n2 := -128i8
+    n3 := &x
+    n4 := !err
+    n5 := try parse(s)
+    n6 := try a.b()
+    n7 := (try x) + 1
+    n8 := try (lookup(k) else !.Missing)
+    d1 := p^
+    d2 := p^.f
+    d3 := pp^^
+    d4 := a.b.c(1).d[2]
+    d5 := x?
+    d6 := x!
+    d7 := x?.field
+    d8 := f(x)!.g
+    i1 := xs[0]
+    i2 := xs[1..3]
+    i3 := xs[1..=3]
+    i4 := xs[1..]
+    i5 := xs[..3]
+    i6 := xs[..=3]
+    i7 := xs[..]
+    i8 := xs[i + 1]
+    i9 := grid[row][col]
+    i10 := m[a[..2][0]..]
+    i11 := p[a..b + 1]
+    t1 := t.0
+    t2 := t.0.1
+    t3 := t.name
+    // grouping and tuples
+    g1 := (a + b) * c
+    g2 := (a, b)
+    g3 := (a,)
+    g4 := (x: 1, y: 2)
+    g5 := ()
+    // equality with patterns on the right
+    h1 := s is .Circle(_)
+    h2 := r is !_
+    h3 := r is !.BadDigit(at: 2)
+    h4 := o is null
+    h5 := o is not null
+    h6 := s is .Empty
+}

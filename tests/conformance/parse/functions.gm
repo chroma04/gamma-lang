@@ -1,0 +1,62 @@
+//! stage: parse
+// Spec 11: function declarations, literals, parameters and calls.
+
+add    :: fn(a, b: i32) -> i32 { return a + b }
+square :: fn(x: f32) -> f32 => x * x
+divmod :: fn(n, d: u32) -> (q: u32, r: u32) => (n / d, n % d)
+greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
+nothing :: fn() {}
+never_returns :: fn() -> never \ {Abort} { abort() }
+with_defaults :: fn(a: i32, b: i32 = 10, name: string = "x") -> i32 => a + b
+caller :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never {
+    @unreachable()
+}
+generic :: fn(T: type, xs: []const T) -> ?T where Ord(T) => xs.first()
+constrained :: fn(T: type, a, b: T) -> T where Int(T), Signed(T) { return a }
+compile_time :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T { return a }
+print_it :: fn(A: type, template :: string, args: A = ()) \ {Out} { }
+effectful :: fn(x: i32) -> E!i32 \ {Alloc, Yield(i32)} where Eq(E) => x
+variadic_user :: fn() { }
+
+calls :: fn() {
+    add(1, 2)
+    add(a: 1, b: 2)
+    add(1, b: 2)
+    add(..pair)
+    add(..t, b: 3)
+    Window(..w, title: "new")
+    f(a, b,)
+    f(
+        a,
+        b,
+    )
+    obj.method(1).other()
+    xs.sort_by(fn(a, b) => a.score > b.score)
+    people.sort_by_key(fn(p) => (p.last, p.first))
+    retry(3, fn() => send(packet))
+    cb := fn(x: i32) -> i32 { return x + 1 }
+    r := (fn(x: i32) => x * 2)(4)
+    n := @size_of(Header) + @align_of(u64)
+    s := @write(sink, "{}\n", value)
+    x := new(Page, ---)
+    h(.A, .B(1), .C(x: 1))
+}
+
+named_fns :: fn() {
+    helper :: fn(a: i32) -> i32 => a * 2
+    #inline
+    fast :: fn(a: i32) -> i32 { return a }
+    #noinline
+    #cold
+    slow :: fn() { }
+}
+
+fn_params :: fn(
+    op: fn(a: i32) -> i32,
+    cmp: fn(a, b: ^const T) -> bool,
+    cb: ^fn(rawptr) -> never \ {Async},
+    cap: fn() \ {Out},
+    plain: fn(i32, u8),
+) { }
+
+returns_fn_ptr :: fn() -> ^fn(i32) -> i32 { return &helper }

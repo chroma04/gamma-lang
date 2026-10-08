@@ -1,0 +1,54 @@
+//! stage: parse
+// Spec 5: pointers, arrays, slices, tuples, optionals, results, function types.
+
+Bytes    :: []u8
+Str      :: []const u8
+Many     :: [^]u8
+ManyC    :: [^]const u8
+Ptr      :: ^u32
+PtrC     :: ^const u32
+Arr      :: [16]u8
+Arr2     :: [N * 2]T
+Opt      :: ?u32
+OptPtr   :: ?^T
+OptMany  :: ?[^]T
+OptRaw   :: ?rawptr
+NestedOpt :: ??i32
+SliceOfOpt :: []?u8
+Res      :: IoError!usize
+ResOpt   :: E!?^T
+Unit     :: ()
+Pair     :: (i32, u8)
+Single   :: (i32,)
+Named    :: (w: f32, h: f32)
+Mat      :: [4][4]f32
+PtrArr   :: ^[N]T
+FnPtr    :: ^fn(a: i32) -> i32
+FnPtr2   :: ^fn(i32, u8) -> bool
+FnPtrEff :: ^fn(arg: rawptr) -> never \ {Async}
+Callback :: ?^fn(key: ^const K, seed: u64) -> u64
+Cont     :: cont(())
+ContOpt  :: ?cont(())
+Qualified :: m.Type
+Applied  :: List(u8)
+AppliedOpt :: ?List(u8)
+ErrApplied :: ParseError!List(string)
+Chain    :: m.List(string).Item
+
+p1: ^u8 = &x
+p2: []const u8 = "text"
+p3: ?^Node = null
+p4: Io.Error!usize = 0
+p5: (a: u8, b: u8) = (a: 1, b: 2)
+
+f :: fn() {
+    x: [3]i32 = [3]i32(1, 2, 3)
+    y := [_]u8(1, 2, 3)
+    z := [8]u8(fill: 0)
+    w := [3]u8(..t)
+    o := ?i32(5)
+    n := ??i32(null)
+    inner := ?i32(null)
+    q := (1, 2).0
+    s := t.0.1
+}

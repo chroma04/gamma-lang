@@ -1,0 +1,87 @@
+(file
+  (item
+    (binding const e1 (else (ident x) (ident d))))
+  (item
+    (binding const e2 (else (ident x) (capture e) (binary + (ident e) (int 1)))))
+  (item
+    (binding const e3 (else (ident x) (else (ident y) (ident z)))))
+  (item
+    (binding const e4
+      (else (ident x) (capture e)
+        (block
+          (expr (call (ident log) (ident e)))
+          (expr (int 0))))))
+  (item
+    (binding const e5 (else (ident x) (return (unary make-err (dot Bad))))))
+  (item
+    (binding const e6 (else (ident x) (break))))
+  (item
+    (binding const e7
+      (if
+        (branch
+          (cond (ident a))
+          (block
+            (expr (int 1))))
+        (else
+          (block
+            (expr (int 2)))))))
+  (item
+    (binding const e8
+      (if
+        (branch
+          (cond (ident a))
+          (block
+            (expr (int 1))))
+        (branch
+          (cond (ident b))
+          (block
+            (expr (int 2))))
+        (else
+          (block
+            (expr (int 3)))))))
+  (item
+    (binding const e9
+      (if
+        (branch
+          (cond (ident a))
+          (block
+            (expr (int 1))))
+        (else-capture e (int 2)))))
+  (item
+    (binding const e10
+      (else
+        (if
+          (branch
+            (cond (ident a))
+            (block
+              (expr (int 1)))))
+        (int 2))))
+  (item
+    (binding const e11 (else (paren (unary try (ident x))) (ident d))))
+  (item
+    (binding const e12 (unary try (paren (else (ident x) (ident d))))))
+  (item
+    (binding const e13 (else (ident x) (capture _) (int 0))))
+  (item
+    (binding const e14
+      (else (binary *? (ident n) (int 10)) (return (unary make-err (dot TooBig))))))
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (expr
+            (if
+              (branch
+                (cond (bind (bind f) (call (ident open) (ident path))))
+                (block
+                  (expr (call (ident read) (ident f)))))
+              (else-capture e
+                (block
+                  (expr (call (ident report) (ident e)))))))
+          (expr
+            (if
+              (branch
+                (cond (bind (bind f) (call (ident open) (ident path))))
+                (block
+                  (expr (call (ident read) (ident f)))))
+              (else-capture e (call (ident report) (ident e))))))))))

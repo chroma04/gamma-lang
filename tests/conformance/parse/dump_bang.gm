@@ -1,0 +1,25 @@
+//! stage: parse
+//! dump
+// A.7 rule 3: `!` after an operand.
+
+b1 :: E!T
+b2 :: E!?^T
+b3 :: x![i]
+b4 :: x!?.f
+b5 :: x!.f
+b6 :: x!(a)
+b7 :: x!(a, b)
+b8 :: x!
+b9 :: x!.f(1)
+b10 :: f(x)!
+b11 :: m.Err!List(u8)
+b12 :: a!b!c
+b13 :: !e
+b14 :: !!e
+b15 :: x! + 1
+b16 :: ?u8!bool
+b17 :: x!y.z
+b18 :: x! and y
+b19 :: x! is .A
+
+f :: fn(r: IoError!usize, s: ?E!T) -> E!T { }

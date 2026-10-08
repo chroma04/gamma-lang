@@ -1,0 +1,24 @@
+//! stage: parse
+//! dump
+// Precedence and associativity (B.1).
+
+a1 :: a + b * c - d
+a2 :: a - b - c
+a3 :: -a * b
+a4 :: !a + try b
+a5 :: (1 << n) - 1
+a6 :: 1 << (n - 1)
+a7 :: a & b & c
+a8 :: a | b | c
+a9 :: lo..hi
+a10 :: lo..=hi + 1
+a11 :: a < b
+a12 :: a is not b and c in xs and d not in ys
+a13 :: not a and not b
+a14 :: a or b or c
+a15 :: x else y else z
+a16 :: a and b else c
+a17 :: p^.f.g[0]?
+a18 :: &x.y
+a19 :: -x?
+a20 :: a +? b -% c *| d

@@ -12,7 +12,8 @@
 //!   (empty if the file does not exist).
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
-//!   `text`. Every reported error or warning must be expected this way.
+//!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
+//!   Every reported error or warning must be expected this way.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
@@ -61,14 +62,19 @@ fn parse_expectations(path: &Path, src: &str) -> Result<Expectations, String> {
             }
         }
         if let Some(pos) = line.find("//~") {
-            let rest = line[pos + 3..].trim();
+            // `//~?` expects a diagnostic that has no source location.
+            let (unlocated, rest) = match line[pos + 3..].strip_prefix('?') {
+                Some(r) => (true, r.trim()),
+                None => (false, line[pos + 3..].trim()),
+            };
             let (sev, msg) = rest.split_once(' ').unwrap_or((rest, ""));
             let sev = match sev {
                 "ERROR" => "error",
                 "WARNING" => "warning",
                 other => return Err(format!("{}:{}: unknown annotation `{}`", path.display(), i + 1, other)),
             };
-            e.diags.push((i as u32 + 1, sev.to_string(), msg.trim().to_string()));
+            let line_no = if unlocated { 0 } else { i as u32 + 1 };
+            e.diags.push((line_no, sev.to_string(), msg.trim().to_string()));
         }
     }
     Ok(e)

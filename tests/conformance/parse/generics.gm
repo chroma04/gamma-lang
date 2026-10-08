@@ -1,0 +1,46 @@
+//! stage: parse
+// Spec 16: generic functions, constraints, generic types, compile-time value parameters.
+
+max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := try xs.get(0)
+    for x in xs { if x > best { best = x } }
+    return best
+}
+
+demo :: fn(scores: []i32) {
+    biggest := max(scores) else 0        // T = i32, from scores: []i32 (array place -> []const T)
+    names   := list(string)              // T written explicitly
+    try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted
+    ids := map(string, u32)                                // @hash and `is`
+    try ids.put("ada", 1)
+    names2 := map_with(string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+}
+
+HashMap :: struct(K, V: type,
+                  hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,
+                  eq:   ?^fn(a, b: ^const K) -> bool = null) {
+    count: usize
+}
+
+rotate :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T {
+    return a
+}
+print  :: fn(A: type, template :: string, args: A = ()) \ {Out} { }
+
+dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
+    acc := ring.zero
+    return acc
+}
+
+max_i32 :: fn(xs: []const i32) -> ?i32 => max(xs)
+
+sort_by :: fn(T: type, xs: []T, less: fn(a, b: ^const T) -> bool) { }
+
+constrained_all :: fn(T: type, a: T) where Eq(T), Ord(T), Num(T), Int(T), Signed(T), Float(T), Plain(T) { }
+
+map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
+               eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc} { }
+
+BTreeUse :: BTree(K, V, less: by_name)
+Ring :: struct(T: type) { zero: T; add, mul: ^fn(a, b: T) -> T }
+FIXED_RING :: Ring(Fixed)(zero: Fixed(0), add: fixed_add, mul: fixed_mul)

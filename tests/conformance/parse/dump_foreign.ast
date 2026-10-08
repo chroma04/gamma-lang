@@ -1,0 +1,31 @@
+(file
+  (item
+    (binding const libc
+      (foreign
+        (str "c")
+        (foreign-fn puts
+          (fn-type (params (param (names s) (ty (ident cstring)))) (ret (ident c_int))))
+        (foreign-fn qsort
+          (fn-type
+            (params (param (names base) (ty (ident rawptr)))
+              (param (names n size) (ty (ident usize)))
+              (param (names cmp)
+                (ty
+                  (ptr-type
+                    (fn-type (params (param (names a b) (ty (ident rawptr))))
+                      (ret (ident c_int)))))))))
+        (foreign-fn printf
+          (fn-type (params (param (names fmt) (ty (ident cstring)))) variadic
+            (ret (ident c_int))))
+        (foreign-fn strlen
+          (fn-type (params (param (names s) (ty (ident cstring)))) (ret (ident usize))
+            (effects)))
+        (foreign-global errno (ident c_int))
+        (foreign-fn (attr link_name (args (str "write"))) sys_write
+          (fn-type
+            (params (param (names fd) (ty (ident c_int)))
+              (param (names buf) (ty (ident rawptr)))
+              (param (names n) (ty (ident usize))))
+            (ret (ident isize))
+            (effects (ident Sys))))
+        (foreign-global (attr thread_local) tls (ident u32))))))

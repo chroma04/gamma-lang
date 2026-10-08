@@ -1,0 +1,25 @@
+//! stage: parse
+//! dump
+// A.7 rule 2 and rule 4: conditions with `:=`, `and`, and heads.
+
+f :: fn() {
+    if user := find(id) { }
+    if .Circle(r) := shape { }
+    if x < 3 and y := foo() and bar(y) { }
+    if a or b { }
+    if !ok { }
+    if !e := f() { }
+    if Point(x, y: 0) := p { }
+    if (a, b) := pair() { }
+    if m.MAX := n { }
+    if v := t else 0 and w { }
+    while line := reader.next() { }
+    while x and not y { }
+    if (struct { a: i32 }) is T { }
+    if f(fn() { return 1 }) is 1 { }
+    if x is .A { }
+    for i in 0..(if a { 1 } else { 2 }) { }
+    match (if a { b } else { c }) { _ => {} }
+    with (handler Log { log(l, m) => {} }) { }
+    when T is (struct { }) { }
+}

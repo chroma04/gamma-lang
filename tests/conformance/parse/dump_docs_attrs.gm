@@ -1,0 +1,36 @@
+//! stage: parse
+//! dump
+// Doc comments (only directly preceding ones attach) and attributes.
+
+/// First line.
+///   second line, indented
+#inline
+pub a :: fn() { }
+
+/// Detached by a blank line.
+
+b :: 1
+
+// An ordinary comment is not documentation.
+c :: 2
+
+/// Docs for a when.
+when X {
+    /// Docs inside.
+    d :: 3
+
+    e :: 4
+}
+
+#global x: i32 = 0 /// not documentation (trailing)
+f :: 5
+
+#export("sym")
+#callconv(.C)
+g :: fn() { }
+
+/// Docs for a test.
+test "t" { }
+
+/// Docs for a handler.
+handler Log for T { }

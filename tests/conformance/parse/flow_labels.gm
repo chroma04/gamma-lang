@@ -1,0 +1,42 @@
+//! stage: parse
+// Spec 8.5: break, continue and labels; A.7 rule 11.
+
+f :: fn() {
+    outer: for row in 0..h {
+        for col in 0..w {
+            if grid[row][col] is target { break outer }
+            if grid[row][col] is skip { continue outer }
+            if done { break }
+            if again { continue }
+        }
+    }
+
+    scan: while i < n {
+        inner: for j in 0..n {
+            if bad(j) { continue scan }
+            if worse(j) { break inner }
+        }
+        i += 1
+    }
+
+    // The label also works for `with`, and `break` may carry a value.
+    found: with handler_stack() {
+        for x in xs {
+            if x is target { break found x }
+        }
+    }
+
+    r := for x in numbers() {
+        if x > 5 { break x }
+    }
+
+    // `done` is not a label here, so it starts the value.
+    for x in xs { if x > 0 { break done } }
+    for x in xs { break done + 1 }
+    loop2: for x in xs { break loop2 loop2 }
+
+    // labels are not visible in function literals
+    lbl: for x in xs {
+        g := fn() { break lbl }
+    }
+}
