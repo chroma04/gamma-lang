@@ -426,6 +426,19 @@ fn is_type_syntax(e: &ast::Expr) -> bool {
     )
 }
 
+
+/// The type inside optional and result wrappers, where a variant shorthand's
+/// union type is found (`x: ?Shape = .Empty`).
+pub fn strip_wrappers(mut t: Ty) -> Ty {
+    loop {
+        match t.kind() {
+            TyKind::Optional(i) => t = *i,
+            TyKind::Result { ok, .. } => t = *ok,
+            _ => return t,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_template;
@@ -439,17 +452,5 @@ mod tests {
         assert_eq!(&*p[2], b"");
         assert!(parse_template(b"{x}").is_none());
         assert!(parse_template(b"}").is_none());
-    }
-}
-
-/// The type inside optional and result wrappers, where a variant shorthand's
-/// union type is found (`x: ?Shape = .Empty`).
-pub fn strip_wrappers(mut t: Ty) -> Ty {
-    loop {
-        match t.kind() {
-            TyKind::Optional(i) => t = *i,
-            TyKind::Result { ok, .. } => t = *ok,
-            _ => return t,
-        }
     }
 }
