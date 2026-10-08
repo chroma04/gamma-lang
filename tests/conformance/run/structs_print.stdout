@@ -1,0 +1,11 @@
+Vec2(x: 1.5, y: -2)
+Ada scored 1200 (.Gold)
+.Rect(w: 2, h: 3) .Circle(0.5) .Empty
+(1, true, 97)
+(q: 7, r: 2)
+[-1, 0, 1]
+["hi", "there"]
+5 null
+!.Silver
+0.1 1e21 2.5e-7 -0
+{literal braces}

@@ -1,0 +1,49 @@
+// match, binding conditions, optionals and results at run time.
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+ParseError :: union { Empty, BadDigit: (at: usize) }
+
+area :: fn(s: Shape) -> f32 => match s {
+    .Circle(r)            => 3 * r * r
+    .Rect(w, h) if w is h => w * w
+    .Rect(w, h)           => w * h
+    .Empty                => 0
+}
+
+parse :: fn(s: string) -> ParseError!u16 {
+    if s.len is 0 { return !.Empty }
+    n: u16 = 0
+    for i in 0..s.len {
+        c := s[i]
+        if c < '0' or c > '9' { return !.BadDigit(at: i) }
+        n = n *? 10 else return !.Empty
+        n = n +? u16(c - '0') else return !.Empty
+    }
+    return n
+}
+
+describe :: fn(s: string) -> u16 => parse(s) else e => match e {
+    .Empty       => 0
+    .BadDigit(i) => 1000 + u16(i.trunc(u8))
+}
+
+main :: fn() \ {Out} {
+    print("{} {} {} {}\n", (area(.Circle(1)), area(.Rect(w: 2, h: 2)), area(.Rect(w: 2, h: 5)), area(.Empty)))
+    print("{} {} {}\n", (describe("123"), describe(""), describe("12a")))
+    print("{}\n", parse("70000"))
+    if v := parse("42") and v > 40 { print("big {}\n", v) }
+    x: ?u8 = null
+    y := x else 9
+    print("{}\n", y)
+    for c in "hi" {
+        match c {
+            'h'       => print("aitch ")
+            'a'..='z' => print("letter ")
+            _         => print("other ")
+        }
+    }
+    print("\n")
+}

@@ -1,0 +1,31 @@
+// Structural formatting of values (§21.6.1).
+Vec2 :: struct { x, y: f32 }
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+Rank :: union { Bronze, Silver, Gold }
+
+main :: fn() \ {Out} {
+    pos := Vec2(x: 1.5, y: -2)
+    print("{}\n", pos)
+    print("{} scored {} ({})\n", ("Ada", 1200, Rank.Gold))
+    s: Shape = .Rect(w: 2, h: 3)
+    print("{} {} {}\n", (s, Shape.Circle(0.5), Shape.Empty))
+    t := (1, true, 'a')
+    print("{}\n", t)
+    named := (q: 7u8, r: 2u8)
+    print("{}\n", named)
+    arr := [3]i16(-1, 0, 1)
+    print("{}\n", arr)
+    words := [2]string("hi", "there")
+    print("{}\n", words)
+    o: ?i32 = 5
+    n: ?i32 = null
+    print("{} {}\n", (o, n))
+    r: Rank!u8 = !.Silver
+    print("{}\n", r)
+    print("{} {} {} {}\n", (0.1, 1e21, 2.5e-7, -0.0))
+    print("{{literal braces}}\n")
+}
