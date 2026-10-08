@@ -6,9 +6,9 @@ f :: fn(a: i32, b: u32) -> i32 {
     return 1
 }
 
-g :: fn() -> i32 {              //~ ERROR without returning a value
+g :: fn() -> i32 {
     x := 1
-}
+}                               //~ ERROR without returning a value
 
 h :: fn() {
     x := 1

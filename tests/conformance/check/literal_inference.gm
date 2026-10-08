@@ -6,8 +6,8 @@ takes_usize :: fn(x: usize) {}
 f :: fn() {
     a := 0
     takes_u8(a)
-    b := 300
-    takes_u8(b)                 //~ ERROR does not fit in `u8`
+    b := 300                    //~ ERROR does not fit in `u8`
+    takes_u8(b)
     c := 1.5
     d: i32 = c                  //~ ERROR expected `i32`
     e := 0

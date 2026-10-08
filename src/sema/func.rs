@@ -66,6 +66,8 @@ pub struct FnCx<'a, 's> {
     pub in_defer: bool,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
+    /// Spans of literal coercions already reported as failing.
+    pub failed_coercions: Vec<Span>,
 }
 
 impl<'s> Sema<'s> {
@@ -129,6 +131,7 @@ impl<'a, 's> FnCx<'a, 's> {
             obligations: vec![],
             in_defer: false,
             defer_label_base: 0,
+            failed_coercions: vec![],
         }
     }
 
@@ -409,6 +412,17 @@ impl<'a, 's> FnCx<'a, 's> {
                 kind: tir::ExprKind::Block(Box::new(discard_block(v, span))),
                 span,
             });
+        }
+        if let ExprKind::Ident(id) = &place_ast.kind {
+            let immutable = match self.lookup_local(id.name) {
+                Some(LocalBinding::Var(l)) => !self.locals[l.index()].mutable,
+                _ => true,
+            };
+            if immutable {
+                self.error(place_ast.span, format!("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name));
+                let _ = self.expr(value, None);
+                return Stmt::Expr(unit(span));
+            }
         }
         let place = self.expr(place_ast, None);
         self.require_mutable_place(&place, place_ast.span);

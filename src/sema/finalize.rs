@@ -29,11 +29,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 if self.infer.unify(src, core).is_err() && self.infer.unify(src, p.target).is_err() {
                     let kind = if self.infer.var_kind(src) == Some(super::infer::VarKind::Float) {
-                        "float"
+                        "a float"
                     } else {
-                        "integer"
+                        "an integer"
                     };
-                    self.error(p.span, format!("expected `{}`, found an {} literal", p.target, kind));
+                    self.error(p.span, format!("expected `{}`, found {} literal", p.target, kind));
+                    self.failed_coercions.push(p.span);
                 }
             }
         }
@@ -126,7 +127,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     match self.coercion_steps_final(inner.ty, target) {
                         Some(steps) => apply_steps(inner, steps),
                         None => {
-                            self.error(inner.span, format!("expected `{}`, found `{}`", target, inner.ty));
+                            if !self.failed_coercions.contains(&inner.span) {
+                                self.error(inner.span, format!("expected `{}`, found `{}`", target, inner.ty));
+                            }
                             inner
                         }
                     }
