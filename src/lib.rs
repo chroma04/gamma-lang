@@ -5,6 +5,7 @@
 pub mod diag;
 pub mod driver;
 pub mod float;
+pub mod interp;
 pub mod layout;
 pub mod sema;
 pub mod source;

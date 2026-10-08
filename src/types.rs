@@ -229,6 +229,11 @@ impl Ty {
         t
     }
 
+    /// A dense index, unique per distinct type, usable to key side tables.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
     pub fn kind(self) -> &'static TyKind {
         interner().read().unwrap().kinds[self.0 as usize]
     }
