@@ -108,6 +108,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Call { callee, args, .. } => self.call(callee, args, expect, span),
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
+            ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
             ExprKind::OptUnwrap(inner) => {
                 let v = self.expr(inner, None);
                 match self.infer.resolve(v.ty).kind() {
@@ -207,9 +208,16 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A name used as a value.
     fn name(&mut self, name: crate::symbol::Symbol, span: Span) -> Expr {
-        if let Some(b) = self.lookup_local(name).cloned() {
+        if let Some((b, depth)) = self.lookup_local_at(name) {
             return match b {
+                LocalBinding::Var(id) if depth < self.depth() => {
+                    // A local of an enclosing function, captured by reference (§11.6).
+                    self.note_capture(depth);
+                    let ty = self.local_at(depth, id).ty;
+                    mk(ty, tir::ExprKind::Upvar { levels: self.depth() - depth, local: id }, span)
+                }
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
+                LocalBinding::NestedFn(f) => self.fn_ref(f, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Label => {
                     self.error(span, format!("`{}` is a label, not a value", name));
@@ -220,16 +228,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
             return match self.sema.resolve_decl(d) {
-                DeclValue::Fn(f) => {
-                    let sig = &self.sema.sigs[&f];
-                    let ty = Ty::intern(TyKind::FnPtr(Box::new(FnTy {
-                        params: sig.params.iter().map(|p| p.ty).collect(),
-                        ret: sig.ret,
-                        effects: sig.effects.clone(),
-                        variadic: false,
-                    })));
-                    mk(ty, tir::ExprKind::FnRef(f), span)
-                }
+                DeclValue::Fn(f) => self.fn_ref(f, span),
                 DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 DeclValue::Untyped(v) => self.untyped_literal(&v, span),
                 DeclValue::Type(_) => {
@@ -255,6 +254,18 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("unknown name `{}`", name));
         }
         error_expr(span)
+    }
+
+    /// A named function used as a value: a function pointer (§5.14).
+    pub fn fn_ref(&mut self, f: tir::FnId, span: Span) -> Expr {
+        let sig = &self.sema.sigs[&f];
+        let ty = Ty::intern(TyKind::FnPtr(Box::new(FnTy {
+            params: sig.params.iter().map(|p| p.ty).collect(),
+            ret: sig.ret,
+            effects: sig.effects.clone(),
+            variadic: false,
+        })));
+        mk(ty, tir::ExprKind::FnRef(f), span)
     }
 
     /// An untyped constant used as a value becomes a literal (§6.2).
@@ -938,6 +949,21 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("expected `{}`, found `{}`", t, s));
             }
             return e;
+        }
+        // A function pointer (or named function) passed where a second-class
+        // function is expected: its effects outside the expected set are handled
+        // where it is written (§11.6).
+        if let (TyKind::FnPtr(a), TyKind::Fn(b)) = (src.kind(), target.kind())
+            && a.params == b.params
+            && a.ret == b.ret
+        {
+            let span = e.span;
+            for eff in a.effects.effects.iter() {
+                if !b.effects.contains(eff) {
+                    self.performed.push((eff.clone(), span));
+                }
+            }
+            return mk(target, tir::ExprKind::Coerce { kind: Coercion::FnToPtr, expr: Box::new(e) }, span);
         }
         match self.coercion_steps(src, target) {
             Some(steps) => apply_steps(e, steps),

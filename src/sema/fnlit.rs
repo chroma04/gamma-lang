@@ -1,0 +1,199 @@
+//! Function literals (§11.1, §11.6) and nested named functions (§11.8).
+
+use super::func::{FnCx, LocalBinding, NestedFn, error_expr};
+use super::{FnSig, ParamInfo};
+use crate::source::Span;
+use crate::symbol::Symbol;
+use crate::syntax::ast;
+use crate::tir::{self, Expr, FnId};
+use crate::types::{FnTy, Ty, TyKind};
+
+fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
+    Expr { ty, kind, span }
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// Checks a function literal used as a value. `name` is set for a nested
+    /// named function `name :: fn …`, which may call itself.
+    pub fn fn_literal(&mut self, lit: &ast::FnLit, expect: Option<Ty>, name: Option<Symbol>, span: Span) -> Expr {
+        if !lit.where_.is_empty() {
+            self.error(lit.span, "generic function literals are not supported yet");
+            return error_expr(span);
+        }
+        let expected = expect.map(|t| self.infer.resolve(t)).and_then(|t| match t.kind() {
+            TyKind::Fn(sig) | TyKind::FnPtr(sig) => Some((**sig).clone()),
+            _ => None,
+        });
+        let wants_pointer = expect.is_some_and(|t| matches!(t.kind(), TyKind::FnPtr(_)));
+        // Parameter types come from annotations, or from the expected function type.
+        let mut params: Vec<ParamInfo> = vec![];
+        for p in &lit.sig.params {
+            if p.comptime {
+                self.error(p.span, "compile-time parameters are not supported in function literals");
+            }
+            let annotated = p.ty.as_ref().map(|t| self.resolve_type(t));
+            for n in &p.names {
+                let i = params.len();
+                let ty = match (annotated, &expected) {
+                    (Some(t), _) => t,
+                    (None, Some(sig)) if i < sig.params.len() => sig.params[i],
+                    _ => {
+                        self.error(
+                            n.span,
+                            format!("the type of parameter `{}` cannot be inferred here; annotate it", n.name),
+                        );
+                        Ty::error()
+                    }
+                };
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None });
+            }
+        }
+        if let Some(sig) = &expected
+            && sig.params.len() != params.len()
+        {
+            self.error(
+                lit.sig.span,
+                format!("expected a function with {} parameters, but this one has {}", sig.params.len(), params.len()),
+            );
+        }
+        let ret_annot = lit.sig.ret.as_ref().map(|r| self.resolve_type(r));
+        let ret_known = ret_annot.or(expected.as_ref().map(|s| s.ret));
+        let effects = match &lit.sig.effects {
+            Some(list) => {
+                let module = self.module;
+                self.sema.resolve_effect_set(module, list)
+            }
+            None => expected.as_ref().map(|s| s.effects.clone()).unwrap_or_default(),
+        };
+        // The return type of an `=>` literal without one comes from its body.
+        let infer_ret = ret_known.is_none() && matches!(lit.body, ast::FnBody::Expr(_));
+        let ret = ret_known.unwrap_or(Ty::unit());
+        let module = self.module;
+        let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone() };
+        let fn_name = name.unwrap_or_else(|| Symbol::intern("<fn>"));
+        let fn_id = self.sema.new_fn(fn_name, span, sig, tir::FnKind::Literal);
+        if let Some(n) = name {
+            // Visible inside its own body, so it can recurse.
+            self.declare(n, LocalBinding::NestedFn(fn_id), span);
+        }
+        self.enter_fn(fn_id, ret, effects.clone());
+        let mut param_ids = vec![];
+        for p in &params {
+            let id = self.new_local(p.name, p.ty, false, p.span);
+            if p.name.as_str() != "_" {
+                self.declare(p.name, LocalBinding::Var(id), p.span);
+            }
+            param_ids.push(id);
+        }
+        let body = match &lit.body {
+            ast::FnBody::Expr(e) if infer_ret => {
+                let b = self.expr(e, None);
+                self.ret = b.ty;
+                b
+            }
+            ast::FnBody::Expr(e) => {
+                let b = self.expr(e, Some(ret));
+                self.coerce(b, ret)
+            }
+            ast::FnBody::Block(b) => {
+                let block = self.block(b, false);
+                if !ret.is_unit()
+                    && !block.ty.is_never()
+                    && !matches!(ret.kind(), TyKind::Result { ok, .. } if ok.is_unit())
+                {
+                    self.error(
+                        b.span.shrink_to_hi(),
+                        format!("function returning `{}` can reach the end of its body without returning a value", ret),
+                    );
+                }
+                block
+            }
+        };
+        let final_ret = self.ret;
+        let (locals, performed, captures) = self.exit_fn();
+        if infer_ret {
+            let s = self.sema.sigs.get_mut(&fn_id).unwrap();
+            s.ret = final_ret;
+            self.sema.prog.fns[fn_id.index()].ret = final_ret;
+        }
+        // Effects in the literal's own set are performed where it is called; the
+        // others are performed where it is written (§11.6, §12.3).
+        for (e, sp) in performed {
+            if !effects.contains(&e) {
+                if name.is_some() && !captures {
+                    let n = e.effect.name();
+                    self.error(
+                        sp,
+                        format!(
+                            "this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)",
+                            n, n
+                        ),
+                    );
+                } else {
+                    self.performed.push((e, sp));
+                }
+            }
+        }
+        let parent = if captures { self.fn_id } else { None };
+        self.sema.prog.fns[fn_id.index()].parent = parent;
+        self.nested.push(NestedFn { fn_id, params: param_ids, locals, body });
+        let fty = FnTy { params: params.iter().map(|p| p.ty).collect(), ret: final_ret, effects, variadic: false };
+        if captures {
+            if wants_pointer {
+                self.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)");
+                return error_expr(span);
+            }
+            if let Some(n) = name {
+                self.check_no_self_reference(fn_id, n, span);
+            }
+            mk(Ty::intern(TyKind::Fn(Box::new(fty))), tir::ExprKind::Closure(fn_id), span)
+        } else {
+            let ty = if expect.is_some_and(|t| matches!(t.kind(), TyKind::Fn(_))) {
+                Ty::intern(TyKind::Fn(Box::new(fty)))
+            } else {
+                Ty::intern(TyKind::FnPtr(Box::new(fty)))
+            };
+            mk(ty, tir::ExprKind::FnRef(fn_id), span)
+        }
+    }
+
+    /// A capturing function cannot refer to itself (§11.8).
+    fn check_no_self_reference(&mut self, fn_id: FnId, name: Symbol, span: Span) {
+        let refers = self.nested.iter().find(|n| n.fn_id == fn_id).is_some_and(|n| {
+            let mut found = false;
+            super::func::visit(&n.body, &mut |e| {
+                if let tir::ExprKind::FnRef(f) | tir::ExprKind::Call { callee: tir::Callee::Fn(f), .. } = &e.kind
+                    && *f == fn_id
+                {
+                    found = true;
+                }
+            });
+            found
+        });
+        if refers {
+            self.error(
+                span,
+                format!("`{}` uses local variables of the enclosing function, so it cannot call itself (§11.8)", name),
+            );
+        }
+    }
+
+    /// `name :: fn …` inside a function body.
+    pub fn nested_fn_binding(&mut self, name: crate::syntax::ast::Ident, lit: &ast::FnLit, span: Span) -> tir::Stmt {
+        let v = self.fn_literal(lit, None, Some(name.name), span);
+        match v.kind {
+            tir::ExprKind::Closure(_) => {
+                // Captures: an immutable local holding a second-class value. Rebind
+                // the name (declared as a nested function for the body) to the local.
+                let id = self.new_local(name.name, v.ty, false, name.span);
+                if let Some(scope) = self.scopes.last_mut()
+                    && let Some(entry) = scope.iter_mut().rev().find(|(n, _)| *n == name.name)
+                {
+                    entry.1 = LocalBinding::Var(id);
+                }
+                tir::Stmt::Let { local: id, init: Some(v) }
+            }
+            _ => tir::Stmt::Expr(super::func::unit(span)),
+        }
+    }
+}

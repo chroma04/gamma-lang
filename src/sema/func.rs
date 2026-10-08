@@ -20,6 +20,8 @@ pub enum LocalBinding {
     Untyped(Untyped),
     /// A label of an enclosing loop or `with`.
     Label,
+    /// A nested named function (§11.8), which captures nothing.
+    NestedFn(FnId),
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +63,7 @@ pub struct FnCx<'a, 's> {
     pub declared: EffectSet,
     pub performed: Vec<(EffectRef, Span)>,
     pub labels: Vec<LabelInfo>,
-    next_label: u32,
+    pub next_label: u32,
     pub pending: Vec<PendingCoercion>,
     pub obligations: Vec<Obligation>,
     /// True while checking a deferred statement (§8.8 restrictions).
@@ -70,6 +72,41 @@ pub struct FnCx<'a, 's> {
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
     pub failed_coercions: Vec<Span>,
+    /// The function whose body is being checked (absent for constant expressions).
+    pub fn_id: Option<FnId>,
+    /// Whether the current function body refers to locals of enclosing functions.
+    pub captures: bool,
+    /// The state of the enclosing functions while a nested function literal is
+    /// checked, outermost first. The current function is not in this list.
+    pub outer: Vec<SavedFrame>,
+    /// The frame depth (index into `outer`, or `outer.len()` for the current
+    /// function) that owns each entry of `scopes`.
+    scope_depths: Vec<u32>,
+    /// Nested function bodies, finalized together with the enclosing body.
+    pub nested: Vec<NestedFn>,
+}
+
+/// The per-function state of an enclosing function, saved while a nested
+/// function literal is checked.
+pub struct SavedFrame {
+    pub locals: Vec<tir::LocalDecl>,
+    pub ret: Ty,
+    pub declared: EffectSet,
+    pub performed: Vec<(EffectRef, Span)>,
+    pub labels: Vec<LabelInfo>,
+    pub next_label: u32,
+    pub in_defer: bool,
+    pub defer_label_base: usize,
+    pub fn_id: Option<FnId>,
+    pub captures: bool,
+}
+
+/// A nested function checked as part of an enclosing body.
+pub struct NestedFn {
+    pub fn_id: FnId,
+    pub params: Vec<LocalId>,
+    pub locals: Vec<tir::LocalDecl>,
+    pub body: Expr,
 }
 
 impl<'s> Sema<'s> {
@@ -134,6 +171,11 @@ impl<'a, 's> FnCx<'a, 's> {
             in_defer: false,
             defer_label_base: 0,
             failed_coercions: vec![],
+            fn_id: None,
+            captures: false,
+            outer: vec![],
+            scope_depths: vec![0],
+            nested: vec![],
         }
     }
 
@@ -148,7 +190,87 @@ impl<'a, 's> FnCx<'a, 's> {
         for l in &mut self.locals {
             l.ty = self.infer.resolve(l.ty);
         }
+        // Nested functions share this body's literal inference.
+        for mut n in std::mem::take(&mut self.nested) {
+            let body = self.finalize_nested(n.body);
+            for l in &mut n.locals {
+                l.ty = self.infer.resolve(l.ty);
+            }
+            let def = &mut self.sema.prog.fns[n.fn_id.index()];
+            def.params = n.params;
+            def.locals = n.locals;
+            def.body = Some(body);
+        }
         (body, self.locals)
+    }
+
+    // --- nested function frames ---
+
+    /// The current frame depth (0 for the outermost function).
+    pub fn depth(&self) -> u32 {
+        self.outer.len() as u32
+    }
+
+    /// Saves the current function's state and starts a nested function body.
+    pub fn enter_fn(&mut self, fn_id: FnId, ret: Ty, declared: EffectSet) {
+        let saved = SavedFrame {
+            locals: std::mem::take(&mut self.locals),
+            ret: std::mem::replace(&mut self.ret, ret),
+            declared: std::mem::replace(&mut self.declared, declared),
+            performed: std::mem::take(&mut self.performed),
+            labels: std::mem::take(&mut self.labels),
+            next_label: std::mem::replace(&mut self.next_label, 0),
+            in_defer: std::mem::replace(&mut self.in_defer, false),
+            defer_label_base: std::mem::replace(&mut self.defer_label_base, 0),
+            fn_id: std::mem::replace(&mut self.fn_id, Some(fn_id)),
+            captures: std::mem::replace(&mut self.captures, false),
+        };
+        self.outer.push(saved);
+        self.push_scope();
+    }
+
+    /// Ends a nested function body, restoring the enclosing function's state.
+    /// Returns the nested function's locals, performed effects and whether it captures.
+    pub fn exit_fn(&mut self) -> (Vec<tir::LocalDecl>, Vec<(EffectRef, Span)>, bool) {
+        self.pop_scope();
+        let saved = self.outer.pop().expect("exit_fn without enter_fn");
+        let locals = std::mem::replace(&mut self.locals, saved.locals);
+        self.ret = saved.ret;
+        self.declared = saved.declared;
+        let performed = std::mem::replace(&mut self.performed, saved.performed);
+        self.labels = saved.labels;
+        self.next_label = saved.next_label;
+        self.in_defer = saved.in_defer;
+        self.defer_label_base = saved.defer_label_base;
+        self.fn_id = saved.fn_id;
+        let captures = std::mem::replace(&mut self.captures, saved.captures);
+        (locals, performed, captures)
+    }
+
+    /// The declaration of a local of the frame at `depth`.
+    pub fn local_at(&self, depth: u32, id: LocalId) -> &tir::LocalDecl {
+        if depth == self.depth() { &self.locals[id.index()] } else { &self.outer[depth as usize].locals[id.index()] }
+    }
+
+    /// Looks up a local name, returning its binding and the depth of the frame owning it.
+    pub fn lookup_local_at(&self, name: Symbol) -> Option<(LocalBinding, u32)> {
+        for (scope, depth) in self.scopes.iter().zip(&self.scope_depths).rev() {
+            if let Some((_, b)) = scope.iter().rev().find(|(n, _)| *n == name) {
+                return Some((b.clone(), *depth));
+            }
+        }
+        None
+    }
+
+    /// Marks the frames above `depth` as capturing (they refer to a local of that frame).
+    pub fn note_capture(&mut self, depth: u32) {
+        let cur = self.depth();
+        if depth < cur {
+            self.captures = true;
+            for f in self.outer.iter_mut().skip(depth as usize + 1) {
+                f.captures = true;
+            }
+        }
     }
 
     fn check_effects(&mut self) {
@@ -199,10 +321,12 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn push_scope(&mut self) {
         self.scopes.push(vec![]);
+        self.scope_depths.push(self.depth());
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.scope_depths.pop();
     }
 
     pub fn local_ty(&self, id: LocalId) -> Ty {
@@ -338,11 +462,11 @@ impl<'a, 's> FnCx<'a, 's> {
             return Stmt::Expr(unit(b.span));
         }
         let name = b.names[0];
-        if let ExprKind::Fn(_) = &b.init.kind
+        if let ExprKind::Fn(lit) = &b.init.kind
             && b.kind == ast::BindingKind::Const
+            && b.ty.is_none()
         {
-            self.error(b.span, "nested functions are not supported yet");
-            return Stmt::Expr(unit(b.span));
+            return self.nested_fn_binding(name, lit, b.span);
         }
         let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
         // An immutable binding of an untyped constant expression is an untyped constant (§6.2).
@@ -383,6 +507,12 @@ impl<'a, 's> FnCx<'a, 's> {
         if matches!(ty.kind(), TyKind::Type) {
             self.error(b.init.span, "types cannot be stored in variables; use `::` at top level for a type alias");
         }
+        if mutable && matches!(self.infer.resolve(ty).kind(), TyKind::Fn(_)) {
+            self.error(
+                b.span,
+                "a second-class function value may only be bound with `::`, not stored in a variable (§11.6)",
+            );
+        }
         let id = self.new_local(name.name, ty, mutable, name.span);
         // The name is in scope only after its initializer (§4.6).
         self.declare(name.name, LocalBinding::Var(id), name.span);
@@ -417,8 +547,8 @@ impl<'a, 's> FnCx<'a, 's> {
             });
         }
         if let ExprKind::Ident(id) = &place_ast.kind {
-            let immutable = match self.lookup_local(id.name) {
-                Some(LocalBinding::Var(l)) => !self.locals[l.index()].mutable,
+            let immutable = match self.lookup_local_at(id.name) {
+                Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
                 _ => true,
             };
             if immutable {
@@ -501,6 +631,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         match &e.kind {
             tir::ExprKind::Local(l) => Some(self.locals[l.index()].mutable),
+            tir::ExprKind::Upvar { levels, local } => Some(self.local_at(self.depth() - levels, *local).mutable),
             tir::ExprKind::Deref(p) => Some(match p.ty.kind() {
                 TyKind::Ptr { is_const, .. } => !is_const,
                 _ => false,

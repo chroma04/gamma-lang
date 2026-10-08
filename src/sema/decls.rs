@@ -209,6 +209,12 @@ impl<'s> Sema<'s> {
             Some(r) => self.resolve_type(module, r),
             None => Ty::unit(),
         };
+        if let (Some(r), TyKind::Fn(_)) = (&sig.ret, ret.kind()) {
+            self.error(
+                r.span,
+                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
+            );
+        }
         let effects = match &sig.effects {
             Some(list) => self.resolve_effect_set(module, list),
             None => EffectSet::empty(),

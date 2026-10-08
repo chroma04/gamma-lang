@@ -47,6 +47,12 @@ impl<'a, 's> FnCx<'a, 's> {
         body
     }
 
+    /// Rewrites a nested function's body once inference is complete.
+    pub fn finalize_nested(&mut self, mut body: Expr) -> Expr {
+        self.fin_expr(&mut body);
+        body
+    }
+
     fn check_obligation(&mut self, o: Obligation) {
         match o {
             Obligation::UnitStatement { ty, span } => {

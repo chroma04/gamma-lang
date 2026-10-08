@@ -73,6 +73,12 @@ impl<'s> Sema<'s> {
                 continue;
             };
             let ty = self.resolve_type(module, &f.ty);
+            if matches!(ty.kind(), TyKind::Fn(_)) {
+                self.error(
+                    f.ty.span,
+                    "a field cannot hold a second-class function; use a function pointer `^fn(…)` (§11.6)",
+                );
+            }
             let mut field_align = None;
             for a in &f.attrs {
                 match a.name.name.as_str() {

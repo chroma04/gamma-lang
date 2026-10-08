@@ -1,0 +1,39 @@
+//! stage: check
+// Function literals, second-class functions and nested functions (§11.6–§11.8).
+IoError :: union { Timeout }
+Net :: effect { send: fn(n: u32) -> IoError!() }
+
+retry :: fn(times: u32, op: fn() -> IoError!()) -> IoError!() {
+    for _ in 1..times { if op() is not !_ { return () } }
+    return op()
+}
+
+apply :: fn(xs: []i32, f: fn(x: i32) -> i32) {
+    for i in 0..xs.len { xs[i] = f(xs[i]) }
+}
+
+double :: fn(x: i32) -> i32 => x * 2
+
+caller :: fn(xs: []i32) \ {Net} {
+    total := 0
+    apply(xs, fn(x) => x + 1)
+    apply(xs, double)
+    apply(xs, fn(x) { total += x; return x })
+    _ = retry(3, fn() => send(7))          // Net is performed here, in `caller`
+    counter :: fn(x: i32) -> i32 => x + total
+    apply(xs, counter)
+    fact :: fn(n: u64) -> u64 => if n is 0 { 1 } else { n * fact(n - 1) }
+    _ = fact(5)
+    bad :: fn(n: i32) -> i32 => if n is 0 { total } else { bad(n - 1) }   //~ ERROR cannot call itself
+    g := fn(x: i32) -> i32 => x + total    //~ ERROR only be bound with `::`
+    p: ^fn(x: i32) -> i32 = fn(x) => x + total   //~ ERROR cannot be a function pointer
+    q: ^fn(x: i32) -> i32 = fn(x) => x * 3
+}
+
+no_net :: fn() {
+    _ = retry(1, fn() => send(1))          //~ ERROR does not declare
+}
+
+Holder :: struct { f: fn() }               //~ ERROR cannot hold a second-class
+
+main :: fn() {}

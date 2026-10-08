@@ -15,6 +15,7 @@ mod decls;
 mod exhaust;
 mod expr;
 mod finalize;
+mod fnlit;
 mod func;
 mod infer;
 mod matching;
