@@ -1,0 +1,23 @@
+//! stage: check
+f :: fn(a: i32, b: u32) -> i32 {
+    c := a + b                  //~ ERROR different types
+    if a { }                    //~ ERROR expected `bool`
+    d := a < b                  //~ ERROR different types
+    return 1
+}
+
+g :: fn() -> i32 {              //~ ERROR without returning a value
+    x := 1
+}
+
+h :: fn() {
+    x := 1
+    x := 2                      //~ ERROR may not be shadowed
+    y :: 1
+    y = 3                       //~ ERROR immutable
+    5                           //~ ERROR unused
+    return
+    z := 1                      //~ ERROR unreachable code
+}
+
+main :: fn() {}

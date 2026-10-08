@@ -1,0 +1,12 @@
+//! stage: check
+greet :: fn() {
+    print("hi\n")               //~ ERROR does not declare
+}
+
+greet2 :: fn() \ {Out} {
+    print("hi\n")
+}
+
+main :: fn() \ {Out} {
+    greet2()
+}

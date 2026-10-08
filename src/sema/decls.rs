@@ -91,6 +91,10 @@ impl<'s> Sema<'s> {
         match &init.kind {
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, &item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
+            ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } if b.ty.is_none() => {
+                let ty = self.declare_adt(module, Some(id), name.name, init);
+                if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) }
+            }
             _ => {
                 // An untyped constant expression?
                 if b.ty.is_none()

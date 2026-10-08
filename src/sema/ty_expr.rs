@@ -125,8 +125,11 @@ impl<'s> Sema<'s> {
             },
             ExprKind::ContType(inner) => Ty::intern(TyKind::Cont(self.resolve_type(module, inner))),
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } => {
-                self.error(e.span, "struct and union types are not supported yet");
-                Ty::error()
+                let name = match &e.kind {
+                    ExprKind::Union(_) => "union",
+                    _ => "struct",
+                };
+                self.declare_adt(module, None, crate::symbol::Symbol::intern(name), e)
             }
             _ => {
                 self.error(e.span, "expected a type");

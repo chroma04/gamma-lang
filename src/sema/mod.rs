@@ -7,6 +7,7 @@
 //! checked after their signatures are known, from a work queue, so functions may
 //! refer to each other freely.
 
+mod adt;
 mod builtins;
 mod call;
 mod decls;
@@ -103,6 +104,10 @@ pub struct OpInfo {
 pub struct AdtInfo {
     pub name: Symbol,
     pub module: ModuleId,
+    /// For structs: each field's default value, if it has one.
+    pub defaults: Vec<Option<tir::Expr>>,
+    /// For structs: the first field is declared `using` (§5.10.3).
+    pub has_using: bool,
 }
 
 /// A function body waiting to be checked.
@@ -192,8 +197,7 @@ impl<'s> Sema<'s> {
     fn find_main(&mut self, root: ModuleId) {
         let main = Symbol::intern("main");
         let Some(&id) = self.modules[root.0 as usize].scope.get(&main) else {
-            let span = self.sess.sources.files().next().map(|(f, _)| Span::new(f, 0, 0)).unwrap_or(Span::DUMMY);
-            self.error(span, "the root module of a program must declare `main`");
+            self.error(Span::DUMMY, "the root module of a program must declare `main`");
             return;
         };
         let span = self.decls[id.0 as usize].name.span;

@@ -1,0 +1,22 @@
+// Integer arithmetic, literal inference and formatting of integers.
+square :: fn(x: i64) -> i64 => x * x
+
+sum_to :: fn(n: u32) -> u32 {
+    total := 0
+    for i in 1..=n {
+        total += i
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    print("{}\n", square(-12))
+    print("{} {}\n", (sum_to(10), sum_to(0)))
+    x: u8 = 200
+    y := x +% 100
+    z := x +| 100
+    print("{} {}\n", (y, z))
+    print("{}\n", 7 / 2)
+    print("{}\n", -7 % 3)
+    print("{}\n", 1 << 10)
+}
