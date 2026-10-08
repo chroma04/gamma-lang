@@ -7,3 +7,6 @@
 - Before every commit run `RUSTFLAGS="-D warnings" cargo clippy -q --all-targets` (CI fails on
   any warning; `cargo fmt` can't catch clippy issues). Once pushed a needless-borrow by mistake.
 - Fold .agent-memory updates into code commits; never a separate commit whose message would have to mention notes/memory.
+- macOS CI compiles generated C with Apple clang; locally `cc` is gcc. clang rejects things gcc
+  accepts (e.g. `(T){0}` for a zero-member struct → use `(T){}`). Before pushing C back-end
+  changes run `CC=clang cargo test -q` too.

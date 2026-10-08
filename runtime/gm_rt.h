@@ -22,7 +22,7 @@
 /* Stores the value v of C type T at address p (any alignment). */
 #define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
 /* A zero value of C type T (scalar or blob). */
-#define GM_ZERO(T) ((T){0})
+#define GM_ZERO(T) ((T){})
 
 typedef struct { uint8_t b[0]; } gm_unit;
 
