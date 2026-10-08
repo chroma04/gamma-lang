@@ -222,7 +222,7 @@ impl<'a, 's> FnCx<'a, 's> {
             next_label: std::mem::replace(&mut self.next_label, 0),
             in_defer: std::mem::replace(&mut self.in_defer, false),
             defer_label_base: std::mem::replace(&mut self.defer_label_base, 0),
-            fn_id: std::mem::replace(&mut self.fn_id, Some(fn_id)),
+            fn_id: self.fn_id.replace(fn_id),
             captures: std::mem::replace(&mut self.captures, false),
         };
         self.outer.push(saved);
