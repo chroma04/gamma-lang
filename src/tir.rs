@@ -622,6 +622,9 @@ pub enum PatKind {
     },
     /// Struct fields or tuple elements by index; unlisted ones are ignored.
     Fields(Vec<(u32, Pat)>),
+    /// Alternatives `p1, p2` of a match arm, tried in order. All alternatives
+    /// bind the same locals.
+    Or(Vec<Pat>),
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +920,7 @@ impl Pat {
             PatKind::Some(p) | PatKind::Ok(p) | PatKind::Err(p) => p.for_each_child(f),
             PatKind::Variant { payload: Some(p), .. } => p.for_each_child(f),
             PatKind::Fields(fs) => fs.iter().for_each(|(_, p)| p.for_each_child(f)),
+            PatKind::Or(ps) => ps.iter().for_each(|p| p.for_each_child(f)),
             _ => {}
         }
     }
@@ -1085,6 +1089,7 @@ impl Pat {
             PatKind::Some(p) | PatKind::Ok(p) | PatKind::Err(p) => p.for_each_child_mut(f),
             PatKind::Variant { payload: Some(p), .. } => p.for_each_child_mut(f),
             PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, p)| p.for_each_child_mut(f)),
+            PatKind::Or(ps) => ps.iter_mut().for_each(|p| p.for_each_child_mut(f)),
             _ => {}
         }
     }

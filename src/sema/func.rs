@@ -323,6 +323,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::If(i) => self.if_expr(i, false, None),
             ExprKind::Block(b) => self.block(b, false),
             ExprKind::For(f) => self.for_loop(f),
+            ExprKind::Match(m) => self.match_expr(m, false, None),
             _ => self.expr(e, None),
         };
         self.obligations.push(Obligation::UnitStatement { ty: ex.ty, span: e.span });
@@ -545,9 +546,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     let ex = self.expect_bool(ex);
                     parts.push(tir::CondPart::Bool(ex));
                 }
-                ast::CondPart::Bind { pat, .. } => {
-                    self.error(pat.span, "binding conditions are not supported yet");
-                }
+                ast::CondPart::Bind { pat, value } => parts.push(self.binding_cond(pat, value)),
             }
         }
         parts

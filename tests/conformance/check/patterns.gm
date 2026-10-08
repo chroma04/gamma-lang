@@ -1,0 +1,70 @@
+//! stage: check
+// Patterns, match exhaustiveness and reachability (§8.6, §9).
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+Dir :: union { N, E, S, W }
+LIMIT :: 10
+
+area :: fn(s: Shape) -> f32 => match s {
+    .Circle(r)            => 3.14 * r * r
+    .Rect(w, h) if w is h => w * w
+    .Rect(w, h)           => w * h
+    .Empty                => 0
+}
+
+missing :: fn(d: Dir) -> u8 => match d {   //~ ERROR `.W` is not covered
+    .N => 0
+    .E => 1
+    .S => 2
+}
+
+bytes :: fn(b: u8) -> u8 => match b {
+    0..=127   => 0
+    128..=255 => 1
+}
+
+gap :: fn(b: u8) -> u8 => match b {        //~ ERROR `200..=255` is not covered
+    0..=199 => 0
+}
+
+dead :: fn(x: i32) -> i32 => match x {
+    _ => 0
+    5 => 1                                 //~ ERROR can never be chosen
+}
+
+opts :: fn(x: ?i32) -> i32 => match x {
+    null => 0
+    5    => 1
+    v    => v
+}
+
+results :: fn(r: u8!i32) -> i32 => match r {
+    !0 => 0
+    !_ => 1
+    v  => v
+}
+
+const_pat :: fn(x: i32) -> i32 => match x {
+    LIMIT => 1                             //~ ERROR is a constant
+}
+
+tests :: fn(s: Shape, x: ?i32) -> bool {
+    a := s is .Circle
+    b := s is .Rect(_)
+    c := x is null
+    d := s is .Circle(r)                   //~ ERROR cannot bind names
+    if v := x and v > 3 { return true }
+    if .Circle(r) := s { return r > 1.0 }
+    if y := 5 { }                          //~ ERROR always succeeds
+    return a and b and c
+}
+
+alternatives :: fn(d: Dir) -> bool => match d {
+    .N, .S => true
+    .E, .W => false
+}
+
+main :: fn() {}

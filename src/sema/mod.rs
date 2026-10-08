@@ -12,11 +12,14 @@ mod builtins;
 mod call;
 mod construct;
 mod decls;
+mod exhaust;
 mod expr;
 mod finalize;
 mod func;
 mod infer;
+mod matching;
 mod modules;
+mod pattern;
 mod ty_expr;
 mod untyped;
 

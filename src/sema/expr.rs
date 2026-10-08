@@ -104,6 +104,49 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ExprKind::Call { callee, args, .. } => self.call(callee, args, expect, span),
             ExprKind::If(i) => self.if_expr(i, true, expect),
+            ExprKind::Match(m) => self.match_expr(m, true, expect),
+            ExprKind::OptUnwrap(inner) => {
+                let v = self.expr(inner, None);
+                match self.infer.resolve(v.ty).kind() {
+                    TyKind::Optional(t) => mk(*t, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: false }, span),
+                    TyKind::Error => error_expr(span),
+                    _ => {
+                        let t = self.infer.resolve(v.ty);
+                        self.error(span, format!("`?` unwraps an optional, but this is `{}`", t));
+                        error_expr(span)
+                    }
+                }
+            }
+            ExprKind::ResUnwrap(inner) => self.res_unwrap(inner, span),
+            ExprKind::Bang { lhs, rhs } => {
+                if self.type_of_name(lhs).is_some() {
+                    self.error(span, "expected a value, found the error-union type `E!T`");
+                    return error_expr(span);
+                }
+                // `x!(args)`: unwrap, then call (§A.7 rule 3).
+                let callee = self.res_unwrap(lhs, lhs.span.to(span.shrink_to_lo()));
+                let args: Vec<ast::Arg> = match &rhs.kind {
+                    ExprKind::Paren(a) => {
+                        vec![ast::Arg { kind: ast::ArgKind::Positional((**a).clone()), span: a.span }]
+                    }
+                    ExprKind::Tuple(elems) => elems
+                        .iter()
+                        .map(|el| ast::Arg {
+                            kind: match el.name {
+                                Some(n) => ast::ArgKind::Named(n, el.value.clone()),
+                                None => ast::ArgKind::Positional(el.value.clone()),
+                            },
+                            span: el.value.span,
+                        })
+                        .collect(),
+                    _ => {
+                        self.error(rhs.span, "this is a type, but `!` follows a value; to unwrap twice write `(x!)?`");
+                        return error_expr(span);
+                    }
+                };
+                self.call_value(callee, &args, span)
+            }
+            ExprKind::Else { lhs, capture, rhs } => self.else_expr(lhs, *capture, rhs, expect, span),
             ExprKind::Block(b) => self.block_expected(b, true, expect),
             ExprKind::Return(v) => self.return_expr(v.as_deref(), span),
             ExprKind::Break { label, value } => self.break_expr(*label, value.as_deref(), span),
@@ -321,8 +364,18 @@ impl<'a, 's> FnCx<'a, 's> {
             ast::UnOp::MakeErr => match expect.map(|t| self.infer.shallow(t)) {
                 Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
                     let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
-                    let v = self.expr(operand, Some(*err));
-                    let v = self.coerce(v, *err);
+                    let err = *err;
+                    let v = self.expr(operand, Some(err));
+                    let vt = self.infer.resolve(v.ty);
+                    // `!e` with `e` of a type that lifts into the error union (§10.6).
+                    let v = if !vt.has_infer() && vt != err && self.coercion_steps(vt, err).is_none() {
+                        match self.lift_variant(vt, err) {
+                            Ok(i) => mk(err, tir::ExprKind::Variant { variant: i, payload: Some(Box::new(v)) }, span),
+                            Err(_) => self.coerce(v, err),
+                        }
+                    } else {
+                        self.coerce(v, err)
+                    };
                     mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
                 }
                 _ => {
@@ -330,10 +383,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
-            ast::UnOp::Try => {
-                self.error(span, "`try` is not supported yet");
-                error_expr(span)
-            }
+            ast::UnOp::Try => self.try_expr(operand, span),
         }
     }
 
@@ -358,6 +408,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::bool(), tir::ExprKind::Logic { is_and: op == B::And, lhs: Box::new(l), rhs: Box::new(r) }, span)
             }
             B::Is | B::IsNot => {
+                if let Some(p) = self.is_pattern_operand(rhs, lhs.ty) {
+                    return self.is_pattern_test(lhs, &p, op == B::IsNot, span);
+                }
                 let r = self.expr(rhs, Some(lhs.ty));
                 let (l, r) = self.equalize(lhs, r, span);
                 mk(Ty::bool(), tir::ExprKind::Eq { lhs: Box::new(l), rhs: Box::new(r), negated: op == B::IsNot }, span)
@@ -559,6 +612,143 @@ impl<'a, 's> FnCx<'a, 's> {
         self.struct_field(inner, name, span)
     }
 
+    // --- optionals and results (§10) ---
+
+    fn res_unwrap(&mut self, inner: &ast::Expr, span: Span) -> Expr {
+        let v = self.expr(inner, None);
+        match self.infer.resolve(v.ty).kind() {
+            TyKind::Result { ok, .. } => mk(*ok, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: true }, span),
+            TyKind::Error => error_expr(span),
+            _ => {
+                let t = self.infer.resolve(v.ty);
+                self.error(span, format!("`!` unwraps a result, but this is `{}`", t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `x else d` and `x else e => d` (§10.4).
+    fn else_expr(
+        &mut self,
+        lhs: &ast::Expr,
+        capture: Option<ast::Ident>,
+        rhs: &ast::Expr,
+        expect: Option<Ty>,
+        span: Span,
+    ) -> Expr {
+        let l = self.expr(lhs, None);
+        let lt = self.infer.resolve(l.ty);
+        let (present, err) = match lt.kind() {
+            TyKind::Optional(t) => (*t, None),
+            TyKind::Result { err, ok } => (*ok, Some(*err)),
+            TyKind::Error => return error_expr(span),
+            _ => {
+                self.error(lhs.span, format!("`else` needs an optional or a result on its left, but this is `{}`", lt));
+                return error_expr(span);
+            }
+        };
+        self.push_scope();
+        let cap = match (capture, err) {
+            (Some(c), Some(e)) => {
+                let id = self.new_local(c.name, e, false, c.span);
+                self.declare(c.name, super::func::LocalBinding::Var(id), c.span);
+                Some(id)
+            }
+            (Some(c), None) => {
+                self.error(c.span, "an optional has no error value to capture; use `x else d`");
+                None
+            }
+            _ => None,
+        };
+        // An error value on the right gets its error type from the context (§10.4).
+        let rhs_expect = match (&rhs.kind, expect) {
+            (ExprKind::Unary { op: ast::UnOp::MakeErr, .. }, Some(t)) if matches!(t.kind(), TyKind::Result { .. }) => {
+                Some(t)
+            }
+            (ExprKind::Unary { op: ast::UnOp::MakeErr, .. }, _) => match self.ret.kind() {
+                TyKind::Result { err, .. } => Some(Ty::result(*err, present)),
+                _ => None,
+            },
+            _ => Some(present),
+        };
+        let r = self.expr(rhs, rhs_expect);
+        self.pop_scope();
+        let rt = self.infer.resolve(r.ty);
+        let (ty, r) = if rt.is_never() {
+            (present, r)
+        } else if rt == lt && err.is_none() {
+            (lt, r)
+        } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present) {
+            (rt, r)
+        } else {
+            let r = self.coerce(r, present);
+            (present, r)
+        };
+        mk(ty, tir::ExprKind::Else { lhs: Box::new(l), capture: cap, rhs: Box::new(r) }, span)
+    }
+
+    /// `try x` (§10.5).
+    fn try_expr(&mut self, operand: &ast::Expr, span: Span) -> Expr {
+        if self.in_defer {
+            self.error(span, "`try` is not allowed in a deferred statement");
+        }
+        let v = self.expr(operand, None);
+        let vt = self.infer.resolve(v.ty);
+        let ret = self.ret;
+        match (vt.kind(), ret.kind()) {
+            (TyKind::Error, _) => error_expr(span),
+            (TyKind::Optional(t), TyKind::Optional(_)) => {
+                mk(*t, tir::ExprKind::Try { expr: Box::new(v), lift: None, levels: 0 }, span)
+            }
+            (TyKind::Result { err, ok }, TyKind::Result { err: f, .. }) => {
+                let lift = if err == f {
+                    None
+                } else {
+                    match self.lift_variant(*err, *f) {
+                        Ok(i) => Some(tir::Lift::Variant(i)),
+                        Err(msg) => {
+                            self.error(span, msg);
+                            None
+                        }
+                    }
+                };
+                mk(*ok, tir::ExprKind::Try { expr: Box::new(v), lift, levels: 0 }, span)
+            }
+            (TyKind::Optional(_), TyKind::Result { .. }) | (TyKind::Result { .. }, TyKind::Optional(_)) => {
+                self.error(
+                    span,
+                    "`try` does not convert between optionals and results; give the absent value an error: `try (x else !.Missing)`",
+                );
+                error_expr(span)
+            }
+            (TyKind::Optional(_) | TyKind::Result { .. }, _) => {
+                self.error(span, format!("`try` needs the function to return an optional or a result, not `{}`", ret));
+                error_expr(span)
+            }
+            _ => {
+                self.error(span, format!("`try` needs an optional or a result, but this is `{}`", vt));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// The variant of union `f` whose payload is `e`, for error lifting (§10.6).
+    pub fn lift_variant(&mut self, e: Ty, f: Ty) -> Result<u32, String> {
+        let Some((variants, _)) = self.sema.union_variants(f) else {
+            return Err(format!(
+                "cannot propagate an error of type `{}` from a function whose error type is `{}`",
+                e, f
+            ));
+        };
+        let matches: Vec<usize> =
+            variants.iter().enumerate().filter(|(_, v)| v.payload == Some(e)).map(|(i, _)| i).collect();
+        match matches[..] {
+            [i] => Ok(i as u32),
+            [] => Err(format!("`{}` has no variant carrying `{}`, so the error cannot be lifted (§10.6)", f, e)),
+            _ => Err(format!("`{}` has several variants carrying `{}`; handle the error explicitly", f, e)),
+        }
+    }
+
     // --- control flow ---
 
     /// Checks an `if`. If `value` is false the branches are statements and the
@@ -727,6 +917,13 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         if let Some(k) = base_coercion(src, target) {
             return Some(vec![(k, target)]);
+        }
+        // Error lifting `E!T` → `F!T` (§10.6).
+        if let (TyKind::Result { err: e, ok: o1 }, TyKind::Result { err: f, ok: o2 }) = (src.kind(), target.kind())
+            && o1 == o2
+            && let Ok(i) = self.lift_variant(*e, *f)
+        {
+            return Some(vec![(Coercion::LiftErr { variant: i }, target)]);
         }
         match target.kind() {
             TyKind::Optional(inner) => {

@@ -47,11 +47,18 @@ impl<'a, 's> FnCx<'a, 's> {
             CalleeKind::Type(t) => self.conversion(t, args, span),
             CalleeKind::Builtin(b) => self.builtin_call(b, args, expect, span),
             CalleeKind::Variant(u, name) => self.construct_variant(u, name, Some(args), span),
-            CalleeKind::Value(v) => {
+            CalleeKind::Value(v) => self.call_value(v, args, span),
+        }
+    }
+
+    /// Calls a function pointer or second-class function value.
+    pub fn call_value(&mut self, v: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        {
+            {
                 let t = self.infer.resolve(v.ty);
                 let (TyKind::FnPtr(sig) | TyKind::Fn(sig)) = t.kind() else {
                     if !t.is_error() {
-                        self.error(callee.span, format!("cannot call a value of type `{}`", t));
+                        self.error(v.span, format!("cannot call a value of type `{}`", t));
                     }
                     return error_expr(span);
                 };
