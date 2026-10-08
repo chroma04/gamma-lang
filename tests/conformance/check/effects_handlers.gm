@@ -1,0 +1,51 @@
+//! stage: check
+// Static rules of effects and handlers (§12).
+Log :: effect { log: fn(msg: string) }
+Stop :: effect { stop: esc() -> never }
+
+needs_log :: fn() \ {Log} { log("x") }
+
+handled :: fn() {
+    with (handler Log { log(m) => {} }) {
+        needs_log()                       // handled here: no effect escapes
+    }
+}
+
+unhandled :: fn() {
+    needs_log()                           //~ ERROR does not declare
+}
+
+missing_clause :: fn() {
+    h :: handler Stop { }                 //~ ERROR no clause for the operation `stop`
+}
+
+extra_clause :: fn() {
+    h :: handler Log {
+        log(m) => {}
+        nope() => {}                      //~ ERROR has no operation `nope`
+    }
+}
+
+fn_clause_break :: fn() {
+    h :: handler Log { log(m) => break }  //~ ERROR can only produce a value
+}
+
+two_for_one :: fn() {
+    a :: handler Log { log(m) => {} }
+    b :: handler Log { log(m) => {} }
+    with a, b { }                         //~ ERROR two handlers for `Log`
+}
+
+stored :: fn() {
+    h := handler Log { log(m) => {} }     //~ ERROR only be bound with `::`
+}
+
+not_iter :: fn() \ {Log} {
+    for x in needs_log() { }              //~ ERROR not an iterator
+}
+
+yields :: fn() \ {Yield(u8)} {
+    yield(1)                              // the instantiation is inferred from the effect set
+}
+
+main :: fn() {}

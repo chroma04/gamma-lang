@@ -38,15 +38,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.record_effects(&sig.effects, span);
                 mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args }, span)
             }
-            CalleeKind::Op(eff, op) => {
-                let info = &self.sema.effects[&eff];
-                let module = info.module;
-                let op_info = info.ops[op as usize].clone();
-                let args = self.bind_args(&op_info.params, module, args, span, "operation");
-                let eref = EffectRef { effect: eff, args: Box::new([]) };
-                self.performed.push((eref.clone(), span));
-                mk(op_info.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args }, span)
-            }
+            CalleeKind::Op(eff, op) => self.perform_op(eff, op, args, span),
             CalleeKind::Type(t) => self.conversion(t, args, span),
             CalleeKind::Builtin(b) => self.builtin_call(b, args, expect, span),
             CalleeKind::Variant(u, name) => self.construct_variant(u, name, Some(args), span),

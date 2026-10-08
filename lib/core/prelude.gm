@@ -11,3 +11,8 @@ pub Out :: effect {
 pub Err :: effect {
     write_err: fn(bytes: []const u8)
 }
+
+/// The iteration effect (§13.1): an iterator is any function that performs it.
+pub Yield :: effect(T: type) {
+    yield: esc(x: T)
+}

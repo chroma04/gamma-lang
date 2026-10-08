@@ -12,6 +12,7 @@ mod builtins;
 mod call;
 mod construct;
 mod decls;
+mod effects;
 mod exhaust;
 mod expr;
 mod finalize;
@@ -142,6 +143,11 @@ pub struct Sema<'s> {
     pub prelude: Option<ModuleId>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
+    /// The predeclared `Yield` effect (§13.1).
+    pub yield_effect: Option<EffectId>,
+    /// Types and locations of clause-level `break`s of each handler literal,
+    /// checked against the value of the `with` that installs it.
+    pub handler_breaks: HashMap<u32, Vec<(Ty, Span)>>,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -172,6 +178,8 @@ impl<'s> Sema<'s> {
             resolving: vec![],
             prelude: None,
             type_params: vec![],
+            yield_effect: None,
+            handler_breaks: HashMap::new(),
         }
     }
 

@@ -109,6 +109,8 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
             ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
+            ExprKind::Handler(lit) => self.handler_literal(lit, span),
+            ExprKind::With(w) => self.with_expr(w, true, expect),
             ExprKind::OptUnwrap(inner) => {
                 let v = self.expr(inner, None);
                 match self.infer.resolve(v.ty).kind() {
@@ -747,11 +749,11 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let v = self.expr(operand, None);
         let vt = self.infer.resolve(v.ty);
-        let ret = self.ret;
+        let (levels, ret) = self.return_target();
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
             (TyKind::Optional(t), TyKind::Optional(_)) => {
-                mk(*t, tir::ExprKind::Try { expr: Box::new(v), lift: None, levels: 0 }, span)
+                mk(*t, tir::ExprKind::Try { expr: Box::new(v), lift: None, levels }, span)
             }
             (TyKind::Result { err, ok }, TyKind::Result { err: f, .. }) => {
                 let lift = if err == f {
@@ -765,7 +767,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                     }
                 };
-                mk(*ok, tir::ExprKind::Try { expr: Box::new(v), lift, levels: 0 }, span)
+                mk(*ok, tir::ExprKind::Try { expr: Box::new(v), lift, levels }, span)
             }
             (TyKind::Optional(_), TyKind::Result { .. }) | (TyKind::Result { .. }, TyKind::Optional(_)) => {
                 self.error(
@@ -862,11 +864,25 @@ impl<'a, 's> FnCx<'a, 's> {
         self.coerce(b, ty)
     }
 
+    /// The function a `return` or `try` leaves: the innermost frame that is not a
+    /// handler clause (§8.7). Returns how many frames up it is and its result type.
+    pub fn return_target(&self) -> (u32, Ty) {
+        if self.clause.is_none() {
+            return (0, self.ret);
+        }
+        for (levels, f) in (1..).zip(self.outer.iter().rev()) {
+            if f.clause.is_none() {
+                return (levels, f.ret);
+            }
+        }
+        (0, self.ret)
+    }
+
     fn return_expr(&mut self, v: Option<&ast::Expr>, span: Span) -> Expr {
         if self.in_defer {
             self.error(span, "`return` is not allowed in a deferred statement");
         }
-        let ret = self.ret;
+        let (levels, ret) = self.return_target();
         let value = match v {
             Some(v) => {
                 let ex = self.expr(v, Some(ret));
@@ -879,49 +895,134 @@ impl<'a, 's> FnCx<'a, 's> {
                 unit(span)
             }
         };
-        mk(Ty::never(), tir::ExprKind::Return { levels: 0, value: Box::new(value) }, span)
+        mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(value) }, span)
     }
 
-    fn find_label(&mut self, label: Option<ast::Ident>, span: Span, is_continue: bool) -> Option<tir::LabelId> {
-        let found = match label {
+    /// Resolves the target of `break` / `continue` (§8.5, §12.7.1).
+    fn find_jump(&mut self, label: Option<ast::Ident>, span: Span, is_continue: bool) -> Option<Jump> {
+        // The current frame first.
+        let here = match label {
             Some(l) => self.labels.iter().rposition(|x| x.name == Some(l.name)),
             None => self.labels.iter().rposition(|x| x.is_loop),
         };
-        let Some(idx) = found else {
+        if let Some(idx) = here {
+            if self.in_defer && idx < self.defer_label_base {
+                self.error(span, "a deferred statement may not `break` or `continue` out of itself");
+            }
+            if is_continue && !self.labels[idx].is_loop {
+                self.error(span, "`continue` can only target a loop");
+            }
+            return Some(Jump::Label { levels: 0, label: self.labels[idx].id });
+        }
+        if self.in_defer {
+            self.error(span, "a deferred statement may not `break` or `continue` out of itself");
+            return None;
+        }
+        // At clause level: exit the installing `with`, or (for `continue`) finish the clause.
+        let Some(clause) = self.clause.clone() else {
             match label {
                 Some(l) => self.error(l.span, format!("no enclosing loop or `with` is labeled `{}`", l.name)),
                 None => self.error(span, "`break` and `continue` must be inside a loop"),
             }
             return None;
         };
-        if self.in_defer && idx < self.defer_label_base {
-            self.error(span, "a deferred statement may not `break` or `continue` out of itself");
+        let Some(l) = label else {
+            if clause.op_kind == ast::OpKind::Fn {
+                self.error(
+                    span,
+                    "a clause of a `fn` operation can only produce a value; it cannot `break` or `continue`",
+                );
+                return None;
+            }
+            return Some(if is_continue { Jump::ClauseReturn { levels: 0 } } else { Jump::InstallingWith });
+        };
+        // A labeled jump from a handler clause to a construct enclosing the handler.
+        let mut frame_clause = Some(clause);
+        let n = self.outer.len();
+        for (levels, k) in (0..).zip((0..n).rev()) {
+            let Some(c) = &frame_clause else { break };
+            if is_continue
+                && let Some((Some(name), _)) = c.for_label
+                && name == l.name
+            {
+                return Some(Jump::ClauseReturn { levels });
+            }
+            let f = &self.outer[k];
+            if let Some(idx) = f.labels.iter().rposition(|x| x.name == Some(l.name)) {
+                let (is_loop, id) = (f.labels[idx].is_loop, f.labels[idx].id);
+                if is_continue && !is_loop {
+                    self.error(span, "`continue` can only target a loop");
+                }
+                return Some(Jump::Label { levels: levels + 1, label: id });
+            }
+            frame_clause = f.clause.clone();
         }
-        if is_continue && !self.labels[idx].is_loop {
-            self.error(span, "`continue` can only target a loop");
-        }
-        Some(self.labels[idx].id)
+        self.error(l.span, format!("no enclosing loop or `with` is labeled `{}`", l.name));
+        None
     }
 
     fn break_expr(&mut self, label: Option<ast::Ident>, value: Option<&ast::Expr>, span: Span) -> Expr {
-        let target = self.find_label(label, span, false);
-        if let Some(v) = value {
-            self.error(v.span, "a `while` loop has no value, so `break` takes no operand here");
-        }
-        match target {
-            Some(l) => mk(
-                Ty::never(),
-                tir::ExprKind::Break { target: Target::Label { levels: 0, label: l }, value: None },
-                span,
-            ),
-            None => error_expr(span),
+        let Some(jump) = self.find_jump(label, span, false) else { return error_expr(span) };
+        let value = match (&jump, value) {
+            (Jump::Label { levels: 0, .. }, Some(v)) if self.clause.is_none() || label.is_none() => {
+                self.error(v.span, "a `while` loop has no value, so `break` takes no operand here");
+                None
+            }
+            (_, v) => {
+                // A `break` that exits a `with` or a `for` over an iterator (§12.7, §13.2).
+                let clause = self.clause.clone();
+                match (&jump, clause.as_ref().and_then(|c| c.break_ty)) {
+                    (Jump::InstallingWith, Some(rt)) => {
+                        // The loop's value: the iterator's result type.
+                        match v {
+                            Some(v) => {
+                                let ex = self.expr(v, Some(rt));
+                                Some(Box::new(self.coerce(ex, rt)))
+                            }
+                            None => {
+                                if !rt.is_unit() && !rt.is_error() {
+                                    self.error(
+                                        span,
+                                        format!("this loop's value is `{}`, so `break` needs a value", rt),
+                                    );
+                                }
+                                None
+                            }
+                        }
+                    }
+                    (Jump::InstallingWith, None) => {
+                        let ex = v.map(|v| self.expr(v, None));
+                        let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
+                        if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
+                            self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
+                        }
+                        ex.map(Box::new)
+                    }
+                    _ => v.map(|v| Box::new(self.expr(v, None))),
+                }
+            }
+        };
+        match jump {
+            Jump::Label { levels, label } => {
+                mk(Ty::never(), tir::ExprKind::Break { target: Target::Label { levels, label }, value }, span)
+            }
+            Jump::InstallingWith => {
+                mk(Ty::never(), tir::ExprKind::Break { target: Target::InstallingWith, value }, span)
+            }
+            Jump::ClauseReturn { .. } => error_expr(span),
         }
     }
 
     fn continue_expr(&mut self, label: Option<ast::Ident>, span: Span) -> Expr {
-        match self.find_label(label, span, true) {
-            Some(l) => mk(Ty::never(), tir::ExprKind::Continue { target: Target::Label { levels: 0, label: l } }, span),
-            None => error_expr(span),
+        match self.find_jump(label, span, true) {
+            Some(Jump::Label { levels, label }) => {
+                mk(Ty::never(), tir::ExprKind::Continue { target: Target::Label { levels, label } }, span)
+            }
+            // `continue` at clause level finishes the clause with `()` (§12.7.1).
+            Some(Jump::ClauseReturn { levels }) => {
+                mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(unit(span)) }, span)
+            }
+            Some(Jump::InstallingWith) | None => error_expr(span),
         }
     }
 
@@ -1103,4 +1204,14 @@ pub fn suffix_type(s: crate::syntax::token::IntSuffix) -> Ty {
         IntSuffix::Usize => Ty::usize(),
         IntSuffix::Isize => Ty::isize(),
     }
+}
+
+/// Where a `break` or `continue` goes.
+enum Jump {
+    /// A loop or `with` of the function `levels` frames up.
+    Label { levels: u32, label: tir::LabelId },
+    /// Out of the `with` that installed the running clause's handler.
+    InstallingWith,
+    /// Finish the clause `levels` frames up, producing `()`.
+    ClauseReturn { levels: u32 },
 }

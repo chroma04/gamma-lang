@@ -92,13 +92,14 @@ pub struct FnCx<'a, 's> {
 
 /// What kind of handler clause the current frame is.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // read by the checking of handler clauses
 pub struct ClauseInfo {
     pub op_kind: ast::OpKind,
     /// For the clause of a `for` loop's handler: the loop's label in the enclosing frame.
     pub for_label: Option<(Option<Symbol>, LabelId)>,
     /// The handler literal the clause belongs to.
     pub handler: Option<tir::HandlerId>,
+    /// For a `for` loop's clause: the type of the loop's value (`break v`).
+    pub break_ty: Option<Ty>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested
@@ -473,6 +474,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Block(b) => self.block(b, false),
             ExprKind::For(f) => self.for_loop(f),
             ExprKind::Match(m) => self.match_expr(m, false, None),
+            ExprKind::With(w) => self.with_expr(w, false, None),
             _ => self.expr(e, None),
         };
         self.obligations.push(Obligation::UnitStatement { ty: ex.ty, span: e.span });
@@ -530,10 +532,10 @@ impl<'a, 's> FnCx<'a, 's> {
         if matches!(ty.kind(), TyKind::Type) {
             self.error(b.init.span, "types cannot be stored in variables; use `::` at top level for a type alias");
         }
-        if mutable && matches!(self.infer.resolve(ty).kind(), TyKind::Fn(_)) {
+        if mutable && matches!(self.infer.resolve(ty).kind(), TyKind::Fn(_) | TyKind::Handler(_)) {
             self.error(
                 b.span,
-                "a second-class function value may only be bound with `::`, not stored in a variable (§11.6)",
+                "a second-class value (a function literal or handler) may only be bound with `::`, not stored in a variable (§11.6)",
             );
         }
         let id = self.new_local(name.name, ty, mutable, name.span);
@@ -719,13 +721,13 @@ impl<'a, 's> FnCx<'a, 's> {
     fn for_loop(&mut self, f: &ast::ForExpr) -> Expr {
         let span = f.span;
         let ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } = &f.iter.kind else {
+            if matches!(f.iter.kind, ExprKind::Call { .. }) {
+                return self.for_iterator(f);
+            }
             if let Some(e) = self.for_each_loop(f) {
                 return e;
             }
-            self.error(
-                f.iter.span,
-                "`for` over iterator calls is not supported yet; iterate over a range, array or slice",
-            );
+            self.error(f.iter.span, "`for` iterates over a range, an array or slice, or a call to an iterator");
             return error_expr(span);
         };
         let inclusive = *op == ast::BinOp::RangeIncl;

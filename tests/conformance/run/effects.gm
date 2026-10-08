@@ -1,0 +1,72 @@
+// Effects, handlers and iteration (§12, §13).
+Log :: effect {
+    log: fn(msg: string)
+}
+
+Abort :: effect {
+    abort: esc(code: i32) -> never
+}
+
+Ask :: effect {
+    ask: fn() -> i32
+}
+
+work :: fn(n: i32) -> i32 \ {Log, Abort, Ask} {
+    log("working")
+    defer log("cleanup")
+    if n < 0 { abort(-n) }
+    return n + ask()
+}
+
+countdown :: fn(from: u32) \ {Yield(u32)} {
+    i := from
+    while i > 0 {
+        yield(i)
+        i -= 1
+    }
+}
+
+evens :: fn(xs: []const i32) \ {Yield(i32)} {
+    for x in xs { if x % 2 is 0 { yield(x) } }
+}
+
+sum_until :: fn(limit: u32) -> u32 {
+    total: u32 = 0
+    for v in countdown(10) {
+        if v < limit { break }
+        total += v
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    messages := 0
+    quiet :: handler Log {
+        log(msg) => { messages += 1; print("[{}] {}\n", (messages, msg)) }
+    }
+    answer :: handler Ask { ask() => 42 }
+    r := with quiet, answer, (handler Abort { abort(code) => break code * 100 }) {
+        work(1)
+    }
+    print("r = {}\n", r)
+    s := with quiet, answer, (handler Abort { abort(code) => break code * 100 }) {
+        work(-3)
+    }
+    print("s = {}\n", s)
+    for v in countdown(3) { print("{} ", v) }
+    print("\n{}\n", sum_until(7))
+    data := [6]i32(1, 2, 3, 4, 5, 6)
+    for e in evens(data[..]) {
+        if e > 4 { break }
+        print("even {}\n", e)
+    }
+    outer: for a in 0..3 {
+        for b in countdown(3) {
+            if b is 2 { continue }
+            if a is 1 { continue outer }
+            if a is 2 { break outer }
+            print("({}, {}) ", (a, b))
+        }
+    }
+    print("\n")
+}

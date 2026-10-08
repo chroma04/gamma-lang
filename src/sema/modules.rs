@@ -17,6 +17,11 @@ impl<'s> Sema<'s> {
         let id = self.add_module(Symbol::intern("core"), vec![ast], true);
         self.prelude = Some(id);
         // Resolve the ambient effects eagerly so their ids are known.
+        if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern("Yield"))
+            && let super::DeclValue::Effect(e) = self.resolve_decl(d)
+        {
+            self.yield_effect = Some(e);
+        }
         for (name, slot) in [("Out", 0), ("Err", 1)] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
