@@ -41,7 +41,7 @@ directly are provided by a small runtime library: stack switching for fibers
 effect system compiles to *evidence passing* and *exit flags* (spec Appendix D),
 which are plain C.
 
-### Demand-driven semantic analysis *(planned)*
+### Demand-driven semantic analysis
 
 Type checking and compile-time evaluation depend on each other: checking
 `buf: [BLOCK * 2]u8` needs the value of `BLOCK`, which may be computed by a
@@ -64,6 +64,12 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/syntax/parser/` | the parser |
 | `src/syntax/ast.rs` | the syntax tree |
 | `src/syntax/ast_dump.rs` | stable textual rendering of the syntax tree |
+| `src/types.rs` | semantic types (hash-consed `Ty`) |
+| `src/layout.rs` | sizes, alignments and field offsets for a target |
+| `src/float.rs` | correctly rounded conversion of exact literals to IEEE formats |
+| `src/tir.rs` | the typed intermediate representation |
+| `src/sema/` | semantic analysis (see below) |
+| `lib/core/` | the parts of the core library written in Gamma, embedded in the compiler |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
 
@@ -118,3 +124,64 @@ All stages report problems to a shared `Diagnostics` collector. Messages are
 lowercase and specific. The `--diag-format=short` flag prints one
 `path:line:col: severity: message` line per diagnostic, which is what the test
 suite matches against.
+
+## Semantic analysis
+
+Semantic analysis (`src/sema/`) resolves names, checks types and effects, and
+lowers each function body to TIR.
+
+| File | Responsibility |
+| --- | --- |
+| `mod.rs` | the `Sema` context, the entry point `analyze`, finding `main` |
+| `modules.rs` | loading the root module and the core prelude; collecting top-level names |
+| `decls.rs` | resolving top-level declarations on demand, with cycle detection |
+| `adt.rs` | struct and union declarations |
+| `ty_expr.rs` | evaluating type expressions |
+| `untyped.rs` | exact arithmetic for untyped constants |
+| `func.rs` | the per-function context, scopes, statements, loops |
+| `expr.rs` | expressions, operators, coercions, optionals and results |
+| `call.rs`, `methods.rs`, `construct.rs` | calls, method calls and builtin methods, construction |
+| `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
+| `seq.rs` | slicing, `in`, and `for` over arrays and slices |
+| `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
+
+### Types
+
+`Ty` values are interned: structurally equal types have equal handles, so type
+identity is `==`. Nominal types (`struct`, `union`, `effect` literals) get a
+fresh id each time a literal is evaluated. A declaration naming a struct is
+marked resolved *before* its fields are, so a type can refer to itself through a
+pointer; containing itself by value is reported as an infinitely sized type.
+
+### Literal inference
+
+Untyped literals get type variables (`TyKind::Infer`), which unify with each
+other and with concrete types wherever the specification requires equal types
+(the operands of most binary operators, assignment, comparison). Variables carry
+a kind (integer or float literal), an "unsigned only" flag for indices and shift
+amounts, and a fallback (`i32`, `u32`, `usize` or `f64`).
+
+To keep the result independent of statement order (§6.1), a coercion whose
+source is still an unresolved variable is not decided immediately. The checker
+records it and emits a placeholder `Coercion::Unresolved`. After the whole body
+has been checked, `finalize.rs`:
+
+1. resolves each pending coercion: an unresolved variable takes the target type,
+   or the type the target wraps for `?T` and `E!T`;
+2. applies fallbacks to the remaining variables;
+3. checks deferred obligations that need final types (lossless conversions,
+   numeric and ordering requirements, unused values);
+4. rewrites the body with final types, checks every literal against its type and
+   rounds float literals exactly, and replaces each placeholder with the real
+   coercion.
+
+### Patterns and exhaustiveness
+
+Patterns are checked against the scrutinee type and lowered to `tir::Pat`, with
+the implicit unwrapping of optionals and results (§9.3) made explicit as `Some`,
+`Ok` and `Err` patterns. Exhaustiveness and unreachable arms are decided by the
+usefulness algorithm over constructor-deconstructed patterns (`exhaust.rs`).
+Integer patterns are handled by splitting the type's range at the boundaries of
+the ranges in a column, so `0..=127, 128..=255` is exhaustive for `u8`. When a
+match is not exhaustive, the algorithm produces a witness, which is shown in the
+error message.
