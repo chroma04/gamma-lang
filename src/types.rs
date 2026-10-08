@@ -209,7 +209,13 @@ struct Interner {
 fn interner() -> &'static RwLock<Interner> {
     static I: OnceLock<RwLock<Interner>> = OnceLock::new();
     I.get_or_init(|| {
-        RwLock::new(Interner { kinds: vec![], map: HashMap::new(), adt_names: vec![], effect_names: vec![], param_names: vec![] })
+        RwLock::new(Interner {
+            kinds: vec![],
+            map: HashMap::new(),
+            adt_names: vec![],
+            effect_names: vec![],
+            param_names: vec![],
+        })
     })
 }
 

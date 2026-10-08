@@ -26,8 +26,8 @@ under active construction:
 | --- | --- |
 | Lexer (spec §2) | implemented |
 | Parser (spec Appendix A) | implemented |
-| Semantic analysis | planned |
-| Interpreter / compile-time evaluator | planned |
+| Semantic analysis | core language; effects, generics and modules in progress |
+| Interpreter / compile-time evaluator | implemented (fibers and foreign calls pending) |
 | Native code generation (via C) | planned |
 | Standard library | planned |
 
@@ -43,6 +43,8 @@ cargo build --release
 Available commands today:
 
 ```sh
+gamma run file.gm            # type-check and run a program (a file or a module directory)
+gamma check file.gm          # type-check only
 gamma lex file.gm            # print the token stream
 gamma parse file.gm          # check syntax
 gamma parse --dump file.gm   # print the syntax tree

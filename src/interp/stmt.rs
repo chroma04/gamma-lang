@@ -253,6 +253,14 @@ impl<'a> Machine<'a> {
                     }
                 }
             }
+            PatKind::Or(alts) => {
+                for p in alts {
+                    if self.match_pat(a, p, b)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
             PatKind::Fields(fields) => {
                 for (i, p) in fields {
                     let (_, fb) = self.tr(span, self.field_bytes(pat.ty, b, *i as usize))?;

@@ -244,7 +244,9 @@ impl<'s> Sema<'s> {
             let mut targs = vec![];
             for a in args {
                 match &a.kind {
-                    ast::ArgKind::Positional(t) => targs.push(crate::types::GenericArg::Type(self.resolve_type(module, t))),
+                    ast::ArgKind::Positional(t) => {
+                        targs.push(crate::types::GenericArg::Type(self.resolve_type(module, t)))
+                    }
                     _ => {
                         self.error(a.span, "expected a type argument");
                         return None;
@@ -280,7 +282,8 @@ impl<'s> Sema<'s> {
         // Type parameters (`effect(T: type)`), visible in the operation signatures.
         let mut params = vec![];
         for p in lit.params.iter().flatten() {
-            let is_type = p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
+            let is_type =
+                p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
             if !is_type {
                 self.error(p.span, "effect parameters other than types are not supported yet");
             }

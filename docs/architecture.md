@@ -14,11 +14,11 @@ tokens
   │  syntax::parser         abstract syntax tree (spec Appendix A)
   ▼
 AST  (syntax::ast)
-  │  sema         (planned) name resolution, type checking, effect checking,
+  │  sema                   name resolution, type checking, effect checking,
   │                         literal inference, exhaustiveness
   ▼
-TIR  (planned)              typed intermediate representation
-  ├─▶ interp      (planned) interpreter: compile-time evaluation and `gamma run`
+TIR                         typed intermediate representation
+  ├─▶ interp                interpreter: compile-time evaluation and `gamma run`
   └─▶ cgen        (planned) C code generation → system C compiler → executable
 ```
 
@@ -69,6 +69,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/float.rs` | correctly rounded conversion of exact literals to IEEE formats |
 | `src/tir.rs` | the typed intermediate representation |
 | `src/sema/` | semantic analysis (see below) |
+| `src/interp/` | the interpreter (see below) |
 | `lib/core/` | the parts of the core library written in Gamma, embedded in the compiler |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
@@ -185,3 +186,37 @@ Integer patterns are handled by splitting the type's range at the boundaries of
 the ranges in a column, so `0..=127, 128..=255` is exhaustive for `u8`. When a
 match is not exhaustive, the algorithm produces a witness, which is shown in the
 error message.
+
+## The interpreter
+
+The interpreter (`src/interp/`) walks TIR directly. It runs programs for
+`gamma run` and evaluates constants at compile time, so it implements the
+language exactly as the target would: target integer sizes, layouts and float
+semantics, with every checked operation checked.
+
+**Memory.** The interpreter models a flat address space. Every allocation (a
+local variable, a temporary whose address is taken, a string literal, a
+constant, a heap block) gets a fresh, never-reused range of addresses, aligned
+to at least 16 bytes and followed by an unused gap. Values are byte strings in
+target layout and pointers are plain addresses, so pointer arithmetic, casts and
+`bits` reinterpretation behave as in compiled code. Because addresses are never
+reused and freed or dead allocations are remembered, accesses through dangling,
+out-of-bounds, misaligned or null pointers are detected and reported as traps
+(at compile time, as the undefined behavior §17.1 requires to be diagnosed).
+
+**Control flow.** Evaluation returns either a value or a *flow*: `break`,
+`continue`, `return`, an exit to a `with`, or a trap. Loops, `with` expressions
+and function calls consume the flows aimed at them; everything else propagates
+them, running deferred statements on the way. `errdefer` statements run when a
+function returns an error value, or when its frame is unwound by a flow whose
+target lies in a caller.
+
+**Effects.** The handler context is a persistent linked list from effects to
+installed handlers, passed down the evaluation. `with` extends it; performing an
+operation looks up the innermost handler and runs the clause as a function
+whose environment is the frame where the handler literal was written. Second-class
+function values capture the context where they were created, as §11.6 requires.
+
+**Constants.** Evaluating a constant produces its bytes plus *relocations* for
+any pointers into static data (string literals, other constants, functions), so
+the value can later be placed in a compiled program's read-only data.

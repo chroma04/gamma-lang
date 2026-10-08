@@ -56,11 +56,13 @@ main :: fn() -> E!() \ {Out} { ... }
 
 ## The `gamma` tool
 
-> **Honest status.** The reference implementation of Gamma is under construction. At this point the `gamma` command line tool can read a source file, split it into tokens (**lex**) and check that it is syntactically valid (**parse**). It cannot yet type-check, compile or run anything.
+> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, and formatted output with `print`. Effects beyond `Out`/`Err` (handlers, `with`, iterators), generics, imports and native compilation are still being built, so some examples in later chapters are rejected with a "not supported yet" message.
 
 You build the tool from the repository with Cargo, then use it like this:
 
 ```text
+gamma run hello.gm         type-check the program and run it
+gamma check hello.gm       type-check without running
 gamma lex file.gm          print the tokens of a source file
 gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
@@ -68,11 +70,7 @@ gamma help                 print usage
 gamma version              print the compiler version
 ```
 
-Two options are accepted: `--dump` (with `parse`) and `--diag-format=human|short` to choose how diagnostics are printed. Diagnostics go to standard error, and the tool exits with a nonzero status if there were errors. A file with correct syntax makes `gamma parse` print nothing and exit with status 0.
-
-The commands `gamma check` and `gamma run` are reserved, but today they only print "not implemented yet" and exit with status 2. When they arrive, `gamma run hello.gm` is how you will run the program above.
-
-This means that most of the rules in this guide, such as "this is a compile error because of a missing effect", are rules of the language that the tool does not enforce yet. The guide describes the language as the specification defines it. You can already use `gamma parse` to check that your examples are well-formed (for instance, that a statement does not continue onto a line it is not allowed to continue on, see [chapter 2](02-basics.md)).
+A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short` chooses how diagnostics are printed; they go to standard error, and the tool exits with status 1 if there were errors. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
 ### Build modes
 

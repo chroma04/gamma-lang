@@ -665,7 +665,7 @@ impl<'a> Machine<'a> {
                 };
                 self.trap(e.span, format!("assertion failed: {}", msg))
             }
-            Builtin::Get | Builtin::GetPtr => {
+            Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last => {
                 let (esz, elem_ty) = match e.ty.kind() {
                     TyKind::Optional(t) => match (op, t.kind()) {
                         (Builtin::GetPtr, TyKind::Ptr { pointee, .. }) => (self.size_of(*pointee), *pointee),
@@ -700,8 +700,14 @@ impl<'a> Machine<'a> {
                     },
                     _ => return self.trap(e.span, format!("get on {}", base.ty)),
                 };
-                let ib = self.eval_bytes(a, &args[1])?;
-                let i = self.int_of(args[1].ty, &ib).to_u64_sat();
+                let i = match op {
+                    Builtin::First => 0,
+                    Builtin::Last => len.wrapping_sub(1),
+                    _ => {
+                        let ib = self.eval_bytes(a, &args[1])?;
+                        self.int_of(args[1].ty, &ib).to_u64_sat()
+                    }
+                };
                 if i >= len {
                     return Ok(Value::Bytes(self.make_none(e.ty)));
                 }

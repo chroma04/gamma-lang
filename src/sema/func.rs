@@ -92,6 +92,7 @@ pub struct FnCx<'a, 's> {
 
 /// What kind of handler clause the current frame is.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // read by the checking of handler clauses
 pub struct ClauseInfo {
     pub op_kind: ast::OpKind,
     /// For the clause of a `for` loop's handler: the loop's label in the enclosing frame.

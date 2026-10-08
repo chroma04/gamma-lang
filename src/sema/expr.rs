@@ -324,7 +324,10 @@ impl<'a, 's> FnCx<'a, 's> {
                         v.span = span;
                         return v;
                     }
-                    tir::ExprKind::UntypedFloat(r) if is_literal(operand) || v.ty.is_infer() => {
+                    // Not for zero: exact rationals have no negative zero, and `-0.0` must keep its sign.
+                    tir::ExprKind::UntypedFloat(r)
+                        if (is_literal(operand) || v.ty.is_infer()) && !num_traits::Zero::is_zero(&**r) =>
+                    {
                         *r = Rc::new(-(**r).clone());
                         v.span = span;
                         return v;
