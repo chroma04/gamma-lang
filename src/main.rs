@@ -147,7 +147,9 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    if opts.c_backend {
+    // The interpreter cannot call C, so programs with foreign functions run natively.
+    let uses_c = prog.fns.iter().any(|f| matches!(f.kind, gamma::tir::FnKind::Foreign { .. }));
+    if opts.c_backend || uses_c {
         return run_native(&sess, &prog, path, opts);
     }
     let cfg = gamma::interp::RunConfig {
@@ -239,11 +241,11 @@ fn test(opts: &Options) -> ExitCode {
 fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::Path) -> Result<(), String> {
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
     let opts = gamma::cgen::Options { checks: true, debug: true };
-    let code = gamma::cgen::generate(prog, &sess.sources, entry, &opts).map_err(|u| match location(sess, u.span) {
+    let out = gamma::cgen::generate(prog, &sess.sources, entry, &opts).map_err(|u| match location(sess, u.span) {
         Some(at) => format!("{}: error: {}", at, u.message),
         None => format!("error: {}", u.message),
     })?;
-    gamma::cgen::compile(&code, exe).map(|_| ())
+    gamma::cgen::compile(&out.code, &out.libs, exe).map(|_| ())
 }
 
 fn build(opts: &Options) -> ExitCode {

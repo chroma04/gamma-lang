@@ -585,6 +585,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     let a = self.addr_of(src, v);
                     (true, self.load(tag, &a))
                 }
+                AdtKind::Struct { bits: Some(u), .. } => {
+                    let u = *u;
+                    let a = self.addr_of(src, v);
+                    (true, self.load(u, &a))
+                }
                 _ => return unsupported(e.span, format!("converting from `{}`", src)),
             },
             _ => return unsupported(e.span, format!("converting from `{}`", src)),
@@ -662,6 +667,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Repr::Float(_) => {
                 let c = self.g.ty.cty(target);
                 Ok(self.tmp(t, &format!("({c}){src_val}")))
+            }
+            // An integer to a `#bits` struct: its bits, wrapped to the underlying type.
+            _ if src_int && self.g.ty.bits_layout(target).is_some() => {
+                let (u, _) = self.g.ty.bits_layout(target).unwrap();
+                let ui = self.int_info(u).unwrap();
+                let w = self.normalize(ui, &format!("({}){}", ui.cty(), src_val));
+                let b = self.tmp_uninit(target);
+                self.line(&format!("GM_ST({}, (uint8_t *)&{}, {});", ui.cty(), b, w));
+                Ok(b)
             }
             _ => unsupported(e.span, format!("converting to `{}`", target)),
         }

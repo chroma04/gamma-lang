@@ -27,8 +27,10 @@ pub enum DeclValue {
     Const { ty: Ty, id: tir::ConstId },
     /// An untyped constant (§6.2).
     Untyped(Untyped),
-    /// A module binding (§3.2), such as the predeclared `target`.
+    /// A module binding (§3.2), such as the predeclared `target`, or a foreign block.
     Module(super::ModuleId),
+    /// A `#global` variable (§19.3).
+    Global { ty: Ty, id: tir::GlobalId },
     /// The declaration has errors (already reported).
     Error,
 }
@@ -86,8 +88,17 @@ impl<'s> Sema<'s> {
         let name = self.decls[id.0 as usize].name;
         let ItemKind::Binding(_) = &item.kind else { return DeclValue::Error };
         let mut fuel = None;
+        let (mut global, mut thread_local, mut export) = (false, false, None);
         for attr in &item.attrs {
             match attr.name.name.as_str() {
+                "global" => global = true,
+                "thread_local" => thread_local = true,
+                "export" => match attr.args.as_deref() {
+                    Some([ast::Expr { kind: ExprKind::Str(s), .. }]) => {
+                        export = Some((Symbol::intern(&String::from_utf8_lossy(&s.bytes)), attr.span))
+                    }
+                    _ => self.error(attr.span, "`#export` takes the symbol name: `#export(\"sym\")`"),
+                },
                 // `#fuel(n)` raises the step budget of this declaration's evaluations (§17.3).
                 "fuel" => match attr.args.as_deref() {
                     Some([n]) => match self.try_untyped(module, n) {
@@ -98,16 +109,32 @@ impl<'s> Sema<'s> {
                 },
                 // Inlining hints (§11.10) do not change the meaning of a program.
                 "inline" | "noinline" | "cold" => {}
-                "packed" | "align" | "bits" | "c_union" | "export" | "link_name" | "callconv" | "global"
-                | "thread_local" | "fast_math" | "deprecated" => {
+                "packed" | "align" | "bits" | "c_union" | "link_name" | "callconv" | "fast_math" | "deprecated" => {
                     self.error(attr.span, format!("attribute `#{}` is not supported here yet", attr.name.name))
                 }
                 other => self.error(attr.span, format!("unknown attribute `#{}` (§20.2)", other)),
             }
         }
         let saved_fuel = std::mem::replace(&mut self.fuel, fuel.unwrap_or(super::consteval::STEP_BUDGET));
-        let v = self.compute_binding(id, module, name, &item);
+        if thread_local && !global {
+            self.error(name.span, "`#thread_local` applies only to a `#global`");
+        }
+        let v = if global {
+            match &item.kind {
+                ItemKind::Binding(b) => self.declare_global(module, name, b, thread_local),
+                _ => DeclValue::Error,
+            }
+        } else {
+            self.compute_binding(id, module, name, &item)
+        };
         self.fuel = saved_fuel;
+        if let Some((sym, span)) = export {
+            match &v {
+                DeclValue::Fn(f) => self.export_fn(*f, sym, span),
+                DeclValue::Error => {}
+                _ => self.error(span, "`#export` applies only to a function"),
+            }
+        }
         v
     }
 
@@ -130,6 +157,7 @@ impl<'s> Sema<'s> {
             };
         }
         match &init.kind {
+            ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } if b.ty.is_none() => {
@@ -287,7 +315,7 @@ impl<'s> Sema<'s> {
                 params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None });
             }
         }
-        if sig.variadic {
+        if sig.variadic && !self.allow_variadic {
             self.error(sig.span, "variadic parameters are allowed only in foreign functions");
             ok = false;
         }
@@ -347,10 +375,6 @@ impl<'s> Sema<'s> {
             return Some(EffectRef { effect: base.effect, args: targs.into_boxed_slice() });
         }
         if let ExprKind::Ident(id) = &e.kind {
-            if id.name.as_str() == "Sys" {
-                self.error(e.span, "the `Sys` effect is not supported yet");
-                return None;
-            }
             if let Some(d) = self.lookup_module_name(module, id.name) {
                 return match self.resolve_decl(d) {
                     DeclValue::Effect(eff) => Some(EffectRef { effect: eff, args: Box::new([]) }),

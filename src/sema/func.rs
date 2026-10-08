@@ -612,7 +612,15 @@ impl<'a, 's> FnCx<'a, 's> {
         if let ExprKind::Ident(id) = &place_ast.kind {
             let immutable = match self.lookup_local_at(id.name) {
                 Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
-                _ => true,
+                Some(_) => true,
+                // A `#global` is mutable storage (§19.3).
+                None => {
+                    let module = self.module;
+                    !matches!(
+                        self.sema.lookup_module_name(module, id.name).map(|d| self.sema.resolve_decl(d)),
+                        Some(super::decls::DeclValue::Global { .. })
+                    )
+                }
             };
             if immutable {
                 self.error(
@@ -696,6 +704,7 @@ impl<'a, 's> FnCx<'a, 's> {
             tir::ExprKind::Local(l) => Some(self.locals[l.index()].mutable),
             // Constants live in read-only static storage (§15.1).
             tir::ExprKind::Const(_) => Some(false),
+            tir::ExprKind::Global(_) => Some(true),
             tir::ExprKind::Upvar { levels, local } => Some(self.local_at(self.depth() - levels, *local).mutable),
             tir::ExprKind::Deref(p) => Some(match p.ty.kind() {
                 TyKind::Ptr { is_const, .. } => !is_const,

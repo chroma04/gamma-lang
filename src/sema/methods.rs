@@ -225,6 +225,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 let t = self.type_arg(args, 0, span)?;
                 Some(b(Builtin::Cast, t, vec![recv]))
             }
+            // The length of a C string, up to its NUL (§5.7).
+            (TyKind::ManyPtr { elem, .. }, "cstr_len") if *elem == Ty::u8() => {
+                self.arity(args, 0, n, span);
+                Some(b(Builtin::CstrLen, Ty::usize(), vec![recv]))
+            }
+            // Reinterpreting bytes (§6.6): any plain-data or `#bits` value as plain data.
+            (_, "bits") if self.is_plain_data(rty) || rty.is_bool() || self.sema.bits_struct_ty(rty).is_some() => {
+                if !self.arity(args, 1, n, span) {
+                    return Some(error_expr(span));
+                }
+                let t = self.type_arg(args, 0, span)?;
+                Some(self.bits_cast(recv, t, span))
+            }
             (TyKind::Adt(..), "tag") if self.sema.union_variants(rty).is_some() => {
                 self.arity(args, 0, n, span);
                 let (_, tag) = self.sema.union_variants(rty).unwrap();

@@ -71,7 +71,12 @@ impl<'s> Sema<'s> {
         self.prog.adts.insert(id, placeholder);
         let kind = match &inner.kind {
             ExprKind::Struct(s) => self.struct_kind(module, id, s, attrs),
-            ExprKind::Union(u) => self.union_kind(module, u, attrs),
+            ExprKind::Union(u) => {
+                if u.tag_type.is_some() {
+                    self.explicit_tags.insert(id);
+                }
+                self.union_kind(module, u, attrs)
+            }
             _ => {
                 self.error(lit.span, "expected a struct or union literal after the attributes");
                 return Ty::error();
@@ -178,7 +183,7 @@ impl<'s> Sema<'s> {
                 None => self.error(
                     span,
                     format!(
-                        "field `{}` of a `#bits` struct must be `bool`, an integer or another `#bits` struct",
+                        "field `{}` of a `#bits` struct must be `bool`, an integer, an enum with an explicit tag type or another `#bits` struct",
                         f.name
                     ),
                 ),
@@ -198,6 +203,12 @@ impl<'s> Sema<'s> {
             TyKind::Int(i) => Some(i.bits as u64),
             TyKind::Adt(id, _) => match &self.prog.adts.get(id)?.kind {
                 AdtKind::Struct { bits: Some(u), .. } => self.bit_width(*u),
+                // An enum with an explicit tag type occupies its tag's bits.
+                AdtKind::Union { tag, variants }
+                    if self.explicit_tags.contains(id) && variants.iter().all(|v| v.payload.is_none()) =>
+                {
+                    self.bit_width(*tag)
+                }
                 _ => None,
             },
             _ => None,
@@ -341,6 +352,49 @@ impl<'s> Sema<'s> {
             AdtKind::Struct { fields, .. } => Some(fields),
             _ => None,
         }
+    }
+
+    /// The fields of a `#c_union` type, if `ty` is one.
+    pub fn c_union_fields(&self, ty: Ty) -> Option<&[FieldDef]> {
+        let TyKind::Adt(id, _) = ty.kind() else { return None };
+        match &self.prog.adts.get(id)?.kind {
+            AdtKind::CUnion { fields } => Some(fields),
+            _ => None,
+        }
+    }
+
+    /// The underlying integer type of a `#bits` struct, if `ty` is one.
+    pub fn bits_struct_ty(&self, ty: Ty) -> Option<Ty> {
+        let TyKind::Adt(id, _) = ty.kind() else { return None };
+        match &self.prog.adts.get(id)?.kind {
+            AdtKind::Struct { bits: Some(u), .. } => Some(*u),
+            _ => None,
+        }
+    }
+
+    /// Whether `T(x)` with `x: from` converts losslessly to `to` (§6.5): numeric
+    /// widenings, `bool` and enum tags to integers, and a `#bits` struct of plain
+    /// fields to and from its underlying integer.
+    pub fn conversion_ok(&self, from: Ty, to: Ty) -> bool {
+        if super::finalize::lossless(from, to) {
+            return true;
+        }
+        let plain_bits = |t: Ty| {
+            self.bits_struct_ty(t).filter(|_| {
+                self.struct_fields(t).is_some_and(|fs| fs.iter().all(|f| f.ty.is_bool() || f.ty.is_integer()))
+            })
+        };
+        if plain_bits(from) == Some(to) || plain_bits(to) == Some(from) {
+            return true;
+        }
+        // An enum (a union without payloads) converts by its tag.
+        if let Some((variants, tag)) = self.union_variants(from)
+            && variants.iter().all(|v| v.payload.is_none())
+            && to.is_integer()
+        {
+            return super::finalize::lossless(tag, to);
+        }
+        false
     }
 
     /// The variants and tag type of a tagged union type, if `ty` is one.

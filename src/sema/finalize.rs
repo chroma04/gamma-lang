@@ -69,7 +69,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             Obligation::Conversion { from, to, span } => {
                 let from = self.infer.resolve(from);
-                if !from.is_error() && !lossless(from, to) {
+                if !from.is_error() && !self.sema.conversion_ok(from, to) {
                     self.error(
                         span,
                         format!(

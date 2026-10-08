@@ -18,6 +18,7 @@ mod exhaust;
 mod expr;
 mod finalize;
 mod fnlit;
+mod foreign;
 mod func;
 mod generics;
 mod handler_decl;
@@ -154,6 +155,10 @@ pub struct Sema<'s> {
     pub caller_site: Option<(Span, Symbol)>,
     /// The step budget of compile-time evaluations (§17.3).
     pub fuel: u64,
+    /// Set while resolving a foreign function's signature, which may be variadic.
+    pub allow_variadic: bool,
+    /// Foreign functions declared with a final `...` (§19.2).
+    pub variadic_fns: std::collections::HashSet<FnId>,
     /// Whether `test` declarations are compiled (`gamma test`, §3.8).
     pub tests_enabled: bool,
     /// While a test body is checked (`expect` is allowed).
@@ -211,6 +216,8 @@ pub struct Sema<'s> {
     pub checking: Vec<FnId>,
     /// Type parameters of generic structs and unions.
     pub adt_params: HashMap<AdtId, Vec<crate::types::ParamId>>,
+    /// Unions declared with an explicit tag type (`union(u8) { … }`).
+    pub explicit_tags: std::collections::HashSet<AdtId>,
     /// Default arguments of the parameters of generic structs and unions.
     pub adt_param_defaults: HashMap<AdtId, Vec<Option<Rc<ast::Expr>>>>,
     /// Instantiations of generic structs and unions.
@@ -249,6 +256,8 @@ impl<'s> Sema<'s> {
             build_mode: "Debug",
             caller_site: None,
             fuel: consteval::STEP_BUDGET,
+            allow_variadic: false,
+            variadic_fns: std::collections::HashSet::new(),
             tests_enabled: false,
             in_test: false,
             test_items: vec![],
@@ -281,6 +290,7 @@ impl<'s> Sema<'s> {
             nested_owner: HashMap::new(),
             adt_params: HashMap::new(),
             adt_param_defaults: HashMap::new(),
+            explicit_tags: std::collections::HashSet::new(),
             adt_instances: HashMap::new(),
         }
     }
@@ -429,7 +439,7 @@ impl<'s> Sema<'s> {
     /// True if `e` is one of the ambient effects of §12.9.
     pub fn is_ambient(&self, e: &EffectRef) -> bool {
         let a = &self.prog.ambient;
-        [a.out, a.err, a.env, a.alloc].contains(&Some(e.effect))
+        [a.out, a.err, a.env, a.alloc, a.sys].contains(&Some(e.effect))
     }
 
     /// Layout computations over the program's nominal types.

@@ -470,6 +470,40 @@ static void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
         break;
     }
     case GM_K_OPAQUE: gm_fmt_str(out, t->name); break;
+    case GM_K_BITS: {
+        unsigned __int128 whole = 0;
+        for (uint32_t i = t->size; i > 0; i--) whole = (whole << 8) | v[i - 1];
+        gm_fmt_str(out, t->name);
+        gm_fmt_ch(out, '(');
+        bool first = true;
+        for (uint32_t i = 0; i < t->nfields; i++) {
+            const gm_field *f = &t->fields[i];
+            if (f->name != NULL && strcmp(f->name, "_") == 0) continue;
+            if (!first) gm_fmt_str(out, ", ");
+            first = false;
+            gm_fmt_str(out, f->name != NULL ? f->name : "");
+            gm_fmt_str(out, ": ");
+            const gm_type *ft = f->type;
+            unsigned w = ft->kind == GM_K_BOOL ? 1u : ft->bits;
+            unsigned __int128 raw = whole >> f->offset;
+            if (w < 128) raw &= (((unsigned __int128)1) << w) - 1;
+            /* Sign-extend signed integers and signed tags from the field's width. */
+            bool sign = (ft->kind == GM_K_INT && ft->is_signed) || (ft->kind == GM_K_UNION && ft->tag_signed);
+            if (sign && w > 0 && w < 128 && ((raw >> (w - 1)) & 1)) raw |= ~(unsigned __int128)0 << w;
+            uint8_t tmp[16];
+            for (unsigned k = 0; k < sizeof tmp; k++) tmp[k] = (uint8_t)(raw >> (8 * k));
+            if (ft->kind == GM_K_UNION) {
+                /* An enum's value is its tag at the tag offset. */
+                uint8_t e[16] = {0};
+                memcpy(e + ft->tag_offset, tmp, ft->tag_size);
+                gm_format(out, ft, e, false);
+            } else {
+                gm_format(out, ft, tmp, false);
+            }
+        }
+        gm_fmt_ch(out, ')');
+        break;
+    }
     }
 }
 

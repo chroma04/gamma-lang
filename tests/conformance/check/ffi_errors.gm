@@ -1,0 +1,31 @@
+//! stage: check
+// Foreign code, #global and #export (§19).
+lib :: foreign "c" {
+    takes_slice :: fn(s: []u8)                       //~ ERROR not a C-compatible parameter type
+    printf :: fn(fmt: cstring, ...) -> i32
+    pure :: fn(x: i32) -> i32 \ {}
+    #global errno_like: i32
+}
+
+#global count: u32 = 0
+
+no_sys :: fn() -> u32 => count                       //~ ERROR performs the effect `Sys`
+
+calls_c :: fn() -> i32 => lib.printf(c"x")           //~ ERROR performs the effect `Sys`
+
+trusted :: fn() -> i32 => lib.pure(3)
+
+#export("gm_bad")
+bad_export :: fn(s: string) \ {Sys} {}               //~ ERROR not a C-compatible parameter type
+
+Log :: effect { log: fn(s: string) }
+
+#export("gm_effectful")                              //~ ERROR effects must be empty or `{Sys}`
+effectful :: fn() \ {Log} {}
+
+main :: fn() \ {Sys} {
+    _ = lib.printf(c"%f", 1.5f32)                    //~ ERROR cannot be passed to a variadic parameter
+    _ = lib.printf(c"%d", 1u8)                       //~ ERROR cannot be passed to a variadic parameter
+    count += 1
+    _ = lib.errno_like
+}

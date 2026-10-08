@@ -781,12 +781,12 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
-| `x.bits(T)` | plain-data → plain-data | reinterpret the bytes; `@size_of` must match |
+| `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
 | `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P` |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
-`bits` accepts `bool` as a source but not as a target, and accepts no non-plain-data target, so it can never create an invalid value. `cast` between `?P` types maps null to null.
+`bits` accepts `bool` and any `#bits` struct as a source but not as a target, and accepts no non-plain-data target, so it can never create an invalid value. `cast` between `?P` types maps null to null.
 
 ### 6.7 Conversions that do not exist
 

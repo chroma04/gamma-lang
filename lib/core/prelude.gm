@@ -12,6 +12,10 @@ pub Err :: effect {
     write_err: fn(bytes: []const u8)
 }
 
+/// Operations that escape Gamma's model: foreign calls, `#global` storage and
+/// the like (§12.10). It has no operations and cannot be handled.
+pub Sys :: effect {}
+
 /// The iteration effect (§13.1): an iterator is any function that performs it.
 pub Yield :: effect(T: type) {
     yield: esc(x: T)

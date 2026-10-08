@@ -1,0 +1,27 @@
+// std/c: C's platform-dependent types (§19.1), for declaring foreign functions.
+
+pub c_char :: i8
+pub c_schar :: i8
+pub c_uchar :: u8
+pub c_short :: i16
+pub c_ushort :: u16
+pub c_int :: i32
+pub c_uint :: u32
+pub c_longlong :: i64
+pub c_ulonglong :: u64
+pub c_size_t :: usize
+pub c_ssize_t :: isize
+pub c_ptrdiff_t :: isize
+pub c_intptr_t :: isize
+pub c_uintptr_t :: usize
+pub c_float :: f32
+pub c_double :: f64
+
+// `long` is 32 bits on Windows and on 32-bit targets, and pointer-sized elsewhere.
+when target.os is .Windows or target.ptr_bits is 32 {
+    pub c_long :: i32
+    pub c_ulong :: u32
+} else {
+    pub c_long :: i64
+    pub c_ulong :: u64
+}

@@ -56,7 +56,11 @@ typedef enum {
     GM_K_STRUCT,   /* name, fields; fields named "_" are skipped */
     GM_K_UNION,    /* name, variants; tag (tag_size bytes, tag_signed) at tag_offset;
                       payload at payload_offset */
-    GM_K_OPAQUE    /* printed as `name` verbatim (e.g. "<handler>") */
+    GM_K_OPAQUE,   /* printed as `name` verbatim (e.g. "<handler>") */
+    GM_K_BITS      /* a #bits struct: name, fields with *bit* offsets, packed into an unsigned
+                      integer of `size` bytes. A field's width is 1 for GM_K_BOOL and `bits` for
+                      GM_K_INT, GM_K_BITS and GM_K_UNION (the tag's width); fields named "_" are
+                      skipped like a struct's */
 } gm_kind;
 
 #define GM_NICHE 0xffffffffu

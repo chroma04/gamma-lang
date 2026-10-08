@@ -69,6 +69,8 @@ pub struct Program {
     pub main: Option<FnId>,
     /// The tests of the root module, when compiled for testing (§3.8).
     pub tests: Vec<TestCase>,
+    /// Functions exported to C under a symbol (§19.4).
+    pub exports: Vec<(Symbol, FnId)>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
     pub ambient: Ambient,
 }
@@ -84,6 +86,8 @@ pub struct Ambient {
     pub env: Option<EffectId>,
     /// `Alloc { current: fn() -> Allocator }`
     pub alloc: Option<EffectId>,
+    /// `Sys`, which has no operations (§12.10).
+    pub sys: Option<EffectId>,
 }
 
 impl Program {
@@ -129,7 +133,7 @@ pub enum FnKind {
     /// by the continuation for `ctl` operations).
     Clause,
     /// A function declared in a `foreign` block.
-    Foreign { lib: Symbol, link_name: Symbol },
+    Foreign { lib: Symbol, link_name: Symbol, variadic: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -243,7 +247,11 @@ pub struct GlobalDef {
     pub span: Span,
     /// `None` for foreign globals.
     pub init: Option<Expr>,
+    /// The initializer's compile-time value (`None` for foreign globals).
+    pub value: Option<ConstValue>,
     pub thread_local: bool,
+    /// For a foreign global: its symbol.
+    pub link_name: Option<Symbol>,
 }
 
 // ---------------------------------------------------------------------------

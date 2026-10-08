@@ -273,6 +273,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("`{}` is a module, which is not a value (§3.2)", name));
                 error_expr(span)
             }
+            // Every access to a `#global` performs `Sys` (§19.3).
+            DeclValue::Global { ty, id } => {
+                let sys = self.sema.sys_set();
+                self.record_effects(&sys, span);
+                mk(ty, tir::ExprKind::Global(id), span)
+            }
             DeclValue::Error => error_expr(span),
         }
     }
@@ -691,7 +697,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Field `name` of a struct value, looking through `using` fields (§5.10.3).
     fn struct_field(&mut self, b: Expr, name: crate::symbol::Symbol, span: Span) -> Option<Expr> {
-        let fields = self.sema.struct_fields(b.ty)?;
+        let fields = self.sema.struct_fields(b.ty).or_else(|| self.sema.c_union_fields(b.ty))?;
         if let Some(i) = fields.iter().position(|f| f.name == name) {
             let ty = fields[i].ty;
             if !fields[i].is_pub && !self.sees_private(b.ty) {

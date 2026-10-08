@@ -39,7 +39,13 @@ impl<'a, 's> FnCx<'a, 's> {
                     return self.generic_call(f, args, span);
                 }
                 let sig = self.sema.sigs[&f].clone();
-                let args = self.bind_args(&sig.params, sig.module, args, span, "function");
+                let n = sig.params.len();
+                let variadic = self.sema.variadic_fns.contains(&f) && args.len() > n;
+                let (fixed, extra) = if variadic { args.split_at(n) } else { (args, &[][..]) };
+                let mut args = self.bind_args(&sig.params, sig.module, fixed, span, "function");
+                for a in extra {
+                    args.push(self.variadic_arg(a));
+                }
                 self.record_effects(&sig.effects, span);
                 mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args }, span)
             }
@@ -231,8 +237,25 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `T(x)`: a lossless conversion (§6.5).
     fn conversion(&mut self, t: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        // A `#c_union` is built from exactly one of its fields (§5.11.1).
+        if let Some(fields) = self.sema.c_union_fields(t) {
+            let fields = fields.to_vec();
+            let [ast::Arg { kind: ArgKind::Named(n, x), .. }] = args else {
+                self.error(span, format!("`{}(field: value)` names exactly one field of the union", t));
+                return error_expr(span);
+            };
+            let Some(f) = fields.iter().find(|f| f.name == n.name) else {
+                self.error(n.span, format!("`{}` has no field `{}`", t, n.name));
+                return error_expr(span);
+            };
+            let v = self.expr(x, Some(f.ty));
+            let v = self.coerce(v, f.ty);
+            return mk(t, tir::ExprKind::Aggregate(vec![v]), span);
+        }
+        // `Mode(u)`: a `#bits` struct from its underlying integer (§5.10.5).
+        let one_positional = matches!(args, [ast::Arg { kind: ArgKind::Positional(_), .. }]);
         // Construction (§7.11) for structs, tuples, arrays and optionals.
-        if self.sema.struct_fields(t).is_some() {
+        if self.sema.struct_fields(t).is_some() && !(one_positional && self.sema.bits_struct_ty(t).is_some()) {
             return self.construct_struct(t, args, span);
         }
         match t.kind() {
@@ -246,6 +269,16 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("construction of `{}` is not supported yet; a conversion takes one argument", t));
             return error_expr(span);
         };
+        // `Mode(u)`: the integer is of the underlying type, so a literal takes it.
+        if let Some(u) = self.sema.bits_struct_ty(t) {
+            let v = self.expr(x, Some(u));
+            if self.infer.var_kind(v.ty).is_some() {
+                let v = self.coerce(v, u);
+                return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
+            }
+            self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
+            return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
+        }
         let v = self.expr(x, Some(t));
         // An untyped literal simply takes the type (§16.1: `T(300)`).
         if self.infer.var_kind(v.ty).is_some() && (t.is_integer() || t.is_float()) {
@@ -470,6 +503,37 @@ pub fn strip_wrappers(mut t: Ty) -> Ty {
             TyKind::Result { ok, .. } => t = *ok,
             _ => return t,
         }
+    }
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// An argument in the variadic position of a foreign call (§19.2): a C-compatible
+    /// scalar at least as wide as C `int` (integers) or `f64` (floats).
+    fn variadic_arg(&mut self, a: &ast::Arg) -> Expr {
+        let ArgKind::Positional(e) = &a.kind else {
+            self.error(a.span, "variadic arguments are written positionally");
+            return error_expr(a.span);
+        };
+        let v = self.expr(e, None);
+        let t = self.infer.resolve(v.ty);
+        let ok = match t.kind() {
+            TyKind::Int(i) => i.bits >= 32 && matches!(i.bits, 32 | 64),
+            TyKind::Usize | TyKind::Isize | TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } => true,
+            TyKind::Float(f) => *f == crate::types::FloatTy::F64,
+            TyKind::Optional(inner) => crate::layout::is_nullable_pointer(*inner),
+            TyKind::Infer(_) | TyKind::Error => true,
+            _ => false,
+        };
+        if !ok {
+            self.error(
+                e.span,
+                format!(
+                    "`{}` cannot be passed to a variadic parameter: use a C-compatible scalar of at least C `int` width or `f64`, converting explicitly (§19.2)",
+                    t
+                ),
+            );
+        }
+        v
     }
 }
 

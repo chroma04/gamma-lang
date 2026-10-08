@@ -43,8 +43,11 @@ pub struct FnGen<'g, 'a> {
 pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     let prog = g.prog;
     let def = &prog.fns[f.index()];
+    if let FnKind::Foreign { .. } = def.kind {
+        return g.foreign_decl(f);
+    }
     let Some(body) = &def.body else {
-        return unsupported(def.span, format!("calls to the foreign function `{}`", def.name));
+        return unsupported(def.span, format!("the function `{}` has no body", def.name));
     };
     // The frame struct.
     let mut frame = format!("struct gm_fr{} {{\n    gm_frame h;\n", f.0);
@@ -59,13 +62,20 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     }
     frame.push_str("};\n");
     g.frames.push_str(&frame);
-    // The signature.
-    let ret = g.ty.cty(def.ret);
-    let mut params = vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()];
+    // The signature: plain functions have the C calling convention (decisions in
+    // docs/architecture.md); the others take the hidden env, cx and inst first.
+    let plain = g.is_plain(f);
+    let void_ret = plain && def.ret.is_unit();
+    let ret = if void_ret { "void".to_string() } else { g.ty.cty(def.ret) };
+    let mut params =
+        if plain { vec![] } else { vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()] };
     for (i, p) in def.params.iter().enumerate() {
         params.push(format!("{} a{}", g.ty.cty(def.locals[p.index()].ty), i));
     }
-    let sig = format!("static {} {}({})", ret, g.fn_name(f), params.join(", "));
+    if params.is_empty() {
+        params.push("void".into());
+    }
+    let sig = format!("static __attribute__((aligned(4))) {} {}({})", ret, g.fn_name(f), params.join(", "));
     let _ = writeln!(g.protos, "{};", sig);
     let mut fg = FnGen {
         g,
@@ -79,6 +89,9 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         no_check: false,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
+    if plain {
+        fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;");
+    }
     fg.line(&format!("struct gm_fr{} F;", f.0));
     fg.line("F.h.up = (gm_frame *)env;");
     let clause_lit = matches!(def.kind, FnKind::Clause);
@@ -91,7 +104,11 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     if !body.ty.is_never() {
         fg.line(&format!("F.ret = {};", v));
     }
-    fg.out.push_str("gm_fret:\n    return F.ret;\ngm_fprop:\n    return F.ret;\n}\n");
+    if void_ret {
+        fg.out.push_str("gm_fret:\n    return;\ngm_fprop:\n    return;\n}\n");
+    } else {
+        fg.out.push_str("gm_fret:\n    return F.ret;\ngm_fprop:\n    return F.ret;\n}\n");
+    }
     let out = std::mem::take(&mut fg.out);
     g.bodies.push_str(&out);
     Ok(())
@@ -309,6 +326,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         self.line(&format!("F.l{} = GM_LD({}, (uint8_t *)&{} + {});", l.0, c, t, offs[i]));
                     }
                 }
+            }
+            // Assigning a `#bits` field rewrites its bits in the integer.
+            Stmt::Assign { place: Expr { kind: ExprKind::Field { base, index }, .. }, value }
+                if self.g.ty.bits_layout(base.ty).is_some() =>
+            {
+                let (u, fields) = self.g.ty.bits_layout(base.ty).unwrap();
+                let (off, w, _) = fields[*index as usize];
+                let a = self.place_addr(base)?;
+                let v = self.expr(value)?;
+                let raw = self.bits_raw(value.ty, &v);
+                let uc = self.g.ty.cty(u);
+                let m = super::expr::mask(w);
+                self.line(&format!(
+                    "GM_ST({uc}, {a}, ({uc})(((unsigned __int128)GM_LD({uc}, {a}) & ~({m} << {off})) | ((({raw}) & {m}) << {off})));"
+                ));
             }
             Stmt::Assign { place, value } => {
                 let p = self.place_addr(place)?;

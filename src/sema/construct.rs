@@ -119,7 +119,17 @@ impl<'a, 's> FnCx<'a, 's> {
             match slot {
                 Some(v) => values.push(v),
                 None => {
-                    let default = self.adt_default(ty, i);
+                    // Padding fields `_` of a `#bits` struct are zero (§5.10.5).
+                    let default = if fields[i].0.as_str() == "_" && self.sema.bits_struct_ty(ty).is_some() {
+                        let ft = fields[i].1;
+                        Some(if ft.is_bool() {
+                            mk(ft, tir::ExprKind::Bool(false), span)
+                        } else {
+                            mk(ft, tir::ExprKind::Int(0.into()), span)
+                        })
+                    } else {
+                        self.adt_default(ty, i)
+                    };
                     match default {
                         Some(d) => values.push(d),
                         None => {

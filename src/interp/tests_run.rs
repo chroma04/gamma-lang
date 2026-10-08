@@ -438,7 +438,9 @@ fn globals_are_static_storage() {
         ty: Ty::i32(),
         span: crate::source::Span::DUMMY,
         init: Some(i32e(5)),
+        value: None,
         thread_local: false,
+        link_name: None,
     });
     let g = ex(Ty::i32(), ExprKind::Global(GlobalId(0)));
     let body = blk(
@@ -470,8 +472,11 @@ fn unsupported_features_trap_cleanly() {
     let mut tb = Tb::new();
     let e = ex(Ty::never(), ExprKind::Resume { cont: Box::new(unit()), value: Box::new(unit()) });
     assert!(trap_msg(tb.eval(&e)).contains("not supported by the interpreter yet"));
-    let f = FnB::new("ext", Ty::unit())
-        .kind(FnKind::Foreign { lib: Symbol::intern("c"), link_name: Symbol::intern("ext") });
+    let f = FnB::new("ext", Ty::unit()).kind(FnKind::Foreign {
+        lib: Symbol::intern("c"),
+        link_name: Symbol::intern("ext"),
+        variadic: false,
+    });
     let mut def = f.build(unit());
     def.body = None;
     let id = tb.add(def);

@@ -203,6 +203,17 @@ impl<'a> Types<'a> {
                         f.push("kind = GM_K_STRUCT".into());
                         self.fields_array(i, &parts, &mut f);
                     }
+                    AdtKind::Struct { fields, bits: Some(_), .. } => {
+                        let layout = self.bits_layout(t).unwrap();
+                        let mut parts = vec![];
+                        for (fd, (off, _, fty)) in fields.iter().zip(&layout.1) {
+                            let d = self.desc(*fty);
+                            parts.push(format!("{{{}, {}, {}}}", c_string(fd.name.as_str().as_bytes()), off, d));
+                        }
+                        f.push("kind = GM_K_BITS".into());
+                        f.push(format!("bits = {}", self.bit_width(t)));
+                        self.fields_array(i, &parts, &mut f);
+                    }
                     AdtKind::Union { tag, variants } => {
                         let offs = self.offsets(t);
                         let mut parts = vec![];
@@ -225,6 +236,7 @@ impl<'a> Types<'a> {
                         f.push(format!("tag_offset = {}", offs[0]));
                         f.push(format!("payload_offset = {}", offs.get(1).copied().unwrap_or(0)));
                         f.push(format!("tag_size = {}", self.size(*tag)));
+                        f.push(format!("bits = {}", self.bit_width(*tag)));
                         f.push(format!("tag_signed = {}", tag.is_signed_integer()));
                     }
                     _ => {
@@ -254,11 +266,43 @@ impl<'a> Types<'a> {
         f.push(format!("fields = gm_ty{}_f", i));
     }
 
+    /// The width in bits of a `#bits` field of type `t` (§5.10.5).
+    pub fn bit_width(&self, t: Ty) -> u32 {
+        match t.kind() {
+            TyKind::Bool => 1,
+            TyKind::Int(i) => i.bits as u32,
+            TyKind::Adt(id, _) => match &self.prog.adts[id].kind {
+                AdtKind::Union { tag, .. } => self.bit_width(*tag),
+                AdtKind::Struct { bits: Some(u), .. } => self.bit_width(*u),
+                _ => 8 * self.size(t) as u32,
+            },
+            _ => 8 * self.size(t) as u32,
+        }
+    }
+
+    /// For a `#bits` struct: its underlying integer type and each field's bit offset,
+    /// width and type, in declaration order from the least significant bit.
+    pub fn bits_layout(&self, t: Ty) -> Option<(Ty, Vec<BitField>)> {
+        let TyKind::Adt(id, _) = t.kind() else { return None };
+        let AdtKind::Struct { fields, bits: Some(u), .. } = &self.prog.adts[id].kind else { return None };
+        let mut off = 0;
+        let mut out = vec![];
+        for fd in fields {
+            let w = self.bit_width(fd.ty);
+            out.push((off, w, fd.ty));
+            off += w;
+        }
+        Some((*u, out))
+    }
+
     /// The descriptor definitions, in dependency-safe order.
     pub fn descriptors(&self) -> String {
         format!("{}{}{}", self.desc_fwd, self.desc_parts, self.desc_defs)
     }
 }
+
+/// A field of a `#bits` struct: bit offset, width and type.
+pub type BitField = (u32, u32, Ty);
 
 pub fn int_cty(signed: bool, storage: u64) -> &'static str {
     match (signed, storage) {

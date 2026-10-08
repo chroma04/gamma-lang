@@ -192,6 +192,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(n)
             }
             ExprKind::Const(id) => Ok(self.load(t, &format!("gm_c{}", id.0))),
+            // A field of a `#bits` struct is a range of bits of its integer (§5.10.5).
+            ExprKind::Field { base, index } if self.g.ty.bits_layout(base.ty).is_some() => {
+                let (u, fields) = self.g.ty.bits_layout(base.ty).unwrap();
+                let (off, w, fty) = fields[*index as usize];
+                let v = self.expr(base)?;
+                let a = self.addr_of(base.ty, &v);
+                let uc = self.g.ty.cty(u);
+                let raw = format!("((((unsigned __int128)GM_LD({uc}, {a})) >> {off}) & {})", mask(w));
+                let raw = self.tmp(Ty::int(false, 128), &raw);
+                Ok(self.bits_value(fty, &raw))
+            }
             ExprKind::Local(_)
             | ExprKind::Upvar { .. }
             | ExprKind::Deref(_)
@@ -201,7 +212,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let a = self.place_addr(e)?;
                 Ok(self.load(t, &a))
             }
-            ExprKind::Global(_) => unsupported(e.span, "#global variables"),
+            ExprKind::Global(_) => {
+                let a = self.place_addr(e)?;
+                Ok(self.load(t, &a))
+            }
             ExprKind::Slice { base, lo, hi, inclusive } => {
                 self.slice_expr(e, base, lo.as_deref(), hi.as_deref(), *inclusive)
             }
@@ -228,12 +242,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::FnRef(f) => {
                 self.g.queue(*f);
-                let name = self.g.fn_name(*f);
+                let name = self.g.callee_name(*f);
+                let plain = self.g.is_plain(*f);
+                // A plain function where hidden-convention code is expected is marked by
+                // setting the low bit of its address (see `call_indirect`).
+                let code = if plain && !self.ptr_type_plain(t) {
+                    format!("((void *)((uintptr_t){} | 1))", name)
+                } else {
+                    format!("((void *){})", name)
+                };
                 if matches!(t.kind(), TyKind::Fn(_)) {
                     let cx = self.cx.clone();
-                    Ok(self.tmp(t, &format!("((gm_closure){{(void *){}, NULL, {}}})", name, cx)))
+                    Ok(self.tmp(t, &format!("((gm_closure){{{}, NULL, {}}})", code, cx)))
                 } else {
-                    Ok(format!("((void *){})", name))
+                    Ok(code)
                 }
             }
             ExprKind::Closure(f) => {
@@ -266,6 +288,22 @@ impl<'g, 'a> FnGen<'g, 'a> {
             ExprKind::Coerce { kind, expr } => self.coerce(e, *kind, expr),
             ExprKind::Builtin { op, args } => self.builtin(e, *op, args),
             ExprKind::Call { callee, args } => self.call(e, callee, args),
+            ExprKind::Aggregate(elems) if self.g.ty.bits_layout(t).is_some() => {
+                let (u, fields) = self.g.ty.bits_layout(t).unwrap();
+                let mut vals = vec![];
+                for x in elems {
+                    vals.push(self.expr(x)?);
+                }
+                let acc = self.tmp(Ty::int(false, 128), "0");
+                for (x, (v, (off, w, _))) in elems.iter().zip(vals.iter().zip(fields)) {
+                    let raw = self.bits_raw(x.ty, v);
+                    self.line(&format!("{acc} |= (({raw}) & {}) << {off};", mask(w)));
+                }
+                let b = self.blob(t);
+                let uc = self.g.ty.cty(u);
+                self.line(&format!("GM_ST({uc}, (uint8_t *)&{b}, ({uc}){acc});"));
+                Ok(b)
+            }
             ExprKind::Aggregate(elems) => {
                 let mut vals = vec![];
                 for x in elems {
@@ -589,6 +627,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     pub fn place_addr(&mut self, e: &'a Expr) -> CResult<String> {
         match &e.kind {
             ExprKind::Local(l) => Ok(format!("((uint8_t *)&F.l{})", l.0)),
+            ExprKind::Global(id) => Ok(format!("((uint8_t *)gm_g{})", id.0)),
             // Constants live in static storage, so their address is stable.
             ExprKind::Const(id) => Ok(format!("((uint8_t *)gm_c{})", id.0)),
             ExprKind::Upvar { levels, local } => {
@@ -767,6 +806,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 res
             }
             Coercion::FromNever => self.zero(t),
+            // Widening a plain function pointer to an effectful type marks it (see `call_indirect`).
+            Coercion::FnPtrWiden if self.ptr_type_plain(x.ty) && !self.ptr_type_plain(t) => {
+                self.tmp(t, &format!("((void *)((uintptr_t){} | 1))", v))
+            }
             Coercion::PtrToPtr | Coercion::FnPtrWiden | Coercion::TupleRename | Coercion::InOptional => {
                 if self.g.ty.repr(t) == self.g.ty.repr(x.ty) && self.g.ty.repr(t) != Repr::Blob {
                     v
@@ -787,7 +830,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Coercion::FnToPtr => match (self.g.ty.repr(x.ty), self.g.ty.repr(t)) {
                 (Repr::Ptr, Repr::Closure) => {
                     let cx = self.cx.clone();
-                    self.tmp(t, &format!("((gm_closure){{{}, NULL, {}}})", v, cx))
+                    let code = if self.ptr_type_plain(x.ty) { format!("((void *)((uintptr_t){} | 1))", v) } else { v };
+                    self.tmp(t, &format!("((gm_closure){{{}, NULL, {}}})", code, cx))
                 }
                 _ => v,
             },
@@ -811,11 +855,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 match c.ty.kind() {
                     TyKind::Fn(_) => self.call_closure(&cv, c.ty, &vals, &tys, e.ty),
                     TyKind::FnPtr(sig) => {
-                        let fp = self.fn_ptr_type(e.ty, &tys);
+                        let effectful = !self.g.within_sys(&sig.effects);
                         let cx = self.cx.clone();
-                        let call = format!("(({}){})(NULL, {}, NULL{})", fp, cv, cx, join_args(&vals));
-                        let r = self.call_result(e.ty, &call);
-                        if !sig.effects.is_empty() {
+                        let r = self.call_indirect(&cv, "NULL", &cx, &vals, &tys, e.ty, effectful);
+                        if effectful {
                             self.check_unwind();
                         }
                         Ok(r)
@@ -850,9 +893,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
     fn call_fn(&mut self, e: &Expr, f: FnId, vals: &[String]) -> CResult<String> {
         self.g.queue(f);
         let def = &self.g.prog.fns[f.index()];
-        if def.body.is_none() {
-            return unsupported(e.span, format!("calls to the foreign function `{}`", def.name));
-        }
         // A function with a parent captures it (a literal called directly).
         let env = match def.parent {
             Some(p) => match (0..64).find(|l| self.frame_up(*l).1 == p) {
@@ -861,10 +901,29 @@ impl<'g, 'a> FnGen<'g, 'a> {
             },
             None => "NULL".into(),
         };
-        let name = self.g.fn_name(f);
-        let cx = self.cx.clone();
-        let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, join_args(vals));
-        let r = self.call_result(e.ty, &call);
+        let name = self.g.callee_name(f);
+        let r = if let crate::tir::FnKind::Foreign { .. } = def.kind {
+            // C's `_Bool` crosses the boundary as 0 or 1 either way.
+            let call = format!("{}({})", name, vals.join(", "));
+            if def.ret.is_unit() {
+                self.line(&format!("{};", call));
+                self.zero(e.ty)
+            } else {
+                self.call_result(e.ty, &call)
+            }
+        } else if self.g.is_plain(f) {
+            let call = format!("{}({})", name, vals.join(", "));
+            if def.ret.is_unit() || def.ret.is_never() {
+                self.line(&format!("{};", call));
+                self.zero(e.ty)
+            } else {
+                self.call_result(e.ty, &call)
+            }
+        } else {
+            let cx = self.cx.clone();
+            let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, join_args(vals));
+            self.call_result(e.ty, &call)
+        };
         if self.g.may_unwind(f) {
             self.check_unwind();
         }
@@ -886,11 +945,69 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 "gm_node {n}; {{ gm_node *f = gm_find({cx}, {id}); if (f) {{ {n} = *f; {n}.next = {ccx}; {ccx} = &{n}; }} }}"
             ));
         }
-        let fp = self.fn_ptr_type(ret, tys);
-        let call = format!("(({}){}.code)({}.env, {}, NULL{})", fp, c, c, ccx, join_args(vals));
-        let r = self.call_result(ret, &call);
+        let r = self.call_indirect(&format!("{}.code", c), &format!("{}.env", c), &ccx, vals, tys, ret, true);
         self.check_unwind();
         Ok(r)
+    }
+
+    /// True if values of function pointer type `t` use the plain C convention: their
+    /// effects are at most `{Sys}`.
+    pub fn ptr_type_plain(&self, t: Ty) -> bool {
+        match t.kind() {
+            TyKind::FnPtr(sig) => self.g.within_sys(&sig.effects),
+            TyKind::Optional(inner) => self.ptr_type_plain(*inner),
+            _ => false,
+        }
+    }
+
+    /// Calls code pointer `code`. With `hidden`, the code uses the hidden convention
+    /// (env, cx, inst) unless its low bit marks a plain function; otherwise it is plain.
+    #[allow(clippy::too_many_arguments)]
+    fn call_indirect(
+        &mut self,
+        code: &str,
+        env: &str,
+        cx: &str,
+        vals: &[String],
+        tys: &[Ty],
+        ret: Ty,
+        hidden: bool,
+    ) -> String {
+        let plain_ret = if ret.is_unit() || ret.is_never() { "void".to_string() } else { self.g.ty.cty(ret) };
+        let mut ps = vec![];
+        for p in tys {
+            ps.push(self.g.ty.cty(*p));
+        }
+        let plain_ty = format!("{} (*)({})", plain_ret, if ps.is_empty() { "void".into() } else { ps.join(", ") });
+        let p = self.tmp(Ty::intern(TyKind::Rawptr), code);
+        let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
+        let plain_call = format!("(({})((uintptr_t){} & ~(uintptr_t)1))({})", plain_ty, p, vals.join(", "));
+        let emit_plain = |fg: &mut Self| match &res {
+            Some(r) if !ret.is_unit() => fg.line(&format!("{} = {};", r, plain_call)),
+            _ => fg.line(&format!("{};", plain_call)),
+        };
+        if hidden {
+            let fp = self.fn_ptr_type(ret, tys);
+            let hidden_call = format!("(({}){})({}, {}, NULL{})", fp, p, env, cx, join_args(vals));
+            self.line(&format!("if ((uintptr_t){} & 1) {{", p));
+            self.indent += 1;
+            emit_plain(self);
+            self.indent -= 1;
+            self.line("} else {");
+            self.indent += 1;
+            match &res {
+                Some(r) => self.line(&format!("{} = {};", r, hidden_call)),
+                None => self.line(&format!("{};", hidden_call)),
+            }
+            self.indent -= 1;
+            self.line("}");
+        } else {
+            emit_plain(self);
+        }
+        match res {
+            Some(r) if !ret.is_unit() => r,
+            _ => self.zero(ret),
+        }
     }
 
     /// Performs operation `op` of `effect` with argument values `vals`.
@@ -1261,6 +1378,62 @@ impl<'g, 'a> FnGen<'g, 'a> {
         Ok(self.tmp(Ty::bool(), &format!("(uint8_t)({}{})", if negated { "!" } else { "" }, r)))
     }
 
+    /// The bits of `v`, a value of `#bits` field type `t`, as an `unsigned __int128`.
+    pub fn bits_raw(&mut self, t: Ty, v: &str) -> String {
+        match self.g.ty.repr(t) {
+            Repr::Bool => format!("(unsigned __int128)({} != 0)", v),
+            Repr::Int { storage, .. } => {
+                format!("(unsigned __int128)({})({})", super::types::int_cty(false, storage), v)
+            }
+            _ => {
+                // An enum's tag, or a nested `#bits` struct's integer.
+                let under = match &self.adt_def(t).kind {
+                    AdtKind::Union { tag, .. } => *tag,
+                    AdtKind::Struct { bits: Some(u), .. } => *u,
+                    _ => Ty::u8(),
+                };
+                let a = self.addr_of(t, v);
+                let uc = self.g.ty.cty(under);
+                let us = super::types::int_cty(false, self.g.ty.size(under));
+                format!("(unsigned __int128)({})GM_LD({}, {})", us, uc, a)
+            }
+        }
+    }
+
+    /// A value of `#bits` field type `t` from its bits `raw` (an `unsigned __int128`).
+    pub fn bits_value(&mut self, t: Ty, raw: &str) -> String {
+        let w = self.g.ty.bit_width(t);
+        match self.g.ty.repr(t) {
+            Repr::Bool => self.tmp(t, &format!("(uint8_t)({} != 0)", raw)),
+            Repr::Int { signed, .. } => {
+                let c = self.g.ty.cty(t);
+                if signed && w < 128 {
+                    self.tmp(t, &format!("({c})((__int128)({raw} << {s}) >> {s})", s = 128 - w))
+                } else {
+                    self.tmp(t, &format!("({c}){raw}"))
+                }
+            }
+            _ => {
+                let (under, signed) = match &self.adt_def(t).kind {
+                    AdtKind::Union { tag, .. } => (*tag, tag.is_signed_integer()),
+                    AdtKind::Struct { bits: Some(u), .. } => (*u, false),
+                    _ => (Ty::u8(), false),
+                };
+                let uc = self.g.ty.cty(under);
+                let v = if signed && w < 128 {
+                    format!("({uc})((__int128)({raw} << {s}) >> {s})", s = 128 - w)
+                } else {
+                    format!("({uc}){raw}")
+                };
+                let b = self.blob(t);
+                let off =
+                    if matches!(self.adt_def(t).kind, AdtKind::Union { .. }) { self.g.ty.offsets(t)[0] } else { 0 };
+                self.line(&format!("GM_ST({uc}, (uint8_t *)&{b} + {off}, {v});"));
+                b
+            }
+        }
+    }
+
     /// A C condition: values `a` and `b` of type `t` are `is`-equal (§7.6).
     pub fn equal(&mut self, t: Ty, a: &str, b: &str) -> String {
         match self.g.ty.repr(t) {
@@ -1313,4 +1486,9 @@ pub fn float_lit(f: FloatTy, x: f64) -> String {
     }
     // Rust's `{:e}` is the shortest form that reads back as the same f64.
     format!("(({}){:e})", c, x)
+}
+
+/// The mask of the low `w` bits, as an `unsigned __int128` C expression.
+pub fn mask(w: u32) -> String {
+    if w >= 128 { "(~(unsigned __int128)0)".into() } else { format!("((((unsigned __int128)1) << {}) - 1)", w) }
 }
