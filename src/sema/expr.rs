@@ -546,6 +546,16 @@ impl<'a, 's> FnCx<'a, 's> {
         if !lt.has_infer() && !lt.is_error() && !self.eq_allowed(lt) {
             self.error(span, format!("`is` is not defined for `{}` (§7.6)", lt));
         }
+        // A literal compared with an optional or result is wrapped: `x is 1`.
+        let wraps = |t: Ty| matches!(t.kind(), TyKind::Optional(_) | TyKind::Result { .. }) && !t.has_infer();
+        if rt.is_infer() && wraps(lt) {
+            let r = self.coerce(r, lt);
+            return (l, r);
+        }
+        if lt.is_infer() && wraps(rt) {
+            let l = self.coerce(l, rt);
+            return (l, r);
+        }
         if lt.has_infer() || rt.has_infer() || lt == rt {
             self.unify_operands(l.ty, r.ty, span, "the operands of `is`");
             return (l, r);
@@ -918,6 +928,14 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let v = self.expr(operand, None);
         let vt = self.infer.resolve(v.ty);
+        // The first `try` of a test decides the test's error type (§3.8).
+        if self.infer_test_error
+            && self.outer.is_empty()
+            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), self.ret.kind())
+            && cur.is_error()
+        {
+            self.ret = Ty::result(*err, *ok);
+        }
         let (levels, ret) = self.return_target();
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),

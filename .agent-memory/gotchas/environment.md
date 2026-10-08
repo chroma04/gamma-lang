@@ -4,3 +4,5 @@
 - Integration tests run with cwd = package root; harness passes relative paths so diagnostics
   print `tests/conformance/...` paths.
 - `cargo fmt` reformats files other agents/you hold open → re-Read before Edit.
+- Before every commit run `RUSTFLAGS="-D warnings" cargo clippy -q --all-targets` (CI fails on
+  any warning; `cargo fmt` can't catch clippy issues). Once pushed a needless-borrow by mistake.

@@ -3,17 +3,24 @@
 //! Runs every `.gm` file under `tests/conformance/` through the `gamma` binary
 //! and checks the result against expectations written in the file itself:
 //!
-//! - `//! stage: lex|parse|check|run` (at the top of the file) selects how far
-//!   the compiler goes. The default is `run`.
+//! - `//! stage: lex|parse|check|run|test` (at the top of the file) selects
+//!   how far the compiler goes; `test` runs the file's `test` declarations with
+//!   `gamma test`. The default is `run`.
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
-//! - `//! exit: N` sets the expected exit status of a `run` test (default 0).
-//!   The expected standard output of a `run` test is the sibling `<name>.stdout`
+//! - `//! exit: N` sets the expected exit status of a `run` or `test` test
+//!   (default 0). Their expected standard output is the sibling `<name>.stdout`
 //!   (empty if the file does not exist).
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
 //!   Every reported error or warning must be expected this way.
+//!
+//! A directory whose name ends in `.test` is one test of several modules. The
+//! program's root module is its `main/` subdirectory if there is one, and the
+//! directory itself otherwise. Directives may appear in any of its `.gm` files,
+//! `//~` annotations refer to the line of the file they are written in, and the
+//! expected output of `name.test` is the sibling `name.stdout`.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
@@ -29,18 +36,27 @@ enum Stage {
     Parse,
     Check,
     Run,
+    Test,
 }
 
 struct Expectations {
     stage: Stage,
     dump: bool,
     exit: i32,
-    /// (line, severity, message substring)
-    diags: Vec<(u32, String, String)>,
+    /// (file, line, severity, message substring); line 0 means no location.
+    diags: Vec<(PathBuf, u32, String, String)>,
 }
 
-fn parse_expectations(path: &Path, src: &str) -> Result<Expectations, String> {
+fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
     let mut e = Expectations { stage: Stage::Run, dump: false, exit: 0, diags: vec![] };
+    for path in files {
+        let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
+        parse_file_expectations(path, &src, &mut e)?;
+    }
+    Ok(e)
+}
+
+fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Result<(), String> {
     for (i, line) in src.lines().enumerate() {
         let trimmed = line.trim_start();
         if let Some(directive) = trimmed.strip_prefix("//!") {
@@ -51,6 +67,7 @@ fn parse_expectations(path: &Path, src: &str) -> Result<Expectations, String> {
                     "parse" => Stage::Parse,
                     "check" => Stage::Check,
                     "run" => Stage::Run,
+                    "test" => Stage::Test,
                     other => return Err(format!("{}: unknown stage `{}`", path.display(), other)),
                 };
             } else if directive == "dump" {
@@ -74,28 +91,32 @@ fn parse_expectations(path: &Path, src: &str) -> Result<Expectations, String> {
                 other => return Err(format!("{}:{}: unknown annotation `{}`", path.display(), i + 1, other)),
             };
             let line_no = if unlocated { 0 } else { i as u32 + 1 };
-            e.diags.push((line_no, sev.to_string(), msg.trim().to_string()));
+            e.diags.push((path.to_path_buf(), line_no, sev.to_string(), msg.trim().to_string()));
         }
     }
-    Ok(e)
+    Ok(())
 }
 
 /// A diagnostic parsed from `--diag-format=short` output.
 struct Reported {
+    /// The file, or `None` for a diagnostic without a location.
+    file: Option<PathBuf>,
     line: u32,
     severity: String,
     message: String,
 }
 
-fn parse_reported(stderr: &str, file: &Path) -> Vec<Reported> {
-    let prefix = format!("{}:", file.display());
+/// Parses `path:line:col: severity: message` and `severity: message` lines.
+/// `files` are the test's files, to recognize the path prefix.
+fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
     let mut out = vec![];
     for line in stderr.lines() {
-        let Some(rest) = line.strip_prefix(&prefix) else {
+        let located = files.iter().find_map(|f| line.strip_prefix(&format!("{}:", f.display())).map(|r| (f, r)));
+        let Some((file, rest)) = located else {
             // Diagnostics without a location still count.
             for sev in ["error", "warning"] {
                 if let Some(msg) = line.strip_prefix(&format!("{}: ", sev)) {
-                    out.push(Reported { line: 0, severity: sev.to_string(), message: msg.to_string() });
+                    out.push(Reported { file: None, line: 0, severity: sev.to_string(), message: msg.to_string() });
                 }
             }
             continue;
@@ -106,57 +127,91 @@ fn parse_reported(stderr: &str, file: &Path) -> Vec<Reported> {
         let tail = parts.next().unwrap_or("").trim_start();
         let (sev, msg) = tail.split_once(": ").unwrap_or((tail, ""));
         if sev == "error" || sev == "warning" {
-            out.push(Reported { line: line_no, severity: sev.to_string(), message: msg.to_string() });
+            out.push(Reported {
+                file: Some(file.clone()),
+                line: line_no,
+                severity: sev.to_string(),
+                message: msg.to_string(),
+            });
         }
     }
     out
 }
 
+/// The `.gm` files under `dir`, sorted.
+fn gm_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![];
+    let Ok(entries) = fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            out.extend(gm_files(&p));
+        } else if p.extension().is_some_and(|e| e == "gm") {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
 fn run_one(path: &Path, bless: bool) -> Result<(), String> {
-    let src = fs::read_to_string(path).map_err(|e| format!("cannot read: {}", e))?;
-    let exp = parse_expectations(path, &src)?;
+    // A `.test` directory, or a single file.
+    let (files, target) = if path.is_dir() {
+        let main = path.join("main");
+        (gm_files(path), if main.is_dir() { main } else { path.to_path_buf() })
+    } else {
+        (vec![path.to_path_buf()], path.to_path_buf())
+    };
+    let exp = parse_expectations(&files)?;
     let command = match exp.stage {
         Stage::Lex => "lex",
         Stage::Parse => "parse",
         Stage::Check => "check",
         Stage::Run => "run",
+        Stage::Test => "test",
     };
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
     cmd.arg(command).arg("--diag-format=short");
     if exp.dump {
         cmd.arg("--dump");
     }
-    cmd.arg(path);
+    cmd.arg(&target);
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let mut problems = vec![];
 
     // Diagnostics.
-    let mut reported = parse_reported(&stderr, path);
+    let mut reported = parse_reported(&stderr, &files);
     let mut unmatched_expected = vec![];
-    for (line, sev, msg) in &exp.diags {
-        if let Some(i) = reported.iter().position(|r| r.line == *line && &r.severity == sev && r.message.contains(msg))
-        {
+    for (file, line, sev, msg) in &exp.diags {
+        let at =
+            |r: &Reported| if *line == 0 { r.file.is_none() } else { r.file.as_ref() == Some(file) && r.line == *line };
+        if let Some(i) = reported.iter().position(|r| at(r) && &r.severity == sev && r.message.contains(msg)) {
             reported.remove(i);
         } else {
-            unmatched_expected.push(format!("  line {}: expected {} containing {:?}", line, sev, msg));
+            unmatched_expected.push(format!("  {}:{}: expected {} containing {:?}", file.display(), line, sev, msg));
         }
     }
     if !unmatched_expected.is_empty() {
         problems.push(format!("missing diagnostics:\n{}", unmatched_expected.join("\n")));
     }
     if !reported.is_empty() {
-        let list: Vec<String> =
-            reported.iter().map(|r| format!("  line {}: {}: {}", r.line, r.severity, r.message)).collect();
+        let list: Vec<String> = reported
+            .iter()
+            .map(|r| {
+                let file = r.file.as_ref().map_or(String::new(), |f| format!("{}:", f.display()));
+                format!("  {}{}: {}: {}", file, r.line, r.severity, r.message)
+            })
+            .collect();
         problems.push(format!("unexpected diagnostics:\n{}", list.join("\n")));
     }
 
     // Exit status.
-    let expects_errors = exp.diags.iter().any(|(_, sev, _)| sev == "error");
+    let expects_errors = exp.diags.iter().any(|(_, _, sev, _)| sev == "error");
     let code = output.status.code().unwrap_or(-1);
     match exp.stage {
-        Stage::Run if !expects_errors => {
+        Stage::Run | Stage::Test if !expects_errors => {
             if code != exp.exit {
                 problems.push(format!("exit status {} (expected {})\nstderr:\n{}", code, exp.exit, stderr));
             }
@@ -173,7 +228,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let golden = match exp.stage {
         Stage::Lex if exp.dump => Some(path.with_extension("tokens")),
         Stage::Parse if exp.dump => Some(path.with_extension("ast")),
-        Stage::Run if !expects_errors => Some(path.with_extension("stdout")),
+        Stage::Run | Stage::Test if !expects_errors => Some(path.with_extension("stdout")),
         _ => None,
     };
     if let Some(golden) = golden {
@@ -217,7 +272,9 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let p = entry.path();
-        if p.is_dir() {
+        if p.is_dir() && p.extension().is_some_and(|e| e == "test") {
+            out.push(p);
+        } else if p.is_dir() {
             collect(&p, out);
         } else if p.extension().is_some_and(|e| e == "gm") {
             out.push(p);

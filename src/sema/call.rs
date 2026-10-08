@@ -289,14 +289,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span)
             }
-            BuiltinFn::Assert => {
+            BuiltinFn::Assert | BuiltinFn::Expect => {
+                let is_expect = b == BuiltinFn::Expect;
+                let what = if is_expect { "expect" } else { "assert" };
+                if is_expect && !self.sema.in_test {
+                    self.error(span, "`expect` may be called only in tests (§21.6)");
+                }
                 let (cond, msg) = match args {
                     [ast::Arg { kind: ArgKind::Positional(c), .. }] => (c, None),
                     [ast::Arg { kind: ArgKind::Positional(c), .. }, ast::Arg { kind: ArgKind::Positional(m), .. }] => {
                         (c, Some(m))
                     }
                     _ => {
-                        self.error(span, "`assert` takes a condition and an optional message");
+                        self.error(span, format!("`{}` takes a condition and an optional message", what));
                         return error_expr(span);
                     }
                 };
@@ -307,9 +312,13 @@ impl<'a, 's> FnCx<'a, 's> {
                         let v = self.expr(m, Some(Ty::string()));
                         self.coerce(v, Ty::string())
                     }
-                    None => mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"assertion failed"[..])), span),
+                    None => {
+                        let text: &[u8] = if is_expect { b"expectation failed" } else { b"assertion failed" };
+                        mk(Ty::string(), tir::ExprKind::Str(Rc::from(text)), span)
+                    }
                 };
-                mk(Ty::unit(), tir::ExprKind::Builtin { op: tir::Builtin::Assert, args: vec![c, m] }, span)
+                let op = if is_expect { tir::Builtin::Expect } else { tir::Builtin::Assert };
+                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vec![c, m] }, span)
             }
         }
     }

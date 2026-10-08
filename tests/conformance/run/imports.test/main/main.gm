@@ -1,0 +1,15 @@
+// Imports (§3.2): a subdirectory, a sibling directory and a dependency package.
+geom :: import "./geom"
+util :: import "../util"
+json :: import "json"
+also :: import "../main/geom"    // the same module as `geom`
+
+main :: fn() \ {Out} {
+    p := geom.Point(x: 3, y: 4)
+    print("{} {}\n", (geom.norm2(p), util.twice(21)))
+    o: geom.Origin = .Center
+    print("{} {} {}\n", (o, geom.ORIGIN, json.VERSION))
+    print("{}\n", p.norm2())             // methods resolve in the type's module
+    q: also.Point = p                    // one module, one type
+    print("{}\n", q is p)
+}

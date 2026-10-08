@@ -1,0 +1,14 @@
+//! stage: test
+// A module without `main` can be tested; tests that pass print `ok`.
+double :: fn(x: i32) -> i32 => x * 2
+
+test "doubles" {
+    expect(double(4) is 8)
+}
+
+test "maps free their storage" {
+    m := map(string, i32)
+    defer m.deinit()
+    m.put("a", 1) else return
+    expect(m.get("a") is 1)
+}

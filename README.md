@@ -26,7 +26,7 @@ under active construction:
 | --- | --- |
 | Lexer (spec §2) | implemented |
 | Parser (spec Appendix A) | implemented |
-| Semantic analysis | core language, effects and handlers, generics with compile-time parameters, compile-time evaluation and `when`; imports and tests in progress |
+| Semantic analysis | the language except fibers and foreign code: effects and handlers, generics with compile-time parameters, compile-time evaluation and `when`, modules, imports and tests |
 | Interpreter / compile-time evaluator | implemented (fibers and foreign calls pending) |
 | Native code generation (via C) | planned |
 | Standard library | core library (output, environment, iterators, allocation, `List`, `HashMap`); `std` planned |
@@ -45,6 +45,7 @@ Available commands today:
 ```sh
 gamma run file.gm            # type-check and run a program (a file or a module directory)
 gamma check file.gm          # type-check only
+gamma test file.gm           # run the `test` declarations of a module
 gamma lex file.gm            # print the token stream
 gamma parse file.gm          # check syntax
 gamma parse --dump file.gm   # print the syntax tree

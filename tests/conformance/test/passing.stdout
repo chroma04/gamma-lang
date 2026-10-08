@@ -1,0 +1,3 @@
+test "doubles" ... ok
+test "maps free their storage" ... ok
+2 passed, 0 failed

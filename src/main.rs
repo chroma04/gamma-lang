@@ -13,6 +13,7 @@ commands:
   parse   check the syntax of a source file (--dump prints the syntax tree)
   check   type-check a program (a .gm file or a module directory)
   run     run a program with the interpreter; arguments after the file go to the program
+  test    run the `test` declarations of a module
   help    print this message
   version print the compiler version
 
@@ -75,6 +76,7 @@ fn main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
         "run" => run(&opts),
+        "test" => test(&opts),
         other => {
             eprintln!("gamma: unknown command `{}`\n\n{}", other, USAGE);
             ExitCode::from(2)
@@ -149,4 +151,63 @@ fn run(opts: &Options) -> ExitCode {
             ExitCode::from(134)
         }
     }
+}
+
+/// The source location of `span` as `file:line:col`, if it has one.
+fn location(sess: &Session, span: gamma::source::Span) -> Option<String> {
+    if span == gamma::source::Span::DUMMY {
+        return None;
+    }
+    let f = sess.sources.file(span.file);
+    let (line, col) = f.line_col(span.lo);
+    Some(format!("{}:{}:{}", f.path.display(), line, col))
+}
+
+/// Runs each test of the root module with captured output (§3.8). A failing
+/// test's output and failure reason are printed after the summary line for it.
+fn test(opts: &Options) -> ExitCode {
+    let Some(path) = &opts.file else {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    };
+    let mut sess = Session::new();
+    let prog = gamma::sema::analyze_tests(&mut sess, path);
+    eprint!("{}", sess.render_diagnostics(opts.format));
+    let Some(prog) = prog else { return ExitCode::FAILURE };
+    let cfg = gamma::interp::RunConfig {
+        target: gamma::layout::Target::host(),
+        mode: gamma::interp::Mode::Debug,
+        step_budget: None,
+    };
+    let (mut passed, mut failed) = (0, 0);
+    for t in &prog.tests {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let outcome = gamma::interp::run_entry(&prog, &cfg, t.entry, &[], &mut out, &mut err);
+        let failure = match outcome {
+            gamma::interp::Outcome::Exit(0) => None,
+            gamma::interp::Outcome::Exit(_) => Some(String::new()),
+            gamma::interp::Outcome::Trap(trap) => Some(match location(&sess, trap.span) {
+                Some(at) => format!("{}\n  at {}\n", trap.message, at),
+                None => format!("{}\n", trap.message),
+            }),
+        };
+        match failure {
+            None => {
+                passed += 1;
+                println!("test \"{}\" ... ok", t.name);
+            }
+            Some(reason) => {
+                failed += 1;
+                println!("test \"{}\" ... FAILED", t.name);
+                let mut detail = String::from_utf8_lossy(&out).into_owned();
+                detail.push_str(&String::from_utf8_lossy(&err));
+                detail.push_str(&reason);
+                for line in detail.lines() {
+                    println!("    {}", line);
+                }
+            }
+        }
+    }
+    println!("{} passed, {} failed", passed, failed);
+    if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }

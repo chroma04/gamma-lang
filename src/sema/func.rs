@@ -88,6 +88,9 @@ pub struct FnCx<'a, 's> {
     pub clause: Option<ClauseInfo>,
     /// Effects handled by enclosing `with`s (and `for` loops) of this body.
     pub handled: Vec<EffectRef>,
+    /// While checking a test's body: its error type is taken from the first
+    /// `try` (§3.8), so `ret` starts as `<error>!()`.
+    pub infer_test_error: bool,
 }
 
 /// What kind of handler clause the current frame is.
@@ -219,6 +222,7 @@ impl<'a, 's> FnCx<'a, 's> {
             nested: vec![],
             clause: None,
             handled: vec![],
+            infer_test_error: false,
         }
     }
 
@@ -398,7 +402,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     // --- bodies, blocks and statements ---
 
-    fn fn_body(&mut self, body: &ast::FnBody) -> Expr {
+    pub fn fn_body(&mut self, body: &ast::FnBody) -> Expr {
         let ret = self.ret;
         match body {
             ast::FnBody::Expr(e) => {
@@ -407,6 +411,22 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::FnBody::Block(b) => {
                 let block = self.block(b, false);
+                // A test's error type may have been decided by the body.
+                let ret = self.ret;
+                // Falling off the end of an `E!()` function returns success (§11.1).
+                if let TyKind::Result { ok, .. } = ret.kind()
+                    && ok.is_unit()
+                    && !block.ty.is_never()
+                {
+                    let span = b.span.shrink_to_hi();
+                    let success = self.coerce(unit(span), ret);
+                    let stmts = vec![Stmt::Expr(block)];
+                    return Expr {
+                        ty: ret,
+                        kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(success), span: b.span })),
+                        span: b.span,
+                    };
+                }
                 if !ret.is_unit() && !block.ty.is_never() {
                     self.error(
                         b.span.shrink_to_hi(),

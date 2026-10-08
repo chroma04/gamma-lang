@@ -67,6 +67,8 @@ pub struct Program {
     pub adts: HashMap<AdtId, AdtDef>,
     /// The entry point, for executables.
     pub main: Option<FnId>,
+    /// The tests of the root module, when compiled for testing (§3.8).
+    pub tests: Vec<TestCase>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
     pub ambient: Ambient,
 }
@@ -182,6 +184,15 @@ pub struct VariantDef {
     pub payload: Option<Ty>,
     /// The tag value (fits the union's tag type).
     pub tag: BigInt,
+}
+
+/// A `test` declaration (§3.8): its name and the entry function that runs it.
+#[derive(Clone, Debug)]
+pub struct TestCase {
+    pub name: String,
+    /// A parameterless function returning `u8`: 0 if the test passed.
+    pub entry: FnId,
+    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -769,6 +780,9 @@ pub enum Builtin {
     CstrLen,
     /// `assert(cond, msg, loc)`: checked (removed in Fast builds).
     Assert,
+    /// `expect(cond, msg)` in a test: traps with `msg` if `cond` is false, in
+    /// every build mode.
+    Expect,
     /// `@hash(x, seed)`.
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).

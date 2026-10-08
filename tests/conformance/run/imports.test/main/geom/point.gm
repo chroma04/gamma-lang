@@ -1,0 +1,4 @@
+pub Point :: struct { pub x, y: i32 }
+pub Origin :: union { Center, Corner }
+pub ORIGIN :: Point(x: 0, y: 0)
+pub norm2 :: fn(p: Point) -> i32 => p.x * p.x + square(p.y)

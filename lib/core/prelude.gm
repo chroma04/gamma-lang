@@ -176,3 +176,53 @@ pub SourceLocation :: struct {
     pub line, column: u32
     pub function: string
 }
+
+// Running tests (§3.8, §12.9): `gamma test` calls `run_test` or `run_test_unit`
+// for each test. The test's allocations go through a tracking allocator, and
+// memory still allocated when the test ends fails it.
+
+TestTracker :: struct {
+    live: usize
+    inner: Allocator
+}
+
+track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    t := data.cast(^TestTracker)
+    p := t.inner.vt.alloc(t.inner.data, size, align) else return null
+    t.live += size
+    return p
+}
+
+track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    t := data.cast(^TestTracker)
+    t.live -= size
+    t.inner.vt.free(t.inner.data, p, size, align)
+}
+
+TRACKING :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
+
+leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
+    if t.live is 0 { return 0 }
+    eprint("leaked {} bytes\n", t.live)
+    return 1
+}
+
+/// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
+run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env}) -> u8 \ {Out, Err, Env} {
+    t := TestTracker(live: 0, inner: heap_allocator())
+    r := with Allocator(data: &t, vt: &TRACKING) { body() }
+    if !e := r {
+        eprint("error: {}\n", e)
+        return 1
+    }
+    return leaked(&t)
+}
+
+/// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
+run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env}) -> u8 \ {Out, Err, Env} {
+    t := TestTracker(live: 0, inner: heap_allocator())
+    with Allocator(data: &t, vt: &TRACKING) { body() }
+    return leaked(&t)
+}

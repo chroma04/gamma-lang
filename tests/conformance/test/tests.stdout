@@ -1,0 +1,12 @@
+test "parse accepts digits" ... ok
+test "parse rejects letters" ... ok
+test "errors propagate" ... FAILED
+    error: .BadDigit(at: 1)
+test "expectations fail" ... FAILED
+    some output
+    expectation failed: math
+      at tests/conformance/test/tests.gm:33:5
+test "leaks are caught" ... FAILED
+    leaked 4 bytes
+test "lists work" ... ok
+3 passed, 3 failed

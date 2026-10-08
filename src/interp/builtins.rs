@@ -319,7 +319,8 @@ impl<'a> Machine<'a> {
             | Builtin::RangeLen
             | Builtin::HeapAlloc
             | Builtin::HeapFree
-            | Builtin::Assert => self.trap(span, "internal error: builtin needs special evaluation"),
+            | Builtin::Assert
+            | Builtin::Expect => self.trap(span, "internal error: builtin needs special evaluation"),
         }
     }
 

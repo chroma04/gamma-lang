@@ -99,7 +99,7 @@ answer :: 42
 
 A **module is a directory**. Every `.gm` file directly inside the directory belongs to the module, and all files of a module share one top-level namespace. The order of files, and of declarations within a file, means nothing, so you can use a function before the line that defines it. Subdirectories are separate modules.
 
-A **package** is a directory tree with a `gamma.toml` manifest at its root; the manifest names the package and lists its dependencies (its format is up to the implementation). The **root module** is the one you name on the compiler's command line, and it must declare `main`.
+A **package** is a directory tree with a `gamma.toml` manifest at its root; the manifest names the package and lists its dependencies. The **root module** is the one you name on the compiler's command line, and it must declare `main`.
 
 Suppose a package looks like this:
 
@@ -135,6 +135,17 @@ Points worth knowing:
 - A path starting with `./` or `../` is relative to the importing module. Any other path starts with a package name: `std` is the standard library, and every other name must be a dependency listed in `gamma.toml`.
 - Everything is **private to its module unless marked `pub`**. A private name is visible from every file of the same module, and from nowhere else. Struct fields have the same rule (§3.3).
 - A module binding is not a value: you cannot store it, pass it or compare it. The import graph must be acyclic.
+- The manifest is a small TOML file. This implementation reads the `[dependencies]` section, where each dependency is a directory given relative to the manifest; other keys are ignored:
+
+  ```toml
+  [package]
+  name = "hello"
+
+  [dependencies]
+  json = { path = "../json" }      # import "json" or "json/sub/dir"
+  ```
+
+  A directory tree without a manifest is a package of its own, rooted at the root module's directory.
 - Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), this guide only relies on the module `std/c` in the interop chapter. Other `std/...` modules are outside what the specification defines.
 
 ## Tests
@@ -148,6 +159,19 @@ test "squares" {
 ```
 
 A test passes if it finishes, and fails if `expect` fails, a trap occurs, or the test allocator detects a leak. Returning an error also fails the test, so `try` works inside tests. More on tests in [chapter 13](13-safety.md).
+
+`gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`. Each test runs on its own; its output is captured and shown only if it fails:
+
+```text
+$ gamma test squares.gm
+test "squares" ... ok
+test "cubes" ... FAILED
+    expectation failed
+      at squares.gm:12:5
+1 passed, 1 failed
+```
+
+The command exits with status 1 if any test failed.
 
 ## Where to go next
 

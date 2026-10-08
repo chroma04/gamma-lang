@@ -7,15 +7,17 @@
   (sema/consteval.rs: typed array lengths, value args), Alloc/Allocator/heap allocator,
   new/make/free, core modules core/list + core/map (only List/list/HashMap/map/map_with
   re-exported; methods resolve in receiver's module), HashMap in Gamma, @hash, field privacy.
+- M6 mostly done (roadmap/M06 status): when, target module, module members `m.x`, consts
+  evaluated at compile time, #fuel, static_assert/compile_error/location/type_of intrinsics.
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
 - Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, ctl/fibers (M8),
-  imports/modules/tests (M9), when/target/@static_assert (M6), C backend (M7), multiple
+  imports/modules/tests (M9), C backend (M7), multiple
   assignment/destructuring stmt, `using` ptr coercion, struct patterns with generic type names.
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. M6: `when`, target constants, @static_assert/@compile_error/@location (use eval_tir_const).
-2. M3/M5 leftovers above; then M7 C backend (big) and M9 modules (imports needed for std).
+1. M9 imports/tests (DeclValue::Module exists; `import` expr + package resolution + `test` items).
+2. M3/M5 leftovers above; then M7 C backend (big).
 3. Keep PR green; CI runs on push.
 
 ## Map

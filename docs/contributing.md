@@ -47,16 +47,23 @@ main :: fn() {
 
 | Directive | Meaning |
 | --- | --- |
-| `//! stage: lex\|parse\|check\|run` | how far to run the compiler (default `run`) |
+| `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
-| `//! exit: N` | expected exit status of a `run` test (default 0) |
+| `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
 | `//~? ERROR text` | an error without a source location (e.g. a missing `main`) |
 
 Every error and warning the compiler reports must be expected by an annotation,
-and every annotation must be matched. A `run` test's expected standard output is
-the sibling file `<name>.stdout`.
+and every annotation must be matched. The expected standard output of a `run` or
+`test` test is the sibling file `<name>.stdout`.
+
+A test of several modules is a directory whose name ends in `.test`, such as
+`tests/conformance/run/imports.test/`. The program's root module is its `main/`
+subdirectory if there is one, and the directory itself otherwise; the other
+subdirectories hold the modules it imports (and may carry `gamma.toml` files).
+Directives and annotations may be written in any of its files, and its expected
+output is the sibling `<name>.stdout`.
 
 Useful environment variables:
 

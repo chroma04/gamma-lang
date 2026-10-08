@@ -1,0 +1,2 @@
+// A second file of the same module: its private names are shared.
+square :: fn(v: i32) -> i32 => v * v

@@ -118,6 +118,17 @@ impl<'s> Sema<'s> {
             return DeclValue::Error;
         }
         let init = &*b.init;
+        if let ExprKind::Import(path) = &init.kind {
+            if b.ty.is_some() {
+                self.error(init.span, "an import binding cannot have a type");
+                return DeclValue::Error;
+            }
+            let path = String::from_utf8_lossy(&path.bytes).into_owned();
+            return match self.import(module, &path, init.span) {
+                Some(m) => DeclValue::Module(m),
+                None => DeclValue::Error,
+            };
+        }
         match &init.kind {
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),

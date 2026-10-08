@@ -5,7 +5,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ItemKind};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
@@ -22,6 +22,7 @@ impl<'s> Sema<'s> {
         let file = self.sess.sources.add("<core>/prelude.gm", PRELUDE_SRC.to_string());
         let ast = self.sess.parse(file);
         let id = self.add_module(Symbol::intern("core"), vec![ast], true);
+        self.collect_whens(id);
         self.prelude = Some(id);
         self.load_target_module(id);
         for (name, src, exports) in CORE_MODULES {
@@ -61,57 +62,61 @@ impl<'s> Sema<'s> {
     }
 
     /// Loads the root module: a single `.gm` file, or every `.gm` file directly
-    /// inside a directory.
+    /// inside a directory (§3.1).
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
-        let paths: Vec<PathBuf> = if root.is_dir() {
-            let mut v: Vec<PathBuf> = match std::fs::read_dir(root) {
-                Ok(rd) => rd
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "gm"))
-                    .collect(),
-                Err(e) => {
-                    self.error(Span::DUMMY, format!("cannot read directory {}: {}", root.display(), e));
-                    return None;
-                }
-            };
-            v.sort();
-            if v.is_empty() {
-                self.error(Span::DUMMY, format!("no `.gm` files in {}", root.display()));
-                return None;
-            }
-            v
-        } else {
-            vec![root.to_path_buf()]
-        };
-        let mut files = vec![];
-        for p in &paths {
-            let file = self.sess.load(p)?;
-            files.push(self.sess.parse(file));
+        if root.is_dir() {
+            let m = self.load_dir_module(root, Span::DUMMY)?;
+            return (!self.sess.diags.has_errors()).then_some(m);
         }
+        let file = self.sess.load(root)?;
+        let ast = self.sess.parse(file);
         if self.sess.diags.has_errors() {
             return None;
         }
+        let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
+        let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let package = self.package_of(&canon);
         let name = root.file_stem().map_or("main".to_string(), |s| s.to_string_lossy().into_owned());
-        Some(self.add_module(Symbol::intern(&name), files, false))
+        let m = self.add_module(Symbol::intern(&name), vec![ast], false);
+        self.modules[m.0 as usize].dir = Some(dir);
+        self.modules[m.0 as usize].package = Some(package);
+        self.collect_whens(m);
+        Some(m)
     }
 
-    fn add_module(&mut self, name: Symbol, files: Vec<ast::File>, is_prelude: bool) -> ModuleId {
+    /// Creates a module from parsed files and collects its top-level names. Its
+    /// top-level `when`s wait for [`Sema::collect_whens`].
+    pub(super) fn add_module(&mut self, name: Symbol, files: Vec<ast::File>, is_prelude: bool) -> ModuleId {
         let id = ModuleId(self.modules.len() as u32);
-        self.modules.push(Module { name, scope: HashMap::new(), is_prelude });
+        self.modules.push(Module {
+            name,
+            scope: HashMap::new(),
+            is_prelude,
+            dir: None,
+            package: None,
+            pending_whens: vec![],
+        });
         let mut scope: HashMap<Symbol, DeclId> = HashMap::new();
-        let mut whens = std::collections::VecDeque::new();
+        let mut whens = vec![];
         for file in files {
             for item in file.items {
                 match &item.kind {
-                    ItemKind::When(_) => whens.push_back(item),
+                    ItemKind::When(_) => whens.push(item),
                     _ => self.collect_item(id, Rc::new(item), &mut scope),
                 }
             }
         }
         self.modules[id.0 as usize].scope = scope;
-        // A top-level `when` declares the items of its taken branch as if written
-        // at top level (§3.6). Its condition may use the module's other names.
+        self.modules[id.0 as usize].pending_whens = whens;
+        id
+    }
+
+    /// Declares the items of the taken branch of each top-level `when` of
+    /// `module`, as if written at top level (§3.6). A condition may use the
+    /// module's other names.
+    pub(super) fn collect_whens(&mut self, id: ModuleId) {
+        let mut whens: std::collections::VecDeque<ast::Item> =
+            std::mem::take(&mut self.modules[id.0 as usize].pending_whens).into();
         while let Some(item) = whens.pop_front() {
             let ItemKind::When(w) = &item.kind else { unreachable!() };
             let branch = match self.when_cond(id, &w.cond) {
@@ -128,7 +133,6 @@ impl<'s> Sema<'s> {
             }
             self.modules[id.0 as usize].scope = scope;
         }
-        id
     }
 
     fn collect_item(&mut self, module: ModuleId, item: Rc<ast::Item>, scope: &mut HashMap<Symbol, DeclId>) {
@@ -169,7 +173,12 @@ impl<'s> Sema<'s> {
             }
             ItemKind::When(_) => unreachable!("collected by `add_module`"),
             ItemKind::Handler(_) => self.handler_items.push((module, item.clone())),
-            ItemKind::Test { name_span, .. } => self.error(*name_span, "tests are not supported yet"),
+            // Tests are compiled only for `gamma test` (§3.8).
+            ItemKind::Test { .. } => {
+                if self.tests_enabled {
+                    self.test_items.push((module, item.clone()));
+                }
+            }
             ItemKind::Intrinsic(_) => self.static_asserts.push((module, item.clone())),
         }
     }

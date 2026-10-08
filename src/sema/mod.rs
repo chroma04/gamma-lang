@@ -21,12 +21,14 @@ mod fnlit;
 mod func;
 mod generics;
 mod handler_decl;
+mod imports;
 mod infer;
 mod matching;
 mod methods;
 mod modules;
 mod pattern;
 mod seq;
+mod tests_decl;
 mod ty_expr;
 mod untyped;
 
@@ -57,8 +59,15 @@ pub struct Module {
     pub name: Symbol,
     /// Top-level declarations by name.
     pub scope: HashMap<Symbol, DeclId>,
-    /// True for the core prelude, whose public names are in the universe scope.
+    /// True for the core library's modules (the prelude's public names are in
+    /// the universe scope).
     pub is_prelude: bool,
+    /// The module's directory (`None` for the core library), for relative imports.
+    pub dir: Option<std::path::PathBuf>,
+    /// The package the module belongs to (an index into `Sema::packages`).
+    pub package: Option<usize>,
+    /// Top-level `when`s not yet decided.
+    pub pending_whens: Vec<ast::Item>,
 }
 
 /// A top-level binding of some module.
@@ -145,6 +154,12 @@ pub struct Sema<'s> {
     pub caller_site: Option<(Span, Symbol)>,
     /// The step budget of compile-time evaluations (§17.3).
     pub fuel: u64,
+    /// Whether `test` declarations are compiled (`gamma test`, §3.8).
+    pub tests_enabled: bool,
+    /// While a test body is checked (`expect` is allowed).
+    pub in_test: bool,
+    /// Test declarations of the root module, in source order.
+    pub test_items: Vec<(ModuleId, Rc<ast::Item>)>,
     /// Top-level `@static_assert`s, checked after the declarations.
     pub static_asserts: Vec<(ModuleId, Rc<ast::Item>)>,
     pub modules: Vec<Module>,
@@ -160,6 +175,12 @@ pub struct Sema<'s> {
     pub prelude: Option<ModuleId>,
     /// The core modules other than the prelude (`core/list`, `core/map`).
     pub core_modules: Vec<ModuleId>,
+    /// Packages seen so far (§3.1).
+    pub packages: Vec<imports::Package>,
+    /// Loaded modules by canonical directory (§3.2).
+    pub module_by_dir: HashMap<std::path::PathBuf, ModuleId>,
+    /// Import edges `(importer, imported, location)`, for cycle detection.
+    pub import_edges: Vec<(ModuleId, ModuleId, Span)>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
@@ -199,7 +220,18 @@ pub struct Sema<'s> {
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
 /// directory). Returns the lowered program if there were no errors.
 pub fn analyze(sess: &mut Session, root: &Path) -> Option<Program> {
+    analyze_with(sess, root, false)
+}
+
+/// Checks the program rooted at `root` for testing: its `test` declarations
+/// are compiled (into [`Program::tests`]) and `main` is not required (§3.8).
+pub fn analyze_tests(sess: &mut Session, root: &Path) -> Option<Program> {
+    analyze_with(sess, root, true)
+}
+
+fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program> {
     let mut sema = Sema::new(sess);
+    sema.tests_enabled = tests;
     sema.load_prelude();
     let root_mod = sema.load_root(root)?;
     sema.check_all(root_mod);
@@ -217,6 +249,9 @@ impl<'s> Sema<'s> {
             build_mode: "Debug",
             caller_site: None,
             fuel: consteval::STEP_BUDGET,
+            tests_enabled: false,
+            in_test: false,
+            test_items: vec![],
             static_asserts: vec![],
             modules: vec![],
             decls: vec![],
@@ -229,6 +264,9 @@ impl<'s> Sema<'s> {
             resolving: vec![],
             prelude: None,
             core_modules: vec![],
+            packages: vec![],
+            module_by_dir: HashMap::new(),
+            import_edges: vec![],
             type_params: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
@@ -262,11 +300,23 @@ impl<'s> Sema<'s> {
     /// Resolves every declaration of the root module (and, transitively, what
     /// they use), checks all queued function bodies, and finds `main`.
     fn check_all(&mut self, root: ModuleId) {
-        let mut ids: Vec<DeclId> = self.modules[root.0 as usize].scope.values().copied().collect();
-        ids.sort();
-        for id in ids {
-            self.resolve_decl(id);
+        // Every declaration of every loaded module is checked; resolving imports
+        // loads more modules.
+        let mut done = 0;
+        while done < self.modules.len() {
+            let m = done;
+            done += 1;
+            if self.modules[m].is_prelude {
+                continue;
+            }
+            let mut ids: Vec<DeclId> = self.modules[m].scope.values().copied().collect();
+            ids.sort();
+            for id in ids {
+                self.resolve_decl(id);
+            }
         }
+        self.check_import_cycles();
+        let _ = root;
         // The core library is checked in full, so its errors surface even when unused.
         let core: Vec<ModuleId> = self.prelude.into_iter().chain(self.core_modules.iter().copied()).collect();
         for m in core {
@@ -287,7 +337,11 @@ impl<'s> Sema<'s> {
             }
         }
         let clauses = self.declare_handlers();
-        self.find_main(root);
+        if self.tests_enabled {
+            self.check_tests(root);
+        } else {
+            self.find_main(root);
+        }
         self.drain_bodies();
         self.check_handler_clauses(clauses);
         self.drain_bodies();

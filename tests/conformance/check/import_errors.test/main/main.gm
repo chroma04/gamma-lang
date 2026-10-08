@@ -1,0 +1,15 @@
+//! stage: check
+// Import errors (§3.2, §3.3).
+lib :: import "../lib"
+a :: import "../a"
+missing :: import "./nowhere"          //~ ERROR cannot find the module directory
+outside :: import "../../../../.."     //~ ERROR leaves the package
+pkg :: import "nosuchpkg/x"            //~ ERROR unknown package `nosuchpkg`
+
+main :: fn() {
+    _ = lib.PUBLIC
+    _ = lib.hidden                     //~ ERROR `hidden` is private to the module `lib`
+    _ = lib.absent                     //~ ERROR has no declaration `absent`
+    m := lib                           //~ ERROR `lib` is a module, which is not a value
+    _ = a.A
+}

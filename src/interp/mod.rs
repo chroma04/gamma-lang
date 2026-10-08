@@ -122,13 +122,29 @@ pub fn run_main(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Outcome {
-    let payload = AssertSend((prog, cfg, args, stdout, stderr));
+    let Some(main) = prog.main else {
+        return Outcome::Trap(Trap { message: "the program has no `main` function".into(), span: Span::DUMMY });
+    };
+    run_entry(prog, cfg, main, args, stdout, stderr)
+}
+
+/// Runs the parameterless function `entry` as [`run_main`] runs `main` (used
+/// for the entry of each test, §3.8).
+pub fn run_entry(
+    prog: &Program,
+    cfg: &RunConfig,
+    entry: FnId,
+    args: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Outcome {
+    let payload = AssertSend((prog, cfg, entry, args, stdout, stderr));
     std::thread::scope(|s| {
         let h = std::thread::Builder::new()
             .stack_size(STACK_SIZE)
             .spawn_scoped(s, move || {
-                let (prog, cfg, args, stdout, stderr) = payload.into_inner();
-                run_main_inner(prog, cfg, args, stdout, stderr)
+                let (prog, cfg, entry, args, stdout, stderr) = payload.into_inner();
+                run_main_inner(prog, cfg, entry, args, stdout, stderr)
             })
             .expect("failed to spawn the evaluation thread");
         match h.join() {
@@ -141,6 +157,7 @@ pub fn run_main(
 fn run_main_inner(
     prog: &Program,
     cfg: &RunConfig,
+    main: FnId,
     args: &[String],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -150,9 +167,6 @@ fn run_main_inner(
     m.out = Some(stdout);
     m.errw = Some(stderr);
     m.args = args.to_vec();
-    let Some(main) = prog.main else {
-        return Outcome::Trap(Trap { message: "the program has no `main` function".into(), span: Span::DUMMY });
-    };
     let mut cx = Ctx::empty();
     let mut install = |e: Option<EffectId>, k: NativeKind| {
         if let Some(id) = e {
