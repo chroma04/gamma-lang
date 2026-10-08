@@ -18,3 +18,5 @@
   fields pub (§15.2); C aliases qualified `c.c_int` (§19.2); §16.6 for-loop with only concerns
   source call; cursor example uses two bindings (§13.4).
 - `@write` float display format defined precisely (§21.6.1).
+- §16.5: value-param types restricted (plain data w/o pointers, string, fn ptrs); `[N]T` only with
+  the bare param as length; `[N]T` built with `fill:`/`---`. §16.4 refers to §16.5 for value types.

@@ -25,7 +25,7 @@ impl<'a, 's> FnCx<'a, 's> {
     ) -> Expr {
         let b = self.expr(base, None);
         let b = match self.infer.resolve(b.ty).kind() {
-            TyKind::Ptr { pointee, .. } if matches!(pointee.kind(), TyKind::Array { .. }) => {
+            TyKind::Ptr { pointee, .. } if pointee.is_array() => {
                 let p = *pointee;
                 mk(p, tir::ExprKind::Deref(Box::new(b)), span)
             }
@@ -33,7 +33,7 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let bt = self.infer.resolve(b.ty);
         let (elem, is_const) = match bt.kind() {
-            TyKind::Array { elem, .. } => match self.place_mutability(&b) {
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => match self.place_mutability(&b) {
                 Some(m) => (*elem, !m),
                 None => {
                     self.error(base.span, "only an array variable (a place) can be sliced, not a temporary array");
@@ -115,7 +115,9 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let ct = self.infer.resolve(c.ty);
         let item = match ct.kind() {
-            TyKind::Array { elem: e, .. } | TyKind::Slice { elem: e, .. } => Some(*e),
+            TyKind::Array { elem: e, .. } | TyKind::ParamArray { elem: e, .. } | TyKind::Slice { elem: e, .. } => {
+                Some(*e)
+            }
             TyKind::Tuple { elems, .. } => elems.first().copied().or(Some(elem.ty)),
             TyKind::Error => return error_expr(span),
             _ => None,
@@ -135,7 +137,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let st = self.infer.resolve(src.ty);
         let (slice, elem) = match st.kind() {
             TyKind::Slice { elem, .. } => (src, *elem),
-            TyKind::Array { elem, .. } => {
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
                 let elem = *elem;
                 if self.place_mutability(&src).is_none() {
                     self.error(
@@ -148,8 +150,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = Ty::slice(!m, elem);
                 (mk(ty, tir::ExprKind::Slice { base: Box::new(src), lo: None, hi: None, inclusive: false }, span), elem)
             }
-            TyKind::Ptr { pointee, is_const } if matches!(pointee.kind(), TyKind::Array { .. }) => {
-                let TyKind::Array { elem, .. } = pointee.kind() else { unreachable!() };
+            TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
+                let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
+                    unreachable!()
+                };
                 let arr = mk(*pointee, tir::ExprKind::Deref(Box::new(src)), span);
                 let ty = Ty::slice(*is_const, *elem);
                 (

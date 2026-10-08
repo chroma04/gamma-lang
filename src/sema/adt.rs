@@ -27,21 +27,38 @@ impl<'s> Sema<'s> {
             _ => None,
         };
         let scope_len = self.type_params.len();
+        let value_scope_len = self.value_scope.len();
         let mut generics = vec![];
+        let mut defaults = vec![];
         for p in params.into_iter().flatten() {
             let is_type =
                 p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
-            if !is_type {
-                self.error(p.span, "value parameters of types are not supported yet");
-            }
+            // A value parameter (`N :: usize` or `hash: ?^fn(…) = null`): every
+            // parameter of a type is compile-time (§16.4).
+            let value_ty = match &p.ty {
+                Some(t) if !is_type => Some(self.resolve_type(module, t)),
+                Some(_) => None,
+                None => {
+                    self.error(p.span, "a type parameter needs a type: `T: type` or `N :: usize`");
+                    Some(Ty::error())
+                }
+            };
             for n in &p.names {
                 let pid = crate::types::ParamId::fresh(n.name);
                 generics.push(pid);
-                self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
+                defaults.push(p.default.clone().map(std::rc::Rc::new));
+                match value_ty {
+                    Some(t) => {
+                        self.value_params.insert(pid, t);
+                        self.value_scope.push((n.name, pid));
+                    }
+                    None => self.type_params.push((n.name, Ty::intern(TyKind::Param(pid)))),
+                }
             }
         }
         if !generics.is_empty() {
             self.adt_params.insert(id, generics.clone());
+            self.adt_param_defaults.insert(id, defaults);
         }
         // The type is usable (through pointers) by its own fields.
         if let Some(d) = decl {
@@ -70,6 +87,7 @@ impl<'s> Sema<'s> {
             self.declare_constraint(module, &c);
         }
         self.type_params.truncate(scope_len);
+        self.value_scope.truncate(value_scope_len);
         if !generics.is_empty() {
             return ty;
         }
@@ -315,7 +333,9 @@ impl<'s> Sema<'s> {
                 stack.pop();
                 r
             }
-            TyKind::Array { elem, .. } | TyKind::Optional(elem) => self.is_infinitely_sized(*elem, stack),
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Optional(elem) => {
+                self.is_infinitely_sized(*elem, stack)
+            }
             TyKind::Tuple { elems, .. } => elems.iter().any(|e| self.is_infinitely_sized(*e, stack)),
             TyKind::Result { err, ok } => self.is_infinitely_sized(*err, stack) || self.is_infinitely_sized(*ok, stack),
             _ => false,

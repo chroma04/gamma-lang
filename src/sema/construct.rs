@@ -279,6 +279,21 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 }
 
+impl<'a, 's> FnCx<'a, 's> {
+    /// Construction of `[N]T` where `N` is a compile-time parameter: only
+    /// `fill:` can give an element count that is not known yet.
+    pub fn construct_param_array(&mut self, t: Ty, elem: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        if let [ast::Arg { kind: ArgKind::Named(n, e), .. }] = args
+            && n.name.as_str() == "fill"
+        {
+            let v = self.field_value(e, elem);
+            return mk(t, tir::ExprKind::ArrayFill(Box::new(v)), span);
+        }
+        self.error(span, format!("`{}` has a length that is a compile-time parameter; construct it with `fill:`", t));
+        error_expr(span)
+    }
+}
+
 fn is_constant(e: &Expr) -> bool {
     matches!(
         e.kind,

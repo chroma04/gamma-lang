@@ -178,10 +178,34 @@ impl<'s> Sema<'s> {
         let mut generics = vec![];
         let mut seen_default = false;
         let scope_len = self.type_params.len();
+        let value_scope_len = self.value_scope.len();
         for p in &sig.params {
             if p.comptime {
-                self.error(p.span, "compile-time value parameters are not supported yet");
-                ok = false;
+                // `N :: usize`: a compile-time value parameter (§16.5).
+                if !literal {
+                    self.error(p.span, "a function type cannot have compile-time parameters");
+                    ok = false;
+                    continue;
+                }
+                let Some(ty_expr) = &p.ty else {
+                    self.error(p.span, "a compile-time parameter needs a type: `N :: usize`");
+                    ok = false;
+                    continue;
+                };
+                let ty = self.resolve_type(module, ty_expr);
+                if matches!(ty.kind(), TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Type) {
+                    self.error(ty_expr.span, format!("a compile-time parameter cannot have the type `{}`", ty));
+                    ok = false;
+                    continue;
+                }
+                for n in &p.names {
+                    let pid = crate::types::ParamId::fresh(n.name);
+                    generics.push(pid);
+                    self.value_params.insert(pid, ty);
+                    self.value_scope.push((n.name, pid));
+                    let default = p.default.clone().map(Rc::new);
+                    params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: Some(pid) });
+                }
                 continue;
             }
             let Some(ty_expr) = &p.ty else {
@@ -246,6 +270,7 @@ impl<'s> Sema<'s> {
             self.declare_constraint(module, c);
         }
         self.type_params.truncate(scope_len);
+        self.value_scope.truncate(value_scope_len);
         ok.then_some(FnSig { module, params, ret, effects, generics })
     }
 

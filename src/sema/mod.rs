@@ -10,6 +10,7 @@
 mod adt;
 mod builtins;
 mod call;
+mod consteval;
 mod construct;
 mod decls;
 mod effects;
@@ -95,7 +96,8 @@ pub struct ParamInfo {
     pub span: Span,
     /// A default argument, as a constant expression evaluated at each call.
     pub default: Option<Rc<ast::Expr>>,
-    /// For a type parameter (`T: type`): its identity in the signature's types.
+    /// For a type parameter (`T: type`) or a compile-time value parameter
+    /// (`N :: usize`): its identity in the signature's types.
     pub generic: Option<crate::types::ParamId>,
 }
 
@@ -149,6 +151,10 @@ pub struct Sema<'s> {
     pub prelude: Option<ModuleId>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
+    /// Compile-time value parameters in scope (innermost last), by name (§16.5).
+    pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
+    /// The type of each compile-time value parameter.
+    pub value_params: HashMap<crate::types::ParamId, Ty>,
     /// The predeclared `Yield` effect (§13.1).
     pub yield_effect: Option<EffectId>,
     /// Types and locations of clause-level `break`s of each handler literal,
@@ -169,8 +175,12 @@ pub struct Sema<'s> {
     pub mono_queue: Vec<generics::MonoRequest>,
     /// Nested functions (literals, clauses) and the outermost function they belong to.
     pub nested_owner: HashMap<FnId, FnId>,
+    /// Functions whose bodies are being checked (for compile-time evaluation cycles).
+    pub checking: Vec<FnId>,
     /// Type parameters of generic structs and unions.
     pub adt_params: HashMap<AdtId, Vec<crate::types::ParamId>>,
+    /// Default arguments of the parameters of generic structs and unions.
+    pub adt_param_defaults: HashMap<AdtId, Vec<Option<Rc<ast::Expr>>>>,
     /// Instantiations of generic structs and unions.
     pub adt_instances: HashMap<(AdtId, Vec<Ty>), AdtId>,
 }
@@ -200,9 +210,12 @@ impl<'s> Sema<'s> {
             effects: HashMap::new(),
             adts: HashMap::new(),
             pending_bodies: vec![],
+            checking: vec![],
             resolving: vec![],
             prelude: None,
             type_params: vec![],
+            value_scope: vec![],
+            value_params: HashMap::new(),
             yield_effect: None,
             handler_breaks: HashMap::new(),
             handler_items: vec![],
@@ -213,6 +226,7 @@ impl<'s> Sema<'s> {
             mono_queue: vec![],
             nested_owner: HashMap::new(),
             adt_params: HashMap::new(),
+            adt_param_defaults: HashMap::new(),
             adt_instances: HashMap::new(),
         }
     }

@@ -60,6 +60,7 @@ impl<'a> Machine<'a> {
                 Ok(Value::Bytes(self.ptr_bytes(addr)))
             }
             ExprKind::Null => Ok(Value::Bytes(self.make_none(e.ty))),
+            ExprKind::ConstBytes(b) => Ok(Value::from_slice(b)),
             ExprKind::Uninit => {
                 let fill = if self.mode == super::Mode::Debug { 0xAA } else { 0 };
                 Ok(Value::Bytes(Bytes::filled(self.size_of(e.ty), fill)))

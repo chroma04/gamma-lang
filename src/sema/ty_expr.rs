@@ -3,6 +3,7 @@
 use super::builtins::builtin_type;
 use super::{DeclValue, ModuleId, Sema, Untyped};
 use crate::syntax::ast::{self, ExprKind};
+use crate::tir;
 use crate::types::{FnTy, Ty, TyKind};
 use num_traits::ToPrimitive;
 
@@ -114,6 +115,20 @@ impl<'s> Sema<'s> {
                     self.error(e.span, "`[_]` is allowed only in array constructors");
                     return Ty::error();
                 };
+                // `[N]T` with `N` a compile-time value parameter (§16.5).
+                if let ExprKind::Ident(id) = &len.kind
+                    && let Some(&(_, pid)) = self.value_scope.iter().rev().find(|(n, _)| *n == id.name)
+                {
+                    if !self.value_params[&pid].is_integer() {
+                        self.error(
+                            len.span,
+                            format!("`{}` is not an integer, so it cannot be an array length", id.name),
+                        );
+                        return Ty::error();
+                    }
+                    let len = Ty::intern(TyKind::Param(pid));
+                    return Ty::intern(TyKind::ParamArray { len, elem });
+                }
                 match self.const_usize(module, len) {
                     Some(n) => Ty::array(n, elem),
                     None => Ty::error(),
@@ -151,24 +166,9 @@ impl<'s> Sema<'s> {
                     self.error(e.span, "expected a type");
                     return Ty::error();
                 };
-                let n = self.adt_params.get(&template).map_or(0, |p| p.len());
-                if args.len() != n {
-                    self.error(e.span, format!("`{}` takes {} type argument(s)", template.name(), n));
+                let Some(targs) = self.generic_type_args(module, template, args, e.span) else {
                     return Ty::error();
-                }
-                let mut targs = vec![];
-                for a in args {
-                    match &a.kind {
-                        crate::syntax::ast::ArgKind::Positional(t) => targs.push(self.resolve_type(module, t)),
-                        _ => {
-                            self.error(a.span, "expected a type argument");
-                            return Ty::error();
-                        }
-                    }
-                }
-                if targs.iter().any(|t| t.is_error()) {
-                    return Ty::error();
-                }
+                };
                 for (pid, t) in self.adt_params[&template].clone().into_iter().zip(&targs) {
                     for c in self.constraints.get(&pid).cloned().unwrap_or_default() {
                         if !self.satisfies(*t, c) {
@@ -217,12 +217,125 @@ impl<'s> Sema<'s> {
             }
             Some(Err(())) => None,
             None => {
-                self.error(
-                    e.span,
-                    "array lengths must be constant expressions (typed constants are not supported yet)",
-                );
-                None
+                // A typed constant expression, evaluated now (§7.15).
+                let ex = self.check_const_expr(module, e, Some(Ty::usize()))?;
+                let v = self.eval_tir_const(&ex)?;
+                let n = crate::types::ConstKey::Bytes(v.ty, v.bytes.into()).as_u64();
+                if n.is_none() {
+                    self.error(e.span, "array length is out of range");
+                }
+                n
             }
         }
+    }
+}
+
+impl<'s> Sema<'s> {
+    /// The arguments of `G(args)`, in parameter order: positional, then named,
+    /// then defaults (§16.4). Value arguments are evaluated.
+    fn generic_type_args(
+        &mut self,
+        module: ModuleId,
+        template: crate::types::AdtId,
+        args: &[crate::syntax::ast::Arg],
+        span: crate::source::Span,
+    ) -> Option<Vec<Ty>> {
+        use crate::syntax::ast::ArgKind;
+        let params = self.adt_params.get(&template).cloned().unwrap_or_default();
+        let defaults = self.adt_param_defaults.get(&template).cloned().unwrap_or_default();
+        let mut given: Vec<Option<&ast::Expr>> = vec![None; params.len()];
+        let mut next = 0;
+        for a in args {
+            let (i, e) = match &a.kind {
+                ArgKind::Positional(e) => {
+                    next += 1;
+                    (next - 1, e)
+                }
+                ArgKind::Named(n, e) => match params.iter().position(|p| p.name() == n.name) {
+                    Some(i) => (i, e),
+                    None => {
+                        self.error(n.span, format!("`{}` has no parameter named `{}`", template.name(), n.name));
+                        return None;
+                    }
+                },
+                ArgKind::Spread(_) => {
+                    self.error(a.span, "a spread argument cannot instantiate a generic type");
+                    return None;
+                }
+            };
+            if i >= params.len() {
+                self.error(span, format!("`{}` takes {} argument(s)", template.name(), params.len()));
+                return None;
+            }
+            if given[i].is_some() {
+                self.error(a.span, format!("the parameter `{}` is given twice", params[i].name()));
+                return None;
+            }
+            given[i] = Some(e);
+        }
+        let mut out = vec![];
+        for (i, pid) in params.iter().enumerate() {
+            let default = defaults.get(i).cloned().flatten();
+            let e: &ast::Expr = match (given[i], &default) {
+                (Some(e), _) => e,
+                (None, Some(d)) => d,
+                (None, None) => {
+                    self.error(
+                        span,
+                        format!("missing argument for the parameter `{}` of `{}`", pid.name(), template.name()),
+                    );
+                    return None;
+                }
+            };
+            let t = match self.value_params.get(pid).copied() {
+                Some(vt) => {
+                    let map: Vec<(crate::types::ParamId, Ty)> =
+                        params.iter().copied().zip(out.iter().copied()).collect();
+                    let vt = self.subst(vt, &map);
+                    self.comptime_value(module, vt, e)?
+                }
+                None => self.resolve_type(module, e),
+            };
+            if t.is_error() {
+                return None;
+            }
+            out.push(t);
+        }
+        Some(out)
+    }
+
+    /// Evaluates the argument of a compile-time value parameter of type `ty`
+    /// (§16.5) to a type-level value. Inside a generic body, a compile-time
+    /// parameter in scope is passed on as it is.
+    pub fn comptime_value(&mut self, module: ModuleId, ty: Ty, e: &ast::Expr) -> Option<Ty> {
+        if let ExprKind::Ident(id) = &e.kind
+            && let Some(&(_, pid)) = self.value_scope.iter().rev().find(|(n, _)| *n == id.name)
+        {
+            let have = self.value_params[&pid];
+            if have != ty {
+                self.error(e.span, format!("expected a compile-time `{}`, found `{}` of type `{}`", ty, id.name, have));
+                return None;
+            }
+            return Some(Ty::intern(TyKind::Param(pid)));
+        }
+        let ex = self.check_const_expr(module, e, Some(ty))?;
+        // Functions and `null` are known without evaluation, whatever the type.
+        let key = match &ex.kind {
+            tir::ExprKind::Null => crate::types::ConstKey::Null,
+            tir::ExprKind::FnRef(f) => crate::types::ConstKey::Fn(f.0, self.prog.fns[f.index()].name),
+            tir::ExprKind::Coerce { expr, .. } if matches!(expr.kind, tir::ExprKind::FnRef(_)) => {
+                let tir::ExprKind::FnRef(f) = expr.kind else { unreachable!() };
+                crate::types::ConstKey::Fn(f.0, self.prog.fns[f.index()].name)
+            }
+            _ if super::generics::has_param(ty) => {
+                self.error(e.span, "this compile-time argument's type depends on a type parameter; only functions and `null` are supported here yet");
+                return None;
+            }
+            _ => {
+                let v = self.eval_tir_const(&ex)?;
+                self.const_key(&v, e.span)?
+            }
+        };
+        Some(Ty::intern(TyKind::Value(key)))
     }
 }

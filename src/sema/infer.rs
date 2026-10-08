@@ -172,6 +172,7 @@ impl InferTable {
                 self.unify(*e1, *e2)
             }
             (Array { len: l1, elem: e1 }, Array { len: l2, elem: e2 }) if l1 == l2 => self.unify(*e1, *e2),
+            (ParamArray { len: l1, elem: e1 }, ParamArray { len: l2, elem: e2 }) if l1 == l2 => self.unify(*e1, *e2),
             (Optional(x), Optional(y)) | (Cont(x), Cont(y)) => self.unify(*x, *y),
             (Result { err: e1, ok: o1 }, Result { err: e2, ok: o2 }) => {
                 self.unify(*e1, *e2)?;

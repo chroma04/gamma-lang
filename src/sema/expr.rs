@@ -173,6 +173,13 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::ArrayType { len, elem } if matches!(elem.kind, ExprKind::Call { .. }) => {
                 let ExprKind::Call { callee, args, .. } = &elem.kind else { unreachable!() };
                 let elem_ty = self.resolve_type(callee);
+                if let Some(ast::Expr { kind: ExprKind::Ident(id), .. }) = len.as_deref()
+                    && let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == id.name)
+                {
+                    let len = Ty::intern(TyKind::Param(pid));
+                    let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
+                    return self.construct_param_array(t, elem_ty, args, span);
+                }
                 let len = match len {
                     Some(l) => match self.sema.const_usize(self.module, l) {
                         Some(n) => Some(n),
@@ -226,6 +233,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             };
+        }
+        if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
+            return mk(self.sema.value_params[&pid], tir::ExprKind::ValueParam(pid), span);
         }
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
@@ -530,7 +540,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let bt = self.infer.resolve(b.ty);
         let (elem, checked) = match bt.kind() {
-            TyKind::Array { elem, .. } | TyKind::Slice { elem, .. } => (*elem, true),
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => (*elem, true),
             TyKind::ManyPtr { elem, .. } => (*elem, false),
             TyKind::Error => return error_expr(span),
             _ => {
@@ -544,7 +554,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// `p[i]` on a pointer to an array indexes the array (§7.9).
     fn auto_deref_array(&mut self, b: Expr) -> Expr {
         if let TyKind::Ptr { pointee, .. } = self.infer.shallow(b.ty).kind()
-            && matches!(pointee.kind(), TyKind::Array { .. })
+            && pointee.is_array()
         {
             let span = b.span;
             return mk(*pointee, tir::ExprKind::Deref(Box::new(b)), span);
@@ -610,6 +620,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 return mk(Ty::many_ptr(*is_const, *elem), tir::ExprKind::SlicePtr(Box::new(b)), span);
             }
             (TyKind::Array { len, .. }, "len") => return mk(Ty::usize(), tir::ExprKind::Int((*len).into()), span),
+            (TyKind::ParamArray { len, .. }, "len") => {
+                let TyKind::Param(p) = len.kind() else { unreachable!() };
+                return mk(Ty::usize(), tir::ExprKind::ValueParam(*p), span);
+            }
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
@@ -1194,7 +1208,8 @@ pub fn base_coercion(src: Ty, target: Ty) -> Option<Coercion> {
         .then_some(Coercion::FnPtrWiden),
         _ => {
             if pointer_coercion(src, target) {
-                let array_to_slice = matches!((src.kind(), target.kind()), (Ptr { pointee, .. }, Slice { .. }) if matches!(pointee.kind(), Array { .. }));
+                let array_to_slice =
+                    matches!((src.kind(), target.kind()), (Ptr { pointee, .. }, Slice { .. }) if pointee.is_array());
                 Some(if array_to_slice { Coercion::ArrayPtrToSlice } else { Coercion::PtrToPtr })
             } else {
                 None
@@ -1227,9 +1242,9 @@ fn pointer_coercion(src: Ty, target: Ty) -> bool {
     match (sk, tk) {
         (0, 0) | (1, 1) | (2, 2) => se == te,
         // ^T → [^]T, and ^[N]T → [^]T
-        (0, 1) => se == te || matches!(se.kind(), Array { elem, .. } if *elem == te),
+        (0, 1) => se == te || matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te),
         // ^[N]T → []T
-        (0, 2) => matches!(se.kind(), Array { elem, .. } if *elem == te),
+        (0, 2) => matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te),
         _ => false,
     }
 }

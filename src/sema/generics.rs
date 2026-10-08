@@ -7,7 +7,7 @@ use super::{ModuleId, ParamInfo, Sema};
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Expr, FnId, HandlerId};
-use crate::types::{EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
+use crate::types::{ConstKey, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
 use std::collections::HashMap;
 
 /// The closed set of constraints (§16.3).
@@ -104,7 +104,9 @@ impl<'s> Sema<'s> {
         match t.kind() {
             TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) | TyKind::ManyPtr { .. } => true,
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_ord(*e)),
-            TyKind::Array { elem, .. } | TyKind::Slice { elem, .. } => self.has_ord(*elem),
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => {
+                self.has_ord(*elem)
+            }
             TyKind::Param(p) => self.param_has(*p, Constraint::Ord),
             TyKind::Adt(..) => self.union_variants(t).is_some_and(|(vs, _)| vs.iter().all(|v| v.payload.is_none())),
             _ => false,
@@ -117,7 +119,10 @@ impl<'s> Sema<'s> {
             TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Cont(_) | TyKind::Type => false,
             TyKind::Param(p) => self.param_has(*p, Constraint::Eq),
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq(*e)),
-            TyKind::Array { elem, .. } | TyKind::Slice { elem, .. } | TyKind::Optional(elem) => self.has_eq(*elem),
+            TyKind::Array { elem, .. }
+            | TyKind::ParamArray { elem, .. }
+            | TyKind::Slice { elem, .. }
+            | TyKind::Optional(elem) => self.has_eq(*elem),
             TyKind::Result { err, ok } => self.has_eq(*err) && self.has_eq(*ok),
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(tir::AdtKind::Struct { fields, .. }) => fields.iter().all(|f| self.has_eq(f.ty)),
@@ -134,7 +139,7 @@ impl<'s> Sema<'s> {
     pub fn is_plain(&self, t: Ty) -> bool {
         match t.kind() {
             TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) => true,
-            TyKind::Array { elem, .. } => self.is_plain(*elem),
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => self.is_plain(*elem),
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.is_plain(*e)),
             TyKind::Param(p) => self.param_has(*p, Constraint::Plain),
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
@@ -195,7 +200,7 @@ impl<'s> Sema<'s> {
         }
     }
 
-    fn produce_instance(&mut self, req: MonoRequest) {
+    pub(super) fn produce_instance(&mut self, req: MonoRequest) {
         let sig = self.sigs[&req.generic].clone();
         let map: Vec<(ParamId, Ty)> = sig.generics.iter().copied().zip(req.args.iter().copied()).collect();
         let g = &self.prog.fns[req.generic.index()];
@@ -216,6 +221,23 @@ impl<'s> Sema<'s> {
     fn mono_expr(&mut self, cx: &mut MonoCx, mut e: Expr) -> Expr {
         let had_param = has_param(e.ty);
         e.ty = self.subst(e.ty, cx.map);
+        // A compile-time value parameter becomes its argument (§16.5).
+        if let tir::ExprKind::ValueParam(p) = e.kind
+            && let Some((_, v)) = cx.map.iter().find(|(q, _)| *q == p)
+            && let TyKind::Value(k) = v.kind()
+        {
+            e.kind = match k {
+                ConstKey::Bytes(t, b) => match k.as_int() {
+                    Some(i) => tir::ExprKind::Int(i),
+                    None if t.is_bool() => tir::ExprKind::Bool(b.first() == Some(&1)),
+                    None => tir::ExprKind::ConstBytes(b.clone().into()),
+                },
+                ConstKey::Fn(f, _) => tir::ExprKind::FnRef(FnId(*f)),
+                ConstKey::Null => tir::ExprKind::Null,
+                ConstKey::Str(s) => tir::ExprKind::Str(s.clone().into()),
+            };
+            return e;
+        }
         // Literals typed by a parameter are checked against each instantiation (§16.1).
         match &mut e.kind {
             tir::ExprKind::Int(v) if had_param => {
@@ -460,10 +482,19 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, "spread arguments are not supported in generic calls yet");
             return error_expr(span);
         }
+        // A compile-time value parameter is inferable only if another parameter's
+        // type mentions it (§16.2).
+        let inferable = |i: usize| match sig.params[i].generic {
+            None => false,
+            Some(pid) if self.sema.value_params.contains_key(&pid) => sig.params.iter().any(|q| {
+                let mut found = false;
+                q.ty.walk(&mut |t| found |= matches!(t.kind(), TyKind::Param(x) if *x == pid));
+                found
+            }),
+            Some(_) => true,
+        };
         let non_inferable: Vec<usize> = (0..sig.params.len())
-            .filter(|&i| {
-                sig.params[i].generic.is_none() && !named.contains(&sig.params[i].name) && Some(i) != recv_index
-            })
+            .filter(|&i| !inferable(i) && !named.contains(&sig.params[i].name) && Some(i) != recv_index)
             .collect();
         let r = non_inferable.iter().filter(|&&i| sig.params[i].default.is_none()).count();
         let n = non_inferable.len();
@@ -492,7 +523,18 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         for (i, e) in &sources {
             let p = &sig.params[*i];
-            if let Some(pid) = p.generic {
+            if let Some(pid) = p.generic
+                && self.sema.value_params.contains_key(&pid)
+            {
+                let bound: Vec<(ParamId, Ty)> = binds.iter().map(|(k, v)| (*k, *v)).collect();
+                let ty = self.sema.subst(p.ty, &bound);
+                match self.comptime_arg(ty, e) {
+                    Some(v) => {
+                        binds.insert(pid, v);
+                    }
+                    None => return error_expr(span),
+                }
+            } else if let Some(pid) = p.generic {
                 let t = self.resolve_type(e);
                 binds.insert(pid, t);
             } else {
@@ -531,7 +573,27 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut targs = vec![];
         for pid in &sig.generics {
             match binds.get(pid) {
+                Some(t) if self.sema.value_params.contains_key(pid) => {
+                    let pty = self.sema.value_params[pid];
+                    match self.normalize_value(*t, pty, pid.name(), span) {
+                        Some(v) => targs.push(v),
+                        None => return error_expr(span),
+                    }
+                }
                 Some(t) => targs.push(*t),
+                None if self.sema.value_params.contains_key(pid) => {
+                    let p = sig.params.iter().find(|p| p.generic == Some(*pid)).unwrap();
+                    match p.default.clone() {
+                        Some(d) => match self.comptime_arg(p.ty, &d) {
+                            Some(v) => targs.push(v),
+                            None => return error_expr(span),
+                        },
+                        None => {
+                            self.error(span, format!("missing argument for the compile-time parameter `{}`", p.name));
+                            return error_expr(span);
+                        }
+                    }
+                }
                 None => {
                     self.error(
                         span,
@@ -589,6 +651,48 @@ impl<'a, 's> FnCx<'a, 's> {
             ty: self.sema.subst(sig.ret, &map),
             kind: tir::ExprKind::Call { callee: tir::Callee::Fn(inst), args: out },
             span,
+        }
+    }
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
+    fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
+        if let ast::ExprKind::Ident(id) = &e.kind
+            && self.lookup_local(id.name).is_some()
+        {
+            self.error(
+                e.span,
+                format!("a compile-time argument must be a constant expression, but `{}` is a variable", id.name),
+            );
+            return None;
+        }
+        let module = self.module;
+        self.sema.comptime_value(module, ty, e)
+    }
+
+    /// Converts an inferred value argument (an array length) to the parameter's type.
+    fn normalize_value(&mut self, v: Ty, ty: Ty, name: crate::symbol::Symbol, span: Span) -> Option<Ty> {
+        let k = match v.kind() {
+            TyKind::Value(k) => k,
+            TyKind::Param(p) if self.sema.value_params.contains_key(p) => return Some(v),
+            _ => {
+                self.error(span, format!("`{}` is a compile-time value parameter, but a type was given", name));
+                return None;
+            }
+        };
+        match k {
+            crate::types::ConstKey::Bytes(t, _) if *t == ty => Some(v),
+            crate::types::ConstKey::Bytes(t, _) if t.is_integer() && ty.is_integer() => {
+                let i = k.as_int()?;
+                if !super::finalize::int_fits(&i, ty, &self.sema.target) {
+                    self.error(span, format!("`{}` = {} does not fit in `{}`", name, i, ty));
+                    return None;
+                }
+                let size = self.sema.with_layouts(|l| l.size_of(ty));
+                Some(Ty::intern(TyKind::Value(crate::types::ConstKey::int(ty, &i, size))))
+            }
+            _ => Some(v),
         }
     }
 }

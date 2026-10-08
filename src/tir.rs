@@ -293,6 +293,12 @@ pub enum ExprKind {
     CStr(Rc<[u8]>),
     /// The absent value of the optional type `ty`.
     Null,
+    /// A plain-data value of type `ty`, given by its bytes in target layout
+    /// (a compile-time argument substituted into an instantiation).
+    ConstBytes(Rc<[u8]>),
+    /// A compile-time value parameter inside a generic body (§16.5). Never
+    /// present in a finished [`Program`]: instantiation replaces it.
+    ValueParam(crate::types::ParamId),
     /// `---`: unspecified contents (plain-data `ty` only).
     Uninit,
     /// A reference to a top-level constant's value.

@@ -80,10 +80,12 @@ pub enum GenericArg {
 pub enum ConstKey {
     /// The value's type and its bytes in target layout.
     Bytes(Ty, Box<[u8]>),
-    /// A named function, by declaration identity.
-    Fn(u32),
+    /// A named function, by declaration identity (with its name, for display).
+    Fn(u32, Symbol),
     /// The null value of an optional function pointer.
-    Null(Ty),
+    Null,
+    /// A string (`[]const u8`), by its contents.
+    Str(Box<[u8]>),
 }
 
 /// An instantiated effect, such as `Yield(i32)`.
@@ -187,8 +189,18 @@ pub enum TyKind {
     Adt(AdtId, Box<[GenericArg]>),
     /// `cont(T)`
     Cont(Ty),
-    /// A generic type parameter, opaque inside the generic body.
+    /// A generic parameter, opaque inside the generic body: a type parameter, or a
+    /// compile-time value parameter where a generic argument is expected (§16.5).
     Param(ParamId),
+    /// `[N]T` inside a generic body, where `N` is a compile-time value parameter
+    /// (`len` is its `Param`). Instantiation turns it into an `Array`.
+    ParamArray {
+        len: Ty,
+        elem: Ty,
+    },
+    /// A compile-time value used as a generic argument (§16.4, §16.5), such as
+    /// the `16` of `Ring(u8, 16)`. Never the type of an expression.
+    Value(ConstKey),
     /// An unresolved literal type variable.
     Infer(InferVar),
     /// The anonymous second-class type of a handler literal (§5.15), identified
@@ -338,6 +350,10 @@ impl Ty {
     pub fn is_unsigned_integer(self) -> bool {
         matches!(self.kind(), TyKind::Int(IntTy { signed: false, .. }) | TyKind::Usize)
     }
+    /// An array type, `[N]T` (including one sized by a compile-time parameter).
+    pub fn is_array(self) -> bool {
+        matches!(self.kind(), TyKind::Array { .. } | TyKind::ParamArray { .. })
+    }
     pub fn is_float(self) -> bool {
         matches!(self.kind(), TyKind::Float(_))
     }
@@ -362,6 +378,10 @@ impl Ty {
             | TyKind::Array { elem: t, .. }
             | TyKind::Optional(t)
             | TyKind::Cont(t) => t.walk(f),
+            TyKind::ParamArray { len, elem } => {
+                len.walk(f);
+                elem.walk(f);
+            }
             TyKind::Result { err, ok } => {
                 err.walk(f);
                 ok.walk(f);
@@ -392,6 +412,16 @@ impl Ty {
             TyKind::ManyPtr { is_const, elem } => TyKind::ManyPtr { is_const: *is_const, elem: elem.map(f) },
             TyKind::Slice { is_const, elem } => TyKind::Slice { is_const: *is_const, elem: elem.map(f) },
             TyKind::Array { len, elem } => TyKind::Array { len: *len, elem: elem.map(f) },
+            TyKind::ParamArray { len, elem } => {
+                let (len, elem) = (len.map(f), elem.map(f));
+                match len.kind() {
+                    TyKind::Value(k) => match k.as_u64() {
+                        Some(n) => TyKind::Array { len: n, elem },
+                        None => TyKind::Error,
+                    },
+                    _ => TyKind::ParamArray { len, elem },
+                }
+            }
             TyKind::Optional(t) => TyKind::Optional(t.map(f)),
             TyKind::Cont(t) => TyKind::Cont(t.map(f)),
             TyKind::Result { err, ok } => TyKind::Result { err: err.map(f), ok: ok.map(f) },
@@ -523,7 +553,7 @@ impl fmt::Display for Ty {
                         }
                         match a {
                             GenericArg::Type(t) => write!(f, "{}", t)?,
-                            GenericArg::Value(_) => f.write_str("…")?,
+                            GenericArg::Value(k) => write!(f, "{}", k)?,
                         }
                     }
                     f.write_str(")")?;
@@ -532,6 +562,8 @@ impl fmt::Display for Ty {
             }
             TyKind::Cont(t) => write!(f, "cont({})", t),
             TyKind::Param(p) => write!(f, "{}", p.name()),
+            TyKind::ParamArray { len, elem } => write!(f, "[{}]{}", len, elem),
+            TyKind::Value(k) => write!(f, "{}", k),
             TyKind::Handler(_) => f.write_str("handler"),
             TyKind::Infer(_) => f.write_str("{integer}"),
             TyKind::Error => f.write_str("{error}"),
@@ -570,6 +602,51 @@ fn fmt_sig(f: &mut fmt::Formatter<'_>, head: &str, sig: &FnTy) -> fmt::Result {
 impl fmt::Debug for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Ty({})", self)
+    }
+}
+
+impl ConstKey {
+    /// The key of an integer value of type `ty` (which must be an integer type).
+    pub fn int(ty: Ty, v: &num_bigint::BigInt, size: u64) -> ConstKey {
+        let mut bytes = v.to_signed_bytes_le();
+        let fill = if v.sign() == num_bigint::Sign::Minus { 0xff } else { 0 };
+        bytes.resize(size as usize, fill);
+        ConstKey::Bytes(ty, bytes.into())
+    }
+
+    /// The value of an integer key, if it is an integer that fits in `u64`.
+    pub fn as_int(&self) -> Option<num_bigint::BigInt> {
+        match self {
+            ConstKey::Bytes(t, b) if t.is_signed_integer() => Some(num_bigint::BigInt::from_signed_bytes_le(b)),
+            ConstKey::Bytes(t, b) if t.is_integer() => {
+                Some(num_bigint::BigInt::from_bytes_le(num_bigint::Sign::Plus, b))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        use num_traits::ToPrimitive;
+        self.as_int().and_then(|i| i.to_u64())
+    }
+}
+
+impl fmt::Display for ConstKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConstKey::Fn(_, name) => write!(f, "{}", name),
+            ConstKey::Null => f.write_str("null"),
+            ConstKey::Str(s) => write!(f, "{:?}", String::from_utf8_lossy(s)),
+            ConstKey::Bytes(t, b) => {
+                if let Some(i) = self.as_int() {
+                    write!(f, "{}", i)
+                } else if t.is_bool() {
+                    write!(f, "{}", b.first() == Some(&1))
+                } else {
+                    write!(f, "{}(…)", t)
+                }
+            }
+        }
     }
 }
 

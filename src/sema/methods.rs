@@ -238,7 +238,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // Methods of arrays and slices; a pointer to an array also works.
         let (base, elem, is_const) = match rty.kind() {
             TyKind::Slice { elem, is_const } => (recv, *elem, *is_const),
-            TyKind::Array { elem, .. } => {
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
                 let m = self.place_mutability(&recv);
                 let c = m != Some(true);
                 if m.is_none() && matches!(n, "get_ptr" | "fill" | "swap" | "copy_from") {
@@ -246,8 +246,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 (recv, *elem, c)
             }
-            TyKind::Ptr { pointee, is_const } if matches!(pointee.kind(), TyKind::Array { .. }) => {
-                let TyKind::Array { elem, .. } = pointee.kind() else { unreachable!() };
+            TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
+                let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
+                    unreachable!()
+                };
                 let d = mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span);
                 (d, *elem, *is_const)
             }

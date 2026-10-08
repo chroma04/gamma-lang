@@ -168,6 +168,7 @@ stack_demo :: fn() \ {Out} {
 Observe three things.
 
 - `N :: usize` is a **compile-time value parameter**. It is declared with `::` instead of `:`, its argument must be a constant expression, and each distinct value produces its own instantiation. Inside the body it is a constant, so it can size arrays. When it appears in the type of another parameter (as `N` does in `s: ^Stack(T, N)`), it is inferable like a type parameter.
+- Because the body is checked once, without knowing `N`, an array length in it must be the parameter itself: `[N]T` is fine, `[N + 1]T` is an error. Such an array is built with `[N]T(fill: x)` or `---`, since a list of elements cannot be counted against an unknown `N`.
 - Inside the type's own module, methods take the generic type as a pointer, `^Stack(T, N)`, with the type's parameters as their leading compile-time parameters. Method syntax skips those parameters, which is why `st.push(10)` works and `T` and `N` are inferred.
 - Two instantiations are the same type if every argument is the same: types are identical, values are `is`-equal.
 

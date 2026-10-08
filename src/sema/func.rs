@@ -133,11 +133,17 @@ impl<'s> Sema<'s> {
         let ast::ItemKind::Binding(b) = &item.kind else { return };
         let ExprKind::Fn(lit) = &b.init.kind else { return };
         let sig = self.sigs[&fn_id].clone();
+        self.checking.push(fn_id);
         // A generic body is checked once, with its type parameters opaque (§16.1).
         let scope_len = self.type_params.len();
+        let value_scope_len = self.value_scope.len();
         for p in &sig.params {
             if let Some(pid) = p.generic {
-                self.type_params.push((p.name, Ty::intern(TyKind::Param(pid))));
+                if self.value_params.contains_key(&pid) {
+                    self.value_scope.push((p.name, pid));
+                } else {
+                    self.type_params.push((p.name, Ty::intern(TyKind::Param(pid))));
+                }
             }
         }
         let numeric: Vec<_> =
@@ -159,6 +165,8 @@ impl<'s> Sema<'s> {
         let body = cx.fn_body(&lit.body);
         let (body, locals) = cx.finish(body);
         self.type_params.truncate(scope_len);
+        self.value_scope.truncate(value_scope_len);
+        self.checking.pop();
         let def = &mut self.prog.fns[fn_id.index()];
         def.params = params;
         def.locals = locals;
@@ -562,14 +570,9 @@ impl<'a, 's> FnCx<'a, 's> {
         Stmt::Let { local: id, init: Some(init) }
     }
 
+    /// Plain data (§5.19); a type parameter is plain data if it is constrained `Plain`.
     pub fn is_plain_data(&mut self, t: Ty) -> bool {
-        match t.kind() {
-            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) => true,
-            TyKind::Array { elem, .. } => self.is_plain_data(*elem),
-            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.is_plain_data(*e)),
-            TyKind::Error => true,
-            _ => false,
-        }
+        t.is_error() || self.sema.is_plain(t)
     }
 
     fn assign(&mut self, places: &[ast::Expr], op: ast::AssignOp, value: &ast::Expr, span: Span) -> Stmt {
@@ -684,7 +687,7 @@ impl<'a, 's> FnCx<'a, 's> {
             tir::ExprKind::Field { base, .. } => self.place_mutability(base),
             tir::ExprKind::Index { base, .. } => match base.ty.kind() {
                 TyKind::Slice { is_const, .. } | TyKind::ManyPtr { is_const, .. } => Some(!is_const),
-                TyKind::Array { .. } => self.place_mutability(base),
+                TyKind::Array { .. } | TyKind::ParamArray { .. } => self.place_mutability(base),
                 _ => None,
             },
             _ => None,

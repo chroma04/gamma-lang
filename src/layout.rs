@@ -154,9 +154,13 @@ impl<'a> Layouts<'a> {
                 FloatTy::F64 => 8,
             }),
             TyKind::Bool => Layout::scalar(1),
-            TyKind::Never | TyKind::Type | TyKind::Error | TyKind::Param(_) | TyKind::Infer(_) => {
-                Layout { size: 0, align: 1, offsets: vec![] }
-            }
+            TyKind::Never
+            | TyKind::Type
+            | TyKind::Error
+            | TyKind::Param(_)
+            | TyKind::ParamArray { .. }
+            | TyKind::Value(_)
+            | TyKind::Infer(_) => Layout { size: 0, align: 1, offsets: vec![] },
             TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::FnPtr(_) => Layout::scalar(p),
             TyKind::Slice { .. } => Layout { size: 2 * p, align: p, offsets: vec![0, p] },
             TyKind::Array { len, elem } => {

@@ -1,0 +1,52 @@
+// Compile-time value parameters (§16.5) and typed constants as array lengths.
+rotate :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T {
+    out: [N]T = a
+    for i in 0..N {
+        out[(i + by) % N] = a[i]
+    }
+    return out
+}
+
+sum :: fn(N :: usize, a: [N]i64) -> i64 {
+    t: i64 = 0
+    for x in a { t += x }
+    return t
+}
+
+// A compile-time parameter can be passed on, explicitly or by inference.
+twice :: fn(N :: usize, a: [N]i64) -> i64 => sum(a) + sum(N, a)
+
+zeros :: fn(N :: usize = 4) -> [N]i32 => [N]i32(fill: 0)
+
+repeat :: fn(times :: u8, s: string) \ {Out} {
+    for _ in 0..times { print("{}", s) }
+    print("\n")
+}
+
+apply :: fn(f :: ^fn(x: i32) -> i32, x: i32) -> i32 => f(f(x))
+inc :: fn(x: i32) -> i32 => x + 1
+dbl :: fn(x: i32) -> i32 => x * 2
+
+pick :: fn(flag :: bool) -> i32 => if flag { 1 } else { 2 }
+
+label :: fn(s :: string, n: i32) \ {Out} => print("{} {} {}\n", (s, s.len, n))
+
+GREETING :: "hello"
+SIZE :: @size_of(u64) * 2
+three :: fn() -> usize => 3
+
+main :: fn() \ {Out} {
+    a := [5]i32(1, 2, 3, 4, 5)
+    print("{}\n", rotate(a, 2))
+    print("{}\n", rotate(3, u8, [3]u8(7, 8, 9), 1))
+    print("{}\n", twice([3]i64(1, 2, 3)))
+    print("{} {}\n", (zeros(), zeros(2).len))
+    repeat(3, "ab")
+    print("{} {}\n", (apply(inc, 5), apply(dbl, 5)))
+    print("{} {}\n", (pick(true), pick(1 > 2)))
+    label("hi", 1)
+    label(GREETING, 2)
+    buf: [SIZE]u8 = ---
+    small: [three()]u8 = [3]u8(fill: 9)
+    print("{} {}\n", (buf.len, small))
+}
