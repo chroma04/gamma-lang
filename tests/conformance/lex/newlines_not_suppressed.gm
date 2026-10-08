@@ -1,0 +1,22 @@
+//! stage: lex
+//! dump
+// Tokens that end an expression keep their newline, including postfix operators.
+a?
+b!
+c^
+d()
+e[0]
+1
+'x'
+"s"
+true
+null
+_
+return
+---
+...
+not
+@size_of
+#packed
+@
+f

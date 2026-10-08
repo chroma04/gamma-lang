@@ -1,0 +1,32 @@
+//! stage: lex
+//! dump
+// Directly inside a `match` body every line begins an arm: rule 2 is off.
+match x {
+  1 => a
+  .b => c
+  else => d
+  y and z => e
+}
+.after
+match f({
+  a
+  .b
+}) {
+  1 => x
+  .y => z
+}
+match (a
+  .b) {
+  1 => x
+}
+nest :: match a {
+  1 => match b {
+    2 => x
+    else => y
+  }
+  else => {
+    p
+    .q
+  }
+}
+.r

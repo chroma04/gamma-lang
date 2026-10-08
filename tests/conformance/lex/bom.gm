@@ -1,0 +1,4 @@
+﻿// A leading byte-order mark is ignored (this file starts with one).
+//! stage: lex
+//! dump
+a b

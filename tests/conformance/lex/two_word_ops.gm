@@ -1,0 +1,24 @@
+//! stage: lex
+//! dump
+// `is not` and `not in` are single tokens when on one line.
+a is not b
+a not in b
+a   is   not   b
+a is /* c */ not b
+a not /* c */ in b
+a is
+not b
+a not
+in b
+a is // comment
+not b
+a is /* multi
+line */ not b
+a is nothing
+a is not_b
+a not inside
+a is not not b
+a and not b
+not not in x
+c is not
+d

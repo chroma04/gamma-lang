@@ -1,0 +1,10 @@
+//! stage: lex
+//! dump
+// `---` is always a single token.
+x: i32 = ---
+y := ---
+a---b
+a----b
+a-----b
+a - -b
+a --b

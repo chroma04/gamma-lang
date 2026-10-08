@@ -1,0 +1,7 @@
+//! stage: lex
+//! dump
+// `@name` and `#name` need the name immediately after the sigil.
+@size_of(T) @import("x") #packed #align(8) @_x #a1
+@ size_of # packed
+@1 #!
+a@b a#b

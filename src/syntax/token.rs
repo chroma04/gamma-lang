@@ -107,6 +107,7 @@ macro_rules! keywords {
                 match self { $(Keyword::$variant => $text,)* }
             }
 
+            #[allow(clippy::should_implement_trait)]
             pub fn from_str(s: &str) -> Option<Keyword> {
                 match s { $($text => Some(Keyword::$variant),)* _ => None }
             }

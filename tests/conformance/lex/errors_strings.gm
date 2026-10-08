@@ -1,0 +1,16 @@
+//! stage: lex
+// Malformed string literals.
+"unterminated //~ ERROR unterminated string literal
+"bad \q escape" //~ ERROR unknown escape sequence `\q`
+"bad \x4 escape" //~ ERROR invalid `\x` escape
+"bad \xzz escape" //~ ERROR invalid `\x` escape
+"bad \u41" //~ ERROR expected `{`
+"bad \u{} escape" //~ ERROR 1 to 6
+"bad \u{1234567}" //~ ERROR 1 to 6
+"bad \u{DFFF}" //~ ERROR surrogate
+"bad \u{110000}" //~ ERROR above U+10FFFF
+"bad \u{41" //~ ERROR expected `}`
+c"nul \0 byte" //~ ERROR NUL
+c"nul \x00 byte" //~ ERROR NUL
+c"nul \u{0} byte" //~ ERROR NUL
+c"unterminated c string //~ ERROR unterminated string literal

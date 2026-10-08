@@ -1,0 +1,15 @@
+//! stage: lex
+//! dump
+// Every operator, one per token, separated by spaces (assignments end lines
+// only where a newline would be suppressed anyway).
++ - * / % << >> & | ~
++% -% *% <<%
++| -| *| <<|
++? -? *? <<?
+= += -= *= /= %= <<= >>= &= |= ~=
++%= -%= *%= <<%= +|= -|= *|= <<|=
+< <= > >=
+? ! ^ @ # \
+.. ..= ... --- :: := : , . ;
+=> ->
+( ) [ ] { }

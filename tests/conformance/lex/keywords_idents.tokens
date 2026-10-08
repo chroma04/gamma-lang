@@ -1,0 +1,65 @@
+4:1 keyword and
+4:5 keyword break
+4:11 keyword continue
+4:20 keyword ctl
+4:24 keyword defer
+4:30 keyword discard
+4:38 keyword effect
+4:45 keyword else
+5:1 keyword errdefer
+5:10 keyword esc
+5:14 keyword false
+5:20 keyword fn
+5:23 keyword for
+5:27 keyword foreign
+5:35 keyword handler
+5:43 keyword if
+5:45 newline
+6:1 keyword import
+6:8 keyword in
+6:11 keyword is
+6:14 keyword match
+6:20 keyword not
+6:24 keyword null
+6:29 keyword or
+6:32 keyword pub
+6:35 newline
+7:1 keyword resume
+7:8 keyword return
+7:15 keyword struct
+7:22 keyword true
+7:27 keyword try
+7:31 keyword union
+7:37 keyword using
+7:43 keyword when
+7:47 newline
+8:1 keyword while
+8:7 keyword with
+8:11 newline
+9:1 ident const
+9:7 ident on
+9:10 ident where
+9:16 ident test
+9:21 ident type
+9:26 ident cont
+9:30 newline
+10:1 ident foo
+10:5 ident Foo
+10:9 ident _foo
+10:14 ident foo_1
+10:20 ident FOO9
+10:25 ident __
+10:28 underscore
+10:30 ident _1
+10:33 ident c
+10:35 ident cc
+10:38 ident ca
+10:40 newline
+11:1 ident fns
+11:5 ident fn_
+11:9 ident iff
+11:13 ident matches
+11:21 ident notin
+11:27 ident isnot
+11:32 newline
+12:1 eof

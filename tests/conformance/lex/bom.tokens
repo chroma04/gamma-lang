@@ -1,0 +1,4 @@
+4:1 ident a
+4:3 ident b
+4:4 newline
+5:1 eof

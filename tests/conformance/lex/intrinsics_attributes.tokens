@@ -1,0 +1,32 @@
+4:1 intrinsic @size_of
+4:9 punct (
+4:10 ident T
+4:11 punct )
+4:13 intrinsic @import
+4:20 punct (
+4:21 str Regular "x"
+4:24 punct )
+4:26 attribute #packed
+4:34 attribute #align
+4:40 punct (
+4:41 int 8
+4:42 punct )
+4:44 intrinsic @_x
+4:48 attribute #a1
+4:51 newline
+5:1 punct @
+5:3 ident size_of
+5:11 punct #
+5:13 ident packed
+5:19 newline
+6:1 punct @
+6:2 int 1
+6:4 punct #
+6:5 punct !
+6:6 newline
+7:1 ident a
+7:2 intrinsic @b
+7:5 ident a
+7:6 attribute #b
+7:8 newline
+8:1 eof

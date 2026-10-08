@@ -1,0 +1,95 @@
+4:1 keyword match
+4:7 ident x
+4:9 punct {
+5:3 int 1
+5:5 punct =>
+5:8 ident a
+5:9 newline
+6:3 punct .
+6:4 ident b
+6:6 punct =>
+6:9 ident c
+6:10 newline
+7:3 keyword else
+7:8 punct =>
+7:11 ident d
+7:12 newline
+8:3 ident y
+8:5 keyword and
+8:9 ident z
+8:11 punct =>
+8:14 ident e
+8:15 newline
+9:1 punct }
+10:1 punct .
+10:2 ident after
+10:7 newline
+11:1 keyword match
+11:7 ident f
+11:8 punct (
+11:9 punct {
+12:3 ident a
+13:3 punct .
+13:4 ident b
+13:5 newline
+14:1 punct }
+14:2 punct )
+14:4 punct {
+15:3 int 1
+15:5 punct =>
+15:8 ident x
+15:9 newline
+16:3 punct .
+16:4 ident y
+16:6 punct =>
+16:9 ident z
+16:10 newline
+17:1 punct }
+17:2 newline
+18:1 keyword match
+18:7 punct (
+18:8 ident a
+19:3 punct .
+19:4 ident b
+19:5 punct )
+19:7 punct {
+20:3 int 1
+20:5 punct =>
+20:8 ident x
+20:9 newline
+21:1 punct }
+21:2 newline
+22:1 ident nest
+22:6 punct ::
+22:9 keyword match
+22:15 ident a
+22:17 punct {
+23:3 int 1
+23:5 punct =>
+23:8 keyword match
+23:14 ident b
+23:16 punct {
+24:5 int 2
+24:7 punct =>
+24:10 ident x
+24:11 newline
+25:5 keyword else
+25:10 punct =>
+25:13 ident y
+25:14 newline
+26:3 punct }
+26:4 newline
+27:3 keyword else
+27:8 punct =>
+27:11 punct {
+28:5 ident p
+29:5 punct .
+29:6 ident q
+29:7 newline
+30:3 punct }
+30:4 newline
+31:1 punct }
+32:1 punct .
+32:2 ident r
+32:3 newline
+33:1 eof

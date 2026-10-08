@@ -1,0 +1,18 @@
+//! stage: lex
+//! dump
+// Raw strings: n backticks open, the next run of exactly n closes.
+`C:\dir\file`
+`no \n escapes, "quotes" or // comments`
+``a`b``
+``a```b``
+```a``b````c```
+`line one
+line two`
+`
+first newline dropped`
+`
+
+second newline kept`
+`a``b`
+`é€`
+x := `after`

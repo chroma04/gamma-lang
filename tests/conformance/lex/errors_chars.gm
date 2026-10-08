@@ -1,0 +1,13 @@
+//! stage: lex
+// Malformed character literals.
+'' //~ ERROR empty character literal
+'ab' //~ ERROR exactly one character
+'a //~ ERROR unterminated character literal
+'\q' //~ ERROR unknown escape sequence `\q`
+'\xZ1' //~ ERROR invalid `\x` escape
+'\x4' //~ ERROR invalid `\x` escape
+'\u41' //~ ERROR expected `{`
+'\u{}' //~ ERROR 1 to 6 hexadecimal digits
+'\u{D800}' //~ ERROR surrogate
+'\u{110000}' //~ ERROR above U+10FFFF
+'\u{41' //~ ERROR expected `}`

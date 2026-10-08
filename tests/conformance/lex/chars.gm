@@ -1,0 +1,9 @@
+//! stage: lex
+//! dump
+// Character literals are integers.
+'a' 'Z' '0' ' ' '"' '`' '/'
+'\n' '\r' '\t' '\0' '\\' '\'' '\"'
+'\x41' '\x7f' '\xff' '\x00'
+'\u{41}' '\u{e9}' '\u{20AC}' '\u{1F600}' '\u{10FFFF}' '\u{000041}'
+'é' '€' '😀'
+x = 'a' + 1

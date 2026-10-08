@@ -1,0 +1,8 @@
+//! stage: lex
+// Unbalanced and mismatched brackets.
+a ) //~ ERROR unmatched closing `)`
+b ] //~ ERROR unmatched closing `]`
+} //~ ERROR unmatched closing `}`
+{ ( } //~ ERROR unclosed `(`
+[ { ] //~ ERROR unclosed `{`
+f( //~ ERROR unclosed `(`

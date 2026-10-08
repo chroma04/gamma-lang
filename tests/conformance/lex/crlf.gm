@@ -1,0 +1,10 @@
+//! stage: lex
+//! dump
+// CRLF line endings
+a
+
+b /* block
+comment */ c
+`raw
+string`
+d

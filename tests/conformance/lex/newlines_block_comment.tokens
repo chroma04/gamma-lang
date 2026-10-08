@@ -1,0 +1,25 @@
+4:1 ident a
+4:11 newline
+5:10 ident b
+5:11 newline
+6:1 ident c
+6:21 ident d
+6:22 newline
+7:1 ident e
+7:3 punct +
+8:10 ident f
+8:11 newline
+9:1 ident g
+10:10 keyword else
+10:15 ident h
+10:16 newline
+11:1 punct (
+11:2 ident i
+12:10 ident j
+12:11 punct )
+12:12 newline
+13:1 ident k
+13:21 newline
+14:13 ident l
+14:14 newline
+15:1 eof

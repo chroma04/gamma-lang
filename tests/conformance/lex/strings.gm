@@ -1,0 +1,15 @@
+//! stage: lex
+//! dump
+// Regular and C strings.
+""
+"hello"
+"tab\there"
+"\n\r\t\0\\\"\'"
+"\x41\x42\xff\x80\x00"
+"\u{41}\u{e9}\u{20AC}\u{1F600}"
+"é€😀 non-ASCII"
+"// not a comment" "/* nor this */"
+"a" "b" "adjacent strings stay separate"
+c"" c"hello" c"a\nb" c"\xff\u{e9}"
+c "not a c string"
+abc"x"

@@ -1,0 +1,15 @@
+//! stage: lex
+//! dump
+// Float literals have exact rational values.
+0.0 0.1 0.5 1.0 1.5 3.14159 100.001
+1e3 1E3 1e+3 1e-3 2.5e10 2.5E-2 1e0 1e05
+1_000.000_1 1e1_0
+1.5f32 2.0f64 1e3f16 3.5e-1f32
+0x1.0p0 0x1.8p1 0x1.8p-1 0xA.8p+2 0x0.1p0 0xf.fp0 0x1.8p1f64 0x1_0.8p0
+// Not floats.
+1..10
+1..=10
+1.e5
+1. 5
+.5
+a.5

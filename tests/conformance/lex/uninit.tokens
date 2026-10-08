@@ -1,0 +1,36 @@
+4:1 ident x
+4:2 punct :
+4:4 ident i32
+4:8 punct =
+4:10 punct ---
+4:13 newline
+5:1 ident y
+5:3 punct :=
+5:6 punct ---
+5:9 newline
+6:1 ident a
+6:2 punct ---
+6:5 ident b
+6:6 newline
+7:1 ident a
+7:2 punct ---
+7:5 punct -
+7:6 ident b
+7:7 newline
+8:1 ident a
+8:2 punct ---
+8:5 punct -
+8:6 punct -
+8:7 ident b
+8:8 newline
+9:1 ident a
+9:3 punct -
+9:5 punct -
+9:6 ident b
+9:7 newline
+10:1 ident a
+10:3 punct -
+10:4 punct -
+10:5 ident b
+10:6 newline
+11:1 eof

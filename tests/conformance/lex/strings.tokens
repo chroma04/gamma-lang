@@ -1,0 +1,33 @@
+4:1 str Regular ""
+4:3 newline
+5:1 str Regular "hello"
+5:8 newline
+6:1 str Regular "tab\there"
+6:12 newline
+7:1 str Regular "\n\r\t\x00\\\"'"
+7:17 newline
+8:1 str Regular "AB\xff\x80\x00"
+8:23 newline
+9:1 str Regular "A\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80"
+9:32 newline
+10:1 str Regular "\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80 non-ASCII"
+10:16 newline
+11:1 str Regular "// not a comment"
+11:20 str Regular "/* nor this */"
+11:36 newline
+12:1 str Regular "a"
+12:5 str Regular "b"
+12:9 str Regular "adjacent strings stay separate"
+12:41 newline
+13:1 str C ""
+13:5 str C "hello"
+13:14 str C "a\nb"
+13:22 str C "\xff\xc3\xa9"
+13:35 newline
+14:1 ident c
+14:3 str Regular "not a c string"
+14:19 newline
+15:1 ident abc
+15:4 str Regular "x"
+15:7 newline
+16:1 eof

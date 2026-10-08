@@ -797,6 +797,7 @@ impl NodeIdGen {
         NodeIdGen::default()
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> NodeId {
         let id = NodeId(self.next);
         self.next += 1;
