@@ -10,6 +10,7 @@
 mod adt;
 mod builtins;
 mod call;
+mod construct;
 mod decls;
 mod expr;
 mod finalize;

@@ -419,7 +419,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => true,
             };
             if immutable {
-                self.error(place_ast.span, format!("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name));
+                self.error(
+                    place_ast.span,
+                    format!("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name),
+                );
                 let _ = self.expr(value, None);
                 return Stmt::Expr(unit(span));
             }

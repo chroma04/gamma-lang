@@ -22,10 +22,19 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut stmts: Vec<Stmt> = vec![];
         let mut slots: Vec<Option<Expr>> = vec![None; n];
         let mut explicit = vec![false; n];
+        // Field indices of named arguments, in the order written.
+        let mut written: Vec<usize> = vec![];
+        let mut bad_args = false;
         for arg in args {
             match &arg.kind {
                 ArgKind::Positional(e) => {
-                    self.error(e.span, format!("`{}` is constructed with named arguments only: `{}(field: value)`", ty, ty));
+                    if !bad_args {
+                        self.error(
+                            e.span,
+                            format!("`{}` is constructed with named arguments only: `{}(field: value)`", ty, ty),
+                        );
+                    }
+                    bad_args = true;
                 }
                 ArgKind::Named(name, e) => {
                     let Some(i) = fields.iter().position(|(f, _)| *f == name.name) else {
@@ -38,24 +47,36 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                     explicit[i] = true;
                     let v = self.field_value(e, fields[i].1);
-                    slots[i] = Some(self.bind_temp(v, &mut stmts));
+                    written.push(i);
+                    slots[i] = Some(v);
                 }
                 ArgKind::Spread(e) => {
                     let v = self.expr(e, None);
                     let vt = self.infer.resolve(v.ty);
                     let src_fields: Vec<(Symbol, Ty)> = match vt.kind() {
-                        TyKind::Tuple { elems, names: Some(names) } => names.iter().copied().zip(elems.iter().copied()).collect(),
+                        TyKind::Tuple { elems, names: Some(names) } => {
+                            names.iter().copied().zip(elems.iter().copied()).collect()
+                        }
                         _ => match self.sema.struct_fields(vt) {
                             Some(fs) => fs.iter().map(|f| (f.name, f.ty)).collect(),
                             None => {
                                 if !vt.is_error() {
-                                    self.error(e.span, format!("cannot spread a value of type `{}` into named arguments", vt));
+                                    self.error(
+                                        e.span,
+                                        format!("cannot spread a value of type `{}` into named arguments", vt),
+                                    );
                                 }
                                 continue;
                             }
                         },
                     };
                     let tmp_ty = vt;
+                    // Values written before the spread are evaluated before it.
+                    for &w in &written {
+                        let v = slots[w].take().unwrap();
+                        slots[w] = Some(self.bind_temp(v, &mut stmts));
+                    }
+                    written.clear();
                     let base = self.bind_temp(v, &mut stmts);
                     for (k, (fname, fty)) in src_fields.iter().enumerate() {
                         let Some(i) = fields.iter().position(|(f, _)| f == fname) else {
@@ -70,11 +91,20 @@ impl<'a, 's> FnCx<'a, 's> {
                         if slots[i].is_some() {
                             self.error(e.span, format!("field `{}` is supplied by two spreads", fname));
                         }
-                        let proj = mk(*fty, tir::ExprKind::Field { base: Box::new(base.clone()), index: k as u32 }, e.span);
+                        let proj =
+                            mk(*fty, tir::ExprKind::Field { base: Box::new(base.clone()), index: k as u32 }, e.span);
                         let _ = tmp_ty;
                         slots[i] = Some(self.coerce(proj, fields[i].1));
                     }
                 }
+            }
+        }
+        // Arguments written out of field order are evaluated into temporaries first,
+        // so evaluation follows the written order (§7.1).
+        if written.windows(2).any(|w| w[0] > w[1]) {
+            for &w in &written {
+                let v = slots[w].take().unwrap();
+                slots[w] = Some(self.bind_temp(v, &mut stmts));
             }
         }
         let mut values = vec![];
@@ -86,7 +116,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     match default {
                         Some(d) => values.push(d),
                         None => {
-                            self.error(span, format!("missing field `{}` (it has no default)", fields[i].0));
+                            if !bad_args {
+                                self.error(span, format!("missing field `{}` (it has no default)", fields[i].0));
+                            }
                             values.push(error_expr(span));
                         }
                     }
@@ -173,7 +205,14 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// Builds a tuple of type `ty` from call-style arguments (positional or named).
-    pub fn construct_tuple(&mut self, ty: Ty, elems: &[Ty], names: Option<&[Symbol]>, args: &[ast::Arg], span: Span) -> Expr {
+    pub fn construct_tuple(
+        &mut self,
+        ty: Ty,
+        elems: &[Ty],
+        names: Option<&[Symbol]>,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Expr {
         let mut slots: Vec<Option<Expr>> = vec![None; elems.len()];
         let mut next = 0;
         for arg in args {

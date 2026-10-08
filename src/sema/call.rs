@@ -20,12 +20,14 @@ enum CalleeKind {
     Op(crate::types::EffectId, u32),
     Type(Ty),
     Builtin(BuiltinFn),
+    /// A union variant with a payload: `.V(…)` or `U.V(…)`.
+    Variant(Ty, ast::Ident),
     Value(Expr),
 }
 
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
-        let Some(kind) = self.classify_callee(callee) else { return error_expr(span) };
+        let Some(kind) = self.classify_callee(callee, expect) else { return error_expr(span) };
         match kind {
             CalleeKind::Fn(f) => {
                 let sig = self.sema.sigs[&f].clone();
@@ -44,6 +46,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             CalleeKind::Type(t) => self.conversion(t, args, span),
             CalleeKind::Builtin(b) => self.builtin_call(b, args, expect, span),
+            CalleeKind::Variant(u, name) => self.construct_variant(u, name, Some(args), span),
             CalleeKind::Value(v) => {
                 let t = self.infer.resolve(v.ty);
                 let (TyKind::FnPtr(sig) | TyKind::Fn(sig)) = t.kind() else {
@@ -65,7 +68,21 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
-    fn classify_callee(&mut self, callee: &ast::Expr) -> Option<CalleeKind> {
+    fn classify_callee(&mut self, callee: &ast::Expr, expect: Option<Ty>) -> Option<CalleeKind> {
+        if let ExprKind::DotIdent(name) = &callee.kind {
+            return match expect.map(|t| self.infer.resolve(t)) {
+                Some(t) => Some(CalleeKind::Variant(strip_wrappers(t), *name)),
+                None => {
+                    self.error(callee.span, format!("cannot infer the union type of `.{}` here", name.name));
+                    None
+                }
+            };
+        }
+        if let ExprKind::Field { base, name } = &callee.kind
+            && let Some(t) = self.type_of_name(base)
+        {
+            return Some(CalleeKind::Variant(t, *name));
+        }
         if let ExprKind::Ident(id) = &callee.kind {
             if self.lookup_local(id.name).is_none() {
                 let module = self.module;
@@ -182,6 +199,16 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `T(x)`: a lossless conversion (§6.5).
     fn conversion(&mut self, t: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        // Construction (§7.11) for structs, tuples, arrays and optionals.
+        if self.sema.struct_fields(t).is_some() {
+            return self.construct_struct(t, args, span);
+        }
+        match t.kind() {
+            TyKind::Tuple { elems, names } => return self.construct_tuple(t, elems, names.as_deref(), args, span),
+            TyKind::Array { len, elem } => return self.construct_array(Some(*len), *elem, args, span),
+            TyKind::Optional(inner) => return self.construct_optional(t, *inner, args, span),
+            _ => {}
+        }
         let [ast::Arg { kind: ArgKind::Positional(x), .. }] = args else {
             self.error(span, format!("construction of `{}` is not supported yet; a conversion takes one argument", t));
             return error_expr(span);
@@ -196,6 +223,20 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
         mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
+    }
+
+    /// `?T(x)` holds `x`; `?T(null)` is the absent value (§7.11).
+    pub fn construct_optional(&mut self, t: Ty, inner: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        let [ast::Arg { kind: ArgKind::Positional(x), .. }] = args else {
+            self.error(span, format!("`{}(…)` takes exactly one value", t));
+            return error_expr(span);
+        };
+        if let ExprKind::Null = x.kind {
+            return mk(t, tir::ExprKind::Null, span);
+        }
+        let v = self.expr(x, Some(inner));
+        let v = self.coerce(v, inner);
+        mk(t, tir::ExprKind::Coerce { kind: tir::Coercion::WrapOptional, expr: Box::new(v) }, span)
     }
 
     fn builtin_call(&mut self, b: BuiltinFn, args: &[ast::Arg], _expect: Option<Ty>, span: Span) -> Expr {
@@ -391,5 +432,17 @@ mod tests {
         assert_eq!(&*p[2], b"");
         assert!(parse_template(b"{x}").is_none());
         assert!(parse_template(b"}").is_none());
+    }
+}
+
+/// The type inside optional and result wrappers, where a variant shorthand's
+/// union type is found (`x: ?Shape = .Empty`).
+pub fn strip_wrappers(mut t: Ty) -> Ty {
+    loop {
+        match t.kind() {
+            TyKind::Optional(i) => t = *i,
+            TyKind::Result { ok, .. } => t = *ok,
+            _ => return t,
+        }
     }
 }

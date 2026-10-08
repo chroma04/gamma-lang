@@ -116,6 +116,31 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", name.name));
                 error_expr(span)
             }
+            ExprKind::DotIdent(name) => match expect.map(|t| self.infer.resolve(t)) {
+                Some(t) => self.construct_variant(super::call::strip_wrappers(t), *name, None, span),
+                None => {
+                    self.error(span, format!("cannot infer the union type of `.{}` here", name.name));
+                    error_expr(span)
+                }
+            },
+            // A type prefix before a construction applies to the whole type (§A.7 rule 12).
+            ExprKind::ArrayType { len, elem } if matches!(elem.kind, ExprKind::Call { .. }) => {
+                let ExprKind::Call { callee, args, .. } = &elem.kind else { unreachable!() };
+                let elem_ty = self.resolve_type(callee);
+                let len = match len {
+                    Some(l) => match self.sema.const_usize(self.module, l) {
+                        Some(n) => Some(n),
+                        None => return error_expr(span),
+                    },
+                    None => None,
+                };
+                self.construct_array(len, elem_ty, args, span)
+            }
+            ExprKind::OptionalType(inner) if matches!(inner.kind, ExprKind::Call { .. }) => {
+                let ExprKind::Call { callee, args, .. } = &inner.kind else { unreachable!() };
+                let t = self.resolve_type(callee);
+                self.construct_optional(Ty::optional(t), t, args, span)
+            }
             ExprKind::OptionalType(_)
             | ExprKind::PtrType { .. }
             | ExprKind::SliceType { .. }
@@ -473,7 +498,27 @@ impl<'a, 's> FnCx<'a, 's> {
         b
     }
 
+    /// If `e` is a name denoting a type, that type.
+    pub fn type_of_name(&mut self, e: &ast::Expr) -> Option<Ty> {
+        let ExprKind::Ident(id) = &e.kind else { return None };
+        if self.lookup_local(id.name).is_some() {
+            return None;
+        }
+        let module = self.module;
+        if let Some(d) = self.sema.lookup_module_name(module, id.name) {
+            return match self.sema.resolve_decl(d) {
+                DeclValue::Type(t) => Some(t),
+                _ => None,
+            };
+        }
+        super::builtins::builtin_type(id.name.as_str())
+    }
+
     fn field(&mut self, base: &ast::Expr, name: ast::Ident, span: Span) -> Expr {
+        // `U.V` — a payload-less variant of a union type.
+        if let Some(t) = self.type_of_name(base) {
+            return self.construct_variant(t, name, None, span);
+        }
         let b = self.expr(base, None);
         let b = self.auto_deref(b);
         let bt = self.infer.resolve(b.ty);
@@ -491,8 +536,27 @@ impl<'a, 's> FnCx<'a, 's> {
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
+        if let Some(e) = self.struct_field(b.clone(), name.name, span) {
+            return e;
+        }
         self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
         error_expr(span)
+    }
+
+    /// Field `name` of a struct value, looking through `using` fields (§5.10.3).
+    fn struct_field(&mut self, b: Expr, name: crate::symbol::Symbol, span: Span) -> Option<Expr> {
+        let fields = self.sema.struct_fields(b.ty)?;
+        if let Some(i) = fields.iter().position(|f| f.name == name) {
+            let ty = fields[i].ty;
+            return Some(mk(ty, tir::ExprKind::Field { base: Box::new(b), index: i as u32 }, span));
+        }
+        let TyKind::Adt(id, _) = b.ty.kind() else { return None };
+        if !self.sema.adts.get(id).is_some_and(|a| a.has_using) {
+            return None;
+        }
+        let first = fields[0].ty;
+        let inner = mk(first, tir::ExprKind::Field { base: Box::new(b), index: 0 }, span);
+        self.struct_field(inner, name, span)
     }
 
     // --- control flow ---

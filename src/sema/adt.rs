@@ -38,7 +38,10 @@ impl<'s> Sema<'s> {
         };
         self.prog.adts.insert(id, AdtDef { name, kind });
         if self.is_infinitely_sized(ty, &mut vec![]) {
-            self.error(lit.span, format!("`{}` contains itself by value and would be infinitely large; use a pointer", name));
+            self.error(
+                lit.span,
+                format!("`{}` contains itself by value and would be infinitely large; use a pointer", name),
+            );
             return Ty::error();
         }
         ty
@@ -79,7 +82,10 @@ impl<'s> Sema<'s> {
             }
             if f.is_using {
                 if i != 0 || f.names.len() != 1 {
-                    self.error(f.span, "only the first field of a struct may be `using`, and it must be a single field");
+                    self.error(
+                        f.span,
+                        "only the first field of a struct may be `using`, and it must be a single field",
+                    );
                 } else if !matches!(ty.kind(), TyKind::Adt(..)) && !ty.is_error() {
                     self.error(f.span, format!("a `using` field must have a struct type, not `{}`", ty));
                 } else {
@@ -118,12 +124,18 @@ impl<'s> Sema<'s> {
                 Some(w) => total += w,
                 None => self.error(
                     span,
-                    format!("field `{}` of a `#bits` struct must be `bool`, an integer or another `#bits` struct", f.name),
+                    format!(
+                        "field `{}` of a `#bits` struct must be `bool`, an integer or another `#bits` struct",
+                        f.name
+                    ),
                 ),
             }
         }
         if total != u.bits as u64 {
-            self.error(span, format!("the fields of this `#bits` struct use {} bits, but `{}` has {}", total, underlying, u.bits));
+            self.error(
+                span,
+                format!("the fields of this `#bits` struct use {} bits, but `{}` has {}", total, underlying, u.bits),
+            );
         }
     }
 
@@ -210,11 +222,17 @@ impl<'s> Sema<'s> {
         };
         for (i, v) in variants.iter().enumerate() {
             if !tag.is_error() && !super::finalize::int_fits(&v.tag, tag, &self.target) {
-                self.error(spans[i], format!("tag value {} of `{}` does not fit the tag type `{}`", v.tag, v.name, tag));
+                self.error(
+                    spans[i],
+                    format!("tag value {} of `{}` does not fit the tag type `{}`", v.tag, v.name, tag),
+                );
             }
             if let Some(j) = variants[..i].iter().position(|w| w.tag == v.tag) {
-                let d = Diagnostic::error(spans[i], format!("variants `{}` and `{}` have the same tag value {}", variants[j].name, v.name, v.tag))
-                    .with_label(spans[j], "first used here");
+                let d = Diagnostic::error(
+                    spans[i],
+                    format!("variants `{}` and `{}` have the same tag value {}", variants[j].name, v.name, v.tag),
+                )
+                .with_label(spans[j], "first used here");
                 self.emit(d);
             }
         }
