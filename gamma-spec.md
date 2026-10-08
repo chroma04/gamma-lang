@@ -1209,7 +1209,7 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
-- If `x: ?T`, then `d` must have type `T`, `?T`, or `never`. The result type is `T` if `d` is `T` or `never`, and `?T` if `d` is `?T`. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
+- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
 - If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), or `never`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
@@ -1276,7 +1276,7 @@ effect_set = '{' [ effect % ',' ] '}'
 ```
 
 - `a, b: i32` declares two parameters of one type.
-- `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` (falling off the end returns `()`). With an `=>` body, the expression's value is returned.
+- `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` or `E!()` (falling off the end returns `()`, which for `E!()` is a success). With an `=>` body, the expression's value is returned.
 - The effect set lists every effect the function may perform that it does not handle itself (§12.3). Omitted means empty.
 - Parameter types may be omitted only in a literal whose expected type is a known function type (e.g. an argument to a parameter of function type); they are then taken from it. When the expected return type is a type parameter still to be inferred, an `=>` literal without `-> R` has the type of its body expression, which determines that parameter: `people.sort_by_key(fn(p) => (p.last, p.first))` infers the key type.
 
@@ -1362,7 +1362,7 @@ Function pointers may be stored anywhere, compared with `is`, and passed to C wh
 
 ### 11.8 Nested named functions
 
-A `name :: fn(…) { … }` binding inside a function body declares a nested function. It captures nothing: its body may refer to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), and to its own parameters, but not to other locals. It is equivalent to a private top-level function and is first-class.
+A `name :: fn(…) { … }` binding inside a function body whose literal captures nothing declares a **nested function**: its body refers only to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), to its own parameters and locals, and to itself by name. It is equivalent to a private top-level function and is first-class. If the literal refers to any other local of the enclosing function, the binding is instead an immutable local holding a second-class function value (§11.6), which cannot refer to itself.
 
 ### 11.9 Recursion
 
@@ -1403,7 +1403,7 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters are compile-time values (usually types). Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. If `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal), and exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — that instantiation is used, and the arguments are typed accordingly. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 
 ### 12.2 Operation kinds
 
@@ -1645,7 +1645,8 @@ Any user function with `Yield(T)` in its effect set is an iterator; there is no 
 Internal iteration cannot advance two iterators in lockstep without fibers. Standard containers and slices therefore also provide **cursors**: values with a `next` method returning `?T` or `?^T`, used with `while`:
 
 ```
-ca, cb := a.cursor(), b.cursor()
+ca := a.cursor()
+cb := b.cursor()
 while x := ca.next() {
     y := cb.next() else break
     combine(x, y)
@@ -1831,13 +1832,13 @@ Using a pointer to an object after its lifetime ends is undefined behavior (§18
 
 ```
 Allocator :: struct {
-    data: rawptr
-    vt:   ^const AllocVtable
+    pub data: rawptr
+    pub vt:   ^const AllocVtable
 }
 AllocVtable :: struct {
-    alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
-    resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
-    free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
+    pub alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
+    pub resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
+    pub free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
 }
 Alloc :: effect { current: fn() -> Allocator }
 AllocError :: union { OutOfMemory }
@@ -1909,7 +1910,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 
 ```
-biggest := max(scores) else 0        // T = i32, from scores: []i32 (array place → []const T)
+biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
 names   := list(string)              // T written explicitly
 try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted (§7.10)
 ```
@@ -1980,7 +1981,7 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 
 Effects may have parameters (`Yield(T)`). An effect set may mention type parameters of the enclosing generic function: `\ {Yield(T)}`. There is no abstraction over effect sets themselves (§12.8).
 
-**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Inside a generic function or type, any two instantiations of the same generic effect that are simultaneously in scope — in the declared effect set, handled by an enclosing `with` (including the implicit `with` of a `for` loop, §13.2), or in a second-class parameter's type — must be either identical or **provably distinct**: they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`.
+**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Inside a generic function or type, any two instantiations of the same generic effect that are simultaneously in scope — in the declared effect set, handled by an enclosing `with` (for the implicit `with` of a `for` loop, §13.2, this concerns only the loop's source call, since the loop body's own performs are handled outside the loop), or in a second-class parameter's type — must be either identical or **provably distinct**: they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`.
 
 ### 16.7 Restrictions
 
@@ -2166,20 +2167,21 @@ Unions (tagged), optionals of non-pointers, results, slices, tuples, arrays as p
 ### 19.2 Foreign functions
 
 ```
+c    :: import "std/c"               // C's platform-dependent types (§19.1)
 libc :: foreign "c" {
-    puts   :: fn(s: cstring) -> c_int
-    qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c_int)
-    printf :: fn(fmt: cstring, ...) -> c_int
+    puts   :: fn(s: cstring) -> c.c_int
+    qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int)
+    printf :: fn(fmt: cstring, ...) -> c.c_int
     strlen :: fn(s: cstring) -> usize \ {}          // trusted: performs no effects
-    #global errno: c_int                            // a foreign variable
+    #global errno: c.c_int                            // a foreign variable
 }
 ```
 
 - `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name.
 - Parameter and result types must be C-compatible.
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
-- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least `c_int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
-- Narrowing at the boundary (`usize` lengths to `c_uint`, and so on) is never implicit: write `n.trunc(c_uint)` or `n.checked(c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
+- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
+- Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
 - Calling convention: the target's C ABI. `#callconv(.Stdcall)` and similar select another where the target supports it.
 
 ### 19.3 Global variables
@@ -2188,7 +2190,7 @@ libc :: foreign "c" {
 #global last_error: i32 = 0
 ```
 
-`#global name: T = e` declares a mutable variable with static storage. `e` must be a compile-time constant (§17.4). Every read or write of a `#global` performs `Sys`. `#global` inside a `foreign` block declares a variable defined by foreign code (no initializer).
+`#global name: T = e` declares a mutable variable with static storage. `e` must be a compile-time constant (§17.4). Every read or write of a `#global`, and taking its address, performs `Sys`; accesses through a pointer obtained that way do not (they are ordinary memory accesses, §19.6). `#global` inside a `foreign` block declares a variable defined by foreign code (no initializer).
 
 `#thread_local` may be added to make one instance per thread.
 
@@ -2201,7 +2203,7 @@ libc :: foreign "c" {
 checksum :: fn(data: [^]const u8, len: usize) -> u32 { … }
 
 #export("gm_load")
-load :: fn(path: cstring) -> c_int \ {Sys} {
+load :: fn(path: cstring) -> c.c_int \ {Sys} {
     with heap_allocator(), stderr_log(), real_fs() {
         cfg := load_config(path_from(path)) else e => { last_error = code(e); return -1 }
         …
@@ -2502,7 +2504,7 @@ Env   :: effect {
 
 ## Appendix A. Grammar
 
-This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply.
+This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
 
 ### A.1 Files and declarations
 
@@ -2552,7 +2554,7 @@ tuple_type    = '(' ')' | '(' type ',' ')' | '(' type ',' type { ',' type } [ ',
 effect_set    = '{' [ effect_ref % ',' ] '}'
 effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net
 
-struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } { field_decl NL { NL } } '}'
+struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'
 field_decl    = [ 'pub' ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
               | { attribute } field_decl
               | 'when' expr '{' { field_decl NL } '}' [ 'else' '{' { field_decl NL } '}' ]

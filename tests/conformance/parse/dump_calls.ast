@@ -1,0 +1,66 @@
+(file
+  (item
+    (binding const c1 (call (ident f))))
+  (item
+    (binding const c2 (call (ident f) (ident a))))
+  (item
+    (binding const c3 (call (ident f) (ident a) trailing-comma)))
+  (item
+    (binding const c4 (call (ident f) (ident a) (named b (int 1)) (named c (int 2)))))
+  (item
+    (binding const c5 (call (ident f) (spread (ident t)))))
+  (item
+    (binding const c6 (call (ident f) (spread (ident t)) (named b (int 3)))))
+  (item
+    (binding const c7 (call (ident f) uninit)))
+  (item
+    (binding const c8 (call (ident Buf) (named len (int 0)) (named data uninit))))
+  (item
+    (binding const c9 (call (call (call (ident f) (ident a)) (ident b)) (ident c))))
+  (item
+    (binding const c10
+      (field (index (field (call (field (ident o) m) (ident a)) n) (int 1)) p)))
+  (item
+    (binding const c11 (index (ident a) (ident i))))
+  (item
+    (binding const c12 (slice (ident a) (lo (int 1)))))
+  (item
+    (binding const c13 (slice (ident a) (hi (int 2)))))
+  (item
+    (binding const c14 (slice (ident a))))
+  (item
+    (binding const c15 (slice (ident a) (lo (int 1)) (hi (int 2)))))
+  (item
+    (binding const c16 (slice (ident a) (lo (int 1)) (hi (int 2)) inclusive)))
+  (item
+    (binding const c17 (slice (ident a) (hi (int 2)) inclusive)))
+  (item
+    (binding const c18 (index (ident a) (paren (binary .. (int 1) (int 2))))))
+  (item
+    (binding const c19 (slice (ident a) (lo (slice (ident b) (lo (int 1)))))))
+  (item
+    (binding const c20 (tuple-field (tuple-field (ident t) 0) 1)))
+  (item
+    (binding const c21 (intrinsic size_of (args (ident T)))))
+  (item
+    (binding const c22 (intrinsic min_stack)))
+  (item
+    (binding const c23 (intrinsic foo (args))))
+  (item
+    (binding const c24 (intrinsic write (args (ident sink) (str "{}") (ident x)))))
+  (item
+    (binding const c25 (tuple (ident a) (ident b))))
+  (item
+    (binding const c26 (tuple (ident a))))
+  (item
+    (binding const c27 (tuple (named x (int 1)) (named y (int 2)))))
+  (item
+    (binding const c28 (tuple)))
+  (item
+    (binding const c29 (paren (paren (ident a)))))
+  (item
+    (binding const c30 (dot V)))
+  (item
+    (binding const c31 (call (dot V) (int 1))))
+  (item
+    (binding const c32 (call (dot V) (named x (int 1))))))

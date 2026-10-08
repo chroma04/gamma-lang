@@ -1,0 +1,56 @@
+//! stage: parse
+// Spec 21: core library signatures (with placeholder bodies).
+
+new          :: fn(T: type, init: T) -> AllocError!^T \ {Alloc} { }
+make         :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T) { }
+make_fill    :: fn(T: type, n: usize, x: T) -> AllocError![]T \ {Alloc} { }
+make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T) { }
+free         :: fn(T: type, s: []T) \ {Alloc} { }
+destroy      :: fn(T: type, p: ^T) \ {Alloc} { }
+
+// core/list
+List   :: struct(T: type) { pub items: []T; cap: usize; alloc: Allocator }    // items.len is the length
+list   :: fn(T: type) -> List(T) \ {Alloc} { }                        // captures current()
+push   :: fn(T: type, l: ^List(T), x: T) -> AllocError!() { }
+pop    :: fn(T: type, l: ^List(T)) -> ?T { }
+clear  :: fn(T: type, l: ^List(T)) { }
+deinit :: fn(T: type, l: ^List(T)) { }                                 // frees through l.alloc
+
+// core/map
+map      :: fn(K, V: type) -> HashMap(K, V) \ {Alloc} where Eq(K) { }
+put      :: fn(K, V: type, m: ^HashMap(K, V), k: K, v: V) -> AllocError!() { }
+get      :: fn(K, V: type, m: ^const HashMap(K, V), k: K) -> ?V { }
+remove   :: fn(K, V: type, m: ^HashMap(K, V), k: K) -> ?V { }
+
+trap   :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never { }
+assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation = @caller_location()) { }
+expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) { }
+print  :: fn(A: type, template :: string, args: A = ()) \ {Out} { }
+eprint :: fn(A: type, template :: string, args: A = ()) \ {Err} { }
+
+IoError :: union {
+    NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    Other: i32                                  // OS error code
+}
+Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
+Duration :: struct { pub ns: u64 }
+SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
+
+Out   :: effect { write_out: fn(bytes: []const u8) }
+Err   :: effect { write_err: fn(bytes: []const u8) }
+In    :: effect { read: fn(buf: []u8) -> IoError!usize }      // 0 at end of input
+Clock :: effect { now: fn() -> Instant; wall: fn() -> i64; sleep: fn(d: Duration) }
+Rand  :: effect { fill: fn(buf: []u8) }
+Env   :: effect {
+    args: fn() -> []const string
+    var:  fn(name: string) -> ?string
+    exit: esc(code: u8) -> never
+}
+
+demo :: fn() \ {Out} {
+    print("hello, world\n")
+    print("{} scored {} ({})\n", (player.name, score, rank))     // Ada scored 1200 (.Gold)
+    print("{}\n", pos)                                           // Vec2(x: 1.5, y: -2)
+    s := cstr[0..cstr.cstr_len()]
+}

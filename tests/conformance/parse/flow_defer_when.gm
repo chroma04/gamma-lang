@@ -1,0 +1,49 @@
+//! stage: parse
+// Spec 8.8 defer/errdefer, 8.9 statement-level when, 8.1 nested blocks.
+
+f :: fn() -> AllocError!() {
+    buf := try make(u8, 256)
+    defer free(buf)
+    errdefer cleanup(buf)
+    defer {
+        flush()
+        close()
+    }
+    defer count += 1
+    defer count, other = (0, 1)
+    errdefer { log("failed") }
+
+    when target.os is .Linux {
+        linux_only()
+    }
+
+    when target.os is .Linux {
+        a()
+    } else {
+        b()
+    }
+
+    when target.arch is .X86_64 {
+        a()
+    } else when target.arch is .Aarch64 {
+        b()
+    } else when target.arch is .Riscv64 {
+        c()
+    } else {
+        @compile_error("unsupported")
+    }
+
+    when T is u8 and @size_of(T) is 1 { }
+
+    {
+        local := 1
+        use(local)
+    }
+    { }
+    { one() }
+    { a(); b() }
+
+    a(); b(); c()
+    x := 1; y := 2
+    return ()
+}

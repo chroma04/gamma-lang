@@ -1,0 +1,25 @@
+//! stage: parse
+//! dump
+// A.7 rule 11: labels in break and continue.
+
+f :: fn() {
+    outer: for a in xs {
+        break outer
+        continue outer
+        break outer 5
+        break other
+        break other + 1
+        break
+        continue
+        inner: while go() {
+            break outer
+            continue inner
+        }
+    }
+    break outer
+    w: with h {
+        break w ()
+    }
+    x := for a in xs { break a }
+    g := fn() { break outer }
+}

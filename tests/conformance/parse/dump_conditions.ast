@@ -1,0 +1,122 @@
+(file
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (expr
+            (if
+              (branch
+                (cond (bind (bind user) (call (ident find) (ident id))))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (bind (path (dot Circle) (args (bind r))) (ident shape)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (binary < (ident x) (int 3)) (bind (bind y) (call (ident foo)))
+                  (call (ident bar) (ident y)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (binary or (ident a) (ident b)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (unary make-err (ident ok)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (bind (err (bind e)) (call (ident f))))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond
+                  (bind (path (ident Point) (args (bind x) (named y (lit (int 0)))))
+                    (ident p)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (bind (tuple (bind a) (bind b)) (call (ident pair))))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (bind (path (field (ident m) MAX)) (ident n)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (bind (bind v) (else (ident t) (int 0))) (ident w))
+                (block))))
+          (while (cond (bind (bind line) (call (field (ident reader) next)))) (block))
+          (while (cond (ident x) (unary not (ident y))) (block))
+          (expr
+            (if
+              (branch
+                (cond
+                  (binary is
+                    (paren
+                      (struct
+                        (field (names a) (ident i32))))
+                    (ident T)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond
+                  (binary is
+                    (call (ident f)
+                      (fn (params)
+                        (block
+                          (expr (return (int 1))))))
+                    (int 1)))
+                (block))))
+          (expr
+            (if
+              (branch
+                (cond (binary is (ident x) (dot A)))
+                (block))))
+          (expr
+            (for (pats (bind i))
+              (binary .. (int 0)
+                (paren
+                  (if
+                    (branch
+                      (cond (ident a))
+                      (block
+                        (expr (int 1))))
+                    (else
+                      (block
+                        (expr (int 2)))))))
+              (block)))
+          (expr
+            (match
+              (paren
+                (if
+                  (branch
+                    (cond (ident a))
+                    (block
+                      (expr (ident b))))
+                  (else
+                    (block
+                      (expr (ident c))))))
+              (arm (pats wildcard) (block))))
+          (expr
+            (with
+              (handlers
+                (paren
+                  (handler
+                    (ident Log)
+                    (clause log
+                      (params l m)
+                      (block)))))
+              (block)))
+          (when-stmt (binary is (ident T) (paren (struct))) (block)))))))

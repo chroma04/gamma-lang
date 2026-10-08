@@ -1,0 +1,14 @@
+//! stage: parse
+// Tuples are all-named or all-unnamed; `resume` takes a continuation call.
+
+f :: fn() {
+    a := (x: 1, 2) //~ ERROR tuple elements must be either all named or all unnamed
+    b := (1, y: 2) //~ ERROR tuple elements must be either all named or all unnamed
+    c := (x: 1, y: 2)
+    d := (1, 2)
+    resume k //~ ERROR `resume` expects a continuation call
+    resume k(1, 2) //~ ERROR `resume` expects a continuation call
+    resume k(v: 1) //~ ERROR `resume` expects a continuation call
+    resume r()
+    resume k(5)
+}

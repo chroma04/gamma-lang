@@ -1,0 +1,11 @@
+//! stage: parse
+// 7.5: comparisons do not chain; ranges are non-associative.
+
+f :: fn() {
+    a := x < y < z //~ ERROR comparison operators cannot be chained
+    b := x is y is z //~ ERROR comparison operators cannot be chained
+    c := x in xs in ys //~ ERROR comparison operators cannot be chained
+    d := x <= y and y <= z
+    e := 0..5..10 //~ ERROR range operators cannot be chained
+    f := (0..5)..10
+}

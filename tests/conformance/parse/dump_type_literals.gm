@@ -1,0 +1,40 @@
+//! stage: parse
+//! dump
+// 5.10, 5.11, 12.1: struct, union and effect literals.
+
+S1 :: struct { x, y: f32 }
+S2 :: struct {
+    pub title: string
+    size: Vec2 = Vec2(x: 800, y: 600)
+    using base: Base
+    #align(8)
+    pub using other: Other
+    _: u9
+}
+S3 :: struct(T: type, n: usize = 4) where Eq(T) { items: [n]T }
+S4 :: #packed struct { a: u8; b: u16 }
+S5 :: struct {
+    id: u32
+    when target.os is .Linux {
+        fd: i32
+    } else {
+        handle: rawptr
+    }
+}
+U1 :: union { Circle: f32, Rect: (w: f32, h: f32), Empty }
+U2 :: union(u8) { A = 1, B, C = 10, }
+U3 :: union(T: type) { None, Some: T }
+U4 :: union(K, V: type) where Eq(K) { Left: K, Right: V }
+U5 :: #c_union union { a: u32, b: f32 }
+U6 :: union {
+    A
+    B: i32
+    when X { C } else { D }
+}
+E1 :: effect { log: fn(msg: string) }
+E2 :: effect(T: type) {
+    yield: esc(x: T)
+    abort: esc() -> never
+    suspend: ctl(what: W) -> R
+}
+E3 :: effect {}

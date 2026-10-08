@@ -1,0 +1,45 @@
+(file
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (expr
+            (match
+              (ident v)
+              (arm (pats wildcard) (ident a))
+              (arm (pats (bind x)) (ident b))
+              (arm (pats null-pat) (ident c))
+              (arm (pats (lit (int 0))) (ident d))
+              (arm (pats (lit (unary neg (int 1)))) (ident e))
+              (arm (pats (lit (char 97))) (ident f))
+              (arm (pats (lit (str "s"))) (ident g))
+              (arm (pats (lit (bool true))) (ident h))
+              (arm (pats (lit (float 3/2))) (ident i))
+              (arm (pats (range (int 0) (int 10))) (ident j))
+              (arm (pats (range (int 0) (int 9) inclusive)) (ident k))
+              (arm (pats (range (unary neg (int 5)) (unary neg (int 1)))) (ident l))
+              (arm (pats (range (field (ident m) LOW) (field (ident m) HIGH))) (ident n))
+              (arm (pats (err (bind p))) (ident o))
+              (arm (pats (err (path (dot Err) (args (bind x))))) (ident p))
+              (arm (pats (path (dot A))) (ident q))
+              (arm (pats (path (dot B) (args (bind x) wildcard))) (ident r))
+              (arm (pats (path (dot C) (args (named a (lit (int 1))) (named b (bind y)))))
+                (ident s))
+              (arm (pats (path (field (ident T) D) (args (bind z)))) (ident t))
+              (arm (pats (path (field (ident m) CONST))) (ident u))
+              (arm (pats (path (field (field (ident m) T) V))) (ident v2))
+              (arm (pats (path (ident S) (args (named f (lit (int 1))) (bind g)))) (ident w))
+              (arm (pats (tuple)) (ident x2))
+              (arm (pats (bind a)) (ident y2))
+              (arm (pats (tuple (bind a))) (ident z2))
+              (arm (pats (tuple (bind a) (bind b))) (ident a3))
+              (arm (pats (tuple (named a (bind x)) (named b (bind y)))) (ident b3))
+              (arm (pats (lit (int 1)) (lit (int 2)) (lit (int 3))) (ident c3))
+              (arm (pats (path (dot X)) (path (dot Y))) (guard (ident cond)) (ident d3))
+              (arm (pats (bind n))
+                (guard
+                  (binary and (binary > (ident n) (int 3)) (binary < (ident n) (int 9))))
+                (ident e3))
+              (arm (pats wildcard)
+                (block
+                  (expr (call (ident block))))))))))))

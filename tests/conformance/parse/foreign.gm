@@ -1,0 +1,46 @@
+//! stage: parse
+// Spec 19.2-19.4: foreign blocks, globals, exported functions.
+
+libc :: foreign "c" {
+    puts   :: fn(s: cstring) -> c_int
+    qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c_int)
+    printf :: fn(fmt: cstring, ...) -> c_int
+    strlen :: fn(s: cstring) -> usize \ {}          // trusted: performs no effects
+    #global errno: c_int                            // a foreign variable
+    #link_name("write")
+    sys_write :: fn(fd: c_int, buf: rawptr, n: usize) -> isize \ {Sys}
+    #callconv(.Stdcall)
+    win_call :: fn(x: u32) -> u32
+    getenv :: fn(name: cstring) -> ?cstring
+    #thread_local
+    #global tls_slot: u32
+}
+
+m :: foreign "m" { sqrt :: fn(x: f64) -> f64 \ {} }
+
+#export("gm_checksum")
+checksum :: fn(data: [^]const u8, len: usize) -> u32 {
+    return 0
+}
+
+#export("gm_load")
+load :: fn(path: cstring) -> c_int \ {Sys} {
+    with heap_allocator(), stderr_log(), real_fs() {
+        cfg := load_config(path_from(path)) else e => { last_error = code(e); return -1 }
+        apply(cfg)
+    }
+    return 0
+}
+
+#global last_error: i32 = 0
+
+f :: fn() {
+    n := libc.strlen(c"hello")
+    libc.puts(c"hi")
+    libc.printf(c"%d\n", c_int(5))
+    e := libc.errno
+    raw := `C:\dir\file`
+    s := "tab\there\x41\u{1F600}"
+    ch := '\n'
+    ch2 := 'é'
+}

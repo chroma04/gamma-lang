@@ -1,0 +1,36 @@
+//! stage: parse
+// Doc comments and attributes in front of declarations.
+
+/// Adds two numbers.
+/// The second line of the comment.
+#inline
+add :: fn(a, b: i32) -> i32 => a + b
+
+/// A visible constant.
+pub LIMIT :: 100
+
+#export("gm_checksum")
+checksum :: fn(data: [^]const u8, len: usize) -> u32 {
+    return 0
+}
+
+#export("gm_load")
+#callconv(.C)
+pub load :: fn(path: cstring) -> c_int \ {Sys} {
+    return 0
+}
+
+#fuel(100000)
+CRC32 :: crc_table(0xEDB88320)
+
+#global last_error: i32 = 0
+
+#thread_local
+#global counter: u32 = 0
+
+#global
+#align(64)
+cache: [64]u8 = ---
+
+#deprecated("use add")
+old_add :: fn(a, b: i32) -> i32 => a + b

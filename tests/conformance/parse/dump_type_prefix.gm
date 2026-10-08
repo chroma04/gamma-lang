@@ -1,0 +1,24 @@
+//! stage: parse
+//! dump
+// A.7 rule 12: type prefixes apply to the following postfix expression, calls included.
+
+t1 :: ?List(u8)
+t2 :: ?i32(5)
+t3 :: [3]u8(1, 2, 3)
+t4 :: [_]u8(1, 2)
+t5 :: [N]T
+t6 :: [N * 2]m.T
+t7 :: []const u8
+t8 :: [^]const u8
+t9 :: ^const T
+t10 :: ^^T
+t11 :: ?^[]T
+t12 :: []?u8
+t13 :: ^fn(i32) -> i32
+t14 :: ?^fn()
+t15 :: [4][4]f32
+t16 :: ??i32
+t17 :: cont(i32)
+t18 :: ^List(T).Item
+t19 :: [3]u8(fill: 0)
+t20 :: ?G(a, b)(c)

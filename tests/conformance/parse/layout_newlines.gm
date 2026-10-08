@@ -1,0 +1,66 @@
+//! stage: parse
+// Spec 2.8: significant newlines, continuation lines, semicolons, comments.
+
+total :: a +
+    b +
+    c
+
+chained :: items
+    .filter(keep)
+    .map(convert)
+    .collect()
+
+cond :: x is 1
+    and y is 2
+    and z is 3
+
+pick :: first
+    else second
+    else third
+
+f :: fn(
+    a: i32,
+    b: i32,
+) -> i32 {
+    x := g(
+        a,
+        b,
+    )
+    y := [
+        3
+    ]u8(1, 2, 3)
+    z := xs[
+        0
+    ]
+    if a < b
+        and b < c {
+        return 1
+    }
+    w := a
+        .b
+        .c
+    v := fn(q: i32) -> i32 {
+        return q   // comment
+    }
+    /* block comment */ u := 1
+    /* multi
+       line */
+    t := 2
+    s := "a" ; r := "b"
+    return x + /* inline */ y
+}
+
+g :: fn() { a(); b(); }
+
+h :: fn() {
+    ;
+    a()
+    ;;
+    b()
+
+    c()
+}
+
+/* a block comment before a declaration */ i :: 1 // trailing
+j :: 2; k :: 3
+l :: 4;

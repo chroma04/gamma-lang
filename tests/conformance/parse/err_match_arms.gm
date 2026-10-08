@@ -1,0 +1,17 @@
+//! stage: parse
+// Malformed match arms.
+
+f :: fn(x: i32) -> i32 {
+    return match x {
+        1 => a
+        2 b //~ ERROR expected `=>` after the pattern of the match arm, found identifier `b`
+        3 => c
+        4 => d 5 //~ ERROR expected a newline or `;` after the match arm, found integer literal
+        + => e //~ ERROR expected a pattern, found `+`
+        _ => z
+    }
+}
+
+g :: fn(x: i32) {
+    match x { 1 => a, 2 => b } //~ ERROR expected a newline or `;` after the match arm, found `,`
+}

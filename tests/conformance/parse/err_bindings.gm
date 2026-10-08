@@ -1,0 +1,18 @@
+//! stage: parse
+// Malformed bindings and assignments; each error recovers at the next statement.
+
+f :: fn() {
+    a: i32 //~ ERROR expected `=` or `:` and an initializer after the type
+    b := 1
+    c, d //~ ERROR expected an assignment operator after the list of places
+    e: = 5 //~ ERROR expected a type, found `=`
+    g := 1
+    h = = 2 //~ ERROR expected an expression, found `=`
+    x y //~ ERROR expected a newline or `;` after the statement, found identifier `y`
+    ok := 3
+}
+
+g :: fn() {
+    #inline
+    return 5 //~ ERROR expected a declaration after the attribute, found keyword `return`
+}

@@ -1,0 +1,30 @@
+//! stage: parse
+// Spec 15.2: allocators.
+
+Allocator :: struct {
+    data: rawptr
+    vt:   ^const AllocVtable
+}
+AllocVtable :: struct {
+    alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
+    resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
+    free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
+}
+Alloc :: effect { current: fn() -> Allocator }
+AllocError :: union { OutOfMemory }
+
+handler Alloc for Allocator { current(self) => self }
+
+demo :: fn() -> AllocError!() \ {Alloc} {
+    names := list(string)                 // captures the current allocator (the heap)
+    defer names.deinit()
+    with arena.allocator() {
+        tmp := try make(u8, 256)          // from the arena
+        try names.push("ada")             // grows on the heap: the list kept its allocator
+    }
+    p := try new(Page, ---)
+    buf := try make_fill(u8, 64, 0)
+    destroy(p)
+    free(buf)
+    return ()
+}

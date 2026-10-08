@@ -1,0 +1,65 @@
+//! stage: parse
+// Spec 14: continuations, resume, discard, scheduler example.
+
+Async :: effect {
+    wait:  ctl(fd: Fd, events: Events)
+    spawn: ctl(entry: ^fn(arg: rawptr) -> never \ {Async}, arg: rawptr, stack: []u8)
+    exit:  ctl() -> never
+    join:  ctl()                      // wait until every spawned task has exited
+}
+
+Scheduler :: struct {
+    ready:   Queue(cont(()))
+    waiting: Poller(cont(()))         // fds -> continuations
+    joiner:  ?cont(())
+    live:    usize
+}
+
+handler Async for ^Scheduler \ {Sys} {
+    wait(self, fd, events, k) => {
+        self.waiting.add(fd, events, k)
+        r := self.next()
+        resume r()
+    }
+    spawn(self, entry, arg, stack, k) => {
+        self.ready.push(@fiber(entry, arg, stack))
+        self.live += 1
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
+        r := self.next()
+        resume r()
+    }
+    join(self, k) => {
+        if self.live is 0 { resume k() }
+        self.joiner = k
+        r := self.next()
+        resume r()
+    }
+}
+
+main :: fn() {
+    sched := Scheduler(ready: queue(), waiting: poller(), joiner: null, live: 0)
+    with &sched on main_stack[..] {
+        spawn_task(serve, &conn_a, stack_a)       // library wrapper around `spawn`
+        spawn_task(serve, &conn_b, stack_b)
+        join()
+    }   // completes only after both tasks exit; every continuation has been consumed
+}
+
+resumes :: fn(k: cont(i32), q: Queue(cont(()))) {
+    h := handler Async2 {
+        a(k) => resume k(5)
+        b(k) => resume k(x + 1)
+        c(k) => resume k()
+        d(k) => {
+            resume (k)()
+        }
+    }
+    n := @fiber(f, arg, stack)
+    s := @stack_size(f)
+    m := @min_stack
+}

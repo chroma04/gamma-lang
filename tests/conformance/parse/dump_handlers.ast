@@ -1,0 +1,70 @@
+(file
+  (item
+    (handler-decl
+      (ident Log)
+      (for (ptr-type (ident FileLogger)))
+      (effects (ident Fs))
+      (clause log
+        (params self level msg)
+        (if
+          (branch
+            (cond (binary >= (ident level) (field (ident self) min)))
+            (block
+              (assign = (places underscore)
+                (call (field (ident fs) write) (field (ident self) fd) (ident msg)))))))))
+  (item
+    (handler-decl
+      (call (ident Yield) (ident i32))
+      (for (ptr-type (ident Collector)))
+      (clause yield
+        (params self x)
+        (call (field (field (ident self) items) push) (ident x)))))
+  (item
+    (handler-decl
+      (field (ident m) Net)
+      (for (ident T))))
+  (item
+    (handler-decl
+      (ident Async)
+      (for (ptr-type (ident Scheduler)))
+      (effects (ident Sys))
+      (clause wait
+        (params self k)
+        (block
+          (binding var r (call (field (ident self) next)))
+          (expr (resume (ident r)))))
+      (clause spawn
+        (params self k)
+        (resume (ident k)))
+      (clause exit
+        (params self v k)
+        (resume (ident k) (binary + (ident v) (int 1))))
+      (clause done
+        (params self k)
+        (block
+          (discard (ident k))
+          (expr (break))))))
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (binding const q
+            (handler
+              (ident Log)
+              (clause log
+                (params level msg)
+                (if
+                  (branch
+                    (cond (binary is (ident level) (dot Warn)))
+                    (block
+                      (assign += (places (ident warnings)) (int 1))))))))
+          (binding var r
+            (with (handlers (ident q))
+              (block
+                (expr (call (ident save) (ident doc))))))
+          (binding var h
+            (handler
+              (ident Abort)
+              (clause abort
+                (params)
+                (break)))))))))

@@ -1,0 +1,18 @@
+//! stage: parse
+// Declarations that are not declarations.
+
+a :: 1
+5 //~ ERROR expected a declaration, found integer literal
+b :: 2
+if x { } //~ ERROR expected a declaration, found keyword `if`
+c :: 3
+x := foo(1,, 2) //~ ERROR expected an expression, found `,`
+pub when X { } //~ ERROR `pub` cannot be applied to a `when` block
+d :: 4
+test "t" //~ ERROR expected `{` to begin a block, found newline
+e :: 5
+handler Log { } //~ ERROR expected `for` after the effect of a handler declaration, found `{`
+f :: 6
+pub @static_assert(true, "x") //~ ERROR `pub` cannot be applied to an intrinsic call
+test :: 7
+g :: 8

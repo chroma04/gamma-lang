@@ -1,0 +1,32 @@
+(file
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (expr
+            (for (label outer) (pats (bind a)) (ident xs)
+              (block
+                (expr (break (label outer)))
+                (expr (continue (label outer)))
+                (expr (break (label outer) (int 5)))
+                (expr (break (ident other)))
+                (expr (break (binary + (ident other) (int 1))))
+                (expr (break))
+                (expr (continue))
+                (while (label inner) (cond (call (ident go)))
+                  (block
+                    (expr (break (label outer)))
+                    (expr (continue (label inner))))))))
+          (expr (break (ident outer)))
+          (expr
+            (with (label w) (handlers (ident h))
+              (block
+                (expr (break (label w) (tuple))))))
+          (binding var x
+            (for (pats (bind a)) (ident xs)
+              (block
+                (expr (break (ident a))))))
+          (binding var g
+            (fn (params)
+              (block
+                (expr (break (ident outer)))))))))))

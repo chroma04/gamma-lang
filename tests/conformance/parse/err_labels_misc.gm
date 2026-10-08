@@ -1,0 +1,29 @@
+//! stage: parse
+// Labels, jumps and miscellaneous statement errors.
+
+f :: fn() {
+    outer: for a in xs {
+        continue outer
+        continue nowhere //~ ERROR `nowhere` is not a label
+    }
+    continue other //~ ERROR `other` is not a label
+    outer: x //~ ERROR expected `=` or `:` and an initializer after the type
+    break
+}
+
+g :: fn() {
+    l: while go() {
+        h := fn() {
+            continue l //~ ERROR `l` is not a label
+        }
+    }
+}
+
+h :: fn() {
+    a[1..=] //~ ERROR an inclusive range needs an upper bound
+    b[..=] //~ ERROR an inclusive range needs an upper bound
+    c := (1..) //~ ERROR expected an expression, found `)`
+    d := a.1.2.x
+    e := a.+ b //~ ERROR expected a field name or tuple index after `.`
+    ok := 1
+}

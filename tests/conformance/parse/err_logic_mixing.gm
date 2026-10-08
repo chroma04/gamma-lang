@@ -1,0 +1,16 @@
+//! stage: parse
+// 7.8 and A.5: `and` and `or` cannot be mixed without parentheses.
+
+f :: fn() {
+    a := x and y or z //~ ERROR cannot mix `and` and `or`
+    b := x or y and z //~ ERROR cannot mix `and` and `or`
+    c := (x and y) or z
+    d := x and y and z
+    e := x or y or z
+    if p and q or r { } //~ ERROR cannot mix `and` and `or`
+    if p or q and r { } //~ ERROR cannot mix `and` and `or`
+    if v := p and q or r { } //~ ERROR cannot mix `and` and `or`
+    if p and (q or r) { }
+    if p or q { }
+    while a and b or c { } //~ ERROR cannot mix `and` and `or`
+}

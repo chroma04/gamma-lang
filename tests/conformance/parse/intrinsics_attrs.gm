@@ -1,0 +1,42 @@
+//! stage: parse
+// Spec 19.5-19.6, 20: intrinsics and attributes.
+
+f :: fn(p: ^u32, q: ^const u32) {
+    x := @volatile_load(q)
+    @volatile_store(p, 5)
+    @asm("nop", (), (), ())
+    a := @atomic_load(p, .SeqCst)
+    @atomic_store(p, 1, .Release)
+    old := @atomic_swap(p, 2, .AcqRel)
+    r := @atomic_cas(p, 1, 2, .SeqCst, .Relaxed)
+    @atomic_add(p, 1, .Relaxed)
+    @fence(.SeqCst)
+    t := @type_of(x)
+    n := @type_name(u32)
+    loc := @location()
+    h := @hash(x, 0)
+    off := @offset_of(Header, length)
+    if @expect_true(a is 0) { }
+    @prefetch(q)
+    c := @clz(x) + @ctz(x) + @popcount(x) + @bswap(x) + @bitreverse(x)
+    s := @sqrt(2.0) + @fma(1.0, 2.0, 3.0)
+    @compile_error("nope")
+    @unreachable()
+    @write(sink, "{} at {}", (name, pos))
+    y: @type_of(x) = 0
+}
+
+Packed :: #packed struct { a: u8; b: u32 }
+Flags :: #bits(u8) struct { a, b: bool; rest: u6 }
+Un :: #c_union union { i: i32, f: f32 }
+fp :: #callconv(.C) ^fn(c_int) -> c_int
+fp2 :: ?#callconv(.C) ^fn(c_int) -> c_int
+
+#align(16)
+Vec4 :: struct { v: [4]f32 }
+#deprecated("old")
+#inline
+#cold
+#noinline
+#fast_math
+fm :: fn(a: f32) -> f32 => a * 2.0

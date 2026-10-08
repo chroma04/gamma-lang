@@ -1,0 +1,63 @@
+//! stage: parse
+// Spec 10: optionals and results.
+
+LoadError :: union { Parse: ParseError, Io: IoError, Missing }
+
+load_config :: fn(path: string) -> LoadError!Config \ {Alloc, Fs} {
+    text := try read_file(path)        // IoError lifts to .Io
+    port := try parse_u16(text)        // ParseError lifts to .Parse
+    cfg := Config(port: port)
+    return cfg
+}
+
+parse_digits :: fn(s: string) -> ParseError!u32 {
+    n := 0u32
+    for c in bytes(s) {
+        d := digit(c) else return !.BadDigit(at: 0)
+        n = n *? 10 else return !.TooBig
+        n = n +? d else return !.TooBig
+    }
+    return n
+}
+
+fallbacks :: fn() {
+    biggest := max(scores) else 0
+    v := lookup(k) else d
+    w := a else b else c
+    x := risky() else e => fallback(e)
+    y := risky() else e => { log(e); 0 }
+    z := (try x) else 0
+    t := try (lookup(k) else !.Missing)
+    o := ??i32(null)
+    p := ?i32(null)
+    q := E!?T
+    if v := maybe() { use(v) }
+    u := maybe()?
+    r := risky()!
+    s := first(xs)? + second(xs)!
+    e1 := !.TooBig
+    e2 := !err
+    e3 := !(a: 1, b: 2)
+}
+
+iterator_errors :: fn(src: string) -> LexError!() {
+    try for t in tokenize(src) {
+        if t is .Eof { break () }        // break with a success value
+        push_token(t)
+    }
+    return ()
+}
+
+pick :: fn(r: IoError!usize) -> usize {
+    if r is not !_ { return r! }
+    return 0
+}
+
+unwrap_chain :: fn(c: Callbacks) {
+    c.on_event!(1)
+    c.table![0]
+    c.table!.len
+    c.next?.next?.value
+    f(x)!(y)
+    g()!
+}

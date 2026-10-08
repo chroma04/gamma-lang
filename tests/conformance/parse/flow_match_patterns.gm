@@ -1,0 +1,119 @@
+//! stage: parse
+// Spec 8.6 and 9.1: match arms and patterns.
+
+PI :: 3.14159
+
+area :: fn(s: Shape) -> f32 => match s {
+    .Circle(r)            => PI * r * r
+    .Rect(w, h) if w is h => w * w
+    .Rect(w, h)           => w * h
+    .Empty                => 0
+}
+
+classify :: fn(n: i32) -> string => match n {
+    0 => "zero"
+    1, 2, 3 => "small"
+    4..10 => "medium"
+    10..=99 => "large"
+    -1 => "minus one"
+    -5..-2 => "negative"
+    limits.MAX => "max"
+    limits.MIN..limits.LOW => "min range"
+    x if x > 1000 => "huge"
+    _ => "other"
+}
+
+describe :: fn(v: ?Shape) -> string {
+    return match v {
+        null => "nothing"
+        .Circle(r) if r > 10 => "big circle"
+        .Circle(_) => "circle"
+        Shape.Rect(w: a, h: b) => "rect"
+        Shape.Empty => "empty"
+        _ => "other"
+    }
+}
+
+results :: fn(r: IoError!usize) {
+    match r {
+        !.NotFound => report("missing")
+        !.Other(code) => report(code)
+        !e => report(e)
+        0 => done()
+        n => use(n)
+    }
+}
+
+structs :: fn(p: Point, t: (i32, i32), n: (a: i32, b: i32)) {
+    match p {
+        Point(x: 0, y: 0) => origin()
+        Point(x, y: 0) => on_axis(x)
+        Point(x: px, y: py) => at(px, py)
+    }
+    match t {
+        (0, 0) => origin()
+        (x, 0) => on_axis(x)
+        (_, y) => other(y)
+    }
+    match n {
+        (a: 0, b: _) => zero_a()
+        (a: x, b: y) => both(x, y)
+    }
+    match () {
+        () => unit()
+    }
+}
+
+literals :: fn(c: u8, s: string, b: bool) {
+    match c {
+        'a' => a()
+        'a'..='z' => lower()
+        '\n', '\r' => newline()
+        0x41 => hex()
+        _ => {}
+    }
+    match s {
+        "admin" => admin()
+        "root", "wheel" => root()
+        _ => user()
+    }
+    match b {
+        true => yes()
+        false => no()
+    }
+}
+
+blocks :: fn(x: Shape) -> i32 {
+    y := match x {
+        .Circle(r) => {
+            t := r * 2
+            t + 1
+        }
+        .Rect(w, h) => { w * h }
+        .Empty => 0
+    }
+    match y {
+        0 => { return 1 }
+        _ => return 2
+    }
+}
+
+nested :: fn(a: Shape, b: Shape) {
+    match a {
+        .Circle(_) => match b {
+            .Circle(_) => both()
+            _ => first()
+        }
+        _ => if x { y() } else { z() }
+    }
+}
+
+chain :: fn(xs: []i32) -> i32 {
+    return match xs.len {
+        0 => 0
+        1 => xs[0]
+        _ => (xs
+            .first()
+            .unwrap_or(0))
+    }
+}

@@ -28,7 +28,11 @@ pub struct Target {
 impl Target {
     /// The target the compiler itself runs on.
     pub fn host() -> Target {
-        Target { ptr_bytes: std::mem::size_of::<usize>() as u64, little_endian: cfg!(target_endian = "little"), int128_align: 16 }
+        Target {
+            ptr_bytes: std::mem::size_of::<usize>() as u64,
+            little_endian: cfg!(target_endian = "little"),
+            int128_align: 16,
+        }
     }
 
     pub fn ptr_bits(&self) -> u32 {

@@ -1,0 +1,56 @@
+(file
+  (item
+    (binding const f1
+      (fn-type (params (param (names) (ty (ident i32))) (param (names) (ty (ident u8))))
+        (ret (ident bool)))))
+  (item
+    (binding const f2
+      (fn-type (params (param (names a b) (ty (ptr-type const (ident T)))))
+        (ret (ident bool)))))
+  (item
+    (binding const f3
+      (fn (params (param (names a) (ty (ident i32)))) (ret (ident i32))
+        (block
+          (expr (return (ident a)))))))
+  (item
+    (binding const f4 (fn (params (param (names a b))) (=> (binary + (ident a) (ident b))))))
+  (item
+    (binding const f5
+      (fn-type (params) (effects (ident Out) (call (ident Yield) (ident i32))))))
+  (item
+    (binding const f6
+      (fn (params) (ret (error-union-type (ident E) (ident T))) (effects (ident Alloc))
+        (block))))
+  (item
+    (binding const f7
+      (fn
+        (params (param (names T) (ty (ident type)))
+          (param (names n) comptime (ty (ident usize)))
+          (param (names x) (ty (ident u8)) (default (int 0))))
+        (where (constraint Ord (ident T)) (constraint Int (ident T)))
+        (block))))
+  (item
+    (binding const f8
+      (ptr-type
+        (fn-type (params (param (names) (ty (ident rawptr)))) (ret (ident never))
+          (effects (ident Async))))))
+  (item
+    (binding const f9
+      (fn-type (params (param (names fmt) (ty (ident cstring)))) variadic
+        (ret (ident c_int)))))
+  (item
+    (binding const f10
+      (fn-type
+        (params (param (names) (ty (call (ident List) (ident T))))
+          (param (names) (ty (field (ident m) U)))
+          (param (names) (ty (optional-type (ident V))))
+          (param (names)
+            (ty (fn-type (params (param (names) (ty (ident A)))) (ret (ident B)))))))))
+  (item
+    (binding const f11 (fn (params (param (names x))) (=> (ident x)))))
+  (item
+    (binding const f12
+      (fn-type (params (param (names a b) (ty (ident i32))) (param (names) (ty (ident c))))
+        (ret (ident i32)))))
+  (item
+    (binding const f13 (fn-type (params) (ret (fn-type (params) (ret (ident i32))))))))
