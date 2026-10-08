@@ -5,6 +5,7 @@
 pub mod diag;
 pub mod layout;
 pub mod driver;
+pub mod interp;
 pub mod source;
 pub mod symbol;
 pub mod syntax;

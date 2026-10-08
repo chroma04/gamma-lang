@@ -469,7 +469,7 @@ pub enum ExprKind {
     /// `@write(sink, template, args)`: `pieces` are the literal parts of the template,
     /// interleaved with `args` (`pieces.len() == args.len() + 1`).
     Write {
-        sink: Box<Expr>,
+        sink: WriteSink,
         pieces: Vec<Rc<[u8]>>,
         args: Vec<Expr>,
     },
