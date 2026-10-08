@@ -1,0 +1,4 @@
+live 20 after 2 allocations
+live 0 after 2 allocations
+live 8 after 4 allocations
+live 0

@@ -311,9 +311,14 @@ impl<'a> Machine<'a> {
                 self.tr(span, self.hash_val(arg_tys[0], &v[0], &mut h))?;
                 Ok(self.int_bytes(res_ty, &Int::from_u128(h as u128)))
             }
-            Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last | Builtin::RangeLen | Builtin::Assert => {
-                self.trap(span, "internal error: builtin needs special evaluation")
-            }
+            Builtin::Get
+            | Builtin::GetPtr
+            | Builtin::First
+            | Builtin::Last
+            | Builtin::RangeLen
+            | Builtin::HeapAlloc
+            | Builtin::HeapFree
+            | Builtin::Assert => self.trap(span, "internal error: builtin needs special evaluation"),
         }
     }
 

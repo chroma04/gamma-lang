@@ -26,10 +26,10 @@ under active construction:
 | --- | --- |
 | Lexer (spec §2) | implemented |
 | Parser (spec Appendix A) | implemented |
-| Semantic analysis | core language; effects, generics and modules in progress |
+| Semantic analysis | core language, effects and handlers, generics; modules, `when` and compile-time value parameters in progress |
 | Interpreter / compile-time evaluator | implemented (fibers and foreign calls pending) |
 | Native code generation (via C) | planned |
-| Standard library | planned |
+| Standard library | core prelude (output, environment, iterators, allocation, lists); the rest planned |
 
 ## Building
 

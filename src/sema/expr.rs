@@ -654,6 +654,10 @@ impl<'a, 's> FnCx<'a, 's> {
         match name.name.as_str() {
             "size_of" | "align_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if super::generics::has_param(t) {
+                    let align = name.name.as_str() == "align_of";
+                    return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
+                }
                 let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
                 usize_const(if name.name.as_str() == "size_of" { size } else { align })
             }
@@ -672,6 +676,31 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
                 usize_const(off)
+            }
+            // Compiler-internal heap primitives behind the core library's heap allocator.
+            "heap_alloc" | "heap_free" if self.sema.modules[self.module.0 as usize].is_prelude => {
+                let mut vals = vec![];
+                let is_alloc = name.name.as_str() == "heap_alloc";
+                let tys: Vec<Ty> = if is_alloc {
+                    vec![Ty::usize(), Ty::usize()]
+                } else {
+                    vec![Ty::many_ptr(false, Ty::u8()), Ty::usize(), Ty::usize()]
+                };
+                for (i, t) in tys.iter().enumerate() {
+                    match args.get(i).map(|a| &a.kind) {
+                        Some(ast::ArgKind::Positional(e)) => {
+                            let v = self.expr(e, Some(*t));
+                            vals.push(self.coerce(v, *t));
+                        }
+                        _ => return error_expr(span),
+                    }
+                }
+                let (op, ty) = if is_alloc {
+                    (tir::Builtin::HeapAlloc, Ty::optional(Ty::many_ptr(false, Ty::u8())))
+                } else {
+                    (tir::Builtin::HeapFree, Ty::unit())
+                };
+                mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
             }
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };

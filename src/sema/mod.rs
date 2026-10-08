@@ -237,12 +237,20 @@ impl<'s> Sema<'s> {
         for id in ids {
             self.resolve_decl(id);
         }
+        // The core prelude is checked in full, so its errors surface even when unused.
+        if let Some(p) = self.prelude {
+            let mut ids: Vec<DeclId> = self.modules[p.0 as usize].scope.values().copied().collect();
+            ids.sort();
+            for id in ids {
+                self.resolve_decl(id);
+            }
+        }
         let clauses = self.declare_handlers();
+        self.find_main(root);
         self.drain_bodies();
         self.check_handler_clauses(clauses);
         self.drain_bodies();
         self.monomorphize();
-        self.find_main(root);
     }
 
     /// Checks queued function bodies until none remain.
@@ -277,11 +285,50 @@ impl<'s> Sema<'s> {
                         self.error(span, format!("`main` may only perform ambient effects, but performs `{}`", name));
                     }
                 }
-                self.prog.main = Some(f);
+                self.prog.main = Some(self.entry_point(f, &sig));
             }
             DeclValue::Error => {}
             _ => self.error(span, "`main` must be a function"),
         }
+    }
+
+    /// The function the runtime calls: `main`, wrapped so that `Alloc` is handled
+    /// by the system heap when `main` performs it (§3.7, §12.9).
+    fn entry_point(&mut self, main: FnId, sig: &FnSig) -> FnId {
+        let Some(alloc) = self.prog.ambient.alloc else { return main };
+        if !sig.effects.effects.iter().any(|e| e.effect == alloc) {
+            return main;
+        }
+        let Some(&heap) =
+            self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern("heap_allocator")))
+        else {
+            return main;
+        };
+        let DeclValue::Fn(heap) = self.resolve_decl(heap) else { return main };
+        let allocator = self.sigs[&heap].ret;
+        let decls = self.handlers_for(allocator);
+        let span = self.prog.fns[main.index()].span;
+        let effects = EffectSet::new(sig.effects.effects.iter().filter(|e| e.effect != alloc).cloned().collect());
+        let entry_sig =
+            FnSig { module: sig.module, params: vec![], ret: sig.ret, effects: effects.clone(), generics: vec![] };
+        let entry = self.new_fn(Symbol::intern("<entry>"), span, entry_sig, tir::FnKind::Named);
+        let call = |f: FnId, ty: Ty| tir::Expr {
+            ty,
+            kind: tir::ExprKind::Call { callee: tir::Callee::Fn(f), args: vec![] },
+            span,
+        };
+        let with = tir::Expr {
+            ty: sig.ret,
+            kind: tir::ExprKind::With {
+                label: tir::LabelId(0),
+                handlers: vec![tir::HandlerValue::Decl { decls, value: call(heap, allocator) }],
+                on: None,
+                body: Box::new(call(main, sig.ret)),
+            },
+            span,
+        };
+        self.prog.fns[entry.index()].body = Some(with);
+        entry
     }
 
     /// True if `e` is one of the ambient effects of §12.9.

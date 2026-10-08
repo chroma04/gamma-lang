@@ -674,6 +674,8 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         match &e.kind {
             tir::ExprKind::Local(l) => Some(self.locals[l.index()].mutable),
+            // Constants live in read-only static storage (§15.1).
+            tir::ExprKind::Const(_) => Some(false),
             tir::ExprKind::Upvar { levels, local } => Some(self.local_at(self.depth() - levels, *local).mutable),
             tir::ExprKind::Deref(p) => Some(match p.ty.kind() {
                 TyKind::Ptr { is_const, .. } => !is_const,

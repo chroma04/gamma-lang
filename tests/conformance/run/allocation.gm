@@ -1,0 +1,33 @@
+// Allocation through the core library (§15.2, §21.2, §21.5).
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    p := try new(i32, 5)
+    p^ += 1
+    print("new: {}\n", p^)
+    destroy(i32, p)
+
+    s := try make_fill(u8, 4, 7)
+    s[1] = 9
+    print("make_fill: {} {} {}\n", (s[0], s[1], s.len))
+    free(u8, s)
+
+    e := try make(u64, 0)
+    print("empty: {}\n", e.len)
+
+    l := list(i64)
+    defer l.deinit()
+    for i in 0..10 {
+        try l.push(i * i)
+    }
+    print("len {} cap {}\n", (l.items.len, l.cap))
+    total: i64 = 0
+    for x in each(l.items) { total += x }
+    print("sum {}\n", total)
+    print("pop {} len {}\n", (l.pop()?, l.items.len))
+    l.clear()
+    print("cleared {}\n", l.items.len)
+    match l.pop() {
+        null => print("empty pop\n")
+        x => print("got {}\n", x)
+    }
+    return ()
+}

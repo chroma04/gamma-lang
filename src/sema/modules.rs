@@ -22,14 +22,15 @@ impl<'s> Sema<'s> {
         {
             self.yield_effect = Some(e);
         }
-        for (name, slot) in [("Out", 0), ("Err", 1), ("Env", 2)] {
+        for (name, slot) in [("Out", 0), ("Err", 1), ("Env", 2), ("Alloc", 3)] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
             {
                 match slot {
                     0 => self.prog.ambient.out = Some(e),
                     1 => self.prog.ambient.err = Some(e),
-                    _ => self.prog.ambient.env = Some(e),
+                    2 => self.prog.ambient.env = Some(e),
+                    _ => self.prog.ambient.alloc = Some(e),
                 }
             }
         }

@@ -229,6 +229,15 @@ impl<'s> Sema<'s> {
             }
             _ => {}
         }
+        if let tir::ExprKind::SizeOf { of, align } = &e.kind {
+            let t = self.subst(*of, cx.map);
+            if !has_param(t) {
+                let (size, al) = self.with_layouts(|l| (l.size_of(t), l.align_of(t)));
+                e.kind = tir::ExprKind::Int((if *align { al } else { size }).into());
+            } else {
+                e.kind = tir::ExprKind::SizeOf { of: t, align: *align };
+            }
+        }
         if let tir::ExprKind::UntypedFloat(r) = &e.kind {
             let r = (**r).clone();
             match e.ty.kind() {

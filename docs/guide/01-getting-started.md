@@ -56,7 +56,7 @@ main :: fn() -> E!() \ {Out} { ... }
 
 ## The `gamma` tool
 
-> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, and formatted output with `print`. Effects beyond `Out`/`Err` (handlers, `with`, iterators), generics, imports and native compilation are still being built, so some examples in later chapters are rejected with a "not supported yet" message.
+> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, iterators, generics, and allocation with lists. Imports, maps, fibers, compile-time value parameters and native compilation are still being built, so some examples in later chapters are rejected with a "not supported yet" message.
 
 You build the tool from the repository with Cargo, then use it like this:
 

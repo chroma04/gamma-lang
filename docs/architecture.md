@@ -145,6 +145,24 @@ lowers each function body to TIR.
 | `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
+| `fnlit.rs` | function literals, captures and second-class rules |
+| `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations, `with`, `for` over iterators |
+| `generics.rs` | constraints, inference of type arguments, monomorphization |
+| `builtins.rs` | predeclared names built into the compiler (primitive type names) |
+
+### The core prelude and the entry point
+
+The core prelude (`lib/core/prelude.gm`) is ordinary Gamma source that every
+module sees. It declares the ambient effects (`Out`, `Err`, `Env`, `Alloc`), the
+standard iterators, allocation (`Allocator`, `new`, `make`, `free`, …) and
+`List`. A few intrinsics that reach the host, such as `@heap_alloc` and
+`@heap_free`, may only be used in the prelude. The whole prelude is checked on
+every compilation, so mistakes in it surface immediately.
+
+The program's entry is a synthesized function that calls `main`. When `main`
+performs `Alloc`, the entry installs the heap allocator around the call:
+`with heap_allocator() { main() }`. The ambient effects with host-provided
+handlers (`Out`, `Err`, `Env`) are installed by the runtime itself.
 
 ### Types
 

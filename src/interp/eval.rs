@@ -665,6 +665,41 @@ impl<'a> Machine<'a> {
                 };
                 self.trap(e.span, format!("assertion failed: {}", msg))
             }
+            Builtin::HeapAlloc => {
+                let sb = self.eval_bytes(a, &args[0])?;
+                let ab = self.eval_bytes(a, &args[1])?;
+                let size = self.int_of(args[0].ty, &sb).to_u64_sat();
+                let align = self.int_of(args[1].ty, &ab).to_u64_sat().max(1);
+                if !align.is_power_of_two() {
+                    return self.trap(e.span, format!("allocation alignment {} is not a power of two", align));
+                }
+                let addr = self.alloc_mem(e.span, size as usize, align, super::memory::AllocKind::Heap, true)?;
+                // Fresh storage is unspecified; Debug builds fill it with a pattern (§18.3).
+                if self.mode == super::Mode::Debug && size > 0 {
+                    let fill = vec![0xAAu8; size as usize];
+                    self.mem.init(addr, &fill).map_err(|m| super::value::trap_flow(e.span, m.message()))?;
+                }
+                Ok(Value::Bytes(self.make_some(e.ty, &self.ptr_bytes(addr))))
+            }
+            Builtin::HeapFree => {
+                let pb = self.eval_bytes(a, &args[0])?;
+                let sb = self.eval_bytes(a, &args[1])?;
+                let p = self.ptr_of(&pb);
+                let size = self.int_of(args[1].ty, &sb).to_u64_sat();
+                match self.mem.describe(p) {
+                    Some((base, sz, super::memory::AllocKind::Heap, true)) if base == p && sz == size => {
+                        self.mem.kill(base);
+                        Ok(Value::unit())
+                    }
+                    Some((_, _, super::memory::AllocKind::Heap, false)) => {
+                        self.trap(e.span, format!("double free of heap block {:#x}", p))
+                    }
+                    _ => self.trap(
+                        e.span,
+                        format!("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size),
+                    ),
+                }
+            }
             Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last => {
                 let (esz, elem_ty) = match e.ty.kind() {
                     TyKind::Optional(t) => match (op, t.kind()) {

@@ -275,6 +275,13 @@ pub enum ExprKind {
     /// A float constant of float type `ty`, already rounded to that type; stored as f64
     /// (exact for f16 and f32 values).
     Float(f64),
+    /// `@size_of(T)` (or `@align_of(T)` when `align`) of a type that mentions type
+    /// parameters; folded to a constant when the generic body is instantiated.
+    /// Never present in executable code.
+    SizeOf {
+        of: Ty,
+        align: bool,
+    },
     /// An untyped float literal's exact value. Exists only while semantic analysis
     /// is inferring literal types; never present in a finished [`Program`].
     UntypedFloat(Rc<num_rational::BigRational>),
@@ -758,6 +765,11 @@ pub enum Builtin {
     Assert,
     /// `@hash(x, seed)`.
     Hash,
+    /// Allocates `size` bytes aligned to `align` from the system heap → `?[^]u8`.
+    /// Used only by the core library's heap allocator.
+    HeapAlloc,
+    /// Frees a heap block `(p, size, align)` obtained from `HeapAlloc`.
+    HeapFree,
 }
 
 // ---------------------------------------------------------------------------

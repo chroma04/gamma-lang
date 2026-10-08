@@ -1,0 +1,40 @@
+// A user-defined allocator: counts bytes, delegating to the heap.
+Counter :: struct {
+    live: usize
+    allocs: u32
+    inner: Allocator
+}
+
+count_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    c := data.cast(^Counter)
+    c.live += size
+    c.allocs += 1
+    return c.inner.vt.alloc(c.inner.data, size, align)
+}
+
+count_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+count_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    c := data.cast(^Counter)
+    c.live -= size
+    c.inner.vt.free(c.inner.data, p, size, align)
+}
+
+COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_free)
+
+main :: fn() \ {Out, Alloc} {
+    c := Counter(live: 0, allocs: 0, inner: current())
+    with Allocator(data: &c, vt: &COUNTING) {
+        p := new(u64, 1) else return
+        s := make(i32, 3) else return
+        print("live {} after {} allocations\n", (c.live, c.allocs))
+        free(i32, s)
+        destroy(u64, p)
+    }
+    print("live {} after {} allocations\n", (c.live, c.allocs))
+    l := with Allocator(data: &c, vt: &COUNTING) { list(u8) }
+    for b in bytes("hello") { l.push(b) else return }
+    print("live {} after {} allocations\n", (c.live, c.allocs))
+    l.deinit()
+    print("live {}\n", c.live)
+}
