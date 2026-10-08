@@ -133,9 +133,23 @@ impl<'s> Sema<'s> {
         let ast::ItemKind::Binding(b) = &item.kind else { return };
         let ExprKind::Fn(lit) = &b.init.kind else { return };
         let sig = self.sigs[&fn_id].clone();
+        // A generic body is checked once, with its type parameters opaque (§16.1).
+        let scope_len = self.type_params.len();
+        for p in &sig.params {
+            if let Some(pid) = p.generic {
+                self.type_params.push((p.name, Ty::intern(TyKind::Param(pid))));
+            }
+        }
+        let numeric: Vec<_> =
+            sig.generics.iter().copied().filter(|p| self.param_has(*p, super::generics::Constraint::Num)).collect();
         let mut cx = FnCx::new(self, module, sig.ret, sig.effects.clone());
+        cx.fn_id = Some(fn_id);
+        cx.infer.numeric_params = numeric;
         let mut params = vec![];
         for p in &sig.params {
+            if p.generic.is_some() {
+                continue;
+            }
             let id = cx.new_local(p.name, p.ty, false, p.span);
             if p.name.as_str() != "_" {
                 cx.declare(p.name, LocalBinding::Var(id), p.span);
@@ -144,6 +158,7 @@ impl<'s> Sema<'s> {
         }
         let body = cx.fn_body(&lit.body);
         let (body, locals) = cx.finish(body);
+        self.type_params.truncate(scope_len);
         let def = &mut self.prog.fns[fn_id.index()];
         def.params = params;
         def.locals = locals;
@@ -212,6 +227,9 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         // Nested functions share this body's literal inference.
         for mut n in std::mem::take(&mut self.nested) {
+            if let Some(root) = self.fn_id {
+                self.sema.nested_owner.insert(n.fn_id, root);
+            }
             let body = self.finalize_nested(n.body);
             for l in &mut n.locals {
                 l.ty = self.infer.resolve(l.ty);

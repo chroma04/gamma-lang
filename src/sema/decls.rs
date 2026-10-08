@@ -156,11 +156,7 @@ impl<'s> Sema<'s> {
 
     /// Resolves the signature of a top-level function and queues its body.
     fn declare_fn(&mut self, module: ModuleId, name: ast::Ident, lit: &ast::FnLit, item: &Rc<ast::Item>) -> DeclValue {
-        if !lit.where_.is_empty() {
-            self.error(lit.span, "generic functions are not supported yet");
-            return DeclValue::Error;
-        }
-        let Some(sig) = self.resolve_fn_sig(module, &lit.sig, true) else { return DeclValue::Error };
+        let Some(sig) = self.resolve_fn_sig(module, &lit.sig, true, &lit.where_) else { return DeclValue::Error };
         let id = self.new_fn(name.name, name.span, sig, tir::FnKind::Named);
         self.pending_bodies.push(PendingBody { fn_id: id, module, item: item.clone() });
         DeclValue::Fn(id)
@@ -168,13 +164,21 @@ impl<'s> Sema<'s> {
 
     /// Resolves parameter types, return type and effect set. `literal` is true for
     /// function literals (parameter names required), false for function types.
-    pub fn resolve_fn_sig(&mut self, module: ModuleId, sig: &ast::FnSig, literal: bool) -> Option<FnSig> {
+    pub fn resolve_fn_sig(
+        &mut self,
+        module: ModuleId,
+        sig: &ast::FnSig,
+        literal: bool,
+        where_: &[ast::Constraint],
+    ) -> Option<FnSig> {
         let mut ok = true;
         let mut params = vec![];
+        let mut generics = vec![];
         let mut seen_default = false;
+        let scope_len = self.type_params.len();
         for p in &sig.params {
             if p.comptime {
-                self.error(p.span, "compile-time parameters are not supported yet");
+                self.error(p.span, "compile-time value parameters are not supported yet");
                 ok = false;
                 continue;
             }
@@ -183,22 +187,39 @@ impl<'s> Sema<'s> {
                 ok = false;
                 continue;
             };
-            let ty = self.resolve_type(module, ty_expr);
-            if ty == Ty::type_() {
-                self.error(ty_expr.span, "generic functions are not supported yet");
-                ok = false;
+            // `T: type` declares a type parameter, visible in the rest of the signature (§16.1).
+            if matches!(&ty_expr.kind, ExprKind::Ident(i) if i.name.as_str() == "type") {
+                if !literal {
+                    self.error(ty_expr.span, "a function type cannot have type parameters");
+                    ok = false;
+                    continue;
+                }
+                for n in &p.names {
+                    let pid = crate::types::ParamId::fresh(n.name);
+                    generics.push(pid);
+                    self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
+                    params.push(ParamInfo {
+                        name: n.name,
+                        ty: Ty::type_(),
+                        span: n.span,
+                        default: None,
+                        generic: Some(pid),
+                    });
+                }
+                continue;
             }
+            let ty = self.resolve_type(module, ty_expr);
             if p.default.is_some() {
                 seen_default = true;
             } else if seen_default && literal {
                 self.error(p.span, "parameters with defaults may be followed only by parameters with defaults");
             }
             if p.names.is_empty() {
-                params.push(ParamInfo { name: Symbol::intern("_"), ty, span: p.span, default: None });
+                params.push(ParamInfo { name: Symbol::intern("_"), ty, span: p.span, default: None, generic: None });
             }
             for n in &p.names {
                 let default = p.default.clone().map(Rc::new);
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default });
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None });
             }
         }
         if sig.variadic {
@@ -219,7 +240,11 @@ impl<'s> Sema<'s> {
             Some(list) => self.resolve_effect_set(module, list),
             None => EffectSet::empty(),
         };
-        ok.then_some(FnSig { module, params, ret, effects })
+        for c in where_ {
+            self.declare_constraint(module, c);
+        }
+        self.type_params.truncate(scope_len);
+        ok.then_some(FnSig { module, params, ret, effects, generics })
     }
 
     pub fn resolve_effect_set(&mut self, module: ModuleId, list: &[ast::Expr]) -> EffectSet {
@@ -311,7 +336,7 @@ impl<'s> Sema<'s> {
                     }
                 };
                 for n in &p.names {
-                    params.push(ParamInfo { name: n.name, ty, span: n.span, default: None });
+                    params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None });
                 }
             }
             let ret = op.ret.as_ref().map_or(Ty::unit(), |r| self.resolve_type(module, r));

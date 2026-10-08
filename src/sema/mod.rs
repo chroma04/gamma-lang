@@ -18,6 +18,7 @@ mod expr;
 mod finalize;
 mod fnlit;
 mod func;
+mod generics;
 mod handler_decl;
 mod infer;
 mod matching;
@@ -83,6 +84,8 @@ pub struct FnSig {
     pub params: Vec<ParamInfo>,
     pub ret: Ty,
     pub effects: EffectSet,
+    /// The type parameters, in order (empty unless the function is generic, §16.1).
+    pub generics: Vec<crate::types::ParamId>,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +95,8 @@ pub struct ParamInfo {
     pub span: Span,
     /// A default argument, as a constant expression evaluated at each call.
     pub default: Option<Rc<ast::Expr>>,
+    /// For a type parameter (`T: type`): its identity in the signature's types.
+    pub generic: Option<crate::types::ParamId>,
 }
 
 /// An effect declaration (§12.1).
@@ -154,6 +159,16 @@ pub struct Sema<'s> {
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
     /// its clauses may perform.
     pub handler_decl_effects: Vec<EffectSet>,
+    /// Constraints on type parameters (§16.3).
+    pub constraints: HashMap<crate::types::ParamId, Vec<generics::Constraint>>,
+    /// Instantiations of generic functions, by generic function and type arguments.
+    pub instances: HashMap<(FnId, Vec<Ty>), FnId>,
+    /// The generic function and type arguments of each instantiation.
+    pub instance_of: HashMap<FnId, (FnId, Vec<Ty>)>,
+    /// Instantiations whose bodies are still to be produced.
+    pub mono_queue: Vec<generics::MonoRequest>,
+    /// Nested functions (literals, clauses) and the outermost function they belong to.
+    pub nested_owner: HashMap<FnId, FnId>,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -188,6 +203,11 @@ impl<'s> Sema<'s> {
             handler_breaks: HashMap::new(),
             handler_items: vec![],
             handler_decl_effects: vec![],
+            constraints: HashMap::new(),
+            instances: HashMap::new(),
+            instance_of: HashMap::new(),
+            mono_queue: vec![],
+            nested_owner: HashMap::new(),
         }
     }
 
@@ -215,6 +235,7 @@ impl<'s> Sema<'s> {
         self.drain_bodies();
         self.check_handler_clauses(clauses);
         self.drain_bodies();
+        self.monomorphize();
         self.find_main(root);
     }
 

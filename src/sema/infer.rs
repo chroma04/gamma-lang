@@ -33,6 +33,8 @@ struct Var {
 #[derive(Default)]
 pub struct InferTable {
     vars: Vec<Var>,
+    /// Type parameters with a `Num` constraint, at which untyped literals are allowed (§16.3).
+    pub numeric_params: Vec<crate::types::ParamId>,
 }
 
 /// Why two types could not be unified.
@@ -109,7 +111,10 @@ impl InferTable {
         }
     }
 
-    fn compatible(var: &Var, ty: Ty) -> bool {
+    fn compatible(&self, var: &Var, ty: Ty) -> bool {
+        if let TyKind::Param(p) = ty.kind() {
+            return !var.unsigned && self.numeric_params.contains(p);
+        }
         match var.kind {
             VarKind::Float => ty.is_float(),
             VarKind::Int if var.unsigned => ty.is_unsigned_integer(),
@@ -149,7 +154,7 @@ impl InferTable {
 
     fn bind(&mut self, v: u32, ty: Ty) -> Result<(), Mismatch> {
         let r = self.root(v) as usize;
-        if !Self::compatible(&self.vars[r], ty) {
+        if !self.compatible(&self.vars[r], ty) {
             return Err(Mismatch);
         }
         self.vars[r].resolved = Some(ty);

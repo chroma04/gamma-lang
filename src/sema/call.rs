@@ -33,6 +33,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let Some(kind) = self.classify_callee(callee, expect) else { return error_expr(span) };
         match kind {
             CalleeKind::Fn(f) => {
+                if !self.sema.sigs[&f].generics.is_empty() {
+                    return self.generic_call(f, args, span);
+                }
                 let sig = self.sema.sigs[&f].clone();
                 let args = self.bind_args(&sig.params, sig.module, args, span, "function");
                 self.record_effects(&sig.effects, span);
@@ -60,7 +63,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 let params: Vec<ParamInfo> = sig
                     .params
                     .iter()
-                    .map(|&ty| ParamInfo { name: crate::symbol::Symbol::intern("_"), ty, span, default: None })
+                    .map(|&ty| ParamInfo {
+                        name: crate::symbol::Symbol::intern("_"),
+                        ty,
+                        span,
+                        default: None,
+                        generic: None,
+                    })
                     .collect();
                 let module = self.module;
                 let args = self.bind_args(&params, module, args, span, "function");

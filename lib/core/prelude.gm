@@ -23,3 +23,62 @@ pub Env :: effect {
     var: fn(name: string) -> ?string
     exit: esc(code: u8) -> never
 }
+
+// Standard iterators (§13.3, §21.4).
+
+/// The integers `lo, lo + 1, …, hi - 1`.
+pub range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+    i := lo
+    while i < hi {
+        yield(i)
+        i += 1
+    }
+}
+
+/// The integers `lo, …, hi`, without overflowing at `hi`; nothing if `lo > hi`.
+pub range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+    if lo > hi { return }
+    i := lo
+    while true {
+        yield(i)
+        if i is hi { return }
+        i += 1
+    }
+}
+
+/// The elements of `xs`, in order.
+pub each :: fn(T: type, xs: []const T) \ {Yield(T)} {
+    for x in xs { yield(x) }
+}
+
+/// Pointers to the elements of `xs`, for modifying them in place.
+pub each_ptr :: fn(T: type, xs: []T) \ {Yield(^T)} {
+    i: usize = 0
+    while i < xs.len {
+        yield(&xs[i])
+        i += 1
+    }
+}
+
+/// Each element with its index.
+pub enumerate :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} {
+    i: usize = 0
+    for x in xs {
+        yield((i: i, x: x))
+        i += 1
+    }
+}
+
+/// The elements of `xs`, last to first.
+pub reversed :: fn(T: type, xs: []const T) \ {Yield(T)} {
+    i := xs.len
+    while i > 0 {
+        i -= 1
+        yield(xs[i])
+    }
+}
+
+/// The bytes of a string.
+pub bytes :: fn(s: string) \ {Yield(u8)} {
+    for b in s { yield(b) }
+}

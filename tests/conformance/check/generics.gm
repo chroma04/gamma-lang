@@ -1,0 +1,42 @@
+//! stage: check
+// Generic functions are checked once, with type parameters opaque (§16.1, §16.3).
+max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := try xs.get(0)
+    for x in xs { if x > best { best = x } }
+    return best
+}
+
+no_ord :: fn(T: type, a, b: T) -> bool {
+    return a < b                            //~ ERROR are not ordered
+}
+
+no_eq :: fn(T: type, a, b: T) -> bool {
+    return a is b                           //~ ERROR `is` is not defined
+}
+
+no_num :: fn(T: type, a: T) -> T where Ord(T) {
+    return a + a                            //~ ERROR requires numeric operands
+}
+
+literal :: fn(T: type) -> T where Num(T) {
+    return 300
+}
+
+Shape :: struct { w: u32 }
+
+uses :: fn(xs: []const i32, ss: []const Shape) {
+    _ = max(xs)
+    _ = max(i32, xs)
+    _ = max(ss)                             //~ ERROR does not satisfy `Ord(T)`
+    _ = literal(u8)                         //~ ERROR does not fit in `u8`
+    _ = literal(u16)
+    _ = literal(f32)
+}
+
+infer :: fn(T: type) -> T where Num(T) => 0
+
+not_inferable :: fn() {
+    _ = infer()                             //~ ERROR cannot infer the type parameter `T`
+}
+
+main :: fn() {}

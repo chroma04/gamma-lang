@@ -30,6 +30,10 @@ pub fn subst(t: Ty, params: &[ParamId], args: &[GenericArg]) -> Ty {
 }
 
 /// Binds type parameters by matching a parameter type against an argument type.
+pub fn match_params_pub(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
+    match_params(pat, actual, binds)
+}
+
 fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
     if actual.has_infer() || actual.is_error() {
         return;
@@ -166,7 +170,13 @@ impl<'a, 's> FnCx<'a, 's> {
         let params = o
             .params
             .iter()
-            .map(|p| ParamInfo { name: p.name, ty: subst(p.ty, &info.params, &eref.args), span: p.span, default: None })
+            .map(|p| ParamInfo {
+                name: p.name,
+                ty: subst(p.ty, &info.params, &eref.args),
+                span: p.span,
+                default: None,
+                generic: None,
+            })
             .collect();
         (params, subst(o.ret, &info.params, &eref.args), o.kind)
     }
@@ -211,7 +221,8 @@ impl<'a, 's> FnCx<'a, 's> {
         if c.params.len() != params.len() {
             self.error(c.span, format!("the clause for `{}` takes {} parameter(s)", c.name.name, params.len()));
         }
-        let sig = FnSig { module: self.module, params: params.to_vec(), ret, effects: EffectSet::empty() };
+        let sig =
+            FnSig { module: self.module, params: params.to_vec(), ret, effects: EffectSet::empty(), generics: vec![] };
         let fn_id = self.sema.new_fn(c.name.name, c.span, sig, tir::FnKind::Clause);
         self.enter_fn(fn_id, ret, EffectSet::empty());
         self.clause = Some(info);
@@ -385,8 +396,14 @@ impl<'a, 's> FnCx<'a, 's> {
         self.sema.prog.handlers.push(tir::HandlerLit { effect: eref.clone(), clauses: vec![] });
         // The clause `yield(x) => { p :: x; B }`.
         let x = Symbol::intern("<item>");
-        let params = vec![ParamInfo { name: x, ty: elem, span, default: None }];
-        let sig = FnSig { module: self.module, params: params.clone(), ret: Ty::unit(), effects: EffectSet::empty() };
+        let params = vec![ParamInfo { name: x, ty: elem, span, default: None, generic: None }];
+        let sig = FnSig {
+            module: self.module,
+            params: params.clone(),
+            ret: Ty::unit(),
+            effects: EffectSet::empty(),
+            generics: vec![],
+        };
         let fn_id = self.sema.new_fn(Symbol::intern("<for body>"), span, sig, tir::FnKind::Clause);
         self.enter_fn(fn_id, Ty::unit(), EffectSet::empty());
         self.clause = Some(ClauseInfo {

@@ -87,7 +87,7 @@ impl<'s> Sema<'s> {
                     if *is_const {
                         self.error(e.span, "`^const fn` is not a type; function pointers are written `^fn(…)`");
                     }
-                    return match self.resolve_fn_sig(module, sig, false) {
+                    return match self.resolve_fn_sig(module, sig, false, &[]) {
                         Some(s) => Ty::intern(TyKind::FnPtr(Box::new(FnTy {
                             params: s.params.iter().map(|p| p.ty).collect(),
                             ret: s.ret,
@@ -117,7 +117,7 @@ impl<'s> Sema<'s> {
                 let ok = self.resolve_type(module, ok);
                 Ty::result(err, ok)
             }
-            ExprKind::FnType(sig) => match self.resolve_fn_sig(module, sig, false) {
+            ExprKind::FnType(sig) => match self.resolve_fn_sig(module, sig, false, &[]) {
                 Some(s) => Ty::intern(TyKind::Fn(Box::new(FnTy {
                     params: s.params.iter().map(|p| p.ty).collect(),
                     ret: s.ret,

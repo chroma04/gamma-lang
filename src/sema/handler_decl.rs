@@ -69,6 +69,7 @@ impl<'s> Sema<'s> {
                             ty: super::effects::subst(p.ty, &info.params, &eref.args),
                             span: p.span,
                             default: None,
+                            generic: None,
                         })
                         .collect();
                     (ps, super::effects::subst(o.ret, &info.params, &eref.args), o.kind)
@@ -76,9 +77,15 @@ impl<'s> Sema<'s> {
                 // The first clause parameter is the handler value itself.
                 params.insert(
                     0,
-                    ParamInfo { name: Symbol::intern("self"), ty: for_ty, span: h.for_ty.span, default: None },
+                    ParamInfo {
+                        name: Symbol::intern("self"),
+                        ty: for_ty,
+                        span: h.for_ty.span,
+                        default: None,
+                        generic: None,
+                    },
                 );
-                let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone() };
+                let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone(), generics: vec![] };
                 let fn_id = self.new_fn(*op, h.clauses[ci].span, sig, tir::FnKind::Clause);
                 clause_ids.push(fn_id);
                 pending.push(PendingClause {

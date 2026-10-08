@@ -45,7 +45,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         Ty::error()
                     }
                 };
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None });
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None });
             }
         }
         if let Some(sig) = &expected
@@ -69,7 +69,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let infer_ret = ret_known.is_none() && matches!(lit.body, ast::FnBody::Expr(_));
         let ret = ret_known.unwrap_or(Ty::unit());
         let module = self.module;
-        let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone() };
+        let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone(), generics: vec![] };
         let fn_name = name.unwrap_or_else(|| Symbol::intern("<fn>"));
         let fn_id = self.sema.new_fn(fn_name, span, sig, tir::FnKind::Literal);
         if let Some(n) = name {

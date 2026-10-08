@@ -81,7 +81,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             Obligation::Ord { ty, span } => {
                 let t = self.infer.resolve(ty);
-                if !t.is_error() && !self.is_ord(t) {
+                if !t.is_error() && !self.sema.has_ord(t) {
                     self.error(span, format!("values of type `{}` are not ordered (§7.5)", t));
                 }
             }
@@ -90,7 +90,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 if t.is_error() {
                     return;
                 }
-                let ok = if int_only {
+                use super::generics::Constraint as C;
+                let ok = if let TyKind::Param(p) = t.kind() {
+                    let p = *p;
+                    (if int_only { self.sema.param_has(p, C::Int) } else { self.sema.param_has(p, C::Num) })
+                        && (!signed_only || self.sema.param_has(p, C::Signed))
+                } else if int_only {
                     t.is_integer() && (!signed_only || t.is_signed_integer())
                 } else if signed_only {
                     t.is_signed_integer() || t.is_float()
@@ -113,6 +118,8 @@ impl<'a, 's> FnCx<'a, 's> {
         e.for_each_child_mut(&mut |c| self.fin_expr(c));
         e.ty = self.infer.resolve(e.ty);
         match &mut e.kind {
+            // Literals at a type parameter are checked per instantiation (§16.1).
+            ExprKind::Int(_) | ExprKind::UntypedFloat(_) if matches!(e.ty.kind(), TyKind::Param(_)) => {}
             ExprKind::Int(v) => {
                 if e.ty.is_float() {
                     let r = BigRational::from_integer(v.clone());
@@ -148,20 +155,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
             }
             _ => {}
-        }
-    }
-
-    /// The types `< <= > >=` apply to (§7.5).
-    pub fn is_ord(&self, t: Ty) -> bool {
-        match t.kind() {
-            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) => true,
-            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.is_ord(*e)),
-            TyKind::Array { elem, .. } | TyKind::Slice { elem, .. } => self.is_ord(*elem),
-            TyKind::ManyPtr { .. } => true,
-            TyKind::Adt(..) => {
-                self.sema.union_variants(t).is_some_and(|(vs, _)| vs.iter().all(|v| v.payload.is_none()))
-            }
-            _ => false,
         }
     }
 
