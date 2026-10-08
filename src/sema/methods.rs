@@ -18,7 +18,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // `U.from_tag(x)` on an enum type.
         if let Some(t) = self.type_of_name(base) {
             if name.name.as_str() == "from_tag" {
-                return self.from_tag(t, args, span);
+                return self.check_from_tag(t, args, span);
             }
             return self.construct_variant(t, name, Some(args), span);
         }
@@ -296,7 +296,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// `U.from_tag(x)` (§5.11).
-    fn from_tag(&mut self, u: Ty, args: &[ast::Arg], span: Span) -> Expr {
+    fn check_from_tag(&mut self, u: Ty, args: &[ast::Arg], span: Span) -> Expr {
         let Some((variants, tag)) = self.sema.union_variants(u) else {
             self.error(span, format!("`from_tag` is defined only for enums, not `{}`", u));
             return error_expr(span);
