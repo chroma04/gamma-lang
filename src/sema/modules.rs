@@ -22,13 +22,14 @@ impl<'s> Sema<'s> {
         {
             self.yield_effect = Some(e);
         }
-        for (name, slot) in [("Out", 0), ("Err", 1)] {
+        for (name, slot) in [("Out", 0), ("Err", 1), ("Env", 2)] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
             {
                 match slot {
                     0 => self.prog.ambient.out = Some(e),
-                    _ => self.prog.ambient.err = Some(e),
+                    1 => self.prog.ambient.err = Some(e),
+                    _ => self.prog.ambient.env = Some(e),
                 }
             }
         }
@@ -120,7 +121,7 @@ impl<'s> Sema<'s> {
                 }
             }
             ItemKind::When(w) => self.error(w.span, "top-level `when` is not supported yet"),
-            ItemKind::Handler(h) => self.error(h.span, "handler declarations are not supported yet"),
+            ItemKind::Handler(_) => self.handler_items.push((module, item.clone())),
             ItemKind::Test { name_span, .. } => self.error(*name_span, "tests are not supported yet"),
             ItemKind::Intrinsic(e) => self.error(e.span, "top-level intrinsic calls are not supported yet"),
         }

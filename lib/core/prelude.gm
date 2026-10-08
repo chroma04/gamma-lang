@@ -16,3 +16,10 @@ pub Err :: effect {
 pub Yield :: effect(T: type) {
     yield: esc(x: T)
 }
+
+/// Command-line arguments, environment variables and process exit (§12.9, §21.7).
+pub Env :: effect {
+    args: fn() -> []const string
+    var: fn(name: string) -> ?string
+    exit: esc(code: u8) -> never
+}

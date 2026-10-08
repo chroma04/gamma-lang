@@ -18,6 +18,7 @@ mod expr;
 mod finalize;
 mod fnlit;
 mod func;
+mod handler_decl;
 mod infer;
 mod matching;
 mod methods;
@@ -148,6 +149,11 @@ pub struct Sema<'s> {
     /// Types and locations of clause-level `break`s of each handler literal,
     /// checked against the value of the `with` that installs it.
     pub handler_breaks: HashMap<u32, Vec<(Ty, Span)>>,
+    /// Handler declarations (§12.6) found while loading modules.
+    handler_items: Vec<(ModuleId, Rc<ast::Item>)>,
+    /// For each declared handler (indexed like `prog.handler_decls`): the effects
+    /// its clauses may perform.
+    pub handler_decl_effects: Vec<EffectSet>,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -180,6 +186,8 @@ impl<'s> Sema<'s> {
             type_params: vec![],
             yield_effect: None,
             handler_breaks: HashMap::new(),
+            handler_items: vec![],
+            handler_decl_effects: vec![],
         }
     }
 
@@ -203,6 +211,9 @@ impl<'s> Sema<'s> {
         for id in ids {
             self.resolve_decl(id);
         }
+        let clauses = self.declare_handlers();
+        self.drain_bodies();
+        self.check_handler_clauses(clauses);
         self.drain_bodies();
         self.find_main(root);
     }

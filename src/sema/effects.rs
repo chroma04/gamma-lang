@@ -269,7 +269,24 @@ impl<'a, 's> FnCx<'a, 's> {
                     handlers.push(tir::HandlerValue::Literal(v));
                 }
                 TyKind::Error => {}
-                _ => self.error(h.span, format!("expected a handler, found a value of type `{}`", t)),
+                _ => {
+                    let decls = self.sema.handlers_for(t);
+                    if decls.is_empty() {
+                        self.error(h.span, format!("expected a handler, but no handler is declared for `{}`", t));
+                        continue;
+                    }
+                    for d in &decls {
+                        let eref = self.sema.prog.handler_decls[d.index()].effect.clone();
+                        if handled.contains(&eref) {
+                            self.error(h.span, format!("two handlers for `{}` in one `with`", eref.effect.name()));
+                        }
+                        handled.push(eref);
+                        // The clauses' effects are performed at the `with`, outside it (§12.6).
+                        let effs = self.sema.handler_decl_effects[d.index()].clone();
+                        self.record_effects(&effs, h.span);
+                    }
+                    handlers.push(tir::HandlerValue::Decl { decls, value: v });
+                }
             }
         }
         if let Some(on) = &w.on {

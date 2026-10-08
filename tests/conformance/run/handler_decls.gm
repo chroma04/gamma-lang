@@ -1,0 +1,35 @@
+// Handler declarations: a value of a type installs the handlers declared for it (§12.6).
+Log :: effect { log: fn(msg: string) }
+Fail :: effect { fail: esc(why: string) -> never }
+
+Counter :: struct { seen: u32, prefix: string }
+
+handler Log for ^Counter \ {Out} {
+    log(self, msg) => {
+        self.seen += 1
+        print("{}{}: {}\n", (self.prefix, self.seen, msg))
+    }
+}
+
+Bail :: struct { code: i32 }
+
+handler Fail for Bail \ {Out} {
+    fail(self, why) => {
+        print("failed: {}\n", why)
+        break self.code
+    }
+}
+
+step :: fn(n: i32) -> i32 \ {Log, Fail} {
+    log("step")
+    if n > 2 { fail("too big") }
+    return n * 10
+}
+
+main :: fn() \ {Out} {
+    c := Counter(seen: 0, prefix: "#")
+    a := with &c, Bail(code: -1) { step(1) + step(2) }
+    print("a = {}, seen {}\n", (a, c.seen))
+    b := with &c, Bail(code: -1) { step(3) }
+    print("b = {}, seen {}\n", (b, c.seen))
+}
