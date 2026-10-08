@@ -191,6 +191,9 @@ pub enum TyKind {
     Param(ParamId),
     /// An unresolved literal type variable.
     Infer(InferVar),
+    /// The anonymous second-class type of a handler literal (§5.15), identified
+    /// by the literal.
+    Handler(u32),
     /// The type of an erroneous expression; suppresses follow-on errors.
     Error,
 }
@@ -200,12 +203,13 @@ struct Interner {
     map: HashMap<&'static TyKind, Ty>,
     adt_names: Vec<Symbol>,
     effect_names: Vec<Symbol>,
+    param_names: Vec<Symbol>,
 }
 
 fn interner() -> &'static RwLock<Interner> {
     static I: OnceLock<RwLock<Interner>> = OnceLock::new();
     I.get_or_init(|| {
-        RwLock::new(Interner { kinds: vec![], map: HashMap::new(), adt_names: vec![], effect_names: vec![] })
+        RwLock::new(Interner { kinds: vec![], map: HashMap::new(), adt_names: vec![], effect_names: vec![], param_names: vec![] })
     })
 }
 
@@ -431,6 +435,19 @@ impl EffectId {
     }
 }
 
+impl ParamId {
+    /// Allocates a new type parameter with the given display name.
+    pub fn fresh(name: Symbol) -> ParamId {
+        let mut i = interner().write().unwrap();
+        i.param_names.push(name);
+        ParamId(i.param_names.len() as u32 - 1)
+    }
+
+    pub fn name(self) -> Symbol {
+        interner().read().unwrap().param_names[self.0 as usize]
+    }
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
@@ -490,7 +507,8 @@ impl fmt::Display for Ty {
                 Ok(())
             }
             TyKind::Cont(t) => write!(f, "cont({})", t),
-            TyKind::Param(p) => write!(f, "<param {}>", p.0),
+            TyKind::Param(p) => write!(f, "{}", p.name()),
+            TyKind::Handler(_) => f.write_str("handler"),
             TyKind::Infer(_) => f.write_str("{integer}"),
             TyKind::Error => f.write_str("{error}"),
         }

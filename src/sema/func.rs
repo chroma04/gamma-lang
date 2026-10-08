@@ -84,6 +84,20 @@ pub struct FnCx<'a, 's> {
     scope_depths: Vec<u32>,
     /// Nested function bodies, finalized together with the enclosing body.
     pub nested: Vec<NestedFn>,
+    /// Set while checking a handler clause (§12.5): how its exits behave.
+    pub clause: Option<ClauseInfo>,
+    /// Effects handled by enclosing `with`s (and `for` loops) of this body.
+    pub handled: Vec<EffectRef>,
+}
+
+/// What kind of handler clause the current frame is.
+#[derive(Clone, Debug)]
+pub struct ClauseInfo {
+    pub op_kind: ast::OpKind,
+    /// For the clause of a `for` loop's handler: the loop's label in the enclosing frame.
+    pub for_label: Option<(Option<Symbol>, LabelId)>,
+    /// The handler literal the clause belongs to.
+    pub handler: Option<tir::HandlerId>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested
@@ -99,6 +113,8 @@ pub struct SavedFrame {
     pub defer_label_base: usize,
     pub fn_id: Option<FnId>,
     pub captures: bool,
+    pub clause: Option<ClauseInfo>,
+    pub handled: Vec<EffectRef>,
 }
 
 /// A nested function checked as part of an enclosing body.
@@ -176,6 +192,8 @@ impl<'a, 's> FnCx<'a, 's> {
             outer: vec![],
             scope_depths: vec![0],
             nested: vec![],
+            clause: None,
+            handled: vec![],
         }
     }
 
@@ -224,6 +242,8 @@ impl<'a, 's> FnCx<'a, 's> {
             defer_label_base: std::mem::replace(&mut self.defer_label_base, 0),
             fn_id: self.fn_id.replace(fn_id),
             captures: std::mem::replace(&mut self.captures, false),
+            clause: self.clause.take(),
+            handled: std::mem::take(&mut self.handled),
         };
         self.outer.push(saved);
         self.push_scope();
@@ -244,6 +264,8 @@ impl<'a, 's> FnCx<'a, 's> {
         self.defer_label_base = saved.defer_label_base;
         self.fn_id = saved.fn_id;
         let captures = std::mem::replace(&mut self.captures, saved.captures);
+        self.clause = saved.clause;
+        self.handled = saved.handled;
         (locals, performed, captures)
     }
 

@@ -233,6 +233,26 @@ impl<'s> Sema<'s> {
     }
 
     pub fn resolve_effect_ref(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectRef> {
+        // `E(T1, …)`: an instantiation of a generic effect.
+        if let ExprKind::Call { callee, args, .. } = &e.kind {
+            let base = self.resolve_effect_ref(module, callee)?;
+            let n = self.effects[&base.effect].params.len();
+            if args.len() != n {
+                self.error(e.span, format!("`{}` takes {} type argument(s)", base.effect.name(), n));
+                return None;
+            }
+            let mut targs = vec![];
+            for a in args {
+                match &a.kind {
+                    ast::ArgKind::Positional(t) => targs.push(crate::types::GenericArg::Type(self.resolve_type(module, t))),
+                    _ => {
+                        self.error(a.span, "expected a type argument");
+                        return None;
+                    }
+                }
+            }
+            return Some(EffectRef { effect: base.effect, args: targs.into_boxed_slice() });
+        }
         if let ExprKind::Ident(id) = &e.kind {
             if id.name.as_str() == "Sys" {
                 self.error(e.span, "the `Sys` effect is not supported yet");
@@ -256,18 +276,27 @@ impl<'s> Sema<'s> {
     }
 
     fn declare_effect(&mut self, module: ModuleId, decl: DeclId, name: ast::Ident, lit: &ast::EffectLit) -> DeclValue {
-        if lit.params.is_some() {
-            self.error(lit.span, "generic effects are not supported yet");
-            return DeclValue::Error;
-        }
         let eff = EffectId::fresh(name.name);
+        // Type parameters (`effect(T: type)`), visible in the operation signatures.
+        let mut params = vec![];
+        for p in lit.params.iter().flatten() {
+            let is_type = p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
+            if !is_type {
+                self.error(p.span, "effect parameters other than types are not supported yet");
+            }
+            for n in &p.names {
+                let pid = crate::types::ParamId::fresh(n.name);
+                params.push(pid);
+                self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
+            }
+        }
         // Register the effect before resolving operation types, which may mention it.
-        self.effects.insert(eff, EffectInfo { name: name.name, module, ops: vec![] });
+        self.effects.insert(eff, EffectInfo { name: name.name, module, params: params.clone(), ops: vec![] });
         self.decls[decl.0 as usize].state = DeclState::Done(DeclValue::Effect(eff));
         let mut ops = vec![];
         for op in &lit.ops {
-            if op.kind != ast::OpKind::Fn {
-                self.error(op.span, "`esc` and `ctl` operations are not supported yet");
+            if op.kind == ast::OpKind::Ctl {
+                self.error(op.span, "`ctl` operations are not supported yet");
             }
             let mut params = vec![];
             for p in &op.params {
@@ -285,6 +314,8 @@ impl<'s> Sema<'s> {
             let ret = op.ret.as_ref().map_or(Ty::unit(), |r| self.resolve_type(module, r));
             ops.push(OpInfo { name: op.name.name, kind: op.kind, params, ret });
         }
+        let n = self.type_params.len() - params.len();
+        self.type_params.truncate(n);
         self.effects.get_mut(&eff).unwrap().ops = ops;
         DeclValue::Effect(eff)
     }

@@ -96,6 +96,8 @@ pub struct ParamInfo {
 pub struct EffectInfo {
     pub name: Symbol,
     pub module: ModuleId,
+    /// Type parameters of a generic effect (`Yield(T)`); operation types refer to them.
+    pub params: Vec<crate::types::ParamId>,
     pub ops: Vec<OpInfo>,
 }
 
@@ -138,6 +140,8 @@ pub struct Sema<'s> {
     /// Stack of declarations being resolved, for cycle reports.
     resolving: Vec<DeclId>,
     pub prelude: Option<ModuleId>,
+    /// Type parameters in scope while resolving types (innermost last).
+    pub type_params: Vec<(Symbol, Ty)>,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -167,6 +171,7 @@ impl<'s> Sema<'s> {
             pending_bodies: vec![],
             resolving: vec![],
             prelude: None,
+            type_params: vec![],
         }
     }
 

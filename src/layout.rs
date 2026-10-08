@@ -180,6 +180,7 @@ impl<'a> Layouts<'a> {
                 struct_layout(&[(Layout::scalar(1), None), (payload, None)], false, None)
             }
             TyKind::Fn(_) => Layout { size: 3 * p, align: p, offsets: vec![] },
+            TyKind::Handler(_) => Layout { size: 2 * p, align: p, offsets: vec![] },
             TyKind::Cont(_) => Layout { size: 2 * p, align: p, offsets: vec![] },
             TyKind::Adt(id, _) => match (self.adts)(*id) {
                 Some(def) => self.adt_layout(def),

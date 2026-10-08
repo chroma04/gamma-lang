@@ -39,6 +39,9 @@ impl<'s> Sema<'s> {
     pub fn resolve_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         match &e.kind {
             ExprKind::Ident(id) => {
+                if let Some((_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    return *t;
+                }
                 if let Some(d) = self.lookup_module_name(module, id.name) {
                     return match self.resolve_decl(d) {
                         DeclValue::Type(t) => t,
