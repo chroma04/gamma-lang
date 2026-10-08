@@ -2450,7 +2450,7 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | --- | --- |
 | `string` or `[]u8` as an argument itself | its bytes, unchanged |
 | integers | decimal |
-| floats | the shortest decimal that reads back as the same value; `nan`, `inf`, `-inf` |
+| floats | the shortest decimal that reads back as the same value at the argument's type, without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
 | `bool` | `true`, `false` |
 | enums | `.Name` |
 | tagged unions | `.Name(payload)`; a tuple payload's elements are written directly: `.Rect(w: 2, h: 3)` |

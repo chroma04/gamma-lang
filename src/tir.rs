@@ -22,7 +22,7 @@
 
 use crate::source::Span;
 use crate::symbol::Symbol;
-use crate::types::{AdtId, EffectRef, EffectSet, Ty};
+use crate::types::{AdtId, EffectId, EffectRef, EffectSet, Ty};
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -67,6 +67,21 @@ pub struct Program {
     pub adts: HashMap<AdtId, AdtDef>,
     /// The entry point, for executables.
     pub main: Option<FnId>,
+    /// The predeclared effects whose default handlers the runtime provides (§12.9).
+    pub ambient: Ambient,
+}
+
+/// Ids of the predeclared ambient effects, when the program uses them.
+#[derive(Debug, Default, Clone)]
+pub struct Ambient {
+    /// `Out { write_out: fn(bytes: []const u8) }`
+    pub out: Option<EffectId>,
+    /// `Err { write_err: fn(bytes: []const u8) }`
+    pub err: Option<EffectId>,
+    /// `Env { args, var, exit }` (operation indices 0, 1, 2)
+    pub env: Option<EffectId>,
+    /// `Alloc { current: fn() -> Allocator }`
+    pub alloc: Option<EffectId>,
 }
 
 impl Program {
@@ -176,6 +191,38 @@ pub struct ConstDef {
     pub span: Span,
     /// The initializer, evaluated once at compile time.
     pub init: Expr,
+    /// The value, once evaluated.
+    pub value: Option<ConstValue>,
+}
+
+/// A compile-time value in target layout. Pointers inside it point into static
+/// data and are recorded as relocations, since static data has no fixed address
+/// until the program is loaded or linked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConstValue {
+    pub ty: Ty,
+    pub bytes: Vec<u8>,
+    pub relocs: Vec<Reloc>,
+}
+
+/// A pointer stored at `offset` within a [`ConstValue`]: the address of
+/// `target` plus `addend` bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reloc {
+    pub offset: u64,
+    pub target: StaticData,
+    pub addend: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StaticData {
+    /// Read-only bytes such as a string literal's contents (a C string's
+    /// stored bytes include its NUL terminator).
+    Bytes(Rc<[u8]>),
+    /// The storage of another constant.
+    Const(ConstId),
+    /// The code address of a function (for function pointers).
+    Fn(FnId),
 }
 
 #[derive(Debug)]
@@ -426,6 +473,15 @@ pub enum ExprKind {
         pieces: Vec<Rc<[u8]>>,
         args: Vec<Expr>,
     },
+}
+
+/// Where `@write` sends its output.
+#[derive(Clone, Debug)]
+pub enum WriteSink {
+    /// Call a second-class function value `fn(bytes: []const u8)`.
+    Fn(Box<Expr>),
+    /// Perform an operation taking `[]const u8` (e.g. `Out.write_out` for `print`).
+    Perform { effect: EffectRef, op: u32 },
 }
 
 /// The target of a `break` or `continue`.
