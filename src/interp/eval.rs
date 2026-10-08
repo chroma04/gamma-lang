@@ -713,6 +713,78 @@ impl<'a> Machine<'a> {
                     ),
                 }
             }
+            // The interpreter runs one thread, so atomics are plain memory accesses (§19.6).
+            Builtin::AtomicLoad
+            | Builtin::AtomicStore
+            | Builtin::AtomicSwap
+            | Builtin::AtomicCas
+            | Builtin::AtomicRmw(_)
+            | Builtin::VolatileLoad
+            | Builtin::VolatileStore => {
+                let mut vals = Vec::with_capacity(args.len());
+                for x in args {
+                    vals.push(self.eval_bytes(a, x)?);
+                }
+                let addr = self.ptr_of(&vals[0]);
+                let ty = match args[0].ty.kind() {
+                    TyKind::Ptr { pointee, .. } => *pointee,
+                    _ => return self.trap(e.span, "internal error: atomic access through a non-pointer"),
+                };
+                let align = self.ti(ty).align;
+                let old = self.load_ty(e.span, addr, ty)?;
+                match op {
+                    Builtin::AtomicLoad | Builtin::VolatileLoad => Ok(Value::Bytes(old)),
+                    Builtin::AtomicStore | Builtin::VolatileStore => {
+                        self.store(e.span, addr, &vals[1], align)?;
+                        Ok(Value::unit())
+                    }
+                    Builtin::AtomicSwap => {
+                        self.store(e.span, addr, &vals[1], align)?;
+                        Ok(Value::Bytes(old))
+                    }
+                    Builtin::AtomicCas => {
+                        if self.tr(e.span, self.eq(ty, &old, &vals[1]))? {
+                            self.store(e.span, addr, &vals[2], align)?;
+                            Ok(Value::Bytes(self.make_none(e.ty)))
+                        } else {
+                            Ok(Value::Bytes(self.make_some(e.ty, &old)))
+                        }
+                    }
+                    Builtin::AtomicRmw(rmw) => {
+                        let (x, y) = (self.int_of(ty, &old), self.int_of(ty, &vals[1]));
+                        let (signed, bits) = self.ti(ty).int.unwrap_or((false, 8 * old.len() as u32));
+                        let r = match rmw {
+                            RmwOp::Add => x.add(&y),
+                            RmwOp::Sub => x.sub(&y),
+                            RmwOp::And => x.and(&y),
+                            RmwOp::Or => x.or(&y),
+                            RmwOp::Xor => x.xor(&y),
+                            RmwOp::Max => {
+                                if y.cmp(&x) == std::cmp::Ordering::Greater {
+                                    y
+                                } else {
+                                    x
+                                }
+                            }
+                            RmwOp::Min => {
+                                if y.cmp(&x) == std::cmp::Ordering::Less {
+                                    y
+                                } else {
+                                    x
+                                }
+                            }
+                        };
+                        let new = self.int_bytes(ty, &super::num::wrap(&r, signed, bits));
+                        self.store(e.span, addr, &new, align)?;
+                        Ok(Value::Bytes(old))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Builtin::Fence => {
+                self.eval_bytes(a, &args[0])?;
+                Ok(Value::unit())
+            }
             Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last => {
                 let (esz, elem_ty) = match e.ty.kind() {
                     TyKind::Optional(t) => match (op, t.kind()) {

@@ -501,6 +501,86 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(self.tmp(t, &format!("({hi} > {lo} ? (uintptr_t)({hi} - {lo}) : 0)")))
             }
             Builtin::CstrLen => Ok(self.tmp(t, &format!("(uintptr_t)strlen((const char *){})", vals[0]))),
+            Builtin::AtomicLoad
+            | Builtin::AtomicStore
+            | Builtin::AtomicSwap
+            | Builtin::AtomicCas
+            | Builtin::AtomicRmw(_)
+            | Builtin::VolatileLoad
+            | Builtin::VolatileStore => {
+                let TyKind::Ptr { pointee, .. } = at.kind() else { return unsupported(e.span, "this atomic") };
+                let elem = *pointee;
+                let c = self.g.ty.cty(elem);
+                let p = format!("(({} *){})", c, vals[0]);
+                let mut ords = vec![];
+                for (x, v) in args.iter().zip(&vals).skip(1) {
+                    if !matches!(x.ty.kind(), TyKind::Adt(..)) {
+                        continue;
+                    }
+                    let a = self.addr_of(x.ty, v);
+                    ords.push(format!("gm_ord[GM_LD(uint8_t, {})]", a));
+                }
+                match op {
+                    Builtin::VolatileLoad => Ok(self.tmp(t, &format!("*(volatile {} *){}", c, vals[0]))),
+                    Builtin::VolatileStore => {
+                        self.line(&format!("*(volatile {} *){} = {};", c, vals[0], vals[1]));
+                        Ok(self.unit())
+                    }
+                    Builtin::AtomicLoad => Ok(self.tmp(t, &format!("__atomic_load_n({p}, {})", ords[0]))),
+                    Builtin::AtomicStore => {
+                        self.line(&format!("__atomic_store_n({p}, {}, {});", vals[1], ords[0]));
+                        Ok(self.unit())
+                    }
+                    Builtin::AtomicSwap => {
+                        Ok(self.tmp(t, &format!("__atomic_exchange_n({p}, {}, {})", vals[1], ords[0])))
+                    }
+                    Builtin::AtomicCas => {
+                        let exp = self.tmp(elem, &vals[1]);
+                        let ok = self.tmp(
+                            Ty::bool(),
+                            &format!(
+                                "__atomic_compare_exchange_n({p}, &{exp}, {}, 0, {}, {})",
+                                vals[2], ords[0], ords[1]
+                            ),
+                        );
+                        let res = self.tmp_uninit(t);
+                        let none = self.make_none(t);
+                        let some = self.make_some(t, &exp);
+                        self.line(&format!("{res} = {ok} ? {none} : {some};"));
+                        Ok(res)
+                    }
+                    Builtin::AtomicRmw(rmw) => {
+                        use crate::tir::RmwOp;
+                        let f = match rmw {
+                            RmwOp::Add => Some("__atomic_fetch_add"),
+                            RmwOp::Sub => Some("__atomic_fetch_sub"),
+                            RmwOp::And => Some("__atomic_fetch_and"),
+                            RmwOp::Or => Some("__atomic_fetch_or"),
+                            RmwOp::Xor => Some("__atomic_fetch_xor"),
+                            RmwOp::Max | RmwOp::Min => None,
+                        };
+                        match f {
+                            Some(f) => Ok(self.tmp(t, &format!("{f}({p}, {}, {})", vals[1], ords[0]))),
+                            None => {
+                                let cmp = if rmw == RmwOp::Max { ">" } else { "<" };
+                                let old = self.tmp(elem, &format!("__atomic_load_n({p}, __ATOMIC_RELAXED)"));
+                                let v = &vals[1];
+                                self.line(&format!(
+                                    "while (!__atomic_compare_exchange_n({p}, &{old}, {v} {cmp} {old} ? {v} : {old}, 1, {}, __ATOMIC_RELAXED)) {{}}",
+                                    ords[0]
+                                ));
+                                Ok(old)
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Builtin::Fence => {
+                let a = self.addr_of(at, &vals[0]);
+                self.line(&format!("__atomic_thread_fence(gm_ord[GM_LD(uint8_t, {})]);", a));
+                Ok(self.unit())
+            }
             Builtin::Hash => {
                 let f = self.g.helpers.hash_fn(&mut self.g.ty, at);
                 let a = self.addr_of(at, &vals[0]);

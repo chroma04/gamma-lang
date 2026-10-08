@@ -230,3 +230,6 @@ run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env}) -> u8 \ {Out, Err, Env
     with Allocator(data: &t, vt: &TRACKING) { body() }
     return leaked(&t)
 }
+
+/// The memory order of an atomic operation (§19.6), as in C11.
+pub MemoryOrder :: union { Relaxed, Acquire, Release, AcqRel, SeqCst }

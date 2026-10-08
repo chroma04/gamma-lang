@@ -828,6 +828,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
+            "atomic_load" | "atomic_store" | "atomic_swap" | "atomic_cas" | "atomic_add" | "atomic_sub"
+            | "atomic_and" | "atomic_or" | "atomic_xor" | "atomic_max" | "atomic_min" | "fence" | "volatile_load"
+            | "volatile_store" => self.atomic(name.name.as_str(), args, span),
             "unreachable" => {
                 mk(Ty::never(), tir::ExprKind::Builtin { op: tir::Builtin::Unreachable, args: vec![] }, span)
             }
@@ -1440,5 +1443,108 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn eq_allowed(&self, t: Ty) -> bool {
         self.sema.has_eq(t) || (self.sema.modules[self.module.0 as usize].is_prelude && super::generics::has_param(t))
+    }
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// The atomic (§19.6) and volatile (§19.5) intrinsics.
+    fn atomic(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
+        use tir::{Builtin as B, RmwOp};
+        let (op, n_values, n_orders, writes) = match name {
+            "atomic_load" => (B::AtomicLoad, 0, 1, false),
+            "atomic_store" => (B::AtomicStore, 1, 1, true),
+            "atomic_swap" => (B::AtomicSwap, 1, 1, true),
+            "atomic_cas" => (B::AtomicCas, 2, 2, true),
+            "atomic_add" => (B::AtomicRmw(RmwOp::Add), 1, 1, true),
+            "atomic_sub" => (B::AtomicRmw(RmwOp::Sub), 1, 1, true),
+            "atomic_and" => (B::AtomicRmw(RmwOp::And), 1, 1, true),
+            "atomic_or" => (B::AtomicRmw(RmwOp::Or), 1, 1, true),
+            "atomic_xor" => (B::AtomicRmw(RmwOp::Xor), 1, 1, true),
+            "atomic_max" => (B::AtomicRmw(RmwOp::Max), 1, 1, true),
+            "atomic_min" => (B::AtomicRmw(RmwOp::Min), 1, 1, true),
+            "fence" => (B::Fence, 0, 1, false),
+            "volatile_load" => (B::VolatileLoad, 0, 0, false),
+            _ => (B::VolatileStore, 1, 0, true),
+        };
+        let has_ptr = op != B::Fence;
+        let expected = has_ptr as usize + n_values + n_orders;
+        let exprs: Vec<&ast::Expr> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ast::ArgKind::Positional(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        if exprs.len() != expected || exprs.len() != args.len() {
+            self.error(span, format!("`@{}` takes {} positional arguments", name, expected));
+            return error_expr(span);
+        }
+        let order_ty = self.memory_order_ty();
+        let mut vals = vec![];
+        let mut elem = Ty::unit();
+        if has_ptr {
+            let p = self.expr(exprs[0], None);
+            let pt = self.infer.resolve(p.ty);
+            match pt.kind() {
+                TyKind::Ptr { is_const, pointee } => {
+                    if writes && *is_const {
+                        self.error(
+                            exprs[0].span,
+                            format!("`@{}` writes through the pointer, so it needs a `^T`, not `{}`", name, pt),
+                        );
+                    }
+                    elem = *pointee;
+                }
+                TyKind::Error => return error_expr(span),
+                _ => {
+                    self.error(exprs[0].span, format!("`@{}` needs a pointer `^T`, not `{}`", name, pt));
+                    return error_expr(span);
+                }
+            }
+            let volatile = matches!(op, B::VolatileLoad | B::VolatileStore);
+            let int = matches!(elem.kind(), TyKind::Int(i) if matches!(i.bits, 8 | 16 | 32 | 64))
+                || matches!(elem.kind(), TyKind::Usize | TyKind::Isize);
+            let ptr = matches!(elem.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr)
+                || matches!(elem.kind(), TyKind::Optional(t) if crate::layout::is_nullable_pointer(*t));
+            let ok = match op {
+                B::AtomicRmw(_) => int,
+                _ if volatile => int || ptr || elem.is_float() || self.sema.bits_struct_ty(elem).is_some(),
+                _ => int || ptr || elem.is_bool(),
+            };
+            if !ok {
+                self.error(exprs[0].span, format!("`@{}` is not defined on `{}`", name, elem));
+            }
+            vals.push(p);
+            if volatile {
+                let sys = self.sema.sys_set();
+                self.record_effects(&sys, span);
+            }
+        }
+        let first_value = has_ptr as usize;
+        for e in &exprs[first_value..first_value + n_values] {
+            let v = self.expr(e, Some(elem));
+            vals.push(self.coerce(v, elem));
+        }
+        for e in &exprs[first_value + n_values..] {
+            let v = self.expr(e, Some(order_ty));
+            vals.push(self.coerce(v, order_ty));
+        }
+        let ty = match op {
+            B::AtomicLoad | B::AtomicSwap | B::AtomicRmw(_) | B::VolatileLoad => elem,
+            B::AtomicCas => Ty::optional(elem),
+            _ => Ty::unit(),
+        };
+        mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+    }
+
+    /// The core library's `MemoryOrder`.
+    fn memory_order_ty(&mut self) -> Ty {
+        let d = self.sema.prelude.and_then(|p| {
+            self.sema.modules[p.0 as usize].scope.get(&crate::symbol::Symbol::intern("MemoryOrder")).copied()
+        });
+        match d.map(|d| self.sema.resolve_decl(d)) {
+            Some(DeclValue::Type(t)) => t,
+            _ => Ty::error(),
+        }
     }
 }

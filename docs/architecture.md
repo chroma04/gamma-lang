@@ -290,7 +290,18 @@ Structural `is`, ordering and `@hash` use C functions generated per type
 (`src/cgen/helpers.rs`) that agree with the interpreter, including the hash
 values, so hash maps iterate in the same order.
 
-Not yet supported natively: fibers (`with … on`, continuations), foreign
-functions, `#global` variables, `#bits` field access and integers wider than 128
-bits; the back end reports them as errors.
+**Calling conventions and foreign code.** A function whose effects are at most
+`{Sys}` takes no hidden parameters: it has the plain C calling convention, so it
+can be passed to C as a callback, and function pointer types with such effect
+sets are C function pointers (§19.1). Where a plain function is used as code
+of the hidden convention (a closure, or a pointer widened to a type with
+effects), the low bit of its address is set, and those calls test it. Foreign
+functions are declared under private C names bound to their symbols with asm
+labels, so they never clash with the runtime's C headers. The interpreter
+cannot call C, so `gamma run` uses this back end for programs with foreign
+functions.
+
+Not yet supported natively: fibers (`with … on`, continuations), structs passed
+by value to or from C, and integers wider than 128 bits; the back end reports
+them as errors.
 

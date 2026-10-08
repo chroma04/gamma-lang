@@ -320,7 +320,15 @@ impl<'a> Machine<'a> {
             | Builtin::HeapAlloc
             | Builtin::HeapFree
             | Builtin::Assert
-            | Builtin::Expect => self.trap(span, "internal error: builtin needs special evaluation"),
+            | Builtin::Expect
+            | Builtin::AtomicLoad
+            | Builtin::AtomicStore
+            | Builtin::AtomicSwap
+            | Builtin::AtomicCas
+            | Builtin::AtomicRmw(_)
+            | Builtin::Fence
+            | Builtin::VolatileLoad
+            | Builtin::VolatileStore => self.trap(span, "internal error: builtin needs special evaluation"),
         }
     }
 

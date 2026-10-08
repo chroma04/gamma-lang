@@ -695,6 +695,18 @@ pub enum BinOp {
     Ge,
 }
 
+/// The operation of an atomic read-modify-write (§19.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RmwOp {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Max,
+    Min,
+}
+
 /// Implicit coercions (§6.4), made explicit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coercion {
@@ -795,6 +807,24 @@ pub enum Builtin {
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).
     Unreachable,
+    /// `@atomic_load(p, order)` (§19.6). The memory orders are `MemoryOrder` values.
+    AtomicLoad,
+    /// `@atomic_store(p, v, order)`.
+    AtomicStore,
+    /// `@atomic_swap(p, v, order)` → the old value.
+    AtomicSwap,
+    /// `@atomic_cas(p, expected, new, success, failure)` → `?T`: `null` on success,
+    /// the observed value on failure.
+    AtomicCas,
+    /// `@atomic_add(p, v, order)` and the other read-modify-write operations → the
+    /// old value (wrapping arithmetic).
+    AtomicRmw(RmwOp),
+    /// `@fence(order)`.
+    Fence,
+    /// `@volatile_load(p)` (§19.5).
+    VolatileLoad,
+    /// `@volatile_store(p, v)`.
+    VolatileStore,
     /// Allocates `size` bytes aligned to `align` from the system heap → `?[^]u8`.
     /// Used only by the core library's heap allocator.
     HeapAlloc,

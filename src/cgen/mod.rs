@@ -134,6 +134,8 @@ enum { GM_LIT, GM_DECL, GM_NATIVE };
 typedef struct { void *code; void *env; gm_node *cx; } gm_closure;
 typedef struct { void *env; gm_node *cx; } gm_hval;
 enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT };
+/* C11 memory orders, indexed by the tag of `MemoryOrder` (§19.6). */
+static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
 typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
 static gm_unwind gm_unw;
 
