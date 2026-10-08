@@ -52,6 +52,7 @@ main :: fn() {
 | `//! exit: N` | expected exit status of a `run` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
+| `//~? ERROR text` | an error without a source location (e.g. a missing `main`) |
 
 Every error and warning the compiler reports must be expected by an annotation,
 and every annotation must be matched. A `run` test's expected standard output is
