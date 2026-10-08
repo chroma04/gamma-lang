@@ -275,6 +275,9 @@ pub enum ExprKind {
     /// A float constant of float type `ty`, already rounded to that type; stored as f64
     /// (exact for f16 and f32 values).
     Float(f64),
+    /// An untyped float literal's exact value. Exists only while semantic analysis
+    /// is inferring literal types; never present in a finished [`Program`].
+    UntypedFloat(Rc<num_rational::BigRational>),
     Bool(bool),
     /// A string literal: a `string` (slice) pointing at static bytes.
     Str(Rc<[u8]>),
@@ -429,7 +432,10 @@ pub enum ExprKind {
         lift: Option<Lift>,
         levels: u32,
     },
-    /// A loop: `while` (cond checked before each iteration) or a lowered `for`.
+    /// A loop: `while`, or a lowered `for`. Each iteration checks `cond` (all parts
+    /// must succeed; binding parts bind for the body), then runs `body`; after the body
+    /// completes normally or by `continue`, `step` (if any) runs, then the next iteration
+    /// begins. `break` leaves the loop without running `step`. The loop's value is `()`.
     Loop {
         label: LabelId,
         cond: Vec<CondPart>,
@@ -467,9 +473,10 @@ pub enum ExprKind {
         message: Box<Expr>,
     },
     /// `@write(sink, template, args)`: `pieces` are the literal parts of the template,
-    /// interleaved with `args` (`pieces.len() == args.len() + 1`).
+    /// interleaved with `args` (`pieces.len() == args.len() + 1`). Each argument is
+    /// formatted by its type (§21.6.1) and the output passed to the sink in pieces.
     Write {
-        sink: Box<Expr>,
+        sink: WriteSink,
         pieces: Vec<Rc<[u8]>>,
         args: Vec<Expr>,
     },
@@ -681,6 +688,9 @@ pub enum Coercion {
     FnPtrWiden,
     /// Applies the inner coercion inside an optional (`?^T` → `?^const T`).
     InOptional,
+    /// A coercion from an unresolved literal type, decided once inference is done.
+    /// Exists only during semantic analysis; never present in a finished [`Program`].
+    Unresolved,
 }
 
 /// Explicit conversions, builtin methods (§21.3) and intrinsics (§20.3).
@@ -738,4 +748,344 @@ pub enum Builtin {
     Assert,
     /// `@hash(x, seed)`.
     Hash,
+}
+
+// ---------------------------------------------------------------------------
+// Traversal
+// ---------------------------------------------------------------------------
+
+impl Expr {
+    /// Calls `f` on each direct sub-expression, including those inside
+    /// statements, conditions, match arms and patterns.
+    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+        match &self.kind {
+            ExprKind::Deref(a)
+            | ExprKind::AddrOf(a)
+            | ExprKind::AddrOfTemp(a)
+            | ExprKind::SliceLen(a)
+            | ExprKind::SlicePtr(a)
+            | ExprKind::MakeErr(a)
+            | ExprKind::Discard(a)
+            | ExprKind::ArrayFill(a)
+            | ExprKind::Unary { operand: a, .. }
+            | ExprKind::Coerce { expr: a, .. }
+            | ExprKind::Unwrap { expr: a, .. }
+            | ExprKind::Try { expr: a, .. }
+            | ExprKind::Field { base: a, .. }
+            | ExprKind::VariantPayload { base: a, .. }
+            | ExprKind::Return { value: a, .. }
+            | ExprKind::Trap { message: a } => f(a),
+            ExprKind::Index { base, index, .. } => {
+                f(base);
+                f(index);
+            }
+            ExprKind::Slice { base, lo, hi, .. } => {
+                f(base);
+                if let Some(x) = lo.as_deref() {
+                    f(x);
+                }
+                if let Some(x) = hi.as_deref() {
+                    f(x);
+                }
+            }
+            ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Logic { lhs, rhs, .. }
+            | ExprKind::Eq { lhs, rhs, .. }
+            | ExprKind::Else { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            ExprKind::In { elem, container, .. } => {
+                f(elem);
+                f(container);
+            }
+            ExprKind::Builtin { args, .. } | ExprKind::Aggregate(args) | ExprKind::Array(args) => {
+                args.iter().for_each(f)
+            }
+            ExprKind::Call { callee, args } => {
+                if let Callee::Indirect(c) = callee {
+                    f(c);
+                }
+                args.iter().for_each(f);
+            }
+            ExprKind::Variant { payload, .. } => {
+                if let Some(x) = payload.as_deref() {
+                    f(x);
+                }
+            }
+            ExprKind::Block(b) => b.for_each_child(f),
+            ExprKind::If { cond, then, else_ } => {
+                cond.iter().for_each(|c| c.for_each_child(f));
+                f(then);
+                if let Some(x) = else_.as_deref() {
+                    f(x);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                f(scrutinee);
+                for a in arms.iter() {
+                    a.pat.for_each_child(f);
+                    if let Some(g) = a.guard.iter().next() {
+                        f(g);
+                    }
+                    f(&a.body);
+                }
+            }
+            ExprKind::Loop { cond, body, step, .. } => {
+                cond.iter().for_each(|c| c.for_each_child(f));
+                body.for_each_child(f);
+                if let Some(x) = step.as_deref() {
+                    f(x);
+                }
+            }
+            ExprKind::Break { value, .. } => {
+                if let Some(x) = value.as_deref() {
+                    f(x);
+                }
+            }
+            ExprKind::With { handlers, on, body, .. } => {
+                for h in handlers.iter() {
+                    match h {
+                        HandlerValue::Literal(x) | HandlerValue::Decl { value: x, .. } => f(x),
+                    }
+                }
+                if let Some(x) = on.as_deref() {
+                    f(x);
+                }
+                f(body);
+            }
+            ExprKind::Resume { cont, value } => {
+                f(cont);
+                f(value);
+            }
+            ExprKind::Write { sink, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                args.iter().for_each(f);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Block {
+    /// Calls `f` on each expression directly inside the block's statements and tail.
+    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+        for s in self.stmts.iter() {
+            match s {
+                Stmt::Let { init, .. } => {
+                    if let Some(x) = init.iter().next() {
+                        f(x);
+                    }
+                }
+                Stmt::LetTuple { init, .. } => f(init),
+                Stmt::Assign { place, value } => {
+                    f(place);
+                    f(value);
+                }
+                Stmt::AssignTuple { places, value } => {
+                    places.iter().flatten().for_each(&mut *f);
+                    f(value);
+                }
+                Stmt::Expr(e) | Stmt::Defer { body: e, .. } => f(e),
+            }
+        }
+        if let Some(t) = self.tail.iter().next() {
+            f(t);
+        }
+    }
+}
+
+impl CondPart {
+    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+        match self {
+            CondPart::Bool(e) => f(e),
+            CondPart::Match { pat, value } => {
+                pat.for_each_child(f);
+                f(value);
+            }
+        }
+    }
+}
+
+impl Pat {
+    /// Calls `f` on the constant expressions inside the pattern.
+    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+        match &self.kind {
+            PatKind::Const(e) => f(e),
+            PatKind::Some(p) | PatKind::Ok(p) | PatKind::Err(p) => p.for_each_child(f),
+            PatKind::Variant { payload: Some(p), .. } => p.for_each_child(f),
+            PatKind::Fields(fs) => fs.iter().for_each(|(_, p)| p.for_each_child(f)),
+            _ => {}
+        }
+    }
+}
+
+impl Expr {
+    /// Calls `f` on each direct sub-expression, including those inside
+    /// statements, conditions, match arms and patterns.
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
+        match &mut self.kind {
+            ExprKind::Deref(a)
+            | ExprKind::AddrOf(a)
+            | ExprKind::AddrOfTemp(a)
+            | ExprKind::SliceLen(a)
+            | ExprKind::SlicePtr(a)
+            | ExprKind::MakeErr(a)
+            | ExprKind::Discard(a)
+            | ExprKind::ArrayFill(a)
+            | ExprKind::Unary { operand: a, .. }
+            | ExprKind::Coerce { expr: a, .. }
+            | ExprKind::Unwrap { expr: a, .. }
+            | ExprKind::Try { expr: a, .. }
+            | ExprKind::Field { base: a, .. }
+            | ExprKind::VariantPayload { base: a, .. }
+            | ExprKind::Return { value: a, .. }
+            | ExprKind::Trap { message: a } => f(a),
+            ExprKind::Index { base, index, .. } => {
+                f(base);
+                f(index);
+            }
+            ExprKind::Slice { base, lo, hi, .. } => {
+                f(base);
+                if let Some(x) = lo.as_deref_mut() {
+                    f(x);
+                }
+                if let Some(x) = hi.as_deref_mut() {
+                    f(x);
+                }
+            }
+            ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Logic { lhs, rhs, .. }
+            | ExprKind::Eq { lhs, rhs, .. }
+            | ExprKind::Else { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            ExprKind::In { elem, container, .. } => {
+                f(elem);
+                f(container);
+            }
+            ExprKind::Builtin { args, .. } | ExprKind::Aggregate(args) | ExprKind::Array(args) => {
+                args.iter_mut().for_each(f)
+            }
+            ExprKind::Call { callee, args } => {
+                if let Callee::Indirect(c) = callee {
+                    f(c);
+                }
+                args.iter_mut().for_each(f);
+            }
+            ExprKind::Variant { payload, .. } => {
+                if let Some(x) = payload.as_deref_mut() {
+                    f(x);
+                }
+            }
+            ExprKind::Block(b) => b.for_each_child_mut(f),
+            ExprKind::If { cond, then, else_ } => {
+                cond.iter_mut().for_each(|c| c.for_each_child_mut(f));
+                f(then);
+                if let Some(x) = else_.as_deref_mut() {
+                    f(x);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                f(scrutinee);
+                for a in arms.iter_mut() {
+                    a.pat.for_each_child_mut(f);
+                    if let Some(g) = a.guard.iter_mut().next() {
+                        f(g);
+                    }
+                    f(&mut a.body);
+                }
+            }
+            ExprKind::Loop { cond, body, step, .. } => {
+                cond.iter_mut().for_each(|c| c.for_each_child_mut(f));
+                body.for_each_child_mut(f);
+                if let Some(x) = step.as_deref_mut() {
+                    f(x);
+                }
+            }
+            ExprKind::Break { value, .. } => {
+                if let Some(x) = value.as_deref_mut() {
+                    f(x);
+                }
+            }
+            ExprKind::With { handlers, on, body, .. } => {
+                for h in handlers.iter_mut() {
+                    match h {
+                        HandlerValue::Literal(x) | HandlerValue::Decl { value: x, .. } => f(x),
+                    }
+                }
+                if let Some(x) = on.as_deref_mut() {
+                    f(x);
+                }
+                f(body);
+            }
+            ExprKind::Resume { cont, value } => {
+                f(cont);
+                f(value);
+            }
+            ExprKind::Write { sink, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                args.iter_mut().for_each(f);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Block {
+    /// Calls `f` on each expression directly inside the block's statements and tail.
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
+        for s in self.stmts.iter_mut() {
+            match s {
+                Stmt::Let { init, .. } => {
+                    if let Some(x) = init.iter_mut().next() {
+                        f(x);
+                    }
+                }
+                Stmt::LetTuple { init, .. } => f(init),
+                Stmt::Assign { place, value } => {
+                    f(place);
+                    f(value);
+                }
+                Stmt::AssignTuple { places, value } => {
+                    places.iter_mut().flatten().for_each(&mut *f);
+                    f(value);
+                }
+                Stmt::Expr(e) | Stmt::Defer { body: e, .. } => f(e),
+            }
+        }
+        if let Some(t) = self.tail.iter_mut().next() {
+            f(t);
+        }
+    }
+}
+
+impl CondPart {
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
+        match self {
+            CondPart::Bool(e) => f(e),
+            CondPart::Match { pat, value } => {
+                pat.for_each_child_mut(f);
+                f(value);
+            }
+        }
+    }
+}
+
+impl Pat {
+    /// Calls `f` on the constant expressions inside the pattern.
+    pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
+        match &mut self.kind {
+            PatKind::Const(e) => f(e),
+            PatKind::Some(p) | PatKind::Ok(p) | PatKind::Err(p) => p.for_each_child_mut(f),
+            PatKind::Variant { payload: Some(p), .. } => p.for_each_child_mut(f),
+            PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, p)| p.for_each_child_mut(f)),
+            _ => {}
+        }
+    }
 }

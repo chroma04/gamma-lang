@@ -11,7 +11,7 @@ usage: gamma <command> [options] <file>
 commands:
   lex     print the tokens of a source file
   parse   check the syntax of a source file (--dump prints the syntax tree)
-  check   type-check a program (not yet implemented)
+  check   type-check a program (a .gm file or a module directory)
   run     run a program (not yet implemented)
   help    print this message
   version print the compiler version
@@ -67,7 +67,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "lex" | "parse" => run_front_end(&opts),
-        "check" | "run" => {
+        "check" => check(&opts),
+        "run" => {
             eprintln!("gamma: `{}` is not implemented yet", opts.command);
             ExitCode::from(2)
         }
@@ -99,4 +100,15 @@ fn run_front_end(opts: &Options) -> ExitCode {
     print!("{}", out);
     eprint!("{}", sess.render_diagnostics(opts.format));
     if sess.diags.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn check(opts: &Options) -> ExitCode {
+    let Some(path) = &opts.file else {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    };
+    let mut sess = Session::new();
+    let ok = gamma::sema::analyze(&mut sess, path).is_some();
+    eprint!("{}", sess.render_diagnostics(opts.format));
+    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }

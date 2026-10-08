@@ -3,8 +3,10 @@
 //! See `docs/architecture.md` for an overview of the pipeline.
 
 pub mod diag;
-pub mod layout;
 pub mod driver;
+pub mod float;
+pub mod layout;
+pub mod sema;
 pub mod source;
 pub mod symbol;
 pub mod syntax;

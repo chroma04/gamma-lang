@@ -1,0 +1,13 @@
+// The core prelude: declarations of the core library (spec §21) that are
+// written in Gamma. Its public names are visible in every module without an
+// import, as part of the universe scope (§21.1).
+
+/// Standard output (§12.9, §21.7).
+pub Out :: effect {
+    write_out: fn(bytes: []const u8)
+}
+
+/// Standard error (§12.9, §21.7).
+pub Err :: effect {
+    write_err: fn(bytes: []const u8)
+}
