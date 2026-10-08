@@ -204,6 +204,8 @@ struct Interner {
     adt_names: Vec<Symbol>,
     effect_names: Vec<Symbol>,
     param_names: Vec<Symbol>,
+    /// For an instantiation of a generic struct or union: its template.
+    adt_templates: HashMap<AdtId, AdtId>,
 }
 
 fn interner() -> &'static RwLock<Interner> {
@@ -215,6 +217,7 @@ fn interner() -> &'static RwLock<Interner> {
             adt_names: vec![],
             effect_names: vec![],
             param_names: vec![],
+            adt_templates: HashMap::new(),
         })
     })
 }
@@ -431,6 +434,16 @@ impl AdtId {
 
     pub fn name(self) -> Symbol {
         interner().read().unwrap().adt_names[self.0 as usize]
+    }
+
+    /// Records that `self` is an instantiation of the generic type `template`.
+    pub fn set_template(self, template: AdtId) {
+        interner().write().unwrap().adt_templates.insert(self, template);
+    }
+
+    /// The generic type this is an instantiation of, or `self`.
+    pub fn template(self) -> AdtId {
+        interner().read().unwrap().adt_templates.get(&self).copied().unwrap_or(self)
     }
 }
 

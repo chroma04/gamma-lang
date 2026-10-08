@@ -51,6 +51,13 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
             match_params(*e1, *e2, binds);
             match_params(*o1, *o2, binds);
         }
+        (TyKind::Adt(a, x), TyKind::Adt(b, y)) if a.template() == b.template() && x.len() == y.len() => {
+            for (p, q) in x.iter().zip(y.iter()) {
+                if let (GenericArg::Type(p), GenericArg::Type(q)) = (p, q) {
+                    match_params(*p, *q, binds);
+                }
+            }
+        }
         (TyKind::Tuple { elems: x, .. }, TyKind::Tuple { elems: y, .. }) if x.len() == y.len() => {
             for (a, b) in x.iter().zip(y.iter()) {
                 match_params(*a, *b, binds);

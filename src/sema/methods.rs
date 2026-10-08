@@ -324,21 +324,28 @@ impl<'a, 's> FnCx<'a, 's> {
         let d = *self.sema.modules[module.0 as usize].scope.get(&name.name)?;
         let DeclValue::Fn(f) = self.sema.resolve_decl(d) else { return None };
         let sig = self.sema.sigs[&f].clone();
-        let Some(first) = sig.params.first() else {
+        // The receiver fills the first run-time parameter (§7.10).
+        let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) else {
             self.error(span, format!("`{}` takes no receiver", name.name));
             return Some(error_expr(span));
         };
+        // Types match exactly, or (for generic methods) as instantiations of one generic type.
+        let fits = |p: Ty, a: Ty| match (p.kind(), a.kind()) {
+            _ if p == a => true,
+            (TyKind::Adt(x, _), TyKind::Adt(y, _)) => x.template() == y.template(),
+            _ => false,
+        };
         // Receiver adjustments: `&e` for `^T`, `e^` for `T` given a pointer.
         let recv = match (first.ty.kind(), rty.kind()) {
-            _ if first.ty == rty => recv,
-            (TyKind::Ptr { is_const, pointee }, _) if *pointee == rty => match self.place_mutability(&recv) {
+            _ if fits(first.ty, rty) => recv,
+            (TyKind::Ptr { is_const, pointee }, _) if fits(*pointee, rty) => match self.place_mutability(&recv) {
                 Some(m) => {
                     if !m && !is_const {
                         self.error(recv.span, format!("`{}` needs a mutable receiver", name.name));
                     }
-                    mk(first.ty, tir::ExprKind::AddrOf(Box::new(recv)), span)
+                    mk(Ty::ptr(*is_const, rty), tir::ExprKind::AddrOf(Box::new(recv)), span)
                 }
-                None if *is_const => mk(first.ty, tir::ExprKind::AddrOfTemp(Box::new(recv)), span),
+                None if *is_const => mk(Ty::ptr(true, rty), tir::ExprKind::AddrOfTemp(Box::new(recv)), span),
                 None => {
                     self.error(
                         recv.span,
@@ -347,17 +354,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     return Some(error_expr(span));
                 }
             },
-            (TyKind::Ptr { is_const: true, pointee }, TyKind::Ptr { pointee: p2, .. }) if pointee == p2 => {
-                self.coerce(recv, first.ty)
+            (TyKind::Ptr { is_const: true, pointee }, TyKind::Ptr { pointee: p2, .. }) if fits(*pointee, *p2) => {
+                let t = Ty::ptr(true, *p2);
+                self.coerce(recv, t)
             }
-            (_, TyKind::Ptr { pointee, .. }) if *pointee == first.ty => {
-                mk(first.ty, tir::ExprKind::Deref(Box::new(recv)), span)
+            (_, TyKind::Ptr { pointee, .. }) if fits(first.ty, *pointee) => {
+                mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span)
             }
             _ => {
                 self.error(span, format!("`{}` cannot take a receiver of type `{}`", name.name, rty));
                 return Some(error_expr(span));
             }
         };
+        if !sig.generics.is_empty() {
+            return Some(self.generic_call_with(f, Some(recv), args, span));
+        }
         let rest: Vec<ParamInfo> = sig.params[1..].to_vec();
         let mut bound = vec![recv];
         bound.extend(self.bind_args(&rest, sig.module, args, span, "method"));

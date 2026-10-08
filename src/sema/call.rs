@@ -125,6 +125,11 @@ impl<'a, 's> FnCx<'a, 's> {
             let t = self.resolve_type(callee);
             return if t.is_error() { None } else { Some(CalleeKind::Type(t)) };
         }
+        if let ExprKind::Call { .. } = &callee.kind
+            && let Some(t) = self.type_of_name(callee)
+        {
+            return Some(CalleeKind::Type(t));
+        }
         Some(CalleeKind::Value(self.expr(callee, None)))
     }
 

@@ -29,6 +29,13 @@ impl<'s> Sema<'s> {
             | ExprKind::Struct(_)
             | ExprKind::Union(_) => true,
             ExprKind::Bang { lhs, .. } => self.looks_like_type(module, lhs),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
+                    Some(d) => matches!(self.resolve_decl(d), DeclValue::GenericType(_)),
+                    None => false,
+                },
+                _ => false,
+            },
             ExprKind::Attributed { inner, .. } => self.looks_like_type(module, inner),
             _ => false,
         }
@@ -127,6 +134,59 @@ impl<'s> Sema<'s> {
                 None => Ty::error(),
             },
             ExprKind::ContType(inner) => Ty::intern(TyKind::Cont(self.resolve_type(module, inner))),
+            // `G(args)` — an instantiation of a generic type (§16.4).
+            ExprKind::Call { callee, args, .. } => {
+                let template = match &callee.kind {
+                    ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
+                        Some(d) => match self.resolve_decl(d) {
+                            DeclValue::GenericType(t) => Some(t),
+                            DeclValue::Error => return Ty::error(),
+                            _ => None,
+                        },
+                        None => None,
+                    },
+                    _ => None,
+                };
+                let Some(template) = template else {
+                    self.error(e.span, "expected a type");
+                    return Ty::error();
+                };
+                let n = self.adt_params.get(&template).map_or(0, |p| p.len());
+                if args.len() != n {
+                    self.error(e.span, format!("`{}` takes {} type argument(s)", template.name(), n));
+                    return Ty::error();
+                }
+                let mut targs = vec![];
+                for a in args {
+                    match &a.kind {
+                        crate::syntax::ast::ArgKind::Positional(t) => targs.push(self.resolve_type(module, t)),
+                        _ => {
+                            self.error(a.span, "expected a type argument");
+                            return Ty::error();
+                        }
+                    }
+                }
+                if targs.iter().any(|t| t.is_error()) {
+                    return Ty::error();
+                }
+                for (pid, t) in self.adt_params[&template].clone().into_iter().zip(&targs) {
+                    for c in self.constraints.get(&pid).cloned().unwrap_or_default() {
+                        if !self.satisfies(*t, c) {
+                            self.error(
+                                e.span,
+                                format!(
+                                    "`{}` does not satisfy `{:?}({})` required by `{}`",
+                                    t,
+                                    c,
+                                    pid.name(),
+                                    template.name()
+                                ),
+                            );
+                        }
+                    }
+                }
+                self.instantiate_adt(template, targs)
+            }
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } => {
                 let name = match &e.kind {
                     ExprKind::Union(_) => "union",

@@ -14,6 +14,8 @@ use std::rc::Rc;
 pub enum DeclValue {
     /// A type (an alias, or a nominal `struct`/`union` literal).
     Type(Ty),
+    /// A generic struct or union, applied to arguments to give a type (§16.4).
+    GenericType(crate::types::AdtId),
     /// An effect.
     Effect(EffectId),
     /// A (non-generic) function.

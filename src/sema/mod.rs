@@ -169,6 +169,10 @@ pub struct Sema<'s> {
     pub mono_queue: Vec<generics::MonoRequest>,
     /// Nested functions (literals, clauses) and the outermost function they belong to.
     pub nested_owner: HashMap<FnId, FnId>,
+    /// Type parameters of generic structs and unions.
+    pub adt_params: HashMap<AdtId, Vec<crate::types::ParamId>>,
+    /// Instantiations of generic structs and unions.
+    pub adt_instances: HashMap<(AdtId, Vec<Ty>), AdtId>,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -208,6 +212,8 @@ impl<'s> Sema<'s> {
             instance_of: HashMap::new(),
             mono_queue: vec![],
             nested_owner: HashMap::new(),
+            adt_params: HashMap::new(),
+            adt_instances: HashMap::new(),
         }
     }
 

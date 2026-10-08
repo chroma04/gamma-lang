@@ -159,12 +159,12 @@ impl<'s> Sema<'s> {
             .params
             .iter()
             .filter(|p| p.generic.is_none())
-            .map(|p| ParamInfo { ty: subst_ty(p.ty, &map), ..p.clone() })
+            .map(|p| ParamInfo { ty: self.subst(p.ty, &map), ..p.clone() })
             .collect();
         let inst_sig = super::FnSig {
             module: sig.module,
             params,
-            ret: subst_ty(sig.ret, &map),
+            ret: self.subst(sig.ret, &map),
             effects: subst_effects(&sig.effects, &map),
             generics: vec![],
         };
@@ -201,8 +201,9 @@ impl<'s> Sema<'s> {
         let g = &self.prog.fns[req.generic.index()];
         let Some(body) = g.body.clone() else { return };
         let params = g.params.clone();
+        let locals = g.locals.clone();
         let locals: Vec<tir::LocalDecl> =
-            g.locals.iter().map(|l| tir::LocalDecl { ty: subst_ty(l.ty, &map), ..l.clone() }).collect();
+            locals.into_iter().map(|l| tir::LocalDecl { ty: self.subst(l.ty, &map), ..l }).collect();
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
         let body = self.mono_expr(&mut cx, body);
@@ -214,7 +215,7 @@ impl<'s> Sema<'s> {
 
     fn mono_expr(&mut self, cx: &mut MonoCx, mut e: Expr) -> Expr {
         let had_param = has_param(e.ty);
-        e.ty = subst_ty(e.ty, cx.map);
+        e.ty = self.subst(e.ty, cx.map);
         // Literals typed by a parameter are checked against each instantiation (§16.1).
         match &mut e.kind {
             tir::ExprKind::Int(v) if had_param => {
@@ -262,7 +263,7 @@ impl<'s> Sema<'s> {
             tir::ExprKind::With { handlers, .. } => {
                 for h in handlers.iter_mut() {
                     if let tir::HandlerValue::Decl { value, decls } = h {
-                        let t = subst_ty(value.ty, cx.map);
+                        let t = self.subst(value.ty, cx.map);
                         *decls = self.handlers_for(t);
                     }
                 }
@@ -279,25 +280,30 @@ impl<'s> Sema<'s> {
 
     /// Substitutes types inside the patterns directly owned by `e`.
     fn mono_pats(&mut self, cx: &mut MonoCx, e: &mut Expr) {
-        fn fix(p: &mut tir::Pat, map: &[(ParamId, Ty)]) {
-            p.ty = subst_ty(p.ty, map);
-            match &mut p.kind {
-                tir::PatKind::Some(q) | tir::PatKind::Ok(q) | tir::PatKind::Err(q) => fix(q, map),
-                tir::PatKind::Variant { payload: Some(q), .. } => fix(q, map),
-                tir::PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, q)| fix(q, map)),
-                tir::PatKind::Or(ps) => ps.iter_mut().for_each(|q| fix(q, map)),
-                _ => {}
-            }
-        }
         match &mut e.kind {
-            tir::ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| fix(&mut a.pat, cx.map)),
+            tir::ExprKind::Match { arms, .. } => {
+                for a in arms.iter_mut() {
+                    self.mono_pat(cx, &mut a.pat);
+                }
+            }
             tir::ExprKind::If { cond, .. } | tir::ExprKind::Loop { cond, .. } => {
                 for c in cond.iter_mut() {
                     if let tir::CondPart::Match { pat, .. } = c {
-                        fix(pat, cx.map);
+                        self.mono_pat(cx, pat);
                     }
                 }
             }
+            _ => {}
+        }
+    }
+
+    fn mono_pat(&mut self, cx: &mut MonoCx, p: &mut tir::Pat) {
+        p.ty = self.subst(p.ty, cx.map);
+        match &mut p.kind {
+            tir::PatKind::Some(q) | tir::PatKind::Ok(q) | tir::PatKind::Err(q) => self.mono_pat(cx, q),
+            tir::PatKind::Variant { payload: Some(q), .. } => self.mono_pat(cx, q),
+            tir::PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, q)| self.mono_pat(cx, q)),
+            tir::PatKind::Or(ps) => ps.iter_mut().for_each(|q| self.mono_pat(cx, q)),
             _ => {}
         }
     }
@@ -310,7 +316,7 @@ impl<'s> Sema<'s> {
         }
         if let Some((g, args)) = self.instance_of.get(&id).cloned() {
             if args.iter().any(|a| has_param(*a)) {
-                let args: Vec<Ty> = args.iter().map(|a| subst_ty(*a, cx.map)).collect();
+                let args: Vec<Ty> = args.iter().map(|a| self.subst(*a, cx.map)).collect();
                 return self.instantiate(g, args, cx.span);
             }
             return id;
@@ -323,8 +329,8 @@ impl<'s> Sema<'s> {
         let (name, span, kind, parent) = (def.name, def.span, def.kind, def.parent);
         let sig = self.sigs[&id].clone();
         let new_sig = super::FnSig {
-            params: sig.params.iter().map(|p| ParamInfo { ty: subst_ty(p.ty, cx.map), ..p.clone() }).collect(),
-            ret: subst_ty(sig.ret, cx.map),
+            params: sig.params.iter().map(|p| ParamInfo { ty: self.subst(p.ty, cx.map), ..p.clone() }).collect(),
+            ret: self.subst(sig.ret, cx.map),
             effects: subst_effects(&sig.effects, cx.map),
             ..sig
         };
@@ -332,10 +338,9 @@ impl<'s> Sema<'s> {
         cx.fn_map.insert(id, new_id);
         self.nested_owner.insert(new_id, new_id);
         let def = &self.prog.fns[id.index()];
-        let params = def.params.clone();
+        let (params, locals, body) = (def.params.clone(), def.locals.clone(), def.body.clone());
         let locals: Vec<tir::LocalDecl> =
-            def.locals.iter().map(|l| tir::LocalDecl { ty: subst_ty(l.ty, cx.map), ..l.clone() }).collect();
-        let body = def.body.clone();
+            locals.into_iter().map(|l| tir::LocalDecl { ty: self.subst(l.ty, cx.map), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
         let body = body.map(|b| self.mono_expr(cx, b));
         let nd = &mut self.prog.fns[new_id.index()];
@@ -420,7 +425,14 @@ pub fn subst_effects(s: &EffectSet, map: &[(ParamId, Ty)]) -> EffectSet {
 impl<'a, 's> FnCx<'a, 's> {
     /// A call to a generic function (§16.2).
     pub fn generic_call(&mut self, f: FnId, args: &[ast::Arg], span: Span) -> Expr {
+        self.generic_call_with(f, None, args, span)
+    }
+
+    /// A generic call; `receiver`, if given, is the method receiver bound to the first
+    /// run-time parameter (§7.10).
+    pub fn generic_call_with(&mut self, f: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
         let sig = self.sema.sigs[&f].clone();
+        let recv_index = receiver.as_ref().and_then(|_| sig.params.iter().position(|p| p.generic.is_none()));
         let named: Vec<crate::symbol::Symbol> = args
             .iter()
             .filter_map(|a| match &a.kind {
@@ -440,7 +452,9 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         }
         let non_inferable: Vec<usize> = (0..sig.params.len())
-            .filter(|&i| sig.params[i].generic.is_none() && !named.contains(&sig.params[i].name))
+            .filter(|&i| {
+                sig.params[i].generic.is_none() && !named.contains(&sig.params[i].name) && Some(i) != recv_index
+            })
             .collect();
         let r = non_inferable.iter().filter(|&&i| sig.params[i].default.is_none()).count();
         let n = non_inferable.len();
@@ -449,7 +463,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let targets: Vec<usize> = if omit {
             non_inferable.clone()
         } else {
-            (0..sig.params.len()).filter(|&i| !named.contains(&sig.params[i].name)).collect()
+            (0..sig.params.len()).filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index).collect()
         };
         if positional.len() > targets.len() {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));
@@ -500,6 +514,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 values[*i] = Some(v);
             }
         }
+        if let (Some(i), Some(r)) = (recv_index, receiver) {
+            let t = self.infer.resolve(r.ty);
+            super::effects::match_params_pub(sig.params[i].ty, t, &mut binds);
+            values[i] = Some(r);
+        }
         let mut targs = vec![];
         for pid in &sig.generics {
             match binds.get(pid) {
@@ -536,7 +555,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if p.generic.is_some() {
                 continue;
             }
-            let pty = subst_ty(p.ty, &map);
+            let pty = self.sema.subst(p.ty, &map);
             match values[i].take() {
                 Some(v) => out.push(self.coerce(v, pty)),
                 None => match &p.default {
@@ -558,7 +577,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.record_effects(&effects, span);
         let inst = self.sema.instantiate(f, targs, span);
         Expr {
-            ty: subst_ty(sig.ret, &map),
+            ty: self.sema.subst(sig.ret, &map),
             kind: tir::ExprKind::Call { callee: tir::Callee::Fn(inst), args: out },
             span,
         }

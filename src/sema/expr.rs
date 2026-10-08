@@ -233,7 +233,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 DeclValue::Fn(f) => self.fn_ref(f, span),
                 DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 DeclValue::Untyped(v) => self.untyped_literal(&v, span),
-                DeclValue::Type(_) => {
+                DeclValue::Type(_) | DeclValue::GenericType(_) => {
                     self.error(span, format!("expected a value, found the type `{}`", name));
                     error_expr(span)
                 }
@@ -563,6 +563,20 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// If `e` is a name denoting a type, that type.
     pub fn type_of_name(&mut self, e: &ast::Expr) -> Option<Ty> {
+        // `G(args)` where `G` is a generic type.
+        if let ExprKind::Call { callee, .. } = &e.kind
+            && let ExprKind::Ident(id) = &callee.kind
+            && self.lookup_local(id.name).is_none()
+        {
+            let module = self.module;
+            if let Some(d) = self.sema.lookup_module_name(module, id.name)
+                && let DeclValue::GenericType(_) = self.sema.resolve_decl(d)
+            {
+                let t = self.resolve_type(e);
+                return (!t.is_error()).then_some(t);
+            }
+            return None;
+        }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
             return None;

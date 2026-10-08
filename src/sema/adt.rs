@@ -20,9 +20,33 @@ impl<'s> Sema<'s> {
         };
         let id = AdtId::fresh(name);
         let ty = Ty::intern(TyKind::Adt(id, Box::new([])));
+        // Type parameters of a generic struct or union (§16.4).
+        let params = match &inner.kind {
+            ExprKind::Struct(s) => s.params.as_ref(),
+            ExprKind::Union(u) => u.params.as_ref(),
+            _ => None,
+        };
+        let scope_len = self.type_params.len();
+        let mut generics = vec![];
+        for p in params.into_iter().flatten() {
+            let is_type =
+                p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
+            if !is_type {
+                self.error(p.span, "value parameters of types are not supported yet");
+            }
+            for n in &p.names {
+                let pid = crate::types::ParamId::fresh(n.name);
+                generics.push(pid);
+                self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
+            }
+        }
+        if !generics.is_empty() {
+            self.adt_params.insert(id, generics.clone());
+        }
         // The type is usable (through pointers) by its own fields.
         if let Some(d) = decl {
-            self.decls[d.0 as usize].state = DeclState::Done(DeclValue::Type(ty));
+            let v = if generics.is_empty() { DeclValue::Type(ty) } else { DeclValue::GenericType(id) };
+            self.decls[d.0 as usize].state = DeclState::Done(v);
         }
         self.adts.insert(id, AdtInfo { name, module, defaults: vec![], has_using: false });
         let placeholder =
@@ -37,6 +61,18 @@ impl<'s> Sema<'s> {
             }
         };
         self.prog.adts.insert(id, AdtDef { name, kind });
+        let wheres = match &inner.kind {
+            ExprKind::Struct(s) => &s.where_,
+            ExprKind::Union(u) => &u.where_,
+            _ => &s_empty(),
+        };
+        for c in wheres.clone() {
+            self.declare_constraint(module, &c);
+        }
+        self.type_params.truncate(scope_len);
+        if !generics.is_empty() {
+            return ty;
+        }
         if self.is_infinitely_sized(ty, &mut vec![]) {
             self.error(
                 lit.span,
@@ -48,9 +84,6 @@ impl<'s> Sema<'s> {
     }
 
     fn struct_kind(&mut self, module: ModuleId, id: AdtId, s: &ast::StructLit, attrs: &[ast::Attribute]) -> AdtKind {
-        if s.params.is_some() {
-            self.error(s.span, "generic struct types are not supported yet");
-        }
         let (mut packed, mut align, mut bits) = (false, None, None);
         for a in attrs {
             match a.name.name.as_str() {
@@ -158,9 +191,6 @@ impl<'s> Sema<'s> {
     }
 
     fn union_kind(&mut self, module: ModuleId, u: &ast::UnionLit, attrs: &[ast::Attribute]) -> AdtKind {
-        if u.params.is_some() {
-            self.error(u.span, "generic union types are not supported yet");
-        }
         let mut c_union = false;
         for a in attrs {
             match a.name.name.as_str() {
@@ -313,5 +343,87 @@ impl<'s> Sema<'s> {
     pub fn adt_def(&self, ty: Ty) -> Option<&tir::AdtDef> {
         let TyKind::Adt(id, _) = ty.kind() else { return None };
         self.prog.adts.get(id)
+    }
+}
+
+fn s_empty() -> Vec<ast::Constraint> {
+    vec![]
+}
+
+impl<'s> Sema<'s> {
+    /// The instance of generic struct or union `template` for `args` (§16.4).
+    pub fn instantiate_adt(&mut self, template: AdtId, args: Vec<Ty>) -> Ty {
+        let gargs: Box<[crate::types::GenericArg]> = args.iter().map(|t| crate::types::GenericArg::Type(*t)).collect();
+        if let Some(&inst) = self.adt_instances.get(&(template, args.clone())) {
+            return Ty::intern(TyKind::Adt(inst, gargs));
+        }
+        let params = self.adt_params.get(&template).cloned().unwrap_or_default();
+        let name = template.name();
+        let inst = AdtId::fresh(name);
+        inst.set_template(template);
+        self.adt_instances.insert((template, args.clone()), inst);
+        let ty = Ty::intern(TyKind::Adt(inst, gargs));
+        let map: Vec<(crate::types::ParamId, Ty)> = params.iter().copied().zip(args.iter().copied()).collect();
+        let info = &self.adts[&template];
+        let (module, defaults, has_using) = (info.module, info.defaults.clone(), info.has_using);
+        self.adts.insert(inst, AdtInfo { name, module, defaults, has_using });
+        let placeholder =
+            AdtDef { name, kind: AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None } };
+        self.prog.adts.insert(inst, placeholder);
+        let def = self.prog.adts[&template].clone();
+        let kind = match def.kind {
+            AdtKind::Struct { fields, packed, align, bits } => AdtKind::Struct {
+                fields: fields.into_iter().map(|f| FieldDef { ty: self.subst(f.ty, &map), ..f }).collect(),
+                packed,
+                align,
+                bits,
+            },
+            AdtKind::Union { tag, variants } => AdtKind::Union {
+                tag,
+                variants: variants
+                    .into_iter()
+                    .map(|v| VariantDef { payload: v.payload.map(|p| self.subst(p, &map)), ..v })
+                    .collect(),
+            },
+            AdtKind::CUnion { fields } => AdtKind::CUnion {
+                fields: fields.into_iter().map(|f| FieldDef { ty: self.subst(f.ty, &map), ..f }).collect(),
+            },
+        };
+        self.prog.adts.insert(inst, AdtDef { name, kind });
+        ty
+    }
+
+    /// Replaces type parameters in `t`, re-instantiating generic types (§16.4).
+    pub fn subst(&mut self, t: Ty, map: &[(crate::types::ParamId, Ty)]) -> Ty {
+        if map.is_empty() || !super::generics::has_param(t) {
+            return t;
+        }
+        t.map(&mut |x| match x.kind() {
+            TyKind::Param(p) => map.iter().find(|(q, _)| q == p).map(|(_, a)| *a),
+            TyKind::Adt(id, args) if !args.is_empty() => {
+                let new_args: Vec<Ty> = args
+                    .iter()
+                    .map(|a| match a {
+                        crate::types::GenericArg::Type(t) => self.subst(*t, map),
+                        _ => Ty::error(),
+                    })
+                    .collect();
+                Some(self.instantiate_adt(id.template(), new_args))
+            }
+            TyKind::Fn(sig) | TyKind::FnPtr(sig) => {
+                let s = crate::types::FnTy {
+                    params: sig.params.iter().map(|t| self.subst(*t, map)).collect(),
+                    ret: self.subst(sig.ret, map),
+                    effects: super::generics::subst_effects(&sig.effects, map),
+                    variadic: sig.variadic,
+                };
+                Some(Ty::intern(if matches!(x.kind(), TyKind::Fn(_)) {
+                    TyKind::Fn(Box::new(s))
+                } else {
+                    TyKind::FnPtr(Box::new(s))
+                }))
+            }
+            _ => None,
+        })
     }
 }
