@@ -23,6 +23,7 @@ impl<'s> Sema<'s> {
         let ast = self.sess.parse(file);
         let id = self.add_module(Symbol::intern("core"), vec![ast], true);
         self.prelude = Some(id);
+        self.load_target_module(id);
         for (name, src, exports) in CORE_MODULES {
             let file = self.sess.sources.add(format!("<core>/{}.gm", name), src.to_string());
             let ast = self.sess.parse(file);
@@ -99,12 +100,34 @@ impl<'s> Sema<'s> {
         let id = ModuleId(self.modules.len() as u32);
         self.modules.push(Module { name, scope: HashMap::new(), is_prelude });
         let mut scope: HashMap<Symbol, DeclId> = HashMap::new();
+        let mut whens = std::collections::VecDeque::new();
         for file in files {
             for item in file.items {
-                self.collect_item(id, Rc::new(item), &mut scope);
+                match &item.kind {
+                    ItemKind::When(_) => whens.push_back(item),
+                    _ => self.collect_item(id, Rc::new(item), &mut scope),
+                }
             }
         }
         self.modules[id.0 as usize].scope = scope;
+        // A top-level `when` declares the items of its taken branch as if written
+        // at top level (§3.6). Its condition may use the module's other names.
+        while let Some(item) = whens.pop_front() {
+            let ItemKind::When(w) = &item.kind else { unreachable!() };
+            let branch = match self.when_cond(id, &w.cond) {
+                Some(true) => w.then.clone(),
+                Some(false) => w.else_.clone().unwrap_or_default(),
+                None => vec![],
+            };
+            let mut scope = std::mem::take(&mut self.modules[id.0 as usize].scope);
+            for it in branch {
+                match &it.kind {
+                    ItemKind::When(_) => whens.push_back(it),
+                    _ => self.collect_item(id, Rc::new(it), &mut scope),
+                }
+            }
+            self.modules[id.0 as usize].scope = scope;
+        }
         id
     }
 
@@ -144,10 +167,10 @@ impl<'s> Sema<'s> {
                     }
                 }
             }
-            ItemKind::When(w) => self.error(w.span, "top-level `when` is not supported yet"),
+            ItemKind::When(_) => unreachable!("collected by `add_module`"),
             ItemKind::Handler(_) => self.handler_items.push((module, item.clone())),
             ItemKind::Test { name_span, .. } => self.error(*name_span, "tests are not supported yet"),
-            ItemKind::Intrinsic(e) => self.error(e.span, "top-level intrinsic calls are not supported yet"),
+            ItemKind::Intrinsic(_) => self.static_asserts.push((module, item.clone())),
         }
     }
 
@@ -180,5 +203,79 @@ impl<'s> Sema<'s> {
         let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
         let core = self.modules[module.0 as usize].is_prelude;
         if core || self.decls[d.0 as usize].item.is_pub { Some(d) } else { None }
+    }
+
+    /// The module that a module-binding name (`m` in `m.T`) denotes in `module`.
+    pub fn module_named(&mut self, module: ModuleId, e: &ast::Expr) -> Option<ModuleId> {
+        let ast::ExprKind::Ident(id) = &e.kind else { return None };
+        let d = self.lookup_module_name(module, id.name)?;
+        match self.resolve_decl(d) {
+            super::DeclValue::Module(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The public declaration `name` of module `m`; reports a missing or private one.
+    pub fn module_member(&mut self, m: ModuleId, name: ast::Ident) -> Option<DeclId> {
+        let module_name = self.modules[m.0 as usize].name;
+        match self.modules[m.0 as usize].scope.get(&name.name).copied() {
+            Some(d) if self.decls[d.0 as usize].item.is_pub => Some(d),
+            Some(_) => {
+                self.error(name.span, format!("`{}` is private to the module `{}` (§3.3)", name.name, module_name));
+                None
+            }
+            None => {
+                self.error(name.span, format!("the module `{}` has no declaration `{}`", module_name, name.name));
+                None
+            }
+        }
+    }
+
+    /// The predeclared module `target` (§3.6): compile-time constants describing
+    /// the compilation target, generated from the session's target.
+    fn load_target_module(&mut self, prelude: ModuleId) {
+        let t = &self.target;
+        let src = format!(
+            "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Freestanding }}\n\
+             pub Arch :: union {{ X86_64, Aarch64, Riscv64, Wasm32, Other }}\n\
+             pub Endian :: union {{ Little, Big }}\n\
+             pub Mode :: union {{ Debug, Checked, Fast }}\n\
+             pub os :: Os.{}\n\
+             pub arch :: Arch.{}\n\
+             pub endian :: Endian.{}\n\
+             pub ptr_bits :: {}\n\
+             pub mode :: Mode.{}\n",
+            t.os,
+            t.arch,
+            if t.little_endian { "Little" } else { "Big" },
+            t.ptr_bits(),
+            self.build_mode,
+        );
+        let file = self.sess.sources.add("<core>/target.gm", src);
+        let ast = self.sess.parse(file);
+        let m = self.add_module(Symbol::intern("target"), vec![ast], true);
+        self.core_modules.push(m);
+        let name = ast::Ident { name: Symbol::intern("target"), span: Span::DUMMY };
+        let item = Rc::new(ast::Item {
+            id: ast::NodeId(u32::MAX),
+            span: Span::DUMMY,
+            doc: None,
+            attrs: vec![],
+            is_pub: true,
+            kind: ItemKind::Intrinsic(ast::Expr {
+                id: ast::NodeId(u32::MAX),
+                kind: ast::ExprKind::Underscore,
+                span: Span::DUMMY,
+            }),
+        });
+        let id = DeclId(self.decls.len() as u32);
+        self.decls.push(Decl {
+            name,
+            module: prelude,
+            item,
+            state: DeclState::Done(super::DeclValue::Module(m)),
+            op_of: None,
+        });
+        self.modules[prelude.0 as usize].scope.insert(name.name, id);
     }
 }

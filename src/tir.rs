@@ -771,6 +771,8 @@ pub enum Builtin {
     Assert,
     /// `@hash(x, seed)`.
     Hash,
+    /// `@unreachable()`: traps when reached (checked, §18).
+    Unreachable,
     /// Allocates `size` bytes aligned to `align` from the system heap → `?[^]u8`.
     /// Used only by the core library's heap allocator.
     HeapAlloc,

@@ -304,6 +304,7 @@ impl<'a> Machine<'a> {
                 }
                 Ok(self.usize_bytes(n))
             }
+            Builtin::Unreachable => self.trap(span, "reached `@unreachable()`"),
             Builtin::Hash => {
                 let seed = self.int_of(arg_tys[1], &v[1]);
                 let mut h = 0xcbf29ce484222325u64

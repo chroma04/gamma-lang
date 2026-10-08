@@ -27,7 +27,9 @@ enum CalleeKind {
 
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
-        if let ExprKind::Field { base, name } = &callee.kind {
+        if let ExprKind::Field { base, name } = &callee.kind
+            && self.module_of(base).is_none()
+        {
             return self.method_call(base, *name, args, span);
         }
         let Some(kind) = self.classify_callee(callee, expect) else { return error_expr(span) };
@@ -79,6 +81,21 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// What a call to the declaration `d` (written as `callee`) does.
+    fn callee_of(&mut self, d: super::DeclId, name: crate::symbol::Symbol, callee: &ast::Expr) -> Option<CalleeKind> {
+        match self.sema.resolve_decl(d) {
+            DeclValue::Fn(f) => Some(CalleeKind::Fn(f)),
+            DeclValue::Op(e, i) => Some(CalleeKind::Op(e, i)),
+            DeclValue::Type(t) => Some(CalleeKind::Type(t)),
+            DeclValue::Error => None,
+            DeclValue::Const { .. } => Some(CalleeKind::Value(self.expr(callee, None))),
+            _ => {
+                self.error(callee.span, format!("`{}` cannot be called", name));
+                None
+            }
+        }
+    }
+
     fn classify_callee(&mut self, callee: &ast::Expr, expect: Option<Ty>) -> Option<CalleeKind> {
         if let ExprKind::DotIdent(name) = &callee.kind {
             return match expect.map(|t| self.infer.resolve(t)) {
@@ -89,6 +106,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             };
         }
+        if let ExprKind::Field { name, .. } = &callee.kind
+            && let Some(d) = self.qualified_decl(callee)
+        {
+            return self.callee_of(d?, name.name, callee);
+        }
         if let ExprKind::Field { base, name } = &callee.kind
             && let Some(t) = self.type_of_name(base)
         {
@@ -98,17 +120,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if self.lookup_local(id.name).is_none() {
                 let module = self.module;
                 if let Some(d) = self.sema.lookup_module_name(module, id.name) {
-                    return match self.sema.resolve_decl(d) {
-                        DeclValue::Fn(f) => Some(CalleeKind::Fn(f)),
-                        DeclValue::Op(e, i) => Some(CalleeKind::Op(e, i)),
-                        DeclValue::Type(t) => Some(CalleeKind::Type(t)),
-                        DeclValue::Error => None,
-                        DeclValue::Const { .. } => Some(CalleeKind::Value(self.expr(callee, None))),
-                        _ => {
-                            self.error(callee.span, format!("`{}` cannot be called", id.name));
-                            None
-                        }
-                    };
+                    return self.callee_of(d, id.name, callee);
                 }
                 if let Some(b) = builtin_fn(id.name.as_str()) {
                     return Some(CalleeKind::Builtin(b));
@@ -186,7 +198,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     match &p.default {
                         Some(d) => {
                             let d = d.clone();
-                            match self.sema.check_const_expr(callee_module, &d, Some(p.ty)) {
+                            let site = self.call_site(span);
+                            let saved = self.sema.caller_site.replace(site);
+                            let v = self.sema.check_const_expr(callee_module, &d, Some(p.ty));
+                            self.sema.caller_site = saved;
+                            match v {
                                 Some(v) => out.push(v),
                                 None => out.push(error_expr(span)),
                             }

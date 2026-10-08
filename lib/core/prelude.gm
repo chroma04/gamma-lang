@@ -169,3 +169,10 @@ pub destroy :: fn(T: type, p: ^T) \ {Alloc} {
     a := current()
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
 }
+
+/// Where a piece of source code is (§21.7): the result of `@location()`.
+pub SourceLocation :: struct {
+    pub file: string
+    pub line, column: u32
+    pub function: string
+}

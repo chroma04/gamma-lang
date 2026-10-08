@@ -1,0 +1,46 @@
+// Conditional compilation, the target module, static assertions and locations (§3.6, §17.7, §20.3).
+when target.ptr_bits is 64 {
+    WORD :: u64
+    word_name :: fn() -> string => "64-bit"
+} else {
+    WORD :: u32
+    word_name :: fn() -> string => "32-bit"
+}
+
+@static_assert(@size_of(WORD) * 8 is target.ptr_bits, "WORD matches the pointer width")
+
+Header :: struct {
+    magic: u32
+    when target.endian is .Little {
+        le: bool
+    } else {
+        be: bool
+    }
+}
+
+Flavor :: union {
+    Plain
+    when false { Hidden }
+    Spicy
+}
+
+where_am_i :: fn(loc: SourceLocation = @caller_location()) -> u32 => loc.line
+
+main :: fn() \ {Out} {
+    print("{} {}\n", (word_name(), @size_of(WORD)))
+    h := Header(magic: 1, le: true)
+    print("{}\n", h)
+    f: Flavor = .Spicy
+    print("{} {}\n", (f, Flavor.Spicy.tag()))
+    when target.os is .Windows {
+        print("windows\n")
+    } else when target.ptr_bits is 64 {
+        print("64\n")
+    } else {
+        print("other\n")
+    }
+    @static_assert(@size_of(Header) is 8, "header size")
+    here := @location()
+    print("{} {} {}\n", (here.line, here.column, here.function))
+    print("{}\n", where_am_i())
+}

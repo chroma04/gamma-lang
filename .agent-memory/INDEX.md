@@ -1,29 +1,29 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (end of session 1, 2026-10-08) — PR chroma04/gamma-lang#1 open, subscribed
+## State (session 1, 2026-10-08) — PR chroma04/gamma-lang#1 open, subscribed, CI green
 - Pipeline works end to end: lexer → parser → sema → TIR → interpreter. `gamma run file.gm`.
-- Done: M0–M3 (core data types, patterns, methods, closures), M4 (effects/handlers/with/for over
-  iterators/handler decls/Env), M5 partly: generic fns + generic structs/unions (monomorphized,
-  decisions/006), std iterators, Alloc effect + Allocator vtable + heap allocator (entry wrapper
-  installs it when main performs Alloc), new/make/make_fill/free/destroy, List(T) — all in
-  `lib/core/prelude.gm` (whole prelude checked every compile; `@heap_alloc/@heap_free` prelude-only).
-- Interpreter covers whole TIR except fibers/foreign calls.
-- Not yet: comptime value params `N :: usize` (§16.5), §16.6 distinctness, HashMap/@hash/map,
-  sort builtins, ctl/fibers (M8), imports/modules/tests (M9), when/target (M6), C backend (M7),
-  typed consts in array lengths, multiple assignment/destructuring stmt, `using` ptr coercion.
+- Done: M0–M4; M5 mostly: generic fns/structs/unions (decisions/006), compile-time value params
+  on fns and types incl. fn-pointer/string/plain-data args (decisions/007), sema-time const eval
+  (sema/consteval.rs: typed array lengths, value args), Alloc/Allocator/heap allocator,
+  new/make/free, core modules core/list + core/map (only List/list/HashMap/map/map_with
+  re-exported; methods resolve in receiver's module), HashMap in Gamma, @hash, field privacy.
+- Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
+- Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, ctl/fibers (M8),
+  imports/modules/tests (M9), when/target/@static_assert (M6), C backend (M7), multiple
+  assignment/destructuring stmt, `using` ptr coercion, struct patterns with generic type names.
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. Finish M5: value params (needs symbolic array lengths), HashMap + @hash, sort builtins.
-2. M3 leftovers (roadmap/M03) and M6 `when`/target/@static_assert.
-3. M7 C backend is the big one after that; then M9 modules (imports needed for std).
-4. Keep PR green; CI runs on push.
+1. M6: `when`, target constants, @static_assert/@compile_error/@location (use eval_tir_const).
+2. M3/M5 leftovers above; then M7 C backend (big) and M9 modules (imports needed for std).
+3. Keep PR green; CI runs on push.
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria)
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)
+                  · 007 value params + sema-time const eval
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md
 - gotchas/        environment.md

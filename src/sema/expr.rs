@@ -239,24 +239,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
-            return match self.sema.resolve_decl(d) {
-                DeclValue::Fn(f) => self.fn_ref(f, span),
-                DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
-                DeclValue::Untyped(v) => self.untyped_literal(&v, span),
-                DeclValue::Type(_) | DeclValue::GenericType(_) => {
-                    self.error(span, format!("expected a value, found the type `{}`", name));
-                    error_expr(span)
-                }
-                DeclValue::Effect(_) => {
-                    self.error(span, format!("expected a value, found the effect `{}`", name));
-                    error_expr(span)
-                }
-                DeclValue::Op(..) => {
-                    self.error(span, format!("the operation `{}` can only be called", name));
-                    error_expr(span)
-                }
-                DeclValue::Error => error_expr(span),
-            };
+            return self.decl_expr(d, name, span);
         }
         if super::builtins::builtin_type(name.as_str()).is_some() {
             self.error(span, format!("expected a value, found the type `{}`", name));
@@ -266,6 +249,55 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("unknown name `{}`", name));
         }
         error_expr(span)
+    }
+
+    /// The value of a top-level declaration named `name`.
+    pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, span: Span) -> Expr {
+        match self.sema.resolve_decl(d) {
+            DeclValue::Fn(f) => self.fn_ref(f, span),
+            DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
+            DeclValue::Untyped(v) => self.untyped_literal(&v, span),
+            DeclValue::Type(_) | DeclValue::GenericType(_) => {
+                self.error(span, format!("expected a value, found the type `{}`", name));
+                error_expr(span)
+            }
+            DeclValue::Effect(_) => {
+                self.error(span, format!("expected a value, found the effect `{}`", name));
+                error_expr(span)
+            }
+            DeclValue::Op(..) => {
+                self.error(span, format!("the operation `{}` can only be called", name));
+                error_expr(span)
+            }
+            DeclValue::Module(_) => {
+                self.error(span, format!("`{}` is a module, which is not a value (§3.2)", name));
+                error_expr(span)
+            }
+            DeclValue::Error => error_expr(span),
+        }
+    }
+
+    /// The module a module-binding expression (`m` in `m.x`) names, unless a
+    /// local shadows it.
+    pub fn module_of(&mut self, e: &ast::Expr) -> Option<super::ModuleId> {
+        let ExprKind::Ident(id) = &e.kind else { return None };
+        if self.lookup_local(id.name).is_some() {
+            return None;
+        }
+        let module = self.module;
+        let d = self.sema.lookup_module_name(module, id.name)?;
+        match self.sema.resolve_decl(d) {
+            DeclValue::Module(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// For `m.x` with `m` a module: `Some(x's declaration)`, or `Some(None)` if
+    /// `x` is missing or private (reported).
+    pub fn qualified_decl(&mut self, e: &ast::Expr) -> Option<Option<super::DeclId>> {
+        let ExprKind::Field { base, name } = &e.kind else { return None };
+        let m = self.module_of(base)?;
+        Some(self.sema.module_member(m, *name))
     }
 
     /// A named function used as a value: a function pointer (§5.14).
@@ -573,6 +605,12 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// If `e` is a name denoting a type, that type.
     pub fn type_of_name(&mut self, e: &ast::Expr) -> Option<Ty> {
+        if let Some(d) = self.qualified_decl(e) {
+            return match self.sema.resolve_decl(d?) {
+                DeclValue::Type(t) => Some(t),
+                _ => None,
+            };
+        }
         // `G(args)` where `G` is a generic type.
         if let ExprKind::Call { callee, .. } = &e.kind
             && let ExprKind::Ident(id) = &callee.kind
@@ -602,6 +640,13 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     fn field(&mut self, base: &ast::Expr, name: ast::Ident, span: Span) -> Expr {
+        // `m.x` — a declaration of another module (§3.2).
+        if let Some(m) = self.module_of(base) {
+            return match self.sema.module_member(m, name) {
+                Some(d) => self.decl_expr(d, name.name, span),
+                None => error_expr(span),
+            };
+        }
         // `U.V` — a payload-less variant of a union type.
         if let Some(t) = self.type_of_name(base) {
             return self.construct_variant(t, name, None, span);
@@ -739,6 +784,47 @@ impl<'a, 's> FnCx<'a, 's> {
                 let seed = self.coerce(seed, Ty::u64());
                 mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
             }
+            "static_assert" => {
+                let module = self.module;
+                self.sema.static_assert(module, args, span);
+                unit(span)
+            }
+            "compile_error" => {
+                let module = self.module;
+                let msg = match args.first().map(|a| &a.kind) {
+                    Some(ast::ArgKind::Positional(m)) => self.sema.const_string(module, m),
+                    _ => None,
+                };
+                match msg {
+                    Some(m) => self.error(span, m),
+                    None => self.error(span, "`@compile_error` takes a constant string message"),
+                }
+                error_expr(span)
+            }
+            "location" => {
+                let f = self.fn_id.map_or(crate::symbol::Symbol::intern(""), |f| self.sema.prog.fns[f.index()].name);
+                self.sema.source_location(span, f)
+            }
+            "caller_location" => match self.sema.caller_site {
+                Some((site, f)) => self.sema.source_location(site, f),
+                None => {
+                    self.error(span, "`@caller_location()` is allowed only as a parameter's default value");
+                    error_expr(span)
+                }
+            },
+            "unreachable" => {
+                mk(Ty::never(), tir::ExprKind::Builtin { op: tir::Builtin::Unreachable, args: vec![] }, span)
+            }
+            "expect_true" | "expect_false" => match args.first().map(|a| &a.kind) {
+                Some(ast::ArgKind::Positional(b)) if args.len() == 1 => {
+                    let v = self.expr(b, Some(Ty::bool()));
+                    self.coerce(v, Ty::bool())
+                }
+                _ => {
+                    self.error(span, format!("`@{}` takes one `bool`", name.name));
+                    error_expr(span)
+                }
+            },
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
@@ -1305,6 +1391,12 @@ impl<'a, 's> FnCx<'a, 's> {
     /// containers use them on unconstrained parameters: their public
     /// constructors require `Eq` exactly when the default hash and equality are
     /// used (§21.5).
+    /// Where this expression is, for `@location()` and `@caller_location()`.
+    pub fn call_site(&self, span: Span) -> (Span, crate::symbol::Symbol) {
+        let f = self.fn_id.map_or(crate::symbol::Symbol::intern(""), |f| self.sema.prog.fns[f.index()].name);
+        (span, f)
+    }
+
     /// Whether the private fields of struct type `t` are visible here: only in
     /// the module that declares it (§3.3).
     pub fn sees_private(&self, t: Ty) -> bool {

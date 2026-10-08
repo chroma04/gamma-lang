@@ -138,6 +138,15 @@ struct PendingBody {
 pub struct Sema<'s> {
     pub sess: &'s mut Session,
     pub target: Target,
+    /// The build mode's name, as a variant of `target.Mode` (§1.4).
+    pub build_mode: &'static str,
+    /// While a parameter default is checked: the call's location and the calling
+    /// function's name, for `@caller_location()`.
+    pub caller_site: Option<(Span, Symbol)>,
+    /// The step budget of compile-time evaluations (§17.3).
+    pub fuel: u64,
+    /// Top-level `@static_assert`s, checked after the declarations.
+    pub static_asserts: Vec<(ModuleId, Rc<ast::Item>)>,
     pub modules: Vec<Module>,
     pub decls: Vec<Decl>,
     pub prog: Program,
@@ -205,6 +214,10 @@ impl<'s> Sema<'s> {
         Sema {
             sess,
             target: Target::host(),
+            build_mode: "Debug",
+            caller_site: None,
+            fuel: consteval::STEP_BUDGET,
+            static_asserts: vec![],
             modules: vec![],
             decls: vec![],
             prog: Program::default(),
@@ -261,6 +274,16 @@ impl<'s> Sema<'s> {
             ids.sort();
             for id in ids {
                 self.resolve_decl(id);
+            }
+        }
+        for (module, item) in std::mem::take(&mut self.static_asserts) {
+            if let ast::ItemKind::Intrinsic(e) = &item.kind
+                && let ast::ExprKind::Intrinsic { name, args } = &e.kind
+                && name.name.as_str() == "static_assert"
+            {
+                self.static_assert(module, args.as_deref().unwrap_or(&[]), e.span);
+            } else {
+                self.error(item.span, "only `@static_assert` may appear as a top-level declaration");
             }
         }
         let clauses = self.declare_handlers();

@@ -632,7 +632,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 None => match &p.default {
                     Some(d) => {
                         let d = d.clone();
-                        match self.sema.check_const_expr(sig.module, &d, Some(pty)) {
+                        let site = self.call_site(span);
+                        let saved = self.sema.caller_site.replace(site);
+                        let v = self.sema.check_const_expr(sig.module, &d, Some(pty));
+                        self.sema.caller_site = saved;
+                        match v {
                             Some(v) => out.push(v),
                             None => out.push(error_expr(span)),
                         }

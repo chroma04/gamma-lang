@@ -7,6 +7,7 @@ use crate::symbol::Symbol;
 use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind};
 use crate::tir::{self, FnId};
 use crate::types::{EffectId, EffectRef, EffectSet, Ty, TyKind};
+use num_traits::ToPrimitive;
 use std::rc::Rc;
 
 /// What a top-level binding denotes.
@@ -26,6 +27,8 @@ pub enum DeclValue {
     Const { ty: Ty, id: tir::ConstId },
     /// An untyped constant (§6.2).
     Untyped(Untyped),
+    /// A module binding (§3.2), such as the predeclared `target`.
+    Module(super::ModuleId),
     /// The declaration has errors (already reported).
     Error,
 }
@@ -81,10 +84,35 @@ impl<'s> Sema<'s> {
         let item = self.decls[id.0 as usize].item.clone();
         let module = self.decls[id.0 as usize].module;
         let name = self.decls[id.0 as usize].name;
-        let ItemKind::Binding(b) = &item.kind else { return DeclValue::Error };
+        let ItemKind::Binding(_) = &item.kind else { return DeclValue::Error };
+        let mut fuel = None;
         for attr in &item.attrs {
-            self.error(attr.span, format!("attribute `#{}` is not supported yet", attr.name.name));
+            match attr.name.name.as_str() {
+                // `#fuel(n)` raises the step budget of this declaration's evaluations (§17.3).
+                "fuel" => match attr.args.as_deref() {
+                    Some([n]) => match self.try_untyped(module, n) {
+                        Some(Ok(super::Untyped::Int(i))) if i.to_u64().is_some_and(|v| v > 0) => fuel = i.to_u64(),
+                        _ => self.error(attr.span, "`#fuel(n)` takes a positive integer constant"),
+                    },
+                    _ => self.error(attr.span, "`#fuel(n)` takes a positive integer constant"),
+                },
+                // Inlining hints (§11.10) do not change the meaning of a program.
+                "inline" | "noinline" | "cold" => {}
+                "packed" | "align" | "bits" | "c_union" | "export" | "link_name" | "callconv" | "global"
+                | "thread_local" | "fast_math" | "deprecated" => {
+                    self.error(attr.span, format!("attribute `#{}` is not supported here yet", attr.name.name))
+                }
+                other => self.error(attr.span, format!("unknown attribute `#{}` (§20.2)", other)),
+            }
         }
+        let saved_fuel = std::mem::replace(&mut self.fuel, fuel.unwrap_or(super::consteval::STEP_BUDGET));
+        let v = self.compute_binding(id, module, name, &item);
+        self.fuel = saved_fuel;
+        v
+    }
+
+    fn compute_binding(&mut self, id: DeclId, module: ModuleId, name: ast::Ident, item: &Rc<ast::Item>) -> DeclValue {
+        let ItemKind::Binding(b) = &item.kind else { return DeclValue::Error };
         if b.kind == BindingKind::Var {
             self.error(b.span, "top-level bindings are immutable; use `::` (mutable storage needs `#global`)");
             return DeclValue::Error;
@@ -393,8 +421,34 @@ impl<'s> Sema<'s> {
             return DeclValue::Error;
         }
         let ty = expr.ty;
+        if let Some(bad) = non_constant_part(ty) {
+            self.error(init.span, format!("a constant cannot hold `{}`, which contains `{}` (§17.4)", ty, bad));
+            return DeclValue::Error;
+        }
+        // Top-level initializers are evaluated at compile time (§17.2).
+        let Some(value) = self.eval_tir_const(&expr) else { return DeclValue::Error };
         let id = tir::ConstId(self.prog.consts.len() as u32);
-        self.prog.consts.push(tir::ConstDef { name: name.name, ty, span: name.span, init: expr, value: None });
+        self.prog.consts.push(tir::ConstDef { name: name.name, ty, span: name.span, init: expr, value: Some(value) });
         DeclValue::Const { ty, id }
     }
+}
+
+/// The part of a type that a constant may not contain (§17.4): mutable pointers,
+/// `rawptr`, continuations, and allocator handles.
+fn non_constant_part(t: Ty) -> Option<Ty> {
+    let mut bad = None;
+    t.walk(&mut |x| {
+        let is_bad = match x.kind() {
+            TyKind::Ptr { is_const, .. } | TyKind::ManyPtr { is_const, elem: _ } | TyKind::Slice { is_const, .. } => {
+                !is_const
+            }
+            TyKind::Rawptr | TyKind::Cont(_) => true,
+            TyKind::Adt(id, _) => id.name().as_str() == "Allocator",
+            _ => false,
+        };
+        if is_bad && bad.is_none() {
+            bad = Some(x);
+        }
+    });
+    bad
 }

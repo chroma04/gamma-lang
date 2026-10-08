@@ -13,8 +13,9 @@ use crate::tir::{self, ConstValue, Expr, ExprKind, FnId, StaticData};
 use crate::types::{ConstKey, Ty, TyKind};
 use std::collections::HashSet;
 
-/// The number of interpreter steps one compile-time evaluation may take.
-const STEP_BUDGET: u64 = 50_000_000;
+/// The default number of interpreter steps one compile-time evaluation may
+/// take (§17.3); `#fuel(n)` changes it for one declaration.
+pub const STEP_BUDGET: u64 = 50_000_000;
 
 impl<'s> Sema<'s> {
     /// Evaluates a checked, closed expression. Reports a failed evaluation and
@@ -24,7 +25,7 @@ impl<'s> Sema<'s> {
         if e.ty.is_error() || !self.prepare_for_eval(e) {
             return None;
         }
-        let cfg = RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(STEP_BUDGET) };
+        let cfg = RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel) };
         match interp::eval_const(&self.prog, &cfg, e) {
             Ok(v) => Some(v),
             Err(t) => {
@@ -178,6 +179,81 @@ impl<'s> Sema<'s> {
         }
         // Foreign functions have no body; calling one at compile time traps.
         true
+    }
+}
+
+impl<'s> Sema<'s> {
+    /// `@static_assert(cond, msg)` (§17.7).
+    pub fn static_assert(&mut self, module: super::ModuleId, args: &[crate::syntax::ast::Arg], span: Span) {
+        use crate::syntax::ast::ArgKind;
+        let (Some(ArgKind::Positional(cond)), msg) = (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind))
+        else {
+            self.error(span, "`@static_assert(cond, \"message\")` takes a condition and a message");
+            return;
+        };
+        let Some(ex) = self.check_const_expr(module, cond, Some(Ty::bool())) else { return };
+        let Some(v) = self.eval_tir_const(&ex) else { return };
+        if v.bytes.first() == Some(&1) {
+            return;
+        }
+        let msg = match msg {
+            Some(ArgKind::Positional(m)) => self.const_string(module, m),
+            _ => None,
+        };
+        self.error(span, format!("static assertion failed: {}", msg.as_deref().unwrap_or("(no message)")));
+    }
+
+    /// The value of a constant string expression.
+    pub fn const_string(&mut self, module: super::ModuleId, e: &crate::syntax::ast::Expr) -> Option<String> {
+        let ex = self.check_const_expr(module, e, Some(Ty::string()))?;
+        let v = self.eval_tir_const(&ex)?;
+        match self.const_key(&v, e.span)? {
+            ConstKey::Str(s) => Some(String::from_utf8_lossy(&s).into_owned()),
+            _ => None,
+        }
+    }
+
+    /// A `SourceLocation` value (§21.7) for `span` in function `function`.
+    pub fn source_location(&mut self, span: Span, function: crate::symbol::Symbol) -> Expr {
+        let ty = self
+            .prelude
+            .and_then(|p| {
+                self.modules[p.0 as usize].scope.get(&crate::symbol::Symbol::intern("SourceLocation")).copied()
+            })
+            .map(|d| self.resolve_decl(d));
+        let Some(super::DeclValue::Type(ty)) = ty else {
+            self.error(span, "the core library does not declare `SourceLocation`");
+            return super::func::error_expr(span);
+        };
+        let f = self.sess.sources.file(span.file);
+        let (line, col) = f.line_col(span.lo);
+        let file = f.path.to_string_lossy().into_owned();
+        let leaf = |ty: Ty, kind: ExprKind| Expr { ty, kind, span };
+        let fields = vec![
+            leaf(Ty::string(), ExprKind::Str(std::rc::Rc::from(file.as_bytes()))),
+            leaf(Ty::u32(), ExprKind::Int(line.into())),
+            leaf(Ty::u32(), ExprKind::Int(col.into())),
+            leaf(Ty::string(), ExprKind::Str(std::rc::Rc::from(function.as_str().as_bytes()))),
+        ];
+        leaf(ty, ExprKind::Aggregate(fields))
+    }
+
+    /// Evaluates the condition of a `when` (§3.6, §8.9). It may not depend on a
+    /// generic parameter (§16.7).
+    pub fn when_cond(&mut self, module: super::ModuleId, cond: &crate::syntax::ast::Expr) -> Option<bool> {
+        let ex = self.check_const_expr(module, cond, Some(Ty::bool()))?;
+        let mut generic = false;
+        walk(&ex, &mut |n| {
+            generic |= super::generics::has_param(n.ty)
+                || matches!(n.kind, ExprKind::ValueParam(_))
+                || matches!(&n.kind, ExprKind::SizeOf { .. });
+        });
+        if generic {
+            self.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)");
+            return None;
+        }
+        let v = self.eval_tir_const(&ex)?;
+        Some(v.bytes.first() == Some(&1))
     }
 }
 

@@ -117,12 +117,8 @@ impl<'s> Sema<'s> {
         let mut fields: Vec<FieldDef> = vec![];
         let mut defaults = vec![];
         let mut has_using = false;
-        for (i, m) in s.members.iter().enumerate() {
-            let ast::StructMember::Field(f) = m else {
-                let ast::StructMember::When { span, .. } = m else { unreachable!() };
-                self.error(*span, "`when` in a struct body is not supported yet");
-                continue;
-            };
+        let members = self.taken_struct_members(module, &s.members);
+        for (i, f) in members.iter().enumerate() {
             let ty = self.resolve_type(module, &f.ty);
             if matches!(ty.kind(), TyKind::Fn(_)) {
                 self.error(
@@ -226,12 +222,8 @@ impl<'s> Sema<'s> {
         let mut variants: Vec<VariantDef> = vec![];
         let mut next = BigInt::from(0);
         let mut spans = vec![];
-        for m in &u.members {
-            let ast::UnionMember::Variant(v) = m else {
-                let ast::UnionMember::When { span, .. } = m else { unreachable!() };
-                self.error(*span, "`when` in a union body is not supported yet");
-                continue;
-            };
+        let members = self.taken_union_members(module, &u.members);
+        for v in &members {
             if variants.iter().any(|x| x.name == v.name.name) {
                 self.error(v.name.span, format!("duplicate variant `{}`", v.name.name));
             }
@@ -445,5 +437,39 @@ impl<'s> Sema<'s> {
             }
             _ => None,
         })
+    }
+}
+
+impl<'s> Sema<'s> {
+    /// The fields of a struct body, with each `when` replaced by its taken branch (§3.6).
+    fn taken_struct_members(&mut self, module: ModuleId, members: &[ast::StructMember]) -> Vec<ast::FieldDecl> {
+        let mut out = vec![];
+        for m in members {
+            match m {
+                ast::StructMember::Field(f) => out.push(f.clone()),
+                ast::StructMember::When { cond, then, else_, .. } => match self.when_cond(module, cond) {
+                    Some(true) => out.extend(self.taken_struct_members(module, then)),
+                    Some(false) => out.extend(self.taken_struct_members(module, else_.as_deref().unwrap_or(&[]))),
+                    None => {}
+                },
+            }
+        }
+        out
+    }
+
+    /// The variants of a union body, with each `when` replaced by its taken branch.
+    fn taken_union_members(&mut self, module: ModuleId, members: &[ast::UnionMember]) -> Vec<ast::Variant> {
+        let mut out = vec![];
+        for m in members {
+            match m {
+                ast::UnionMember::Variant(v) => out.push(v.clone()),
+                ast::UnionMember::When { cond, then, else_, .. } => match self.when_cond(module, cond) {
+                    Some(true) => out.extend(self.taken_union_members(module, then)),
+                    Some(false) => out.extend(self.taken_union_members(module, else_.as_deref().unwrap_or(&[]))),
+                    None => {}
+                },
+            }
+        }
+        out
     }
 }

@@ -194,6 +194,26 @@ impl<'s> Sema<'s> {
                 };
                 self.declare_adt(module, None, crate::symbol::Symbol::intern(name), e)
             }
+            ExprKind::Intrinsic { name, args } if name.name.as_str() == "type_of" => {
+                let Some([ast::Arg { kind: ast::ArgKind::Positional(x), .. }]) = args.as_deref() else {
+                    self.error(e.span, "`@type_of(e)` takes one expression");
+                    return Ty::error();
+                };
+                self.check_const_expr(module, x, None).map_or(Ty::error(), |v| v.ty)
+            }
+            // `m.T` — a type declared in another module.
+            ExprKind::Field { base, name } if self.module_named(module, base).is_some() => {
+                let m = self.module_named(module, base).unwrap();
+                let Some(d) = self.module_member(m, *name) else { return Ty::error() };
+                match self.resolve_decl(d) {
+                    DeclValue::Type(t) => t,
+                    DeclValue::Error => Ty::error(),
+                    _ => {
+                        self.error(e.span, format!("`{}` is not a type", name.name));
+                        Ty::error()
+                    }
+                }
+            }
             _ => {
                 self.error(e.span, "expected a type");
                 Ty::error()

@@ -1,0 +1,84 @@
+// Compile-time evaluation (§17): tables built by ordinary functions, #fuel, when, static assertions.
+crc_table :: fn(poly: u32) -> [256]u32 {
+    table: [256]u32 = ---
+    n: u32 = 0
+    while n < 256 {
+        c := n
+        k: u32 = 0
+        while k < 8 {
+            if c & 1 is 1 {
+                c = (c >> 1) ~ poly
+            } else {
+                c = c >> 1
+            }
+            k += 1
+        }
+        table[n] = c
+        n += 1
+    }
+    return table
+}
+
+CRC_TABLE :: crc_table(0xEDB88320)
+
+crc32 :: fn(data: []const u8) -> u32 {
+    crc: u32 = 0xFFFFFFFF
+    for b in data {
+        idx := (crc ~ u32(b)) & 0xFF
+        crc = (crc >> 8) ~ CRC_TABLE[idx]
+    }
+    return crc ~ 0xFFFFFFFF
+}
+LINE_MAX :: 256                          // an untyped constant, used as an array length
+
+lookup_demo :: fn() -> u32 {
+    buf: [LINE_MAX]u8 = ---              // array length: required at compile time
+    table :: crc_table(0x82F63B78)       // opportunistic: computed now if it fits the budget
+    buf[0] = 1
+    return table[1] +% u32(buf[0])
+}
+#fuel(50_000_000)
+BIG_TABLE :: crc_table(0x04C11DB7)
+when target.os is .Windows {
+    PATH_SEP :: '\\'
+} else {
+    PATH_SEP :: '/'
+}
+
+when target.ptr_bits is 64 {
+    Word :: u64
+} else when target.ptr_bits is 32 {
+    Word :: u32
+} else {
+    @compile_error("unsupported pointer width")
+}
+Stats :: struct {
+    hits: u32 = 0
+    when target.mode is .Debug {
+        trace: u32 = 0               // this field exists only in Debug builds
+    }
+}
+
+mode_demo :: fn() \ {Out} {
+    when target.mode is .Fast {
+        print("checks are off\n")
+    } else {
+        print("checks are on\n")
+    }
+}
+Header :: struct {
+    magic: u32
+    version: u16
+    flags: u16
+    length: u64
+}
+
+@static_assert(@size_of(Header) is 16, "Header must match the on-disk format")
+@static_assert(@offset_of(Header, length) is 8, "length must be 8-byte aligned")
+main :: fn() \ {Out} {
+    print("{} {} {}\n", (crc32("hello"), lookup_demo(), BIG_TABLE[1]))
+    print("{} {}\n", (PATH_SEP, @size_of(Word)))
+    s := Stats()
+    print("{}\n", s)
+    mode_demo()
+}

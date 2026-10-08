@@ -482,10 +482,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             StmtKind::While { label, cond, body } => Stmt::Expr(self.while_loop(*label, cond, body, s.span)),
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
-            StmtKind::When(w) => {
-                self.error(w.span, "`when` is not supported yet");
-                Stmt::Expr(unit(s.span))
-            }
+            StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
             StmtKind::Discard(e) => {
                 self.error(e.span, "`discard` is permitted only in a `ctl` clause");
                 Stmt::Expr(unit(s.span))
@@ -843,6 +840,25 @@ impl<'a, 's> FnCx<'a, 's> {
     // --- type expressions inside bodies ---
 
     pub fn resolve_type(&mut self, e: &ast::Expr) -> Ty {
+        // `@type_of(e)`: the type of `e`, which is checked but not evaluated, so
+        // its effects do not count.
+        if let ExprKind::Intrinsic { name, args } = &e.kind
+            && name.name.as_str() == "type_of"
+        {
+            let Some([ast::Arg { kind: ast::ArgKind::Positional(x), .. }]) = args.as_deref() else {
+                self.error(e.span, "`@type_of(e)` takes one expression");
+                return Ty::error();
+            };
+            let performed = self.performed.len();
+            let v = self.expr(x, None);
+            self.performed.truncate(performed);
+            let t = self.infer.resolve(v.ty);
+            if t.has_infer() {
+                self.error(e.span, "the type of an untyped literal is not known here; give it a type");
+                return Ty::error();
+            }
+            return t;
+        }
         let module = self.module;
         self.sema.resolve_type(module, e)
     }
@@ -950,4 +966,33 @@ fn contains_break_to(e: &Expr, label: LabelId) -> bool {
 pub fn visit(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(e);
     e.for_each_child(&mut |c| visit(c, f));
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// `when c { … } else { … }` in a body: only the taken branch is checked (§8.9).
+    fn when_stmt(&mut self, w: &ast::WhenStmt) -> Expr {
+        let module = self.module;
+        let Some(taken) = self.sema.when_cond(module, &w.cond) else { return unit(w.span) };
+        if taken {
+            let b = self.block(&w.then, false);
+            return discard(b);
+        }
+        match &w.else_ {
+            Some(ast::WhenElse::Block(b)) => {
+                let b = self.block(b, false);
+                discard(b)
+            }
+            Some(ast::WhenElse::When(inner)) => self.when_stmt(inner),
+            None => unit(w.span),
+        }
+    }
+}
+
+/// A block used as a statement: its value, if any, is dropped.
+fn discard(b: Expr) -> Expr {
+    if b.ty == Ty::unit() || b.ty.is_never() || b.ty.is_error() {
+        return b;
+    }
+    let span = b.span;
+    Expr { ty: Ty::unit(), kind: tir::ExprKind::Block(Box::new(discard_block(b, span))), span }
 }

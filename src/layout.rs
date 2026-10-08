@@ -23,6 +23,10 @@ pub struct Target {
     pub little_endian: bool,
     /// Alignment the C ABI gives `__int128` (16 on x86-64 and AArch64).
     pub int128_align: u64,
+    /// The operating system, as a variant name of `target.Os` (§3.6).
+    pub os: &'static str,
+    /// The architecture, as a variant name of `target.Arch`.
+    pub arch: &'static str,
 }
 
 impl Target {
@@ -32,6 +36,28 @@ impl Target {
             ptr_bytes: std::mem::size_of::<usize>() as u64,
             little_endian: cfg!(target_endian = "little"),
             int128_align: 16,
+            os: if cfg!(target_os = "linux") {
+                "Linux"
+            } else if cfg!(target_os = "macos") {
+                "MacOS"
+            } else if cfg!(target_os = "windows") {
+                "Windows"
+            } else if cfg!(target_os = "freebsd") {
+                "FreeBSD"
+            } else {
+                "Freestanding"
+            },
+            arch: if cfg!(target_arch = "x86_64") {
+                "X86_64"
+            } else if cfg!(target_arch = "aarch64") {
+                "Aarch64"
+            } else if cfg!(target_arch = "riscv64") {
+                "Riscv64"
+            } else if cfg!(target_arch = "wasm32") {
+                "Wasm32"
+            } else {
+                "Other"
+            },
         }
     }
 
