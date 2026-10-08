@@ -122,7 +122,7 @@ A conforming implementation provides three build modes. They differ only in the 
 
 A source file is a sequence of Unicode scalar values encoded as UTF-8. A byte-order mark at the start of a file is ignored. A file that is not valid UTF-8 is ill-formed. Source files have the extension `.gm`.
 
-Line terminators are LF (U+000A) or CR LF. A lone CR is ill-formed outside string literals' raw content, where it is also ill-formed (raw strings normalize CR LF to LF).
+Line terminators are LF (U+000A) or CR LF. A CR (U+000D) that is not immediately followed by LF is ill-formed everywhere, including inside string literals. Inside raw string literals, a CR LF line terminator is normalized to LF.
 
 The horizontal tab (U+0009) and space (U+0020) are whitespace. No other Unicode whitespace is permitted outside comments and string literals.
 
@@ -180,7 +180,10 @@ hex_lit    = '0x' hexdigit { [ '_' ] hexdigit }
 oct_lit    = '0o' octdigit { [ '_' ] octdigit }
 bin_lit    = '0b' bindigit { [ '_' ] bindigit }
 int_suffix = ( 'u' | 'i' ) width | 'usize' | 'isize'
+width      = nzdigit { digit }                   // 1 … 65535, no leading 0
 ```
+
+`digit` is `0`–`9`, `nzdigit` is `1`–`9`, `hexdigit` is `0`–`9`, `a`–`f`, `A`–`F`, `octdigit` is `0`–`7` and `bindigit` is `0` or `1`. The prefixes `0x`, `0o`, `0b` are lowercase. A literal immediately followed by an identifier character that does not form a valid suffix (`12abc`, `0x1g`) is ill-formed.
 
 A decimal literal may not have a leading `0` unless it is exactly `0` (so `017` is ill-formed, avoiding C's octal trap). Underscores separate digits and have no meaning; a literal may not begin or end with `_` and may not contain `__`. The value of an integer literal is a mathematical integer of unbounded size. A suffix fixes the type (§6.1); without one the literal is *untyped*.
 
@@ -236,16 +239,19 @@ In a string literal `\xHH` inserts one raw byte, so a string literal may hold in
 +%=  -%=  *%=  <<%= +|=  -|=  *|=  <<|=
 <    <=   >    >=
 ?    !    ^    @    #    \
-..   ..=  ---  ::   :=   :    ,    .    ;
+..   ..=  ...  ---  ::   :=   :    ,    .    ;
 =>   ->
 (    )    [    ]    {    }
 ```
+
+`...` appears only as the variadic marker of a foreign function type (§19.2).
 
 Exceptions to maximal munch:
 
 - `[^]` is three tokens, `[`, `^`, `]`; the parser recognizes the sequence.
 - `---` is always one token, so `a---b` is ill-formed; write `a - -b`.
-- A `.` immediately followed by a digit after an expression is a field access with a numeric field name (`t.0`), never part of a float literal.
+- A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
+- The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -260,10 +266,12 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `\`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** at an *arm start* inside a `match` body (§8.6), where a newline always ends the preceding arm.
-3. It is inside `( )` or `[ ]` that are themselves nested inside braces (rule: the innermost enclosing bracket decides).
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm.
+3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.
+
+A **`match` body** is the `{ }` that follows the scrutinee of a `match`: the first `{` after the `match` keyword at the same bracket depth. This is unambiguous because the head of a `match` (like the heads of `if`, `while`, `for`, `with` and `when`) cannot contain an unparenthesized `{` (§A.7, rule 4).
 
 Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 
@@ -677,10 +685,11 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 **Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals) or to numeric types (for float literals: float types only). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
 
 - a variable binding `x := L` gives `x` the type α\_L, so later uses of `x` constrain it (an immutable `x :: L` is an untyped constant instead, §6.2);
-- the two operands of a binary operator, the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
-- a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type).
+- the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
+- a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type). If the target is `?T` or `E!T` (possibly nested), the variable becomes `T`, the type that the wrapping coercion starts from;
+- the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for a range bound or an array length, otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -1749,7 +1758,11 @@ Scheduler :: struct {
 }
 
 handler Async for ^Scheduler \ {Sys} {
-    wait(self, fd, events, k) => { self.waiting.add(fd, events, k); resume self.next() }
+    wait(self, fd, events, k) => {
+        self.waiting.add(fd, events, k)
+        r := self.next()
+        resume r()
+    }
     spawn(self, entry, arg, stack, k) => {
         self.ready.push(@fiber(entry, arg, stack))
         self.live += 1
@@ -1759,16 +1772,20 @@ handler Async for ^Scheduler \ {Sys} {
         discard k
         self.live -= 1
         if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
-        resume self.next()
+        r := self.next()
+        resume r()
     }
     join(self, k) => {
         if self.live is 0 { resume k() }
         self.joiner = k
-        resume self.next()
+        r := self.next()
+        resume r()
     }
 }
 
 // next(): pop a ready continuation, or block in the poller (a Sys call) until one is ready.
+// `resume k(v)` takes the continuation from a postfix expression without its final call (§A.7),
+// so a continuation returned by a call is bound to a name first.
 ```
 
 ```
@@ -2576,7 +2593,6 @@ stmt          = binding
               | '_' '=' expr
               | defer_stmt
               | when_stmt
-when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
               | [ label ] while_stmt
               | [ label ] for_stmt
               | 'return' [ expr ]
@@ -2586,6 +2602,7 @@ when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
               | intrinsic_call
               | block                                             // a nested scope
               | expr
+when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
 place_list    = expr { ',' expr }
 assign_op     = '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '<<=' | '>>=' | '&=' | '|=' | '~='
               | '+%=' | '-%=' | '*%=' | '<<%=' | '+|=' | '-|=' | '*|=' | '<<|='
@@ -2666,14 +2683,17 @@ literal_bound = [ '-' ] literal | postfix_expr '.' IDENT           // qualified 
 
 1. **Statements beginning with an identifier.** `IDENT ':'` followed by `for`, `while` or `with` is a label. `IDENT ':'` followed by anything else begins a typed binding. `IDENT '::'`, `IDENT ':='` and `IDENT ','` begin bindings (or destructuring / multiple assignment, decided by the operator after the list). Otherwise the statement is an expression or assignment.
 2. **Pattern vs expression in conditions.** In `cond_part`, the parser first tries `pattern ':='`; if no `:=` follows at the same nesting depth, the part is an expression.
-3. **`!` after an operand.** A `!` directly after an operand is a postfix unwrap, unless the operand denotes a type and the `!` is followed by a token that can begin a type, in which case it is the error-union operator. The parser produces a single node `Bang(lhs, rhs?)` and name resolution decides: if `lhs` is a type it is `E!T`; otherwise it is `lhs!` followed by any postfix operators parsed from `rhs`. In particular `x![i]` and `x!(a)` unwrap `x` and then index or call.
-4. **`{` after a condition.** In `if`, `while`, `for … in`, `match`, `with` and `when` heads, a `{` always begins the body. A struct, union, effect or handler literal in such a head must be parenthesized. (Construction uses `( )`, so this rarely matters.)
+3. **`!` after an operand.** In a type position (after `:` in a binding, parameter or field, after `->`, inside a function type, in an effect set), `!` is always the error-union operator. In an expression position, a `!` directly after an operand is ambiguous between the postfix unwrap `x!` and the error-union type `E!T`. If the token after the `!` can begin a type, the parser attempts to parse a type there; if that succeeds, it produces a single node `Bang(lhs, rhs)`, and otherwise the postfix unwrap `lhs!`. Name resolution decides a `Bang`: if `lhs` denotes a type it is `E!T`; otherwise it is `lhs!` followed by the postfix operators of `rhs`, whose leading parenthesized part is reinterpreted as an argument list (so `x!(a)` calls the unwrapped value). An attempted type parse fails on `x![i]`, `x!?.f` and `x!.f`, so those simply unwrap and continue. When the rhs is a type but `lhs` is a value (`x!?u8`), resolution reports an error.
+4. **`{` after a head.** In the heads of `if`, `while`, `for … in`, `match`, `with` and `when`, the first `{` at the head's own bracket depth always begins the body. Any construct containing a `{` — a struct, union, effect or handler literal, a function literal with a block body, or an `if`, `match`, `with` or `for` expression — must be parenthesized when it appears in such a head. (Construction uses `( )`, so this rarely matters.)
 5. **`fn` types vs literals.** In an expression position, `fn(...)` followed by `{`, `=>`, or `-> T {` / `-> T =>` (after an optional effect set and `where` clause) is a literal; otherwise it is a type.
 6. **`else` dispatch.** See §7.3.
 7. **`..` in arguments** is spread (§11.4). Ranges with missing bounds exist only inside index brackets.
 8. **Match arms.** A newline at the end of a match arm always ends it (§2.8).
 9. **`is` right operand.** The right operand of `is`/`is not` is parsed as an expression; if it contains `_` or a variant name without its required payload, it is reinterpreted as a binding-free pattern (§7.6).
 10. **`resume k(v)`** parses `k` as a postfix expression without the final call, which supplies the value.
+11. **Labels in `break` and `continue`.** In `break IDENT …` and `continue IDENT`, the identifier is a label if a `while`, `for` or `with` carrying that label lexically encloses the statement (labels are visible inside handler literal clauses written within the labeled construct, but not inside function literals or nested functions). Otherwise, for `break`, the identifier begins the value operand. `break` and `return` take an operand exactly when the next token can begin an expression.
+12. **Type prefixes before a call.** A prefix type operator (`?`, `^`, `^const`, `[]`, `[N]`, `[_]`, `[^]`, with or without `const`) applies to the postfix expression that follows it, including calls: `?List(u8)` is `?(List(u8))`. If name resolution finds that the final call of that operand is not the application of a generic type (it is a construction or conversion, so it produces a value, not a type), the call is instead applied to the whole prefixed type: `?i32(5)` is `(?i32)(5)` and `[3]u8(1, 2, 3)` is `([3]u8)(1, 2, 3)`.
+13. **Attributes.** Newlines directly after an attribute are not significant, so an attribute may be written on its own line before the declaration, field or literal it modifies.
 
 ---
 
