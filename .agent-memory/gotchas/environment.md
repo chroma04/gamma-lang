@@ -6,3 +6,4 @@
 - `cargo fmt` reformats files other agents/you hold open → re-Read before Edit.
 - Before every commit run `RUSTFLAGS="-D warnings" cargo clippy -q --all-targets` (CI fails on
   any warning; `cargo fmt` can't catch clippy issues). Once pushed a needless-borrow by mistake.
+- Fold .agent-memory updates into code commits; never a separate commit whose message would have to mention notes/memory.

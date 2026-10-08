@@ -12,7 +12,8 @@ commands:
   lex     print the tokens of a source file
   parse   check the syntax of a source file (--dump prints the syntax tree)
   check   type-check a program (a .gm file or a module directory)
-  run     run a program with the interpreter; arguments after the file go to the program
+  run     run a program; arguments after the file go to the program
+  build   compile a program to a native executable (via the system C compiler)
   test    run the `test` declarations of a module
   help    print this message
   version print the compiler version
@@ -20,6 +21,8 @@ commands:
 options:
   --diag-format=human|short   how to print diagnostics (default: human)
   --dump                      (parse) print the syntax tree
+  --backend=interp|c          (run) run with the interpreter (default) or compile via C
+  -o <file>                   (build) the executable to write (default: the input's name)
 ";
 
 struct Options {
@@ -29,19 +32,35 @@ struct Options {
     program_args: Vec<String>,
     format: DiagFormat,
     dump: bool,
+    /// `--backend=c`: run through the C back end.
+    c_backend: bool,
+    /// `-o`: the output of `build`.
+    output: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| "missing command".to_string())?;
-    let mut opts = Options { command, file: None, program_args: vec![], format: DiagFormat::Human, dump: false };
-    for arg in args {
+    let mut opts = Options {
+        command,
+        file: None,
+        program_args: vec![],
+        format: DiagFormat::Human,
+        dump: false,
+        c_backend: false,
+        output: None,
+    };
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
         if opts.file.is_some() && opts.command == "run" {
             opts.program_args.push(arg);
             continue;
         }
         match arg.as_str() {
             "--dump" => opts.dump = true,
+            "--backend=c" => opts.c_backend = true,
+            "--backend=interp" => opts.c_backend = false,
+            "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
@@ -77,6 +96,7 @@ fn main() -> ExitCode {
         "check" => check(&opts),
         "run" => run(&opts),
         "test" => test(&opts),
+        "build" => build(&opts),
         other => {
             eprintln!("gamma: unknown command `{}`\n\n{}", other, USAGE);
             ExitCode::from(2)
@@ -127,6 +147,9 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
+    if opts.c_backend {
+        return run_native(&sess, &prog, path, opts);
+    }
     let cfg = gamma::interp::RunConfig {
         target: gamma::layout::Target::host(),
         mode: gamma::interp::Mode::Debug,
@@ -210,4 +233,70 @@ fn test(opts: &Options) -> ExitCode {
     }
     println!("{} passed, {} failed", passed, failed);
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// Translates the program to C and compiles it to `exe`.
+fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::Path) -> Result<(), String> {
+    let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
+    let opts = gamma::cgen::Options { checks: true, debug: true };
+    let code = gamma::cgen::generate(prog, &sess.sources, entry, &opts).map_err(|u| match location(sess, u.span) {
+        Some(at) => format!("{}: error: {}", at, u.message),
+        None => format!("error: {}", u.message),
+    })?;
+    gamma::cgen::compile(&code, exe).map(|_| ())
+}
+
+fn build(opts: &Options) -> ExitCode {
+    let Some(path) = &opts.file else {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    };
+    let mut sess = Session::new();
+    let prog = gamma::sema::analyze(&mut sess, path);
+    eprint!("{}", sess.render_diagnostics(opts.format));
+    let Some(prog) = prog else { return ExitCode::FAILURE };
+    let exe = opts.output.clone().unwrap_or_else(|| {
+        let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
+        PathBuf::from(stem)
+    });
+    match compile_native(&sess, &prog, &exe) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `gamma run --backend=c`: compiles to a temporary executable and runs it.
+fn run_native(sess: &Session, prog: &gamma::tir::Program, path: &std::path::Path, opts: &Options) -> ExitCode {
+    let dir = std::env::temp_dir().join(format!("gamma-run-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("gamma: cannot create {}: {}", dir.display(), e);
+        return ExitCode::FAILURE;
+    }
+    let exe = dir.join("prog");
+    let result = compile_native(sess, prog, &exe);
+    let code = match result {
+        Ok(()) => {
+            let mut cmd = std::process::Command::new(&exe);
+            // The program sees the source path as its name, as with the interpreter.
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::arg0(&mut cmd, path);
+            let status = cmd.args(&opts.program_args).status();
+            match status {
+                Ok(s) => ExitCode::from(s.code().map_or(134, |c| c as u8)),
+                Err(e) => {
+                    eprintln!("gamma: cannot run {}: {}", exe.display(), e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(msg) => {
+            eprintln!("{}", msg);
+            ExitCode::FAILURE
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    code
 }

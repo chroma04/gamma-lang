@@ -75,6 +75,11 @@ BLESS=1 cargo test --test conformance                         # rewrite golden f
 Only bless after checking that the new output is correct; `git diff` shows what
 changed.
 
+Every `run` test that expects no errors also runs through the C back end and
+must produce the same output and exit status as with the interpreter. This
+needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it. The C
+runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
+
 When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs
 that check each compile error the section requires.

@@ -1,0 +1,615 @@
+/* The runtime of programs compiled by the Gamma C back end: implementations of the
+ * declarations in gm_rt.h. The compiler emits gm_rt.h, then this file, then the generated
+ * code, as one translation unit, so this file includes nothing itself.
+ *
+ * Observable behavior (trap output, value display, heap diagnostics) mirrors the reference
+ * interpreter byte for byte.
+ */
+
+/* ---- traps ---------------------------------------------------------------- */
+
+static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
+    gm_flush();
+    fputs("trap: ", stderr);
+    if (len > 0) fwrite(msg, 1, len, stderr);
+    fputc('\n', stderr);
+    if (file != NULL) fprintf(stderr, "  at %s:%u:%u\n", file, (unsigned)line, (unsigned)col);
+    fflush(stderr);
+    /* The status of a process terminated by `abort` (SIGABRT). */
+    exit(134);
+}
+
+static _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col) {
+    gm_trap_bytes((const uint8_t *)msg, strlen(msg), file, line, col);
+}
+
+/* ---- growable byte buffer --------------------------------------------------- */
+
+static void gm_buf_push(gm_buf *b, const void *data, size_t len) {
+    if (len == 0) return;
+    if (len > SIZE_MAX - b->len) gm_trap("out of memory", NULL, 0, 0);
+    size_t need = b->len + len;
+    if (need > b->cap) {
+        size_t cap = b->cap < 64 ? 64 : b->cap;
+        while (cap < need) {
+            if (cap > SIZE_MAX / 2) {
+                cap = need;
+                break;
+            }
+            cap *= 2;
+        }
+        uint8_t *p = (uint8_t *)realloc(b->data, cap);
+        if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+        b->data = p;
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, data, len);
+    b->len = need;
+}
+
+static void gm_buf_free(gm_buf *b) {
+    free(b->data);
+    b->data = NULL;
+    b->len = b->cap = 0;
+}
+
+/* ---- value display (spec §21.6.1) ---------------------------------------------- */
+
+static void gm_fmt_str(gm_buf *out, const char *s) { gm_buf_push(out, s, strlen(s)); }
+static void gm_fmt_ch(gm_buf *out, char c) { gm_buf_push(out, &c, 1); }
+
+/* Decimal digits of v into buf (at least 40 bytes); returns the length. */
+static size_t gm_u128_dec(char *buf, unsigned __int128 v) {
+    char tmp[40];
+    size_t n = 0;
+    do {
+        tmp[n++] = (char)('0' + (int)(v % 10));
+        v /= 10;
+    } while (v != 0);
+    for (size_t i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return n;
+}
+
+/* The value of a `bits`-bit integer stored in `size` little-endian bytes at p. */
+static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
+    unsigned __int128 raw = 0;
+    uint32_t size = t->size > 16 ? 16 : t->size;
+    for (uint32_t i = size; i > 0; i--) raw = (raw << 8) | p[i - 1];
+    unsigned bits = t->bits > 128 ? 128 : t->bits;
+    unsigned __int128 mask = bits >= 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
+    raw &= mask;
+    char buf[48];
+    size_t n = 0;
+    if (t->is_signed && bits > 0 && ((raw >> (bits - 1)) & 1) != 0) {
+        unsigned __int128 mag = (~raw + 1) & mask; /* |value| as an unsigned number */
+        buf[n++] = '-';
+        n += gm_u128_dec(buf + n, mag);
+    } else {
+        n = gm_u128_dec(buf, raw);
+    }
+    gm_buf_push(out, buf, n);
+}
+
+/* binary16 -> double, exactly. */
+static double gm_f16_to_f64(uint16_t h) {
+    uint64_t sign = (uint64_t)(h >> 15) << 63;
+    unsigned exp = (h >> 10) & 0x1f;
+    uint64_t man = h & 0x3ff;
+    uint64_t bits;
+    double d;
+    if (exp == 0) {
+        d = (double)man / 16777216.0; /* man * 2^-24 */
+        memcpy(&bits, &d, 8);
+        bits |= sign;
+    } else if (exp == 0x1f) {
+        bits = sign | (0x7ffull << 52) | (man << 42);
+    } else {
+        bits = sign | ((uint64_t)(exp - 15 + 1023) << 52) | (man << 42);
+    }
+    memcpy(&d, &bits, 8);
+    return d;
+}
+
+/* Rounds a double to the nearest binary16 (ties to even); returns its bits. */
+static uint16_t gm_f64_to_f16(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, 8);
+    uint16_t sign = (uint16_t)((bits >> 63) << 15);
+    int exp = (int)((bits >> 52) & 0x7ff);
+    uint64_t man = bits & ((1ull << 52) - 1);
+    if (exp == 0x7ff) return man == 0 ? (uint16_t)(sign | 0x7c00) : (uint16_t)(sign | 0x7e00);
+    if (exp == 0) return sign;
+    int e = exp - 1023;
+    int he = e + 15;
+    if (he >= 1) {
+        if (he >= 0x1f) return (uint16_t)(sign | 0x7c00);
+        uint32_t keep = (uint32_t)(man >> 42);
+        uint64_t rem = man & ((1ull << 42) - 1);
+        uint64_t half = 1ull << 41;
+        uint32_t r = ((uint32_t)he << 10) | keep;
+        if (rem > half || (rem == half && (keep & 1) == 1)) r += 1;
+        return (uint16_t)(sign | r);
+    }
+    unsigned __int128 m = ((unsigned __int128)1 << 52) | man;
+    int shift = 28 - e;
+    if (shift >= 120) return sign;
+    unsigned __int128 q = m >> shift;
+    unsigned __int128 rem = m & (((unsigned __int128)1 << shift) - 1);
+    unsigned __int128 half = (unsigned __int128)1 << (shift - 1);
+    uint32_t r = (uint32_t)q;
+    if (rem > half || (rem == half && (r & 1) == 1)) r += 1;
+    return (uint16_t)(sign | r);
+}
+
+/* Splits "d.ddde+XX" into its digits and the exponent. */
+static size_t gm_split_digits(const char *s, char *digits, int *exp10) {
+    size_t n = 0;
+    for (; *s != 'e' && *s != '\0'; s++) {
+        if (*s >= '0' && *s <= '9') digits[n++] = *s;
+    }
+    *exp10 = *s == 'e' ? atoi(s + 1) : 0;
+    digits[n] = '\0';
+    return n;
+}
+
+/* printf rounds an exact tie (x lies halfway between two n-digit decimals) to even, but the
+ * display rule picks the larger one when it reads back as x as well. Detects the tie by
+ * checking that its exact expansion is the (n+1)-digit one ending in 5, then bumps the last digit. */
+static void gm_round_tie_up(double x, unsigned bits, size_t n, char *digits, int *exp10) {
+    char buf[64], longer[24];
+    int e2;
+    snprintf(buf, sizeof buf, "%.*e", (int)n, x);
+    size_t m = gm_split_digits(buf, longer, &e2);
+    if (m != n + 1 || longer[n] != '5' || strtod(buf, NULL) != x) return;
+    /* The (n+1)-digit rendering reads back as x, but only an exact expansion is a tie. A double
+     * has at most 767 significant digits. */
+    char exact[800];
+    snprintf(exact, sizeof exact, "%.770e", x);
+    for (const char *q = exact + 2 + n + 1; *q != 'e' && *q != '\0'; q++) {
+        if (*q != '0') return;
+    }
+    char up[24];
+    memcpy(up, longer, n);
+    size_t i = n;
+    while (i > 0 && up[i - 1] == '9') up[--i] = '0';
+    if (i == 0) {
+        /* 99...9 rounds up to 100...0 one decade higher. */
+        memset(up, '0', n);
+        up[0] = '1';
+        e2 += 1;
+    } else {
+        up[i - 1]++;
+    }
+    up[n] = '\0';
+    snprintf(buf, sizeof buf, "%c.%se%d", up[0], up + 1, e2);
+    if (bits == 32 ? strtof(buf, NULL) == (float)x : strtod(buf, NULL) == x) {
+        memcpy(digits, up, n + 1);
+        *exp10 = e2;
+    }
+}
+
+/* The shortest decimal digits (no trailing zeros, at least one) that read back as the
+ * same value at the given width, and the decimal exponent of the first digit. x is positive
+ * and finite, and exactly representable at that width. */
+static void gm_shortest(double x, unsigned bits, char *digits, int *exp10) {
+    char buf[64];
+    int found = 0;
+    if (bits == 16) {
+        uint16_t target = gm_f64_to_f16(x);
+        for (int d = 1; d <= 6 && !found; d++) {
+            snprintf(buf, sizeof buf, "%.*e", d - 1, x);
+            found = gm_f64_to_f16(strtod(buf, NULL)) == target;
+        }
+    } else if (bits == 32) {
+        float f = (float)x;
+        for (int d = 1; d <= 9 && !found; d++) {
+            snprintf(buf, sizeof buf, "%.*e", d - 1, (double)f);
+            found = strtof(buf, NULL) == f;
+        }
+    }
+    for (int d = 1; d <= 17 && !found; d++) {
+        snprintf(buf, sizeof buf, "%.*e", d - 1, x);
+        found = strtod(buf, NULL) == x;
+    }
+    size_t n = gm_split_digits(buf, digits, exp10);
+    if (bits != 16 && n >= 2) gm_round_tie_up(x, bits, n, digits, exp10);
+    n = strlen(digits);
+    while (n > 1 && digits[n - 1] == '0') digits[--n] = '\0';
+}
+
+/* The display form of a float (§21.6.1): "nan", "inf", "-inf", "0", "-0", else the shortest
+ * round-trip digits in positional notation for decimal exponents -6..=20 and scientific
+ * (`d.ddde<exp>`) otherwise. */
+static void gm_fmt_float(gm_buf *out, const gm_type *t, const uint8_t *p) {
+    double x;
+    if (t->bits == 16) {
+        uint16_t h;
+        memcpy(&h, p, 2);
+        x = gm_f16_to_f64(h);
+    } else if (t->bits == 32) {
+        float f;
+        memcpy(&f, p, 4);
+        x = (double)f;
+    } else {
+        memcpy(&x, p, 8);
+    }
+    if (__builtin_isnan(x)) return gm_fmt_str(out, "nan");
+    if (__builtin_isinf(x)) return gm_fmt_str(out, x > 0 ? "inf" : "-inf");
+    if (x == 0) return gm_fmt_str(out, __builtin_signbit(x) ? "-0" : "0");
+    if (x < 0) {
+        gm_fmt_ch(out, '-');
+        x = -x;
+    }
+    char digits[24];
+    int exp;
+    gm_shortest(x, t->bits, digits, &exp);
+    int nd = (int)strlen(digits);
+    if (exp >= -6 && exp <= 20) {
+        if (exp >= 0) {
+            int int_len = exp + 1;
+            if (nd <= int_len) {
+                gm_buf_push(out, digits, (size_t)nd);
+                for (int i = nd; i < int_len; i++) gm_fmt_ch(out, '0');
+            } else {
+                gm_buf_push(out, digits, (size_t)int_len);
+                gm_fmt_ch(out, '.');
+                gm_buf_push(out, digits + int_len, (size_t)(nd - int_len));
+            }
+        } else {
+            gm_fmt_str(out, "0.");
+            for (int i = 0; i < -exp - 1; i++) gm_fmt_ch(out, '0');
+            gm_buf_push(out, digits, (size_t)nd);
+        }
+    } else {
+        gm_fmt_ch(out, digits[0]);
+        if (nd > 1) {
+            gm_fmt_ch(out, '.');
+            gm_buf_push(out, digits + 1, (size_t)(nd - 1));
+        }
+        char e[16];
+        int n = snprintf(e, sizeof e, "e%d", exp);
+        gm_buf_push(out, e, (size_t)n);
+    }
+}
+
+/* Whether the n bytes at p are one complete, well-formed UTF-8 sequence. */
+static bool gm_utf8_seq_ok(const uint8_t *p, size_t n) {
+    uint8_t lo = 0x80, hi = 0xbf;
+    if (n == 2 && p[0] >= 0xc2 && p[0] <= 0xdf) {
+        /* any continuation byte */
+    } else if (n == 3 && p[0] >= 0xe0 && p[0] <= 0xef) {
+        if (p[0] == 0xe0) lo = 0xa0;
+        if (p[0] == 0xed) hi = 0x9f;
+    } else if (n == 4 && p[0] >= 0xf0 && p[0] <= 0xf4) {
+        if (p[0] == 0xf0) lo = 0x90;
+        if (p[0] == 0xf4) hi = 0x8f;
+    } else {
+        return false;
+    }
+    if (p[1] < lo || p[1] > hi) return false;
+    for (size_t i = 2; i < n; i++) {
+        if (p[i] < 0x80 || p[i] > 0xbf) return false;
+    }
+    return true;
+}
+
+static void gm_fmt_hex_escape(gm_buf *out, uint8_t b) {
+    static const char hex[] = "0123456789abcdef";
+    char e[4] = {'\\', 'x', hex[b >> 4], hex[b & 15]};
+    gm_buf_push(out, e, 4);
+}
+
+/* Appends the bytes quoted with escapes; valid UTF-8 sequences are kept as they are. */
+static void gm_quote_bytes(gm_buf *out, const uint8_t *s, size_t n) {
+    gm_fmt_ch(out, '"');
+    size_t i = 0;
+    while (i < n) {
+        uint8_t b = s[i];
+        switch (b) {
+        case '"': gm_fmt_str(out, "\\\""); break;
+        case '\\': gm_fmt_str(out, "\\\\"); break;
+        case '\n': gm_fmt_str(out, "\\n"); break;
+        case '\r': gm_fmt_str(out, "\\r"); break;
+        case '\t': gm_fmt_str(out, "\\t"); break;
+        case 0: gm_fmt_str(out, "\\0"); break;
+        default:
+            if (b >= 0x20 && b <= 0x7e) {
+                gm_fmt_ch(out, (char)b);
+            } else if (b >= 0x80) {
+                size_t len = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc2 ? 2 : 0;
+                if (b > 0xf4) len = 0;
+                if (len > 0 && i + len <= n && gm_utf8_seq_ok(s + i, len)) {
+                    gm_buf_push(out, s + i, len);
+                    i += len;
+                    continue;
+                }
+                gm_fmt_hex_escape(out, b);
+            } else {
+                gm_fmt_hex_escape(out, b);
+            }
+        }
+        i++;
+    }
+    gm_fmt_ch(out, '"');
+}
+
+/* Reads an unsigned little-endian integer of n (at most 8) bytes. */
+static uint64_t gm_load_uint(const uint8_t *p, uint32_t n) {
+    uint64_t v = 0;
+    if (n > 8) n = 8;
+    for (uint32_t i = n; i > 0; i--) v = (v << 8) | p[i - 1];
+    return v;
+}
+
+static uint64_t gm_load_ptr(const uint8_t *p) {
+    uintptr_t v;
+    memcpy(&v, p, sizeof v);
+    return (uint64_t)v;
+}
+
+static void gm_fmt_seq(gm_buf *out, const gm_type *elem, const uint8_t *data, uint64_t n) {
+    gm_fmt_ch(out, '[');
+    for (uint64_t i = 0; i < n; i++) {
+        if (i > 0) gm_fmt_str(out, ", ");
+        gm_format(out, elem, data + i * elem->size, false);
+    }
+    gm_fmt_ch(out, ']');
+}
+
+/* The elements of a tuple-like list of fields, separated by ", " (named ones as `name: v`). */
+static void gm_fmt_fields(gm_buf *out, const gm_type *t, const uint8_t *v) {
+    for (uint32_t i = 0; i < t->nfields; i++) {
+        const gm_field *f = &t->fields[i];
+        if (i > 0) gm_fmt_str(out, ", ");
+        if (t->named && f->name != NULL) {
+            gm_fmt_str(out, f->name);
+            gm_fmt_str(out, ": ");
+        }
+        gm_format(out, f->type, v + f->offset, false);
+    }
+}
+
+static void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
+    const uint8_t *v = (const uint8_t *)vp;
+    switch (t->kind) {
+    case GM_K_INT: gm_fmt_int(out, t, v); break;
+    case GM_K_FLOAT: gm_fmt_float(out, t, v); break;
+    case GM_K_BOOL: gm_fmt_str(out, v[0] != 0 ? "true" : "false"); break;
+    case GM_K_PTR: {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "0x%llx", (unsigned long long)gm_load_ptr(v));
+        gm_buf_push(out, buf, (size_t)n);
+        break;
+    }
+    case GM_K_SLICE: {
+        const uint8_t *data = (const uint8_t *)(uintptr_t)gm_load_ptr(v);
+        uint64_t n = gm_load_ptr(v + sizeof(void *));
+        const gm_type *e = t->elem;
+        if (e->kind == GM_K_INT && e->bits == 8 && !e->is_signed) {
+            if (top) {
+                gm_buf_push(out, data, (size_t)n);
+            } else {
+                gm_quote_bytes(out, data, (size_t)n);
+            }
+        } else {
+            gm_fmt_seq(out, e, data, n);
+        }
+        break;
+    }
+    case GM_K_ARRAY: gm_fmt_seq(out, t->elem, v, t->len); break;
+    case GM_K_TUPLE:
+        gm_fmt_ch(out, '(');
+        gm_fmt_fields(out, t, v);
+        if (t->nfields == 1 && !t->named) gm_fmt_ch(out, ',');
+        gm_fmt_ch(out, ')');
+        break;
+    case GM_K_OPTIONAL: {
+        bool present = t->flag_offset == GM_NICHE ? gm_load_ptr(v) != 0 : v[t->flag_offset] != 0;
+        if (present) {
+            gm_format(out, t->elem, v, false);
+        } else {
+            gm_fmt_str(out, "null");
+        }
+        break;
+    }
+    case GM_K_RESULT:
+        if (v[t->tag_offset] != 0) {
+            gm_fmt_ch(out, '!');
+            gm_format(out, t->err, v + t->payload_offset, false);
+        } else {
+            gm_format(out, t->elem, v + t->payload_offset, false);
+        }
+        break;
+    case GM_K_STRUCT: {
+        gm_fmt_str(out, t->name);
+        gm_fmt_ch(out, '(');
+        bool first = true;
+        for (uint32_t i = 0; i < t->nfields; i++) {
+            const gm_field *f = &t->fields[i];
+            if (f->name != NULL && strcmp(f->name, "_") == 0) continue;
+            if (!first) gm_fmt_str(out, ", ");
+            first = false;
+            gm_fmt_str(out, f->name != NULL ? f->name : "");
+            gm_fmt_str(out, ": ");
+            gm_format(out, f->type, v + f->offset, false);
+        }
+        gm_fmt_ch(out, ')');
+        break;
+    }
+    case GM_K_UNION: {
+        uint64_t raw = gm_load_uint(v + t->tag_offset, t->tag_size);
+        int64_t tag = (int64_t)raw;
+        if (t->tag_signed && t->tag_size > 0 && t->tag_size < 8) {
+            unsigned shift = 64 - 8u * t->tag_size;
+            tag = (int64_t)(raw << shift) >> shift;
+        }
+        const gm_variant *var = NULL;
+        for (uint32_t i = 0; i < t->nvariants; i++) {
+            if (t->variants[i].tag == tag) {
+                var = &t->variants[i];
+                break;
+            }
+        }
+        if (var == NULL) {
+            gm_fmt_str(out, ".?");
+            break;
+        }
+        gm_fmt_ch(out, '.');
+        gm_fmt_str(out, var->name);
+        if (var->payload != NULL) {
+            const gm_type *pt = var->payload;
+            const uint8_t *pv = v + t->payload_offset;
+            gm_fmt_ch(out, '(');
+            if (pt->kind == GM_K_TUPLE) {
+                gm_fmt_fields(out, pt, pv);
+            } else {
+                gm_format(out, pt, pv, false);
+            }
+            gm_fmt_ch(out, ')');
+        }
+        break;
+    }
+    case GM_K_OPAQUE: gm_fmt_str(out, t->name); break;
+    }
+}
+
+/* ---- ambient effects ---------------------------------------------------------- */
+
+static void gm_write_out(const uint8_t *p, size_t len) {
+    if (len > 0) fwrite(p, 1, len, stdout);
+}
+
+static void gm_write_err(const uint8_t *p, size_t len) {
+    if (len > 0) fwrite(p, 1, len, stderr);
+    fflush(stderr);
+}
+
+static void gm_flush(void) { fflush(stdout); }
+
+typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
+static gm_rt_str *gm_rt_args;
+static size_t gm_rt_argc;
+
+static void gm_set_args(int argc, char **argv) {
+    if (gm_rt_args != NULL || argc <= 0) return;
+    gm_rt_args = (gm_rt_str *)malloc((size_t)argc * sizeof(gm_rt_str));
+    if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (int i = 0; i < argc; i++) {
+        gm_rt_args[i].ptr = (const uint8_t *)argv[i];
+        gm_rt_args[i].len = strlen(argv[i]);
+    }
+    gm_rt_argc = (size_t)argc;
+}
+
+static const void *gm_args(size_t *count) {
+    *count = gm_rt_argc;
+    return gm_rt_args;
+}
+
+static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+    char *key = (char *)malloc(len + 1);
+    if (key == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (len > 0) memcpy(key, name, len);
+    key[len] = '\0';
+    const char *v = getenv(key);
+    free(key);
+    if (v == NULL) return false;
+    *value = (const uint8_t *)v;
+    *value_len = strlen(v);
+    return true;
+}
+
+/* ---- heap ------------------------------------------------------------------------ */
+
+/* Blocks are over-allocated and aligned by hand so that any power-of-two alignment works on
+ * every libc; the address of the underlying allocation is stored just before the block. */
+
+/* In debug builds every block ever handed out is remembered: a hash table keyed by address
+ * (open addressing; entries are never removed, a freed block is only marked) tells a double
+ * free from a free of an address that was never a block. */
+enum { GM_HB_EMPTY = 0, GM_HB_LIVE = 1, GM_HB_FREED = 2 };
+typedef struct { uintptr_t addr; size_t size; uint8_t state; } gm_hblock;
+static gm_hblock *gm_hb_tab;
+static size_t gm_hb_cap, gm_hb_used;
+
+static size_t gm_hb_index(uintptr_t addr, size_t cap) {
+    uint64_t h = ((uint64_t)addr >> 3) * 0x9e3779b97f4a7c15ull;
+    return (size_t)(h >> 29) & (cap - 1);
+}
+
+/* The slot for addr: its entry if it has one, else the empty slot where it belongs. */
+static gm_hblock *gm_hb_slot(uintptr_t addr) {
+    size_t i = gm_hb_index(addr, gm_hb_cap);
+    while (gm_hb_tab[i].state != GM_HB_EMPTY && gm_hb_tab[i].addr != addr) i = (i + 1) & (gm_hb_cap - 1);
+    return &gm_hb_tab[i];
+}
+
+static gm_hblock *gm_hb_find(uintptr_t addr) {
+    if (gm_hb_cap == 0) return NULL;
+    gm_hblock *s = gm_hb_slot(addr);
+    return s->state == GM_HB_EMPTY ? NULL : s;
+}
+
+static void gm_hb_record(uintptr_t addr, size_t size) {
+    if ((gm_hb_used + 1) * 2 > gm_hb_cap) {
+        gm_hblock *old = gm_hb_tab;
+        size_t old_cap = gm_hb_cap;
+        size_t cap = old_cap == 0 ? 256 : old_cap * 2;
+        gm_hblock *tab = (gm_hblock *)calloc(cap, sizeof(gm_hblock));
+        if (tab == NULL) gm_trap("out of memory", NULL, 0, 0);
+        gm_hb_tab = tab;
+        gm_hb_cap = cap;
+        for (size_t i = 0; i < old_cap; i++) {
+            if (old[i].state != GM_HB_EMPTY) *gm_hb_slot(old[i].addr) = old[i];
+        }
+        free(old);
+    }
+    gm_hblock *s = gm_hb_slot(addr);
+    if (s->state == GM_HB_EMPTY) gm_hb_used++;
+    s->addr = addr;
+    s->size = size;
+    s->state = GM_HB_LIVE;
+}
+
+static void *gm_heap_alloc(size_t size, size_t align) {
+    if (align == 0) align = 1;
+    if (size > SIZE_MAX - align - sizeof(void *)) return NULL;
+    uint8_t *raw = (uint8_t *)malloc(size + align + sizeof(void *));
+    if (raw == NULL) return NULL;
+    uintptr_t a = ((uintptr_t)raw + sizeof(void *) + (align - 1)) & ~(uintptr_t)(align - 1);
+    uint8_t *p = (uint8_t *)a;
+    memcpy(p - sizeof(void *), &raw, sizeof raw);
+    if (gm_debug != 0) {
+        memset(p, 0xAA, size);
+        gm_hb_record(a, size);
+    }
+    return p;
+}
+
+static void gm_heap_release(void *p) {
+    uint8_t *raw;
+    memcpy(&raw, (uint8_t *)p - sizeof(void *), sizeof raw);
+    free(raw);
+}
+
+static void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
+    (void)align;
+    if (gm_debug == 0) {
+        if (p != NULL) gm_heap_release(p);
+        return;
+    }
+    char msg[160];
+    gm_hblock *b = gm_hb_find((uintptr_t)p);
+    if (b != NULL && b->state == GM_HB_FREED) {
+        snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
+        gm_trap(msg, file, line, col);
+    }
+    if (b == NULL || b->size != size) {
+        snprintf(msg, sizeof msg, "invalid free of 0x%llx: not the start of a live heap block of %llu bytes",
+                 (unsigned long long)(uintptr_t)p, (unsigned long long)size);
+        gm_trap(msg, file, line, col);
+    }
+    memset(p, 0xDD, size);
+    b->state = GM_HB_FREED;
+    gm_heap_release(p);
+}

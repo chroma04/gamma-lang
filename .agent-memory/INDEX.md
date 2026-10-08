@@ -11,15 +11,16 @@
   evaluated at compile time, #fuel, static_assert/compile_error/location/type_of intrinsics.
 - M9 mostly done (roadmap/M09 status): directory modules, imports + gamma.toml deps, cycles,
   `test` decls + `gamma test` (leak-checking, captured output), harness `*.test` dirs.
+- M7 C backend works for all run tests (roadmap/M07 status, decisions/008): src/cgen + runtime/.
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
 - Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, ctl/fibers (M8),
-  C backend (M7), FFI (M10), std (M11), multiple
+  FFI (M10), std (M11), C-backend gaps (M07 status), multiple
   assignment/destructuring stmt, `using` ptr coercion, struct patterns with generic type names.
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. M7 C backend (big; design first in decisions/008). Or M8 fibers (interp) first?
-2. M3/M5 leftovers above; M10 FFI needs M7; M11 std after M7/M10.
+1. M8 fibers (interp + C runtime context switch) or M10 FFI (foreign fns in C backend first).
+2. M3/M5 leftovers above; C-backend gaps; M11 std after M10.
 3. Keep PR green; CI runs on push.
 
 ## Map

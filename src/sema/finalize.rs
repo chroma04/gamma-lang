@@ -5,7 +5,7 @@
 use super::expr::{apply_steps, base_coercion};
 use super::func::{FnCx, Obligation};
 use crate::float;
-use crate::tir::{Coercion, Expr, ExprKind};
+use crate::tir::{self, Coercion, Expr, ExprKind};
 use crate::types::{IntTy, Ty, TyKind};
 use num_bigint::BigInt;
 use num_rational::BigRational;
@@ -114,8 +114,32 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// Patterns carry types (and literal constants) that need final types too.
+    fn fin_pat(&mut self, p: &mut tir::Pat) {
+        p.ty = self.infer.resolve(p.ty);
+        match &mut p.kind {
+            tir::PatKind::Const(c) => self.fin_expr(c),
+            tir::PatKind::Some(q) | tir::PatKind::Ok(q) | tir::PatKind::Err(q) => self.fin_pat(q),
+            tir::PatKind::Variant { payload: Some(q), .. } => self.fin_pat(q),
+            tir::PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, q)| self.fin_pat(q)),
+            tir::PatKind::Or(ps) => ps.iter_mut().for_each(|q| self.fin_pat(q)),
+            _ => {}
+        }
+    }
+
     fn fin_expr(&mut self, e: &mut Expr) {
         e.for_each_child_mut(&mut |c| self.fin_expr(c));
+        match &mut e.kind {
+            ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| self.fin_pat(&mut a.pat)),
+            ExprKind::If { cond, .. } | ExprKind::Loop { cond, .. } => {
+                for c in cond.iter_mut() {
+                    if let tir::CondPart::Match { pat, .. } = c {
+                        self.fin_pat(pat);
+                    }
+                }
+            }
+            _ => {}
+        }
         e.ty = self.infer.resolve(e.ty);
         match &mut e.kind {
             // Literals at a type parameter are checked per instantiation (§16.1).

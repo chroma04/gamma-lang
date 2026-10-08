@@ -70,6 +70,8 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/tir.rs` | the typed intermediate representation |
 | `src/sema/` | semantic analysis (see below) |
 | `src/interp/` | the interpreter (see below) |
+| `src/cgen/` | the C back end (see below) |
+| `runtime/` | the C runtime of compiled programs, embedded in the compiler |
 | `lib/core/` | the parts of the core library written in Gamma, embedded in the compiler |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
@@ -246,3 +248,49 @@ function values capture the context where they were created, as §11.6 requires.
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so
 the value can later be placed in a compiled program's read-only data.
+
+## The C back end
+
+`gamma build` and `gamma run --backend=c` translate the checked program to one
+C translation unit (`src/cgen/`), prefixed by the runtime (`runtime/gm_rt.h`,
+`runtime/gm_rt.c`), and compile it with the system C compiler (`$CC`, default
+`cc`) in GNU C11 mode. The generated code follows the interpreter exactly, and
+the conformance runner checks this: every `run` test also runs natively and
+must print the same output and exit with the same status.
+
+**Values.** Scalars (integers up to 128 bits, floats, `bool`, pointers) are
+native C values. Every other type is a *blob*, a struct holding its bytes with
+the Gamma layout's size and alignment, whose fields are read and written with
+`memcpy` at the layout's offsets (`src/cgen/types.rs`). Values therefore have
+the same bytes in both back ends. Integers narrower than their C storage are
+kept sign- or zero-extended, and arithmetic checks the Gamma type's range.
+
+**Functions and frames.** Each function becomes
+`RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. Its locals live in
+a frame struct whose address is the `env` of the function literals and handler
+clauses it creates, so captured variables are shared, as §11.6 requires.
+
+**Effects.** The handler context `cx` is a linked list of `gm_node`s, built on
+the C stack by `with`. Performing an operation finds the innermost node for the
+effect instance and calls the clause from its table. Handler declarations go
+through small thunks that load the handler value. The ambient `Out`, `Err` and
+`Env` have native nodes served by the runtime.
+
+**Non-local exits.** `break`, `continue`, `return` and `try` aimed at another
+frame, clause exits to a `with`, and `Env.exit` set a global exit record and
+return. After each call that may exit this way, the caller tests the record and
+runs its *ladder*: the pending deferred statements from the innermost scope
+outwards, with a test at each loop and `with` for whether it is the exit's
+target. A deferred statement run by a ladder sets the exit aside while it runs.
+Traps print their message and stop the process (status 134) without unwinding.
+
+**Formatting and comparison.** `@write` formats through the runtime's
+`gm_format`, driven by type descriptors generated for each formatted type.
+Structural `is`, ordering and `@hash` use C functions generated per type
+(`src/cgen/helpers.rs`) that agree with the interpreter, including the hash
+values, so hash maps iterate in the same order.
+
+Not yet supported natively: fibers (`with … on`, continuations), foreign
+functions, `#global` variables, `#bits` field access and integers wider than 128
+bits; the back end reports them as errors.
+

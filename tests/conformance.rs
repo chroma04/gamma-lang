@@ -22,6 +22,10 @@
 //! `//~` annotations refer to the line of the file they are written in, and the
 //! expected output of `name.test` is the sibling `name.stdout`.
 //!
+//! Every `run` test that expects no errors also runs through the C back end
+//! (`gamma run --backend=c`) and must give the same output and exit status,
+//! unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
+//!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
 
@@ -154,6 +158,43 @@ fn gm_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
+fn c_backend_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
+            return false;
+        }
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success())
+    })
+}
+
+/// Runs a `run` test through the C back end and compares it with the expectations.
+fn run_c(target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .args(["run", "--backend=c", "--diag-format=short"])
+        .arg(target)
+        .output()
+        .map_err(|e| format!("cannot run gamma: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = fs::read_to_string(golden).unwrap_or_default();
+    let mut problems = vec![];
+    let code = output.status.code().unwrap_or(-1);
+    if code != exit {
+        problems.push(format!(
+            "[C back end] exit status {} (expected {})\nstderr:\n{}",
+            code,
+            exit,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if expected != stdout {
+        problems.push(format!("[C back end] output differs from {}:\n{}", golden.display(), diff(&expected, &stdout)));
+    }
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
 fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     // A `.test` directory, or a single file.
     let (files, target) = if path.is_dir() {
@@ -244,6 +285,16 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
                 problems.push(format!("output differs from {}:\n{}", golden.display(), diff(&expected, &stdout)));
             }
         }
+    }
+
+    if exp.stage == Stage::Run
+        && !expects_errors
+        && problems.is_empty()
+        && !bless
+        && c_backend_available()
+        && let Err(p) = run_c(&target, &path.with_extension("stdout"), exp.exit)
+    {
+        problems.push(p);
     }
 
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }

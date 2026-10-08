@@ -56,12 +56,13 @@ main :: fn() -> E!() \ {Out} { ... }
 
 ## The `gamma` tool
 
-> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, iterators, generics, and allocation with lists. Imports, maps, fibers, compile-time value parameters and native compilation are still being built, so some examples in later chapters are rejected with a "not supported yet" message.
+> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, iterators, generics, allocation with lists and maps, modules and tests. `gamma build` compiles a program to a native executable through the system C compiler; `gamma run --backend=c` compiles and runs it in one step. Fibers and foreign code are still being built, so some examples in later chapters are rejected with a "not supported yet" message.
 
 You build the tool from the repository with Cargo, then use it like this:
 
 ```text
 gamma run hello.gm         type-check the program and run it
+gamma build hello.gm       compile it to a native executable `hello` (-o picks the name)
 gamma check hello.gm       type-check without running
 gamma lex file.gm          print the tokens of a source file
 gamma parse file.gm        check the syntax of a source file
