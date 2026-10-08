@@ -1,5 +1,5 @@
 # Code map (current)
-src/main.rs        CLI: lex | parse [--dump] | check | run (check/run not implemented yet);
+src/main.rs        CLI: lex | parse [--dump] | check | run [program args];
                    --diag-format=human|short. Exit 0 ok, 1 compile errors, 2 usage.
 src/lib.rs         module list
 src/source.rs      SourceMap, FileId, Span{file,lo,hi} (byte offsets), line_col
@@ -12,6 +12,13 @@ src/syntax/lexer.rs   lex(file, src, diags) -> LexOutput{tokens, docs}; newline 
 src/syntax/ast.rs     AST (types are Exprs); NodeId on every node; NodeIdGen shared per session
 src/syntax/parser/    parse_file(file, &LexOutput, &mut NodeIdGen, diags) -> ast::File
 src/syntax/ast_dump.rs  dump_file -> stable S-expr (golden tests)
+src/types.rs       hash-consed Ty/TyKind (global RwLock interner), AdtId/EffectId/ParamId names
+src/layout.rs      Target, Layouts (size/align/offsets; optional = payload+flag, result = tag+payload)
+src/float.rs       exact rational → f16/f32/f64 bits (round half even)
+src/tir.rs         typed IR + for_each_child(_mut) traversals
+src/sema/          semantic analysis (see architecture/sema-notes.md)
+src/interp/        tree-walking interpreter; run_main / eval_const
+lib/core/prelude.gm  core declarations in Gamma (embedded via include_str!)
 tests/conformance.rs  harness (see decisions/004)
 tests/conformance/{lex,parse}/  .gm tests + goldens
 docs/              README-level docs (architecture.md, contributing.md, guide/)

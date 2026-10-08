@@ -11,3 +11,10 @@
 - A.4 stmt grammar: when_stmt alternatives were misattached; fixed.
 - A.7 rules 3 (Bang algorithm), 4 (heads, generalized), new 11 (break labels), 12 (type prefix
   before call), 13 (newlines after attributes).
+- From guide review: comma-separated struct fields + optional NL after last element in any brace
+  list (A intro); falling off end OK for E!() (§11.1); nested fn vs capturing literal (§11.8);
+  `?T else E!T` gives E!T, `!e` error type from try context (§10.4); effect instantiation for
+  untyped args inferred from available set (§12.1); &global performs Sys (§19.3); Allocator
+  fields pub (§15.2); C aliases qualified `c.c_int` (§19.2); §16.6 for-loop with only concerns
+  source call; cursor example uses two bindings (§13.4).
+- `@write` float display format defined precisely (§21.6.1).
