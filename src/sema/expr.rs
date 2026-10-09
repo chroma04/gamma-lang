@@ -1293,6 +1293,22 @@ impl<'a, 's> FnCx<'a, 's> {
             self.pending.push(PendingCoercion { source: src, target, span });
             return mk(target, tir::ExprKind::Coerce { kind: Coercion::Unresolved, expr: Box::new(e) }, span);
         }
+        // A tuple with unresolved elements, to the same tuple with or without names (§5.9).
+        if let (TyKind::Tuple { elems: a, names: na }, TyKind::Tuple { elems: b, names: nb }) =
+            (src.kind(), target.kind())
+            && (src.has_infer() || target.has_infer())
+            && a.len() == b.len()
+            && na != nb
+            && (na.is_none() || nb.is_none())
+        {
+            let span = e.span;
+            if a.iter().zip(b.iter()).any(|(x, y)| self.infer.unify(*x, *y).is_err()) {
+                let found = self.infer.resolve(src);
+                self.error(span, format!("expected `{}`, found `{}`", target, found));
+                return e;
+            }
+            return mk(target, tir::ExprKind::Coerce { kind: Coercion::TupleRename, expr: Box::new(e) }, span);
+        }
         if src.has_infer() || target.has_infer() {
             let span = e.span;
             if self.infer.unify(src, target).is_err() {

@@ -66,6 +66,31 @@ directory without allocating. Failures are `IoError` values.
 - `fs.write_all(path, bytes)`, `fs.append(path, bytes)`, `fs.copy(from, to)`,
   `fs.exists(path)`, and `fs.write_all_to(file, bytes)`, which retries short writes.
 
+## `std/fmt`
+
+`print` writes each value one fixed way (§21.6.1). `std/fmt` provides the other
+presentations, written into a buffer you supply and returned as a `string` slice of
+it; nothing allocates, and a buffer that is too small traps. Size constants and
+functions (`INT_BUF`, `max_int_len(T)`, `fixed_buf_len(d)`, …) say how large is enough.
+
+```gamma
+fmt :: import "std/fmt"
+
+buf: [fmt.INT_BUF]u8 = ---
+print("{}\n", fmt.prefixed(u32(255), 16, buf[..]))     // 0xff
+fb: [400]u8 = ---
+print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary value is below 2.675)
+```
+
+- Integers (any type from 8 to 128 bits): `dec`, `hex`, `hex_upper`, `oct`, `bin`,
+  `radix(x, base)` for bases 2–36, `prefixed(x, base)` with `0x`/`0o`/`0b`, and
+  `grouped(x, sep)` with thousands separators. Untyped literals need a type:
+  `fmt.hex(u32(255), buf)`.
+- Padding any formatted text: `pad_left`, `pad_right`, `center` and `zero_pad`
+  (which keeps a sign or base prefix first: `-0042`, `0x00ff`).
+- Floats: `fixed(x, decimals)`, `sci(x, digits)` and `general(x, precision)`, correctly
+  rounded like C's `%.*f`, `%.*e` and `%.*g`.
+
 ## `std/c`
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring

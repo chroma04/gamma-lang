@@ -123,6 +123,19 @@ impl<'a, 's> FnCx<'a, 's> {
             return Some(CalleeKind::Variant(t, *name));
         }
         if let ExprKind::Ident(id) = &callee.kind {
+            if self.lookup_local(id.name).is_none()
+                && let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name)
+            {
+                self.error(
+                    callee.span,
+                    format!(
+                        "`{}(x)` would be a conversion to a type parameter, which is not lossless for every type; use `x.trunc({})`, `x.sat({})` or `x.checked({})`",
+                        id.name, id.name, id.name, id.name
+                    ),
+                );
+                let _ = t;
+                return None;
+            }
             if self.lookup_local(id.name).is_none() {
                 let module = self.module;
                 if let Some(d) = self.sema.lookup_module_name(module, id.name) {

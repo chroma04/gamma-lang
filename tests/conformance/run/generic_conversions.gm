@@ -1,0 +1,11 @@
+// Conversion methods on constrained type parameters (§16.3), and tuple literals
+// coerced to named tuple types (§5.9).
+low :: fn(T: type, x: T) -> u8 where Int(T) => x.trunc(u8)
+widen :: fn(T: type, x: u8) -> T where Int(T) => x.sat(T)
+fl :: fn(F: type, x: F) -> i32 where Float(F) => x.floor(i32)
+named :: fn() -> (n: usize, point: usize) {
+    return (0, 7)
+}
+main :: fn() \ {Out} {
+    print("{} {} {} {}\n", (low(u32(300)), widen(i8, 200), fl(f64(2.7)), named()))
+}

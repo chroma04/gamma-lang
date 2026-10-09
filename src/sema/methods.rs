@@ -2,6 +2,7 @@
 //! methods (§6.6, §21.3) and functions of the receiver type's module.
 
 use super::func::{FnCx, Obligation, error_expr};
+use super::generics::Constraint;
 use super::{DeclValue, ParamInfo};
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind};
@@ -83,12 +84,22 @@ impl<'a, 's> FnCx<'a, 's> {
         true
     }
 
+    /// Whether `t` is a type parameter with constraint `c`.
+    fn param_with(&self, t: Ty, c: Constraint) -> bool {
+        matches!(t.kind(), TyKind::Param(p) if self.sema.param_has(*p, c))
+    }
+
     /// The builtin methods of §21.3 and the conversions of §6.6.
     fn builtin_method(&mut self, recv: Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
         let n = name.name.as_str();
         let rty = self.infer.resolve(recv.ty);
-        let is_int = rty.is_integer() || self.infer.var_kind(rty) == Some(super::infer::VarKind::Int);
-        let is_float = rty.is_float() || self.infer.var_kind(rty) == Some(super::infer::VarKind::Float);
+        // A type parameter constrained `Int` or `Float` has the methods of its types (§16.3).
+        let is_int = rty.is_integer()
+            || self.infer.var_kind(rty) == Some(super::infer::VarKind::Int)
+            || self.param_with(rty, Constraint::Int);
+        let is_float = rty.is_float()
+            || self.infer.var_kind(rty) == Some(super::infer::VarKind::Float)
+            || self.param_with(rty, Constraint::Float);
         let b = |op, ty, args: Vec<Expr>| mk(ty, tir::ExprKind::Builtin { op, args }, span);
         if is_int || is_float {
             match n {
@@ -105,10 +116,12 @@ impl<'a, 's> FnCx<'a, 's> {
                         "checked" => Builtin::Checked,
                         _ => Builtin::Sat,
                     };
+                    let t_int = t.is_integer() || self.param_with(t, Constraint::Int);
+                    let t_float = t.is_float() || self.param_with(t, Constraint::Float);
                     let ok = match op {
-                        Builtin::Trunc | Builtin::Checked | Builtin::Sat => t.is_integer(),
-                        Builtin::Round => t.is_integer() || t.is_float(),
-                        _ => t.is_integer() && is_float,
+                        Builtin::Trunc | Builtin::Checked | Builtin::Sat => t_int,
+                        Builtin::Round => t_int || t_float,
+                        _ => t_int && is_float,
                     };
                     if !ok {
                         self.error(span, format!("`.{}` cannot convert to `{}`", n, t));

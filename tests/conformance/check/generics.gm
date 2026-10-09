@@ -40,3 +40,5 @@ not_inferable :: fn() {
 }
 
 main :: fn() {}
+
+conv_to_param :: fn(T: type, x: u8) -> T where Int(T) => T(x)   //~ ERROR would be a conversion to a type parameter
