@@ -37,6 +37,10 @@ impl Helpers {
         let mut b = String::new();
         let p = ty.lay.target.ptr_bytes;
         match ty.repr(t) {
+            _ if ty.wide(t).is_some() => {
+                let w = ty.wide(t).unwrap();
+                let _ = writeln!(b, "    return gm_wcmp(a, b, {}, {}) == 0;", w.bits, w.signed as u8);
+            }
             Repr::Int { .. } | Repr::Float(_) | Repr::Ptr => {
                 let c = ty.cty(t);
                 let _ = writeln!(b, "    return GM_LD({c}, a) == GM_LD({c}, b);");
@@ -139,6 +143,10 @@ impl Helpers {
         let mut b = String::new();
         let p = ty.lay.target.ptr_bytes;
         match ty.repr(t) {
+            _ if ty.wide(t).is_some() => {
+                let w = ty.wide(t).unwrap();
+                let _ = writeln!(b, "    return gm_wcmp(a, b, {}, {}) < 0;", w.bits, w.signed as u8);
+            }
             Repr::Int { .. } | Repr::Float(_) | Repr::Ptr | Repr::Bool => {
                 let c = ty.cty(t);
                 let _ = writeln!(b, "    return GM_LD({c}, a) < GM_LD({c}, b);");
@@ -211,6 +219,10 @@ impl Helpers {
         let mut b = String::new();
         let p = ty.lay.target.ptr_bytes;
         match ty.repr(t) {
+            _ if ty.wide(t).is_some() => {
+                let w = ty.wide(t).unwrap();
+                let _ = writeln!(b, "    return gm_whash(h, v, {}, {});", w.bits, w.signed as u8);
+            }
             Repr::Int { signed, .. } => {
                 let c = ty.cty(t);
                 let f = if signed { "gm_hash_int" } else { "gm_hash_uint" };

@@ -116,6 +116,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// A C literal of integer type `t` with value `v` (floats accept integer literals too).
     pub fn int_lit(&mut self, t: Ty, v: &BigInt) -> String {
+        if let Some(w) = self.wide(t) {
+            return self.wide_lit(t, w, v);
+        }
         match self.g.ty.repr(t) {
             Repr::Float(f) => float_lit(f, v.to_string().parse::<f64>().unwrap_or(f64::NAN)),
             Repr::Int { signed, storage, .. } => {
@@ -666,7 +669,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::Index { base, index, checked } => {
                 let i = self.expr(index)?;
-                let i = self.tmp(Ty::usize(), &format!("(uintptr_t){}", i));
+                let i = self.usize_value(index.ty, &i);
+                let i = self.tmp(Ty::usize(), &i);
                 let loc = self.loc(e);
                 let check = |fg: &mut Self, len: &str| {
                     if *checked {
@@ -744,14 +748,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let lo_v = match lo {
             Some(x) => {
                 let v = self.expr(x)?;
-                self.tmp(Ty::usize(), &format!("(uintptr_t){}", v))
+                let v = self.usize_value(x.ty, &v);
+                self.tmp(Ty::usize(), &v)
             }
             None => "(uintptr_t)0".into(),
         };
         let hi_v = match hi {
             Some(x) => {
                 let v = self.expr(x)?;
-                let h = self.tmp(Ty::usize(), &format!("(uintptr_t){}", v));
+                let v = self.usize_value(x.ty, &v);
+                let h = self.tmp(Ty::usize(), &v);
                 if inclusive {
                     self.line(&format!("{} += 1;", h));
                 }
@@ -785,6 +791,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let v = self.expr(x)?;
         let t = e.ty;
         Ok(match kind {
+            Coercion::IntWiden if self.wide(t).is_some() || self.wide(x.ty).is_some() => {
+                self.wide_convert(e, crate::tir::Builtin::Convert, x.ty, &v, t)?
+            }
             Coercion::IntWiden | Coercion::FloatWiden => {
                 let c = self.g.ty.cty(t);
                 self.tmp(t, &format!("({}){}", c, v))
@@ -1328,7 +1337,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let v = self.load(t, addr);
                 let (l, h) = (self.int_lit(t, lo), self.int_lit(t, hi));
                 let op = if *inclusive { ">" } else { ">=" };
-                self.line(&format!("if ({v} < {l} || {v} {op} {h}) goto {fail};"));
+                let (below, above) = (self.int_cmp(t, &v, "<", &l), self.int_cmp(t, &v, op, &h));
+                self.line(&format!("if ({below} || {above}) goto {fail};"));
             }
             PatKind::Null => {
                 let present = self.opt_present(t, addr);
@@ -1425,7 +1435,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let lo = self.load(lt, &format!("({ca} + {})", offs[0]));
                 let hi = self.load(lt, &format!("({ca} + {})", offs[1]));
                 let op = if incl { "<=" } else { "<" };
-                self.line(&format!("{r} = {x} >= {lo} && {x} {op} {hi};"));
+                let (ge, below) = (self.int_cmp(lt, &x, ">=", &lo), self.int_cmp(lt, &x, op, &hi));
+                self.line(&format!("{r} = {ge} && {below};"));
             }
             _ => return unsupported(container.span, "`in` on this type"),
         }

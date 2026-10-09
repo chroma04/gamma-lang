@@ -1,0 +1,10 @@
+//! exit: 134
+// A narrowing conversion that does not fit is caught with `.checked`.
+main :: fn() \ {Out} {
+    x: u300 = 1 << 200
+    small := x >> 150
+    print("{}\n", small.checked(u64))
+    n := x.checked(u64)
+    assert(n is not null, "does not fit in u64")
+    print("unreachable\n")
+}

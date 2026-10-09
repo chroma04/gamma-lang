@@ -296,6 +296,19 @@ the Gamma layout's size and alignment, whose fields are read and written with
 the same bytes in both back ends. Integers narrower than their C storage are
 kept sign- or zero-extended, and arithmetic checks the Gamma type's range.
 
+**Wide integers.** An integer wider than 128 bits is a blob holding its
+little-endian two's-complement value in `⌈bits/64⌉` words (`src/cgen/wide.rs`).
+Every operation (arithmetic and its overflow flavors, shifts, comparison,
+conversion to and from other integers and floats, `min`, `abs`, `pow`, bit
+counting, hashing and decimal display) calls a `gm_w*` routine of the runtime
+with the operands' addresses, the width and the signedness. The routines
+return the overflow flag that the operator's flavor needs, so the checks and
+trap messages are those of narrow integers. They read the padding bits above
+the width as the sign (or zero) extension and always write them that way, so a
+value is the same whichever way it was made, and they use schoolbook
+multiplication and shift-and-subtract division. `runtime/rt_test.c` checks them
+against `__int128` and against exact big-integer vectors.
+
 **Functions and frames.** Each function becomes
 `RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. Its locals live in
 a frame struct whose address is the `env` of the function literals and handler
@@ -364,7 +377,3 @@ signatures (foreign functions, exports, functions with at most `{Sys}`, and
 calls through their pointers) take and return mirrors, and values are copied
 between blob and mirror with `GM_CONV` at those calls; the C compiler removes
 the copies.
-
-Not yet supported natively: integers wider than 128 bits; the back end reports
-them as errors.
-

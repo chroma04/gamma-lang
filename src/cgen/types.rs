@@ -2,7 +2,8 @@
 //! runtime's formatter reads.
 //!
 //! Scalars (integers up to 128 bits, floats, `bool`, pointers) are native C
-//! types. Every other first-class type is a *blob*: a struct holding its bytes
+//! types. Every other first-class type, including integers wider than 128 bits,
+//! is a *blob*: a struct holding its bytes
 //! with the size and alignment of the Gamma layout, so values have exactly the
 //! bytes the interpreter gives them. Fields are read and written with `memcpy`
 //! at the layout's offsets.
@@ -32,6 +33,15 @@ pub struct Types<'a> {
     /// Mirror C types by Gamma type (`None`: the type has none).
     mirrors: HashMap<Ty, Option<String>>,
     mirror_defs: String,
+}
+
+/// An integer wider than 128 bits: `bits` bits, little-endian two's complement in
+/// `size` bytes (a multiple of 8). The runtime's `gm_w*` routines operate on these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WideInfo {
+    pub signed: bool,
+    pub bits: u32,
+    pub size: u64,
 }
 
 /// How a type is represented in C.
@@ -99,6 +109,16 @@ impl<'a> Types<'a> {
             TyKind::Fn(_) => Repr::Closure,
             TyKind::Handler(_) => Repr::Handler,
             _ => Repr::Blob,
+        }
+    }
+
+    /// Facts about `t` if it is an integer wider than 128 bits, which is held as a blob.
+    pub fn wide(&self, t: Ty) -> Option<WideInfo> {
+        match t.kind() {
+            TyKind::Int(IntTy { signed, bits }) if *bits > 128 => {
+                Some(WideInfo { signed: *signed, bits: *bits as u32, size: self.size(t) })
+            }
+            _ => None,
         }
     }
 

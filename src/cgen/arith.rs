@@ -89,6 +89,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
     pub fn unary(&mut self, e: &'a Expr, op: UnOp, x: &'a Expr) -> CResult<String> {
         let v = self.expr(x)?;
         let t = e.ty;
+        if let Some(w) = self.wide(x.ty) {
+            return self.wide_unary(e, op, w, x.ty, &v);
+        }
         match op {
             UnOp::Not => Ok(self.tmp(t, &format!("(uint8_t)!{}", v))),
             UnOp::Neg => match self.g.ty.repr(x.ty) {
@@ -120,6 +123,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let a = self.expr(l)?;
         let b = self.expr(r)?;
         let t = e.ty;
+        if self.wide(l.ty).is_some() {
+            return self.int_binary(e, op, l.ty, r.ty, &a, &b);
+        }
         if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
             return match self.g.ty.repr(l.ty) {
                 Repr::Int { .. } | Repr::Float(_) | Repr::Bool | Repr::Ptr => {
@@ -156,6 +162,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     pub(super) fn int_binary(&mut self, e: &Expr, op: BinOp, lt: Ty, rt: Ty, a: &str, b: &str) -> CResult<String> {
+        if self.wide(lt).is_some() {
+            return self.wide_binary(e, op, lt, rt, a, b);
+        }
         let ii = self.int_info(lt).unwrap();
         let c = ii.cty();
         let loc = self.loc(e);
@@ -186,16 +195,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
             BinOp::Shl(_) | BinOp::Shr => {
                 let fl = if let BinOp::Shl(f) = op { f } else { Flavor::Checked };
                 let n = format!("n{}", self.fresh());
-                self.line(&format!("unsigned __int128 {n} = (unsigned __int128){b};"));
+                let amount = match self.wide(rt) {
+                    Some(rw) => {
+                        let p = self.addr_of(rt, b);
+                        format!("(unsigned __int128)gm_wshamt({p}, {})", rw.bits)
+                    }
+                    None => format!("(unsigned __int128){b}"),
+                };
+                self.line(&format!("unsigned __int128 {n} = {amount};"));
                 if self.checks() {
-                    let rii = self.int_info(rt).unwrap();
                     self.line(&format!(
                         "if ({n} >= {bits}) {{ char m[128]; snprintf(m, sizeof m, \"shift amount %llu too large for {ty}\", (unsigned long long){n}); gm_trap(m, {loc}); }}",
                         bits = ii.bits,
                         ty = lt,
                         loc = loc
                     ));
-                    let _ = rii;
                 } else {
                     self.line(&format!("{n} %= {};", ii.bits));
                 }
@@ -387,6 +401,24 @@ impl<'g, 'a> FnGen<'g, 'a> {
             vals.push(self.expr(a)?);
         }
         let at = args[0].ty;
+        if let Some(w) = self.wide(at)
+            && matches!(
+                op,
+                Builtin::Min
+                    | Builtin::Max
+                    | Builtin::Clamp
+                    | Builtin::Abs
+                    | Builtin::AbsDiff
+                    | Builtin::Pow(_)
+                    | Builtin::Clz
+                    | Builtin::Ctz
+                    | Builtin::Popcount
+                    | Builtin::Bswap
+                    | Builtin::Bitreverse
+            )
+        {
+            return self.wide_builtin(e, op, w, at, &vals);
+        }
         match op {
             Builtin::Convert
             | Builtin::Trunc
@@ -672,7 +704,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Builtin::Last => format!("({} - 1)", len),
             _ => {
                 let v = self.expr(&args[1])?;
-                format!("(uintptr_t){}", v)
+                self.usize_value(args[1].ty, &v)
             }
         };
         let i = self.tmp(Ty::usize(), &i);
@@ -708,6 +740,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             t
         };
         let loc = self.loc(e);
+        if self.wide(src).is_some() || self.wide(target).is_some() {
+            return self.wide_convert(e, op, src, v, target);
+        }
         // The source as a number: integers (and bools, enum tags) or a float.
         let (src_int, src_val) = match self.g.ty.repr(src) {
             Repr::Int { .. } => (true, v.to_string()),

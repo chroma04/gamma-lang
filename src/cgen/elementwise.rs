@@ -62,7 +62,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
             // `-x` is `0 - x`, which overflows exactly when the negation does.
             Err(_) => (
                 BinOp::Sub(Flavor::Checked),
-                if matches!(self.g.ty.repr(t), Repr::Float(_)) { "-0.0".into() } else { "0".into() },
+                match self.g.ty.repr(t) {
+                    Repr::Float(_) => "-0.0".into(),
+                    Repr::Blob => format!("GM_ZERO({})", self.g.ty.cty(t)),
+                    _ => "0".into(),
+                },
             ),
         };
         match self.g.ty.repr(t) {

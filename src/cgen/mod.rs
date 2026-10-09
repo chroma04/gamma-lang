@@ -13,6 +13,7 @@ mod fiber;
 mod func;
 mod helpers;
 mod types;
+mod wide;
 
 use crate::layout::{Layouts, Target};
 use crate::source::{SourceMap, Span};
