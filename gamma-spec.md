@@ -2482,7 +2482,7 @@ print("{}\n", pos)                                           // Vec2(x: 1.5, y: 
 ```
 IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
-    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
     Other: i32                                  // OS error code
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
@@ -2526,7 +2526,23 @@ Fs :: effect {
 }
 ```
 
-Operations whose first parameter is a `File` or `Dir` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+and its `Net` (TCP) is:
+
+```
+Socket, Listener :: struct { … }               // handles
+Net :: effect {
+    connect: fn(host: string, port: u16) -> IoError!Socket
+    listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
+    local_port: fn(l: Listener) -> IoError!u16
+    accept: fn(l: Listener) -> IoError!Socket
+    send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
+    recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
+    close_socket: fn(s: Socket)
+    close_listener: fn(l: Listener)
+}
+```
+
+Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
 
 ---
 

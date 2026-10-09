@@ -31,7 +31,7 @@ pub Env :: effect {
 /// Why an input or output operation failed (§21.7).
 pub IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
-    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
     Other: i32                                  // OS error code
 }
 
@@ -102,6 +102,25 @@ pub Fs :: effect {
     close_dir: fn(d: Dir)
 }
 
+/// A TCP connection (§21.7).
+pub Socket :: struct { handle: i64 }
+
+/// A TCP socket listening for connections.
+pub Listener :: struct { handle: i64 }
+
+/// The network (§12.9, §21.7): TCP connections. Hosts are names or address literals
+/// (`"localhost"`, `"127.0.0.1"`, `"::1"`).
+pub Net :: effect {
+    connect: fn(host: string, port: u16) -> IoError!Socket
+    listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
+    local_port: fn(l: Listener) -> IoError!u16
+    accept: fn(l: Listener) -> IoError!Socket                     // waits for a connection
+    send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
+    recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
+    close_socket: fn(s: Socket)
+    close_listener: fn(l: Listener)
+}
+
 /// `n` nanoseconds.
 pub ns :: fn(n: u64) -> Duration => Duration(ns: n)
 /// `n` microseconds.
@@ -140,7 +159,8 @@ io_result :: fn(n: i64) -> IoError!usize {
         6 => .ConnectionReset
         7 => .InvalidInput
         8 => .UnexpectedEof
-        _ => .NoSpace
+        9 => .NoSpace
+        _ => .ConnectionRefused
     }
     return !e
 }
@@ -199,6 +219,29 @@ handler Fs for SystemIo {
     }
     next_entry(self, d, buf) => io_result(@fs_next_entry(d.handle, buf))
     close_dir(self, d) => { _ = @fs_close_dir(d.handle) }
+}
+
+handler Net for SystemIo {
+    connect(self, host, port) => {
+        h := try io_result(@net_connect(host, port))
+        return Socket(handle: h.trunc(i64))
+    }
+    listen(self, host, port) => {
+        h := try io_result(@net_listen(host, port))
+        return Listener(handle: h.trunc(i64))
+    }
+    local_port(self, l) => {
+        p := try io_result(@net_local_port(l.handle))
+        return p.trunc(u16)
+    }
+    accept(self, l) => {
+        h := try io_result(@net_accept(l.handle))
+        return Socket(handle: h.trunc(i64))
+    }
+    send(self, s, bytes) => io_result(@net_send(s.handle, bytes))
+    recv(self, s, buf) => io_result(@net_recv(s.handle, buf))
+    close_socket(self, s) => { _ = @net_close(s.handle) }
+    close_listener(self, l) => { _ = @net_close(l.handle) }
 }
 
 system_io :: fn() -> SystemIo => SystemIo()

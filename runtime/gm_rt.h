@@ -20,6 +20,9 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
 
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
@@ -153,6 +156,15 @@ static int64_t gm_fs_remove_dir(const void *path, size_t len);
 static int64_t gm_fs_open_dir(const void *path, size_t len);
 static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
 static int64_t gm_fs_close_dir(int64_t d);
+/* TCP sockets; handles are file descriptors. Host names are resolved with getaddrinfo;
+ * a failed lookup is Other(0), as in the interpreter. */
+static int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
+static int64_t gm_net_listen(const void *host, size_t len, uint16_t port);
+static int64_t gm_net_local_port(int64_t h);
+static int64_t gm_net_accept(int64_t h);
+static int64_t gm_net_send(int64_t h, const void *p, size_t n);
+static int64_t gm_net_recv(int64_t h, void *p, size_t n);
+static int64_t gm_net_close(int64_t h);
 
 /* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
 

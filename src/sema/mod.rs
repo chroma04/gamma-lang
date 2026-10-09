@@ -407,7 +407,7 @@ impl<'s> Sema<'s> {
         if performs(a.alloc) {
             providers.push("heap_allocator");
         }
-        if performs(a.input) || performs(a.clock) || performs(a.rand) || performs(a.fs) {
+        if performs(a.input) || performs(a.clock) || performs(a.rand) || performs(a.fs) || performs(a.net) {
             providers.push("system_io");
         }
         let span = self.prog.fns[main.index()].span;
@@ -455,7 +455,7 @@ impl<'s> Sema<'s> {
     /// True if `e` is one of the ambient effects of §12.9.
     pub fn is_ambient(&self, e: &EffectRef) -> bool {
         let a = &self.prog.ambient;
-        [a.out, a.err, a.env, a.alloc, a.sys, a.input, a.clock, a.rand, a.fs].contains(&Some(e.effect))
+        [a.out, a.err, a.env, a.alloc, a.sys, a.input, a.clock, a.rand, a.fs, a.net].contains(&Some(e.effect))
     }
 
     /// Layout computations over the program's nominal types.

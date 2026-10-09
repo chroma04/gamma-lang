@@ -566,6 +566,7 @@ static int64_t gm_io_error(int err) {
     case ECONNRESET: return -7;
     case EINVAL: return -8;
     case ENOSPC: return -10;
+    case ECONNREFUSED: return -11;
     default: return -1000 - (int64_t)err;
     }
 }
@@ -753,6 +754,124 @@ static int64_t gm_fs_close_dir(int64_t d) {
     gm_dirs[d - 1] = NULL;
     return GM_RET_ERR(closedir(dir) != 0);
 }
+
+/* Resolves host:port for a stream socket (passive: for listening). */
+static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
+    char *h = gm_path(host, len);
+    if (h == NULL) {
+        *err = gm_io_error(EINVAL);
+        return NULL;
+    }
+    char service[8];
+    snprintf(service, sizeof service, "%u", (unsigned)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = passive ? AI_PASSIVE : 0;
+    struct addrinfo *res = NULL;
+    int r = getaddrinfo(len ? h : NULL, service, &hints, &res);
+    free(h);
+    if (r != 0) {
+        *err = -1000;
+        return NULL;
+    }
+    return res;
+}
+
+static int gm_socket(const struct addrinfo *a) {
+    int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (fd < 0) return fd;
+#if defined(SO_NOSIGPIPE)
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    return fd;
+}
+
+static int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, false, &err);
+    if (res == NULL) return err;
+    int fd = -1, e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_socket(a);
+        if (fd < 0) { e = errno; continue; }
+        int r;
+        do r = connect(fd, a->ai_addr, a->ai_addrlen); while (r != 0 && errno == EINTR);
+        if (r == 0) break;
+        e = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd < 0 ? gm_io_error(e) : (int64_t)fd;
+}
+
+static int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, true, &err);
+    if (res == NULL) return err;
+    int fd = -1, e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_socket(a);
+        if (fd < 0) { e = errno; continue; }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        if (bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 128) == 0) break;
+        e = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd < 0 ? gm_io_error(e) : (int64_t)fd;
+}
+
+static int64_t gm_net_local_port(int64_t h) {
+    struct sockaddr_storage a;
+    socklen_t n = sizeof a;
+    if (getsockname((int)h, (struct sockaddr *)&a, &n) != 0) return gm_io_error(errno);
+    if (a.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&a)->sin_port);
+    if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    return gm_io_error(EINVAL);
+}
+
+static int64_t gm_net_accept(int64_t h) {
+    for (;;) {
+        int fd = accept((int)h, NULL, NULL);
+        if (fd >= 0) {
+#if defined(SO_NOSIGPIPE)
+            int one = 1;
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+            return fd;
+        }
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static int64_t gm_net_send(int64_t h, const void *p, size_t n) {
+#if defined(MSG_NOSIGNAL)
+    int flags = MSG_NOSIGNAL;
+#else
+    int flags = 0;
+#endif
+    for (;;) {
+        ssize_t r = send((int)h, p, n, flags);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    for (;;) {
+        ssize_t r = recv((int)h, p, n, 0);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
 
 /* ---- heap ------------------------------------------------------------------------ */
 

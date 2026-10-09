@@ -24,7 +24,8 @@ handlers, and tests run with the test handlers instead.
 | `In` | `read(buf) -> IoError!usize` (0 at the end) | stdin | empty input |
 | `Clock` | `now() -> Instant`, `wall() -> i64`, `sleep(d)` | system clocks | fake clock; `sleep` advances it |
 | `Rand` | `fill(buf)` | the OS's generator | fixed seed |
-| `Fs` | files and directories (below) | the real file system | — |
+| `Fs` | files and directories (below) | the real file system | in-memory file system |
+| `Net` | TCP connections (below) | real sockets | — |
 | `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | empty |
 | `Alloc` | `current() -> Allocator` | the system heap | leak-checking heap |
 
@@ -44,6 +45,20 @@ as methods on it. `stat(path)` gives a `FileInfo` (`size`, `is_dir`, `modified`)
 `remove`, `rename`, `make_dir` and `remove_dir` change the tree; `open_dir`,
 `next_entry` (a name into your buffer, 0 after the last) and `close_dir` list a
 directory without allocating. Failures are `IoError` values.
+
+### The network: `Net`
+
+```gamma
+l := try listen("127.0.0.1", 0)          // any free port
+port := try l.local_port()
+c := try connect("localhost", port)
+s := try l.accept()
+_ = try c.send("ping")
+n := try s.recv(buf[..])                 // 0 once the peer has closed
+```
+
+`close_socket` and `close_listener` release the handles. Hosts are names or address
+literals; a failed name lookup is `.Other(0)`.
 
 ## `std/io`
 

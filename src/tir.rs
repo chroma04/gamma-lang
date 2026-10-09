@@ -101,6 +101,21 @@ pub enum SysOp {
     FsNextEntry,
     /// `@fs_close_dir(d: i64) -> i64`.
     FsCloseDir,
+    /// `@net_connect(host: string, port: u16) -> i64`: a TCP connection's handle.
+    NetConnect,
+    /// `@net_listen(host: string, port: u16) -> i64`: a listening socket's handle (port 0:
+    /// any free port).
+    NetListen,
+    /// `@net_local_port(h: i64) -> i64`: the port a socket is bound to.
+    NetLocalPort,
+    /// `@net_accept(listener: i64) -> i64`: the next connection's handle.
+    NetAccept,
+    /// `@net_send(h: i64, bytes: []const u8) -> i64`.
+    NetSend,
+    /// `@net_recv(h: i64, buf: []u8) -> i64`: 0 when the peer has closed the connection.
+    NetRecv,
+    /// `@net_close(h: i64) -> i64`: closes a connection or a listening socket.
+    NetClose,
 }
 
 /// Flags of [`SysOp::FsOpen`].
@@ -139,10 +154,17 @@ impl SysOp {
             SysOp::FsOpenDir => ("fs_open_dir", vec![Ty::string()], i64),
             SysOp::FsNextEntry => ("fs_next_entry", vec![i64, buf], i64),
             SysOp::FsCloseDir => ("fs_close_dir", vec![i64], i64),
+            SysOp::NetConnect => ("net_connect", vec![Ty::string(), Ty::int(false, 16)], i64),
+            SysOp::NetListen => ("net_listen", vec![Ty::string(), Ty::int(false, 16)], i64),
+            SysOp::NetLocalPort => ("net_local_port", vec![i64], i64),
+            SysOp::NetAccept => ("net_accept", vec![i64], i64),
+            SysOp::NetSend => ("net_send", vec![i64, Ty::string()], i64),
+            SysOp::NetRecv => ("net_recv", vec![i64, buf], i64),
+            SysOp::NetClose => ("net_close", vec![i64], i64),
         }
     }
 
-    pub const ALL: [SysOp; 18] = [
+    pub const ALL: [SysOp; 25] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -161,6 +183,13 @@ impl SysOp {
         SysOp::FsOpenDir,
         SysOp::FsNextEntry,
         SysOp::FsCloseDir,
+        SysOp::NetConnect,
+        SysOp::NetListen,
+        SysOp::NetLocalPort,
+        SysOp::NetAccept,
+        SysOp::NetSend,
+        SysOp::NetRecv,
+        SysOp::NetClose,
     ];
 }
 
@@ -186,6 +215,7 @@ pub enum IoErrorKind {
     InvalidInput,
     UnexpectedEof,
     NoSpace,
+    ConnectionRefused,
     Other(i32),
 }
 
@@ -202,7 +232,8 @@ impl IoErrorKind {
             IoErrorKind::InvalidInput => 7,
             IoErrorKind::UnexpectedEof => 8,
             IoErrorKind::NoSpace => 9,
-            IoErrorKind::Other(_) => 10,
+            IoErrorKind::ConnectionRefused => 10,
+            IoErrorKind::Other(_) => 11,
         }
     }
 }
@@ -254,6 +285,8 @@ pub struct Ambient {
     pub rand: Option<EffectId>,
     /// `Fs { open, … }`
     pub fs: Option<EffectId>,
+    /// `Net { connect, … }`
+    pub net: Option<EffectId>,
 }
 
 impl Program {

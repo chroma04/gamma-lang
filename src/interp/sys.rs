@@ -16,6 +16,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub struct SysState {
     files: HashMap<i64, std::fs::File>,
     dirs: HashMap<i64, std::fs::ReadDir>,
+    streams: HashMap<i64, std::net::TcpStream>,
+    listeners: HashMap<i64, std::net::TcpListener>,
     last: i64,
 }
 
@@ -73,6 +75,7 @@ pub fn error_code(e: &std::io::Error) -> i64 {
         K::InvalidInput => IoErrorKind::InvalidInput,
         K::UnexpectedEof => IoErrorKind::UnexpectedEof,
         K::StorageFull => IoErrorKind::NoSpace,
+        K::ConnectionRefused => IoErrorKind::ConnectionRefused,
         _ => IoErrorKind::Other(e.raw_os_error().unwrap_or(0)),
     };
     io_error_code(kind)
@@ -135,6 +138,16 @@ impl<'a> Machine<'a> {
             | SysOp::FsNextEntry
             | SysOp::FsCloseDir => {
                 let n = self.fs_op(e, op, args, &vals)?;
+                Ok(int(self, e.ty, n as i128))
+            }
+            SysOp::NetConnect
+            | SysOp::NetListen
+            | SysOp::NetLocalPort
+            | SysOp::NetAccept
+            | SysOp::NetSend
+            | SysOp::NetRecv
+            | SysOp::NetClose => {
+                let n = self.net_op(e, op, args, &vals)?;
                 Ok(int(self, e.ty, n as i128))
             }
             SysOp::RandFill => {
@@ -288,6 +301,92 @@ impl<'a> Machine<'a> {
             SysOp::FsCloseDir => {
                 let h = self.int_arg(&args[0], &vals[0]);
                 code(self.sys.dirs.remove(&h).map(|_| 0).ok_or_else(bad_handle))
+            }
+            _ => unreachable!(),
+        })
+    }
+}
+
+impl<'a> Machine<'a> {
+    /// A network service: its result, or an error code.
+    fn net_op(&mut self, e: &Expr, op: SysOp, args: &[Expr], vals: &[super::bytes::Bytes]) -> R<i64> {
+        use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+        let addr = |m: &Self| -> R<std::io::Result<Vec<std::net::SocketAddr>>> {
+            let host = String::from_utf8_lossy(&m.read_str(e.span, &vals[0])?).into_owned();
+            let port = m.int_arg(&args[1], &vals[1]) as u16;
+            Ok((host.as_str(), port).to_socket_addrs().map(|a| a.collect()))
+        };
+        Ok(match op {
+            SysOp::NetConnect => {
+                let r = addr(self)?.and_then(|a| TcpStream::connect(&a[..]));
+                let sys = &mut self.sys;
+                code(r.map(|s| {
+                    let h = sys.handle();
+                    sys.streams.insert(h, s);
+                    h
+                }))
+            }
+            SysOp::NetListen => {
+                let r = addr(self)?.and_then(|a| TcpListener::bind(&a[..]));
+                let sys = &mut self.sys;
+                code(r.map(|l| {
+                    let h = sys.handle();
+                    sys.listeners.insert(h, l);
+                    h
+                }))
+            }
+            SysOp::NetLocalPort => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let sys = &self.sys;
+                let a = match (sys.listeners.get(&h), sys.streams.get(&h)) {
+                    (Some(l), _) => l.local_addr(),
+                    (_, Some(s)) => s.local_addr(),
+                    _ => Err(bad_handle()),
+                };
+                code(a.map(|a| a.port() as i64))
+            }
+            SysOp::NetAccept => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let r = match self.sys.listeners.get(&h) {
+                    Some(l) => l.accept().map(|(s, _)| s),
+                    None => Err(bad_handle()),
+                };
+                let sys = &mut self.sys;
+                code(r.map(|s| {
+                    let h = sys.handle();
+                    sys.streams.insert(h, s);
+                    h
+                }))
+            }
+            SysOp::NetSend => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let data = self.read_str(e.span, &vals[1])?;
+                code(match self.sys.streams.get_mut(&h) {
+                    Some(s) => s.write(&data).map(|n| n as i64),
+                    None => Err(bad_handle()),
+                })
+            }
+            SysOp::NetRecv => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let (ptr, len) = self.slice_parts(&vals[1]);
+                let mut buf = vec![0u8; len as usize];
+                let r = match self.sys.streams.get_mut(&h) {
+                    Some(s) => s.read(&mut buf),
+                    None => Err(bad_handle()),
+                };
+                match r {
+                    Ok(n) => {
+                        self.store(e.span, ptr, &buf[..n], 1)?;
+                        n as i64
+                    }
+                    Err(err) => error_code(&err),
+                }
+            }
+            SysOp::NetClose => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let sys = &mut self.sys;
+                let found = sys.streams.remove(&h).is_some() || sys.listeners.remove(&h).is_some();
+                code(if found { Ok(0) } else { Err(bad_handle()) })
             }
             _ => unreachable!(),
         })

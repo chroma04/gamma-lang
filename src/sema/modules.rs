@@ -58,6 +58,7 @@ impl<'s> Sema<'s> {
             ("Clock", 6),
             ("Rand", 7),
             ("Fs", 8),
+            ("Net", 9),
         ] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
@@ -72,7 +73,8 @@ impl<'s> Sema<'s> {
                     5 => &mut a.input,
                     6 => &mut a.clock,
                     7 => &mut a.rand,
-                    _ => &mut a.fs,
+                    8 => &mut a.fs,
+                    _ => &mut a.net,
                 } = Some(e);
             }
         }
