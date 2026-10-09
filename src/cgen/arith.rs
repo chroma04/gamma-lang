@@ -464,6 +464,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Builtin::Addr => Ok(self.tmp(t, &format!("(uintptr_t){}", vals[0]))),
             Builtin::ToPtr => Ok(self.tmp(t, &format!("(void *)(uintptr_t){}", vals[0]))),
+            Builtin::PtrAdd | Builtin::PtrSub | Builtin::PtrDiff => {
+                let TyKind::ManyPtr { elem, .. } = at.kind() else { unreachable!() };
+                let stride = self.g.ty.size(*elem);
+                let (p, x) = (&vals[0], &vals[1]);
+                Ok(match op {
+                    Builtin::PtrDiff if stride == 0 => self.tmp(t, "0"),
+                    Builtin::PtrDiff => {
+                        self.tmp(t, &format!("(intptr_t)((uintptr_t){p} - (uintptr_t){x}) / (intptr_t){stride}"))
+                    }
+                    _ => {
+                        let sign = if op == Builtin::PtrAdd { '+' } else { '-' };
+                        self.tmp(t, &format!("(void *)((uintptr_t){p} {sign} (uintptr_t){x} * {stride}u)"))
+                    }
+                })
+            }
             Builtin::Tag => {
                 let a = self.addr_of(at, &vals[0]);
                 Ok(self.load(t, &a))

@@ -1,0 +1,33 @@
+// Arithmetic on many-pointers (§5.5): `p + n`, `p - n`, `p - q`, and compound assignment.
+sum :: fn(p: [^]const i32, n: usize) -> i32 {
+    total := 0
+    q := p
+    end := p + n
+    while q - end < 0 {
+        total += q[0]
+        q = q + 1
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    a := [6]i32(1, 2, 3, 4, 5, 6)
+    p: [^]i32 = &a
+    print("{}\n", sum(p, 6))
+    last := p + 5
+    print("{} {}\n", (last[0], (last - 2)[0]))
+    back: isize = -3
+    print("{} {}\n", ((last + back)[0], last - p))
+    print("{}\n", (p - p))
+    e := p.cast([^]u64)
+    print("{}\n", ((e + 1) - e))
+    stepped()
+}
+
+stepped :: fn() \ {Out} {
+    a := [3]i32(7, 8, 9)
+    p: [^]i32 = &a
+    p += 2
+    p -= 1
+    print("{}\n", p[0])
+}

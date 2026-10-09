@@ -14,6 +14,7 @@ mod consteval;
 mod construct;
 mod decls;
 mod effects;
+mod escape;
 mod exhaust;
 mod expr;
 mod finalize;
@@ -260,6 +261,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
     let root_mod = sema.load_root(root)?;
     sema.check_all(root_mod);
     sema.check_inline();
+    sema.check_escapes();
     if sema.sess.diags.has_errors() {
         return None;
     }

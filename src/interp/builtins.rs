@@ -196,6 +196,21 @@ impl<'a> Machine<'a> {
                 Ok(v[0].clone())
             }
             Builtin::Addr | Builtin::ToPtr => Ok(v[0].clone()),
+            Builtin::PtrAdd | Builtin::PtrSub | Builtin::PtrDiff => {
+                let TyKind::ManyPtr { elem, .. } = arg_tys[0].kind() else { unreachable!() };
+                let stride = self.size_of(*elem) as i128;
+                let p = self.ptr_of(&v[0]) as i128;
+                let mask = if self.target.ptr_bits() >= 64 { u64::MAX } else { (1u64 << self.target.ptr_bits()) - 1 };
+                if op == Builtin::PtrDiff {
+                    let d = (p - self.ptr_of(&v[1]) as i128) as i64;
+                    let d = if stride == 0 { 0 } else { d / stride as i64 };
+                    return Ok(self.int_bytes(res_ty, &Int::from_big(num_bigint::BigInt::from(d))));
+                }
+                let n = self.int_of(arg_tys[1], &v[1]).to_i128().unwrap_or(0);
+                let off = n.wrapping_mul(stride);
+                let a = if op == Builtin::PtrAdd { p.wrapping_add(off) } else { p.wrapping_sub(off) };
+                Ok(self.ptr_bytes(a as u64 & mask))
+            }
             Builtin::Tag => {
                 let (tag, _) = self.union_def(arg_tys[0]).ok_or_else(|| trap_flow(span, "tag() of a non-union"))?;
                 Ok(Bytes::from_slice(&v[0][..self.size_of(tag)]))

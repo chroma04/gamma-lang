@@ -536,6 +536,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = if opt { Ty::optional(lhs.ty) } else { lhs.ty };
                 mk(ty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
             }
+            B::Add(ast::Flavor::Checked) | B::Sub(ast::Flavor::Checked)
+                if matches!(self.infer.resolve(lhs.ty).kind(), TyKind::ManyPtr { .. }) =>
+            {
+                self.pointer_arith(op, lhs, rhs, span)
+            }
+            B::Add(_) | B::Sub(_)
+                if matches!(self.infer.resolve(lhs.ty).kind(), TyKind::Ptr { .. } | TyKind::Rawptr) =>
+            {
+                let t = self.infer.resolve(lhs.ty);
+                self.expr(rhs, None);
+                self.error(span, format!("`{}` has no arithmetic: only many-pointers `[^]T` do (§5.5)", t));
+                error_expr(span)
+            }
             B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 let r = self.expr(rhs, Some(lhs.ty));
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
@@ -569,6 +582,33 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// `p + n`, `p - n` and `p - q` on a many-pointer `p` (§5.5).
+    fn pointer_arith(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        let lt = self.infer.resolve(lhs.ty);
+        let r = self.expr(rhs, None);
+        let rt = self.infer.resolve(r.ty);
+        let b = |op, ty, args| mk(ty, tir::ExprKind::Builtin { op, args }, span);
+        let sub = matches!(op, ast::BinOp::Sub(_));
+        if let TyKind::ManyPtr { elem, .. } = rt.kind() {
+            let TyKind::ManyPtr { elem: le, .. } = lt.kind() else { unreachable!() };
+            if !sub || elem != le {
+                self.error(span, format!("cannot {} `{}` and `{}`", if sub { "subtract" } else { "add" }, lt, rt));
+                return error_expr(span);
+            }
+            // The distance does not depend on `const`: make both sides read-only.
+            let ro = Ty::intern(TyKind::ManyPtr { elem: *elem, is_const: true });
+            let (l, r) = (self.coerce(lhs, ro), self.coerce(r, ro));
+            return b(tir::Builtin::PtrDiff, Ty::isize(), vec![l, r]);
+        }
+        if rt.is_infer() {
+            self.unify_operands(r.ty, Ty::usize(), span, "a pointer offset");
+        } else if rt != Ty::usize() && rt != Ty::isize() && !rt.is_error() {
+            self.error(r.span, format!("a pointer offset must be a `usize` or an `isize`, not `{}`", rt));
+            return error_expr(span);
+        }
+        b(if sub { tir::Builtin::PtrSub } else { tir::Builtin::PtrAdd }, lt, vec![lhs, r])
     }
 
     /// Makes two operands of `is` the same type: unify, or coerce one to the other.

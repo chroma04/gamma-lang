@@ -1,0 +1,32 @@
+//! stage: check
+// Returning the address or a slice of a local or parameter is rejected (§15.1).
+P :: struct { a: [4]u8, n: i32 }
+
+addr :: fn() -> ^i32 {
+    x: i32 = 1
+    return &x                         //~ ERROR returns the address of the local `x`
+}
+
+slice :: fn() -> []u8 {
+    local: [16]u8 = ---
+    return local[..]                  //~ ERROR returns a slice of the local `local`
+}
+
+field :: fn(p: P) -> []const u8 => p.a[1..3]   //~ ERROR returns a slice of the parameter `p`
+
+arms :: fn(p: P, c: bool) -> ^const u8 {
+    q := p
+    return if c {
+        &q.a[0]                       //~ ERROR returns the address of the local `q`
+    } else {
+        &p.a[1]                       //~ ERROR returns the address of the parameter `p`
+    }
+}
+
+// These point into storage that outlives the call.
+of_slice :: fn(s: []u8) -> []u8 => s[1..]
+through_pointer :: fn(p: ^P) -> ^i32 => &p.n
+array_through_pointer :: fn(p: ^P) -> []u8 => p.a[..]
+element_of_slice :: fn(s: []i32) -> ^i32 => &s[0]
+
+main :: fn() {}

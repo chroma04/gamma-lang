@@ -1072,6 +1072,12 @@ pub enum Builtin {
     Cast,
     /// `p.addr()`.
     Addr,
+    /// `p + n` and `p - n` on a many-pointer (`n: usize` or `isize`), moving by
+    /// whole elements; the address wraps.
+    PtrAdd,
+    PtrSub,
+    /// `p - q` on many-pointers: the distance in elements, as `isize`.
+    PtrDiff,
     /// `n.to_ptr(P)` → `?P`.
     ToPtr,
     /// `u.tag()`.
