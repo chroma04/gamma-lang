@@ -1579,8 +1579,9 @@ is defined as follows.
 
 1. **The source.** `e` must be one of:
    - a call `f(a1, …, an)` (including a method call, §7.10) whose callee's effect set contains exactly one instantiation `Yield(T)`;
-   - a range `lo..hi` or `lo..=hi` of an integer type, meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
-   - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order.
+   - a range `lo..hi` or `lo..=hi` of an integer type, or a value of type `Range(T)` or `RangeIncl(T)` with an integer `T` (§5.16), meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
+   - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order;
+   - any other expression of array type, such as an array constructor or a call that returns an array (and has no `Yield` effect): the array is evaluated into a hidden variable that lives as long as the loop, which is then iterated as an array place.
    Any other form is a compile error. `T` is the type of the yielded values.
 
 2. **Evaluation.** The callee and arguments `a1 … an` are evaluated first, left to right, **in the context outside the loop**. Then the call is made in a context where `Yield(T)` is handled by the loop's handler and every other effect is handled as outside the loop. Second-class arguments therefore keep their own (outer) context (§11.6).

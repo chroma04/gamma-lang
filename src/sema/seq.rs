@@ -177,23 +177,36 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `for p in xs` where `xs` is an array place, a pointer to an array, or a slice.
     pub fn for_each_loop(&mut self, f: &ast::ForExpr) -> Option<Expr> {
-        let span = f.span;
         let src = self.expr(&f.iter, None);
+        self.for_each_value(f, src)
+    }
+
+    /// `for p in src` where `src` (already checked) is an array, a pointer to one, a
+    /// slice or a range; `None` if it is none of these.
+    pub fn for_each_value(&mut self, f: &ast::ForExpr, src: Expr) -> Option<Expr> {
+        let span = f.span;
         let st = self.infer.resolve(src.ty);
         let (slice, elem) = match st.kind() {
             TyKind::Slice { elem, .. } => (src, *elem),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
                 let elem = *elem;
-                if self.place_mutability(&src).is_none() {
-                    self.error(
-                        f.iter.span,
-                        "`for` iterates over an array variable (a place) or a slice, not a temporary array",
-                    );
-                    return Some(error_expr(span));
-                }
-                let m = self.place_mutability(&src) == Some(true);
+                // A temporary array is iterated from a hidden local that lives as long as the loop.
+                let (src, m, pre) = match self.place_mutability(&src) {
+                    Some(m) => (src, m, None),
+                    None => {
+                        let t = self.temp(st, span);
+                        (mk(st, tir::ExprKind::Local(t), span), false, Some(Stmt::Let { local: t, init: Some(src) }))
+                    }
+                };
                 let ty = Ty::slice(!m, elem);
-                (mk(ty, tir::ExprKind::Slice { base: Box::new(src), lo: None, hi: None, inclusive: false }, span), elem)
+                let slice =
+                    mk(ty, tir::ExprKind::Slice { base: Box::new(src), lo: None, hi: None, inclusive: false }, span);
+                if let Some(pre) = pre {
+                    let block = tir::Block { stmts: vec![pre], tail: Some(slice), span };
+                    (mk(ty, tir::ExprKind::Block(Box::new(block)), span), elem)
+                } else {
+                    (slice, elem)
+                }
             }
             TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
                 let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {

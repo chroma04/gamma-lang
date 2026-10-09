@@ -551,6 +551,10 @@ impl<'a, 's> FnCx<'a, 's> {
         let eref = match yields.as_slice() {
             [one] => one.clone(),
             [] => {
+                // A call returning an array or slice is iterated like any such value.
+                if let Some(e) = self.for_each_value(f, call) {
+                    return e;
+                }
                 self.error(f.iter.span, "this call is not an iterator: its effects include no `Yield(T)`");
                 return error_expr(span);
             }

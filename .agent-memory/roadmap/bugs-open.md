@@ -3,4 +3,4 @@
    overflow now traps (SIGSEGV altstack handler + temp bytes in check). gcc uses ~4x size.
 9. Diagnostics: failed import (path leaving package) cascades into many errors.
 10. Usability (std): no sign/abs, string split/trim/substring, string builder, HashMap entry/get_ptr,
-    print width/padding specs; temporaries of arrays can't be sliced/iterated (`for x in [_]T(..)`).
+    print width/padding specs. (for over array temporaries: done; slicing temporaries stays an error by §7.2.)

@@ -1,36 +1,33 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 1, 2026-10-08/09) — PR chroma04/gamma-lang#1 open, subscribed, CI green
-- The whole spec is implemented in both back ends (interpreter + C), except what is listed
-  under "Not yet". Every run test runs on both and must match (gcc and clang).
-- Milestone status files (roadmap/M00..M12) say what is done per area; decisions/ say how.
-- Highlights by area: generics + value params (006/007); C back end incl. wide ints, mirror
-  structs at the C ABI, stack checks (008, M07); fibers + @stack_size (010/011); interop:
-  foreign, #export, #callconv, @asm, threads (009, M10); ambient effects + std (M11).
-- Late language completions (this session): spreads §11.4, `if … else e =>`, generic nested
-  fns, qualified consts in patterns, consts with temporaries, @write/@prefetch,
-  elementwise arrays, #deprecated/#fast_math/#inline (see architecture/sema-notes.md).
-- Spec amendments are indexed in spec-notes/amendments.md.
-- Native `gamma test` and §18.3 Debug extras done (M12 file). Docs audit subagent running in a
-  worktree (fixes docs, reports impl bugs) — merge and fix what it reports.
-- Not yet: static handler specialization (D.3, optional).
+## State (session 2, 2026-10-09) — PR #1 merged; session-2 PR open on claude/gifted-hamilton-smqfae
+- The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
+  test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
+- Session 2: docs audit + dogfooding subagents (≈35 example_* conformance tests). Fixed their bugs:
+  ptr arithmetic, escape checks (sema/escape.rs, also packed-field pointers), Signed⇒Num, #bits
+  bitwise, T(c) in generics, effect ambiguity under `with`, handler types in generic instances,
+  qualified effects `m.E`, local type aliases, Range values (prelude Range/RangeIncl), `else {}`
+  fallback, ==/!= hints, test Env empty, free_aligned, signed zero consts.
+- Debug backtraces on traps (interp: Trap.trace; C: gm_bt chain; //! stderr directive),
+  stack overflow → trap even for huge frames (SIGSEGV altstack handler), //! mode: directive.
+- Open bugs/usability list: roadmap/bugs-open.md. Not yet: static handler specialization (D.3).
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
-  privates, `is`/@hash on params. Trap locations: innermost frame; no backtrace yet.
+  privates, `is`/@hash on params.
 
 ## Next steps
-1. Merge docs-audit work, fix reported bugs. Then M12 polish: guide review against the current language,
-   diagnostics pass, README/docs accuracy; maybe std/fmt wide ints.
+1. bugs-open.md: std usability (string helpers, HashMap entry/get_ptr, print width specs),
+   array temporaries in `for`/slicing, import-failure cascades, big-value copies in C.
 2. Keep PR green; CI runs on push. Update the PR description at the end of each chunk.
 
 ## Map
-- roadmap/        M00..M12, one file per milestone (scope, status, exit criteria)
+- roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)
                   · 007 value params + sema-time const eval · 008 C back end · 009 interop
                   · 010 fibers · 011 stack size
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
-- sessions/       s01-2026-10-08.md
+- sessions/       s01-2026-10-08.md · s02-2026-10-09.md
 - gotchas/        environment.md
 
 ## Conventions
