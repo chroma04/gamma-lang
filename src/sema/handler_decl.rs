@@ -3,10 +3,11 @@
 use super::func::{ClauseInfo, FnCx, LocalBinding};
 use super::{FnSig, ModuleId, ParamInfo, Sema};
 use crate::diag::Diagnostic;
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind, ItemKind};
 use crate::tir::{self, HandlerDeclId};
-use crate::types::{EffectSet, Ty};
+use crate::types::{EffectRef, EffectSet, Ty, TyKind};
 use std::rc::Rc;
 
 /// A clause of a declared handler, waiting for its body to be checked.
@@ -19,6 +20,7 @@ pub struct PendingClause {
     params: Vec<ParamInfo>,
     ret: Ty,
     kind: ast::OpKind,
+    effect: EffectRef,
 }
 
 impl<'s> Sema<'s> {
@@ -58,22 +60,7 @@ impl<'s> Sema<'s> {
                     self.error(h.span, format!("this handler has no clause for the operation `{}`", op));
                     continue;
                 };
-                let (mut params, ret, kind) = {
-                    let info = &self.effects[&eref.effect];
-                    let o = &info.ops[i];
-                    let ps: Vec<ParamInfo> = o
-                        .params
-                        .iter()
-                        .map(|p| ParamInfo {
-                            name: p.name,
-                            ty: super::effects::subst(p.ty, &info.params, &eref.args),
-                            span: p.span,
-                            default: None,
-                            generic: None,
-                        })
-                        .collect();
-                    (ps, super::effects::subst(o.ret, &info.params, &eref.args), o.kind)
-                };
+                let (mut params, ret, kind) = self.clause_signature(&eref, i);
                 // The first clause parameter is the handler value itself.
                 params.insert(
                     0,
@@ -97,6 +84,7 @@ impl<'s> Sema<'s> {
                     params,
                     ret,
                     kind,
+                    effect: eref.clone(),
                 });
             }
             self.prog.handler_decls.push(tir::HandlerDecl { effect: eref, for_ty, clauses: clause_ids });
@@ -111,7 +99,13 @@ impl<'s> Sema<'s> {
             let ItemKind::Handler(h) = &p.item.kind else { continue };
             let c = &h.clauses[p.clause];
             let mut cx = FnCx::new(self, p.module, p.ret, p.effects.clone());
-            cx.clause = Some(ClauseInfo { op_kind: p.kind, for_label: None, handler: None, break_ty: None });
+            cx.clause = Some(ClauseInfo {
+                op_kind: p.kind,
+                for_label: None,
+                handler: None,
+                break_ty: None,
+                effect: Some(p.effect.clone()),
+            });
             if c.params.len() != p.params.len() {
                 cx.error(
                     c.span,
@@ -135,13 +129,45 @@ impl<'s> Sema<'s> {
                 ExprKind::Block(b) => cx.block_expected(b, true, Some(p.ret)),
                 _ => cx.expr(&c.body, Some(p.ret)),
             };
-            let body = if body.ty.is_never() { body } else { cx.coerce(body, p.ret) };
+            let body = cx.clause_body(body, p.kind, p.ret);
             let (body, locals) = cx.finish(body);
             let def = &mut self.prog.fns[p.fn_id.index()];
             def.params = ids;
             def.locals = locals;
             def.body = Some(body);
         }
+    }
+
+    /// The parameters and result type of a clause for operation `op` of an instantiated
+    /// effect, and the operation's kind. A `ctl` clause takes the continuation as a final
+    /// parameter `k: cont(R)` and has type `never` (§14.2, §14.3).
+    pub fn clause_signature(&self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
+        let info = &self.effects[&eref.effect];
+        let o = &info.ops[op];
+        let mut params: Vec<ParamInfo> = o
+            .params
+            .iter()
+            .map(|p| ParamInfo {
+                name: p.name,
+                ty: super::effects::subst(p.ty, &info.params, &eref.args),
+                span: p.span,
+                default: None,
+                generic: None,
+            })
+            .collect();
+        let ret = super::effects::subst(o.ret, &info.params, &eref.args);
+        if o.kind != ast::OpKind::Ctl {
+            return (params, ret, o.kind);
+        }
+        let span = params.last().map_or(Span::DUMMY, |p| p.span);
+        params.push(ParamInfo {
+            name: Symbol::intern("k"),
+            ty: Ty::intern(TyKind::Cont(ret)),
+            span,
+            default: None,
+            generic: None,
+        });
+        (params, Ty::never(), o.kind)
     }
 
     /// The handler declarations for values of type `t`.

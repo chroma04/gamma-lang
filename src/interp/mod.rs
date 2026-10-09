@@ -28,6 +28,7 @@ mod calls;
 mod consts;
 pub mod display;
 mod eval;
+mod fiber;
 mod machine;
 pub mod memory;
 pub mod num;
@@ -96,7 +97,7 @@ impl<T> AssertSend<T> {
     }
 }
 
-fn panic_trap(p: Box<dyn std::any::Any + Send>) -> Trap {
+pub(super) fn panic_trap(p: Box<dyn std::any::Any + Send>) -> Trap {
     let msg = p
         .downcast_ref::<String>()
         .cloned()
@@ -105,10 +106,12 @@ fn panic_trap(p: Box<dyn std::any::Any + Send>) -> Trap {
     Trap { message: format!("internal error: interpreter panicked: {}", msg), span: Span::DUMMY }
 }
 
-fn stack_floor() -> usize {
+/// The lowest stack address the evaluator may use on the current thread, whose
+/// stack is `size` bytes, keeping `margin` bytes in reserve.
+pub(super) fn stack_floor(size: usize, margin: usize) -> usize {
     let marker = 0u8;
     let top = &marker as *const u8 as usize;
-    top.saturating_sub(STACK_SIZE - STACK_MARGIN)
+    top.saturating_sub(size - margin)
 }
 
 /// Runs `prog.main`: installs default handlers for the ambient effects (`Out` to
@@ -163,7 +166,7 @@ fn run_main_inner(
     stderr: &mut dyn Write,
 ) -> Outcome {
     let lookup = |id: AdtId| prog.adts.get(&id);
-    let mut m = Machine::new(prog, cfg, &lookup, stack_floor());
+    let mut m = Machine::new(prog, cfg, &lookup, stack_floor(STACK_SIZE, STACK_MARGIN));
     m.out = Some(stdout);
     m.errw = Some(stderr);
     m.args = args.to_vec();
@@ -252,7 +255,7 @@ pub fn eval_const(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<ConstV
 
 fn eval_const_inner(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<ConstValue, Trap> {
     let lookup = |id: AdtId| prog.adts.get(&id);
-    let mut m = Machine::new(prog, cfg, &lookup, stack_floor());
+    let mut m = Machine::new(prog, cfg, &lookup, stack_floor(STACK_SIZE, STACK_MARGIN));
     m.const_mode = true;
     let r = m.with_root_frame(expr.ty, |m, act| {
         let b = match m.eval_bytes(act, expr) {

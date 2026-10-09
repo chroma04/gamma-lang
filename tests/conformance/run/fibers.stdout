@@ -1,0 +1,27 @@
+sum 10
+asked first
+asked second
+asking 1112
+producer unwound
+first big 4
+main spawned
+worker 1 step 0
+worker 2 step 0
+worker 1 step 1
+worker 2 step 1
+worker 1 step 2
+worker 2 step 2
+worker 1 done
+worker 2 done
+all tasks done, 2 stacks used
+failing task unwound
+body unwound
+crossing 7
+nested 115
+clause done
+line alpha (5)
+clause done
+line beta (4)
+clause done
+2 lines
+min stack 16384

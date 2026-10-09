@@ -8,6 +8,7 @@
 
 mod arith;
 mod expr;
+mod fiber;
 mod func;
 mod helpers;
 mod types;
@@ -94,7 +95,6 @@ pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options
     out.push_str(RT_C);
     out.push_str("\n/* ---- generated ---- */\n");
     let _ = writeln!(out, "static int gm_checks = {};", opts.checks as u8);
-    out.push_str(PRELUDE);
     out.push_str(helpers::SUPPORT);
     out.push_str(&g.ty.blob_typedefs());
     out.push_str(&g.ty.descriptors());
@@ -110,61 +110,6 @@ pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options
     out.push_str(&main);
     Ok(Generated { code: out, libs: g.libs.into_iter().collect() })
 }
-
-/// Support code shared by all generated programs: frames, handler contexts and
-/// non-local exits (decisions documented in docs/architecture.md).
-const PRELUDE: &str = r#"
-#define GM_XSTR(x) GM_STR(x)
-#define GM_STR(x) #x
-/* The assembler name of C symbol `s` (macOS prefixes an underscore). */
-#define GM_SYM(s) GM_XSTR(__USER_LABEL_PREFIX__) s
-typedef struct gm_frame { struct gm_frame *up; uint8_t clause_lit; } gm_frame;
-typedef struct gm_node {
-    uint32_t eff;
-    uint8_t kind;               /* GM_LIT, GM_DECL or GM_NATIVE */
-    void *const *clauses;       /* clause functions, by operation */
-    void *env;                  /* literal: its frame; declaration: the handler value */
-    struct gm_node *hctx;       /* the context clauses run in */
-    gm_frame *with_frame;       /* the installing `with`, for clause exits */
-    uint32_t with_label;
-    void *result;               /* where a `break` from a clause stores the `with`'s value */
-    struct gm_node *next;
-} gm_node;
-enum { GM_LIT, GM_DECL, GM_NATIVE };
-typedef struct { void *code; void *env; gm_node *cx; } gm_closure;
-typedef struct { void *env; gm_node *cx; } gm_hval;
-enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT };
-/* C11 memory orders, indexed by the tag of `MemoryOrder` (§19.6). */
-static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
-typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
-static gm_unwind gm_unw;
-
-static gm_node *gm_find(gm_node *cx, uint32_t eff) {
-    for (; cx; cx = cx->next) {
-        if (cx->eff == eff) return cx;
-    }
-    return NULL;
-}
-
-/* Whether `target` is the function lexically containing the code of frame `fr`. */
-static bool gm_lexically_same(gm_frame *fr, gm_frame *target) {
-    for (;;) {
-        if (fr == target) return true;
-        if (!fr->clause_lit || !fr->up) return false;
-        fr = fr->up;
-    }
-}
-
-/* Whether errdefers run as the current exit leaves a block of frame `fr` (§8.8). */
-static bool gm_errdefer_runs(gm_frame *fr) {
-    switch (gm_unw.kind) {
-    case GM_RETURN: return gm_lexically_same(fr, gm_unw.frame) ? gm_unw.is_err : true;
-    case GM_BREAK: case GM_CONTINUE: return !gm_lexically_same(fr, gm_unw.frame);
-    case GM_EXIT: return true;
-    default: return false;
-    }
-}
-"#;
 
 pub struct Gen<'a> {
     pub prog: &'a Program,

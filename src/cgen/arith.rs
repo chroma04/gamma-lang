@@ -305,6 +305,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line("}");
                 return Ok(self.unit());
             }
+            Builtin::Fiber => return self.fiber_builtin(e, args),
             Builtin::Unreachable => {
                 self.line(&format!("gm_trap(\"reached `@unreachable()`\", {});", loc));
                 return Ok(self.zero(t));

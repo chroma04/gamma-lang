@@ -103,6 +103,8 @@ pub struct ClauseInfo {
     pub handler: Option<tir::HandlerId>,
     /// For a `for` loop's clause: the type of the loop's value (`break v`).
     pub break_ty: Option<Ty>,
+    /// The effect whose operation the clause handles.
+    pub effect: Option<EffectRef>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested
@@ -503,10 +505,7 @@ impl<'a, 's> FnCx<'a, 's> {
             StmtKind::While { label, cond, body } => Stmt::Expr(self.while_loop(*label, cond, body, s.span)),
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
             StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
-            StmtKind::Discard(e) => {
-                self.error(e.span, "`discard` is permitted only in a `ctl` clause");
-                Stmt::Expr(unit(s.span))
-            }
+            StmtKind::Discard(e) => Stmt::Expr(self.discard_stmt(e, s.span)),
         }
     }
 

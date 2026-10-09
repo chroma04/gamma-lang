@@ -78,6 +78,12 @@ pub struct Machine<'a> {
     /// True during compile-time evaluation (no `#global` access).
     pub const_mode: bool,
     pub code_end: u64,
+    /// Fibers and active `with … on`s (§14).
+    pub fib: super::fiber::Fibers,
+    /// The bytes left on the running fiber's stack, as estimated by [`Machine::frame_cost`]
+    /// (`u64::MAX` off fibers).
+    pub fiber_stack: u64,
+    frame_costs: HashMap<FnId, u64>,
 }
 
 pub const MAX_DEPTH: u32 = 200_000;
@@ -114,6 +120,9 @@ impl<'a> Machine<'a> {
             errw: None,
             args: Vec::new(),
             const_mode: false,
+            fib: Default::default(),
+            fiber_stack: u64::MAX,
+            frame_costs: HashMap::new(),
             code_end,
         }
     }
@@ -673,6 +682,20 @@ impl<'a> Machine<'a> {
         }
         let id = ((addr - CODE_BASE) / 16) as usize;
         if id < self.prog.fns.len() { Some(FnId(id as u32)) } else { None }
+    }
+
+    /// An estimate of the stack bytes a call of `f` uses: its locals plus a fixed overhead.
+    pub fn frame_cost(&mut self, f: FnId) -> u64 {
+        if let Some(&c) = self.frame_costs.get(&f) {
+            return c;
+        }
+        let def = &self.prog.fns[f.index()];
+        let mut c = 64u64;
+        for l in &def.locals {
+            c += (self.size_of(l.ty) as u64).next_multiple_of(8);
+        }
+        self.frame_costs.insert(f, c);
+        c
     }
 
     pub fn fast(&self) -> bool {

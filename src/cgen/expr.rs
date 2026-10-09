@@ -542,13 +542,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.start_exit("GM_RETURN", &fr, "0", &is_err);
                 Ok(self.zero(t))
             }
-            ExprKind::With { label, handlers, on, body } => {
-                if on.is_some() {
-                    return unsupported(e.span, "`with … on` (fibers)");
-                }
-                self.with_expr(e, *label, handlers, body)
-            }
-            ExprKind::Resume { .. } | ExprKind::Discard(_) => unsupported(e.span, "continuations"),
+            ExprKind::With { label, handlers, on, body } => self.with_expr(e, *label, handlers, on.as_deref(), body),
+            ExprKind::Resume { cont, value } => self.resume(e, cont, value),
+            ExprKind::Discard(k) => self.discard(e, k),
             ExprKind::Trap { message } => {
                 let m = self.expr(message)?;
                 let a = self.addr_of(message.ty, &m);
@@ -871,7 +867,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// The C function pointer type of a Gamma function returning `ret`.
-    fn fn_ptr_type(&mut self, ret: Ty, params: &[Ty]) -> String {
+    pub fn fn_ptr_type(&mut self, ret: Ty, params: &[Ty]) -> String {
         let r = self.g.ty.cty(ret);
         let mut ps = vec!["void *".to_string(), "gm_node *".into(), "gm_node *".into()];
         for p in params {
@@ -963,7 +959,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// Calls code pointer `code`. With `hidden`, the code uses the hidden convention
     /// (env, cx, inst) unless its low bit marks a plain function; otherwise it is plain.
     #[allow(clippy::too_many_arguments)]
-    fn call_indirect(
+    pub fn call_indirect(
         &mut self,
         code: &str,
         env: &str,
@@ -1027,6 +1023,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let name = effect.effect.name();
         self.line(&format!("gm_node *{} = gm_find({}, {});", n, cx, id));
         self.line(&format!("if (!{}) gm_trap(\"no handler installed for effect `{}`\", {});", n, name, loc));
+        if self.g.prog.ctl_ops.contains(&(effect.effect, op)) {
+            return self.ctl_perform(&n, op, vals, tys, ret);
+        }
         let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
         let fp = self.fn_ptr_type(ret, tys);
         let clause_call =
@@ -1106,10 +1105,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
         e: &'a Expr,
         label: LabelId,
         handlers: &'a [HandlerValue],
+        on: Option<&'a Expr>,
         body: &'a Expr,
     ) -> CResult<String> {
         let mut cur = self.cx.clone();
         let result_slot = format!("(void *)&F.w{}", label.0);
+        // A `with … on` (§14) has a driver state its handlers point at.
+        let fw = match on {
+            Some(_) => {
+                let w = format!("gw{}", self.fresh());
+                self.line(&format!("gm_with {w}; memset(&{w}, 0, sizeof {w});"));
+                w
+            }
+            None => String::new(),
+        };
+        let fw_ref = if on.is_some() { format!("&{}", fw) } else { "NULL".into() };
         for h in handlers {
             match h {
                 HandlerValue::Literal(x) => {
@@ -1122,7 +1132,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     let id = self.g.effect_id(&effect);
                     let n = format!("wn{}", self.fresh());
                     self.line(&format!(
-                        "gm_node {n} = {{.eff = {id}, .kind = GM_LIT, .clauses = {table}, .env = {hv}.env, .hctx = {hv}.cx, .with_frame = &F.h, .with_label = {l}, .result = {r}, .next = {cur}}};",
+                        "gm_node {n} = {{.eff = {id}, .kind = GM_LIT, .clauses = {table}, .env = {hv}.env, .hctx = {hv}.cx, .with_frame = &F.h, .with_label = {l}, .result = {r}, .fw = {fw_ref}, .next = {cur}}};",
                         l = label.0,
                         r = result_slot
                     ));
@@ -1138,7 +1148,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         let id = self.g.effect_id(&effect);
                         let n = format!("wn{}", self.fresh());
                         self.line(&format!(
-                            "gm_node {n} = {{.eff = {id}, .kind = GM_DECL, .clauses = {table}, .env = (void *)&{s}, .hctx = {outer}, .with_frame = &F.h, .with_label = {l}, .result = {r}, .next = {cur}}};",
+                            "gm_node {n} = {{.eff = {id}, .kind = GM_DECL, .clauses = {table}, .env = (void *)&{s}, .hctx = {outer}, .with_frame = &F.h, .with_label = {l}, .result = {r}, .fw = {fw_ref}, .next = {cur}}};",
                             l = label.0,
                             r = result_slot
                         ));
@@ -1146,6 +1156,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     }
                 }
             }
+        }
+        if let Some(stack) = on {
+            return self.with_on(e, label, &fw, &cur, stack, body);
         }
         let saved = std::mem::replace(&mut self.cx, cur);
         let end = format!("we{}", self.fresh());

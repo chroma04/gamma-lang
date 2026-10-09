@@ -58,7 +58,8 @@ impl<'a> Machine<'a> {
                 }
             }
             Flow::Break { frame, .. } | Flow::Continue { frame, .. } => !self.lexically_same(fr, *frame),
-            Flow::Exit(_) => true,
+            Flow::Exit(_) | Flow::Cancel => true,
+            Flow::Resume { .. } => false,
         }
     }
 

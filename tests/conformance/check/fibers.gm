@@ -1,0 +1,85 @@
+//! stage: check
+// Fibers and continuations (§14).
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+Plain :: effect {
+    note: fn(x: i32)
+}
+
+needs_stack :: fn() {
+    with (handler Gen { emit(x, k) => resume k() }) {   //~ ERROR needs a stack
+        emit(1)
+    }
+}
+
+stack_without_ctl :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Plain { note(x) => {} }) on stack[..] {   //~ ERROR none of these handlers handles a `ctl` operation
+        note(1)
+    }
+}
+
+missing_k :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Gen { emit(x) => trap("x") }) on stack[..] {   //~ ERROR takes 2 parameter(s)
+        emit(1)
+    }
+}
+
+falls_off :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Gen {
+        emit(x, k) => {                                  //~ ERROR must not finish normally
+            _ = x
+        }
+    }) on stack[..] {
+        emit(1)
+    }
+}
+
+wrong_value :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Gen { emit(x, k) => resume k(true) }) on stack[..] {   //~ ERROR expected `()`, found `bool`
+        emit(1)
+    }
+}
+
+outside :: fn(k: cont(())) {
+    resume k()                                           //~ ERROR only in the body of a `ctl` clause
+}
+
+discard_outside :: fn(k: cont(())) {
+    discard k                                            //~ ERROR only in the body of a `ctl` clause
+}
+
+not_a_cont :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Gen {
+        emit(x, k) => {
+            discard x                                    //~ ERROR expected a continuation
+            resume k()
+        }
+    }) on stack[..] {
+        emit(1)
+    }
+}
+
+fiber_outside :: fn(f: ^fn(a: i32) -> never, s: []u8) {
+    _ = @fiber(f, 1, s)                                  //~ ERROR may be used only in the body of a `ctl` clause
+}
+
+in_defer :: fn() {
+    stack: [32768]u8 = ---
+    with (handler Gen {
+        emit(x, k) => {
+            defer resume k()                             //~ ERROR cannot appear in a deferred statement
+            trap("x")
+        }
+    }) on stack[..] {
+        emit(1)
+    }
+}
+
+main :: fn() {}

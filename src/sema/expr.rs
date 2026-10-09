@@ -157,6 +157,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Return(v) => self.return_expr(v.as_deref(), span),
             ExprKind::Break { label, value } => self.break_expr(*label, value.as_deref(), span),
             ExprKind::Continue { label } => self.continue_expr(*label, span),
+            ExprKind::Resume { cont, value } => self.resume_expr(cont, value.as_deref(), span),
             ExprKind::For(_) => {
                 self.error(span, "`for` is not supported as a value yet; use it as a statement");
                 error_expr(span)
@@ -844,6 +845,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
+            "fiber" => self.fiber_intrinsic(args, span),
+            // The smallest fiber stack (§14.1), in bytes.
+            "min_stack" => usize_const(tir::MIN_STACK),
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)

@@ -318,6 +318,7 @@ impl<'a> Machine<'a> {
             | Builtin::Last
             | Builtin::RangeLen
             | Builtin::HeapAlloc
+            | Builtin::Fiber
             | Builtin::HeapFree
             | Builtin::Assert
             | Builtin::Expect

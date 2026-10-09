@@ -647,3 +647,331 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
     b->state = GM_HB_FREED;
     gm_heap_release(p);
 }
+
+/* ---- handler contexts and non-local exits ---------------------------------------------- */
+
+static gm_node *gm_find(gm_node *cx, uint32_t eff) {
+    for (; cx; cx = cx->next) {
+        if (cx->eff == eff) return cx;
+    }
+    return NULL;
+}
+
+/* Whether `target` is the function lexically containing the code of frame `fr`. */
+static bool gm_lexically_same(gm_frame *fr, gm_frame *target) {
+    for (;;) {
+        if (fr == target) return true;
+        if (!fr->clause_lit || !fr->up) return false;
+        fr = fr->up;
+    }
+}
+
+static bool gm_errdefer_runs(gm_frame *fr) {
+    switch (gm_unw.kind) {
+    case GM_RETURN: return gm_lexically_same(fr, gm_unw.frame) ? gm_unw.is_err : true;
+    case GM_BREAK: case GM_CONTINUE: return !gm_lexically_same(fr, gm_unw.frame);
+    case GM_EXIT: case GM_CANCEL: return true;
+    default: return false;
+    }
+}
+
+/* ---- context switching ------------------------------------------------------------------
+ *
+ * gm_rt_switch(&save, to, arg) saves the callee-saved registers on the current stack, stores
+ * the stack pointer in `save`, loads `to` as the stack pointer, restores the registers saved
+ * there and returns into that context. A new fiber's stack is prepared so that the switch
+ * "returns" into gm_rt_fiber_tramp, which calls gm_fiber_entry(fiber).
+ */
+
+static void gm_fiber_entry(gm_fiber *fb);
+
+#if defined(__x86_64__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    pushq %rbp\n"
+    "    pushq %rbx\n"
+    "    pushq %r12\n"
+    "    pushq %r13\n"
+    "    pushq %r14\n"
+    "    pushq %r15\n"
+    "    movq %rsp, (%rdi)\n"
+    "    movq %rsi, %rsp\n"
+    "    popq %r15\n"
+    "    popq %r14\n"
+    "    popq %r13\n"
+    "    popq %r12\n"
+    "    popq %rbx\n"
+    "    popq %rbp\n"
+    "    movq %rdx, %rax\n"
+    "    ret\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    movq %r12, %rdi\n"
+    "    callq *%r13\n"
+    "    ud2\n");
+
+/* The initial context of a fiber whose stack ends at `top` (16-byte aligned). */
+static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
+    void **sp = (void **)(top - 72);
+    sp[0] = NULL;                       /* r15 */
+    sp[1] = NULL;                       /* r14 */
+    sp[2] = (void *)gm_fiber_entry;     /* r13 */
+    sp[3] = fb;                         /* r12 */
+    sp[4] = NULL;                       /* rbx */
+    sp[5] = NULL;                       /* rbp */
+    sp[6] = (void *)gm_rt_fiber_tramp;  /* return address */
+    return sp;
+}
+#elif defined(__aarch64__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    sub sp, sp, #160\n"
+    "    stp x19, x20, [sp, #0]\n"
+    "    stp x21, x22, [sp, #16]\n"
+    "    stp x23, x24, [sp, #32]\n"
+    "    stp x25, x26, [sp, #48]\n"
+    "    stp x27, x28, [sp, #64]\n"
+    "    stp x29, x30, [sp, #80]\n"
+    "    stp d8, d9, [sp, #96]\n"
+    "    stp d10, d11, [sp, #112]\n"
+    "    stp d12, d13, [sp, #128]\n"
+    "    stp d14, d15, [sp, #144]\n"
+    "    mov x9, sp\n"
+    "    str x9, [x0]\n"
+    "    mov sp, x1\n"
+    "    ldp x19, x20, [sp, #0]\n"
+    "    ldp x21, x22, [sp, #16]\n"
+    "    ldp x23, x24, [sp, #32]\n"
+    "    ldp x25, x26, [sp, #48]\n"
+    "    ldp x27, x28, [sp, #64]\n"
+    "    ldp x29, x30, [sp, #80]\n"
+    "    ldp d8, d9, [sp, #96]\n"
+    "    ldp d10, d11, [sp, #112]\n"
+    "    ldp d12, d13, [sp, #128]\n"
+    "    ldp d14, d15, [sp, #144]\n"
+    "    add sp, sp, #160\n"
+    "    mov x0, x2\n"
+    "    ret\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    mov x0, x19\n"
+    "    blr x20\n"
+    "    brk #0\n");
+
+static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
+    void **sp = (void **)(top - 160);
+    memset(sp, 0, 160);
+    sp[0] = fb;                         /* x19 */
+    sp[1] = (void *)gm_fiber_entry;     /* x20 */
+    sp[11] = (void *)gm_rt_fiber_tramp; /* x30 */
+    return sp;
+}
+#else
+static void *gm_rt_switch(void **save, void *to, void *arg) {
+    (void)save; (void)to; (void)arg;
+    gm_trap("fibers are not supported on this architecture", NULL, 0, 0);
+}
+static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
+    (void)top; (void)fb;
+    return NULL;
+}
+#endif
+
+/* ---- fibers ---------------------------------------------------------------------------- */
+
+static gm_fiber *gm_fiber_pool;
+
+static _Noreturn void gm_stack_overflow(void) {
+    gm_trap("stack overflow on a fiber stack", NULL, 0, 0);
+}
+
+static void gm_fiber_entry(gm_fiber *fb) {
+    fb->start(fb);
+    gm_fiber_finish(fb);
+}
+
+static gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
+                              const char *file, uint32_t line, uint32_t col) {
+    if (gm_checks && len < GM_MIN_STACK) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "a fiber stack needs at least %d bytes (`@min_stack`), but this one has %llu",
+                 GM_MIN_STACK, (unsigned long long)len);
+        gm_trap(msg, file, line, col);
+    }
+    gm_fiber *fb = gm_fiber_pool;
+    if (fb != NULL) {
+        gm_fiber_pool = fb->pool_next;
+    } else {
+        fb = (gm_fiber *)calloc(1, sizeof *fb);
+        if (fb == NULL) gm_trap("out of memory creating a fiber", file, line, col);
+    }
+    uintptr_t epoch = fb->epoch + 1;
+    memset(fb, 0, sizeof *fb);
+    fb->epoch = epoch;
+    fb->owner = w;
+    fb->start = start;
+    fb->state = GM_FB_NEW;
+    fb->own_next = w->owned;
+    w->owned = fb;
+    uintptr_t top = ((uintptr_t)stack + len) & ~(uintptr_t)15;
+    if (arg_size > 0) {
+        top = (top - arg_size) & ~(uintptr_t)15;
+        fb->arg = (void *)top;
+    }
+    fb->limit = (uintptr_t)stack + GM_STACK_RESERVE;
+    fb->sp = gm_ctx_init(top, fb);
+    return fb;
+}
+
+static void gm_susp_link(gm_with *w, gm_fiber *fb) {
+    fb->state = GM_FB_SUSPENDED;
+    fb->susp_with = w;
+    fb->susp_prev = NULL;
+    fb->susp_next = w->suspended;
+    if (w->suspended) w->suspended->susp_prev = fb;
+    w->suspended = fb;
+    w->nsuspended++;
+}
+
+static void gm_susp_unlink(gm_with *w, gm_fiber *fb) {
+    if (fb->susp_prev) fb->susp_prev->susp_next = fb->susp_next;
+    else w->suspended = fb->susp_next;
+    if (fb->susp_next) fb->susp_next->susp_prev = fb->susp_prev;
+    fb->susp_next = fb->susp_prev = NULL;
+    fb->susp_with = NULL;
+    fb->state = GM_FB_RUNNING;
+    w->nsuspended--;
+}
+
+static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
+    fb->epoch++;
+    gm_susp_link(w, fb);
+    return (gm_cont){fb, fb->epoch};
+}
+
+static void gm_with_go(gm_with *w, gm_fiber *fb) {
+    gm_fiber *me = gm_cur_fiber;
+    gm_cur_fiber = fb;
+    fb->state = GM_FB_RUNNING;
+    fb->started = 1;
+    w->event = 0;
+    gm_rt_switch(&w->driver_sp, fb->sp, NULL);
+    gm_cur_fiber = me;
+}
+
+static void gm_with_clause(gm_with *w) {
+    gm_fiber *fb = w->event_fiber;
+    fb->thunk(fb->req, (gm_cont){fb, fb->epoch});
+}
+
+static void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res) {
+    gm_fiber *fb = gm_cur_fiber;
+    if (fb == NULL || w == NULL) gm_trap("internal error: a `ctl` operation performed outside a fiber", NULL, 0, 0);
+    fb->thunk = thunk;
+    fb->req = req;
+    fb->res = res;
+    fb->epoch++;
+    gm_susp_link(w, fb);
+    w->event = GM_EV_PERFORM;
+    w->event_fiber = fb;
+    gm_rt_switch(&fb->sp, w->driver_sp, NULL);
+    if (fb->cancel) {
+        fb->cancel = 0;
+        gm_unw.kind = GM_CANCEL;
+        gm_unw.frame = NULL;
+        gm_unw.label = 0;
+        gm_unw.is_err = 0;
+    }
+}
+
+static _Noreturn void gm_fiber_finish(gm_fiber *fb) {
+    gm_with *w = fb->owner;
+    fb->state = GM_FB_DONE;
+    w->event = GM_EV_DONE;
+    w->event_fiber = fb;
+    gm_rt_switch(&fb->sp, w->driver_sp, NULL);
+    abort();
+}
+
+/* Checks continuation *k for consumption by a clause of `w` and takes it off w's list. */
+static gm_fiber *gm_cont_take(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_cont c;
+    memcpy(&c, k, sizeof c);
+    gm_fiber *fb = c.fiber;
+    if (fb == NULL || fb->epoch != c.epoch || fb->state != GM_FB_SUSPENDED) {
+        gm_trap("this continuation was already consumed (§14.2)", file, line, col);
+    }
+    if (fb->susp_with != w) {
+        gm_trap("a continuation can be consumed only by a clause of the `with` that produced it (§14.2)", file, line,
+                col);
+    }
+    gm_susp_unlink(w, fb);
+    return fb;
+}
+
+static void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_fiber *fb = gm_cont_take(w, k, file, line, col);
+    w->next = fb;
+    return fb->res;
+}
+
+/* Cancels fiber `fb` (no longer on any list): it unwinds to its base, running its defers. */
+static void gm_cancel(gm_with *w, gm_fiber *fb, const char *file, uint32_t line, uint32_t col) {
+    if (!fb->started) {
+        fb->state = GM_FB_DONE;
+        return;
+    }
+    gm_unwind saved = gm_unw;
+    gm_unw.kind = GM_NONE;
+    fb->cancel = 1;
+    gm_with_go(w, fb);
+    if (w->event != GM_EV_DONE) {
+        gm_trap("a `ctl` operation was performed while a fiber was being discarded", file, line, col);
+    }
+    /* An exit started by a deferred statement of the fiber goes on; otherwise the code
+     * that discarded the fiber continues. */
+    if (gm_unw.kind == GM_CANCEL || gm_unw.kind == GM_NONE) gm_unw = saved;
+}
+
+static void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_fiber *fb = gm_cont_take(w, k, file, line, col);
+    gm_cancel(w, fb, file, line, col);
+}
+
+static void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col) {
+    if (gm_unw.kind != GM_EXIT) {
+        if (crossing) {
+            gm_unwind saved = gm_unw;
+            while (w->suspended) {
+                gm_fiber *fb = w->suspended;
+                gm_susp_unlink(w, fb);
+                gm_cancel(w, fb, file, line, col);
+            }
+            gm_unw = saved;
+        } else if (w->nsuspended > 0) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "with completed while %u fiber%s suspended", (unsigned)w->nsuspended,
+                     w->nsuspended == 1 ? " is" : "s are");
+            gm_trap(msg, file, line, col);
+        }
+    }
+    while (w->owned) {
+        gm_fiber *fb = w->owned;
+        w->owned = fb->own_next;
+        fb->state = GM_FB_DONE;
+        fb->pool_next = gm_fiber_pool;
+        gm_fiber_pool = fb;
+    }
+}

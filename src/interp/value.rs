@@ -152,6 +152,13 @@ pub enum Flow {
     /// `Env.exit`: unwinds every frame to the runtime.
     Exit(u8),
     Trap(Trap),
+    /// `resume k(v)`: ends the `ctl` clause; its `with`'s driver then switches to `fiber`.
+    Resume {
+        fiber: u64,
+        value: Value,
+    },
+    /// Unwinds a discarded fiber to its base (§14.5).
+    Cancel,
 }
 
 pub type R<T = Value> = Result<T, Box<Flow>>;

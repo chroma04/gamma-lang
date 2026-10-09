@@ -1,0 +1,234 @@
+// Fibers and continuations (§14).
+
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+Ask :: effect {
+    ask: ctl(prompt: string) -> i32
+}
+
+numbers :: fn(n: i32) \ {Gen} {
+    i := 0
+    while i < n {
+        emit(i)
+        i += 1
+    }
+}
+
+// A generator: the clause runs on the driver and resumes the producer.
+sum_of :: fn(n: i32) -> i32 {
+    stack: [32768]u8 = ---
+    total := 0
+    with (handler Gen {
+        emit(x, k) => {
+            total += x
+            resume k()
+        }
+    }) on stack[..] {
+        numbers(n)
+    }
+    return total
+}
+
+// Resuming with a value: the perform returns it.
+asking :: fn() -> i32 \ {Out} {
+    stack: [32768]u8 = ---
+    next := 10
+    r := with (handler Ask {
+        ask(p, k) => {
+            print("asked {}\n", p)
+            next += 1
+            resume k(next)
+        }
+    }) on stack[..] {
+        a := ask("first")
+        b := ask("second")
+        a * 100 + b
+    }
+    return r
+}
+
+// `break` from a clause completes the `with`; the continuation is discarded first,
+// which runs the suspended fiber's defers.
+first_big :: fn(limit: i32) -> i32 \ {Out} {
+    stack: [32768]u8 = ---
+    r := with (handler Gen {
+        emit(x, k) => {
+            if x > limit {
+                discard k
+                break x
+            }
+            resume k()
+        }
+    }) on stack[..] {
+        defer print("producer unwound\n")
+        numbers(100)
+        -1
+    }
+    return r
+}
+
+// A scheduler: tasks are fibers made with `@fiber`, kept in a queue of continuations.
+Task :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(n: i32) -> never \ {Task, Out}, arg: i32)
+    exit: ctl() -> never
+}
+
+Sched :: struct {
+    ready: List(cont(()))
+    stack_mem: []u8
+    used: usize
+    live: i32
+}
+
+next_task :: fn(s: ^Sched) -> cont(()) {
+    if s.ready.items.len is 0 { trap("no task is ready") }
+    k := s.ready.items[0]
+    i: usize = 1
+    while i < s.ready.items.len {
+        s.ready.items[i - 1] = s.ready.items[i]
+        i += 1
+    }
+    _ = s.ready.pop()
+    return k
+}
+
+handler Task for ^Sched \ {Alloc, Out} {
+    yield_now(self, k) => {
+        _ = self.ready.push(k)
+        r := next_task(self)
+        resume r()
+    }
+    spawn(self, entry, arg, k) => {
+        f := @fiber(entry, arg, self.stack_mem[self.used * 32768..(self.used + 1) * 32768])
+        self.used += 1
+        self.live += 1
+        _ = self.ready.push(f)
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { break }
+        r := next_task(self)
+        resume r()
+    }
+}
+
+worker :: fn(n: i32) -> never \ {Task, Out} {
+    defer print("worker {} done\n", n)
+    i := 0
+    while i < 3 {
+        print("worker {} step {}\n", (n, i))
+        yield_now()
+        i += 1
+    }
+    exit()
+}
+
+run_tasks :: fn() \ {Out, Alloc} {
+    stacks: [4 * 32768]u8 = ---
+    s := Sched(ready: list(cont(())), stack_mem: stacks[..], used: 0, live: 1)
+    main_stack: [32768]u8 = ---
+    with &s on main_stack[..] {
+        spawn(worker, 1)
+        spawn(worker, 2)
+        print("main spawned\n")
+        exit()
+    }
+    print("all tasks done, {} stacks used\n", s.used)
+    s.ready.deinit()
+}
+
+// An exit crossing the `with` from its body discards the other suspended fibers.
+Fail :: effect {
+    fail: esc(code: i32) -> never
+}
+
+Job :: effect {
+    start: ctl(entry: ^fn(n: i32) -> never \ {Fail, Out}, arg: i32)
+}
+
+crossing :: fn() -> i32 \ {Out} {
+    stack: [32768]u8 = ---
+    s1: [32768]u8 = ---
+    r := with (handler Fail { fail(c) => break c }) {
+        with (handler Job {
+            start(entry, arg, k) => {
+                f := @fiber(entry, arg, s1[..])
+                // The starter stays suspended in `k` while the new task runs.
+                _ = k
+                resume f()
+            }
+        }) on stack[..] {
+            defer print("body unwound\n")
+            start(failing, 7)
+            0
+        }
+    }
+    return r
+}
+
+failing :: fn(n: i32) -> never \ {Fail, Out} {
+    defer print("failing task unwound\n")
+    fail(n)
+}
+
+// Nested fibers: the inner body performs an operation of the outer `with`.
+nested :: fn() -> i32 {
+    s1: [32768]u8 = ---
+    s2: [32768]u8 = ---
+    total := 0
+    with (handler Gen { emit(x, k) => { total += x; resume k() } }) on s1[..] {
+        with (handler Ask { ask(p, k) => resume k(5) }) on s2[..] {
+            emit(ask("x"))
+            emit(ask("y") * 2)
+        }
+        emit(100)
+    }
+    return total
+}
+
+// Values of any type travel through `resume`; a clause's defers run when it resumes.
+Lines :: effect {
+    read_line: ctl() -> ?string
+}
+
+echo :: fn() \ {Out} {
+    stack: [32768]u8 = ---
+    input := [2]string("alpha", "beta")
+    i: usize = 0
+    with (handler Lines {
+        read_line(k) => {
+            defer print("clause done\n")
+            if i < input.len {
+                i += 1
+                resume k(input[i - 1])
+            }
+            resume k(null)
+        }
+    }) on stack[..] {
+        each :: fn(f: fn(s: string) \ {Lines}) \ {Lines} {
+            while line := read_line() { f(line) }
+        }
+        n := 0
+        each(fn(s: string) \ {Lines} {
+            print("line {} ({})\n", (s, s.len))
+            n += 1
+        })
+        print("{} lines\n", n)
+    }
+}
+
+main :: fn() \ {Out, Alloc} {
+    print("sum {}\n", sum_of(5))
+    print("asking {}\n", asking())
+    print("first big {}\n", first_big(3))
+    run_tasks()
+    print("crossing {}\n", crossing())
+    print("nested {}\n", nested())
+    echo()
+    print("min stack {}\n", @min_stack)
+}

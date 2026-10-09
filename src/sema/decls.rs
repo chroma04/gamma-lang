@@ -412,9 +412,9 @@ impl<'s> Sema<'s> {
         self.effects.insert(eff, EffectInfo { name: name.name, module, params: params.clone(), ops: vec![] });
         self.decls[decl.0 as usize].state = DeclState::Done(DeclValue::Effect(eff));
         let mut ops = vec![];
-        for op in &lit.ops {
+        for (i, op) in lit.ops.iter().enumerate() {
             if op.kind == ast::OpKind::Ctl {
-                self.error(op.span, "`ctl` operations are not supported yet");
+                self.prog.ctl_ops.insert((eff, i as u32));
             }
             let mut params = vec![];
             for p in &op.params {

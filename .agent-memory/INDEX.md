@@ -14,15 +14,16 @@
 - M7 C backend works for all run tests (roadmap/M07 status, decisions/008): src/cgen + runtime/.
 - M10 interop mostly done (roadmap/M10 status, decisions/009): foreign, #global, #export, std/c,
   atomics, volatile; #bits/#c_union in both backends.
+- M8 fibers done in sema, interpreter and C (roadmap/M08 status, decisions/010).
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
-- Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, ctl/fibers (M8),
+- Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, @stack_size,
   std (M11), C-backend gaps (M07 status), threads/@asm (M10), multiple
   assignment/destructuring stmt, `using` ptr coercion, struct patterns with generic type names.
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. M8 fibers (interp needs separate stacks; C runtime context switch) — last big language piece.
-2. M11 std (io/fs/fmt/… via foreign + Sys handlers); M3/M5 leftovers; C-backend gaps.
+1. M11 std (io/fs/fmt/… via foreign + Sys handlers).
+2. M3/M5 leftovers; C-backend gaps (M07 status); threads (M10).
 3. Keep PR green; CI runs on push.
 
 ## Map
@@ -30,7 +31,8 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)
-                  · 007 value params + sema-time const eval
+                  · 007 value params + sema-time const eval · 008 C back end · 009 interop
+                  · 010 fibers
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md
 - gotchas/        environment.md

@@ -37,6 +37,9 @@ pub struct FnGen<'g, 'a> {
     pub cx: String,
     /// Set while generating a `defer` body: it cannot exit non-locally.
     pub no_check: bool,
+    /// Set while generating the body of a `with … on`, moved into a function of its
+    /// own: its ladder ends at the fiber's base.
+    pub outlined: bool,
 }
 
 /// Generates function `f` into `g`.
@@ -87,12 +90,17 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         scopes: vec![],
         cx: "cx".into(),
         no_check: false,
+        outlined: false,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
     if plain {
         fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;");
     }
     fg.line(&format!("struct gm_fr{} F;", f.0));
+    // Running out of a fiber's stack is checked (§14.1).
+    if fg.g.opts.checks && !fg.g.prog.ctl_ops.is_empty() {
+        fg.line("GM_STACK_CHECK(&F);");
+    }
     fg.line("F.h.up = (gm_frame *)env;");
     let clause_lit = matches!(def.kind, FnKind::Clause);
     fg.line(&format!("F.h.clause_lit = {} && env != NULL;", clause_lit as u8));
@@ -229,7 +237,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
         }
         self.scopes = scopes;
-        self.line("if (gm_unw.kind == GM_RETURN && gm_unw.frame == &F.h) { gm_unw.kind = GM_NONE; goto gm_fret; }");
+        if !self.outlined {
+            self.line("if (gm_unw.kind == GM_RETURN && gm_unw.frame == &F.h) { gm_unw.kind = GM_NONE; goto gm_fret; }");
+        }
         self.line("goto gm_fprop;");
     }
 

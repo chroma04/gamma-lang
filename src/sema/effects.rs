@@ -182,22 +182,9 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(op_info.ret, tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals }, span)
     }
 
-    /// The parameter and result types of operation `op` of an instantiated effect.
+    /// The parameter and result types of a clause for operation `op` of an instantiated effect.
     pub fn op_signature(&self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
-        let info = &self.sema.effects[&eref.effect];
-        let o = &info.ops[op];
-        let params = o
-            .params
-            .iter()
-            .map(|p| ParamInfo {
-                name: p.name,
-                ty: subst(p.ty, &info.params, &eref.args),
-                span: p.span,
-                default: None,
-                generic: None,
-            })
-            .collect();
-        (params, subst(o.ret, &info.params, &eref.args), o.kind)
+        self.sema.clause_signature(eref, op)
     }
 
     /// Checks a handler literal (§12.5), producing a second-class handler value.
@@ -227,7 +214,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 continue;
             };
             let (params, ret, kind) = self.op_signature(&eref, i);
-            let info = ClauseInfo { op_kind: kind, for_label: None, handler: Some(hid), break_ty: None };
+            let info = ClauseInfo {
+                op_kind: kind,
+                for_label: None,
+                handler: Some(hid),
+                break_ty: None,
+                effect: Some(eref.clone()),
+            };
             let f = self.clause_fn(c, &params, ret, info);
             clauses.push(f);
         }
@@ -244,7 +237,7 @@ impl<'a, 's> FnCx<'a, 's> {
             FnSig { module: self.module, params: params.to_vec(), ret, effects: EffectSet::empty(), generics: vec![] };
         let fn_id = self.sema.new_fn(c.name.name, c.span, sig, tir::FnKind::Clause);
         self.enter_fn(fn_id, ret, EffectSet::empty());
-        self.clause = Some(info);
+        self.clause = Some(info.clone());
         let mut ids = vec![];
         for (i, p) in params.iter().enumerate() {
             let name = c.params.get(i).map_or(p.name, |n| n.name);
@@ -259,7 +252,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Block(b) => self.block_expected(b, true, Some(ret)),
             _ => self.expr(&c.body, Some(ret)),
         };
-        let body = if body.ty.is_never() { body } else { self.coerce(body, ret) };
+        let body = self.clause_body(body, info.op_kind, ret);
         self.finish_clause(fn_id, ids, body)
     }
 
@@ -319,9 +312,30 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        if let Some(on) = &w.on {
-            self.error(on.span, "`with … on` (fibers) is not supported yet");
-        }
+        // A `ctl` operation needs a stack to suspend: `on` is required exactly then (§14.1).
+        let has_ctl = handled.iter().any(|e| self.sema.prog.ctl_ops.iter().any(|(eff, _)| *eff == e.effect));
+        let on = match &w.on {
+            Some(s) => {
+                if !has_ctl {
+                    self.error(
+                        s.span,
+                        "`on` gives a stack to fibers, but none of these handlers handles a `ctl` operation",
+                    );
+                }
+                let stack_ty = Ty::intern(TyKind::Slice { elem: Ty::int(false, 8), is_const: false });
+                let v = self.expr(s, Some(stack_ty));
+                Some(Box::new(self.coerce(v, stack_ty)))
+            }
+            None => {
+                if has_ctl {
+                    self.error(
+                        span,
+                        "this `with` handles `ctl` operations, so it needs a stack: `with h on stack { … }` (§14.1)",
+                    );
+                }
+                None
+            }
+        };
         let label = self.new_label(w.label.map(|l| l.name), false);
         let start = self.performed.len();
         let n = self.handled.len();
@@ -345,14 +359,141 @@ impl<'a, 's> FnCx<'a, 's> {
         for id in literal_ids {
             for (bt, bspan) in self.sema.handler_breaks.get(&id).cloned().unwrap_or_default() {
                 let bt = self.infer.resolve(bt);
-                if !bt.is_never() && !ty.is_error() && bt != ty && !(bt.has_infer() && self.infer.unify(bt, ty).is_ok())
-                {
+                let agrees = bt == ty || ((bt.has_infer() || ty.has_infer()) && self.infer.unify(bt, ty).is_ok());
+                if !bt.is_never() && !ty.is_error() && !agrees {
                     self.error(bspan, format!("this `break` gives the `with` a `{}`, but its value is `{}`", bt, ty));
                 }
             }
         }
-        let ty = if !value && body.ty.is_never() { Ty::never() } else { ty };
-        mk(ty, tir::ExprKind::With { label, handlers, on: None, body: Box::new(body) }, span)
+        // A clause of an `esc` or `ctl` operation can complete the `with` even when its
+        // body never does.
+        let clause_exits =
+            handled.iter().any(|e| self.sema.effects[&e.effect].ops.iter().any(|o| o.kind != ast::OpKind::Fn));
+        let ty = if !value && body.ty.is_never() && !clause_exits { Ty::never() } else { ty };
+        mk(ty, tir::ExprKind::With { label, handlers, on, body: Box::new(body) }, span)
+    }
+
+    /// Whether the current frame is the body of a `ctl` clause.
+    fn in_ctl_clause(&self) -> bool {
+        self.clause.as_ref().is_some_and(|c| c.op_kind == ast::OpKind::Ctl && c.for_label.is_none())
+    }
+
+    /// Checks a clause body against the clause's result type. A `ctl` clause never
+    /// finishes normally (§14.3).
+    pub fn clause_body(&mut self, body: Expr, kind: ast::OpKind, ret: Ty) -> Expr {
+        if body.ty.is_never() {
+            return body;
+        }
+        if kind == ast::OpKind::Ctl {
+            if !body.ty.is_error() {
+                self.error(
+                    body.span,
+                    "a `ctl` clause must not finish normally: end every path with `resume`, an exit or a `never` call (§14.3)",
+                );
+            }
+            return body;
+        }
+        self.coerce(body, ret)
+    }
+
+    /// Checks a continuation operand of `resume` or `discard`; returns it and its `R`.
+    fn cont_operand(&mut self, what: &str, k: &ast::Expr) -> Option<(Expr, Ty)> {
+        if !self.in_ctl_clause() {
+            self.error(k.span, format!("`{}` is permitted only in the body of a `ctl` clause (§14)", what));
+        } else if self.in_defer {
+            self.error(k.span, format!("`{}` cannot appear in a deferred statement", what));
+        }
+        let v = self.expr(k, None);
+        let t = self.infer.resolve(v.ty);
+        match t.kind() {
+            TyKind::Cont(r) => Some((v, *r)),
+            TyKind::Error => None,
+            _ => {
+                self.error(k.span, format!("expected a continuation `cont(R)`, found `{}`", t));
+                None
+            }
+        }
+    }
+
+    /// `resume k(v)` (§14.3).
+    pub fn resume_expr(&mut self, k: &ast::Expr, value: Option<&ast::Expr>, span: Span) -> Expr {
+        let Some((k, r)) = self.cont_operand("resume", k) else {
+            if let Some(v) = value {
+                self.expr(v, None);
+            }
+            return error_expr(span);
+        };
+        let v = match value {
+            Some(v) => {
+                let x = self.expr(v, Some(r));
+                self.coerce(x, r)
+            }
+            None => {
+                if !r.is_unit() && !r.is_error() {
+                    self.error(span, format!("this continuation needs a value of type `{}`: `resume k(value)`", r));
+                }
+                super::func::unit(span)
+            }
+        };
+        mk(Ty::never(), tir::ExprKind::Resume { cont: Box::new(k), value: Box::new(v) }, span)
+    }
+
+    /// `discard k` (§14.5).
+    pub fn discard_stmt(&mut self, k: &ast::Expr, span: Span) -> Expr {
+        match self.cont_operand("discard", k) {
+            Some((k, _)) => mk(Ty::unit(), tir::ExprKind::Discard(Box::new(k)), span),
+            None => error_expr(span),
+        }
+    }
+
+    /// `@fiber(f, arg, stack)` (§14.6).
+    pub fn fiber_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if !self.in_ctl_clause() || self.in_defer {
+            self.error(span, "`@fiber` may be used only in the body of a `ctl` clause (§14.6)");
+        }
+        let positional: Vec<&ast::Expr> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Positional(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        let [f, arg, stack] = positional.as_slice() else {
+            self.error(span, "`@fiber` takes a function pointer, its argument and a stack: `@fiber(f, arg, stack)`");
+            return error_expr(span);
+        };
+        let fv = self.expr(f, None);
+        let ft = self.infer.resolve(fv.ty);
+        let sig = match ft.kind() {
+            TyKind::FnPtr(sig) if sig.params.len() == 1 && sig.ret.is_never() => sig.clone(),
+            TyKind::Error => return error_expr(span),
+            _ => {
+                self.error(
+                    f.span,
+                    format!("`@fiber` needs a function pointer `^fn(a: A) -> never \\ {{…}}`, found `{}`", ft),
+                );
+                return error_expr(span);
+            }
+        };
+        let a = sig.params[0];
+        if matches!(a.kind(), TyKind::Fn(_) | TyKind::Handler(_)) {
+            self.error(arg.span, format!("a fiber's argument must have a first-class type, not `{}` (§14.6)", a));
+        }
+        let av = self.expr(arg, Some(a));
+        let av = self.coerce(av, a);
+        let stack_ty = Ty::intern(TyKind::Slice { elem: Ty::int(false, 8), is_const: false });
+        let sv = self.expr(stack, Some(stack_ty));
+        let sv = self.coerce(sv, stack_ty);
+        // The fiber runs in the context of the `with`'s body: its effects other than the
+        // clause's own are required from outside the `with` (§14.6).
+        let own = self.clause.as_ref().and_then(|c| c.effect.clone());
+        let rest: Vec<EffectRef> = sig.effects.effects.iter().filter(|e| Some(*e) != own.as_ref()).cloned().collect();
+        self.record_effects(&EffectSet::new(rest), span);
+        mk(
+            Ty::intern(TyKind::Cont(Ty::unit())),
+            tir::ExprKind::Builtin { op: tir::Builtin::Fiber, args: vec![fv, av, sv] },
+            span,
+        )
     }
 
     /// `for p in f(args) { B }` where `f` is an iterator (§13.2).
@@ -430,6 +571,7 @@ impl<'a, 's> FnCx<'a, 's> {
             for_label: Some((f.label.map(|l| l.name), label)),
             handler: Some(hid),
             break_ty: Some(result_ty),
+            effect: Some(eref.clone()),
         });
         let xid = self.new_local(x, elem, false, span);
         let pat_ast = if f.pats.len() == 1 {

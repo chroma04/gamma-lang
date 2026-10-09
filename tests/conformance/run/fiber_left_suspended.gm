@@ -1,0 +1,19 @@
+//! exit: 134
+// A `with` may not complete while continuations it produced are unconsumed (§14.4).
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+main :: fn() \ {Out} {
+    stack: [32768]u8 = ---
+    with (handler Gen {
+        emit(x, k) => {
+            print("emit {}\n", x)
+            break
+        }
+    }) on stack[..] {
+        emit(1)
+        print("unreachable\n")
+    }
+    print("unreachable\n")
+}

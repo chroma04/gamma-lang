@@ -245,6 +245,19 @@ operation looks up the innermost handler and runs the clause as a function
 whose environment is the frame where the handler literal was written. Second-class
 function values capture the context where they were created, as §11.6 requires.
 
+**Fibers.** The evaluator is recursive, so a fiber suspended in the middle of an
+expression needs a Rust stack of its own: each fiber runs on an OS thread
+(`src/interp/fiber.rs`). The threads share the machine and pass control to each
+other over channels, so exactly one runs at a time; the per-thread parts of the
+machine (temporaries, call depth, stack limits) are saved and restored at each
+switch. A `with … on` runs its body on a new fiber and then acts as the driver:
+it waits for a fiber to perform a `ctl` operation, runs the clause, and switches
+to the fiber that `resume` names. `discard` sends the fiber a cancellation that
+unwinds it like an exit. A continuation is a fiber number and a suspension
+count, so consuming one twice, or from the wrong `with`, is detected. Fiber
+stack usage is estimated per call from the size of each frame's locals, so
+running out of a fiber's stack traps as in compiled code.
+
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so
 the value can later be placed in a compiled program's read-only data.
@@ -284,6 +297,20 @@ outwards, with a test at each loop and `with` for whether it is the exit's
 target. A deferred statement run by a ladder sets the exit aside while it runs.
 Traps print their message and stop the process (status 134) without unwinding.
 
+**Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
+and AArch64 that save the callee-saved registers. The body of a `with … on` is
+moved into a C function of its own, which reaches the enclosing function's frame
+through a pointer, and runs on a fiber whose stack is the given memory. The
+`with` itself becomes the driver loop. A `ctl` perform stores its arguments in a
+request on the fiber's stack and switches to the driver, which calls the clause
+through a small per-site thunk. `resume` and the cancellation by `discard` are
+two more kinds of non-local exit: `resume` ends the clause and tells the driver
+which fiber to switch to; a cancelled fiber unwinds to its base and switches
+back. Fiber records come from a pool and are never freed, and each suspension
+increments the fiber's epoch, so a continuation (fiber, epoch) that was already
+consumed is always detected. In checked builds every function entry compares
+its frame's address with the running fiber's stack limit.
+
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.
 Structural `is`, ordering and `@hash` use C functions generated per type
@@ -301,7 +328,6 @@ labels, so they never clash with the runtime's C headers. The interpreter
 cannot call C, so `gamma run` uses this back end for programs with foreign
 functions.
 
-Not yet supported natively: fibers (`with … on`, continuations), structs passed
-by value to or from C, and integers wider than 128 bits; the back end reports
+Not yet supported natively: structs passed by value to or from C, and integers wider than 128 bits; the back end reports
 them as errors.
 

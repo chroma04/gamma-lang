@@ -470,8 +470,9 @@ fn debug_mode_fills_uninitialized_storage() {
 #[test]
 fn unsupported_features_trap_cleanly() {
     let mut tb = Tb::new();
+    // A `resume` outside a clause cannot be checked, but must not crash the interpreter.
     let e = ex(Ty::never(), ExprKind::Resume { cont: Box::new(unit()), value: Box::new(unit()) });
-    assert!(trap_msg(tb.eval(&e)).contains("not supported by the interpreter yet"));
+    assert!(trap_msg(tb.eval(&e)).contains("internal error"));
     let f = FnB::new("ext", Ty::unit()).kind(FnKind::Foreign {
         lib: Symbol::intern("c"),
         link_name: Symbol::intern("ext"),

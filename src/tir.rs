@@ -55,6 +55,9 @@ id_type! {
     HandlerDeclId;
 }
 
+/// `@min_stack`: the smallest fiber stack, in bytes (§14.1).
+pub const MIN_STACK: u64 = 16384;
+
 /// A whole program, ready to run.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -73,6 +76,9 @@ pub struct Program {
     pub exports: Vec<(Symbol, FnId)>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
     pub ambient: Ambient,
+    /// The `ctl` operations (§14), by effect and operation index: performing one
+    /// suspends the running fiber.
+    pub ctl_ops: std::collections::HashSet<(EffectId, u32)>,
 }
 
 /// Ids of the predeclared ambient effects, when the program uses them.
@@ -825,6 +831,9 @@ pub enum Builtin {
     VolatileLoad,
     /// `@volatile_store(p, v)`.
     VolatileStore,
+    /// `@fiber(f, arg, stack)` in a `ctl` clause (§14.6) → `cont(())`: a new fiber of the
+    /// clause's `with`, about to call the function pointer `f` with `arg`.
+    Fiber,
     /// Allocates `size` bytes aligned to `align` from the system heap → `?[^]u8`.
     /// Used only by the core library's heap allocator.
     HeapAlloc,

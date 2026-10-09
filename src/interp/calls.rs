@@ -101,6 +101,12 @@ impl<'a> Machine<'a> {
                 ),
             );
         }
+        // Running out of a fiber's stack is checked (§14.1).
+        let cost = if self.fiber_stack == u64::MAX { 0 } else { self.frame_cost(fid) };
+        if cost > self.fiber_stack && !self.fast() {
+            return self.trap(span, "stack overflow on a fiber stack");
+        }
+        self.fiber_stack = self.fiber_stack.saturating_sub(cost);
         let frame = self.new_frame(f.ret, Some(fid), env, f.locals.len(), installing, is_clause_lit);
         for (p, v) in f.params.iter().zip(args) {
             let ty = f.locals[p.index()].ty;
@@ -110,6 +116,9 @@ impl<'a> Machine<'a> {
         let mark = self.temps.len();
         let r = self.eval(Act { fr: &frame, cx: &ctx }, body);
         self.depth -= 1;
+        if self.fiber_stack != u64::MAX {
+            self.fiber_stack += cost;
+        }
         self.kill_temps(mark);
         self.kill_frame(&frame);
         match r {
@@ -128,10 +137,18 @@ impl<'a> Machine<'a> {
 
     // --- effects ------------------------------------------------------------------------------------
 
-    pub fn perform(&mut self, a: Act, span: Span, effect: &EffectRef, op: u32, mut args: Vec<Value>) -> R {
+    pub fn perform(&mut self, a: Act, span: Span, effect: &EffectRef, op: u32, args: Vec<Value>) -> R {
         let Some(node) = a.cx.find(effect).cloned() else {
             return self.trap(span, format!("no handler installed for effect `{}`", effect.effect.name()));
         };
+        if self.prog.ctl_ops.contains(&(effect.effect, op)) {
+            return self.ctl_perform(span, node, op, args);
+        }
+        self.call_clause(span, &node, op, args)
+    }
+
+    /// Calls the clause for operation `op` of the handler installed at `node`.
+    pub fn call_clause(&mut self, span: Span, node: &CtxNode, op: u32, mut args: Vec<Value>) -> R {
         let installing = Some((node.with_frame, node.with_label));
         let prog = self.prog;
         match &node.installed {
@@ -158,9 +175,6 @@ impl<'a> Machine<'a> {
         on: Option<&Expr>,
         body: &Expr,
     ) -> R {
-        if on.is_some() {
-            return self.trap(e.span, "not supported by the interpreter yet: `with ... on`");
-        }
         let prog = self.prog;
         let mut cx = a.cx.clone();
         for h in handlers {
@@ -183,6 +197,10 @@ impl<'a> Machine<'a> {
                     }
                 }
             }
+        }
+        if let Some(stack) = on {
+            let sb = self.eval_bytes(Act { fr: a.fr, cx: a.cx }, stack)?;
+            return self.eval_with_on(a, e.span, label, cx, &sb, body);
         }
         match self.eval(Act { fr: a.fr, cx: &cx }, body) {
             Err(f) => match *f {

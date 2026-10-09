@@ -223,7 +223,7 @@ A `join` at the end means the `with` completes only after both tasks have exited
 - A fiber stack is just a slice you supply: a static array, a slice of a larger array, or memory from an allocator. `@min_stack` is the smallest stack the implementation supports. For embedded code, `@stack_size(f)` is a compile-time upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls. It is an error for recursion, calls through function pointers whose targets are not known, or foreign calls.
 - Fibers do not migrate between threads. Each thread has its own handlers, and a `with` and all its fibers belong to the thread that executed it.
 - `defer` statements cannot perform `ctl` operations, so cancellation can never suspend.
-- Debug builds put guard pages on fiber stacks to catch overflow.
+- Debug and Checked builds check each call against the fiber's stack, so running out of it traps instead of overwriting other memory. The reference implementation keeps the lowest 8 KiB of a fiber stack in reserve for reporting the overflow, so `@min_stack` (16 KiB) leaves room for only a few calls; give fibers that do real work tens of kilobytes or more.
 - A pull-style generator over any iterator can be built from a fiber, but the core library does not provide one.
 
 > **Common mistakes.**

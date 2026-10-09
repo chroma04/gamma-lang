@@ -281,8 +281,8 @@ impl<'a> Machine<'a> {
                 Err(Box::new(Flow::Return { frame: target.id, value: v, is_err }))
             }
             ExprKind::With { label, handlers, on, body } => self.eval_with(a, e, *label, handlers, on.as_deref(), body),
-            ExprKind::Resume { .. } => self.trap(e.span, "not supported by the interpreter yet: resume"),
-            ExprKind::Discard(_) => self.trap(e.span, "not supported by the interpreter yet: discard"),
+            ExprKind::Resume { cont, value } => self.eval_resume(a, e.span, cont, value),
+            ExprKind::Discard(k) => self.eval_discard(a, e.span, k),
             ExprKind::Trap { message } => {
                 let m = self.eval_bytes(a, message)?;
                 let s = self.read_str(e.span, &m)?;
@@ -678,6 +678,7 @@ impl<'a> Machine<'a> {
                 let msg = if msg == "expectation failed" { msg } else { format!("expectation failed: {}", msg) };
                 self.trap(e.span, msg)
             }
+            Builtin::Fiber => self.eval_fiber(a, e.span, args),
             Builtin::HeapAlloc => {
                 let sb = self.eval_bytes(a, &args[0])?;
                 let ab = self.eval_bytes(a, &args[1])?;
