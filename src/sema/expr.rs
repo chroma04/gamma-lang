@@ -75,6 +75,9 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Paren(inner) => self.expr(inner, expect),
             ExprKind::Tuple(elems) => self.tuple(elems, expect, span),
             ExprKind::Unary { op, operand } => self.unary(*op, operand, expect, span),
+            ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
+                self.range_value(*op == ast::BinOp::RangeIncl, lhs, rhs, expect, span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
@@ -244,6 +247,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Label => {
                     self.error(span, format!("`{}` is a label, not a value", name));
+                    error_expr(span)
+                }
+                LocalBinding::Type(t) if t.is_error() => error_expr(span),
+                LocalBinding::Type(t) => {
+                    self.error(span, format!("expected a value, found the type `{}`", t));
                     error_expr(span)
                 }
             };
@@ -598,7 +606,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
             B::Range | B::RangeIncl => {
-                self.error(span, "ranges are supported only in `for` loops so far");
+                self.error(span, "a range cannot be an operand here; put it in parentheses");
                 error_expr(span)
             }
         }
@@ -621,6 +629,41 @@ impl<'a, 's> FnCx<'a, 's> {
     fn bits_convert(&mut self, v: Expr, to: Ty) -> Expr {
         let span = v.span;
         mk(to, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
+    }
+
+    /// `lo..hi` or `lo..=hi` as a value: a `Range(T)` or `RangeIncl(T)` (§5.16).
+    fn range_value(&mut self, inclusive: bool, lo: &ast::Expr, hi: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        let Some(template) = self.sema.range_template(inclusive) else {
+            self.error(span, "the core library's range types are not available");
+            return error_expr(span);
+        };
+        // The bound type comes from the expected range type, if there is one.
+        let want = expect.and_then(|t| {
+            let t = self.infer.resolve(t);
+            self.sema.range_of(t).filter(|(i, _)| *i == inclusive).map(|(_, e)| e)
+        });
+        let l = self.expr(lo, want);
+        let h = self.expr(hi, Some(want.unwrap_or(l.ty)));
+        let mut elem = match want {
+            Some(w) => w,
+            None => self.unify_operands(l.ty, h.ty, span, "range bounds"),
+        };
+        // The struct type needs a concrete `T` now: untyped bounds take the range
+        // fallback (§6.1).
+        if self.infer.resolve(elem).has_infer() {
+            let _ = self.infer.unify(elem, Ty::usize());
+        }
+        elem = self.infer.resolve(elem);
+        // `Range(T)` needs `Ord(T)`; `RangeIncl(T)` an integer type (§5.16).
+        if inclusive {
+            let op = "..=";
+            self.obligations.push(Obligation::Numeric { ty: elem, span, op, int_only: true, signed_only: false });
+        } else {
+            self.obligations.push(Obligation::Ord { ty: elem, span });
+        }
+        let (l, h) = (self.coerce(l, elem), self.coerce(h, elem));
+        let ty = self.sema.instantiate_adt(template, vec![elem]);
+        mk(ty, tir::ExprKind::Aggregate(vec![l, h]), span)
     }
 
     /// `p + n`, `p - n` and `p - q` on a many-pointer `p` (§5.5).
@@ -686,6 +729,19 @@ impl<'a, 's> FnCx<'a, 's> {
         let b = self.expr(base, None);
         let b = self.auto_deref_array(b);
         let i = self.expr(index, None);
+        // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
+        let it = self.infer.resolve(i.ty);
+        if let Some((inclusive, elem)) = self.sema.range_of(it) {
+            let r = self.temp(it, span);
+            let field = |n| {
+                let base = Box::new(mk(it, tir::ExprKind::Local(r), span));
+                mk(elem, tir::ExprKind::Field { base, index: n }, span)
+            };
+            let s = self.slice_of(b, base.span, Some(field(0)), Some(field(1)), inclusive, span);
+            let ty = s.ty;
+            let block = tir::Block { stmts: vec![tir::Stmt::Let { local: r, init: Some(i) }], tail: Some(s), span };
+            return mk(ty, tir::ExprKind::Block(Box::new(block)), span);
+        }
         if !self.infer.require_unsigned(i.ty, Fallback::Usize) && !i.ty.is_error() {
             let t = self.infer.resolve(i.ty);
             self.error(i.span, format!("an index must have an unsigned integer type, not `{}`", t));

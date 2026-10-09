@@ -491,6 +491,20 @@ impl<'s> Sema<'s> {
             self.error(e.span, format!("unknown effect `{}`", id.name));
             return None;
         }
+        // `m.E` — an effect declared in another module.
+        if let ExprKind::Field { base, name } = &e.kind
+            && let Some(m) = self.module_named(module, base)
+        {
+            let d = self.module_member(m, *name)?;
+            return match self.resolve_decl(d) {
+                DeclValue::Effect(eff) => Some(EffectRef { effect: eff, args: Box::new([]) }),
+                DeclValue::Error => None,
+                _ => {
+                    self.error(e.span, format!("`{}` is not an effect", name.name));
+                    None
+                }
+            };
+        }
         self.error(e.span, "expected an effect name");
         None
     }

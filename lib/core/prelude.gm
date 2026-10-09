@@ -494,6 +494,16 @@ pub destroy :: fn(T: type, p: ^T, site: SourceLocation = @caller_location()) \ {
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
 }
 
+/// The value of `lo..hi`: from `lo` up to, not including, `hi` (§5.16).
+pub Range :: struct(T: type) {
+    pub lo, hi: T
+}
+
+/// The value of `lo..=hi`: from `lo` up to and including `hi` (§5.16).
+pub RangeIncl :: struct(T: type) {
+    pub lo, hi: T
+}
+
 /// Where a piece of source code is (§21.7): the result of `@location()`.
 pub SourceLocation :: struct {
     pub file: string

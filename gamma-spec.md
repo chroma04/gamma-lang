@@ -335,7 +335,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -657,7 +657,7 @@ A function pointer is one code address in size, C-compatible when its signature 
 
 ### 5.16 Ranges
 
-`a..b` has type `Range(T)` and `a..=b` has type `RangeIncl(T)`, where `T` is an integer type (or, for `Range`, any type with `Ord`). Both are predeclared structs with fields `lo` and `hi`. They are ordinary values: they can be stored, passed, iterated (§13.3), used with `in`, and used to slice.
+`a..b` has type `Range(T)` and `a..=b` has type `RangeIncl(T)`, where `T` is an integer type (or, for `Range`, any type with `Ord`). Both are predeclared structs with fields `lo` and `hi`. They are ordinary values: they can be stored, passed, iterated (§13.3), used with `in`, and used to slice. `a[r]` with `r: Range(usize)` (or `RangeIncl(usize)`) is `a[r.lo..r.hi]` (or `a[r.lo..=r.hi]`). When a range expression is used as a value rather than directly in `for`, `in` or slicing, its `T` comes from the expected range type if there is one, and otherwise from the bounds; untyped bounds that nothing else fixes take `usize` at that point (§6.1).
 
 ### 5.17 `never`
 

@@ -24,6 +24,22 @@ impl<'a, 's> FnCx<'a, 's> {
         span: Span,
     ) -> Expr {
         let b = self.expr(base, None);
+        let bound = |e: Option<&ast::Expr>, cx: &mut Self| e.map(|e| cx.expr(e, None));
+        let lo = bound(lo, self);
+        let hi = bound(hi, self);
+        self.slice_of(b, base.span, lo, hi, inclusive, span)
+    }
+
+    /// Slices the evaluated `b` (written at `base_span`) with the evaluated bounds.
+    pub fn slice_of(
+        &mut self,
+        b: Expr,
+        base_span: Span,
+        lo: Option<Expr>,
+        hi: Option<Expr>,
+        inclusive: bool,
+        span: Span,
+    ) -> Expr {
         let b = match self.infer.resolve(b.ty).kind() {
             TyKind::Ptr { pointee, .. } if pointee.is_array() => {
                 let p = *pointee;
@@ -36,7 +52,7 @@ impl<'a, 's> FnCx<'a, 's> {
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => match self.place_mutability(&b) {
                 Some(m) => (*elem, !m),
                 None => {
-                    self.error(base.span, "only an array variable (a place) can be sliced, not a temporary array");
+                    self.error(base_span, "only an array variable (a place) can be sliced, not a temporary array");
                     return error_expr(span);
                 }
             },
@@ -53,9 +69,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 return error_expr(span);
             }
         };
-        let bound = |e: Option<&ast::Expr>, cx: &mut Self| {
-            e.map(|e| {
-                let v = cx.expr(e, None);
+        let bound = |e: Option<Expr>, cx: &mut Self| {
+            e.map(|v| {
                 if !cx.infer.require_unsigned(v.ty, Fallback::Usize) && !v.ty.is_error() {
                     let t = cx.infer.resolve(v.ty);
                     cx.error(v.span, format!("a slice bound must have an unsigned integer type, not `{}`", t));
@@ -77,28 +92,8 @@ impl<'a, 's> FnCx<'a, 's> {
             let ty = self.unify_operands(elem.ty, lo.ty, span, "the operands of `in`");
             self.unify_operands(ty, hi.ty, span, "the operands of `in`");
             self.obligations.push(Obligation::Ord { ty, span });
-            let tmp = self.temp(ty, span);
-            let x = || mk(ty, tir::ExprKind::Local(tmp), span);
-            let cmp = |op, l: Expr, r: Expr| {
-                mk(Ty::bool(), tir::ExprKind::Binary { op, lhs: Box::new(l), rhs: Box::new(r) }, span)
-            };
-            let upper = if *op == ast::BinOp::RangeIncl { tir::BinOp::Le } else { tir::BinOp::Lt };
-            let test = mk(
-                Ty::bool(),
-                tir::ExprKind::Logic {
-                    is_and: true,
-                    lhs: Box::new(cmp(tir::BinOp::Le, lo, x())),
-                    rhs: Box::new(cmp(upper, x(), hi)),
-                },
-                span,
-            );
-            let test = if negated {
-                mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(test) }, span)
-            } else {
-                test
-            };
-            let block = tir::Block { stmts: vec![Stmt::Let { local: tmp, init: Some(elem) }], tail: Some(test), span };
-            return mk(Ty::bool(), tir::ExprKind::Block(Box::new(block)), span);
+            let inclusive = *op == ast::BinOp::RangeIncl;
+            return self.range_test(elem, vec![], lo, hi, ty, inclusive, negated, span);
         }
         // An inline tuple: every element has the element's type.
         let c = if let ExprKind::Tuple(elems) = &container.kind {
@@ -114,6 +109,17 @@ impl<'a, 's> FnCx<'a, 's> {
             self.expr(container, None)
         };
         let ct = self.infer.resolve(c.ty);
+        // A range value: `r.lo <= x and x < r.hi`.
+        if let Some((inclusive, item)) = self.sema.range_of(ct) {
+            self.unify_operands(elem.ty, item, span, "the element and the range of `in`");
+            let r = self.temp(ct, span);
+            let field = |i| {
+                let base = Box::new(mk(ct, tir::ExprKind::Local(r), span));
+                mk(item, tir::ExprKind::Field { base, index: i }, span)
+            };
+            let (lo, hi) = (field(0), field(1));
+            return self.range_test(elem, vec![(r, c)], lo, hi, item, inclusive, negated, span);
+        }
         let item = match ct.kind() {
             TyKind::Array { elem: e, .. } | TyKind::ParamArray { elem: e, .. } | TyKind::Slice { elem: e, .. } => {
                 Some(*e)
@@ -128,6 +134,45 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         self.unify_operands(elem.ty, item, span, "the element and the members of `in`");
         mk(Ty::bool(), tir::ExprKind::In { elem: Box::new(elem), container: Box::new(c), negated }, span)
+    }
+
+    /// `{ x := elem; lets…; lo <= x and x <(=) hi }`, negated if `negated`.
+    #[allow(clippy::too_many_arguments)]
+    fn range_test(
+        &mut self,
+        elem: Expr,
+        lets: Vec<(tir::LocalId, Expr)>,
+        lo: Expr,
+        hi: Expr,
+        ty: Ty,
+        inclusive: bool,
+        negated: bool,
+        span: Span,
+    ) -> Expr {
+        let tmp = self.temp(ty, span);
+        let x = || mk(ty, tir::ExprKind::Local(tmp), span);
+        let cmp = |op, l: Expr, r: Expr| {
+            mk(Ty::bool(), tir::ExprKind::Binary { op, lhs: Box::new(l), rhs: Box::new(r) }, span)
+        };
+        let upper = if inclusive { tir::BinOp::Le } else { tir::BinOp::Lt };
+        let test = mk(
+            Ty::bool(),
+            tir::ExprKind::Logic {
+                is_and: true,
+                lhs: Box::new(cmp(tir::BinOp::Le, lo, x())),
+                rhs: Box::new(cmp(upper, x(), hi)),
+            },
+            span,
+        );
+        let test = if negated {
+            mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(test) }, span)
+        } else {
+            test
+        };
+        let mut stmts = vec![Stmt::Let { local: tmp, init: Some(elem) }];
+        stmts.extend(lets.into_iter().map(|(local, init)| Stmt::Let { local, init: Some(init) }));
+        let block = tir::Block { stmts, tail: Some(test), span };
+        mk(Ty::bool(), tir::ExprKind::Block(Box::new(block)), span)
     }
 
     /// `for p in xs` where `xs` is an array place, a pointer to an array, or a slice.
@@ -162,6 +207,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 )
             }
             TyKind::Error => return Some(error_expr(span)),
+            TyKind::Adt(..) if self.sema.range_of(st).is_some() => {
+                // A range value: { r := src; for i in r.lo..r.hi { body } }
+                let (inclusive, elem) = self.sema.range_of(st).unwrap();
+                if !elem.is_integer() {
+                    self.error(f.iter.span, format!("`for` iterates over ranges of integers, not of `{}`", elem));
+                    return Some(error_expr(span));
+                }
+                let r = self.temp(st, span);
+                let field = |i| {
+                    let base = Box::new(mk(st, tir::ExprKind::Local(r), span));
+                    mk(elem, tir::ExprKind::Field { base, index: i }, span)
+                };
+                let lp = self.range_loop(f, field(0), field(1), elem, inclusive);
+                let stmts = vec![tir::Stmt::Let { local: r, init: Some(src) }, tir::Stmt::Expr(lp)];
+                return Some(super::func::block_of(stmts, span));
+            }
             _ => return None,
         };
         // { s := xs[..]; i := 0; loop i < s.len { p :: s[i]; body } step i += 1 }
