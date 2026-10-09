@@ -15,6 +15,7 @@
 - M10 interop mostly done (roadmap/M10 status, decisions/009): foreign, #global, #export, std/c,
   atomics, volatile; #bits/#c_union in both backends.
 - M8 fibers done in sema, interpreter and C (roadmap/M08 status, decisions/010).
+- M11 started (roadmap/M11 status): In/Clock/Rand ambient effects, rune/runes, core/slice.
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
 - Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, @stack_size,
   std (M11), C-backend gaps (M07 status), threads/@asm (M10), multiple

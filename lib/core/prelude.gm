@@ -176,6 +176,62 @@ pub bytes :: fn(s: string) \ {Yield(u8)} {
     for b in s { yield(b) }
 }
 
+/// A Unicode code point.
+pub rune :: u32
+
+/// The code points of the UTF-8 text `s`. Each maximal ill-formed subsequence
+/// becomes one U+FFFD REPLACEMENT CHARACTER, as in the Unicode Standard (§3.9).
+pub runes :: fn(s: string) \ {Yield(rune)} {
+    i: usize = 0
+    while i < s.len {
+        b := s[i]
+        if b < 0x80 {
+            yield(rune(b))
+            i += 1
+            continue
+        }
+        // The number of continuation bytes, and the range of the first of them.
+        n: usize = 0
+        lo: u8 = 0x80
+        hi: u8 = 0xbf
+        c: rune = 0
+        if b >= 0xc2 and b <= 0xdf {
+            n = 1
+            c = rune(b & 0x1f)
+        } else if b >= 0xe0 and b <= 0xef {
+            n = 2
+            c = rune(b & 0x0f)
+            if b is 0xe0 { lo = 0xa0 }
+            if b is 0xed { hi = 0x9f }
+        } else if b >= 0xf0 and b <= 0xf4 {
+            n = 3
+            c = rune(b & 0x07)
+            if b is 0xf0 { lo = 0x90 }
+            if b is 0xf4 { hi = 0x8f }
+        } else {
+            yield(0xfffd)
+            i += 1
+            continue
+        }
+        k: usize = 1
+        while k <= n {
+            if i + k >= s.len { break }
+            d := s[i + k]
+            if d < lo or d > hi { break }
+            c = (c << 6) | rune(d & 0x3f)
+            lo = 0x80
+            hi = 0xbf
+            k += 1
+        }
+        if k > n {
+            yield(c)
+        } else {
+            yield(0xfffd)
+        }
+        i += k
+    }
+}
+
 // Allocation (§15.2, §21.2).
 
 /// Allocation failure.
@@ -237,6 +293,15 @@ pub make :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T) {
     if n is 0 { return empty_slice(T) }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
+    return raw.cast([^]T)[0..n]
+}
+
+/// `n` objects of plain data, uninitialized, at an address that is a multiple of
+/// `align` (a power of two; at least the type's own alignment is used).
+pub make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T) {
+    if n is 0 { return empty_slice(T) }
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T) * n, align.max(@align_of(T))) else return !.OutOfMemory
     return raw.cast([^]T)[0..n]
 }
 

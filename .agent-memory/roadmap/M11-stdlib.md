@@ -9,9 +9,11 @@ std/thread, std/c; real Fs/Net/Clock/Rand default handlers; arena + fixed-buffer
 - Pattern for new services: add tir::SysOp variant (signature()), interp/sys.rs, runtime
   gm_rt.c function + cgen/arith.rs Builtin::Sys arm, prelude handler clause.
 
+- Done: rune alias, runes() (maximal-subpart U+FFFD), make_aligned; core/slice module
+  (swap/fill/copy_from, sorts, search, utf8_valid) via sema/methods.rs slice_fn → core_fn.
+  Efficient sorts + big test delegated (worktree agent); merge when it reports.
+- Missing from §21.3: `cursor()` (§13.4), `downcast_unchecked`.
+
 ## Next
-1. rune type, runes(), utf8_valid(), make_aligned (core gaps).
-2. Slice algorithms (§21.3: sort family, binary_search, index_of, starts/ends_with, min/max,
-   cursor) — write in Gamma (core module) + method plumbing in sema/methods.rs.
 3. Fs (open/read/write/close/seek/remove/rename/mkdir/stat) + in-memory test fs; then Net.
 4. std/fmt, std/math, std/io (buffered reader/writer), std/time, arena allocator.
