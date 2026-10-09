@@ -355,7 +355,7 @@ consumed is always detected. In Debug and Checked builds every function entry
 compares its frame's address with the lowest address the running stack may use:
 the fiber's limit, or, on a thread's own stack, the bottom of that stack (found
 with `pthread_getattr_np` or `pthread_get_stackaddr_np` at the start of `main`
-and of each thread) plus a reserve for reporting the overflow.
+and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. Large values read from a place are copied with `memmove` rather than through a C temporary.
 
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.

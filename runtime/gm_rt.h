@@ -28,6 +28,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sched.h>
 
 #define GM_XSTR(x) GM_STR(x)
@@ -42,7 +43,7 @@
 /* Stores the value v of C type T at address p (any alignment). */
 #define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
 /* The value v as C type T of the same size: a blob as its mirror or back. */
-#define GM_CONV(T, v) ({ __typeof__(v) gm_cv_s_ = (v); T gm_cv_d_; memcpy(&gm_cv_d_, &gm_cv_s_, sizeof(T)); gm_cv_d_; })
+#define GM_CONV(T, v) ({ union { __typeof__(v) s; T d; } gm_cv_u_; gm_cv_u_.s = (v); gm_cv_u_.d; })
 /* `#fast_math` functions: float contraction and reassociation are permitted (§5.3). */
 #if defined(__clang__)
 #define GM_FAST_MATH_ATTR
@@ -401,9 +402,10 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #ifdef GM_ASAN
 /* AddressSanitizer may place frames on a separate "fake stack", so frame addresses say
    nothing about the stack's depth; the sanitizer reports overflows itself. */
-#define GM_STACK_CHECK(p) ((void)(p))
+#define GM_STACK_CHECK(p, n) ((void)(p))
 #else
-#define GM_STACK_CHECK(p) do { if ((uintptr_t)(p) < gm_stack_limit) gm_stack_overflow(); } while (0)
+/* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
+#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #endif
 static _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 static _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
