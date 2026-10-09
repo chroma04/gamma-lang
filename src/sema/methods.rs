@@ -509,6 +509,7 @@ const SLICE_FNS: &[&str] = &[
     "max",
     "binary_search",
     "utf8_valid",
+    "cursor",
 ];
 
 /// The unsigned integer type of the same width (`abs_diff`).

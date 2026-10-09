@@ -1,0 +1,18 @@
+// Cursors (§13.4): lockstep iteration over several sequences.
+main :: fn() \ {Out, Alloc} {
+    a := [4]i32(1, 2, 3, 4)
+    b := "xyz"
+    ca := a.cursor()
+    cb := b.cursor()
+    while x := ca.next() {
+        y := cb.next() else break
+        print("{}{} ", (x, y))
+    }
+    print("\n")
+    l := list(string)
+    defer l.deinit()
+    _ = l.push("p")
+    _ = l.push("q")
+    c := l.items.cursor()
+    while s := c.next() { print("{}\n", s) }
+}

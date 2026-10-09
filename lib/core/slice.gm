@@ -361,3 +361,20 @@ pub utf8_valid :: fn(s: []const u8) -> bool {
     }
     return true
 }
+
+/// A position in a slice, for advancing through several sequences in lockstep (§13.4).
+pub Cursor :: struct(T: type) {
+    items: []const T
+    pos: usize
+}
+
+/// A cursor at the start of `s`.
+pub cursor :: fn(T: type, s: []const T) -> Cursor(T) => Cursor(T)(items: s, pos: 0)
+
+/// The next element, or `null` after the last.
+pub next :: fn(T: type, c: ^Cursor(T)) -> ?T {
+    if c.pos >= c.items.len { return null }
+    x := c.items[c.pos]
+    c.pos += 1
+    return x
+}
