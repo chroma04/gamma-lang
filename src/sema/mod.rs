@@ -487,6 +487,7 @@ impl<'s> Sema<'s> {
             effects: sig.effects.clone(),
             parent: None,
             kind,
+            callconv: Default::default(),
             body: None,
         });
         self.sigs.insert(id, sig);

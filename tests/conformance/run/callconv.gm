@@ -1,0 +1,79 @@
+// Calling conventions (§19.2). `.Win64` exists only on x86-64; other targets run the same
+// program with the C convention, so the output is the same everywhere.
+Vec2 :: struct {
+    x: f64
+    y: f64
+}
+
+Pair :: struct {
+    a: i32
+    b: u32
+}
+
+// The default convention, written out.
+#callconv(.C)
+c_add :: fn(a: i32, b: i32) -> i32 => a + b
+
+when target.arch is .X86_64 {
+    // `.SysV` is the C convention of this target.
+    #callconv(.SysV)
+    sysv_mul :: fn(a: i32, b: i32) -> i32 => a * b
+
+    #callconv(.Win64)
+    ms_add :: fn(a: i32, b: i32) -> i32 => a + b
+
+    #callconv(.Win64)
+    ms_mix :: fn(n: i8, x: f64, v: Vec2, p: Pair, m: u32) -> f64 => f64(n) + x + v.x * v.y + f64(p.a) + f64(p.b) + f64(m)
+
+    #callconv(.Win64)
+    ms_swap :: fn(v: Vec2) -> Vec2 => Vec2(x: v.y, y: v.x)
+
+    #callconv(.Win64)
+    ms_unit :: fn(n: u32) {}
+
+    MsBinary :: #callconv(.Win64) ^fn(a: i32, b: i32) -> i32
+
+    Ops :: struct {
+        add: #callconv(.Win64) ^fn(a: i32, b: i32) -> i32
+        maybe: ?#callconv(.Win64) ^fn(a: i32, b: i32) -> i32
+    }
+} else {
+    sysv_mul :: fn(a: i32, b: i32) -> i32 => a * b
+    ms_add :: fn(a: i32, b: i32) -> i32 => a + b
+    ms_mix :: fn(n: i8, x: f64, v: Vec2, p: Pair, m: u32) -> f64 => f64(n) + x + v.x * v.y + f64(p.a) + f64(p.b) + f64(m)
+    ms_swap :: fn(v: Vec2) -> Vec2 => Vec2(x: v.y, y: v.x)
+    ms_unit :: fn(n: u32) {}
+
+    MsBinary :: ^fn(a: i32, b: i32) -> i32
+
+    Ops :: struct {
+        add: ^fn(a: i32, b: i32) -> i32
+        maybe: ?^fn(a: i32, b: i32) -> i32
+    }
+}
+
+apply :: fn(f: MsBinary, a: i32, b: i32) -> i32 => f(a, b)
+
+main :: fn() \ {Out} {
+    print("{} {} {}\n", (c_add(1, 2), sysv_mul(3, 4), ms_add(5, 6)))
+    print("{}\n", ms_mix(2, 0.5, Vec2(x: 2.0, y: 3.0), Pair(a: 10, b: 100), 1000))
+    print("{}\n", ms_swap(Vec2(x: 1.5, y: 2.5)))
+    ms_unit(7)
+
+    // A function used as a value is a pointer that keeps its convention.
+    f: MsBinary = ms_add
+    print("{}\n", f(20, 22))
+    print("{}\n", apply(ms_add, 1, 1))
+    print("{}\n", apply(fn(a: i32, b: i32) -> i32 => a - b, 10, 4))
+
+    ops := Ops(add: ms_add, maybe: null)
+    print("{}\n", ops.add(2, 3))
+    ops.maybe = ms_add
+    if p := ops.maybe {
+        print("{}\n", p(7, 8))
+    }
+
+    // A `.C` function is an ordinary plain pointer.
+    g: ^fn(a: i32, b: i32) -> i32 = c_add
+    print("{}\n", g(40, 2))
+}

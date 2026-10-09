@@ -7,7 +7,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind, ItemKind};
 use crate::tir::{self, AdtKind, FnId};
-use crate::types::{EffectRef, EffectSet, Ty, TyKind};
+use crate::types::{CallConv, EffectRef, EffectSet, FnTy, Ty, TyKind};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -71,13 +71,19 @@ impl<'s> Sema<'s> {
         let mut scope: HashMap<Symbol, DeclId> = HashMap::new();
         for member in &block.members {
             let mut link_name = None;
+            let mut callconv = None;
             for a in &member.attrs {
                 match (a.name.name.as_str(), a.args.as_deref()) {
                     ("link_name", Some([ast::Expr { kind: ExprKind::Str(s), .. }])) => {
                         link_name = Some(Symbol::intern(&String::from_utf8_lossy(&s.bytes)));
                     }
                     ("link_name", _) => self.error(a.span, "`#link_name` takes the symbol name: `#link_name(\"sym\")`"),
-                    ("callconv", _) => self.error(a.span, "`#callconv` is not supported yet"),
+                    ("callconv", _) if matches!(member.kind, ast::ForeignMemberKind::Fn { .. }) => {
+                        if callconv.is_some() {
+                            self.error(a.span, "a function has one calling convention");
+                        }
+                        callconv = self.callconv_attr(a).map(|c| (c, a.span));
+                    }
                     (other, _) => {
                         self.error(a.span, format!("attribute `#{}` does not apply to a foreign member", other))
                     }
@@ -87,7 +93,12 @@ impl<'s> Sema<'s> {
                 ast::ForeignMemberKind::Fn { name: n, sig } => {
                     let link = link_name.unwrap_or(n.name);
                     match self.declare_foreign_fn(module, *n, sig, lib, link) {
-                        Some(f) => (*n, DeclValue::Fn(f)),
+                        Some(f) => {
+                            if let Some((cc, span)) = callconv {
+                                self.apply_callconv(f, cc, span);
+                            }
+                            (*n, DeclValue::Fn(f))
+                        }
                         None => (*n, DeclValue::Error),
                     }
                 }
@@ -165,6 +176,84 @@ impl<'s> Sema<'s> {
             self.variadic_fns.insert(f);
         }
         Some(f)
+    }
+
+    /// The convention named by `#callconv(.X)` (§19.2): `.SysV` is the C ABI of the
+    /// targets that have it, so it normalizes to `C`.
+    pub(super) fn callconv_attr(&mut self, a: &ast::Attribute) -> Option<CallConv> {
+        let Some([ast::Expr { kind: ExprKind::DotIdent(id), .. }]) = a.args.as_deref() else {
+            self.error(a.span, "`#callconv` takes a convention name: `#callconv(.Win64)`");
+            return None;
+        };
+        let x86_64 = self.target.arch == "X86_64";
+        match id.name.as_str() {
+            "C" => Some(CallConv::C),
+            "SysV" | "Win64" if !x86_64 => {
+                self.error(a.span, format!("`.{}` is not supported on this target (x86-64 only)", id.name));
+                None
+            }
+            "SysV" => Some(CallConv::C),
+            "Win64" => Some(CallConv::Win64),
+            other => {
+                self.error(
+                    a.span,
+                    format!("unknown calling convention `.{}`; the conventions are `.C`, `.SysV` and `.Win64`", other),
+                );
+                None
+            }
+        }
+    }
+
+    /// Gives the function `f` the calling convention `cc` (§19.2). A convention other
+    /// than C needs the plain calling convention: a non-generic function whose
+    /// effects are at most `{Sys}`.
+    pub(super) fn apply_callconv(&mut self, f: FnId, cc: CallConv, span: Span) {
+        if cc == CallConv::C {
+            return;
+        }
+        let sig = &self.sigs[&f];
+        let (generic, within_sys) = (!sig.generics.is_empty(), self.within_sys(&sig.effects));
+        if generic {
+            self.error(span, "a generic function cannot have a calling convention other than C");
+        } else if !within_sys {
+            self.error(
+                span,
+                "a function with a calling convention other than C must have effects at most `{Sys}`: it cannot take hidden parameters (§19.2)",
+            );
+        } else {
+            self.prog.fns[f.index()].callconv = cc;
+        }
+    }
+
+    /// `#callconv(.X) ^fn(…)` (§19.2): a function pointer type with a calling
+    /// convention. `inner` is the `^fn` type the attributes precede.
+    pub(super) fn callconv_fn_ptr(
+        &mut self,
+        module: ModuleId,
+        attrs: &[ast::Attribute],
+        inner: &ast::Expr,
+        span: Span,
+    ) -> Ty {
+        let mut callconv = None;
+        for a in attrs {
+            if a.name.name.as_str() != "callconv" {
+                self.error(a.span, format!("attribute `#{}` does not apply to a function pointer type", a.name.name));
+            } else if callconv.is_some() {
+                self.error(a.span, "a function pointer type has one calling convention");
+            } else {
+                callconv = self.callconv_attr(a);
+            }
+        }
+        let ty = self.resolve_type(module, inner);
+        let (TyKind::FnPtr(sig), Some(cc)) = (ty.kind(), callconv) else { return ty };
+        if cc != CallConv::C && !self.within_sys(&sig.effects) {
+            self.error(
+                span,
+                "a function pointer type with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
+            );
+            return Ty::error();
+        }
+        Ty::intern(TyKind::FnPtr(Box::new(FnTy { callconv: cc, ..(**sig).clone() })))
     }
 
     /// `#export("sym")` on a function (§19.4): its signature must be C-compatible and its

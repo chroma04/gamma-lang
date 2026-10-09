@@ -391,6 +391,8 @@ pub struct FnDef {
     pub parent: Option<FnId>,
     /// What kind of body this is (affects how `return` and `break` behave).
     pub kind: FnKind,
+    /// The calling convention (§19.2); other than C only for plain functions.
+    pub callconv: crate::types::CallConv,
     /// The body; its type is `ret` (or `never`). `None` for foreign functions.
     pub body: Option<Expr>,
 }

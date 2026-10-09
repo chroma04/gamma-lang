@@ -6,12 +6,12 @@
 
 use super::func::{FnGen, Scope};
 use super::types::Repr;
-use super::{CResult, unsupported};
+use super::{CResult, conv_attr, unsupported};
 use crate::tir::{
     AdtKind, Arm, Callee, Coercion, CondPart, Expr, ExprKind, FnId, HandlerValue, LabelId, Lift, Pat, PatKind, Target,
     WriteSink,
 };
-use crate::types::{EffectRef, FloatTy, Ty, TyKind};
+use crate::types::{CallConv, EffectRef, FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
 
 impl<'g, 'a> FnGen<'g, 'a> {
@@ -868,7 +868,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     TyKind::FnPtr(sig) => {
                         let effectful = !self.g.within_sys(&sig.effects);
                         let cx = self.cx.clone();
-                        let r = self.call_indirect(&cv, "NULL", &cx, &vals, &tys, e.ty, effectful);
+                        let r = self.call_indirect(&cv, "NULL", &cx, &vals, &tys, e.ty, effectful, sig.callconv);
                         if effectful {
                             self.check_unwind();
                         }
@@ -973,7 +973,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 "gm_node {n}; {{ gm_node *f = gm_find({cx}, {id}); if (f) {{ {n} = *f; {n}.next = {ccx}; {ccx} = &{n}; }} }}"
             ));
         }
-        let r = self.call_indirect(&format!("{}.code", c), &format!("{}.env", c), &ccx, vals, tys, ret, true);
+        let r =
+            self.call_indirect(&format!("{}.code", c), &format!("{}.env", c), &ccx, vals, tys, ret, true, CallConv::C);
         self.check_unwind();
         Ok(r)
     }
@@ -1000,13 +1001,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
         tys: &[Ty],
         ret: Ty,
         hidden: bool,
+        cc: CallConv,
     ) -> String {
         let plain_ret = if ret.is_unit() || ret.is_never() { "void".to_string() } else { self.g.ty.plain_cty(ret) };
         let mut ps = vec![];
         for p in tys {
             ps.push(self.g.ty.plain_cty(*p));
         }
-        let plain_ty = format!("{} (*)({})", plain_ret, if ps.is_empty() { "void".into() } else { ps.join(", ") });
+        let plain_ty = format!(
+            "{} ({}*)({})",
+            plain_ret,
+            conv_attr(cc),
+            if ps.is_empty() { "void".into() } else { ps.join(", ") }
+        );
         let p = self.tmp(Ty::intern(TyKind::Rawptr), code);
         let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
         let plain_args = self.plain_args(vals, tys);

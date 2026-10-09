@@ -125,6 +125,18 @@ impl EffectSet {
     }
 }
 
+/// A calling convention (§19.2). `#callconv(.SysV)` is the same as `.C` on every
+/// target that has it, so only the conventions that differ from the target's C ABI
+/// are distinguished.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CallConv {
+    /// The target's C ABI.
+    #[default]
+    C,
+    /// The Microsoft x64 convention (`.Win64`, x86-64 only).
+    Win64,
+}
+
 /// The signature part of a function or function pointer type (§5.14).
 /// Parameter names are not part of the type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -134,6 +146,8 @@ pub struct FnTy {
     pub effects: EffectSet,
     /// Only foreign function types may be variadic.
     pub variadic: bool,
+    /// Other than `C` only for plain function pointers (§19.2).
+    pub callconv: CallConv,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -454,6 +468,7 @@ fn map_sig(sig: &FnTy, f: &mut impl FnMut(Ty) -> Option<Ty>) -> FnTy {
         ret: sig.ret.map(f),
         effects: sig.effects.clone(),
         variadic: sig.variadic,
+        callconv: sig.callconv,
     }
 }
 
@@ -575,6 +590,9 @@ impl fmt::Display for Ty {
 }
 
 fn fmt_sig(f: &mut fmt::Formatter<'_>, head: &str, sig: &FnTy) -> fmt::Result {
+    if sig.callconv == CallConv::Win64 {
+        f.write_str("#callconv(.Win64) ")?;
+    }
     write!(f, "{}(", head)?;
     for (i, p) in sig.params.iter().enumerate() {
         if i > 0 {

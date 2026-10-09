@@ -88,7 +88,7 @@ impl<'s> Sema<'s> {
         let name = self.decls[id.0 as usize].name;
         let ItemKind::Binding(_) = &item.kind else { return DeclValue::Error };
         let mut fuel = None;
-        let (mut global, mut thread_local, mut export) = (false, false, None);
+        let (mut global, mut thread_local, mut export, mut callconv) = (false, false, None, None);
         for attr in &item.attrs {
             match attr.name.name.as_str() {
                 "global" => global = true,
@@ -99,6 +99,12 @@ impl<'s> Sema<'s> {
                     }
                     _ => self.error(attr.span, "`#export` takes the symbol name: `#export(\"sym\")`"),
                 },
+                "callconv" => {
+                    if callconv.is_some() {
+                        self.error(attr.span, "a function has one calling convention");
+                    }
+                    callconv = self.callconv_attr(attr).map(|c| (c, attr.span));
+                }
                 // `#fuel(n)` raises the step budget of this declaration's evaluations (§17.3).
                 "fuel" => match attr.args.as_deref() {
                     Some([n]) => match self.try_untyped(module, n) {
@@ -109,7 +115,7 @@ impl<'s> Sema<'s> {
                 },
                 // Inlining hints (§11.10) do not change the meaning of a program.
                 "inline" | "noinline" | "cold" => {}
-                "packed" | "align" | "bits" | "c_union" | "link_name" | "callconv" | "fast_math" | "deprecated" => {
+                "packed" | "align" | "bits" | "c_union" | "link_name" | "fast_math" | "deprecated" => {
                     self.error(attr.span, format!("attribute `#{}` is not supported here yet", attr.name.name))
                 }
                 other => self.error(attr.span, format!("unknown attribute `#{}` (§20.2)", other)),
@@ -128,6 +134,13 @@ impl<'s> Sema<'s> {
             self.compute_binding(id, module, name, &item)
         };
         self.fuel = saved_fuel;
+        if let Some((cc, span)) = callconv {
+            match &v {
+                DeclValue::Fn(f) => self.apply_callconv(*f, cc, span),
+                DeclValue::Error => {}
+                _ => self.error(span, "`#callconv` applies only to a function, a foreign function or a `^fn` type"),
+            }
+        }
         if let Some((sym, span)) = export {
             match &v {
                 DeclValue::Fn(f) => self.export_fn(*f, sym, span),
@@ -160,7 +173,13 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
-            ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } if b.ty.is_none() => {
+            ExprKind::Struct(_) | ExprKind::Union(_) if b.ty.is_none() => {
+                let ty = self.declare_adt(module, Some(id), name.name, init);
+                if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) }
+            }
+            ExprKind::Attributed { inner, .. }
+                if b.ty.is_none() && matches!(inner.kind, ExprKind::Struct(_) | ExprKind::Union(_)) =>
+            {
                 let ty = self.declare_adt(module, Some(id), name.name, init);
                 if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) }
             }

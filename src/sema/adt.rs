@@ -482,6 +482,7 @@ impl<'s> Sema<'s> {
                     ret: self.subst(sig.ret, map),
                     effects: super::generics::subst_effects(&sig.effects, map),
                     variadic: sig.variadic,
+                    callconv: sig.callconv,
                 };
                 Some(Ty::intern(if matches!(x.kind(), TyKind::Fn(_)) {
                     TyKind::Fn(Box::new(s))

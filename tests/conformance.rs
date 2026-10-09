@@ -8,6 +8,8 @@
 //!   `gamma test`. The default is `run`.
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
+//! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
+//!   architecture, for tests of features that exist on some targets only.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
 //!   (empty if the file does not exist). If a sibling `<name>.stdin` exists, it
@@ -48,12 +50,14 @@ struct Expectations {
     stage: Stage,
     dump: bool,
     exit: i32,
+    /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
+    arch: Option<String>,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
 
 fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
-    let mut e = Expectations { stage: Stage::Run, dump: false, exit: 0, diags: vec![] };
+    let mut e = Expectations { stage: Stage::Run, dump: false, exit: 0, arch: None, diags: vec![] };
     for path in files {
         let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
         parse_file_expectations(path, &src, &mut e)?;
@@ -77,6 +81,8 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 };
             } else if directive == "dump" {
                 e.dump = true;
+            } else if let Some(arch) = directive.strip_prefix("arch:") {
+                e.arch = Some(arch.trim().to_string());
             } else if let Some(code) = directive.strip_prefix("exit:") {
                 e.exit = code.trim().parse().map_err(|_| format!("{}: bad exit code", path.display()))?;
             } else {
@@ -213,6 +219,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         (vec![path.to_path_buf()], path.to_path_buf())
     };
     let exp = parse_expectations(&files)?;
+    if exp.arch.as_deref().is_some_and(|a| a != std::env::consts::ARCH) {
+        return Ok(());
+    }
     let command = match exp.stage {
         Stage::Lex => "lex",
         Stage::Parse => "parse",

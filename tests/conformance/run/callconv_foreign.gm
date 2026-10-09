@@ -1,0 +1,41 @@
+// Calling conventions across the C boundary (§19.2, §19.4): a function exported and
+// declared again as a foreign function, with the same convention on both sides. Other
+// targets than x86-64 have only the C convention.
+Vec2 :: struct {
+    x: f64
+    y: f64
+}
+
+when target.arch is .X86_64 {
+    #export("gm_test_cc_sum")
+    #callconv(.Win64)
+    win_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 => f64(a) + x + v.x + v.y
+
+    #export("gm_test_cc_sysv")
+    #callconv(.SysV)
+    sysv_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 => f64(a) * 2.0 + x + v.x + v.y
+
+    lib :: foreign "c" {
+        #callconv(.Win64)
+        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+        #callconv(.SysV)
+        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+    }
+} else {
+    #export("gm_test_cc_sum")
+    win_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 => f64(a) + x + v.x + v.y
+
+    #export("gm_test_cc_sysv")
+    sysv_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 => f64(a) * 2.0 + x + v.x + v.y
+
+    lib :: foreign "c" {
+        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+    }
+}
+
+main :: fn() \ {Out} {
+    v := Vec2(x: 2.0, y: 3.0)
+    print("{} {}\n", (win_sum(1, 0.5, v), lib.gm_test_cc_sum(1, 0.5, v)))
+    print("{} {}\n", (sysv_sum(1, 0.5, v), lib.gm_test_cc_sysv(1, 0.5, v)))
+}

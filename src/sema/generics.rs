@@ -424,6 +424,7 @@ pub fn subst_ty(t: Ty, map: &[(ParamId, Ty)]) -> Ty {
                 ret: subst_ty(sig.ret, map),
                 effects: subst_effects(&sig.effects, map),
                 variadic: sig.variadic,
+                callconv: sig.callconv,
             };
             Some(Ty::intern(if matches!(x.kind(), TyKind::Fn(_)) {
                 TyKind::Fn(Box::new(s))

@@ -11,7 +11,7 @@
 //! the exit's target. The same ladder runs after any call that may exit
 //! non-locally, when `gm_unw.kind` is set on return.
 
-use super::{CResult, Gen, unsupported};
+use super::{CResult, Gen, conv_attr, unsupported};
 use crate::tir::{Block, Expr, ExprKind, FnDef, FnId, FnKind, LabelId, Stmt};
 use crate::types::Ty;
 use std::fmt::Write;
@@ -86,7 +86,13 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     if params.is_empty() {
         params.push("void".into());
     }
-    let sig = format!("static __attribute__((aligned(4))) {} {}({})", ret, g.fn_name(f), params.join(", "));
+    let sig = format!(
+        "static __attribute__((aligned(4))) {}{} {}({})",
+        conv_attr(def.callconv),
+        ret,
+        g.fn_name(f),
+        params.join(", ")
+    );
     let _ = writeln!(g.protos, "{};", sig);
     let mut fg = FnGen {
         g,

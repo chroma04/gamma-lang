@@ -8,7 +8,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ArgKind, ExprKind};
 use crate::tir::{self, Expr, HandlerId, Stmt};
-use crate::types::{EffectId, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
+use crate::types::{CallConv, EffectId, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
 use std::collections::HashMap;
 
 fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
@@ -473,12 +473,14 @@ impl<'a, 's> FnCx<'a, 's> {
         let fv = self.expr(f, None);
         let ft = self.infer.resolve(fv.ty);
         let sig = match ft.kind() {
-            TyKind::FnPtr(sig) if sig.params.len() == 1 && sig.ret.is_never() => sig.clone(),
+            TyKind::FnPtr(sig) if sig.params.len() == 1 && sig.ret.is_never() && sig.callconv == CallConv::C => {
+                sig.clone()
+            }
             TyKind::Error => return error_expr(span),
             _ => {
                 self.error(
                     f.span,
-                    format!("`@fiber` needs a function pointer `^fn(a: A) -> never \\ {{…}}`, found `{}`", ft),
+                    format!("`@fiber` needs a function pointer `^fn(a: A) -> never \\ {{…}}` with the C calling convention, found `{}`", ft),
                 );
                 return error_expr(span);
             }

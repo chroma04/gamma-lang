@@ -1,0 +1,58 @@
+//! stage: check
+//! arch: x86_64
+// Calling conventions (§19.2). `.Win64` exists on x86-64 only, hence the architecture above.
+#callconv(.Stdcall)                                       //~ ERROR unknown calling convention
+stdcall_fn :: fn(a: i32) -> i32 => a
+
+#callconv(Win64)                                          //~ ERROR takes a convention name
+bare_name :: fn(a: i32) -> i32 => a
+
+#callconv(.Win64)                                         //~ ERROR effects at most `{Sys}`
+effectful :: fn() \ {Out} {}
+
+#callconv(.Win64)                                         //~ ERROR generic function
+generic :: fn(T: type, x: T) -> T => x
+
+#callconv(.C)
+#callconv(.Win64)                                         //~ ERROR one calling convention
+two :: fn() {}
+
+#callconv(.Win64)
+ms_add :: fn(a: i32, b: i32) -> i32 => a + b
+
+#callconv(.C)
+c_add :: fn(a: i32, b: i32) -> i32 => a + b
+
+#callconv(.SysV)
+sysv_add :: fn(a: i32, b: i32) -> i32 => a + b
+
+take_second_class :: fn(f: fn(a: i32, b: i32) -> i32) -> i32 => f(1, 2)
+
+mismatches :: fn() {
+    a: ^fn(a: i32, b: i32) -> i32 = ms_add                //~ ERROR expected `^fn(i32, i32) -> i32`, found `#callconv(.Win64) ^fn(i32, i32) -> i32`
+    b: #callconv(.Win64) ^fn(a: i32, b: i32) -> i32 = c_add   //~ ERROR expected `#callconv(.Win64) ^fn(i32, i32) -> i32`, found `^fn(i32, i32) -> i32`
+    _ = take_second_class(ms_add)                           //~ ERROR cannot be a second-class `fn` value
+    // `.SysV` is the C convention of this target, so these are the same type.
+    c: ^fn(a: i32, b: i32) -> i32 = sysv_add
+    d: #callconv(.Win64) ^fn(a: i32, b: i32) -> i32 = ms_add
+}
+
+effectful_ptr :: fn(f: #callconv(.Win64) ^fn() \ {Out}) {}   //~ ERROR effects at most `{Sys}`
+
+// An attribute belongs to a function or to a `^fn` type.
+#callconv(.Win64)                                         //~ ERROR applies only to a function
+Win :: struct { a: i32 }
+
+#callconv(.Win64)                                         //~ ERROR applies only to a function
+value :: 3
+
+second_class :: fn(f: #callconv(.Win64) fn(a: i32) -> i32) {}   //~ ERROR attributes here must precede
+optional_attr :: fn(f: #callconv(.Win64) ?i32) {}         //~ ERROR attributes here must precede
+packed_ptr :: fn(f: #packed ^fn(a: i32)) {}               //~ ERROR does not apply to a function pointer type
+
+lib :: foreign "c" {
+    #callconv(.Win64)                                     //~ ERROR does not apply to a foreign member
+    #global errno_like: i32
+}
+
+main :: fn() {}

@@ -11,7 +11,7 @@
 use super::func::{FnGen, Scope};
 use super::{CResult, unsupported};
 use crate::tir::{Expr, LabelId};
-use crate::types::{Ty, TyKind};
+use crate::types::{CallConv, Ty, TyKind};
 use std::fmt::Write;
 
 impl<'g, 'a> FnGen<'g, 'a> {
@@ -189,7 +189,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let text = self.detached(&format!("static void {}(gm_fiber *fb)", start), "fb->cx", |fg| {
             let arg = if size == 0 { fg.zero(aty) } else { format!("GM_LD({}, fb->arg)", ac) };
             let arg = fg.tmp(aty, &arg);
-            fg.call_indirect("fb->fn", "NULL", "fb->cx", &[arg], &[aty], Ty::never(), hidden);
+            fg.call_indirect("fb->fn", "NULL", "fb->cx", &[arg], &[aty], Ty::never(), hidden, CallConv::C);
             fg.out.push_str("}\n");
             Ok(())
         })?;

@@ -340,9 +340,15 @@ values, so hash maps iterate in the same order.
 can be passed to C as a callback, and function pointer types with such effect
 sets are C function pointers (§19.1). Where a plain function is used as code
 of the hidden convention (a closure, or a pointer widened to a type with
-effects), the low bit of its address is set, and those calls test it. Foreign
-functions are declared under private C names bound to their symbols with asm
-labels, so they never clash with the runtime's C headers. The interpreter
+effects), the low bit of its address is set, and those calls test it. A plain
+function may have a convention other than C (`#callconv(.Win64)`), kept in
+`FnDef::callconv` and in the `FnTy` of pointer types, where it takes part in type
+identity so that sema never converts between conventions. The back end turns
+`Win64` into `__attribute__((ms_abi))` (`conv_attr`) on the function's prototype
+and definition, on foreign declarations and exported wrappers, and in the function
+pointer type that plain indirect calls cast to. Foreign functions are declared
+under private C names bound to their symbols with asm labels, so they never clash
+with the runtime's C headers. The interpreter
 cannot call C, so `gamma run` uses this back end for programs with foreign
 functions.
 

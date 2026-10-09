@@ -111,6 +111,7 @@ impl<'s> Sema<'s> {
             ret,
             effects: self.test_effects(true),
             variadic: false,
+            callconv: Default::default(),
         })));
         let arg = tir::Expr { ty: fn_ty, kind: tir::ExprKind::FnRef(f), span };
         let call = tir::Expr {

@@ -4,7 +4,7 @@ use super::builtins::builtin_type;
 use super::{DeclValue, ModuleId, Sema, Untyped};
 use crate::syntax::ast::{self, ExprKind};
 use crate::tir;
-use crate::types::{FnTy, Ty, TyKind};
+use crate::types::{CallConv, FnTy, Ty, TyKind};
 use num_traits::ToPrimitive;
 
 impl<'s> Sema<'s> {
@@ -108,6 +108,7 @@ impl<'s> Sema<'s> {
                             ret: s.ret,
                             effects: s.effects,
                             variadic: false,
+                            callconv: CallConv::C,
                         }))),
                         None => Ty::error(),
                     };
@@ -152,6 +153,7 @@ impl<'s> Sema<'s> {
                     ret: s.ret,
                     effects: s.effects,
                     variadic: false,
+                    callconv: CallConv::C,
                 }))),
                 None => Ty::error(),
             },
@@ -194,9 +196,17 @@ impl<'s> Sema<'s> {
                 }
                 self.instantiate_adt(template, targs)
             }
+            ExprKind::Attributed { attrs, inner } if matches!(&inner.kind, ExprKind::PtrType { inner: f, .. } if matches!(f.kind, ExprKind::FnType(_))) => {
+                self.callconv_fn_ptr(module, attrs, inner, e.span)
+            }
+            ExprKind::Attributed { inner, .. } if !matches!(inner.kind, ExprKind::Struct(_) | ExprKind::Union(_)) => {
+                self.error(e.span, "attributes here must precede a `struct`, a `union` or a `^fn` type");
+                Ty::error()
+            }
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } => {
                 let name = match &e.kind {
                     ExprKind::Union(_) => "union",
+                    ExprKind::Attributed { inner, .. } if matches!(inner.kind, ExprKind::Union(_)) => "union",
                     _ => "struct",
                 };
                 self.declare_adt(module, None, crate::symbol::Symbol::intern(name), e)

@@ -327,6 +327,7 @@ impl FnB {
             effects: self.effects,
             parent: self.parent,
             kind: self.kind,
+            callconv: Default::default(),
             body: Some(body),
         }
     }
@@ -490,6 +491,7 @@ pub fn fn_ty(params: Vec<Ty>, ret: Ty, effects: Vec<EffectRef>) -> Ty {
         ret,
         effects: EffectSet::new(effects),
         variadic: false,
+        callconv: Default::default(),
     })))
 }
 
@@ -499,5 +501,6 @@ pub fn fnptr_ty(params: Vec<Ty>, ret: Ty) -> Ty {
         ret,
         effects: EffectSet::empty(),
         variadic: false,
+        callconv: Default::default(),
     })))
 }

@@ -9,7 +9,7 @@ use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast::{self, Expr as Expr0, ExprKind};
 use crate::tir::{self, Coercion, Expr, Target};
-use crate::types::{FnTy, Ty, TyKind};
+use crate::types::{CallConv, FnTy, Ty, TyKind};
 use num_bigint::BigInt;
 use std::rc::Rc;
 
@@ -324,6 +324,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ret: sig.ret,
             effects: sig.effects.clone(),
             variadic: false,
+            callconv: self.sema.prog.fns[f.index()].callconv,
         })));
         mk(ty, tir::ExprKind::FnRef(f), span)
     }
@@ -899,11 +900,12 @@ impl<'a, 's> FnCx<'a, 's> {
                                     && matches!(sig.params[0].kind(), TyKind::Rawptr)
                                     && sig.ret.is_unit()
                                     && self.sema.within_sys(&sig.effects)
+                                    && sig.callconv == CallConv::C
                             }
                             _ => false,
                         };
                         if !ok && !vt.is_error() {
-                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) \\ {{Sys}}`, not `{}`", vt));
+                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) \\ {{Sys}}` with the C calling convention, not `{}`", vt));
                         }
                         vals.push(v);
                         continue;
@@ -1433,6 +1435,16 @@ impl<'a, 's> FnCx<'a, 's> {
             && a.ret == b.ret
         {
             let span = e.span;
+            if a.callconv != CallConv::C {
+                self.error(
+                    span,
+                    format!(
+                        "`{}` has a calling convention other than C, so it cannot be a second-class `fn` value (§19.2)",
+                        src
+                    ),
+                );
+                return e;
+            }
             for eff in a.effects.effects.iter() {
                 if !b.effects.contains(eff) {
                     self.performed.push((eff.clone(), span));
@@ -1530,6 +1542,7 @@ pub fn base_coercion(src: Ty, target: Ty) -> Option<Coercion> {
         (FnPtr(a), FnPtr(b)) => (a.params == b.params
             && a.ret == b.ret
             && a.variadic == b.variadic
+            && a.callconv == b.callconv
             && a.effects != b.effects
             && a.effects.is_subset_of(&b.effects))
         .then_some(Coercion::FnPtrWiden),

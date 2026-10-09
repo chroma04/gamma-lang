@@ -7,7 +7,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast;
 use crate::tir::{self, Expr, FnId};
-use crate::types::{FnTy, Ty, TyKind};
+use crate::types::{CallConv, FnTy, Ty, TyKind};
 
 fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
     Expr { ty, kind, span }
@@ -140,7 +140,23 @@ impl<'a, 's> FnCx<'a, 's> {
         let parent = if captures { self.fn_id } else { None };
         self.sema.prog.fns[fn_id.index()].parent = parent;
         self.nested.push(NestedFn { fn_id, params: param_ids, locals, body });
-        let fty = FnTy { params: params.iter().map(|p| p.ty).collect(), ret: final_ret, effects, variadic: false };
+        // A literal written where a pointer with a calling convention is expected has it.
+        let callconv = match &expected {
+            Some(s) if wants_pointer && !captures => s.callconv,
+            _ => CallConv::C,
+        };
+        if callconv != CallConv::C {
+            if self.sema.within_sys(&effects) {
+                self.sema.prog.fns[fn_id.index()].callconv = callconv;
+            } else {
+                self.error(
+                    span,
+                    "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
+                );
+            }
+        }
+        let fty =
+            FnTy { params: params.iter().map(|p| p.ty).collect(), ret: final_ret, effects, variadic: false, callconv };
         if captures {
             if wants_pointer {
                 self.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)");

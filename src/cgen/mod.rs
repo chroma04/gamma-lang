@@ -17,7 +17,7 @@ mod types;
 use crate::layout::{Layouts, Target};
 use crate::source::{SourceMap, Span};
 use crate::tir::{FnId, FnKind, Program};
-use crate::types::{AdtId, EffectRef, Ty, TyKind};
+use crate::types::{AdtId, CallConv, EffectRef, Ty, TyKind};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -332,11 +332,11 @@ impl<'a> Gen<'a> {
             let call = format!("{}({})", self.fn_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
             if def.ret.is_unit() {
-                let _ = writeln!(s, "void {}({}) {{ {}; }}", sym, params, call);
+                let _ = writeln!(s, "{}void {}({}) {{ {}; }}", conv_attr(def.callconv), sym, params, call);
             } else {
                 let r = self.c_abi_type(def.ret, def.span)?;
                 let call = if self.ty.mirror(def.ret).is_some() { call } else { format!("({}){}", r, call) };
-                let _ = writeln!(s, "{} {}({}) {{ return {}; }}", r, sym, params, call);
+                let _ = writeln!(s, "{}{} {}({}) {{ return {}; }}", conv_attr(def.callconv), r, sym, params, call);
             }
         }
         Ok(s)
@@ -455,7 +455,8 @@ impl<'a> Gen<'a> {
         let ret = if def.ret.is_unit() { "void".into() } else { self.c_abi_type(def.ret, def.span)? };
         let _ = writeln!(
             self.protos,
-            "extern {} gm_x{}({}) __asm__(GM_SYM(\"{}\"));",
+            "extern {}{} gm_x{}({}) __asm__(GM_SYM(\"{}\"));",
+            conv_attr(def.callconv),
             ret,
             f.0,
             params.join(", "),
@@ -475,6 +476,15 @@ impl<'a> Gen<'a> {
                 None => unsupported(span, format!("passing `{}` by value to or from C", t)),
             },
         }
+    }
+}
+
+/// The C attribute (with a trailing space) selecting calling convention `cc`; the
+/// target's C ABI needs none.
+pub fn conv_attr(cc: CallConv) -> &'static str {
+    match cc {
+        CallConv::C => "",
+        CallConv::Win64 => "__attribute__((ms_abi)) ",
     }
 }
 

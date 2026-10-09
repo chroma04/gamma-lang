@@ -645,7 +645,7 @@ There are two kinds of function type.
 | `fn(params) -> R \ {E}` | **function**: second-class (§11.6) | may capture locals by reference | `{E}` are handled by whoever calls it; any others it performs are handled where it was written |
 | `^fn(params) -> R \ {E}` | **function pointer**: first-class | none | exactly `{E}`, handled by whoever calls it |
 
-`-> R` may be omitted when `R` is `()`. `\ {E}` may be omitted when the set is empty. Parameter names in function types are optional and are not part of the type; parameter types, the return type, and the effect set are.
+`-> R` may be omitted when `R` is `()`. `\ {E}` may be omitted when the set is empty. Parameter names in function types are optional and are not part of the type; parameter types, the return type, and the effect set are. A function pointer type also has a calling convention, `.C` unless written otherwise (§19.2); it too is part of the type.
 
 A function pointer is one code address in size, C-compatible when its signature is (§19.1), and comparable with `is`. A top-level or nested named function (both capture nothing) converts to either kind. A function literal converts to a function pointer only if it captures nothing.
 
@@ -1356,7 +1356,7 @@ A named function passed for a second-class parameter behaves the same way as a l
 
 ### 11.7 Function pointers
 
-`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
+`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
 
 Function pointers may be stored anywhere, compared with `is`, and passed to C when their signature is C-compatible and their effect set is empty or `{Sys}` (§19.2).
 
@@ -1431,7 +1431,7 @@ An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Y
 
 **Checking.** For every function, the effects its body performs must be a subset of its declared effect set. A `test` body and `main` are checked against the ambient set (§3.7). A top-level constant's initializer must perform no effects.
 
-**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
+**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
 
 ### 12.4 Handlers
 
@@ -2192,7 +2192,11 @@ libc :: foreign "c" {
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
 - **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
 - Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
-- Calling convention: the target's C ABI. `#callconv(.Stdcall)` and similar select another where the target supports it.
+- **Calling convention**: the target's C ABI by default. `#callconv(.X)` selects another: `.C` (the target's C ABI, the default, so it only states the default), `.SysV` (the System V AMD64 ABI) and `.Win64` (the Microsoft x64 ABI). `.SysV` and `.Win64` exist only where `target.arch` is `.X86_64`; naming them on another architecture, or naming any other convention, is an error. On the supported x86-64 targets the C ABI is System V, so `.SysV` means exactly `.C`; only `.Win64` differs.
+  - The attribute applies to a top-level function declaration, to a foreign member (it describes the C function being called), and to a `^fn` type: `#callconv(.Win64) ^fn(a: i32) -> i32`. Anywhere else it is an error.
+  - A function or function pointer type with a convention other than `.C` has the plain calling convention (§19.1): its effect set must be empty or `{Sys}`, and a function must be top-level, non-generic and capture nothing. A function literal that captures nothing and is written where such a pointer type is expected has that convention.
+  - The convention is part of a function pointer type: `#callconv(.Win64) ^fn(i32) -> i32` and `^fn(i32) -> i32` are different types and no coercion converts between them, including the effect-widening coercion of §11.6. A function with a convention other than `.C` used as a value is a `^fn` carrying its convention; it cannot become a second-class `fn` value, which always uses the language's own convention. `@fiber` (§14.6) and thread entry points (§19.6) take `.C` pointers only.
+  - Calls, direct or through a pointer of the right type, use the function's convention. An `#export`ed function (§19.4) is exported with its convention. The convention changes no Gamma semantics: the interpreter and compile-time evaluation ignore it.
 
 ### 19.3 Global variables
 
@@ -2221,7 +2225,7 @@ load :: fn(path: cstring) -> c.c_int \ {Sys} {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2303,7 +2307,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
-| `#callconv(.X)` | function, foreign member, `^fn` type | calling convention | 19.2 |
+| `#callconv(.X)` | top-level function, foreign member, `^fn` type | calling convention: `.C` (default), `.SysV`, `.Win64` (x86-64 only); part of a `^fn` type; plain functions only, never second-class | 19.2 |
 | `#global` | binding | mutable static storage | 19.3 |
 | `#thread_local` | `#global` | per-thread storage | 19.3 |
 | `#inline`, `#noinline`, `#cold` | function | inlining hints/requirements | 11.10 |

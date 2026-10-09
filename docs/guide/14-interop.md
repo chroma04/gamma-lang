@@ -57,7 +57,7 @@ libc :: foreign "c" {
 }
 ```
 
-- `"c"` is the C standard library; other names are passed to the linker. `#link_name("sym")` on a member overrides the symbol name, and `#callconv(.Stdcall)` and similar select another calling convention where the target supports it.
+- `"c"` is the C standard library; other names are passed to the linker. `#link_name("sym")` on a member overrides the symbol name. `#callconv` selects another calling convention (see [Calling conventions](#calling-conventions-callconv)).
 - Parameter and result types must be C-compatible. A `cstring` is a `[^]const u8`; a `c"..."` literal makes one. A regular `string` is a slice and is not NUL-terminated, so it never converts to a `cstring` by accident.
 - **A foreign function's effect set is `{Sys}`** unless you annotate it. An annotation with a smaller set, like `\ {}` on `strlen`, is a *trusted assertion* by you that the C function touches nothing but its arguments. The compiler does not verify it. Foreign functions are never evaluated at compile time regardless.
 - Variadic functions end in `...`. Arguments in the variadic position must be C-compatible scalars of at least `c_int` width for integers and `f64` for floats, and C's default argument promotions are not applied for you: convert explicitly.
@@ -129,6 +129,37 @@ checksum :: fn(data: [^]const u8, len: usize) -> u32 {
 ```
 
 On the C side this is `uint32_t gm_checksum(const uint8_t *data, size_t len);`. An exported function that needs effects installs its own handlers internally, using `Sys`-level constructors from the library (the specification's example uses `heap_allocator()` and `real_fs()` for this). A trap inside an exported function terminates the process; it does not return into C.
+
+## Calling conventions: `#callconv`
+
+Every function uses the target's C ABI unless told otherwise. `#callconv(.X)` picks a different convention:
+
+- `.C` is the target's C ABI. It is the default, so writing it only documents the intent.
+- `.SysV` and `.Win64` name the System V and Microsoft x64 ABIs. They exist only on x86-64 (`target.arch is .X86_64`); on any other architecture they are errors. The C ABI of the supported x86-64 targets is System V, so `.SysV` means the same as `.C` there, and `.Win64` is the one that differs.
+
+The attribute goes on a top-level function, on a foreign member, or on a `^fn` type:
+
+```gamma
+// Gamma code that a Windows-ABI caller (a plugin host, say) calls back into.
+#export("plugin_add")
+#callconv(.Win64)
+plugin_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int => a + b
+
+// A C function that uses the Microsoft x64 ABI.
+host :: foreign "c" {
+    #callconv(.Win64)
+    host_log :: fn(msg: cstring)
+}
+
+// A callback of that convention.
+Callback :: #callconv(.Win64) ^fn(code: c.c_int) -> c.c_int
+
+register :: fn(cb: Callback) -> c.c_int => cb(0)
+```
+
+The convention is part of a function pointer's type. `plugin_add` used as a value has the type `#callconv(.Win64) ^fn(a: c.c_int, b: c.c_int) -> c.c_int`, and it does not convert to a plain `^fn` of the same signature or the other way round: calling through the wrong convention would corrupt the call, so the compiler refuses the assignment instead. For the same reason such a function can never become a second-class `fn` value, and `@fiber` and thread entry points accept only `.C` pointers.
+
+A function with another convention must be an ordinary C-style function: top-level, non-generic, capturing nothing, with an effect set that is empty or `{Sys}`. Within Gamma, calls behave as always; the convention only changes how arguments and results travel across the machine boundary.
 
 ## Layout control
 
@@ -287,6 +318,7 @@ Everything in this chapter that crosses into C or bypasses the checks puts a con
 - Foreign functions are declared in a `foreign` block and need `Sys` unless you assert otherwise.
 - Only C-compatible types may cross; `std/c` provides `c_int` and friends; `?^T` is a nullable C pointer.
 - `#export` exposes a Gamma function with the C ABI; its effects must be empty or `{Sys}`.
+- `#callconv(.Win64)` (x86-64 only) selects another ABI for a function, a foreign member or a `^fn` type; it is part of the pointer type.
 - `#packed`, `#align(n)`, `#bits(U)` and `#c_union` control layout; `x.bits(T)` reinterprets plain data.
 - `#global` is mutable static storage and costs `Sys`; atomics follow C11 and do not.
 - Volatile loads and stores are for hardware registers.
