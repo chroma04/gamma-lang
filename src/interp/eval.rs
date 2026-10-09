@@ -905,11 +905,12 @@ impl<'a> Machine<'a> {
         if self.const_mode {
             return self.trap(span, "a #global cannot be accessed at compile time");
         }
-        if let Some(a) = self.globals.get(&g) {
-            return Ok(*a);
-        }
         let prog = self.prog;
         let def = &prog.globals[g.index()];
+        let key = (g, if def.thread_local { self.thread_id } else { 0 });
+        if let Some(a) = self.globals.get(&key) {
+            return Ok(*a);
+        }
         let Some(init) = &def.init else {
             return self.trap(span, "not supported by the interpreter yet: foreign global");
         };
@@ -918,7 +919,7 @@ impl<'a> Machine<'a> {
         let addr = self.alloc_mem(span, ti.size, ti.align, AllocKind::Global(g.0), true)?;
         let r = self.mem.init(addr, &bytes);
         self.mem_err(span, r)?;
-        self.globals.insert(g, addr);
+        self.globals.insert(key, addr);
         Ok(addr)
     }
 

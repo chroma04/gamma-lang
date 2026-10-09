@@ -271,6 +271,10 @@ impl<'a> Gen<'a> {
                 size.max(1),
                 align
             );
+            // A thread-local global gets its initial value in each thread, on first use,
+            // through its accessor `gm_ga{i}()`.
+            let mut tls_init = String::new();
+            let init = if gl.thread_local { &mut tls_init } else { &mut init };
             let Some(v) = &gl.value else { continue };
             if !v.bytes.is_empty() {
                 let s = self.static_bytes(&v.bytes);
@@ -290,6 +294,13 @@ impl<'a> Gen<'a> {
                     "    {{ void *p = (uint8_t *){} + {}; memcpy(gm_g{} + {}, &p, sizeof p); }}",
                     target, r.addend, i, r.offset
                 );
+            }
+            if gl.thread_local {
+                let _ = writeln!(
+                    decls,
+                    "static _Thread_local uint8_t gm_gi{i};\nstatic void gm_ginit{i}(void);\nstatic inline uint8_t *gm_ga{i}(void) {{ if (!gm_gi{i}) {{ gm_gi{i} = 1; gm_ginit{i}(); }} return gm_g{i}; }}"
+                );
+                let _ = writeln!(self.bodies, "static void gm_ginit{i}(void) {{\n{tls_init}}}");
             }
         }
         // Constants may refer to functions not otherwise reached.

@@ -1,0 +1,20 @@
+// `#global #thread_local` storage is per thread (§19.3, §19.6); a plain `#global` is
+// shared.
+thread :: import "std/thread"
+
+#global #thread_local mine: u32 = 10
+#global shared: u32 = 0
+
+bump :: fn(arg: rawptr) \ {Sys} {
+    for i in 0..5 { mine += 1 }
+    _ = @atomic_add(&shared, mine, .Relaxed)
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    mine = 100
+    a := try thread.spawn(bump, (&shared).cast(rawptr))
+    b := try thread.spawn(bump, (&shared).cast(rawptr))
+    a.join()
+    b.join()
+    print("main's copy {}, shared {}\n", (mine, shared))
+}

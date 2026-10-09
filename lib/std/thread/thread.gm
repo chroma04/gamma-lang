@@ -6,7 +6,7 @@
 //     work :: fn(arg: rawptr) \ {Sys} {
 //         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
 //     }
-//     t := try thread.spawn(work, null)
+//     t := try thread.spawn(work, (&state).cast(rawptr))
 //     t.join()
 //
 // Only function pointers and data cross threads: handlers, second-class functions and

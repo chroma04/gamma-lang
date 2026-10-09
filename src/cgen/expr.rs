@@ -623,7 +623,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
     pub fn place_addr(&mut self, e: &'a Expr) -> CResult<String> {
         match &e.kind {
             ExprKind::Local(l) => Ok(format!("((uint8_t *)&F.l{})", l.0)),
-            ExprKind::Global(id) => Ok(format!("((uint8_t *)gm_g{})", id.0)),
+            ExprKind::Global(id) => {
+                let gl = &self.g.prog.globals[id.index()];
+                if gl.thread_local && gl.link_name.is_none() {
+                    Ok(format!("gm_ga{}()", id.0))
+                } else {
+                    Ok(format!("((uint8_t *)gm_g{})", id.0))
+                }
+            }
             // Constants live in static storage, so their address is stable.
             ExprKind::Const(id) => Ok(format!("((uint8_t *)gm_c{})", id.0)),
             ExprKind::Upvar { levels, local } => {

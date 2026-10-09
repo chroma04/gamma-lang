@@ -115,6 +115,8 @@ impl<'a> Machine<'a> {
             return self.trap(span, format!("a thread started from an invalid function pointer {:#x}", f));
         };
         let gil = self.threads.gil.get_or_insert_with(|| Arc::new(Gil::held())).clone();
+        self.threads.last += 1;
+        let id = self.threads.last;
         let m = self as *mut Machine<'a>;
         let payload = Sendable((m, gil, fid, arg, span));
         let body = move || {
@@ -127,6 +129,7 @@ impl<'a> Machine<'a> {
             m.stack_floor = super::stack_floor(THREAD_STACK, THREAD_MARGIN);
             m.fib.cur = 0;
             m.fiber_stack = u64::MAX;
+            m.thread_id = id as u64;
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 m.call_function(span, fid, vec![arg], None, Ctx::empty(), None, false)
             }));
@@ -153,8 +156,6 @@ impl<'a> Machine<'a> {
         let h = unsafe { std::thread::Builder::new().stack_size(THREAD_STACK).spawn_unchecked(body) };
         match h {
             Ok(h) => {
-                self.threads.last += 1;
-                let id = self.threads.last;
                 self.threads.handles.insert(id, h);
                 Ok(id)
             }

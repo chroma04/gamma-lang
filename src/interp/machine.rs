@@ -71,7 +71,10 @@ pub struct Machine<'a> {
     pub cstr_cache: HashMap<(usize, usize), u64>,
     pub consts: HashMap<ConstId, ConstEntry>,
     pub consts_busy: HashSet<ConstId>,
-    pub globals: HashMap<GlobalId, u64>,
+    /// Storage of `#global`s, by global and thread (0 except for `#thread_local` ones).
+    pub globals: HashMap<(GlobalId, u64), u64>,
+    /// The running thread (0: the main thread).
+    pub thread_id: u64,
     pub out: Option<&'a mut dyn Write>,
     pub errw: Option<&'a mut dyn Write>,
     pub args: Vec<String>,
@@ -120,6 +123,7 @@ impl<'a> Machine<'a> {
             consts: HashMap::new(),
             consts_busy: HashSet::new(),
             globals: HashMap::new(),
+            thread_id: 0,
             out: None,
             errw: None,
             args: Vec::new(),

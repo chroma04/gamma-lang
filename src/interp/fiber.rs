@@ -119,6 +119,7 @@ struct FiberRec {
 /// The per-thread part of the machine, saved across a handoff.
 pub(super) struct ThreadState {
     temps: Vec<u64>,
+    thread_id: u64,
     fiber_stack: u64,
     depth: u32,
     stack_floor: usize,
@@ -133,6 +134,7 @@ impl<'a> Machine<'a> {
     pub(super) fn save_thread(&mut self) -> ThreadState {
         ThreadState {
             temps: std::mem::take(&mut self.temps),
+            thread_id: self.thread_id,
             fiber_stack: self.fiber_stack,
             depth: self.depth,
             stack_floor: self.stack_floor,
@@ -142,6 +144,7 @@ impl<'a> Machine<'a> {
 
     pub(super) fn restore_thread(&mut self, s: ThreadState) {
         self.temps = s.temps;
+        self.thread_id = s.thread_id;
         self.fiber_stack = s.fiber_stack;
         self.depth = s.depth;
         self.stack_floor = s.stack_floor;
