@@ -1,0 +1,621 @@
+// std/fmt: number formatting into caller-provided buffers.
+//
+// `print` writes every value in one fixed way (spec §21.6.1). This module provides the
+// other presentations: other bases, padding, thousands separators, and fixed-point and
+// scientific floats with a chosen number of digits.
+//
+// The integer functions are generic over `Int(T)` and support 8 to 128 bits (narrower types
+// cannot hold the digit constants; wider ones trap). Floats are `f64`; an `f32` argument
+// widens exactly.
+//
+// Every function writes into a buffer the caller supplies and returns the `string` it
+// wrote, a slice of that buffer. Nothing allocates and nothing performs effects. A
+// buffer that is too small is a trap, so each kind of output has a constant or function
+// giving the size that always suffices.
+//
+// Floats are converted exactly: the binary value of the `f64` is expanded to its full
+// decimal expansion with fixed-size integer arithmetic and then rounded half to even, so
+// results agree with C's `printf("%.*f")`, `%.*e` and `%.*g` in glibc.
+
+// ---------------------------------------------------------------------------------
+// Integers
+// ---------------------------------------------------------------------------------
+
+/// A buffer size that holds any integer of up to 128 bits in any base, including the sign
+/// and a `0x`, `0o` or `0b` prefix: 128 binary digits, the prefix and `-`.
+pub INT_BUF :: 131
+
+/// The size of a buffer that always holds an integer of type `T` in any base, with sign and
+/// prefix: one byte per bit, plus three.
+pub max_int_len :: fn(T: type) -> usize => @size_of(T) * 8 + 3
+
+/// The size of a buffer that always holds `grouped` output for an integer of type `T`.
+pub max_grouped_len :: fn(T: type) -> usize {
+    digits := @size_of(T) * 8 * 302 / 1000 + 1      // decimal digits of the largest magnitude
+    return 1 + digits + (digits - 1) / 3
+}
+
+digit_char :: fn(d: u8, upper: bool) -> u8 {
+    if d < 10 { return '0' + d }
+    return (if upper { 'A' } else { 'a' }) + (d - 10)
+}
+
+// The value of `r`, which is between 0 and 35, as a `u8`. (Constrained generic integers
+// have no conversion methods, so this is done with comparisons.)
+small :: fn(T: type, r: T) -> u8 where Int(T) {
+    v := r
+    d: u8 = 0
+    if v >= 32 { v -= 32; d += 32 }
+    if v >= 16 { v -= 16; d += 16 }
+    if v >= 8 { v -= 8; d += 8 }
+    if v >= 4 { v -= 4; d += 4 }
+    if v >= 2 { v -= 2; d += 2 }
+    if v >= 1 { d += 1 }
+    return d
+}
+
+// Writes the digits of |x| in `base`, least significant first, into `out` and returns
+// how many there are (at least one). `out` holds 128 digits.
+digits_of :: fn(T: type, x: T, base: u32, upper: bool, out: []u8) -> usize where Int(T) {
+    neg := x < 0
+    b: T = 0
+    for _ in 0..base { b += 1 }
+    v := x
+    n: usize = 0
+    while true {
+        r := v % b
+        if neg { r = 0 -% r }
+        out[n] = digit_char(small(T, r), upper)
+        n += 1
+        v = v / b
+        if v is 0 { break }
+    }
+    return n
+}
+
+check_int :: fn(T: type, base: u32) where Int(T) {
+    if @size_of(T) > 16 { trap("fmt: integers wider than 128 bits are not supported") }
+    if base < 2 or base > 36 { trap("fmt: the base must be between 2 and 36") }
+}
+
+/// Formats `x` in `base` (2 to 36), a minus sign first if `x` is negative.
+///
+/// `upper` chooses `A`-`Z` over `a`-`z` for digits above 9, and `prefix` adds `0x`, `0o`
+/// or `0b` after the sign (it needs base 16, 8 or 2). Every other integer function is
+/// this one with fixed arguments. Traps if `buf` is too small (`INT_BUF` always suffices
+/// for types up to 128 bits).
+pub radix_with :: fn(T: type, x: T, base: u32, upper: bool, prefix: bool, buf: []u8) -> string where Int(T) {
+    check_int(T, base)
+    if prefix and base is not 16 and base is not 8 and base is not 2 {
+        trap("fmt: a prefix needs base 2, 8 or 16")
+    }
+    scratch := [128]u8(fill: 0)
+    n := digits_of(x, base, upper, scratch[..])
+    total := n
+    neg := x < 0
+    if neg { total += 1 }
+    if prefix { total += 2 }
+    if total > buf.len { trap("fmt: buffer too small for the formatted integer") }
+    out: usize = 0
+    if neg {
+        buf[out] = '-'
+        out += 1
+    }
+    if prefix {
+        buf[out] = '0'
+        buf[out + 1] = if base is 16 { 'x' } else if base is 8 { 'o' } else { 'b' }
+        out += 2
+    }
+    while n > 0 {
+        n -= 1
+        buf[out] = scratch[n]
+        out += 1
+    }
+    return buf[0..out]
+}
+
+/// Formats `x` in decimal (`-42`).
+pub dec :: fn(T: type, x: T, buf: []u8) -> string where Int(T) => radix_with(x, 10, false, false, buf)
+
+/// Formats `x` in lowercase hexadecimal (`ff`, `-1f`).
+pub hex :: fn(T: type, x: T, buf: []u8) -> string where Int(T) => radix_with(x, 16, false, false, buf)
+
+/// Formats `x` in uppercase hexadecimal (`FF`).
+pub hex_upper :: fn(T: type, x: T, buf: []u8) -> string where Int(T) => radix_with(x, 16, true, false, buf)
+
+/// Formats `x` in octal (`777`).
+pub oct :: fn(T: type, x: T, buf: []u8) -> string where Int(T) => radix_with(x, 8, false, false, buf)
+
+/// Formats `x` in binary (`101`).
+pub bin :: fn(T: type, x: T, buf: []u8) -> string where Int(T) => radix_with(x, 2, false, false, buf)
+
+/// Formats `x` in any base from 2 to 36, with lowercase digits.
+pub radix :: fn(T: type, x: T, base: u32, buf: []u8) -> string where Int(T) => radix_with(x, base, false, false, buf)
+
+/// Formats `x` in any base from 2 to 36, with uppercase digits.
+pub radix_upper :: fn(T: type, x: T, base: u32, buf: []u8) -> string where Int(T) => radix_with(x, base, true, false, buf)
+
+/// Formats `x` in base 16, 8 or 2 with a `0x`, `0o` or `0b` prefix after the sign
+/// (`-0xff`), with lowercase digits.
+pub prefixed :: fn(T: type, x: T, base: u32, buf: []u8) -> string where Int(T) => radix_with(x, base, false, true, buf)
+
+/// Like `prefixed`, with uppercase digits (`0xFF`).
+pub prefixed_upper :: fn(T: type, x: T, base: u32, buf: []u8) -> string where Int(T) => radix_with(x, base, true, true, buf)
+
+/// Formats `x` in decimal with `sep` between groups of three digits (`1,234,567`).
+/// `max_grouped_len(T)` bytes always suffice.
+pub grouped :: fn(T: type, x: T, sep: u8, buf: []u8) -> string where Int(T) {
+    check_int(T, 10)
+    scratch := [128]u8(fill: 0)
+    n := digits_of(x, 10, false, scratch[..])
+    neg := x < 0
+    total := n + (n - 1) / 3
+    if neg { total += 1 }
+    if total > buf.len { trap("fmt: buffer too small for the grouped integer") }
+    out: usize = 0
+    if neg {
+        buf[out] = '-'
+        out += 1
+    }
+    i := n
+    while i > 0 {
+        i -= 1
+        buf[out] = scratch[i]
+        out += 1
+        if i > 0 and i % 3 is 0 {
+            buf[out] = sep
+            out += 1
+        }
+    }
+    return buf[0..out]
+}
+
+// ---------------------------------------------------------------------------------
+// Padding and alignment
+// ---------------------------------------------------------------------------------
+
+/// Right-aligns `s` in a field of `width` bytes, filling on the left with `fill`.
+///
+/// If `s` is already `width` bytes or longer it is returned unchanged and `buf` is not
+/// touched. Otherwise the result is the first `width` bytes of `buf`. `s` may itself be
+/// a slice of `buf`. Widths count bytes, not characters.
+pub pad_left :: fn(s: string, width: usize, fill: u8, buf: []u8) -> string {
+    if s.len >= width { return s }
+    if width > buf.len { trap("fmt: buffer too small for the padded string") }
+    pad := width - s.len
+    buf[pad..width].copy_from(s)
+    buf[0..pad].fill(fill)
+    return buf[0..width]
+}
+
+/// Left-aligns `s` in a field of `width` bytes, filling on the right with `fill`. See
+/// `pad_left` for the details.
+pub pad_right :: fn(s: string, width: usize, fill: u8, buf: []u8) -> string {
+    if s.len >= width { return s }
+    if width > buf.len { trap("fmt: buffer too small for the padded string") }
+    buf[0..s.len].copy_from(s)
+    buf[s.len..width].fill(fill)
+    return buf[0..width]
+}
+
+/// Centers `s` in a field of `width` bytes. When the padding is odd the extra byte goes
+/// on the right. See `pad_left` for the details.
+pub center :: fn(s: string, width: usize, fill: u8, buf: []u8) -> string {
+    if s.len >= width { return s }
+    if width > buf.len { trap("fmt: buffer too small for the padded string") }
+    pad := width - s.len
+    left := pad / 2
+    buf[left..left + s.len].copy_from(s)
+    buf[0..left].fill(fill)
+    buf[left + s.len..width].fill(fill)
+    return buf[0..width]
+}
+
+/// Zero-pads a formatted number to `width` bytes, keeping the sign and any `0x`, `0o` or
+/// `0b` prefix first: `-42` becomes `-0042` and `0xff` becomes `0x00ff`.
+///
+/// Text whose first character after the sign and prefix is not a digit (`nan`, `inf`)
+/// is padded with spaces on the left instead. See `pad_left` for the details.
+pub zero_pad :: fn(s: string, width: usize, buf: []u8) -> string {
+    if s.len >= width { return s }
+    if width > buf.len { trap("fmt: buffer too small for the padded string") }
+    head: usize = 0
+    if head < s.len and (s[head] is '-' or s[head] is '+') { head += 1 }
+    if head + 2 < s.len and s[head] is '0' and (s[head + 1] is 'x' or s[head + 1] is 'o' or s[head + 1] is 'b') {
+        head += 2
+    }
+    if head >= s.len or s[head] not in '0'..='9' {
+        return pad_left(s, width, ' ', buf)
+    }
+    pad := width - s.len
+    buf[head + pad..width].copy_from(s[head..])
+    buf[head..head + pad].fill('0')
+    if head > 0 { buf[0..head].copy_from(s[0..head]) }
+    return buf[0..width]
+}
+
+// ---------------------------------------------------------------------------------
+// Floats
+// ---------------------------------------------------------------------------------
+
+// The exact decimal expansion of the finite magnitude |x| is held as digits 0-9 in a
+// scratch array: `point` integer digits followed by the fractional digits (so 0.00125 is
+// 0,0,1,2,5 with point 0, and 1500 is 1,5,0,0 with point 4). The largest expansion has
+// 16 integer digits and 1074 fractional digits for x < 2^53 and at most 309 digits for
+// larger values, so 1100 digits always suffice.
+
+DIGITS :: 1100
+
+// The result of `expand`: `n` digits, `point` of them before the decimal point.
+Expansion :: struct {
+    n: usize
+    point: usize
+}
+
+// The parts of a finite f64: the value is `m * 2^e`.
+Parts :: struct {
+    m: u64
+    e: i32
+}
+
+// Writes the decimal digits of `v`, most significant first, at `d[at..]`, and returns how
+// many there are (0 for `v` of 0).
+put_u64 :: fn(v: u64, d: []u8, at: usize) -> usize {
+    n: usize = 0
+    t := v
+    while t is not 0 {
+        d[at + n] = (t % 10).trunc(u8)
+        t /= 10
+        n += 1
+    }
+    i: usize = 0
+    j := n
+    while i + 1 < j {
+        j -= 1
+        c := d[at + i]
+        d[at + i] = d[at + j]
+        d[at + j] = c
+        i += 1
+    }
+    return n
+}
+
+// Expands the binary value m * 2^e (m of 53 bits at most, e between -1074 and 971) into
+// decimal digits in `d`. Returns the number of digits and the number of integer digits.
+expand :: fn(m0: u64, e0: i32, d: []u8) -> Expansion {
+    m := m0
+    e := e0
+    if m is 0 { return Expansion(n: 0, point: 0) }
+    // Drop trailing zero bits so the fraction needs as few bits as possible.
+    while e < 0 and m % 2 is 0 {
+        m /= 2
+        e += 1
+    }
+    if e >= 0 {
+        // An integer below 2^1024: shift m into 32-bit limbs and divide by 10^9 repeatedly.
+        limbs := [40]u32(fill: 0)
+        q := (e / 32).trunc(usize)
+        s := (e % 32).trunc(u32)
+        w0 := (m & 0xffff_ffff) << s
+        limbs[q] = (w0 & 0xffff_ffff).trunc(u32)
+        w1 := ((m >> 32) << s) + (w0 >> 32)
+        limbs[q + 1] = (w1 & 0xffff_ffff).trunc(u32)
+        limbs[q + 2] = (w1 >> 32).trunc(u32)
+        top := q + 3
+        count: usize = 0
+        while top > 0 {
+            rem: u64 = 0
+            i := top
+            while i > 0 {
+                i -= 1
+                cur := (rem << 32) | u64(limbs[i])
+                limbs[i] = (cur / 1_000_000_000).trunc(u32)
+                rem = cur % 1_000_000_000
+            }
+            while top > 0 and limbs[top - 1] is 0 { top -= 1 }
+            // 9 digits of rem, least significant first; the last chunk has no leading zeros.
+            k: usize = 0
+            while k < 9 and (top > 0 or rem is not 0) {
+                d[count] = (rem % 10).trunc(u8)
+                rem /= 10
+                count += 1
+                k += 1
+            }
+        }
+        i: usize = 0
+        j := count
+        while i + 1 < j {
+            j -= 1
+            c := d[i]
+            d[i] = d[j]
+            d[j] = c
+            i += 1
+        }
+        return Expansion(n: count, point: count)
+    }
+    // A fraction: m / 2^k with k > 0.
+    k := (0 - e).trunc(u32)
+    point: usize = 0
+    if k < 64 { point = put_u64(m >> k, d, 0) }
+    n := point
+    // The fractional part F / 2^k, as limbs. Multiplying by 10 puts the next decimal digit
+    // in the bits at and above position k.
+    q := (k / 32).trunc(usize)
+    s := k % 32
+    limbs := [37]u32(fill: 0)
+    frac := if k >= 64 { m } else { m & ((1 << k) - 1) }
+    limbs[0] = (frac & 0xffff_ffff).trunc(u32)
+    limbs[1] = (frac >> 32).trunc(u32)
+    lowest: usize = 0
+    while true {
+        carry: u64 = 0
+        i := lowest
+        while i <= q {
+            cur := u64(limbs[i]) * 10 + carry
+            limbs[i] = (cur & 0xffff_ffff).trunc(u32)
+            carry = cur >> 32
+            i += 1
+        }
+        limbs[q + 1] = carry.trunc(u32)
+        window := u64(limbs[q]) | (u64(limbs[q + 1]) << 32)
+        d[n] = (window >> s).trunc(u8)
+        n += 1
+        limbs[q] = limbs[q] & ((1 << s) - 1)
+        limbs[q + 1] = 0
+        // Done when the remaining fraction is zero.
+        any := false
+        i = lowest
+        while i <= q {
+            if limbs[i] is not 0 {
+                any = true
+                break
+            }
+            i += 1
+        }
+        if not any { break }
+        // The lowest set bit of the fraction moves up one place per digit.
+        lowest = (n - point) / 32
+    }
+    return Expansion(n: n, point: point)
+}
+
+// The integer fields of the f64 `x`: mantissa, binary exponent (of its lowest bit).
+decompose :: fn(x: f64) -> Parts {
+    bits := x.bits(u64)
+    be := (bits >> 52) & 0x7ff
+    frac := bits & 0xf_ffff_ffff_ffff
+    if be is 0 { return Parts(m: frac, e: -1074) }
+    return Parts(m: frac | (1 << 52), e: be.trunc(i32) - 1075)
+}
+
+// Rounds the `n` digits in `d` to their first `keep` digits, half to even, exactly as the
+// digits are the exact value. Returns true if the rounding carried out of the first
+// digit, in which case the `keep` digits are all zero and a leading 1 belongs before them.
+round_digits :: fn(d: []u8, n: usize, keep: usize) -> bool {
+    if keep >= n { return false }
+    up := false
+    next := d[keep]
+    if next > 5 {
+        up = true
+    } else if next is 5 {
+        rest := false
+        i := keep + 1
+        while i < n {
+            if d[i] is not 0 {
+                rest = true
+                break
+            }
+            i += 1
+        }
+        if rest {
+            up = true
+        } else if keep > 0 {
+            up = d[keep - 1] % 2 is 1
+        }
+    }
+    if not up { return false }
+    i := keep
+    while i > 0 {
+        i -= 1
+        if d[i] is 9 {
+            d[i] = 0
+        } else {
+            d[i] += 1
+            return false
+        }
+    }
+    return true
+}
+
+// Digit `i` of the rounded expansion, or zero past its end.
+digit_at :: fn(d: []const u8, n: usize, i: usize) -> u8 {
+    if i < n { return d[i] }
+    return 0
+}
+
+// "nan", "inf" or "-inf" for a non-finite x, else null.
+special :: fn(x: f64, buf: []u8) -> ?string {
+    text := if x.is_nan() { "nan" } else if x.is_inf() { if x.sign_bit() { "-inf" } else { "inf" } } else { "" }
+    if text.len is 0 { return null }
+    if text.len > buf.len { trap("fmt: buffer too small for the formatted float") }
+    buf[0..text.len].copy_from(text)
+    return buf[0..text.len]
+}
+
+/// The size of a buffer that always holds `fixed(x, decimals, ...)` for any finite or
+/// non-finite `x`: a sign, up to 310 integer digits, the point and the decimals.
+pub fixed_buf_len :: fn(decimals: u32) -> usize => usize(decimals) + 312
+
+/// The size of a buffer that always holds `sci(x, digits, ...)`: sign, `d.`, the digits
+/// and `e+NNN`.
+pub sci_buf_len :: fn(digits: u32) -> usize => usize(digits) + 8
+
+/// The size of a buffer that always holds `general(x, precision, ...)`.
+pub general_buf_len :: fn(precision: u32) -> usize => usize(precision) + 9
+
+/// Formats `x` with exactly `decimals` digits after the point and no exponent, like C's
+/// `printf("%.*f")`: `fixed(3.14159, 2, ...)` is `3.14`, and with 0 decimals there is
+/// no point at all.
+///
+/// The result is correctly rounded from the exact binary value of `x`, ties to even
+/// (`0.125` gives `0.12`, `0.375` gives `0.38`, `2.5` with no decimals gives `2`). `-0.0`
+/// and negative values that round to zero keep their sign (`-0.00`). `nan`, `inf` and
+/// `-inf` are written as such. A `f32` argument is widened exactly. `fixed_buf_len(decimals)`
+/// bytes always suffice; otherwise this traps when `buf` is too small.
+pub fixed :: fn(x: f64, decimals: u32, buf: []u8) -> string {
+    if sp := special(x, buf) { return sp }
+    d := [DIGITS]u8(fill: 0)
+    parts := decompose(x)
+    ex := expand(parts.m, parts.e, d[..])
+    n := ex.n
+    point := ex.point
+    places := usize(decimals)
+    carry := round_digits(d[..], n, point + places)
+    neg := x.sign_bit()
+    int_digits := if carry { point + 1 } else if point is 0 { 1 } else { point }
+    total := int_digits
+    if neg { total += 1 }
+    if places > 0 { total += places + 1 }
+    if total > buf.len { trap("fmt: buffer too small for the formatted float") }
+    out: usize = 0
+    if neg {
+        buf[out] = '-'
+        out += 1
+    }
+    if carry {
+        buf[out] = '1'
+        out += 1
+    }
+    if point is 0 and not carry {
+        buf[out] = '0'
+        out += 1
+    }
+    for i in 0..point {
+        buf[out] = '0' + d[i]
+        out += 1
+    }
+    if places > 0 {
+        buf[out] = '.'
+        out += 1
+        for i in 0..places {
+            buf[out] = '0' + digit_at(d[..], n, point + i)
+            out += 1
+        }
+    }
+    return buf[0..out]
+}
+
+// The significant digits of |x| rounded to `sig` of them, as found in `d[first..]`
+// (`avail` digits of the exact expansion), and the decimal exponent of the first one.
+SciDigits :: struct {
+    first: usize
+    avail: usize
+    exp: i32
+    carry: bool
+}
+
+// Expands the finite x into `d` and rounds it to `sig` significant digits. For zero there
+// are no digits (`avail` is 0), the exponent is 0 and every digit reads as zero.
+sci_digits :: fn(x: f64, sig: usize, d: []u8) -> SciDigits {
+    parts := decompose(x)
+    ex := expand(parts.m, parts.e, d)
+    r := SciDigits(first: 0, avail: 0, exp: 0, carry: false)
+    if ex.n is 0 { return r }
+    while d[r.first] is 0 { r.first += 1 }
+    r.avail = ex.n - r.first
+    r.exp = ex.point.trunc(i32) - 1 - r.first.trunc(i32)
+    r.carry = round_digits(d[r.first..ex.n], r.avail, sig)
+    if r.carry { r.exp += 1 }
+    return r
+}
+
+// Significant digit `i` (0 is the leading one) of a rounded `SciDigits`.
+sci_digit :: fn(sd: SciDigits, d: []const u8, i: usize) -> u8 {
+    if sd.carry { return if i is 0 { 1 } else { 0 } }
+    return digit_at(d[sd.first..], sd.avail, i)
+}
+
+/// Formats `x` in scientific notation with `digits` digits after the point, like C's
+/// `printf("%.*e")`: `sci(1234.5, 3, ...)` is `1.234e+03` (the tie goes to the even digit),
+/// and with 0 digits there is no point (`1e+03`). The exponent has a sign and at least two
+/// digits. Rounding is exact, as for `fixed`; zero gives `0.000e+00`, and `nan`, `inf`
+/// and `-inf` are written as such. `sci_buf_len(digits)` bytes always suffice.
+pub sci :: fn(x: f64, digits: u32, buf: []u8) -> string {
+    if sp := special(x, buf) { return sp }
+    d := [DIGITS]u8(fill: 0)
+    places := usize(digits)
+    sd := sci_digits(x, places + 1, d[..])
+    neg := x.sign_bit()
+    ae := (if sd.exp < 0 { 0 - sd.exp } else { sd.exp }).trunc(u32)
+    exp_digits: usize = if ae >= 100 { 3 } else { 2 }
+    total := 1 + 2 + exp_digits
+    if neg { total += 1 }
+    if places > 0 { total += places + 1 }
+    if total > buf.len { trap("fmt: buffer too small for the formatted float") }
+    out: usize = 0
+    if neg {
+        buf[out] = '-'
+        out += 1
+    }
+    buf[out] = '0' + sci_digit(sd, d[..], 0)
+    out += 1
+    if places > 0 {
+        buf[out] = '.'
+        out += 1
+        for i in 1..places + 1 {
+            buf[out] = '0' + sci_digit(sd, d[..], i)
+            out += 1
+        }
+    }
+    buf[out] = 'e'
+    buf[out + 1] = if sd.exp < 0 { '-' } else { '+' }
+    out += 2
+    k := exp_digits
+    v := ae
+    while k > 0 {
+        k -= 1
+        buf[out + k] = '0' + (v % 10).trunc(u8)
+        v /= 10
+    }
+    out += exp_digits
+    return buf[0..out]
+}
+
+// Removes trailing zeros (and then a trailing point) from the fractional part of the
+// number in `s[0..end]`, if it has one, and returns the new end.
+trim_fraction :: fn(s: []const u8, end: usize) -> usize {
+    has_point := false
+    for i in 0..end {
+        if s[i] is '.' { has_point = true }
+    }
+    if not has_point { return end }
+    e := end
+    while s[e - 1] is '0' { e -= 1 }
+    if s[e - 1] is '.' { e -= 1 }
+    return e
+}
+
+/// Formats `x` with `precision` significant digits, like C's `printf("%.*g")`: it uses
+/// scientific notation when the exponent is below -4 or at least `precision`, fixed-point
+/// otherwise, and drops trailing zeros and a bare point (`general(0.5, 6, ...)` is `0.5`,
+/// `general(1e10, 6, ...)` is `1e+10`). A precision of 0 counts as 1. `general_buf_len(precision)`
+/// bytes always suffice.
+pub general :: fn(x: f64, precision: u32, buf: []u8) -> string {
+    if sp := special(x, buf) { return sp }
+    p := if precision is 0 { 1 } else { usize(precision) }
+    d := [DIGITS]u8(fill: 0)
+    sd := sci_digits(x, p, d[..])
+    if sd.exp >= -4 and sd.exp.trunc(i64) < p.trunc(i64) {
+        places := (p.trunc(i64) - 1 - sd.exp.trunc(i64)).trunc(u32)
+        r := fixed(x, places, buf)
+        return buf[0..trim_fraction(r, r.len)]
+    }
+    r := sci(x, (p - 1).trunc(u32), buf)
+    pe: usize = 0
+    for i in 0..r.len {
+        if r[i] is 'e' { pe = i }
+    }
+    me := trim_fraction(r, pe)
+    buf[me..me + r.len - pe].copy_from(r[pe..])
+    return buf[0..me + r.len - pe]
+}
