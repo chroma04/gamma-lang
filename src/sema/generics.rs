@@ -208,10 +208,10 @@ impl<'s> Sema<'s> {
         let params = g.params.clone();
         let locals = g.locals.clone();
         let hints = g.hints;
-        let locals: Vec<tir::LocalDecl> =
-            locals.into_iter().map(|l| tir::LocalDecl { ty: self.subst(l.ty, &map), ..l }).collect();
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
+        let locals: Vec<tir::LocalDecl> =
+            locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(&mut cx, l.ty), ..l }).collect();
         let body = self.mono_expr(&mut cx, body);
         let def = &mut self.prog.fns[req.instance.index()];
         def.params = params;
@@ -222,7 +222,7 @@ impl<'s> Sema<'s> {
 
     fn mono_expr(&mut self, cx: &mut MonoCx, mut e: Expr) -> Expr {
         let had_param = has_param(e.ty);
-        e.ty = self.subst(e.ty, cx.map);
+        e.ty = self.mono_ty(cx, e.ty);
         // A compile-time value parameter becomes its argument (§16.5).
         if let tir::ExprKind::ValueParam(p) = e.kind
             && let Some((_, v)) = cx.map.iter().find(|(q, _)| *q == p)
@@ -373,7 +373,7 @@ impl<'s> Sema<'s> {
         let def = &self.prog.fns[id.index()];
         let (params, locals, body) = (def.params.clone(), def.locals.clone(), def.body.clone());
         let locals: Vec<tir::LocalDecl> =
-            locals.into_iter().map(|l| tir::LocalDecl { ty: self.subst(l.ty, cx.map), ..l }).collect();
+            locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(cx, l.ty), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
         let body = body.map(|b| self.mono_expr(cx, b));
         let nd = &mut self.prog.fns[new_id.index()];
@@ -382,6 +382,15 @@ impl<'s> Sema<'s> {
         nd.body = body;
         nd.parent = parent;
         new_id
+    }
+
+    /// Substitutes type parameters in `t`; the type of a handler literal of the generic
+    /// becomes that of its copy.
+    fn mono_ty(&mut self, cx: &mut MonoCx, t: Ty) -> Ty {
+        match t.kind() {
+            TyKind::Handler(h) => Ty::intern(TyKind::Handler(self.mono_handler(cx, HandlerId(*h)).0)),
+            _ => self.subst(t, cx.map),
+        }
     }
 
     fn mono_handler(&mut self, cx: &mut MonoCx, h: HandlerId) -> HandlerId {

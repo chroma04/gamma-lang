@@ -1,0 +1,12 @@
+// A generic parameter whose effect set mentions the type parameter: `fn() \ {Yield(T)}` (§16.6).
+count_to :: fn(n: u32) \ {Yield(u32)} { for i in 1..=n { yield(i) } }
+sum :: fn(T: type, src: fn() \ {Yield(T)}) -> T where Num(T) {
+    t: T = 0
+    for x in src() { t += x }
+    return t
+}
+main :: fn() \ {Out} {
+    k: u32 = 5
+    print("{}\n", sum(u32, fn() => count_to(4)))
+    print("{}\n", sum(u32, fn() => count_to(k)))
+}

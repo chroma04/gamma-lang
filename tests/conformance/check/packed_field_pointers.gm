@@ -1,0 +1,19 @@
+//! stage: check
+// No pointer or slice into a `#packed` field whose type needs alignment above 1 (§5.10.4).
+H :: #packed struct {
+    a: u8
+    b: u16
+    c: [2]u32
+    d: [3]u8
+}
+read :: fn(p: ^const u16) -> u16 => p^
+main :: fn() \ {Out} {
+    h := H(a: 1, b: 2, c: [2]u32(3, 4), d: [3]u8(5, 6, 7))
+    _ = read(&h.b)                    //~ ERROR where a `u16` may be misaligned
+    _ = h.c[..]                       //~ ERROR where a `u32` may be misaligned
+    _ = &h.c[1]                       //~ ERROR where a `u32` may be misaligned
+    _ = &h.a
+    _ = h.d[..]
+    x := h.c[1]
+    _ = x
+}

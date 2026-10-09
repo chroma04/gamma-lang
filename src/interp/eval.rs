@@ -129,7 +129,7 @@ impl<'a> Machine<'a> {
                 Ok(Value::Bytes(self.ptr_bytes(self.slice_parts(&b).0)))
             }
             ExprKind::AddrOf(inner) => match self.eval_place(a, inner)? {
-                Place::Mem(addr) => Ok(Value::Bytes(self.ptr_bytes(addr))),
+                Place::Mem(addr) | Place::Packed(addr) => Ok(Value::Bytes(self.ptr_bytes(addr))),
                 Place::Bits { .. } => self.trap(e.span, "cannot take the address of a #bits field"),
             },
             ExprKind::AddrOfTemp(inner) => {
@@ -328,6 +328,7 @@ impl<'a> Machine<'a> {
     pub fn read_place(&self, span: Span, p: Place, ty: Ty) -> R<Bytes> {
         match p {
             Place::Mem(addr) => self.load_ty(span, addr, ty),
+            Place::Packed(addr) => self.load(span, addr, self.ti(ty).size, 1),
             Place::Bits { addr, ty: sty, idx } => {
                 let b = self.load_ty(span, addr, sty)?;
                 let r = self.field_bytes(sty, &b, idx as usize);
@@ -342,6 +343,7 @@ impl<'a> Machine<'a> {
                 let align = self.ti(ty).align;
                 self.store(span, addr, data, align)
             }
+            Place::Packed(addr) => self.store(span, addr, data, 1),
             Place::Bits { addr, ty: sty, idx } => {
                 let u = self.bits_struct_ty(sty).unwrap_or(sty);
                 let whole = self.load_ty(span, addr, sty)?;
@@ -393,19 +395,21 @@ impl<'a> Machine<'a> {
             }
             ExprKind::Field { base, index } => {
                 if self.bits_struct_ty(base.ty).is_some() {
-                    let Place::Mem(addr) = self.eval_place(a, base)? else {
+                    let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
                         return self.trap(e.span, "internal error: nested #bits place");
                     };
                     return Ok(Place::Bits { addr, ty: base.ty, idx: *index });
                 }
-                let Place::Mem(addr) = self.eval_place(a, base)? else {
-                    return self.trap(e.span, "internal error: field of a #bits field");
+                let (addr, packed) = match self.eval_place(a, base)? {
+                    Place::Mem(addr) => (addr, self.is_packed(base.ty)),
+                    Place::Packed(addr) => (addr, true),
+                    Place::Bits { .. } => return self.trap(e.span, "internal error: field of a #bits field"),
                 };
                 let (_, off) = self.tr(e.span, self.field_layout(base.ty, *index as usize))?;
-                Ok(Place::Mem(addr + off as u64))
+                Ok(if packed { Place::Packed(addr + off as u64) } else { Place::Mem(addr + off as u64) })
             }
             ExprKind::VariantPayload { base, .. } => {
-                let Place::Mem(addr) = self.eval_place(a, base)? else {
+                let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
                     return self.trap(e.span, "internal error: payload of a #bits field");
                 };
                 Ok(Place::Mem(addr + self.payload_offset(base.ty) as u64))
@@ -414,14 +418,16 @@ impl<'a> Machine<'a> {
                 let esz = self.size_of(e.ty) as u64;
                 match base.ty.kind() {
                     TyKind::Array { len, .. } => {
-                        let Place::Mem(addr) = self.eval_place(a, base)? else {
-                            return self.trap(e.span, "internal error: index of a #bits field");
+                        let (addr, packed) = match self.eval_place(a, base)? {
+                            Place::Mem(addr) => (addr, false),
+                            Place::Packed(addr) => (addr, true),
+                            Place::Bits { .. } => return self.trap(e.span, "internal error: index of a #bits field"),
                         };
                         let i = self.eval_index(a, index)?;
                         if i >= *len {
                             return self.trap(e.span, format!("index {} out of bounds for length {}", i, len));
                         }
-                        Ok(Place::Mem(addr + i * esz))
+                        Ok(if packed { Place::Packed(addr + i * esz) } else { Place::Mem(addr + i * esz) })
                     }
                     TyKind::Slice { .. } => {
                         let sv = self.eval_bytes(a, base)?;
@@ -480,7 +486,7 @@ impl<'a> Machine<'a> {
         };
         let (ptr, len): (u64, Option<u64>) = match base.ty.kind() {
             TyKind::Array { len, .. } => {
-                let Place::Mem(addr) = self.eval_place(a, base)? else {
+                let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
                     return self.trap(e.span, "internal error: slice of a #bits field");
                 };
                 (addr, Some(*len))
@@ -830,7 +836,7 @@ impl<'a> Machine<'a> {
                     }
                     TyKind::Array { len, .. } => {
                         if op == Builtin::GetPtr || is_place_expr(base) {
-                            let Place::Mem(addr) = self.eval_place(a, base)? else {
+                            let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
                                 return self.trap(e.span, "internal error: get on a #bits field");
                             };
                             (addr, *len, None)

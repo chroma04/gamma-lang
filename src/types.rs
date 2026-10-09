@@ -407,6 +407,13 @@ impl Ty {
             TyKind::Fn(sig) | TyKind::FnPtr(sig) => {
                 sig.params.iter().for_each(|t| t.walk(f));
                 sig.ret.walk(f);
+                for e in sig.effects.effects.iter() {
+                    for a in e.args.iter() {
+                        if let GenericArg::Type(t) = a {
+                            t.walk(f);
+                        }
+                    }
+                }
             }
             TyKind::Adt(_, args) => {
                 for a in args.iter() {

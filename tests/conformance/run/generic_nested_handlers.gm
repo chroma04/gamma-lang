@@ -1,0 +1,24 @@
+// Handler literals and `for` loops inside generic functions, on both back ends (§16.1).
+bump_all :: fn(T: type, xs: []T, f: fn(p: ^T)) {
+    for p in each_ptr(xs) { f(p) }
+}
+count_to :: fn(n: u32) \ {Yield(u32)} { for i in 1..=n { yield(i) } }
+total :: fn(T: type, src: fn() \ {Yield(u32)}) -> u32 {
+    t: u32 = 0
+    for x in src() { t += x }
+    return t
+}
+Log :: effect { note: fn(n: u32) }
+tally :: fn(T: type, xs: []const T) -> u32 {
+    count: u32 = 0
+    h :: handler Log { note(n) => { count += n } }
+    with h { for x in xs { note(1) } }
+    return count
+}
+main :: fn() \ {Out} {
+    xs := [3]u32(1, 2, 3)
+    bump_all(u32, xs[..], fn(p: ^u32) { p^ += 10 })
+    print("{} {} {}\n", (xs[0], xs[1], xs[2]))
+    print("{}\n", total(i8, fn() => count_to(4)))
+    print("{}\n", tally(u32, xs[..]))
+}

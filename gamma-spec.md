@@ -585,7 +585,7 @@ Only the first field can be `using`, so there is no ambiguity and no multiple em
 
 Fields are laid out in declaration order. Each field is placed at the next offset that is a multiple of its alignment; the struct's alignment is the maximum field alignment (1 if empty), and its size is rounded up to a multiple of its alignment. This is the C layout algorithm, so a struct whose fields are all C-compatible types (§19.1) is layout-compatible with the corresponding C struct.
 
-- `#packed` places every field at the next byte offset, with alignment 1.
+- `#packed` places every field at the next byte offset, with alignment 1. Fields are read and written directly, but a pointer or slice into a field of a `#packed` struct may not be formed when what it points to has alignment above 1 (`&h.count` with `count: u32` is a compile error; `&h.flags` with `flags: u8` is allowed): such a pointer could be misaligned.
 - `#align(n)` on the struct raises its alignment to `n` (a power of two). On a field, it raises that field's alignment.
 - An empty struct has size 0.
 

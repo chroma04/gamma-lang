@@ -36,6 +36,8 @@ pub struct ConstEntry {
 #[derive(Clone, Copy, Debug)]
 pub enum Place {
     Mem(u64),
+    /// Memory inside a field of a `#packed` struct: accessed with alignment 1.
+    Packed(u64),
     /// Field `idx` of a `#bits` struct of type `ty` stored at `addr`.
     Bits {
         addr: u64,
@@ -181,6 +183,11 @@ impl<'a> Machine<'a> {
             TyKind::Adt(id, _) => prog.adts.get(id),
             _ => None,
         }
+    }
+
+    /// True if `ty` is a `#packed` struct.
+    pub fn is_packed(&self, ty: Ty) -> bool {
+        matches!(self.adt(ty).map(|d| &d.kind), Some(AdtKind::Struct { packed: true, .. }))
     }
 
     pub fn bits_struct_ty(&self, ty: Ty) -> Option<Ty> {
