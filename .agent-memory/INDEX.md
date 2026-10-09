@@ -11,13 +11,14 @@
   fns, qualified consts in patterns, consts with temporaries, @write/@prefetch,
   elementwise arrays, #deprecated/#fast_math/#inline (see architecture/sema-notes.md).
 - Spec amendments are indexed in spec-notes/amendments.md.
-- Not yet: native `gamma test` (subagent working in a worktree; merge its branch when it
-  reports), static handler specialization (D.3, optional). std/fmt handles any int width.
+- Native `gamma test` and §18.3 Debug extras done (M12 file). Docs audit subagent running in a
+  worktree (fixes docs, reports impl bugs) — merge and fix what it reports.
+- Not yet: static handler specialization (D.3, optional).
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params. Trap locations: innermost frame; no backtrace yet.
 
 ## Next steps
-1. Merge native-test work. Then M12 polish: guide review against the current language,
+1. Merge docs-audit work, fix reported bugs. Then M12 polish: guide review against the current language,
    diagnostics pass, README/docs accuracy; maybe std/fmt wide ints.
 2. Keep PR green; CI runs on push. Update the PR description at the end of each chunk.
 

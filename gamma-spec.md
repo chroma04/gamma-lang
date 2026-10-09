@@ -1286,7 +1286,7 @@ Parameters are immutable bindings. Each parameter is a **distinct object** initi
 
 *Implementation note:* an implementation may pass a large argument by reference instead of copying when this is unobservable. See Appendix D.
 
-A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults.
+A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it, and it is not counted among the non-inferable parameters of §16.2.
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
 
@@ -2376,6 +2376,8 @@ destroy      :: fn(T: type, p: ^T) \ {Alloc}
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
 
 `free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op.
+
+Each of these functions also has a final parameter `site: SourceLocation = @caller_location()` (bound only by name, §11.3). Debug builds use the sites to report where a block freed through the wrong allocator was allocated and freed (§18.3).
 
 ### 21.3 Builtin methods
 

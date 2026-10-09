@@ -194,6 +194,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut stmts = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
+        // Positional arguments never bind a `@caller_location()` parameter.
+        let positional_max = params.iter().filter(|p| !p.is_site()).count();
         // After a spread fails, missing arguments are not reported again.
         let mut spread_failed = false;
         for arg in args {
@@ -202,8 +204,8 @@ impl<'a, 's> FnCx<'a, 's> {
                     if seen_named {
                         self.error(arg.span, "positional arguments must come before named arguments");
                     }
-                    if next_positional >= params.len() {
-                        self.error(arg.span, format!("too many arguments: the {} takes {}", what, params.len()));
+                    if next_positional >= positional_max {
+                        self.error(arg.span, format!("too many arguments: the {} takes {}", what, positional_max));
                         let _ = self.expr(e, None);
                         continue;
                     }
@@ -247,10 +249,10 @@ impl<'a, 's> FnCx<'a, 's> {
                                     spread_failed = true;
                                     break;
                                 }
-                                if next_positional >= params.len() {
+                                if next_positional >= positional_max {
                                     self.error(
                                         e.span,
-                                        format!("too many arguments: the {} takes {}", what, params.len()),
+                                        format!("too many arguments: the {} takes {}", what, positional_max),
                                     );
                                     spread_failed = true;
                                     break;

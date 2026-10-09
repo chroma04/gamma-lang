@@ -1549,6 +1549,88 @@ static void gm_heap_release(void *p) {
     free(raw);
 }
 
+/* ---- allocation tags (Debug builds, §18.3) ---------------------------------------------- */
+
+typedef struct { void *p, *owner, *vt; char *site; } gm_atag;
+static gm_atag *gm_atags;      /* open addressing; p == NULL is empty, p == 1 a deleted entry */
+static size_t gm_atag_cap, gm_atag_used;
+
+static size_t gm_atag_slot(void *p) {
+    uintptr_t h = (uintptr_t)p * (uintptr_t)0x9E3779B97F4A7C15ull;
+    return (size_t)(h >> 7) & (gm_atag_cap - 1);
+}
+
+static char *gm_site_str(const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    char *s = (char *)malloc(flen + 32);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, file, flen);
+    snprintf(s + flen, 32, ":%u:%u", (unsigned)line, (unsigned)col);
+    return s;
+}
+
+static void gm_atag_grow(void) {
+    gm_atag *old = gm_atags;
+    size_t old_cap = gm_atag_cap;
+    gm_atag_cap = old_cap ? old_cap * 2 : 256;
+    gm_atags = (gm_atag *)calloc(gm_atag_cap, sizeof(gm_atag));
+    if (gm_atags == NULL) gm_trap("out of memory", NULL, 0, 0);
+    gm_atag_used = 0;
+    for (size_t i = 0; i < old_cap; i++) {
+        if ((uintptr_t)old[i].p > 1) {
+            size_t j = gm_atag_slot(old[i].p);
+            while (gm_atags[j].p != NULL) j = (j + 1) & (gm_atag_cap - 1);
+            gm_atags[j] = old[i];
+            gm_atag_used++;
+        }
+    }
+    free(old);
+}
+
+/* The slot holding p, or NULL. */
+static gm_atag *gm_atag_find(void *p) {
+    if (gm_atag_cap == 0) return NULL;
+    for (size_t j = gm_atag_slot(p);; j = (j + 1) & (gm_atag_cap - 1)) {
+        if (gm_atags[j].p == NULL) return NULL;
+        if (gm_atags[j].p == p) return &gm_atags[j];
+    }
+}
+
+static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    char *site = gm_site_str(file, flen, line, col);
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_atag *t = gm_atag_find(p);
+    if (t == NULL) {
+        if (2 * (gm_atag_used + 1) > gm_atag_cap) gm_atag_grow();
+        size_t j = gm_atag_slot(p);
+        while ((uintptr_t)gm_atags[j].p > 1) j = (j + 1) & (gm_atag_cap - 1);
+        t = &gm_atags[j];
+        if (t->p == NULL) gm_atag_used++;
+    } else {
+        free(t->site);
+    }
+    *t = (gm_atag){p, owner, vt, site};
+    pthread_mutex_unlock(&gm_rt_lock);
+}
+
+static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_atag *t = gm_atag_find(p);
+    if (t == NULL) {
+        pthread_mutex_unlock(&gm_rt_lock);
+        return;
+    }
+    if (t->owner != owner || t->vt != vt) {
+        char *at = gm_site_str(file, flen, line, col);
+        char msg[1024];
+        snprintf(msg, sizeof msg, "memory allocated at %s is freed at %s through a different allocator", t->site, at);
+        pthread_mutex_unlock(&gm_rt_lock);
+        gm_trap(msg, NULL, 0, 0);
+    }
+    free(t->site);
+    *t = (gm_atag){(void *)1, NULL, NULL, NULL};
+    pthread_mutex_unlock(&gm_rt_lock);
+}
+
 static void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
     (void)align;
     if (gm_debug == 0) {

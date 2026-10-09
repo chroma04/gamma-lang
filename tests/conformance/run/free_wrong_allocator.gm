@@ -1,0 +1,15 @@
+//! exit: 134
+// Debug builds trap when memory is freed through another allocator than the one that
+// allocated it, reporting both sites (§18.3).
+fixed_buffer :: import "std/fixed_buffer"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    xs := try make(u8, 4)
+    print("allocated\n")
+    store: [16]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        free(xs)
+    }
+    print("not reached\n")
+}

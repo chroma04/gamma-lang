@@ -858,6 +858,24 @@ impl<'a, 's> FnCx<'a, 's> {
                 usize_const(off)
             }
             // Compiler-internal heap primitives behind the core library's heap allocator.
+            "alloc_tag" | "alloc_check" if self.sema.modules[self.module.0 as usize].is_prelude => {
+                let raw = Ty::intern(TyKind::Rawptr);
+                let tys =
+                    [Ty::many_ptr(false, Ty::u8()), raw, raw, Ty::string(), Ty::int(false, 32), Ty::int(false, 32)];
+                let mut vals = vec![];
+                for (i, t) in tys.iter().enumerate() {
+                    match args.get(i).map(|a| &a.kind) {
+                        Some(ast::ArgKind::Positional(e)) => {
+                            let v = self.expr(e, Some(*t));
+                            vals.push(self.coerce(v, *t));
+                        }
+                        _ => return error_expr(span),
+                    }
+                }
+                let op =
+                    if name.name.as_str() == "alloc_tag" { tir::Builtin::AllocTag } else { tir::Builtin::AllocCheck };
+                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vals }, span)
+            }
             "heap_alloc" | "heap_free" if self.sema.modules[self.module.0 as usize].is_prelude => {
                 let mut vals = vec![];
                 let is_alloc = name.name.as_str() == "heap_alloc";

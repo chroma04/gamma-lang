@@ -145,8 +145,8 @@ Checked mode checks *local facts*: arithmetic, bounds, unwraps, alignment of cas
 Debug builds add the detection that is expensive:
 
 - storage from `---`, freed allocations and dead stack frames are filled with recognizable patterns (`0xAA` for uninitialized, `0xDD` for freed), so stale data stands out;
-- every allocation is tagged with its allocator, and freeing through a different one traps, reporting both call sites;
-- fiber stacks get guard pages;
+- every allocation made with `new` or `make` is tagged with its allocator, and freeing it with `free` or `destroy` through a different one traps, reporting both call sites;
+- every call checks that the stack (a fiber's or a thread's) has room, so running out of it traps instead of overwriting memory;
 - tests use the leak-checking allocator.
 
 A sensible workflow is to develop and test in Debug, ship Checked unless you have measured a cost, and use Fast only for code where you have convinced yourself (and tested under Debug) that no check can fire.

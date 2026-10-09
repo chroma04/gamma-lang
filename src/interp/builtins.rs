@@ -318,6 +318,8 @@ impl<'a> Machine<'a> {
             | Builtin::Last
             | Builtin::RangeLen
             | Builtin::HeapAlloc
+            | Builtin::AllocTag
+            | Builtin::AllocCheck
             | Builtin::Fiber
             | Builtin::Sys(_)
             | Builtin::HeapFree

@@ -87,6 +87,8 @@ pub struct Machine<'a> {
     /// (`u64::MAX` off fibers).
     pub fiber_stack: u64,
     frame_costs: HashMap<FnId, u64>,
+    /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
+    pub alloc_tags: HashMap<u64, (u64, u64, String)>,
     /// Open files and directories of the file-system services.
     pub sys: super::sys::SysState,
     /// The program's threads (§19.6).
@@ -131,6 +133,7 @@ impl<'a> Machine<'a> {
             fib: Default::default(),
             fiber_stack: u64::MAX,
             frame_costs: HashMap::new(),
+            alloc_tags: HashMap::new(),
             sys: Default::default(),
             threads: Default::default(),
             code_end,

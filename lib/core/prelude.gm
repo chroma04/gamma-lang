@@ -423,52 +423,64 @@ empty_slice :: fn(T: type) -> []T {
     return p[0..0]
 }
 
+// Debug builds record which allocator made each block from `new` and `make`, and where,
+// so that freeing it through another allocator traps reporting both sites (§18.3).
+tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
+    @alloc_tag(raw, a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+}
+
 /// A new object holding `init`.
-pub new :: fn(T: type, init: T) -> AllocError!^T \ {Alloc} {
+pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> AllocError!^T \ {Alloc} {
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T), @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
     p := raw.cast(^T)
     p^ = init
     return p
 }
 
 /// `n` objects of plain data, uninitialized.
-pub make :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T) {
+pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
     if n is 0 { return empty_slice(T) }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
     return raw.cast([^]T)[0..n]
 }
 
 /// `n` objects of plain data, uninitialized, at an address that is a multiple of
 /// `align` (a power of two; at least the type's own alignment is used).
-pub make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T) {
+pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
     if n is 0 { return empty_slice(T) }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, align.max(@align_of(T))) else return !.OutOfMemory
+    tag(raw, a, site)
     return raw.cast([^]T)[0..n]
 }
 
 /// `n` copies of `x`.
-pub make_fill :: fn(T: type, n: usize, x: T) -> AllocError![]T \ {Alloc} {
+pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
     if n is 0 { return empty_slice(T) }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
     s := raw.cast([^]T)[0..n]
     for i in 0..n { s[i] = x }
     return s
 }
 
 /// Releases a slice obtained from `make` or `make_fill` under the current allocator.
-pub free :: fn(T: type, s: []T) \ {Alloc} {
+pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
     a := current()
+    @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, @align_of(T))
 }
 
 /// Releases an object obtained from `new` under the current allocator.
-pub destroy :: fn(T: type, p: ^T) \ {Alloc} {
+pub destroy :: fn(T: type, p: ^T, site: SourceLocation = @caller_location()) \ {Alloc} {
     a := current()
+    @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
 }
 

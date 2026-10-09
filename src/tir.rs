@@ -1123,6 +1123,14 @@ pub enum Builtin {
     HeapAlloc,
     /// Frees a heap block `(p, size, align)` obtained from `HeapAlloc`.
     HeapFree,
+    /// `@alloc_tag(p, owner, vt, file, line, column)`: in Debug builds, records that the
+    /// block at `p` was allocated by the allocator `(owner, vt)` at that source location
+    /// (§18.3). Used only by the core library's `new` and `make`.
+    AllocTag,
+    /// `@alloc_check(p, owner, vt, file, line, column)`: in Debug builds, traps if the block
+    /// at `p` was allocated by another allocator than the one freeing it, reporting both
+    /// sites, and forgets the block (§18.3).
+    AllocCheck,
     /// `@asm(template, outputs, inputs, clobbers)` (§19.5). The arguments are the
     /// template (a `Str`), then a constraint (`Str`) and a pointer for each output,
     /// then a constraint and a value for each input, then each clobber (`Str`).

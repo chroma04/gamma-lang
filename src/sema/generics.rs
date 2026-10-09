@@ -577,7 +577,12 @@ impl<'a, 's> FnCx<'a, 's> {
             Some(_) => true,
         };
         let non_inferable: Vec<usize> = (0..sig.params.len())
-            .filter(|&i| !inferable(i) && !named.contains(&sig.params[i].name) && Some(i) != recv_index)
+            .filter(|&i| {
+                !inferable(i)
+                    && !named.contains(&sig.params[i].name)
+                    && Some(i) != recv_index
+                    && !sig.params[i].is_site()
+            })
             .collect();
         let r = non_inferable.iter().filter(|&&i| sig.params[i].default.is_none()).count();
         let n = non_inferable.len();
@@ -586,7 +591,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let targets: Vec<usize> = if omit {
             non_inferable.clone()
         } else {
-            (0..sig.params.len()).filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index).collect()
+            (0..sig.params.len())
+                .filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index && !sig.params[i].is_site())
+                .collect()
         };
         if positional.len() > targets.len() {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));

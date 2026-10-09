@@ -115,6 +115,13 @@ pub struct ParamInfo {
     pub generic: Option<crate::types::ParamId>,
 }
 
+impl ParamInfo {
+    /// A parameter defaulting to `@caller_location()`: it is bound only by name (§11.3).
+    pub fn is_site(&self) -> bool {
+        matches!(self.default.as_deref(), Some(ast::Expr { kind: ast::ExprKind::Intrinsic { name, .. }, .. }) if name.name.as_str() == "caller_location")
+    }
+}
+
 /// An effect declaration (§12.1).
 pub struct EffectInfo {
     pub name: Symbol,

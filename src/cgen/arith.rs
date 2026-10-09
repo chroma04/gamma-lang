@@ -387,6 +387,22 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let p = self.tmp(Ty::intern(TyKind::Rawptr), &format!("gm_heap_alloc({}, {})", s, a));
                 return Ok(self.tmp(t, &p));
             }
+            Builtin::AllocTag | Builtin::AllocCheck => {
+                if !self.g.opts.debug {
+                    return Ok(self.unit());
+                }
+                let mut v = vec![];
+                for x in &args[..3] {
+                    v.push(self.expr(x)?);
+                }
+                let f = self.expr(&args[3])?;
+                let fa = self.addr_of(args[3].ty, &f);
+                let (fp, fl) = (self.slice_ptr(&fa), self.slice_len(&fa));
+                let (line, col) = (self.expr(&args[4])?, self.expr(&args[5])?);
+                let name = if op == Builtin::AllocTag { "gm_alloc_tag" } else { "gm_alloc_check" };
+                self.line(&format!("{name}({}, {}, {}, {fp}, {fl}, {line}, {col});", v[0], v[1], v[2]));
+                return Ok(self.unit());
+            }
             Builtin::HeapFree => {
                 let p = self.expr(&args[0])?;
                 let s = self.expr(&args[1])?;

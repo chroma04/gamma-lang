@@ -696,6 +696,31 @@ impl<'a> Machine<'a> {
                 }
                 Ok(Value::Bytes(self.make_some(e.ty, &self.ptr_bytes(addr))))
             }
+            Builtin::AllocTag | Builtin::AllocCheck => {
+                let mut v = Vec::with_capacity(args.len());
+                for x in args {
+                    v.push(self.eval_bytes(a, x)?);
+                }
+                if self.mode != super::Mode::Debug {
+                    return Ok(Value::unit());
+                }
+                let (p, owner, vt) = (self.ptr_of(&v[0]), self.ptr_of(&v[1]), self.ptr_of(&v[2]));
+                let file = String::from_utf8_lossy(&self.read_str(e.span, &v[3])?).into_owned();
+                let line = self.int_of(args[4].ty, &v[4]).to_u64_sat();
+                let col = self.int_of(args[5].ty, &v[5]).to_u64_sat();
+                let site = format!("{}:{}:{}", file, line, col);
+                if op == Builtin::AllocTag {
+                    self.alloc_tags.insert(p, (owner, vt, site));
+                } else if let Some((o, t, from)) = self.alloc_tags.remove(&p)
+                    && (o, t) != (owner, vt)
+                {
+                    return self.trap(
+                        e.span,
+                        format!("memory allocated at {} is freed at {} through a different allocator", from, site),
+                    );
+                }
+                Ok(Value::unit())
+            }
             Builtin::HeapFree => {
                 let pb = self.eval_bytes(a, &args[0])?;
                 let sb = self.eval_bytes(a, &args[1])?;
