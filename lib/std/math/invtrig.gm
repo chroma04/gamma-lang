@@ -1,0 +1,271 @@
+// Inverse trigonometric functions: asin, acos, atan, atan2 (fdlibm / FreeBSD msun).
+
+PIO2_HI :: 1.57079632679489655800e+00
+PIO2_LO :: 6.12323399573676603587e-17
+PIO4_HI :: 7.85398163397448278999e-01
+PI_F64 :: 3.14159265358979311600e+00
+PI_LO :: 1.2246467991473531772e-16
+
+// Rational approximation R(z) = z * P(z) / Q(z) of (asin(sqrt(z)) - sqrt(z)) / sqrt(z)**3.
+ASIN_PS0 :: 1.66666666666666657415e-01
+ASIN_PS1 :: -3.25565818622400915405e-01
+ASIN_PS2 :: 2.01212532134862925881e-01
+ASIN_PS3 :: -4.00555345006794114027e-02
+ASIN_PS4 :: 7.91534994289814532176e-04
+ASIN_PS5 :: 3.47933107596021167570e-05
+ASIN_QS1 :: -2.40339491173441421878e+00
+ASIN_QS2 :: 2.02094576023350569471e+00
+ASIN_QS3 :: -6.88283971605453293030e-01
+ASIN_QS4 :: 7.70381505559019352791e-02
+
+// z * P(z) / Q(z).
+asin_ratio :: fn(z: f64) -> f64 {
+    p := z * (ASIN_PS0 + z * (ASIN_PS1 + z * (ASIN_PS2 + z * (ASIN_PS3 + z * (ASIN_PS4 + z * ASIN_PS5)))))
+    q := 1.0 + z * (ASIN_QS1 + z * (ASIN_QS2 + z * (ASIN_QS3 + z * ASIN_QS4)))
+    return p / q
+}
+
+/// The arc sine of `x`, in radians within [-pi/2, pi/2]. It is NaN for `|x| > 1`.
+pub asin :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    ix := hx & 0x7fffffff
+    if ix >= 0x3ff00000 {
+        if (ix - 0x3ff00000) is 0 and low_word(x) is 0 {
+            // asin(+-1) = +-pi/2
+            return x * PIO2_HI + x * PIO2_LO
+        }
+        return nan
+    }
+    if ix < 0x3fe00000 {
+        // |x| < 0.5
+        if ix < 0x3e500000 { return x }
+        t := x * x
+        w := asin_ratio(t)
+        return x + x * w
+    }
+    // 1 > |x| >= 0.5
+    w := 1.0 - abs(x)
+    t := w * 0.5
+    r := asin_ratio(t)
+    s := t.sqrt()
+    res := 0.0
+    if ix >= 0x3FEF3333 {
+        // |x| > 0.975
+        res = PIO2_HI - (2.0 * (s + s * r) - PIO2_LO)
+    } else {
+        sw := clear_low(s)
+        c := (t - sw * sw) / (s + sw)
+        p := 2.0 * s * r - (PIO2_LO - 2.0 * c)
+        q := PIO4_HI - 2.0 * sw
+        res = PIO4_HI - (p - q)
+    }
+    return if hx > 0 { res } else { -res }
+}
+
+/// The arc cosine of `x`, in radians within [0, pi]. It is NaN for `|x| > 1`.
+pub acos :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    ix := hx & 0x7fffffff
+    if ix >= 0x3ff00000 {
+        if (ix - 0x3ff00000) is 0 and low_word(x) is 0 {
+            if hx > 0 { return 0.0 }
+            return PI_F64 + 2.0 * PIO2_LO
+        }
+        return nan
+    }
+    if ix < 0x3fe00000 {
+        // |x| < 0.5
+        if ix <= 0x3c600000 { return PIO2_HI + PIO2_LO }
+        z := x * x
+        r := asin_ratio(z)
+        return PIO2_HI - (x - (PIO2_LO - x * r))
+    }
+    if hx < 0 {
+        // x < -0.5
+        z := (1.0 + x) * 0.5
+        r := asin_ratio(z)
+        s := z.sqrt()
+        w := r * s - PIO2_LO
+        return PI_F64 - 2.0 * (s + w)
+    }
+    // x > 0.5
+    z := (1.0 - x) * 0.5
+    s := z.sqrt()
+    df := clear_low(s)
+    c := (z - df * df) / (s + df)
+    r := asin_ratio(z)
+    w := r * s + c
+    return 2.0 * (df + w)
+}
+
+ATAN_HI: [4]f64 : [4]f64(
+    4.63647609000806093515e-01,
+    7.85398163397448278999e-01,
+    9.82793723247329054082e-01,
+    1.57079632679489655800e+00
+)
+ATAN_LO: [4]f64 : [4]f64(
+    2.26987774529616870924e-17,
+    3.06161699786838301793e-17,
+    1.39033110312309984516e-17,
+    6.12323399573676603587e-17
+)
+ATAN_T0 :: 3.33333333333329318027e-01
+ATAN_T1 :: -1.99999999998764832476e-01
+ATAN_T2 :: 1.42857142725034663711e-01
+ATAN_T3 :: -1.11111104054623557880e-01
+ATAN_T4 :: 9.09088713343650656196e-02
+ATAN_T5 :: -7.69187620504482999495e-02
+ATAN_T6 :: 6.66107313738753120669e-02
+ATAN_T7 :: -5.83357013379057348645e-02
+ATAN_T8 :: 4.97687799461593236017e-02
+ATAN_T9 :: -3.65315727442169155270e-02
+ATAN_T10 :: 1.62858201153657823623e-02
+
+
+// atan(ax + tail) for ax >= 0 (or +inf) and a tiny correction `tail` (at most
+// about one ulp of ax), as an unevaluated sum (head, tail) whose head is the
+// rounded value. The extra tail lets `atan2` account for the rounding error of
+// the quotient y/x, and the unrounded result lets it add multiples of pi
+// without a second rounding.
+atan_hl :: fn(ax: f64, tail: f64) -> (f64, f64) {
+    ix := high_word(ax)
+    if ix >= 0x44100000 {
+        // ax >= 2**66, or infinite.
+        return (ATAN_HI[3], ATAN_LO[3])
+    }
+    // d/dx atan = 1/(1 + x^2): the correction contributed by `tail`.
+    corr := tail / (1.0 + ax * ax)
+    x := ax
+    id: i32 = -1
+    if ix < 0x3fdc0000 {
+        // ax < 0.4375
+        if ix < 0x3e400000 { return fast_two_sum(ax, corr) }
+    } else if ix < 0x3ff30000 {
+        // ax < 1.1875
+        if ix < 0x3fe60000 {
+            // 7/16 <= ax < 11/16
+            id = 0
+            x = (2.0 * ax - 1.0) / (2.0 + ax)
+        } else {
+            // 11/16 <= ax < 19/16
+            id = 1
+            x = (ax - 1.0) / (ax + 1.0)
+        }
+    } else if ix < 0x40038000 {
+        // ax < 2.4375
+        id = 2
+        x = (ax - 1.5) / (1.0 + 1.5 * ax)
+    } else {
+        // 2.4375 <= ax < 2**66
+        id = 3
+        x = -1.0 / ax
+    }
+    z := x * x
+    w := z * z
+    // Split the sum of aT[i] * z**(i+1) into odd and even terms.
+    s1 := z * (ATAN_T0 + w * (ATAN_T2 + w * (ATAN_T4 + w * (ATAN_T6 + w * (ATAN_T8 + w * ATAN_T10)))))
+    s2 := w * (ATAN_T1 + w * (ATAN_T3 + w * (ATAN_T5 + w * (ATAN_T7 + w * ATAN_T9))))
+    if id < 0 { return fast_two_sum(x, corr - x * (s1 + s2)) }
+    iu := id.trunc(usize)
+    inner := (x * (s1 + s2) - ATAN_LO[iu]) - x
+    return fast_two_sum(ATAN_HI[iu], corr - inner)
+}
+
+/// The arc tangent of `x`, in radians within [-pi/2, pi/2]. `atan(+-inf)` is
+/// +-pi/2 and the sign of zero is preserved.
+pub atan :: fn(x: f64) -> f64 {
+    if x.is_nan() { return x + x }
+    r := atan_hl(abs(x), 0.0)
+    return copysign(r.0, x)
+}
+
+/// The angle of the point (`x`, `y`) from the positive x axis, in radians
+/// within [-pi, pi]; the signs of both zeros are taken into account, so
+/// `atan2(+0, -1)` is pi and `atan2(-0, -1)` is -pi. Note the order: `y` first.
+pub atan2 :: fn(y: f64, x: f64) -> f64 {
+    hx := high_word(x)
+    lx := low_word(x)
+    ix := hx & 0x7fffffff
+    hy := high_word(y)
+    ly := low_word(y)
+    iy := hy & 0x7fffffff
+    if x.is_nan() or y.is_nan() { return x + y }
+    if hx is 0x3ff00000 and lx is 0 { return atan(y) }
+    // m = 2*sign(x) + sign(y)
+    m := ((hy >> 31) & 1) | ((hx >> 30) & 2)
+
+    // y is zero.
+    if iy is 0 and ly is 0 {
+        if m < 2 { return y }
+        if m is 2 { return PI_F64 }
+        return -PI_F64
+    }
+    // x is zero.
+    if ix is 0 and lx is 0 {
+        return if hy < 0 { -PIO2_HI } else { PIO2_HI }
+    }
+    // x is infinite.
+    if ix is 0x7ff00000 {
+        if iy is 0x7ff00000 {
+            return match m {
+                0 => 0.25 * PI_F64
+                1 => -0.25 * PI_F64
+                2 => 0.75 * PI_F64
+                _ => -0.75 * PI_F64
+            }
+        }
+        return match m {
+            0 => 0.0
+            1 => NEG_ZERO
+            2 => PI_F64
+            _ => -PI_F64
+        }
+    }
+    // y is infinite.
+    if iy is 0x7ff00000 {
+        return if hy < 0 { -PIO2_HI } else { PIO2_HI }
+    }
+    // Compute atan(|y/x|) as a head and a tail.
+    ay := abs(y)
+    ax := abs(x)
+    k := (iy - ix) >> 20
+    z := (0.0, 0.0)
+    mm := m
+    if k > 60 {
+        // |y/x| > 2**60
+        z = (PIO2_HI + 0.5 * PI_LO, 0.0)
+        mm = m & 1
+    } else if hx < 0 and k < -60 {
+        // 0 > |y|/x > -2**-60
+        z = (0.0, 0.0)
+    } else {
+        q0 := ay / ax
+        if q0 < 0x1.0p-900 {
+            // atan(q) = q to full precision, and q may be subnormal, where the
+            // exact product below would not be exact.
+            z = (q0, 0.0)
+        } else {
+            // q = ay/ax rounded; q + delta is the quotient to double precision,
+            // where delta = (ay - q*ax)/ax is computed from the exact product
+            // after scaling ax into [1, 2).
+            sc := from_words(0x7fe00000 - (ix & 0x7ff00000), 0)
+            sx := ax * sc
+            sy := ay * sc
+            q := sy / sx
+            p := two_prod(q, sx)
+            delta := ((sy - p.0) - p.1) / sx
+            z = atan_hl(q, delta)
+        }
+    }
+    return match mm {
+        0 => z.0
+        1 => -z.0
+        _ => {
+            // pi - z, or z - pi, with a single rounding.
+            s := two_sum(PI_F64, -z.0)
+            r := s.0 + (s.1 + (PI_LO - z.1))
+            if mm is 2 { r } else { -r }
+        }
+    }
+}

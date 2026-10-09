@@ -1,0 +1,160 @@
+// std/math: elementary functions on `f64`, written entirely in Gamma.
+//
+// Nothing here calls foreign code or uses effects, so every function gives
+// bit-identical results in the interpreter, in compiled code and during
+// compile-time evaluation. The algorithms are the classic fdlibm ones (as
+// maintained in FreeBSD's msun): argument reduction into a small interval,
+// a minimax polynomial, and a careful reconstruction. All functions follow
+// C99 Annex F for special values: a domain error gives NaN, an overflow gives
+// an infinity, and the sign of zero is preserved where the result is a zero.
+// Except for `pow`, results are within 1 ulp of the exact value; `pow` is
+// within 2 ulp (in practice below 0.85 ulp).
+//
+// `sin`, `cos` and `tan` reduce their argument modulo pi/2 exactly (with
+// Payne-Hanek style multi-precision arithmetic for large arguments), so they
+// are accurate for every finite argument.
+
+SIGN_MASK: u64 : 0x8000_0000_0000_0000
+ABS_MASK: u64 : 0x7fff_ffff_ffff_ffff
+FRAC_MASK: u64 : 0x000f_ffff_ffff_ffff
+HIDDEN_BIT: u64 : 0x0010_0000_0000_0000
+
+// ---------------------------------------------------------------------------
+// Constants
+
+/// Positive infinity.
+pub inf: f64 : (0x7ff0_0000_0000_0000u64).bits(f64)
+
+/// A quiet NaN.
+pub nan: f64 : (0x7ff8_0000_0000_0000u64).bits(f64)
+
+/// The ratio of a circle's circumference to its diameter.
+pub pi: f64 : 3.14159265358979323846264338327950288
+
+/// Twice `pi`, the number of radians in a full turn.
+pub tau: f64 : 6.28318530717958647692528676655900577
+
+/// Euler's number, the base of the natural logarithm.
+pub e: f64 : 2.71828182845904523536028747135266250
+
+/// The natural logarithm of 2.
+pub ln2: f64 : 0.693147180559945309417232121458176568
+
+/// The natural logarithm of 10.
+pub ln10: f64 : 2.30258509299404568401799145468436421
+
+/// The square root of 2.
+pub sqrt2: f64 : 1.41421356237309504880168872420969808
+
+// ---------------------------------------------------------------------------
+// Sign, rounding and remainder
+
+/// The absolute value of `x`; the sign bit is cleared even for NaN and -0.
+pub abs :: fn(x: f64) -> f64 => (x.bits(u64) & ABS_MASK).bits(f64)
+
+/// A value with the magnitude of `x` and the sign of `y` (including the sign
+/// of zeros and NaNs).
+pub copysign :: fn(x: f64, y: f64) -> f64 =>
+    ((x.bits(u64) & ABS_MASK) | (y.bits(u64) & SIGN_MASK)).bits(f64)
+
+/// The square root of `x`, correctly rounded. It is NaN for negative `x`
+/// (except -0, whose root is -0).
+pub sqrt :: fn(x: f64) -> f64 => x.sqrt()
+
+/// `x` rounded toward zero to an integral value. The result keeps the sign of
+/// `x`, so `trunc(-0.5)` is -0. Infinities, NaNs and zeros are returned as is.
+pub trunc :: fn(x: f64) -> f64 {
+    b := x.bits(u64)
+    e := ((b >> 52) & 0x7ff).trunc(i32) - 1023
+    if e >= 52 { return x }
+    if e < 0 { return (b & SIGN_MASK).bits(f64) }
+    mask: u64 = FRAC_MASK >> e.trunc(u32)
+    return (b & ~mask).bits(f64)
+}
+
+/// The largest integral value not greater than `x`.
+pub floor :: fn(x: f64) -> f64 {
+    t := trunc(x)
+    if x < 0.0 and t is not x { return t - 1.0 }
+    return t
+}
+
+/// The smallest integral value not less than `x`.
+pub ceil :: fn(x: f64) -> f64 {
+    t := trunc(x)
+    if x > 0.0 and t is not x { return t + 1.0 }
+    return t
+}
+
+/// `x` rounded to the nearest integral value, halfway cases away from zero.
+pub round :: fn(x: f64) -> f64 {
+    t := trunc(x)
+    if abs(x - t) >= 0.5 { return t + copysign(1.0, x) }
+    return t
+}
+
+/// The remainder of `x / y` with the sign of `x` and the magnitude below that
+/// of `y`, computed exactly: `x - n * y` where `n` is `x / y` truncated toward
+/// zero. It is NaN if `x` is infinite or `y` is zero, and `x` if `y` is
+/// infinite.
+pub fmod :: fn(x: f64, y: f64) -> f64 {
+    ux := x.bits(u64)
+    uy := y.bits(u64)
+    ex := ((ux >> 52) & 0x7ff).trunc(i32)
+    ey := ((uy >> 52) & 0x7ff).trunc(i32)
+    sx := ux & SIGN_MASK
+    if (uy <<% 1) is 0 or y.is_nan() or ex is 0x7ff { return nan }
+    if (ux <<% 1) <= (uy <<% 1) {
+        if (ux <<% 1) is (uy <<% 1) { return sx.bits(f64) }
+        return x
+    }
+    // Significands as 53-bit integers with their exponents.
+    mx := ux & FRAC_MASK
+    if ex is 0 {
+        ex = 1
+        while (mx & HIDDEN_BIT) is 0 {
+            mx <<= 1
+            ex -= 1
+        }
+    } else {
+        mx |= HIDDEN_BIT
+    }
+    my := uy & FRAC_MASK
+    if ey is 0 {
+        ey = 1
+        while (my & HIDDEN_BIT) is 0 {
+            my <<= 1
+            ey -= 1
+        }
+    } else {
+        my |= HIDDEN_BIT
+    }
+    // Long division, one bit at a time.
+    while ex > ey {
+        if mx >= my {
+            mx -= my
+            if mx is 0 { return sx.bits(f64) }
+        }
+        mx <<= 1
+        ex -= 1
+    }
+    if mx >= my {
+        mx -= my
+        if mx is 0 { return sx.bits(f64) }
+    }
+    while (mx & HIDDEN_BIT) is 0 {
+        mx <<= 1
+        ex -= 1
+    }
+    r: u64 = 0
+    if ex > 0 {
+        r = (mx - HIDDEN_BIT) | (u64(ex.trunc(u32)) << 52)
+    } else {
+        r = mx >> (1 - ex).trunc(u32)
+    }
+    return (r | sx).bits(f64)
+}
+
+/// The remainder of `x / y` with the sign of `x`; the same as `fmod`, and the
+/// float counterpart of the integer operator `%`.
+pub rem :: fn(x: f64, y: f64) -> f64 => fmod(x, y)

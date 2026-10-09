@@ -1,0 +1,451 @@
+// Trigonometric functions: sin, cos, tan (fdlibm / FreeBSD msun).
+//
+// The argument is reduced to r = x - n*pi/2 with |r| <= pi/4 and returned as a
+// head and tail pair (y0, y1), then a kernel polynomial is evaluated. For
+// |x| below about 2**20 * pi/2 the reduction uses Cody-Waite steps with pi/2
+// split into up to three 33-bit pieces (about 150 bits). Larger arguments use
+// the multi-precision Payne-Hanek-like algorithm of `kernel_rem_pio2`, which
+// multiplies the 53-bit significand with a 1200-bit table of 2/pi, so the
+// results are accurate for every finite argument.
+
+SIN_S1 :: -1.66666666666666324348e-01
+SIN_S2 :: 8.33333333332248946124e-03
+SIN_S3 :: -1.98412698298579493134e-04
+SIN_S4 :: 2.75573137070700676789e-06
+SIN_S5 :: -2.50507602534068634195e-08
+SIN_S6 :: 1.58969099521155010221e-10
+
+COS_C1 :: 4.16666666666666019037e-02
+COS_C2 :: -1.38888888888741095749e-03
+COS_C3 :: 2.48015872894767294178e-05
+COS_C4 :: -2.75573143513906633035e-07
+COS_C5 :: 2.08757232129817482790e-09
+COS_C6 :: -1.13596475577881948265e-11
+
+TAN_T0 :: 3.33333333333334091986e-01
+TAN_T1 :: 1.33333333333201242699e-01
+TAN_T2 :: 5.39682539762260521377e-02
+TAN_T3 :: 2.18694882948595424599e-02
+TAN_T4 :: 8.86323982359930005737e-03
+TAN_T5 :: 3.59207910759131235356e-03
+TAN_T6 :: 1.45620945432529025516e-03
+TAN_T7 :: 5.88041240820264096874e-04
+TAN_T8 :: 2.46463134818469906812e-04
+TAN_T9 :: 7.81794442939557092300e-05
+TAN_T10 :: 7.14072491382608190305e-05
+TAN_T11 :: -1.85586374855275456654e-05
+TAN_T12 :: 2.59073051863633712884e-05
+PIO4 :: 7.85398163397448278999e-01
+PIO4LO :: 3.06161699786838301793e-17
+
+INVPIO2 :: 6.36619772367581382433e-01
+PIO2_1 :: 1.57079632673412561417e+00
+PIO2_1T :: 6.07710050650619224932e-11
+PIO2_2 :: 6.07710050630396597660e-11
+PIO2_2T :: 2.02226624879595063154e-21
+PIO2_3 :: 2.02226624871116645580e-21
+PIO2_3T :: 8.47842766036889956997e-32
+TWO24 :: 1.67772160000000000000e+07
+TWON24 :: 5.96046447753906250000e-08
+
+// sin(x + y) for |x| <= pi/4 (y is the tail of x; iy is 0 when y is zero).
+k_sin :: fn(x: f64, y: f64, iy: i32) -> f64 {
+    z := x * x
+    w := z * z
+    r := SIN_S2 + z * (SIN_S3 + z * SIN_S4) + z * w * (SIN_S5 + z * SIN_S6)
+    v := z * x
+    if iy is 0 { return x + v * (SIN_S1 + z * r) }
+    return x - ((z * (0.5 * y - v * r) - y) - v * SIN_S1)
+}
+
+// cos(x + y) for |x| <= pi/4.
+k_cos :: fn(x: f64, y: f64) -> f64 {
+    z := x * x
+    w := z * z
+    r := z * (COS_C1 + z * (COS_C2 + z * COS_C3)) + w * w * (COS_C4 + z * (COS_C5 + z * COS_C6))
+    hz := 0.5 * z
+    v := 1.0 - hz
+    return v + (((1.0 - v) - hz) + (z * r - x * y))
+}
+
+// tan(x + y) for |x| <= pi/4 when iy is 1, and -1/tan(x + y) when iy is -1.
+k_tan :: fn(x0: f64, y0: f64, iy: i32) -> f64 {
+    x := x0
+    y := y0
+    hx := high_word(x)
+    ix := hx & 0x7fffffff
+    big := ix >= 0x3FE59428
+    if big {
+        if hx < 0 {
+            x = -x
+            y = -y
+        }
+        x = (PIO4 - x) + (PIO4LO - y)
+        y = 0.0
+    }
+    z := x * x
+    w := z * z
+    r := TAN_T1 + w * (TAN_T3 + w * (TAN_T5 + w * (TAN_T7 + w * (TAN_T9 + w * TAN_T11))))
+    v := z * (TAN_T2 + w * (TAN_T4 + w * (TAN_T6 + w * (TAN_T8 + w * (TAN_T10 + w * TAN_T12)))))
+    s := z * x
+    r = y + z * (s * (r + v) + y)
+    r += TAN_T0 * s
+    w = x + r
+    if big {
+        v = f64(iy)
+        sgn := f64(1 - ((hx >> 30) & 2))
+        return sgn * (v - 2.0 * (x - (w * w / (w + v) - r)))
+    }
+    if iy is 1 { return w }
+    // -1/(x + r), computed accurately.
+    zz := clear_low(w)
+    vv := r - (zz - x)
+    a := -1.0 / w
+    t := clear_low(a)
+    ss := 1.0 + t * zz
+    return t + a * (ss + t * vv)
+}
+
+PIO2_TABLE: [8]f64 : [8]f64(
+    1.57079625129699707031e+00, 7.54978941586159635335e-08,
+    5.39030252995776476554e-15, 3.28200341580791294123e-22,
+    1.27065575308067607349e-29, 1.22933308981111328932e-36,
+    2.73370053816464559624e-44, 2.16741683877804819444e-51
+)
+
+// 2/pi in 24-bit chunks: IPIO2[i] * 2**(-24*(i+1)).
+IPIO2: [66]i32 : [66]i32(
+    0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62,
+    0x95993C, 0x439041, 0xFE5163, 0xABDEBB, 0xC561B7, 0x246E3A,
+    0x424DD2, 0xE00649, 0x2EEA09, 0xD1921C, 0xFE1DEB, 0x1CB129,
+    0xA73EE8, 0x8235F5, 0x2EBB44, 0x84E99C, 0x7026B4, 0x5F7E41,
+    0x3991D6, 0x398353, 0x39F49C, 0x845F8B, 0xBDF928, 0x3B1FF8,
+    0x97FFDE, 0x05980F, 0xEF2F11, 0x8B5A0A, 0x6D1F6D, 0x367ECF,
+    0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D, 0x7527BA, 0xC7EBE5,
+    0xF17B3D, 0x0739F7, 0x8A5292, 0xEA6BFB, 0x5FB11F, 0x8D5D08,
+    0x560330, 0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3,
+    0x91615E, 0xE61B08, 0x659985, 0x5F14A0, 0x68408D, 0xFFD880,
+    0x4D7327, 0x310606, 0x1556CA, 0x73A8C9, 0x60E27B, 0xC08C6B
+)
+
+usz :: fn(i: i32) -> usize => i.trunc(usize)
+
+// Reduces the 24-bit-chunked significand x[0..nx] * 2**e0 modulo pi/2.
+// Returns the quadrant (mod 8) and the reduced value as a head and a tail.
+kernel_rem_pio2 :: fn(x: [3]f64, e0: i32, nx: i32) -> (i32, f64, f64) {
+    jk: i32 = 4
+    jp := jk
+    jx := nx - 1
+    jv := (e0 - 3) / 24
+    if jv < 0 { jv = 0 }
+    q0 := e0 - 24 * (jv + 1)
+
+    // f[0..=jx+jk] holds the needed chunks of 2/pi.
+    f: [20]f64 = [20]f64(fill: 0.0)
+    q: [20]f64 = [20]f64(fill: 0.0)
+    fq: [20]f64 = [20]f64(fill: 0.0)
+    iq: [20]i32 = [20]i32(fill: 0)
+    j := jv - jx
+    m := jx + jk
+    i := 0
+    while i <= m {
+        f[usz(i)] = if j < 0 { 0.0 } else { f64(IPIO2[usz(j)]) }
+        i += 1
+        j += 1
+    }
+    // q[i] = sum of x[j] * f[jx + i - j].
+    i = 0
+    while i <= jk {
+        fw := 0.0
+        j = 0
+        while j <= jx {
+            fw += x[usz(j)] * f[usz(jx + i - j)]
+            j += 1
+        }
+        q[usz(i)] = fw
+        i += 1
+    }
+
+    jz := jk
+    ih: i32 = 0
+    n: i32 = 0
+    z := 0.0
+    while true {
+        // Distill q[] into 24-bit integers iq[], most significant last.
+        i = 0
+        j = jz
+        z = q[usz(jz)]
+        while j > 0 {
+            fw := f64((TWON24 * z).trunc(i32))
+            iq[usz(i)] = (z - TWO24 * fw).trunc(i32)
+            z = q[usz(j - 1)] + fw
+            i += 1
+            j -= 1
+        }
+        // The integer part (mod 8) of the product gives the quadrant n.
+        z = scalbn(z, q0)
+        z -= 8.0 * floor(z * 0.125)
+        n = z.trunc(i32)
+        z -= f64(n)
+        ih = 0
+        if q0 > 0 {
+            i = shr(iq[usz(jz - 1)], 24 - q0)
+            n += i
+            iq[usz(jz - 1)] -= shl(i, 24 - q0)
+            ih = shr(iq[usz(jz - 1)], 23 - q0)
+        } else if q0 is 0 {
+            ih = shr(iq[usz(jz - 1)], 23)
+        } else if z >= 0.5 {
+            ih = 2
+        }
+        if ih > 0 {
+            // The fraction is above 1/2: use 1 - fraction instead.
+            n += 1
+            carry: i32 = 0
+            i = 0
+            while i < jz {
+                j = iq[usz(i)]
+                if carry is 0 {
+                    if j is not 0 {
+                        carry = 1
+                        iq[usz(i)] = 0x1000000 - j
+                    }
+                } else {
+                    iq[usz(i)] = 0xffffff - j
+                }
+                i += 1
+            }
+            if q0 is 1 {
+                iq[usz(jz - 1)] &= 0x7fffff
+            } else if q0 is 2 {
+                iq[usz(jz - 1)] &= 0x3fffff
+            }
+            if ih is 2 {
+                z = 1.0 - z
+                if carry is not 0 { z -= scalbn(1.0, q0) }
+            }
+        }
+        // Too much cancellation: compute more terms and start over.
+        if z is 0.0 {
+            j = 0
+            i = jz - 1
+            while i >= jk {
+                j |= iq[usz(i)]
+                i -= 1
+            }
+            if j is 0 {
+                k: i32 = 1
+                while iq[usz(jk - k)] is 0 { k += 1 }
+                i = jz + 1
+                while i <= jz + k {
+                    f[usz(jx + i)] = f64(IPIO2[usz(jv + i)])
+                    fw := 0.0
+                    j = 0
+                    while j <= jx {
+                        fw += x[usz(j)] * f[usz(jx + i - j)]
+                        j += 1
+                    }
+                    q[usz(i)] = fw
+                    i += 1
+                }
+                jz += k
+                continue
+            }
+        }
+        break
+    }
+
+    // Chop off zero terms.
+    if z is 0.0 {
+        jz -= 1
+        q0 -= 24
+        while iq[usz(jz)] is 0 {
+            jz -= 1
+            q0 -= 24
+        }
+    } else {
+        z = scalbn(z, -q0)
+        if z >= TWO24 {
+            fw := f64((TWON24 * z).trunc(i32))
+            iq[usz(jz)] = (z - TWO24 * fw).trunc(i32)
+            jz += 1
+            q0 += 24
+            iq[usz(jz)] = fw.trunc(i32)
+        } else {
+            iq[usz(jz)] = z.trunc(i32)
+        }
+    }
+
+    // Convert the integer chunks back to floating point.
+    scale := scalbn(1.0, q0)
+    i = jz
+    while i >= 0 {
+        q[usz(i)] = scale * f64(iq[usz(i)])
+        scale *= TWON24
+        i -= 1
+    }
+
+    // fq[jz - i] = sum of PIO2_TABLE[k] * q[i + k].
+    i = jz
+    while i >= 0 {
+        fw := 0.0
+        k := 0
+        while k <= jp and k <= jz - i {
+            fw += PIO2_TABLE[usz(k)] * q[usz(i + k)]
+            k += 1
+        }
+        fq[usz(jz - i)] = fw
+        i -= 1
+    }
+
+    // Compress fq[] into a head and a tail.
+    sum := 0.0
+    i = jz
+    while i >= 0 {
+        sum += fq[usz(i)]
+        i -= 1
+    }
+    y0 := if ih is 0 { sum } else { -sum }
+    tail := fq[0] - sum
+    i = 1
+    while i <= jz {
+        tail += fq[usz(i)]
+        i += 1
+    }
+    y1 := if ih is 0 { tail } else { -tail }
+    return (n & 7, y0, y1)
+}
+
+// Reduction for |x| between pi/4 and 2**20 * pi/2 (and near multiples of pi/2,
+// where cancellation requires the longer expansions).
+rem_pio2_medium :: fn(x: f64, ix: i32) -> (i32, f64, f64) {
+    fnn := (x * INVPIO2 + 0x1.8p52) - 0x1.8p52
+    n := fnn.trunc(i32)
+    r := x - fnn * PIO2_1
+    w := fnn * PIO2_1T
+    j := ix >> 20
+    y0 := r - w
+    i := j - ((high_word(y0) >> 20) & 0x7ff)
+    if i > 16 {
+        // Second iteration, good to 118 bits.
+        t := r
+        w = fnn * PIO2_2
+        r = t - w
+        w = fnn * PIO2_2T - ((t - r) - w)
+        y0 = r - w
+        i = j - ((high_word(y0) >> 20) & 0x7ff)
+        if i > 49 {
+            // Third iteration, good to 151 bits.
+            t = r
+            w = fnn * PIO2_3
+            r = t - w
+            w = fnn * PIO2_3T - ((t - r) - w)
+            y0 = r - w
+        }
+    }
+    y1 := (r - y0) - w
+    return (n, y0, y1)
+}
+
+// x - m*pi/2 for m = 1..4, to about 85 bits.
+rem_pio2_small :: fn(x: f64, hx: i32, m: i32) -> (i32, f64, f64) {
+    t := f64(m)
+    c1 := t * PIO2_1
+    c2 := t * PIO2_1T
+    if hx > 0 {
+        z := x - c1
+        y0 := z - c2
+        return (m, y0, (z - y0) - c2)
+    }
+    z := x + c1
+    y0 := z + c2
+    return (-m, y0, (z - y0) + c2)
+}
+
+// Writes x = n*pi/2 + (y0 + y1) with |y0 + y1| <= pi/4 (roughly), returning
+// (n, y0, y1). The caller has handled |x| <= pi/4.
+rem_pio2 :: fn(x: f64) -> (i32, f64, f64) {
+    hx := high_word(x)
+    ix := hx & 0x7fffffff
+    if ix <= 0x400f6a7a {
+        if (ix & 0xfffff) is 0x921fb { return rem_pio2_medium(x, ix) }
+        if ix <= 0x4002d97c { return rem_pio2_small(x, hx, 1) }
+        return rem_pio2_small(x, hx, 2)
+    }
+    if ix <= 0x401c463b {
+        if ix <= 0x4015fdbc {
+            if ix is 0x4012d97c { return rem_pio2_medium(x, ix) }
+            return rem_pio2_small(x, hx, 3)
+        }
+        if ix is 0x401921fb { return rem_pio2_medium(x, ix) }
+        return rem_pio2_small(x, hx, 4)
+    }
+    if ix < 0x413921fb { return rem_pio2_medium(x, ix) }
+    if ix >= 0x7ff00000 {
+        v := x - x
+        return (0, v, v)
+    }
+    // Large argument: split |x| into three 24-bit chunks and multiply with 2/pi.
+    e0 := (ix >> 20) - 1046
+    z := from_words(ix - shl(e0, 20), low_word(x))
+    tx: [3]f64 = [3]f64(fill: 0.0)
+    for i in 0..2 {
+        tx[i] = f64(z.trunc(i32))
+        z = (z - tx[i]) * TWO24
+    }
+    tx[2] = z
+    nx: i32 = 3
+    while tx[usz(nx - 1)] is 0.0 { nx -= 1 }
+    r := kernel_rem_pio2(tx, e0, nx)
+    if hx < 0 { return (-r.0, -r.1, -r.2) }
+    return r
+}
+
+/// The sine of `x` (in radians). It is NaN for infinite `x`; the sign of zero
+/// is preserved. Accurate for every finite argument, however large.
+pub sin :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        if ix < 0x3e500000 { return x }
+        return k_sin(x, 0.0, 0)
+    }
+    if ix >= 0x7ff00000 { return x - x }
+    r := rem_pio2(x)
+    return match r.0 & 3 {
+        0 => k_sin(r.1, r.2, 1)
+        1 => k_cos(r.1, r.2)
+        2 => -k_sin(r.1, r.2, 1)
+        _ => -k_cos(r.1, r.2)
+    }
+}
+
+/// The cosine of `x` (in radians). It is NaN for infinite `x`. Accurate for
+/// every finite argument, however large.
+pub cos :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        if ix < 0x3e46a09e { return 1.0 }
+        return k_cos(x, 0.0)
+    }
+    if ix >= 0x7ff00000 { return x - x }
+    r := rem_pio2(x)
+    return match r.0 & 3 {
+        0 => k_cos(r.1, r.2)
+        1 => -k_sin(r.1, r.2, 1)
+        2 => -k_cos(r.1, r.2)
+        _ => k_sin(r.1, r.2, 1)
+    }
+}
+
+/// The tangent of `x` (in radians). It is NaN for infinite `x`; the sign of
+/// zero is preserved. Accurate for every finite argument, however large.
+pub tan :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        if ix < 0x3e400000 { return x }
+        return k_tan(x, 0.0, 1)
+    }
+    if ix >= 0x7ff00000 { return x - x }
+    r := rem_pio2(x)
+    return k_tan(r.1, r.2, 1 - ((r.0 & 1) << 1))
+}

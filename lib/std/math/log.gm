@@ -1,0 +1,225 @@
+// Logarithms: log, log2, log10, log1p (fdlibm / FreeBSD msun).
+
+TWO54 :: 1.80143985094819840000e+16
+
+// log(1+f) = f - s*(f - R) with s = f/(2+f); the polynomial R is shared by
+// log, log2 and log10.
+LG1 :: 6.666666666666735130e-01
+LG2 :: 3.999999999940941908e-01
+LG3 :: 2.857142874366239149e-01
+LG4 :: 2.222219843214978396e-01
+LG5 :: 1.818357216161805012e-01
+LG6 :: 1.531383769920937332e-01
+LG7 :: 1.479819860511658591e-01
+
+// s*(hfsq + R) where hfsq = f*f/2, so that log(1+f) = f - hfsq + k_log1p(f).
+k_log1p :: fn(f: f64) -> f64 {
+    s := f / (2.0 + f)
+    z := s * s
+    w := z * z
+    t1 := w * (LG2 + w * (LG4 + w * LG6))
+    t2 := z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+    r := t2 + t1
+    hfsq := 0.5 * f * f
+    return s * (hfsq + r)
+}
+
+/// The natural logarithm of `x`. It is -inf for zero, NaN for negative `x`
+/// (and for -inf), and +inf for +inf.
+pub log :: fn(x0: f64) -> f64 {
+    x := x0
+    hx := high_word(x)
+    lx := low_word(x)
+    k: i32 = 0
+    if hx < 0x00100000 {
+        if ((hx & 0x7fffffff) | lx.trunc(i32)) is 0 { return -inf }
+        if hx < 0 { return nan }
+        k -= 54
+        x *= TWO54
+        hx = high_word(x)
+    }
+    if hx >= 0x7ff00000 { return x + x }
+    k += (hx >> 20) - 1023
+    hx &= 0x000fffff
+    i := (hx + 0x95f64) & 0x100000
+    x = set_high(x, hx | (i ~ 0x3ff00000))
+    k += i >> 20
+    f := x - 1.0
+    if (0x000fffff & (2 + hx)) < 3 {
+        if f is 0.0 {
+            if k is 0 { return 0.0 }
+            dk := f64(k)
+            return dk * LN2_HI + dk * LN2_LO
+        }
+        r := f * f * (0.5 - 0.33333333333333333 * f)
+        if k is 0 { return f - r }
+        dk := f64(k)
+        return dk * LN2_HI - ((r - dk * LN2_LO) - f)
+    }
+    s := f / (2.0 + f)
+    dk := f64(k)
+    z := s * s
+    i = hx - 0x6147a
+    w := z * z
+    j := 0x6b851 - hx
+    t1 := w * (LG2 + w * (LG4 + w * LG6))
+    t2 := z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+    i |= j
+    r := t2 + t1
+    if i > 0 {
+        hfsq := 0.5 * f * f
+        if k is 0 { return f - (hfsq - s * (hfsq + r)) }
+        return dk * LN2_HI - ((hfsq - (s * (hfsq + r) + dk * LN2_LO)) - f)
+    }
+    if k is 0 { return f - s * (f - r) }
+    return dk * LN2_HI - ((s * (f - r) - dk * LN2_LO) - f)
+}
+
+IVLN2_HI :: 1.44269504072144627571e+00
+IVLN2_LO :: 1.67517131648865118353e-10
+
+/// The base-2 logarithm of `x`; exact for powers of two. The special values
+/// are those of `log`.
+pub log2 :: fn(x0: f64) -> f64 {
+    x := x0
+    hx := high_word(x)
+    lx := low_word(x)
+    k: i32 = 0
+    if hx < 0x00100000 {
+        if ((hx & 0x7fffffff) | lx.trunc(i32)) is 0 { return -inf }
+        if hx < 0 { return nan }
+        k -= 54
+        x *= TWO54
+        hx = high_word(x)
+    }
+    if hx >= 0x7ff00000 { return x + x }
+    if hx is 0x3ff00000 and lx is 0 { return 0.0 }
+    k += (hx >> 20) - 1023
+    hx &= 0x000fffff
+    i := (hx + 0x95f64) & 0x100000
+    x = set_high(x, hx | (i ~ 0x3ff00000))
+    k += i >> 20
+    y := f64(k)
+    f := x - 1.0
+    hfsq := 0.5 * f * f
+    r := k_log1p(f)
+    // f - hfsq is split into hi + lo to keep extra precision near sqrt(2).
+    hi := clear_low(f - hfsq)
+    lo := (f - hi) - hfsq + r
+    val_hi := hi * IVLN2_HI
+    val_lo := (lo + hi) * IVLN2_LO + lo * IVLN2_HI
+    w := y + val_hi
+    val_lo += (y - w) + val_hi
+    val_hi = w
+    return val_lo + val_hi
+}
+
+IVLN10_HI :: 4.34294481878168880939e-01
+IVLN10_LO :: 2.50829467116452752298e-11
+LOG10_2_HI :: 3.01029995663611771306e-01
+LOG10_2_LO :: 3.69423907715893078616e-13
+
+/// The base-10 logarithm of `x`. The special values are those of `log`.
+pub log10 :: fn(x0: f64) -> f64 {
+    x := x0
+    hx := high_word(x)
+    lx := low_word(x)
+    k: i32 = 0
+    if hx < 0x00100000 {
+        if ((hx & 0x7fffffff) | lx.trunc(i32)) is 0 { return -inf }
+        if hx < 0 { return nan }
+        k -= 54
+        x *= TWO54
+        hx = high_word(x)
+    }
+    if hx >= 0x7ff00000 { return x + x }
+    if hx is 0x3ff00000 and lx is 0 { return 0.0 }
+    k += (hx >> 20) - 1023
+    hx &= 0x000fffff
+    i := (hx + 0x95f64) & 0x100000
+    x = set_high(x, hx | (i ~ 0x3ff00000))
+    k += i >> 20
+    y := f64(k)
+    f := x - 1.0
+    hfsq := 0.5 * f * f
+    r := k_log1p(f)
+    hi := clear_low(f - hfsq)
+    lo := (f - hi) - hfsq + r
+    val_hi := hi * IVLN10_HI
+    y2 := y * LOG10_2_HI
+    val_lo := y * LOG10_2_LO + (lo + hi) * IVLN10_LO + lo * IVLN10_HI
+    w := y2 + val_hi
+    val_lo += (y2 - w) + val_hi
+    val_hi = w
+    return val_lo + val_hi
+}
+
+/// `log(1 + x)`, accurate also when `x` is close to zero. It is -inf for
+/// `x = -1` and NaN for `x < -1`.
+pub log1p :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    ax := hx & 0x7fffffff
+    k: i32 = 1
+    f := 0.0
+    hu: i32 = 0
+    c := 0.0
+    if hx < 0x3FDA827A {
+        if ax >= 0x3ff00000 {
+            if x is -1.0 { return -inf }
+            return nan
+        }
+        if ax < 0x3e200000 {
+            if ax < 0x3c900000 { return x }
+            return x - x * x * 0.5
+        }
+        if hx > 0 or hx <= (0xbfd2bec4u32).bits(i32) {
+            k = 0
+            f = x
+            hu = 1
+        }
+    }
+    if hx >= 0x7ff00000 { return x + x }
+    if k is not 0 {
+        u := 0.0
+        if hx < 0x43400000 {
+            u = 1.0 + x
+            hu = high_word(u)
+            k = (hu >> 20) - 1023
+            c = if k > 0 { 1.0 - (u - x) } else { x - (u - 1.0) }
+            c /= u
+        } else {
+            u = x
+            hu = high_word(u)
+            k = (hu >> 20) - 1023
+            c = 0.0
+        }
+        hu &= 0x000fffff
+        if hu < 0x6a09e {
+            u = set_high(u, hu | 0x3ff00000)
+        } else {
+            k += 1
+            u = set_high(u, hu | 0x3fe00000)
+            hu = (0x00100000 - hu) >> 2
+        }
+        f = u - 1.0
+    }
+    hfsq := 0.5 * f * f
+    if hu is 0 {
+        if f is 0.0 {
+            if k is 0 { return 0.0 }
+            dk := f64(k)
+            c += dk * LN2_LO
+            return dk * LN2_HI + c
+        }
+        r := hfsq * (1.0 - 0.66666666666666666 * f)
+        if k is 0 { return f - r }
+        dk := f64(k)
+        return dk * LN2_HI - ((r - (dk * LN2_LO + c)) - f)
+    }
+    s := f / (2.0 + f)
+    z := s * s
+    r := z * (LG1 + z * (LG2 + z * (LG3 + z * (LG4 + z * (LG5 + z * (LG6 + z * LG7))))))
+    if k is 0 { return f - (hfsq - s * (hfsq + r)) }
+    dk := f64(k)
+    return dk * LN2_HI - ((hfsq - (s * (hfsq + r) + (dk * LN2_LO + c))) - f)
+}
