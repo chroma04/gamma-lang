@@ -182,6 +182,13 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Unary { op: ast::UnOp::Neg, operand } => -self.pattern_int_raw(operand)?,
             _ => match self.try_untyped(e) {
                 Some(Ok(Untyped::Int(i))) => i,
+                // A typed constant of another module, as a range bound.
+                _ if matches!(&e.kind, ExprKind::Field { base, .. } if self.module_of(base).is_some()) => {
+                    match self.const_pattern_value(e, ty)?.kind {
+                        tir::ExprKind::Int(v) => v,
+                        _ => return None,
+                    }
+                }
                 _ => {
                     self.error(e.span, "expected an integer literal or constant here");
                     return None;
@@ -193,6 +200,56 @@ impl<'a, 's> FnCx<'a, 's> {
             return None;
         }
         Some(v)
+    }
+
+    /// The value of the constant `e` (such as `m.MAX`) as a literal of type `ty`, for a
+    /// pattern: an integer, `bool` or string.
+    fn const_pattern_value(&mut self, e: &ast::Expr, ty: Ty) -> Option<Expr> {
+        let v = self.expr(e, Some(ty));
+        if v.ty.is_error() {
+            return None;
+        }
+        // An untyped constant is already a literal.
+        if let tir::ExprKind::Int(i) = &v.kind
+            && ty.is_integer()
+        {
+            if !super::finalize::int_fits(i, ty, &self.sema.target) {
+                self.error(e.span, format!("{} does not fit in `{}`", i, ty));
+                return None;
+            }
+            return Some(Expr { ty, kind: tir::ExprKind::Int(i.clone()), span: e.span });
+        }
+        let v = self.coerce(v, ty);
+        if !(ty.is_integer() || ty.is_bool() || ty == Ty::string()) {
+            self.error(
+                e.span,
+                format!("a constant pattern needs an integer, `bool` or string, not `{}`; compare with a guard", ty),
+            );
+            return None;
+        }
+        let Some(c) = self.sema.eval_tir_const(&v) else {
+            self.error(e.span, "expected a constant here");
+            return None;
+        };
+        let kind = match self.sema.const_key(&c, e.span)? {
+            crate::types::ConstKey::Str(s) => tir::ExprKind::Str(Rc::from(&s[..])),
+            crate::types::ConstKey::Bytes(_, b) if ty.is_bool() => tir::ExprKind::Bool(b.first() == Some(&1)),
+            crate::types::ConstKey::Bytes(_, b) => {
+                let little = self.sema.target.little_endian;
+                let mut b = b.to_vec();
+                if !little {
+                    b.reverse();
+                }
+                let v = if ty.is_signed_integer() {
+                    BigInt::from_signed_bytes_le(&b)
+                } else {
+                    BigInt::from_bytes_le(num_bigint::Sign::Plus, &b)
+                };
+                tir::ExprKind::Int(v)
+            }
+            _ => return None,
+        };
+        Some(Expr { ty, kind, span: e.span })
     }
 
     fn pattern_int_raw(&mut self, e: &ast::Expr) -> Option<BigInt> {
@@ -266,8 +323,15 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                     (Some(t), *name)
                 }
+                // `m.CONST` — a constant of another module (§9.2).
+                None if args.is_none() && self.module_of(base).is_some() => {
+                    return match self.const_pattern_value(path, ty) {
+                        Some(v) => pat(ty, PatKind::Const(Box::new(v)), span),
+                        None => pat(ty, PatKind::Wild, span),
+                    };
+                }
                 None => {
-                    self.error(path.span, "qualified constants in patterns are not supported yet");
+                    self.error(path.span, "expected a union type or a module before `.` in a pattern");
                     return pat(ty, PatKind::Wild, span);
                 }
             },

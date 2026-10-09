@@ -1,0 +1,19 @@
+// Constants of another module in patterns (§9.2): `m.CONST` compares, and may bound
+// a range.
+limits :: import "./limits"
+
+classify :: fn(x: u8) -> string => match x {
+    limits.MAX => "max"
+    0..limits.MIN => "small"
+    limits.MIN..=limits.MAX => "medium"
+    _ => "large"
+}
+
+main :: fn() \ {Out} {
+    xs := [5]u8(200, 3, 10, 150, 255)
+    for x in xs { print("{} ", classify(x)) }
+    print("\n")
+    name := "gamma"
+    if limits.NAME := name { print("named\n") }
+    print("{}\n", match true { limits.ON => "on"; _ => "off" })
+}
