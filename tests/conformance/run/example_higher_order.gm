@@ -1,0 +1,165 @@
+// Closures and higher-order iteration: generic map/filter/fold helpers taking second-class
+// function parameters, custom iterators with Yield, sorting with key functions, and a
+// table of first-class function pointers.
+Person :: struct {
+    name: string
+    age: u32
+    dept: string
+}
+
+// ---- generic helpers ----------------------------------------------------------------
+
+fold :: fn(T, A: type, xs: []const T, init: A, f: fn(A, T) -> A) -> A {
+    acc := init
+    for x in xs { acc = f(acc, x) }
+    return acc
+}
+
+count_if :: fn(T: type, xs: []const T, pred: fn(T) -> bool) -> usize {
+    n: usize = 0
+    for x in xs { if pred(x) { n += 1 } }
+    return n
+}
+
+map_into :: fn(T, U: type, xs: []const T, out: []U, f: fn(T) -> U) -> usize {
+    n := xs.len.min(out.len)
+    for i in 0..n { out[i] = f(xs[i]) }
+    return n
+}
+
+any :: fn(T: type, xs: []const T, pred: fn(T) -> bool) -> bool {
+    for x in xs { if pred(x) { return true } }
+    return false
+}
+
+find :: fn(T: type, xs: []const T, pred: fn(T) -> bool) -> ?T {
+    for x in xs { if pred(x) { return x } }
+    return null
+}
+
+// ---- iterators --------------------------------------------------------------------------
+
+filtered :: fn(T: type, xs: []const T, pred: fn(T) -> bool) \ {Yield(T)} {
+    for x in xs {
+        if pred(x) { yield(x) }
+    }
+}
+
+windows :: fn(xs: []const i32, n: usize) \ {Yield([]const i32)} {
+    if xs.len < n { return }
+    for i in 0..=(xs.len - n) { yield(xs[i..i + n]) }
+}
+
+take_while_sum :: fn(limit: u32) \ {Yield(u32)} {
+    i: u32 = 1
+    total: u32 = 0
+    while total < limit {
+        total += i
+        yield(total)
+        i += 1
+    }
+}
+
+// ---- function pointers --------------------------------------------------------------------
+
+Op :: struct {
+    sym: string
+    apply: ^fn(a, b: i64) -> i64
+}
+
+add :: fn(a, b: i64) -> i64 => a + b
+sub :: fn(a, b: i64) -> i64 => a - b
+mul :: fn(a, b: i64) -> i64 => a * b
+maxi :: fn(a, b: i64) -> i64 => a.max(b)
+
+make_counter_fn :: fn(step: i32) -> ^fn(x: i32) -> i32 {
+    // Function pointers capture nothing, so the step must be a constant: use two literals.
+    if step is 1 { return fn(x: i32) -> i32 => x + 1 }
+    return fn(x: i32) -> i32 => x + 10
+}
+
+main :: fn() \ {Out} {
+    people := [_]Person(
+        Person(name: "Ada", age: 36, dept: "eng"),
+        Person(name: "Grace", age: 45, dept: "navy"),
+        Person(name: "Linus", age: 29, dept: "eng"),
+        Person(name: "Barbara", age: 52, dept: "eng"),
+        Person(name: "Ken", age: 29, dept: "ops"),
+    )
+
+    min_age: u32 = 30
+    n_senior := count_if(people[..], fn(p) => p.age >= min_age)
+    print("senior: {}\n", n_senior)
+
+    dept := "eng"
+    total_eng := fold(people[..], 0u32, fn(acc, p) => if p.dept is dept { acc + p.age } else { acc })
+    print("eng age total: {}\n", total_eng)
+
+    names_len := fold(people[..], 0usize, fn(acc, p) => acc + p.name.len)
+    print("total name length: {}\n", names_len)
+
+    ages: [5]u32 = ---
+    m := map_into(people[..], ages[..], fn(p) => p.age)
+    print("ages: {} (n={})\n", (ages, m))
+
+    if p := find(people[..], fn(p) => p.name.len > 5) {
+        print("first long name: {}\n", p.name)
+    }
+    print("anyone over 60: {}\n", any(people[..], fn(p) => p.age > 60))
+
+    // sort by (dept, name) and by age descending, stable ordering by tuple key
+    sorted := people
+    sorted[..].sort_by_key(fn(p) => (p.dept, p.name))
+    for p in sorted { print("{}/{} ", (p.dept, p.name)) }
+    print("\n")
+    sorted[..].sort_by(fn(a, b) => a.age > b.age or (a.age is b.age and a.name < b.name))
+    for p in sorted { print("{}:{} ", (p.name, p.age)) }
+    print("\n")
+
+    // iterators composing with for loops and closures capturing mutable locals
+    nums := [_]i32(3, 8, 1, 9, 4, 7, 2, 6)
+    evens_sum: i32 = 0
+    for x in filtered(nums[..], fn(v) => v % 2 is 0) { evens_sum += x }
+    print("sum of evens: {}\n", evens_sum)
+
+    best: i32 = -1
+    best_at: usize = 0
+    idx: usize = 0
+    for w in windows(nums[..], 3) {
+        s := w[0] + w[1] + w[2]
+        if s > best { best = s; best_at = idx }
+        idx += 1
+    }
+    print("best window of 3 starts at {} with sum {}\n", (best_at, best))
+
+    steps: u32 = 0
+    last: u32 = 0
+    for t in take_while_sum(50) {
+        steps += 1
+        last = t
+        if t > 40 { break }
+    }
+    print("triangular numbers: {} steps, last {}\n", (steps, last))
+
+    ops := [_]Op(
+        Op(sym: "+", apply: add), Op(sym: "-", apply: sub),
+        Op(sym: "*", apply: mul), Op(sym: "max", apply: maxi),
+        Op(sym: "avg*2", apply: fn(a, b: i64) -> i64 => (a + b)),
+    )
+    for op in ops {
+        print("{} {} {} = {}\n", (7, op.sym, 5, op.apply(7, 5)))
+    }
+    inc := make_counter_fn(1)
+    bump := make_counter_fn(2)
+    print("{} {} {}\n", (inc(5), bump(5), inc is bump))
+
+    // closure that mutates captured state, passed down
+    seen: u32 = 0
+    total: i64 = 0
+    _ = fold(nums[..], 0i64, fn(acc, x) {
+        seen += 1
+        total += i64(x) * i64(seen)
+        return acc + 1
+    })
+    print("weighted total {} over {} items\n", (total, seen))
+}

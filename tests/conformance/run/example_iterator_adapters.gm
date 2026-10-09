@@ -1,0 +1,73 @@
+// Iterator adapters: functions that take a generator (a `fn` with Yield in its effect set)
+// and re-yield or consume its values. Generators are passed as local functions; some capture
+// local variables and some do not.
+count_to :: fn(n: u32) \ {Yield(u32)} {
+    for i in 1..=n { yield(i) }
+}
+
+collect :: fn(src: fn() \ {Yield(u32)}, out: []u32) -> usize {
+    n: usize = 0
+    for x in src() {
+        if n is out.len { break }
+        out[n] = x
+        n += 1
+    }
+    return n
+}
+
+filter_iter :: fn(src: fn() \ {Yield(u32)}, pred: fn(u32) -> bool) \ {Yield(u32)} {
+    for x in src() {
+        if pred(x) { yield(x) }
+    }
+}
+
+take :: fn(src: fn() \ {Yield(u32)}, n: usize) \ {Yield(u32)} {
+    if n is 0 { return }
+    seen: usize = 0
+    for x in src() {
+        yield(x)
+        seen += 1
+        if seen is n { break }
+    }
+}
+
+fold_iter :: fn(src: fn() \ {Yield(u32)}, init: u64, f: fn(u64, u32) -> u64) -> u64 {
+    acc := init
+    for x in src() { acc = f(acc, x) }
+    return acc
+}
+
+main :: fn() \ {Out} {
+    out: [16]u32 = ---
+    ten :: fn() \ {Yield(u32)} { count_to(10) }
+    n := collect(ten, out[..])
+    print("{}\n", out[0..n])
+
+    squares :: fn() \ {Yield(u32)} {
+        for x in count_to(20) { yield(x * x) }
+    }
+    n = collect(squares, out[..])
+    print("{}\n", out[0..n])
+
+    odd_squares :: fn() \ {Yield(u32)} {
+        for x in filter_iter(squares, fn(v) => v % 2 is 1) { yield(x) }
+    }
+    first5 :: fn() \ {Yield(u32)} {
+        for x in take(odd_squares, 5) { yield(x) }
+    }
+    n = collect(first5, out[..])
+    print("{}\n", out[0..n])
+
+    total := fold_iter(first5, 0, fn(a, x) => a + u64(x))
+    print("sum {}\n", total)
+
+    limit: u32 = 100
+    small :: fn() \ {Yield(u32)} {
+        for x in filter_iter(squares, fn(v) => v < limit) { yield(x) }
+    }
+    n = collect(small, out[..])
+    print("{} squares below {}: {}\n", (n, limit, out[0..n]))
+    limit = 30
+    n = collect(small, out[..])
+    print("{} squares below {}: {}\n", (n, limit, out[0..n]))
+}

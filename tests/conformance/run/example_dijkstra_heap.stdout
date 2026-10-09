@@ -1,0 +1,11 @@
+heap size 9
+-8 -3 0 1 5 5 7 9 12 
+pops: 8
+node 0: dist 0 via 0
+node 1: dist 7 via 0 -> 1
+node 2: dist 9 via 0 -> 2
+node 3: dist 20 via 0 -> 2 -> 3
+node 4: dist 20 via 0 -> 2 -> 5 -> 4
+node 5: dist 11 via 0 -> 2 -> 5
+node 6: unreachable
+node 7: unreachable

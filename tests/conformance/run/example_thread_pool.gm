@@ -1,0 +1,116 @@
+// A worker pool: threads pull chunks of a range from an atomic cursor, count primes in
+// their chunk, and write results into per-chunk slots; a mutex-protected bank checks that
+// concurrent transfers preserve the total.
+thread :: import "std/thread"
+
+CHUNK :: 500
+LIMIT :: 20_000
+NCHUNKS :: LIMIT / CHUNK
+NWORKERS :: 4
+
+Job :: struct {
+    cursor: u32
+    counts: [NCHUNKS]u32
+    done_by: [NWORKERS]u32
+}
+
+JobArg :: struct {
+    job: ^Job
+    id: u32
+}
+
+is_prime :: fn(n: u32) -> bool {
+    if n < 2 { return false }
+    if n < 4 { return true }
+    if n % 2 is 0 { return false }
+    d: u32 = 3
+    while d * d <= n {
+        if n % d is 0 { return false }
+        d += 2
+    }
+    return true
+}
+
+worker :: fn(raw: rawptr) \ {Sys} {
+    arg := raw.cast(^JobArg)
+    job := arg.job
+    while true {
+        chunk := @atomic_add(&job.cursor, 1, .Relaxed)
+        if chunk >= NCHUNKS { break }
+        lo := chunk * CHUNK
+        n: u32 = 0
+        for v in lo..lo + CHUNK {
+            if is_prime(v) { n += 1 }
+        }
+        job.counts[chunk] = n          // each chunk has exactly one writer
+        _ = @atomic_add(&job.done_by[arg.id], 1, .Relaxed)
+    }
+}
+
+Bank :: struct {
+    m: thread.Mutex
+    balance: [4]i64
+    transfers: u32
+}
+
+TransferArg :: struct {
+    bank: ^Bank
+    seed: u32
+}
+
+transfer :: fn(arg: rawptr) \ {Sys} {
+    t := arg.cast(^TransferArg)
+    b := t.bank
+    state := t.seed
+    for _ in 0..2000 {
+        // xorshift32
+        state = state ~ (state <<% 13)
+        state = state ~ (state >> 17)
+        state = state ~ (state <<% 5)
+        from := (state % 4).trunc(usize)
+        to := ((state / 4) % 4).trunc(usize)
+        amount := i64((state / 16) % 50)
+        if from is to { continue }
+        b.m.lock()
+        if b.balance[from] >= amount {
+            b.balance[from] -= amount
+            b.balance[to] += amount
+            b.transfers += 1
+        }
+        b.m.unlock()
+    }
+}
+
+Failure :: union { Io: IoError }
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    job := Job(cursor: 0, counts: [NCHUNKS]u32(fill: 0), done_by: [NWORKERS]u32(fill: 0))
+    args := [NWORKERS]JobArg(fill: JobArg(job: &job, id: 0))
+    ts: [NWORKERS]thread.Thread = ---
+    for i in 0..NWORKERS {
+        args[i] = JobArg(job: &job, id: i.trunc(u32))
+        ts[i] = try thread.spawn(worker, (&args[i]).cast(rawptr))
+    }
+    for i in 0..NWORKERS { ts[i].join() }
+
+    total: u32 = 0
+    chunks_done: u32 = 0
+    for c in job.counts { total += c }
+    for d in job.done_by { chunks_done += d }
+    print("primes below {}: {}\n", (LIMIT, total))
+    print("chunks processed: {} of {}\n", (chunks_done, NCHUNKS))
+    print("first chunks: {}\n", job.counts[0..6])
+
+    bank := Bank(m: thread.mutex(), balance: [4]i64(1000, 1000, 1000, 1000), transfers: 0)
+    targs := [NWORKERS]TransferArg(fill: TransferArg(bank: &bank, seed: 0))
+    for i in 0..NWORKERS {
+        targs[i] = TransferArg(bank: &bank, seed: 12345 + i.trunc(u32) * 7919)
+        ts[i] = try thread.spawn(transfer, (&targs[i]).cast(rawptr))
+    }
+    for i in 0..NWORKERS { ts[i].join() }
+    sum: i64 = 0
+    for x in bank.balance { sum += x }
+    print("bank total preserved: {}\n", sum is 4000)
+    print("no negative balance: {}\n", bank.balance[0] >= 0 and bank.balance[1] >= 0 and bank.balance[2] >= 0 and bank.balance[3] >= 0)
+    print("some transfers happened: {}\n", bank.transfers > 1000)
+}

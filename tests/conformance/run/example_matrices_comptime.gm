@@ -1,0 +1,170 @@
+// Compile-time evaluation and value parameters: fixed-size matrices whose dimensions are
+// part of the type, plus lookup tables computed by ordinary functions at compile time.
+Matrix :: struct(T: type, R: usize, C: usize) {
+    cells: [R][C]T
+}
+
+zero_matrix :: fn(T: type, R, C :: usize) -> Matrix(T, R, C) where Num(T) {
+    return Matrix(T, R, C)(cells: [R][C]T(fill: [C]T(fill: 0)))
+}
+
+identity :: fn(T: type, N :: usize) -> Matrix(T, N, N) where Num(T) {
+    m := zero_matrix(T, N, N)
+    for i in 0..N { m.cells[i][i] = 1 }
+    return m
+}
+
+// Dimensions are checked by the type system: (R x K) * (K x C) = (R x C).
+mul :: fn(T: type, R, K, C :: usize, a: Matrix(T, R, K), b: Matrix(T, K, C)) -> Matrix(T, R, C) where Num(T) {
+    out := zero_matrix(T, R, C)
+    for i in 0..R {
+        for j in 0..C {
+            acc: T = 0
+            for k in 0..K { acc += a.cells[i][k] * b.cells[k][j] }
+            out.cells[i][j] = acc
+        }
+    }
+    return out
+}
+
+transpose :: fn(T: type, R, C :: usize, a: Matrix(T, R, C)) -> Matrix(T, C, R) where Num(T) {
+    out := zero_matrix(T, C, R)
+    for i in 0..R {
+        for j in 0..C { out.cells[j][i] = a.cells[i][j] }
+    }
+    return out
+}
+
+trace :: fn(T: type, N :: usize, a: Matrix(T, N, N)) -> T where Num(T) {
+    t: T = 0
+    for i in 0..N { t += a.cells[i][i] }
+    return t
+}
+
+power :: fn(T: type, N :: usize, a: Matrix(T, N, N), e: u32) -> Matrix(T, N, N) where Num(T) {
+    result := identity(T, N)
+    base := a
+    n := e
+    while n > 0 {
+        if n & 1 is 1 { result = mul(result, base) }
+        base = mul(base, base)
+        n >>= 1
+    }
+    return result
+}
+
+show :: fn(T: type, R, C :: usize, a: Matrix(T, R, C)) \ {Out} {
+    for i in 0..R {
+        for j in 0..C {
+            if j > 0 { print(" ") }
+            print("{}", a.cells[i][j])
+        }
+        print("\n")
+    }
+}
+
+// ---- tables computed at compile time ---------------------------------------------
+
+SIEVE_LIMIT :: 100
+
+sieve :: fn() -> [SIEVE_LIMIT]bool {
+    composite := [SIEVE_LIMIT]bool(fill: false)
+    composite[0] = true
+    composite[1] = true
+    i: usize = 2
+    while i * i < SIEVE_LIMIT {
+        if not composite[i] {
+            j := i * i
+            while j < SIEVE_LIMIT {
+                composite[j] = true
+                j += i
+            }
+        }
+        i += 1
+    }
+    return composite
+}
+
+COMPOSITE :: sieve()
+
+count_primes :: fn(flags: [SIEVE_LIMIT]bool) -> u32 {
+    n: u32 = 0
+    for f in flags { if not f { n += 1 } }
+    return n
+}
+
+PRIME_COUNT :: count_primes(COMPOSITE)
+
+pascal :: fn(N :: usize) -> [N][N]u64 {
+    t := [N][N]u64(fill: [N]u64(fill: 0))
+    for i in 0..N {
+        t[i][0] = 1
+        for j in 1..=i {
+            t[i][j] = t[i - 1][j - 1] + (if j < i { t[i - 1][j] } else { 0 })
+        }
+    }
+    return t
+}
+
+PASCAL :: pascal(12)
+
+crc_table :: fn(poly: u32) -> [256]u32 {
+    table: [256]u32 = ---
+    for n in 0..256 {
+        c := n.trunc(u32)
+        for _ in 0..8 {
+            c = if c & 1 is 1 { (c >> 1) ~ poly } else { c >> 1 }
+        }
+        table[n] = c
+    }
+    return table
+}
+
+CRC :: crc_table(0xEDB88320)
+
+crc32 :: fn(data: string) -> u32 {
+    crc: u32 = 0xFFFFFFFF
+    for b in bytes(data) {
+        crc = (crc >> 8) ~ CRC[((crc ~ u32(b)) & 0xFF).trunc(usize)]
+    }
+    return crc ~ 0xFFFFFFFF
+}
+
+@static_assert(PRIME_COUNT is 25, "there are 25 primes below 100")
+@static_assert(PASCAL[10][5] is 252, "C(10,5)")
+@static_assert(@size_of(Matrix(f32, 3, 4)) is 48, "3x4 f32 matrix")
+@static_assert(CRC[1] is 0x77073096, "crc table entry")
+
+main :: fn() \ {Out} {
+    a := Matrix(i64, 2, 3)(cells: [2][3]i64([3]i64(1, 2, 3), [3]i64(4, 5, 6)))
+    b := transpose(a)
+    print("a (2x3):\n")
+    show(a)
+    print("a^T (3x2):\n")
+    show(b)
+    c := mul(a, b)
+    print("a * a^T (2x2), trace {}:\n", trace(c))
+    show(c)
+    d := mul(b, a)
+    print("a^T * a (3x3), trace {}:\n", trace(d))
+    show(d)
+
+    fibm := Matrix(u64, 2, 2)(cells: [2][2]u64([2]u64(1, 1), [2]u64(1, 0)))
+    p := power(fibm, 50)
+    print("fib(50) = {}\n", p.cells[0][1])
+
+    scale := Matrix(f64, 2, 2)(cells: [2][2]f64([2]f64(0.5, 0), [2]f64(0, 1.5)))
+    show(power(scale, 3))
+
+    print("primes below {}: {}\n", (SIEVE_LIMIT, PRIME_COUNT))
+    for i in 0..SIEVE_LIMIT {
+        if not COMPOSITE[i] and i > 70 { print("{} ", i) }
+    }
+    print("\n")
+    for i in 0..8 {
+        for j in 0..=i { print("{} ", PASCAL[i][j]) }
+        print("\n")
+    }
+    print("crc32(\"hello world\") = {}\n", crc32("hello world"))
+    print("crc32(\"\") = {}\n", crc32(""))
+}

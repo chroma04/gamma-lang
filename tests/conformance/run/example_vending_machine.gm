@@ -1,0 +1,138 @@
+// A vending-machine state machine modelled with ADTs and exhaustive matching, with a
+// logging effect whose handler counts events by severity.
+Coin :: union(u8) { Nickel = 5, Dime = 10, Quarter = 25 }
+
+Product :: union { Chips, Candy, Soda }
+
+State :: union {
+    Idle
+    Collecting: u32
+    Dispensing: (item: Product, change: u32)
+    OutOfOrder: string
+}
+
+Event :: union {
+    Insert: Coin
+    Select: Product
+    Cancel
+    Take
+    Kick
+}
+
+Level :: union { Info, Warn, Alert }
+
+Log :: effect {
+    log: fn(level: Level, msg: string)
+}
+
+price :: fn(p: Product) -> u32 => match p {
+    .Chips => 50
+    .Candy => 35
+    .Soda => 65
+}
+
+name_of :: fn(p: Product) -> string => match p {
+    .Chips => "chips"
+    .Candy => "candy"
+    .Soda => "soda"
+}
+
+step :: fn(s: State, e: Event) -> State \ {Log} {
+    return match s {
+        .OutOfOrder(why) => {
+            log(.Alert, why)
+            s
+        }
+        .Idle => match e {
+            .Insert(c) => State.Collecting(u32(u8(c)))
+            .Select(_) => {
+                log(.Warn, "insert coins first")
+                s
+            }
+            .Kick => State.OutOfOrder("kicked while idle")
+            _ => s
+        }
+        .Collecting(credit) => match e {
+            .Insert(c) => State.Collecting(credit + u32(u8(c)))
+            .Select(p) => {
+                if credit >= price(p) {
+                    log(.Info, name_of(p))
+                    State.Dispensing(item: p, change: credit - price(p))
+                } else {
+                    log(.Warn, "not enough credit")
+                    s
+                }
+            }
+            .Cancel => {
+                log(.Info, "refund")
+                State.Idle
+            }
+            .Kick => State.OutOfOrder("kicked with money inside")
+            .Take => s
+        }
+        .Dispensing(item, change) => match e {
+            .Take => if change > 0 { State.Collecting(change) } else { State.Idle }
+            .Kick => State.OutOfOrder("kicked while dispensing")
+            _ => {
+                log(.Warn, "take your item first")
+                s
+            }
+        }
+    }
+}
+
+Counter :: struct {
+    info: u32 = 0
+    warn: u32 = 0
+    alert: u32 = 0
+}
+
+handler Log for ^Counter \ {Out} {
+    log(self, level, msg) => {
+        match level {
+            .Info => { self.info += 1 }
+            .Warn => { self.warn += 1 }
+            .Alert => { self.alert += 1 }
+        }
+        print("  log [{}] {}\n", (level, msg))
+    }
+}
+
+describe :: fn(s: State) \ {Out} {
+    match s {
+        .Idle => print("  state: idle\n")
+        .Collecting(c) => print("  state: collecting {} cents\n", c)
+        .Dispensing(item, change) => print("  state: dispensing {} (change {})\n", (name_of(item), change))
+        .OutOfOrder(why) => print("  state: out of order ({})\n", why)
+    }
+}
+
+run :: fn(label: string, events: []const Event) \ {Out} {
+    print("{}\n", label)
+    c := Counter()
+    s: State = .Idle
+    with &c {
+        for e in events {
+            s = step(s, e)
+            describe(s)
+        }
+    }
+    print("  totals: info={} warn={} alert={}\n", (c.info, c.warn, c.alert))
+}
+
+main :: fn() \ {Out} {
+    a := [_]Event(
+        .Insert(.Quarter), .Insert(.Quarter), .Insert(.Dime),
+        .Select(.Soda), .Take, .Take,
+    )
+    run("purchase with change", a[..])
+    b := [_]Event(.Select(.Chips), .Insert(.Dime), .Select(.Candy), .Cancel)
+    run("too little then cancel", b[..])
+    c := [_]Event(
+        .Insert(.Nickel), .Insert(.Quarter), .Insert(.Dime), .Select(.Candy),
+        .Insert(.Dime), .Kick, .Take,
+    )
+    run("vandalism", c[..])
+    print("{} {} {}\n", (Coin.Dime, Event.Insert(.Nickel), State.Dispensing(item: .Candy, change: 5)))
+    print("{} {}\n", (Coin.from_tag(25), Coin.from_tag(7)))
+}

@@ -1,0 +1,147 @@
+//! exit: 2
+// A key-value command interpreter reading commands from stdin. The store lives in an arena
+// (map, keys and all), so tearing it down is one call. Exits with status 2 if any command
+// failed, running the deferred cleanup on the way out.
+io :: import "std/io"
+arena :: import "std/arena"
+
+CmdError :: union {
+    Unknown: string
+    MissingArg: string
+    BadNumber: string
+    NoSuchKey: string
+    Memory: AllocError
+}
+
+Words :: struct {
+    parts: [4]string = [4]string(fill: "")
+    count: usize = 0
+}
+
+split :: fn(line: string) -> Words {
+    w := Words()
+    start: ?usize = null
+    for i in 0..=line.len {
+        at_end := i is line.len
+        is_space := at_end or line[i] is ' ' or line[i] is '\t'
+        if is_space {
+            if s := start {
+                if w.count < w.parts.len {
+                    w.parts[w.count] = line[s..i]
+                    w.count += 1
+                }
+                start = null
+            }
+        } else if start is null {
+            start = i
+        }
+    }
+    return w
+}
+
+parse_i64 :: fn(s: string) -> CmdError!i64 {
+    if s.len is 0 { return !.BadNumber(s) }
+    neg := s[0] is '-'
+    body := if neg { s[1..] } else { s }
+    if body.len is 0 { return !.BadNumber(s) }
+    v: i64 = 0
+    for c in bytes(body) {
+        if c not in '0'..='9' { return !.BadNumber(s) }
+        v = v *? 10 else return !.BadNumber(s)
+        v = v +? i64(c - '0') else return !.BadNumber(s)
+    }
+    return if neg { -v } else { v }
+}
+
+Db :: struct {
+    arena: arena.Arena
+    data: HashMap(string, i64)
+    ops: u32 = 0
+}
+
+intern :: fn(a: Allocator, s: string) -> AllocError!string {
+    buf := try with a { make(u8, s.len) }
+    buf.copy_from(s)
+    return buf
+}
+
+arg :: fn(w: Words, i: usize, what: string) -> CmdError!string {
+    if i >= w.count { return !.MissingArg(what) }
+    return w.parts[i]
+}
+
+execute :: fn(db: ^Db, w: Words) -> CmdError!() \ {Out} {
+    cmd := w.parts[0]
+    alloc := db.arena.allocator()
+    db.ops += 1
+    if cmd is "SET" {
+        key := try arg(w, 1, "key")
+        value := try parse_i64(try arg(w, 2, "value"))
+        if db.data.contains(key) {
+            try db.data.put(key, value)
+        } else {
+            try with alloc { db.data.put(try intern(alloc, key), value) }
+        }
+        print("OK\n")
+    } else if cmd is "GET" {
+        key := try arg(w, 1, "key")
+        v := db.data.get(key) else return !.NoSuchKey(key)
+        print("{}\n", v)
+    } else if cmd is "INCR" {
+        key := try arg(w, 1, "key")
+        by := if w.count > 2 { try parse_i64(w.parts[2]) } else { 1 }
+        old := db.data.get(key) else return !.NoSuchKey(key)
+        sum := old +? by else return !.BadNumber("overflow")
+        try db.data.put(key, sum)
+        print("{}\n", sum)
+    } else if cmd is "DEL" {
+        key := try arg(w, 1, "key")
+        _ = db.data.remove(key) else return !.NoSuchKey(key)
+        print("deleted {}\n", key)
+    } else if cmd is "SUM" {
+        total: i64 = 0
+        for e in db.data.entries() { total += e.value }
+        print("{} over {} keys\n", (total, db.data.len()))
+    } else if cmd is "MAX" {
+        best: ?(key: string, value: i64) = null
+        for e in db.data.entries() {
+            replace := if b := best { e.value > b.value or (e.value is b.value and e.key < b.key) } else { true }
+            if replace { best = (key: e.key, value: e.value) }
+        }
+        if b := best { print("{}={}\n", (b.key, b.value)) } else { print("empty\n") }
+    } else {
+        return !.Unknown(cmd)
+    }
+    return ()
+}
+
+main :: fn() -> IoError!() \ {Out, In, Alloc, Env} {
+    db := Db(arena: arena.new(), data: map(string, i64))
+    defer print("cleanup done\n")
+    defer db.arena.deinit()
+    defer db.data.deinit()
+    r := io.reader()
+    failures: u32 = 0
+    line_no: u32 = 0
+    while line := try r.next_line() {
+        line_no += 1
+        w := split(line)
+        if w.count is 0 { continue }
+        if w.parts[0] is "QUIT" { break }
+        if ok := execute(&db, w) {
+            _ = ok
+        } else e => {
+            failures += 1
+            match e {
+                .Unknown(c) => print("line {}: unknown command {}\n", (line_no, c))
+                .MissingArg(a) => print("line {}: missing {}\n", (line_no, a))
+                .BadNumber(n) => print("line {}: bad number {}\n", (line_no, n))
+                .NoSuchKey(k) => print("line {}: no such key {}\n", (line_no, k))
+                .Memory(_) => print("line {}: out of memory\n", line_no)
+            }
+        }
+    }
+    print("{} lines, {} commands run, {} failed\n", (line_no, db.ops, failures))
+    if failures > 0 { exit(2) }
+    return ()
+}

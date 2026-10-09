@@ -1,0 +1,37 @@
+ok:   a = 10
+ok:   b=-20
+fail: c = 5x -> bad number '5x'
+fail: d -> no '=' in 1-byte line
+fail: e = -> empty value
+fail: a = 1 -> duplicate key a
+fail: f = 5000 -> out of range [-1000, 1000]
+ok:   g = 7
+ok:   h = 8
+fail: i = 9 -> store full
+stored 4: a=10 b=-20 g=7 z=null
+fallback chain: 7
+a+b = -10
+sums:
+  18
+  !.BadNumber("x")
+step
+  defer: leave step
+  defer: end of iteration
+step
+  defer: leave step
+  defer: end of iteration
+step
+  defer: leave step
+  defer: end of iteration
+  defer: transaction closed
+result: 3
+step
+  defer: leave step
+  defer: end of iteration
+step
+  errdefer: undo step
+  defer: leave step
+  defer: end of iteration
+  errdefer: rollback
+  defer: transaction closed
+result: !.Full

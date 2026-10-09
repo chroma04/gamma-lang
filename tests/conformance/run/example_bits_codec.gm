@@ -1,0 +1,198 @@
+// Bit-level work: a packet codec with #bits flags and big-endian fields, the Internet
+// checksum, LEB128 varints, base64, FNV-1a with wrapping arithmetic, a bitset using
+// @popcount, and wide integers.
+Flags :: #bits(u8) struct {
+    syn, ack, fin, rst: bool
+    prio: u3
+    _: u1
+}
+
+Header :: struct {
+    magic: u16
+    flags: u8
+    len: u16
+    seq: u32
+}
+
+@static_assert(@size_of(Flags) is 1, "flags are one byte")
+
+put16 :: fn(out: []u8, at: usize, x: u16) {
+    out[at] = (x >> 8).trunc(u8)
+    out[at + 1] = x.trunc(u8)
+}
+
+put32 :: fn(out: []u8, at: usize, x: u32) {
+    put16(out, at, (x >> 16).trunc(u16))
+    put16(out, at + 2, x.trunc(u16))
+}
+
+get16 :: fn(buf: []const u8, at: usize) -> u16 => (u16(buf[at]) << 8) | u16(buf[at + 1])
+get32 :: fn(buf: []const u8, at: usize) -> u32 => (u32(get16(buf, at)) << 16) | u32(get16(buf, at + 2))
+
+encode :: fn(h: Header, out: []u8) -> usize {
+    put16(out, 0, h.magic)
+    out[2] = h.flags
+    put16(out, 3, h.len)
+    put32(out, 5, h.seq)
+    return 9
+}
+
+decode :: fn(buf: []const u8) -> ?Header {
+    if buf.len < 9 { return null }
+    h := Header(magic: get16(buf, 0), flags: buf[2], len: get16(buf, 3), seq: get32(buf, 5))
+    if h.magic is not 0xCAFE { return null }
+    return h
+}
+
+dump :: fn(bs: []const u8) \ {Out} {
+    for b in bs { print("{} ", b) }
+    print("\n")
+}
+
+checksum :: fn(data: []const u8) -> u16 {
+    sum: u32 = 0
+    i: usize = 0
+    while i + 1 < data.len {
+        sum += (u32(data[i]) << 8) | u32(data[i + 1])
+        i += 2
+    }
+    if i < data.len { sum += u32(data[i]) << 8 }
+    while (sum >> 16) is not 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16)
+    }
+    return (~sum).trunc(u16)
+}
+
+// ---- LEB128 ----------------------------------------------------------------------------
+
+put_varint :: fn(v: u64, out: []u8) -> usize {
+    x := v
+    n: usize = 0
+    while true {
+        b := (x & 0x7F).trunc(u8)
+        x >>= 7
+        if x is 0 {
+            out[n] = b
+            return n + 1
+        }
+        out[n] = b | 0x80
+        n += 1
+    }
+}
+
+get_varint :: fn(buf: []const u8) -> ?(value: u64, used: usize) {
+    v: u64 = 0
+    shift: u32 = 0
+    for i in 0..buf.len {
+        if shift >= 64 { return null }
+        v |= u64(buf[i] & 0x7F) << shift
+        if buf[i] & 0x80 is 0 { return (value: v, used: i + 1) }
+        shift += 7
+    }
+    return null
+}
+
+// ---- base64 --------------------------------------------------------------------------------
+
+ALPHABET :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+base64 :: fn(data: []const u8, out: []u8) -> usize {
+    n: usize = 0
+    i: usize = 0
+    while i < data.len {
+        rest := data.len - i
+        b0 := u32(data[i])
+        b1 := if rest > 1 { u32(data[i + 1]) } else { 0 }
+        b2 := if rest > 2 { u32(data[i + 2]) } else { 0 }
+        triple := (b0 << 16) | (b1 << 8) | b2
+        out[n] = ALPHABET[((triple >> 18) & 63).trunc(usize)]
+        out[n + 1] = ALPHABET[((triple >> 12) & 63).trunc(usize)]
+        out[n + 2] = if rest > 1 { ALPHABET[((triple >> 6) & 63).trunc(usize)] } else { '=' }
+        out[n + 3] = if rest > 2 { ALPHABET[(triple & 63).trunc(usize)] } else { '=' }
+        n += 4
+        i += 3
+    }
+    return n
+}
+
+// ---- hashing and bitsets ------------------------------------------------------------------------
+
+fnv1a :: fn(data: string) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    for b in bytes(data) {
+        h = (h ~ u64(b)) *% 0x100000001b3
+    }
+    return h
+}
+
+BitSet :: struct { words: [4]u64 = [4]u64(fill: 0) }
+
+set_bit :: fn(s: ^BitSet, i: usize) {
+    s.words[i / 64] |= u64(1) << (i % 64).trunc(u32)
+}
+
+has_bit :: fn(s: ^const BitSet, i: usize) -> bool {
+    return s.words[i / 64] & (u64(1) << (i % 64).trunc(u32)) is not 0
+}
+
+count_bits :: fn(s: ^const BitSet) -> u32 {
+    n: u32 = 0
+    for w in s.words { n += @popcount(w) }
+    return n
+}
+
+main :: fn() \ {Out} {
+    f := Flags(syn: true, ack: false, fin: false, rst: true, prio: 5)
+    print("flags {} = {}\n", (f, u8(f)))
+    h := Header(magic: 0xCAFE, flags: u8(f), len: 300, seq: 0x01020304)
+    buf: [16]u8 = ---
+    n := encode(h, buf[..])
+    print("wire: ")
+    dump(buf[0..n])
+    back := decode(buf[0..n])
+    print("decoded: {}\n", back)
+    print("bad magic: {}, short: {}\n", (decode(buf[1..n]), decode(buf[0..4])))
+    d := back?
+    print("seq {} len {} flags prio {}\n", (d.seq, d.len, Flags(d.flags).prio))
+    print("bswap: {} {}\n", (@bswap(u32(0x01020304)), @bswap(u16(0xCAFE))))
+    print("checksum of 'hello world!': {}\n", checksum("hello world!"))
+    print("checksum of odd length: {}\n", checksum("abc"))
+
+    vals := [_]u64(0, 1, 127, 128, 300, 16384, 0xFFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF)
+    for v in vals {
+        vb: [10]u8 = ---
+        m := put_varint(v, vb[..])
+        got := get_varint(vb[0..m])?
+        print("varint {}: {} bytes: ", (v, m))
+        dump(vb[0..m])
+        print("  -> {}\n", got.value)
+    }
+    trunc := [_]u8(0x80, 0x80)
+    print("truncated varint: {}\n", get_varint(trunc[..]))
+
+    out: [32]u8 = ---
+    strs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")
+    for s in strs {
+        k := base64(s, out[..])
+        print("base64({}) = {}\n", (s, out[0..k]))
+    }
+
+    print("fnv1a(\"\") = {}\n", fnv1a(""))
+    print("fnv1a(\"a\") = {}\n", fnv1a("a"))
+    print("fnv1a(\"foobar\") = {}\n", fnv1a("foobar"))
+
+    bits := BitSet()
+    idx := [_]usize(0, 5, 63, 64, 100, 127, 128, 255, 5)
+    for i in idx { set_bit(&bits, i) }
+    print("bits set: {}, has 100: {}, has 101: {}\n", (count_bits(&bits), has_bit(&bits, 100), has_bit(&bits, 101)))
+
+    // wide integers
+    big: u256 = 1
+    for _ in 0..100 { big *= 3 }
+    print("3^100 = {}\n", big)
+    print("clz {} ctz {} popcount {}\n", (@clz(u32(1)), @ctz(u32(0x80)), @popcount(u64(0xF0F0))))
+    x: i24 = -8_000_000
+    print("{} {} {}\n", (x, x +% x, x.trunc(i8)))
+    y: u8 = 200
+    print("{} {} {}\n", (y +% 100, y +| 100, y +? 100))
+}

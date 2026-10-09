@@ -1,0 +1,43 @@
+42 -7 255
+18446744073709551615 -170141183460469231731687303715884105728 1267650600228229401496703205376
+1.5 0.30000000000000004 1e21 1e-7
+0.1 16777216 33.333333333333336
+true false
+.Red .Blue
+.Circle(1.5) .Rect(w: 2, h: 3) .Named("sq\"uare") .Empty
+Point(x: -1, y: 2)
+Line(from: Point(x: 0, y: 0), to: Point(x: 3, y: 4), label: null, color: .Green)
+Line(from: Point(x: 1, y: 1), to: Point(x: 2, y: 2), label: "diag", color: .Blue)
+Flags(read: true, write: false, mode: 420)
+plain (1, "in tuple")
+["a", "b\n", "c"] ["b\n", "c"]
+[1, -2, 3] [1, -2]
+5 null "text"
+9 !.NotFound !.Other(13)
+null false
+{braces} ok
+() (7,)
+(lo: 1, hi: 10) 9
+hex beef
+HEX BEEF
+bin 100101
+oct 777
+prefixed 0xff
+zero_pad -00042
+grouped 1_234_567_890_123
+radix36 z
+fixed 3.14
+fixed0 2
+fixed1 1234.5
+sci 1.235e+05
+general 0.000123
+center [***mid***]
+pad_right [ab...]
+captured 24 bytes: Point(x: 1, y: 2)-.Green
+item            qty           unit           total
+--------------------------------------------------
+widget            3         $19.99          $59.97
+gadget (large)   12      $2,500.00      $30,000.00
+bolt           1000          $0.05          $50.00
+premium thing     1  $1,234,567.89   $1,234,567.89
+TOTAL                                $1,264,677.86

@@ -1,0 +1,141 @@
+// Formatting many kinds of values: print's fixed presentations for every type, and an
+// aligned report built with std/fmt and the Capture output handler.
+fmt :: import "std/fmt"
+io :: import "std/io"
+
+Color :: union { Red, Green, Blue }
+Shape :: union { Circle: f32, Rect: (w: f32, h: f32), Named: string, Empty }
+Point :: struct { x, y: i32 }
+Line :: struct { from, to: Point; label: ?string = null; color: Color = .Green }
+Flags :: struct { read, write: bool; mode: u16 = 0o644 }
+
+Item :: struct {
+    name: string
+    qty: u32
+    cents: u64
+}
+
+// Right-align `s` in a column of `width` characters, appending to `out`.
+cell_right :: fn(s: string, width: usize) \ {Out} {
+    buf: [64]u8 = ---
+    print("{}", fmt.pad_left(s, width, ' ', buf[..]))
+}
+
+cell_left :: fn(s: string, width: usize) \ {Out} {
+    buf: [64]u8 = ---
+    print("{}", fmt.pad_right(s, width, ' ', buf[..]))
+}
+
+money :: fn(cents: u64, buf: []u8) -> string {
+    // "$12,345.67": dollars grouped by thousands, always two decimals
+    tmp: [fmt.INT_BUF]u8 = ---
+    dollars := fmt.grouped(cents / 100, ',', tmp[..])
+    n: usize = 0
+    buf[n] = '$'
+    n += 1
+    buf[n..n + dollars.len].copy_from(dollars)
+    n += dollars.len
+    buf[n] = '.'
+    buf[n + 1] = '0' + (cents % 100 / 10).trunc(u8)
+    buf[n + 2] = '0' + (cents % 10).trunc(u8)
+    return buf[0..n + 3]
+}
+
+invoice :: fn(items: []const Item) \ {Out} {
+    total: u64 = 0
+    cell_left("item", 14)
+    cell_right("qty", 5)
+    cell_right("unit", 15)
+    cell_right("total", 16)
+    print("\n")
+    print("{}\n", "--------------------------------------------------")
+    for it in items {
+        line := it.cents * u64(it.qty)
+        total += line
+        a: [32]u8 = ---
+        b: [32]u8 = ---
+        c: [32]u8 = ---
+        d: [fmt.INT_BUF]u8 = ---
+        cell_left(it.name, 14)
+        cell_right(fmt.dec(it.qty, d[..]), 5)
+        cell_right(money(it.cents, a[..]), 15)
+        cell_right(money(line, b[..]), 16)
+        print("\n")
+        _ = c
+    }
+    z: [32]u8 = ---
+    cell_left("TOTAL", 34)
+    cell_right(money(total, z[..]), 16)
+    print("\n")
+}
+
+main :: fn() \ {Out} {
+    // ---- every type through `print` -------------------------------------------------
+    print("{} {} {}\n", (42, -7i8, 255u8))
+    print("{} {} {}\n", (u64(18446744073709551615), i128(-170141183460469231731687303715884105728), u128(1) << 100))
+    print("{} {} {} {}\n", (1.5, 0.1 + 0.2, 1e21, 1.0e-7))
+    print("{} {} {}\n", (f32(0.1), f32(16777216), 100.0 / 3.0))
+    print("{} {}\n", (true, not true))
+    print("{} {}\n", (Color.Red, Color.Blue))
+    print("{} {} {} {}\n", (Shape.Circle(1.5), Shape.Rect(w: 2, h: 3), Shape.Named("sq\"uare"), Shape.Empty))
+    print("{}\n", Point(x: -1, y: 2))
+    print("{}\n", Line(from: Point(x: 0, y: 0), to: Point(x: 3, y: 4)))
+    print("{}\n", Line(from: Point(x: 1, y: 1), to: Point(x: 2, y: 2), label: "diag", color: .Blue))
+    print("{}\n", Flags(read: true, write: false))
+    print("{} {}\n", ("plain", (1, "in tuple")))
+    arr := [_]string("a", "b\n", "c")
+    print("{} {}\n", (arr, arr[1..]))
+    nums := [_]i16(1, -2, 3)
+    print("{} {}\n", (nums, nums[..2]))
+    opt1: ?i32 = 5
+    opt2: ?i32 = null
+    opt3: ?string = "text"
+    print("{} {} {}\n", (opt1, opt2, opt3))
+    res1: IoError!u32 = 9
+    res2: IoError!u32 = !.NotFound
+    res3: IoError!u32 = !.Other(13)
+    print("{} {} {}\n", (res1, res2, res3))
+    nested: ??i32 = ?i32(null)
+    print("{} {}\n", (nested, nested is null))
+    print("{{braces}} {}\n", "ok")
+    unit := ()
+    print("{} {}\n", (unit, (7,)))
+    named := (lo: 1, hi: 10)
+    print("{} {}\n", (named, named.hi - named.lo))
+
+    // ---- std/fmt presentations ---------------------------------------------------------
+    b: [fmt.INT_BUF]u8 = ---
+    f: [400]u8 = ---
+    // Each result lives in the buffer it was written to, so use one call per print.
+    print("hex {}\n", fmt.hex(u32(48879), b[..]))
+    print("HEX {}\n", fmt.hex_upper(u32(48879), b[..]))
+    print("bin {}\n", fmt.bin(u8(37), b[..]))
+    print("oct {}\n", fmt.oct(u16(511), b[..]))
+    print("prefixed {}\n", fmt.prefixed(u32(255), 16, b[..]))
+    print("zero_pad {}\n", fmt.zero_pad(fmt.dec(i32(-42), b[..]), 6, f[..]))
+    print("grouped {}\n", fmt.grouped(u64(1234567890123), '_', b[..]))
+    print("radix36 {}\n", fmt.radix(u32(35), 36, b[..]))
+    print("fixed {}\n", fmt.fixed(3.14159, 2, f[..]))
+    print("fixed0 {}\n", fmt.fixed(2.5, 0, f[..]))
+    print("fixed1 {}\n", fmt.fixed(1234.5, 1, f[..]))
+    print("sci {}\n", fmt.sci(123456.789, 3, f[..]))
+    print("general {}\n", fmt.general(0.000123456, 3, f[..]))
+    print("center [{}]\n", fmt.center("mid", 9, '*', f[..]))
+    print("pad_right [{}]\n", fmt.pad_right("ab", 5, '.', f[..]))
+
+    // ---- capture output of a formatter into a buffer --------------------------------
+    store: [64]u8 = ---
+    cap := io.Capture(buf: store[..])
+    with &cap { print("{}-{}", (Point(x: 1, y: 2), Color.Green)) }
+    text := cap.text()
+    print("captured {} bytes: {}\n", (text.len, text))
+
+    // ---- an aligned report -----------------------------------------------------------------
+    items := [_]Item(
+        Item(name: "widget", qty: 3, cents: 1999),
+        Item(name: "gadget (large)", qty: 12, cents: 250_000),
+        Item(name: "bolt", qty: 1000, cents: 5),
+        Item(name: "premium thing", qty: 1, cents: 123_456_789),
+    )
+    invoice(items[..])
+}

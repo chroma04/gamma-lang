@@ -1,0 +1,36 @@
+arena :: import "std/arena"
+fixed_buffer :: import "std/fixed_buffer"
+
+fill_list :: fn(n: u32) -> AllocError!u32 \ {Alloc} {
+    l := list(u32)
+    defer l.deinit()
+    for i in 0..n { try l.push(i * i) }
+    total: u32 = 0
+    for x in l.items { total += x }
+    return total
+}
+
+main :: fn() \ {Out, Alloc} {
+    store: [4096]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    sizes := [_]u32(10, 100, 3000)
+    for n in sizes {
+        r := with fb.allocator() { fill_list(n) }
+        print("fixed n={}: {}\n", (n, r))
+        fb.reset()
+    }
+    a := arena.new()
+    defer a.deinit()
+    r := with a.allocator() { fill_list(1500) }
+    print("arena: {}\n", r)
+    // arena memory is shared by everything allocated in it
+    with a.allocator() {
+        xs := make(u64, 100) else return
+        ys := make(u64, 100) else return
+        xs.fill(1)
+        ys.fill(2)
+        sum: u64 = 0
+        for i in 0..100 { sum += xs[i] + ys[i] }
+        print("arena slices: {} {}\n", (sum, xs.ptr is not ys.ptr))
+    }
+}

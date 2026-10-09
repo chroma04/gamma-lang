@@ -1,0 +1,143 @@
+// HashMap with struct, tuple and string keys: a sparse grid (game of life), an inverted
+// index (map of lists), nested optionals from a map of optionals, and removal.
+Cell :: struct { x, y: i32 }
+
+Life :: struct {
+    alive: HashMap(Cell, bool)
+}
+
+life_free :: fn(l: ^Life) { l.alive.deinit() }
+
+neighbors :: fn(c: Cell) \ {Yield(Cell)} {
+    for dy in 0..3 {
+        for dx in 0..3 {
+            if dx is 1 and dy is 1 { continue }
+            yield(Cell(x: c.x + i32(dx) - 1, y: c.y + i32(dy) - 1))
+        }
+    }
+}
+
+step :: fn(l: ^Life) -> AllocError!() \ {Alloc} {
+    counts := map(Cell, u32)
+    defer counts.deinit()
+    for e in l.alive.entries() {
+        for n in neighbors(e.key) {
+            old := counts.get(n) else 0
+            try counts.put(n, old + 1)
+        }
+    }
+    next := map(Cell, bool)
+    errdefer next.deinit()
+    for e in counts.entries() {
+        n := e.value
+        was := l.alive.contains(e.key)
+        if n is 3 or (n is 2 and was) {
+            try next.put(e.key, true)
+        }
+    }
+    l.alive.deinit()
+    l.alive = next
+    return ()
+}
+
+bounds :: fn(l: ^const Life) -> (min_x: i32, max_x: i32, min_y: i32, max_y: i32) {
+    min_x := 1_000_000
+    max_x := -1_000_000
+    min_y := 1_000_000
+    max_y := -1_000_000
+    for e in l.alive.entries() {
+        min_x = min_x.min(e.key.x)
+        max_x = max_x.max(e.key.x)
+        min_y = min_y.min(e.key.y)
+        max_y = max_y.max(e.key.y)
+    }
+    return (min_x: min_x, max_x: max_x, min_y: min_y, max_y: max_y)
+}
+
+draw :: fn(l: ^const Life) \ {Out} {
+    b := bounds(l)
+    y := b.min_y
+    while y <= b.max_y {
+        x := b.min_x
+        while x <= b.max_x {
+            if l.alive.contains(Cell(x: x, y: y)) { print("#") } else { print(".") }
+            x += 1
+        }
+        print("\n")
+        y += 1
+    }
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    life := Life(alive: map(Cell, bool))
+    defer life_free(&life)
+    // a glider
+    glider := [_]Cell(Cell(x: 1, y: 0), Cell(x: 2, y: 1), Cell(x: 0, y: 2), Cell(x: 1, y: 2), Cell(x: 2, y: 2))
+    for c in glider { try life.alive.put(c, true) }
+    print("gen 0: {} cells\n", life.alive.len())
+    draw(&life)
+    for g in 1..=4 {
+        try step(&life)
+        print("gen {}: {} cells\n", (g, life.alive.len()))
+    }
+    draw(&life)
+    b := bounds(&life)
+    print("bounds {}\n", b)
+
+    // inverted index: word -> list of line numbers
+    index := map(string, List(u32))
+    defer {
+        for e in index.entries() {
+            l := e.value
+            l.deinit()
+        }
+        index.deinit()
+    }
+    lines := [_]string("a b c", "b c d", "c d e", "a e")
+    for i, line in enumerate(lines[..]) {
+        start: usize = 0
+        for j in 0..=line.len {
+            if j is line.len or line[j] is ' ' {
+                w := line[start..j]
+                start = j + 1
+                if p := index.get(w) {
+                    l := p
+                    try l.push(i.trunc(u32))
+                    try index.put(w, l)
+                } else {
+                    l := list(u32)
+                    try l.push(i.trunc(u32))
+                    try index.put(w, l)
+                }
+            }
+        }
+    }
+    keys := [_]string("a", "b", "c", "d", "e", "z")
+    for k in keys {
+        if l := index.get(k) {
+            print("{}: {}\n", (k, l.items))
+        } else {
+            print("{}: absent\n", k)
+        }
+    }
+
+    // nested optionals from a map of optionals
+    opt := map(string, ?i32)
+    defer opt.deinit()
+    try opt.put("some", 5)
+    try opt.put("none", null)
+    print("{} {} {}\n", (opt.get("some"), opt.get("none"), opt.get("missing")))
+    r := opt.get("none")
+    print("present key with null value: {}\n", r is not null)
+    print("missing key: {}\n", opt.get("missing") is null)
+
+    // tuple keys and removal
+    pairs := map((u8, u8), string)
+    defer pairs.deinit()
+    try pairs.put((1, 2), "one-two")
+    try pairs.put((2, 1), "two-one")
+    try pairs.put((1, 2), "again")
+    print("{} {} {}\n", (pairs.len(), pairs.get((1, 2)), pairs.get((9, 9))))
+    print("removed {}, then {}\n", (pairs.remove((2, 1)), pairs.remove((2, 1))))
+    print("len {}\n", pairs.len())
+}

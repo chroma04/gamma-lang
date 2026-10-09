@@ -1,0 +1,96 @@
+// A keyed store over items, written against an audit effect; the module also provides a
+// handler type that journals events into a fixed buffer.
+model :: import "../model"
+
+pub Event :: union { Added: u32, Removed: u32, Rejected: u32 }
+
+pub Audit :: effect {
+    record: fn(e: Event)
+}
+
+pub Journal :: struct {
+    pub events: [8]Event = [8]Event(fill: Event.Rejected(0))
+    pub count: usize = 0
+    pub dropped: u32 = 0
+}
+
+handler Audit for ^Journal {
+    record(self, e) => {
+        if self.count < self.events.len {
+            self.events[self.count] = e
+            self.count += 1
+        } else {
+            self.dropped += 1
+        }
+    }
+}
+
+pub summary :: fn(j: ^const Journal) -> (added: u32, removed: u32, rejected: u32) {
+    added: u32 = 0
+    removed: u32 = 0
+    rejected: u32 = 0
+    for i in 0..j.count {
+        match j.events[i] {
+            .Added(n) => { added += n }
+            .Removed(n) => { removed += n }
+            .Rejected(_) => { rejected += 1 }
+        }
+    }
+    return (added: added, removed: removed, rejected: rejected)
+}
+
+pub Failure :: union { Stock: model.StockError, Memory: AllocError }
+
+pub Store :: struct {
+    pub items: List(model.Item)
+}
+
+pub store :: fn() -> Store \ {Alloc} => Store(items: list(model.Item))
+
+pub deinit :: fn(s: ^Store) { s.items.deinit() }
+
+find_index :: fn(s: ^const Store, sku: u32) -> ?usize {
+    for i in 0..s.items.items.len {
+        if s.items.items[i].sku is sku { return i }
+    }
+    return null
+}
+
+pub register :: fn(s: ^Store, it: model.Item) -> Failure!() \ {Alloc, Audit} {
+    if find_index(s, it.sku) is not null {
+        record(.Rejected(it.sku))
+        return !.Stock(.Duplicate(it.sku))
+    }
+    try s.items.push(it)
+    return ()
+}
+
+pub receive :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() \ {Audit} {
+    i := find_index(s, sku)
+    if i is null {
+        record(.Rejected(sku))
+        return !.Stock(.Unknown(sku))
+    }
+    model.add_stock(&s.items.items[i?], n)
+    record(.Added(n))
+    return ()
+}
+
+pub ship :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() \ {Audit} {
+    idx := find_index(s, sku)
+    if idx is null {
+        record(.Rejected(sku))
+        return !.Stock(.Unknown(sku))
+    }
+    r := model.remove_stock(&s.items.items[idx?], n)
+    if r is !_ { record(.Rejected(sku)) }
+    try r
+    record(.Removed(n))
+    return ()
+}
+
+pub total_value :: fn(s: ^const Store) -> u64 {
+    total: u64 = 0
+    for i in 0..s.items.items.len { total += model.value(&s.items.items[i]) }
+    return total
+}
