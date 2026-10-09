@@ -595,11 +595,31 @@ fn fmt_sig(f: &mut fmt::Formatter<'_>, head: &str, sig: &FnTy) -> fmt::Result {
             if i > 0 {
                 f.write_str(", ")?;
             }
-            write!(f, "{}", e.effect.name())?;
+            write!(f, "{}", e)?;
         }
         f.write_str("}")?;
     }
     Ok(())
+}
+
+impl fmt::Display for EffectRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.effect.name().as_str())?;
+        if !self.args.is_empty() {
+            f.write_str("(")?;
+            for (i, a) in self.args.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                match a {
+                    GenericArg::Type(t) => write!(f, "{}", t)?,
+                    GenericArg::Value(v) => write!(f, "{}", v)?,
+                }
+            }
+            f.write_str(")")?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Debug for Ty {

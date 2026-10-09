@@ -6,7 +6,7 @@ use crate::diag::Diagnostic;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind};
 use crate::tir::{self, FnId};
-use crate::types::{EffectId, EffectRef, EffectSet, Ty, TyKind};
+use crate::types::{EffectId, EffectRef, EffectSet, GenericArg, Ty, TyKind};
 use num_traits::ToPrimitive;
 use std::rc::Rc;
 
@@ -355,9 +355,46 @@ impl<'s> Sema<'s> {
         for c in where_ {
             self.declare_constraint(module, c);
         }
+        // Instantiations of one generic effect in scope together must be told apart
+        // without knowing the type arguments (§16.6).
+        if !generics.is_empty() {
+            let mut in_scope: Vec<EffectRef> = effects.effects.to_vec();
+            for p in &params {
+                if let TyKind::Fn(f) = p.ty.kind() {
+                    in_scope.extend(f.effects.effects.iter().cloned());
+                }
+            }
+            self.check_distinct(sig.span, &in_scope);
+        }
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
         ok.then_some(FnSig { module, params, ret, effects, generics })
+    }
+
+    /// Reports two instantiations of the same generic effect in `refs` that are neither
+    /// identical nor provably distinct (§16.6).
+    pub fn check_distinct(&mut self, span: crate::source::Span, refs: &[EffectRef]) {
+        for (i, a) in refs.iter().enumerate() {
+            for b in &refs[i + 1..] {
+                if a.effect != b.effect || a == b {
+                    continue;
+                }
+                let distinct = a.args.iter().zip(b.args.iter()).any(|(x, y)| match (x, y) {
+                    (GenericArg::Type(x), GenericArg::Type(y)) => provably_distinct(*x, *y),
+                    _ => false,
+                });
+                if !distinct {
+                    self.error(
+                        span,
+                        format!(
+                            "`{}` and `{}` might be the same effect for some type arguments, so performing either would be ambiguous (§16.6)",
+                            a,
+                            b
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     pub fn resolve_effect_set(&mut self, module: ModuleId, list: &[ast::Expr]) -> EffectSet {
@@ -505,4 +542,31 @@ fn non_constant_part(t: Ty) -> Option<Ty> {
         }
     });
     bad
+}
+
+/// Whether types `a` and `b` differ for every substitution of their type parameters:
+/// both are concrete and unequal, or their outermost constructors differ (§16.6).
+fn provably_distinct(a: Ty, b: Ty) -> bool {
+    use super::generics::has_param;
+    if !has_param(a) && !has_param(b) {
+        return a != b;
+    }
+    match (a.kind(), b.kind()) {
+        (TyKind::Param(_), _) | (_, TyKind::Param(_)) => false,
+        (TyKind::Ptr { pointee: x, .. }, TyKind::Ptr { pointee: y, .. })
+        | (TyKind::Slice { elem: x, .. }, TyKind::Slice { elem: y, .. })
+        | (TyKind::ManyPtr { elem: x, .. }, TyKind::ManyPtr { elem: y, .. })
+        | (TyKind::Optional(x), TyKind::Optional(y)) => provably_distinct(*x, *y),
+        (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => {
+            x.template() != y.template()
+                || xs.iter().zip(ys.iter()).any(|(p, q)| match (p, q) {
+                    (GenericArg::Type(p), GenericArg::Type(q)) => provably_distinct(*p, *q),
+                    _ => false,
+                })
+        }
+        (TyKind::Tuple { elems: x, .. }, TyKind::Tuple { elems: y, .. }) => {
+            x.len() != y.len() || x.iter().zip(y.iter()).any(|(p, q)| provably_distinct(*p, *q))
+        }
+        (x, y) => std::mem::discriminant(x) != std::mem::discriminant(y),
+    }
 }
