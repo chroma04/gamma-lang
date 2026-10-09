@@ -5,6 +5,7 @@ use super::DeclValue;
 use super::func::{FnCx, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
 use super::infer::{Fallback, VarKind};
 use super::untyped::Untyped;
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast::{self, Expr as Expr0, ExprKind};
 use crate::tir::{self, Coercion, Expr, Target};
@@ -174,9 +175,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             },
             // A type prefix before a construction applies to the whole type (§A.7 rule 12).
-            ExprKind::ArrayType { len, elem } if matches!(elem.kind, ExprKind::Call { .. }) => {
-                let ExprKind::Call { callee, args, .. } = &elem.kind else { unreachable!() };
-                let elem_ty = self.resolve_type(callee);
+            ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
+                let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else {
+                    unreachable!()
+                };
+                // `[2][3]i32(…)`: the element type is everything after the outer prefix.
+                let elem_ty = self.resolve_type(&without_call(elem));
                 if let Some(ast::Expr { kind: ExprKind::Ident(id), .. }) = len.as_deref()
                     && let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == id.name)
                 {
@@ -193,9 +197,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 self.construct_array(len, elem_ty, args, span)
             }
-            ExprKind::OptionalType(inner) if matches!(inner.kind, ExprKind::Call { .. }) => {
-                let ExprKind::Call { callee, args, .. } = &inner.kind else { unreachable!() };
-                let t = self.resolve_type(callee);
+            ExprKind::OptionalType(inner) if construction_call(inner).is_some() => {
+                let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
+                    unreachable!()
+                };
+                let t = self.resolve_type(&without_call(inner));
                 self.construct_optional(Ty::optional(t), t, args, span)
             }
             ExprKind::OptionalType(_)
@@ -459,7 +465,12 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn unify_operands(&mut self, a: Ty, b: Ty, span: Span, what: &str) -> Ty {
         if self.infer.unify(a, b).is_err() {
             let (a, b) = (self.infer.resolve(a), self.infer.resolve(b));
-            self.error(span, format!("{} have different types: `{}` and `{}`", what, a, b));
+            let mut d = Diagnostic::error(span, format!("{} have different types: `{}` and `{}`", what, a, b));
+            let is_array = |t: Ty| matches!(t.kind(), TyKind::Array { .. });
+            if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
+                d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
+            }
+            self.sema.emit(d);
             return Ty::error();
         }
         self.infer.shallow(a)
@@ -1862,4 +1873,28 @@ fn asm_entries(list: &ast::Expr, pairs: bool) -> Vec<&ast::Expr> {
         ast::ExprKind::Tuple(elems) => elems.iter().map(|e| &e.value).collect(),
         _ => vec![list],
     }
+}
+
+/// The call at the end of a chain of array and optional type prefixes, as in
+/// `[2][3]i32(…)` or `?[2]u8(…)`.
+pub fn construction_call(e: &ast::Expr) -> Option<&ast::Expr> {
+    match &e.kind {
+        ExprKind::Call { .. } => Some(e),
+        ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => construction_call(inner),
+        _ => None,
+    }
+}
+
+/// The type a construction `e` builds: `e` with its final call replaced by the callee.
+fn without_call(e: &ast::Expr) -> ast::Expr {
+    let mut t = e.clone();
+    fn strip(e: &mut ast::Expr) {
+        match &mut e.kind {
+            ExprKind::Call { callee, .. } => *e = (**callee).clone(),
+            ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => strip(inner),
+            _ => {}
+        }
+    }
+    strip(&mut t);
+    t
 }

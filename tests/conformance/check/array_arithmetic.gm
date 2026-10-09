@@ -1,0 +1,12 @@
+//! stage: check
+// Elementwise arithmetic is for arrays of numbers, without the `?` flavors (§7.4.6).
+
+f :: fn(a: [3]i32, b: [3]bool, c: [2]i32) {
+    _ = a +? a          //~ ERROR `+?` requires integer operands, not `[3]i32`
+    _ = b + b           //~ ERROR `+` requires numeric operands, not `[3]bool`
+    _ = a % a           //~ ERROR `%` requires integer operands, not `[3]i32`
+    _ = a + c           //~ ERROR have different types: `[3]i32` and `[2]i32`
+    _ = a + 1           //~ ERROR have different types: `[3]i32` and `{integer}`
+}
+
+main :: fn() {}

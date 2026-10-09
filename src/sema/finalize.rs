@@ -86,7 +86,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
             Obligation::Numeric { ty, span, op, int_only, signed_only } => {
-                let t = self.infer.resolve(ty);
+                let shown = self.infer.resolve(ty);
+                let mut t = shown;
+                // `+ - * /` (not the `?` flavors) and negation apply to arrays of numbers,
+                // elementwise (§7.4.6).
+                let base = op.trim_end_matches(['%', '|']);
+                if matches!(base, "+" | "-" | "*" | "/") && (base.len() == op.len() || base != "/") {
+                    while let TyKind::Array { elem, .. } = t.kind() {
+                        t = *elem;
+                    }
+                }
                 if t.is_error() {
                     return;
                 }
@@ -108,7 +117,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         (false, true) => "signed integer or float",
                         (false, false) => "numeric",
                     };
-                    self.error(span, format!("`{}` requires {} operands, not `{}`", op, what, t));
+                    self.error(span, format!("`{}` requires {} operands, not `{}`", op, what, shown));
                 }
             }
         }

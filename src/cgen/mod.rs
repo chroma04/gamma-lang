@@ -7,6 +7,7 @@
 //! descriptors. The design is described in `docs/architecture.md`.
 
 mod arith;
+mod elementwise;
 mod expr;
 mod fiber;
 mod func;

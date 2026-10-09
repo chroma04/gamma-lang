@@ -155,7 +155,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    fn int_binary(&mut self, e: &Expr, op: BinOp, lt: Ty, rt: Ty, a: &str, b: &str) -> CResult<String> {
+    pub(super) fn int_binary(&mut self, e: &Expr, op: BinOp, lt: Ty, rt: Ty, a: &str, b: &str) -> CResult<String> {
         let ii = self.int_info(lt).unwrap();
         let c = ii.cty();
         let loc = self.loc(e);

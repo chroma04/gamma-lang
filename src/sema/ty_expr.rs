@@ -21,7 +21,7 @@ impl<'s> Sema<'s> {
             // `[3]i32(1, 2, 3)` and `?T(x)` construct values (§A.7 rule 12), unless the call
             // instantiates a generic type: `[4]List(i32)`.
             ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner)
-                if matches!(inner.kind, ExprKind::Call { .. }) =>
+                if super::expr::construction_call(inner).is_some() =>
             {
                 self.looks_like_type(module, inner)
             }
