@@ -154,7 +154,7 @@ fn maximal_munch() {
     );
     assert_eq!(toks(".. ..= ... . :: := : =>"), ".. ..= ... . :: := : => EOF");
     // Operators with no combined form split.
-    assert_eq!(toks("== != !x"), "= = ! = ! x EOF");
+    assert_eq!(toks("= = ! = !x"), "= = ! = ! x EOF");
     assert_eq!(toks("a<<?=b"), "a <<? = b EOF");
     assert_eq!(toks("a+-b"), "a + - b EOF");
 }
@@ -839,4 +839,10 @@ fn spans_are_in_bounds_and_ordered() {
         assert!(t.span.lo >= prev && t.span.hi >= t.span.lo && t.span.hi as usize <= src.len(), "{:?}", t);
         prev = t.span.hi;
     }
+}
+
+#[test]
+fn c_equality_operators_are_reported() {
+    one_err("a == b", "`==` is not an operator; compare with `is`");
+    one_err("a != b", "`!=` is not an operator; compare with `is not`");
 }

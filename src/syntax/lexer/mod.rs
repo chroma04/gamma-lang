@@ -313,6 +313,19 @@ impl<'a> Lexer<'a> {
                     self.emit(TokenKind::Punct(p), lo, self.pos);
                 }
             }
+            // C's `==` and `!=`: report them, and read them as `is` and `is not`.
+            b'=' | b'!' if self.bytes.get(self.pos + 1) == Some(&b'=') => {
+                let eq = self.bytes[self.pos] == b'=';
+                self.pos += 2;
+                let (op, kind) = if eq {
+                    ("is", TokenKind::Keyword(Keyword::Is))
+                } else {
+                    ("is not", TokenKind::Punct(Punct::IsNot))
+                };
+                let written = if eq { "==" } else { "!=" };
+                self.error(lo, self.pos, format!("`{}` is not an operator; compare with `{}` (§7.6)", written, op));
+                self.emit(kind, lo, self.pos);
+            }
             _ => match self.scan_punct() {
                 Some(p) => self.emit(TokenKind::Punct(p), lo, self.pos),
                 None => self.unexpected_char(),

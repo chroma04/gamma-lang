@@ -5,7 +5,9 @@ a<<?=b
 a<<%=b a<<|=b a>>=b a>>b a>=b
 a+%b a+|b a+?b a-?b
 a+-b a--b a-->b
-a==b a!=b !a !!a
+a==b !a !!a           //~ ERROR `==` is not an operator
+a!=b                  //~ ERROR `!=` is not an operator
+a = =b a! =b         // spaced, they are separate tokens
 x..y x..=y x...y x....y
 a::b a:=b a:b a: =b
 a=>b a->b a-=>b

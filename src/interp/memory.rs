@@ -36,12 +36,34 @@ struct Alloc {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MemError {
     Null,
-    Unmapped { addr: u64, len: u64 },
-    Dead { addr: u64, kind: AllocKind },
-    OutOfBounds { addr: u64, len: u64, base: u64, size: u64 },
-    Misaligned { addr: u64, align: u64 },
-    ReadOnly { addr: u64, kind: AllocKind },
+    Unmapped {
+        addr: u64,
+        len: u64,
+    },
+    Dead {
+        addr: u64,
+        kind: AllocKind,
+    },
+    OutOfBounds {
+        addr: u64,
+        len: u64,
+        base: u64,
+        size: u64,
+    },
+    Misaligned {
+        addr: u64,
+        align: u64,
+    },
+    ReadOnly {
+        addr: u64,
+        kind: AllocKind,
+    },
     Exhausted,
+    /// The host could not provide memory for an object of `size` bytes.
+    TooLarge {
+        size: u64,
+        kind: AllocKind,
+    },
 }
 
 impl MemError {
@@ -70,6 +92,10 @@ impl MemError {
                 format!("invalid memory access: write to read-only memory at address {:#x}", addr)
             }
             MemError::Exhausted => "address space exhausted".into(),
+            MemError::TooLarge { size, kind: AllocKind::Stack | AllocKind::Temp } => {
+                format!("stack overflow: a local of {} bytes does not fit", size)
+            }
+            MemError::TooLarge { size, .. } => format!("out of memory allocating {} bytes", size),
         }
     }
 }
@@ -98,8 +124,13 @@ impl Memory {
         if next >= self.limit {
             return Err(MemError::Exhausted);
         }
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(size as usize).is_err() {
+            return Err(MemError::TooLarge { size, kind });
+        }
+        bytes.resize(size as usize, 0);
         self.next = next;
-        self.allocs.push(Alloc { base, size, bytes: vec![0; size as usize], live: true, mutable, kind });
+        self.allocs.push(Alloc { base, size, bytes, live: true, mutable, kind });
         self.live_count += 1;
         Ok(base)
     }

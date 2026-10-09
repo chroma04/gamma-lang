@@ -1,0 +1,9 @@
+//! stage: check
+// Common slips from other languages get a hint (§7.6, §11.5).
+main :: fn() {
+    x := 3
+    if x == 3 { }                     //~ ERROR `==` is not an operator; compare with `is`
+    if x != 3 { }                     //~ ERROR `!=` is not an operator; compare with `is not`
+    g := fn(a: i32) -> i32 => { a + 1 }   //~ ERROR `=>` takes an expression
+    _ = g(1)
+}

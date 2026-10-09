@@ -12,7 +12,7 @@ first :: fn() {
     d := 5
     for x in { } //~ ERROR expected an expression, found `{`
     e := 6
-    if a == b { } //~ ERROR expected `{` to begin a block, found `=`
+    if a = b { } //~ ERROR expected `{` to begin a block, found `=`; to compare values, use `is`
     f := 7
 }
 

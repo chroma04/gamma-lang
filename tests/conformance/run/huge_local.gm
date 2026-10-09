@@ -1,0 +1,7 @@
+//! exit: 134
+// A local too large for any stack is a stack overflow trap, not a crash.
+main :: fn() \ {Out} {
+    x: [1000000000000]u8 = ---
+    x[5] = 1
+    print("hi {}\n", x[5])
+}

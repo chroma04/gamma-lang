@@ -187,7 +187,12 @@ impl Parser<'_> {
                 self.mk_expr(ExprKind::Else { lhs: Box::new(lhs), capture: Some(capture), rhs: Box::new(rhs) }, span)
             );
         }
-        let rhs = self.nest(|p| p.parse_else())?;
+        // `e else { … }`: a block fallback (not inside a condition, where `{` begins the body).
+        let rhs = if self.at(Punct::LBrace) && !self.restr.no_brace {
+            self.parse_block_expr()?
+        } else {
+            self.nest(|p| p.parse_else())?
+        };
         let span = lhs.span.to(rhs.span);
         Ok(self.mk_expr(ExprKind::Else { lhs: Box::new(lhs), capture: None, rhs: Box::new(rhs) }, span))
     }

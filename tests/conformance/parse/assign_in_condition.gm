@@ -1,0 +1,5 @@
+//! stage: parse
+// `=` where a block should begin is most likely a comparison (§7.6).
+main :: fn() {
+    if x = 1 { }                      //~ ERROR to compare values, use `is`
+}

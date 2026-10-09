@@ -1,0 +1,11 @@
+// A block as the fallback of `else` (§10.4).
+f :: fn(n: i32) -> ?i32 => if n > 0 { n } else { null }
+g :: fn(n: i32) -> i32 \ {Out} {
+    x := f(n) else {
+        print("none\n")
+        return -1
+    }
+    y := f(n - 5) else { 100 }
+    return x + y
+}
+main :: fn() \ {Out} { print("{} {}\n", (g(3), g(-1))) }

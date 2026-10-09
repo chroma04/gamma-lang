@@ -9,6 +9,9 @@ use crate::tir::*;
 use crate::types::*;
 use std::rc::Rc;
 
+/// The largest frame the interpreter runs: far above any real thread's stack.
+const MAX_FRAME: u64 = 1 << 30;
+
 impl<'a> Machine<'a> {
     pub fn eval_args(&mut self, a: Act, args: &[Expr]) -> R<Vec<Value>> {
         let mut vals = Vec::with_capacity(args.len());
@@ -102,8 +105,13 @@ impl<'a> Machine<'a> {
                 ),
             );
         }
-        // Running out of a fiber's stack is checked (§14.1).
-        let cost = if self.fiber_stack == u64::MAX { 0 } else { self.frame_cost(fid) };
+        // Running out of a fiber's stack is checked (§14.1). A frame that no stack could
+        // hold is an overflow on a thread's stack too.
+        let cost = self.frame_cost(fid);
+        if cost > MAX_FRAME {
+            return self.trap(span, format!("stack overflow: `{}` needs a frame of {} bytes", f.name, cost));
+        }
+        let cost = if self.fiber_stack == u64::MAX { 0 } else { cost };
         if cost > self.fiber_stack && !self.fast() {
             return self.trap(span, "stack overflow on a fiber stack");
         }

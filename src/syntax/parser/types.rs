@@ -255,7 +255,13 @@ impl Parser<'_> {
         }
         let saved_labels = std::mem::take(&mut self.labels);
         let body = if self.eat(Punct::FatArrow) {
-            self.parse_expr().map(FnBody::Expr)
+            if self.at(Punct::LBrace) {
+                let span = self.span();
+                self.report(span, "`=>` takes an expression; a block body is written without it: `fn(…) -> R { … }`");
+                self.parse_block().map(FnBody::Block)
+            } else {
+                self.parse_expr().map(FnBody::Expr)
+            }
         } else {
             self.parse_block().map(FnBody::Block)
         };

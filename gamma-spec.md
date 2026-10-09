@@ -252,6 +252,7 @@ Exceptions to maximal munch:
 - `---` is always one token, so `a---b` is ill-formed; write `a - -b`.
 - A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
 - The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
+- `==` and `!=` are not tokens; the character pairs are ill-formed (equality is written `is` and `is not`, §7.6). Implementations should say so and may read them as `is` and `is not` to continue.
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -832,7 +833,7 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 **Type operators.** In type expressions, the prefix forms `?T`, `^T`, `^const T`, `[]T`, `[]const T`, `[N]T`, `[^]T`, `[^]const T` apply to the entire type that follows (so `?^T` is `?(^T)` and `[]?u8` is a slice of `?u8`). The infix `E!T` is right-associative and looser than every prefix form: `E!?^T` is `E!(?(^T))`. A type expression used as a value argument (`list(?u8)`) parses the same way.
 
-**`else` forms.** After `else`: the keyword `if` continues an `if` chain; `{` begins an `else` block of an `if`; an identifier immediately followed by `=>` begins an error capture (§10.4); anything else is the fallback operand of `e else d`.
+**`else` forms.** After `else`: the keyword `if` continues an `if` chain; `{` begins an `else` block of an `if`, or the block fallback of `x else { … }` (§10.4); an identifier immediately followed by `=>` begins an error capture (§10.4); anything else is the fallback operand of `e else d`.
 
 ### 7.4 Arithmetic
 
