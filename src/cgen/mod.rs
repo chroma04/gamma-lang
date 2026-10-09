@@ -348,7 +348,8 @@ impl<'a> Gen<'a> {
         let def = &self.prog.fns[entry.index()];
         let ret = def.ret;
         let rc = self.ty.cty(ret);
-        let mut s = String::from("int main(int argc, char **argv) {\n    gm_set_args(argc, argv);\n");
+        let mut s =
+            String::from("int main(int argc, char **argv) {\n    gm_set_args(argc, argv);\n    gm_thread_stack();\n");
         let _ = writeln!(s, "    gm_debug = {};", self.opts.debug as u8);
         s.push_str("    gm_init_consts();\n    gm_node *cx = NULL;\n");
         let a = self.prog.ambient.clone();

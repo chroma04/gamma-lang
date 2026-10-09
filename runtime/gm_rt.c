@@ -987,7 +987,11 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
 
 typedef struct { pthread_t t; void (*f)(void *); void *arg; } gm_thread;
 
+/* The stack size of the threads the runtime starts. */
+#define GM_THREAD_STACK_SIZE ((size_t)8 << 20)
+
 static void *gm_thread_main(void *p) {
+    gm_thread_stack();
     gm_thread *t = (gm_thread *)p;
     t->f(t->arg);
     return NULL;
@@ -1000,7 +1004,7 @@ static int64_t gm_thread_spawn(void *f, void *arg) {
     t->arg = arg;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 8u << 20);
+    pthread_attr_setstacksize(&attr, GM_THREAD_STACK_SIZE);
     int r = pthread_create(&t->t, &attr, gm_thread_main, t);
     pthread_attr_destroy(&attr);
     if (r != 0) {
@@ -1170,7 +1174,36 @@ static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
 static _Thread_local gm_fiber *gm_fiber_pool;
 
 static _Noreturn void gm_stack_overflow(void) {
-    gm_trap("stack overflow on a fiber stack", NULL, 0, 0);
+    gm_trap(gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow", NULL, 0, 0);
+}
+
+/* The space kept below a thread's limit for reporting the overflow. */
+#define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
+
+static void gm_thread_stack(void) {
+    uintptr_t low = 0;
+    size_t size = 0;
+#if defined(__APPLE__)
+    pthread_t me = pthread_self();
+    size = pthread_get_stacksize_np(me);
+    low = (uintptr_t)pthread_get_stackaddr_np(me) - size;
+#elif defined(__linux__)
+    pthread_attr_t a;
+    void *addr;
+    if (pthread_getattr_np(pthread_self(), &a) == 0) {
+        if (pthread_attr_getstack(&a, &addr, &size) == 0) low = (uintptr_t)addr;
+        pthread_attr_destroy(&a);
+    }
+#endif
+    /* Without a known stack (other systems), nothing is checked. */
+    gm_thread_stack_limit = low != 0 && size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
+    gm_stack_limit = gm_thread_stack_limit;
+}
+
+/* Makes `fb` (NULL: the thread's own stack) the running stack. */
+static void gm_set_cur_fiber(gm_fiber *fb) {
+    gm_cur_fiber = fb;
+    gm_stack_limit = fb ? fb->limit : gm_thread_stack_limit;
 }
 
 static void gm_fiber_entry(gm_fiber *fb) {
@@ -1239,12 +1272,12 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
 
 static void gm_with_go(gm_with *w, gm_fiber *fb) {
     gm_fiber *me = gm_cur_fiber;
-    gm_cur_fiber = fb;
+    gm_set_cur_fiber(fb);
     fb->state = GM_FB_RUNNING;
     fb->started = 1;
     w->event = 0;
     gm_rt_switch(&w->driver_sp, fb->sp, NULL);
-    gm_cur_fiber = me;
+    gm_set_cur_fiber(me);
 }
 
 static void gm_with_clause(gm_with *w) {

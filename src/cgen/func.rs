@@ -111,8 +111,8 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;");
     }
     fg.line(&format!("struct gm_fr{} F;", f.0));
-    // Running out of a fiber's stack is checked (§14.1).
-    if fg.g.opts.checks && !fg.g.prog.ctl_ops.is_empty() {
+    // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
+    if fg.g.opts.checks {
         fg.line("GM_STACK_CHECK(&F);");
     }
     fg.line("F.h.up = (gm_frame *)env;");

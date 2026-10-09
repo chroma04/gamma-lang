@@ -326,8 +326,11 @@ two more kinds of non-local exit: `resume` ends the clause and tells the driver
 which fiber to switch to; a cancelled fiber unwinds to its base and switches
 back. Fiber records come from a pool and are never freed, and each suspension
 increments the fiber's epoch, so a continuation (fiber, epoch) that was already
-consumed is always detected. In checked builds every function entry compares
-its frame's address with the running fiber's stack limit.
+consumed is always detected. In Debug and Checked builds every function entry
+compares its frame's address with the lowest address the running stack may use:
+the fiber's limit, or, on a thread's own stack, the bottom of that stack (found
+with `pthread_getattr_np` or `pthread_get_stackaddr_np` at the start of `main`
+and of each thread) plus a reserve for reporting the overflow.
 
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.

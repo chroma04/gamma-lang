@@ -8,6 +8,10 @@
 #ifndef GM_RT_H
 #define GM_RT_H
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* pthread_getattr_np */
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -300,8 +304,14 @@ static gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*sta
 /* Registers a new fiber as suspended on `w` (made by @fiber) and returns its continuation. */
 static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 /* Checked builds: traps if a frame at address `p` is below the running fiber's limit. */
-#define GM_STACK_CHECK(p) do { if (gm_cur_fiber && (uintptr_t)(p) < gm_cur_fiber->limit) gm_stack_overflow(); } while (0)
+/* Checked builds compare each frame's address with the lowest address the running stack
+   may use: the fiber's limit, or the thread's (§14.1, §18). */
+#define GM_STACK_CHECK(p) do { if ((uintptr_t)(p) < gm_stack_limit) gm_stack_overflow(); } while (0)
 static _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
+static _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
+static _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
+/* Records the stack limit of the calling thread (at the start of `main` or of a thread). */
+static void gm_thread_stack(void);
 static _Noreturn void gm_stack_overflow(void);
 /* Driver: switches to `fb` until something happens on `w` (an event). */
 static void gm_with_go(gm_with *w, gm_fiber *fb);

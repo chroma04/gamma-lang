@@ -1,0 +1,11 @@
+//! exit: 134
+// Running out of the thread's stack is a checked error (§18), as on a fiber (§14.1).
+deep :: fn(n: u64) -> u64 {
+    if n is 0 { return 0 }
+    return deep(n - 1) + 1
+}
+
+main :: fn() \ {Out} {
+    print("{}\n", deep(10000))
+    print("{}\n", deep(1000000000))
+}

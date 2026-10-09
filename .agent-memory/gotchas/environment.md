@@ -11,3 +11,6 @@
   accepts (e.g. `(T){0}` for a zero-member struct → use `(T){}`). Before pushing C back-end
   changes run `CC=clang cargo test -q` too.
 - Worktree subagents (isolation: worktree) are created from the repo's default branch (old main here), not the session branch: brief them to `git reset --hard <session branch tip>` first.
+- Force-push is denied by the permission classifier: never push a commit you may want to drop.
+  Never make memory-only commits (their messages can't avoid mentioning notes); fold memory
+  edits into code commits.

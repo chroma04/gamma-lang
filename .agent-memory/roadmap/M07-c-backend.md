@@ -13,6 +13,7 @@ gcc and clang (macOS CI = clang). Fibers, foreign fns, #global, #bits all done.
 `gamma build [-o]`, `gamma run --backend=c`, `--mode=debug|checked|fast` (Options{checks,debug}).
 Elementwise array ops done (sema finalize Numeric peels arrays; cgen/elementwise.rs loops).
 Not yet: ints >128 bits (delegated), static handler specialization (D.3),
-main-stack overflow trap (C segfaults; fiber stacks are checked), `gamma test` native.
+`gamma test` native. Main/thread stack overflow traps in checked builds (gm_stack_limit TLS,
+gm_thread_stack(), 256 KiB reserve; fast mode segfaults = UB).
 Gotchas: Const is a place (static gm_cN) — `&CONST` must not copy; pattern types needed
 finalizing (sema fix); defers run by a ladder must save/clear gm_unw; `(T){}` not `(T){0}`.
