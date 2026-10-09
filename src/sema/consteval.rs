@@ -149,7 +149,7 @@ impl<'s> Sema<'s> {
 
     /// Checks `f`'s body now if it is still pending. Returns false if it cannot
     /// have one yet (it is being checked).
-    fn ensure_body(&mut self, f: FnId, span: Span) -> bool {
+    pub(super) fn ensure_body(&mut self, f: FnId, span: Span) -> bool {
         if self.prog.fns[f.index()].body.is_some() {
             return true;
         }

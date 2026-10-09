@@ -150,6 +150,8 @@ lowers each function body to TIR.
 | `fnlit.rs` | function literals, captures and second-class rules |
 | `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations, `with`, `for` over iterators |
 | `generics.rs` | constraints, inference of type arguments, monomorphization |
+| `consteval.rs` | compile-time evaluation (checking the bodies it reaches first), `@static_assert` |
+| `stack_size.rs` | `@stack_size`: the deepest chain of frames below a function, following statically known handlers and function arguments |
 | `builtins.rs` | predeclared names built into the compiler (primitive type names) |
 
 ### The core prelude and the entry point
@@ -262,9 +264,10 @@ switch. A `with … on` runs its body on a new fiber and then acts as the driver
 it waits for a fiber to perform a `ctl` operation, runs the clause, and switches
 to the fiber that `resume` names. `discard` sends the fiber a cancellation that
 unwinds it like an exit. A continuation is a fiber number and a suspension
-count, so consuming one twice, or from the wrong `with`, is detected. Fiber
-stack usage is estimated per call from the size of each frame's locals, so
-running out of a fiber's stack traps as in compiled code.
+count, so consuming one twice, or from the wrong `with`, is detected. Each call
+is charged against the fiber's stack by `tir::frame_cost`, the same cost model
+`@stack_size` uses, so running out of a fiber's stack traps as in compiled code,
+and a fiber given `@stack_size(f)` bytes never traps while running `f`.
 
 **Threads.** Each Gamma thread runs on an OS thread of its own, sharing the
 machine under a fair global lock (`src/interp/threads.rs`): a thread holds it while

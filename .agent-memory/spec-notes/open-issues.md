@@ -1,7 +1,4 @@
 # Known spec issues not yet resolved (decide when the milestone arrives)
-- @stack_size (§14.8) with a C backend: we can't know cc's frame sizes before compiling.
-  Idea: estimate conservatively in Gamma, then verify with `cc -fstack-usage` after compiling
-  and fail the build if exceeded. (M12)
 - Generic bodies checked once (§16.1) with array lengths depending on comptime params
   (`[N*2]T`): type equality needs symbolic lengths. Plan: equal iff normalized length
   expressions are identical. (M5)

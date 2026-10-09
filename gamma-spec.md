@@ -1735,7 +1735,7 @@ Deferred statements cannot perform `ctl` operations (§8.8), so cancellation can
 
 `@fiber` may be used only inside the body of a `ctl` clause. `f` is a function pointer `^fn(a: A) -> never \ {S}`, `arg: A`, and `stack: []u8`. `A` must be a first-class type (§16.1): a second-class value cannot be smuggled into a fiber that may outlive its frame. It creates a new fiber belonging to the clause's `with`, whose initial state is "about to call `f(arg)` on `stack`", and returns its continuation; resuming it (with `()`) starts the call.
 
-- The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` not handled by the `with` itself are therefore required from the context outside the `with`, exactly like effects of the `with`'s body. They are part of the effects the handler requires: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects not handled by the declaration must be listed in its `\ {A}`.
+- The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` other than the clause's own effect are part of the effects the handler requires, since the clause cannot know which other handlers its `with` installs: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects other than the declaration's own must be listed in its `\ {A}`. (A fiber that needs several `ctl` operations of its scheduler gets them from one effect, as `Async` in §14.7 does.)
 - `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause discards it (a library `spawn` wraps the user's function to do this).
 - The stack rules of §14.1 apply to `stack`.
 
@@ -1800,7 +1800,16 @@ with &sched on main_stack[..] {
 
 ### 14.8 Stack size analysis
 
-`@stack_size(f)` is a compile-time `usize` constant: an upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls. A perform counts as a direct call to the clause when the handler is statically known (§D.3), and otherwise as an unknown call. Recursion, calls through function pointers or second-class parameters whose targets are not statically known, unknown performs, and foreign calls are compile errors in `@stack_size`. It is intended for sizing fiber stacks in embedded code.
+`@stack_size(f)` is a compile-time `usize` constant: an upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls and the space the implementation reserves on a fiber stack for its run-time support. It is at least `@min_stack`, so a stack of `@stack_size(f)` bytes is big enough for a fiber that calls `f` (a `with … on` whose body just calls `f`, or a fiber made by `@fiber(f, …)`). It is intended for sizing fiber stacks in embedded code.
+
+The bound follows the calls that `f` can make, using what is statically known at each call:
+
+- A call of a named function, or through a function value whose target is statically known, counts that function. A function value is statically known when it is a function name or literal, or a parameter or immutable local bound to one along the calls being followed — so `s.sort_by(fn(a, b) => …)` counts the literal where the sort calls `less`.
+- A perform of a `fn` or `esc` operation counts as a call to the clause when the handler is statically known: installed by a `with` that the calls being followed pass through, with a handler literal or a value whose type has `handler … for` declarations (§12.6). The clause's own performs then use the handlers outside that `with` (§12.5).
+- A perform of a `ctl` operation suspends the fiber; its clause runs on another stack (§14.1).
+- A `with … on` counts its `ctl` clauses, which run on the current stack (§14.1), but not its body, which runs on the fiber's stack.
+
+Recursion, calls through function values whose targets are not statically known, performs of operations whose handlers are not statically known (including the ambient effects of §12.9, which `f` cannot see), and foreign calls are compile errors in `@stack_size`. The bound is conservative: each frame is costed generously from the sizes of its locals and temporaries, and the implementation checks fiber stacks at run time in Debug and Checked builds (§14.1).
 
 ### 14.9 Threads
 

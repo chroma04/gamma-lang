@@ -137,31 +137,10 @@ partition :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) -> usize {
     return i - 1
 }
 
-// Quicksort that falls back to heapsort when the recursion gets too deep.
-introsort_rec :: fn(T: type, s: []T, depth: usize, less: fn(a, b: ^const T) -> bool) {
-    cur := s
-    d := depth
-    while cur.len > SMALL {
-        if d is 0 {
-            heap_sort(cur, less)
-            return
-        }
-        d -= 1
-        p := partition(cur, less)
-        lo := cur[0..p]
-        hi := cur[p + 1..cur.len]
-        // Recurse into the smaller part, iterate on the larger.
-        if lo.len < hi.len {
-            introsort_rec(lo, d, less)
-            cur = hi
-        } else {
-            introsort_rec(hi, d, less)
-            cur = lo
-        }
-    }
-    insertion_sort(cur, less)
-}
-
+// Quicksort that falls back to heapsort when a range has been partitioned too often.
+// Instead of recursing, the larger part of each partition waits on a fixed stack
+// while the smaller part is sorted: each waiting range is at least twice the size
+// of the next, so no more than 64 ever wait, and the sort's stack use has a bound.
 introsort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
     depth: usize = 0
     m := s.len
@@ -169,7 +148,39 @@ introsort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
         m /= 2
         depth += 2
     }
-    introsort_rec(s, depth, less)
+    los: [64]usize = ---
+    his: [64]usize = ---
+    depths: [64]usize = ---
+    n: usize = 0
+    lo: usize = 0
+    hi := s.len
+    while true {
+        if hi - lo <= SMALL {
+            insertion_sort(s[lo..hi], less)
+        } else if depth is 0 {
+            heap_sort(s[lo..hi], less)
+        } else {
+            p := lo + partition(s[lo..hi], less)
+            depth -= 1
+            if p - lo < hi - (p + 1) {
+                los[n] = p + 1
+                his[n] = hi
+                hi = p
+            } else {
+                los[n] = lo
+                his[n] = p
+                lo = p + 1
+            }
+            depths[n] = depth
+            n += 1
+            continue
+        }
+        if n is 0 { break }
+        n -= 1
+        lo = los[n]
+        hi = his[n]
+        depth = depths[n]
+    }
 }
 
 // Reverses `s[lo..hi]`.
@@ -191,55 +202,78 @@ rotate :: fn(T: type, s: []T, a, m, b: usize) {
 }
 
 // Merges the sorted runs `s[a..m]` and `s[m..b]` (a < m < b) in place and stably
-// (the SymMerge algorithm: split around the middle, rotate, recurse).
-sym_merge :: fn(T: type, s: []T, a, m, b: usize, less: fn(a, b: ^const T) -> bool) {
-    if m - a is 1 {
-        // Insert s[a] after the elements of s[m..b] that are less than it.
-        i := m
-        j := b
-        while i < j {
-            h := i + (j - i) / 2
-            if less(&s[h], &s[a]) { i = h + 1 } else { j = h }
+// (the SymMerge algorithm: split around the middle, rotate, merge both halves).
+// The second half's merge waits on a fixed stack while the first is done; each
+// half is at most half as long as its range, so no more than 64 ever wait.
+sym_merge :: fn(T: type, s: []T, a0, m0, b0: usize, less: fn(a, b: ^const T) -> bool) {
+    pa: [64]usize = ---
+    pm: [64]usize = ---
+    pb: [64]usize = ---
+    n: usize = 0
+    a := a0
+    m := m0
+    b := b0
+    while true {
+        if m - a is 1 {
+            // Insert s[a] after the elements of s[m..b] that are less than it.
+            i := m
+            j := b
+            while i < j {
+                h := i + (j - i) / 2
+                if less(&s[h], &s[a]) { i = h + 1 } else { j = h }
+            }
+            k := a
+            while k + 1 < i {
+                s.swap(k, k + 1)
+                k += 1
+            }
+        } else if b - m is 1 {
+            // Insert s[m] before the elements of s[a..m] that are greater than it.
+            i := a
+            j := m
+            while i < j {
+                h := i + (j - i) / 2
+                if not less(&s[m], &s[h]) { i = h + 1 } else { j = h }
+            }
+            k := m
+            while k > i {
+                s.swap(k, k - 1)
+                k -= 1
+            }
+        } else {
+            mid := a + (b - a) / 2
+            sum := mid + m
+            start := a
+            r := m
+            if m > mid {
+                start = sum - b
+                r = mid
+            }
+            p := sum - 1
+            while start < r {
+                c := start + (r - start) / 2
+                if not less(&s[p - c], &s[c]) { start = c + 1 } else { r = c }
+            }
+            end := sum - start
+            if start < m and m < end { rotate(s, start, m, end) }
+            if mid < end and end < b {
+                pa[n] = mid
+                pm[n] = end
+                pb[n] = b
+                n += 1
+            }
+            if a < start and start < mid {
+                m = start
+                b = mid
+                continue
+            }
         }
-        k := a
-        while k + 1 < i {
-            s.swap(k, k + 1)
-            k += 1
-        }
-        return
+        if n is 0 { break }
+        n -= 1
+        a = pa[n]
+        m = pm[n]
+        b = pb[n]
     }
-    if b - m is 1 {
-        // Insert s[m] before the elements of s[a..m] that are greater than it.
-        i := a
-        j := m
-        while i < j {
-            h := i + (j - i) / 2
-            if not less(&s[m], &s[h]) { i = h + 1 } else { j = h }
-        }
-        k := m
-        while k > i {
-            s.swap(k, k - 1)
-            k -= 1
-        }
-        return
-    }
-    mid := a + (b - a) / 2
-    n := mid + m
-    start := a
-    r := m
-    if m > mid {
-        start = n - b
-        r = mid
-    }
-    p := n - 1
-    while start < r {
-        c := start + (r - start) / 2
-        if not less(&s[p - c], &s[c]) { start = c + 1 } else { r = c }
-    }
-    end := n - start
-    if start < m and m < end { rotate(s, start, m, end) }
-    if a < start and start < mid { sym_merge(s, a, start, mid, less) }
-    if mid < end and end < b { sym_merge(s, mid, end, b, less) }
 }
 
 // Stable merge sort without extra space: sorted runs of SMALL elements, then

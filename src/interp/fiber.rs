@@ -29,10 +29,6 @@ use std::thread::JoinHandle;
 /// Stack size of a fiber's thread, and the part kept in reserve for overflow checks.
 const FIBER_STACK: usize = 64 << 20;
 const FIBER_MARGIN: usize = 8 << 20;
-/// Bytes at the bottom of a Gamma fiber stack kept for reporting an overflow (as in
-/// compiled code).
-const STACK_RESERVE: u64 = 8192;
-
 /// Values crossing between fiber threads. Only one thread runs at a time and
 /// every handoff goes through a channel, so the `Rc`s inside are never used
 /// concurrently.
@@ -172,7 +168,7 @@ impl<'a> Machine<'a> {
     }
 
     fn new_fiber(&mut self, owner: WithKey, start: Start, state: State, stack: &[u8]) -> u64 {
-        let stack = self.slice_parts(stack).1.saturating_sub(STACK_RESERVE);
+        let stack = self.slice_parts(stack).1.saturating_sub(crate::tir::STACK_RESERVE);
         self.fib.last_id += 1;
         let id = self.fib.last_id;
         self.fib

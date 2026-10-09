@@ -220,7 +220,15 @@ A `join` at the end means the `with` completes only after both tasks have exited
 
 ## Sizing stacks and other notes
 
-- A fiber stack is just a slice you supply: a static array, a slice of a larger array, or memory from an allocator. `@min_stack` is the smallest stack the implementation supports. For embedded code, `@stack_size(f)` is a compile-time upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls. It is an error for recursion, calls through function pointers whose targets are not known, or foreign calls.
+- A fiber stack is just a slice you supply: a static array, a slice of a larger array, or memory from an allocator. `@min_stack` is the smallest stack the implementation supports.
+- `@stack_size(f)` is a compile-time upper bound on the stack a call of the named function `f` needs, including everything it calls and the reserve described below, and never less than `@min_stack`. A stack of that size is enough for a fiber that runs `f`:
+
+  ```gamma
+  // Enough for a fiber made by `@fiber(task_entry, …)`, whatever `task_entry` calls.
+  task_stack: [@stack_size(task_entry)]u8 = ---
+  ```
+
+  The bound follows the calls `f` can make. Performs of `ctl` operations cost nothing here (the fiber suspends and the clause runs on the driver); other performs count as calls to their clauses when the handler is installed by a `with` on the way. Function values passed down as arguments, such as the comparison given to `sort_by`, are followed too. Recursion, calls through function pointers, performs whose handler `f` cannot see (such as `print`, which goes to the ambient `Out` handler), and foreign calls are compile errors, reported where they occur.
 - Fibers do not migrate between threads. Each thread has its own handlers, and a `with` and all its fibers belong to the thread that executed it.
 - `defer` statements cannot perform `ctl` operations, so cancellation can never suspend.
 - Debug and Checked builds check each call against the fiber's stack, so running out of it traps instead of overwriting other memory. The reference implementation keeps the lowest 8 KiB of a fiber stack in reserve for reporting the overflow, so `@min_stack` (16 KiB) leaves room for only a few calls; give fibers that do real work tens of kilobytes or more.

@@ -971,6 +971,26 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             // The smallest fiber stack (§14.1), in bytes.
             "min_stack" => usize_const(tir::MIN_STACK),
+            "stack_size" => {
+                let f = match args {
+                    [ast::Arg { kind: ast::ArgKind::Positional(f), .. }] => self.expr(f, None),
+                    _ => {
+                        self.error(span, "`@stack_size` takes one function: `@stack_size(f)`");
+                        return error_expr(span);
+                    }
+                };
+                match f.kind {
+                    tir::ExprKind::FnRef(id) => match self.sema.stack_size(id, span) {
+                        Some(n) => usize_const(n),
+                        None => error_expr(span),
+                    },
+                    _ if f.ty.is_error() => error_expr(span),
+                    _ => {
+                        self.error(f.span, "`@stack_size` needs the name of a function (§14.8)");
+                        error_expr(span)
+                    }
+                }
+            }
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)

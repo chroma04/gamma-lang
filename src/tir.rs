@@ -259,6 +259,49 @@ impl IoErrorKind {
 /// `@min_stack`: the smallest fiber stack, in bytes (§14.1).
 pub const MIN_STACK: u64 = 16384;
 
+/// The bytes at the end of every fiber stack that Gamma frames may not use: they are
+/// kept for the run-time support code called from the deepest frame.
+pub const STACK_RESERVE: u64 = 8192;
+
+/// What `@stack_size` adds for the fiber's own start-up frames and for a `ctl`
+/// perform, which saves the fiber's state on its stack before switching away.
+pub const STACK_BASE: u64 = 1024;
+
+/// The stack bytes charged for one call of `def`, the cost model shared by
+/// `@stack_size` (§14.8) and the interpreter's fiber stacks. It bounds a compiled
+/// frame generously: a fixed overhead for the return address, saved registers and
+/// spills; twice the locals (room for a copy of each, as a C compiler may make to
+/// initialize one); every composite temporary (call results, constructed values)
+/// bigger than a register; and the records of the handlers its `with`s install.
+pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
+    let mut c = 256u64;
+    for l in &def.locals {
+        c += 2 * size_of(l.ty).next_multiple_of(8);
+    }
+    if let Some(b) = &def.body {
+        fn temps(e: &Expr, size_of: &mut dyn FnMut(Ty) -> u64, c: &mut u64) {
+            match &e.kind {
+                ExprKind::With { handlers, .. } => *c += 128 * handlers.len() as u64,
+                ExprKind::Call { .. }
+                | ExprKind::Aggregate(_)
+                | ExprKind::Array(_)
+                | ExprKind::ArrayFill(_)
+                | ExprKind::Variant { .. }
+                | ExprKind::Builtin { .. } => {
+                    let n = size_of(e.ty);
+                    if n > 8 {
+                        *c += n.next_multiple_of(8);
+                    }
+                }
+                _ => {}
+            }
+            e.for_each_child(&mut |x| temps(x, size_of, c));
+        }
+        temps(b, size_of, &mut c);
+    }
+    c
+}
+
 /// A whole program, ready to run.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -1061,7 +1104,7 @@ pub enum Builtin {
 impl Expr {
     /// Calls `f` on each direct sub-expression, including those inside
     /// statements, conditions, match arms and patterns.
-    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
         match &self.kind {
             ExprKind::Deref(a)
             | ExprKind::AddrOf(a)
@@ -1175,7 +1218,7 @@ impl Expr {
 
 impl Block {
     /// Calls `f` on each expression directly inside the block's statements and tail.
-    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
         for s in self.stmts.iter() {
             match s {
                 Stmt::Let { init, .. } => {
@@ -1202,7 +1245,7 @@ impl Block {
 }
 
 impl CondPart {
-    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
         match self {
             CondPart::Bool(e) => f(e),
             CondPart::Match { pat, value } => {
@@ -1215,7 +1258,7 @@ impl CondPart {
 
 impl Pat {
     /// Calls `f` on the constant expressions inside the pattern.
-    pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
+    pub fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
         match &self.kind {
             PatKind::Const(e) => f(e),
             PatKind::Some(p) | PatKind::Ok(p) | PatKind::Err(p) => p.for_each_child(f),

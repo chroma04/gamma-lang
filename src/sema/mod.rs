@@ -29,6 +29,7 @@ mod methods;
 mod modules;
 mod pattern;
 mod seq;
+mod stack_size;
 mod tests_decl;
 mod ty_expr;
 mod untyped;
