@@ -15,6 +15,7 @@ commands:
   run     run a program; arguments after the file go to the program
   build   compile a program to a native executable (via the system C compiler)
   test    run the `test` declarations of a module (natively if it needs C)
+  fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
   help    print this message
   version print the compiler version
 
@@ -85,6 +86,9 @@ fn parse_args() -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("fmt") {
+        return fmt_command(std::env::args().skip(2).collect());
+    }
     let opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {
@@ -424,4 +428,95 @@ fn run_native(sess: &Session, prog: &gamma::tir::Program, path: &std::path::Path
     };
     let _ = std::fs::remove_dir_all(&dir);
     code
+}
+
+/// `gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)`
+fn fmt_command(args: Vec<String>) -> ExitCode {
+    let mut check = false;
+    let mut paths = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--check" => check = true,
+            s if s.starts_with('-') && s != "-" => {
+                eprintln!("gamma: unknown option `{}`\n\n{}", s, USAGE);
+                return ExitCode::from(2);
+            }
+            _ => paths.push(PathBuf::from(a)),
+        }
+    }
+    if paths.is_empty() {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    }
+    if paths == [PathBuf::from("-")] {
+        // Filter mode: standard input to standard output.
+        let mut src = String::new();
+        if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut src) {
+            eprintln!("gamma: <stdin>: {}", e);
+            return ExitCode::FAILURE;
+        }
+        return match gamma::fmt::format_source(&src) {
+            Ok(out) => {
+                print!("{}", out);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("<stdin>:{}", e);
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let mut files = Vec::new();
+    for p in &paths {
+        if let Err(e) = collect_gm_files(p, &mut files) {
+            eprintln!("gamma: {}: {}", p.display(), e);
+            return ExitCode::FAILURE;
+        }
+    }
+    let mut failed = false;
+    for f in &files {
+        let src = match std::fs::read_to_string(f) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("gamma: {}: {}", f.display(), e);
+                failed = true;
+                continue;
+            }
+        };
+        match gamma::fmt::format_source(&src) {
+            Ok(out) if out != src => {
+                if check {
+                    println!("{}", f.display());
+                    failed = true;
+                } else if let Err(e) = std::fs::write(f, out) {
+                    eprintln!("gamma: {}: {}", f.display(), e);
+                    failed = true;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{}:{}", f.display(), e);
+                failed = true;
+            }
+        }
+    }
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// Adds `path` (a file) or every `.gm` file below it (a directory) to `out`, in name order.
+fn collect_gm_files(path: &std::path::Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if path.is_dir() {
+        let mut entries: Vec<PathBuf> =
+            std::fs::read_dir(path)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
+        entries.sort();
+        for e in entries {
+            if e.is_dir() || e.extension().is_some_and(|x| x == "gm") {
+                collect_gm_files(&e, out)?;
+            }
+        }
+    } else {
+        std::fs::metadata(path)?;
+        out.push(path.to_path_buf());
+    }
+    Ok(())
 }

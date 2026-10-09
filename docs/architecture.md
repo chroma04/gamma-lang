@@ -55,6 +55,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | the `gamma` command-line tool |
+| `src/fmt.rs` | the source formatter behind `gamma fmt` (token based, see `docs/contributing.md`) |
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |

@@ -52,6 +52,8 @@ gamma test file.gm           # run the `test` declarations of a module
 gamma lex file.gm            # print the token stream
 gamma parse file.gm          # check syntax
 gamma parse --dump file.gm   # print the syntax tree
+gamma fmt file.gm            # format source files in place (files or directories)
+gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
 ```
 
 `run`, `build` and `test` also take `--mode=debug|checked|fast` (default `debug`).

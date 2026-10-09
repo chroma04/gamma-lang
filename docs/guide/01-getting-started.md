@@ -67,6 +67,8 @@ gamma check hello.gm       type-check without running
 gamma lex file.gm          print the tokens of a source file
 gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
+gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
+gamma fmt --check file.gm  list the files that formatting would change, without writing
 gamma help                 print usage
 gamma version              print the compiler version
 ```
