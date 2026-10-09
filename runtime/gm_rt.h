@@ -43,6 +43,14 @@
 #define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
 /* The value v as C type T of the same size: a blob as its mirror or back. */
 #define GM_CONV(T, v) ({ __typeof__(v) gm_cv_s_ = (v); T gm_cv_d_; memcpy(&gm_cv_d_, &gm_cv_s_, sizeof(T)); gm_cv_d_; })
+/* `#fast_math` functions: float contraction and reassociation are permitted (§5.3). */
+#if defined(__clang__)
+#define GM_FAST_MATH_ATTR
+#define GM_FAST_MATH_BODY _Pragma("clang fp contract(fast) reassociate(on)")
+#else
+#define GM_FAST_MATH_ATTR __attribute__((optimize("associative-math", "no-signed-zeros", "no-trapping-math", "fp-contract=fast")))
+#define GM_FAST_MATH_BODY
+#endif
 /* A zero value of C type T (scalar or blob). */
 #define GM_ZERO(T) ((T){})
 

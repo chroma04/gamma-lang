@@ -89,6 +89,7 @@ impl<'s> Sema<'s> {
         let ItemKind::Binding(_) = &item.kind else { return DeclValue::Error };
         let mut fuel = None;
         let (mut global, mut thread_local, mut export, mut callconv) = (false, false, None, None);
+        let mut hints = (tir::FnHints::default(), None);
         for attr in &item.attrs {
             match attr.name.name.as_str() {
                 "global" => global = true,
@@ -114,8 +115,22 @@ impl<'s> Sema<'s> {
                     _ => self.error(attr.span, "`#fuel(n)` takes a positive integer constant"),
                 },
                 // Inlining hints (§11.10) do not change the meaning of a program.
-                "inline" | "noinline" | "cold" => {}
-                "packed" | "align" | "bits" | "c_union" | "link_name" | "fast_math" | "deprecated" => {
+                "inline" | "noinline" | "cold" | "fast_math" => {
+                    match attr.name.name.as_str() {
+                        "inline" => hints.0.inline = Some(true),
+                        "noinline" => hints.0.inline = Some(false),
+                        "cold" => hints.0.cold = true,
+                        _ => hints.0.fast_math = true,
+                    }
+                    hints.1 = Some((attr.span, attr.name.name));
+                }
+                // Uses of the declaration warn (`check_deprecated`).
+                "deprecated" => {
+                    if !matches!(attr.args.as_deref(), None | Some([ast::Expr { kind: ExprKind::Str(_), .. }])) {
+                        self.error(attr.span, "`#deprecated` takes an optional message: `#deprecated(\"use g\")`");
+                    }
+                }
+                "packed" | "align" | "bits" | "c_union" | "link_name" => {
                     self.error(attr.span, format!("attribute `#{}` is not supported here yet", attr.name.name))
                 }
                 other => self.error(attr.span, format!("unknown attribute `#{}` (§20.2)", other)),
@@ -139,6 +154,18 @@ impl<'s> Sema<'s> {
                 DeclValue::Fn(f) => self.apply_callconv(*f, cc, span),
                 DeclValue::Error => {}
                 _ => self.error(span, "`#callconv` applies only to a function, a foreign function or a `^fn` type"),
+            }
+        }
+        if let (h, Some((span, attr))) = hints {
+            match &v {
+                DeclValue::Fn(f) => {
+                    self.prog.fns[f.index()].hints = h;
+                    if h.inline == Some(true) {
+                        self.inline_fns.push((*f, span));
+                    }
+                }
+                DeclValue::Error => {}
+                _ => self.error(span, format!("`#{}` applies only to a function (§20.2)", attr)),
             }
         }
         if let Some((sym, span)) = export {

@@ -328,6 +328,7 @@ impl FnB {
             parent: self.parent,
             kind: self.kind,
             callconv: Default::default(),
+            hints: Default::default(),
             body: Some(body),
         }
     }

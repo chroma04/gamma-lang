@@ -263,6 +263,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// The value of a top-level declaration named `name`.
     pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, span: Span) -> Expr {
+        self.sema.check_deprecated(d, span);
         match self.sema.resolve_decl(d) {
             DeclValue::Fn(f) => self.fn_ref(f, span),
             DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),

@@ -393,8 +393,21 @@ pub struct FnDef {
     pub kind: FnKind,
     /// The calling convention (§19.2); other than C only for plain functions.
     pub callconv: crate::types::CallConv,
+    /// `#fast_math`, `#inline`, `#noinline` and `#cold` (§11.10).
+    pub hints: FnHints,
     /// The body; its type is `ret` (or `never`). `None` for foreign functions.
     pub body: Option<Expr>,
+}
+
+/// Attributes of a function that do not change its meaning (§11.10), except that
+/// `#fast_math` float results may differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FnHints {
+    /// Float contraction and reassociation are permitted (§5.3).
+    pub fast_math: bool,
+    /// `Some(true)` for `#inline`, `Some(false)` for `#noinline`.
+    pub inline: Option<bool>,
+    pub cold: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

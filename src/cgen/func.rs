@@ -87,7 +87,8 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         params.push("void".into());
     }
     let sig = format!(
-        "static __attribute__((aligned(4))) {}{} {}({})",
+        "static __attribute__((aligned(4))) {}{}{} {}({})",
+        hint_attrs(def.hints),
         conv_attr(def.callconv),
         ret,
         g.fn_name(f),
@@ -107,6 +108,9 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         outlined: false,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
+    if def.hints.fast_math {
+        fg.line("GM_FAST_MATH_BODY");
+    }
     if plain {
         fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;");
     }
@@ -137,6 +141,23 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     let out = std::mem::take(&mut fg.out);
     g.bodies.push_str(&out);
     Ok(())
+}
+
+/// The C attributes (each with a trailing space) for a function's hints (§11.10).
+fn hint_attrs(h: crate::tir::FnHints) -> String {
+    let mut s = String::new();
+    match h.inline {
+        Some(true) => s.push_str("__attribute__((always_inline)) inline "),
+        Some(false) => s.push_str("__attribute__((noinline)) "),
+        None => {}
+    }
+    if h.cold {
+        s.push_str("__attribute__((cold)) ");
+    }
+    if h.fast_math {
+        s.push_str("GM_FAST_MATH_ATTR ");
+    }
+    s
 }
 
 /// The labels and types of the `with`s in `e` (excluding nested functions).

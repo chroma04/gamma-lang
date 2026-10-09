@@ -173,6 +173,10 @@ pub struct Sema<'s> {
     pub static_asserts: Vec<(ModuleId, Rc<ast::Item>)>,
     pub modules: Vec<Module>,
     pub decls: Vec<Decl>,
+    /// Uses of `#deprecated` declarations already warned about.
+    deprecated_uses: std::collections::HashSet<(DeclId, Span)>,
+    /// `#inline` functions, checked for recursion once every body is known.
+    pub inline_fns: Vec<(FnId, Span)>,
     pub prog: Program,
     /// Signatures of functions in `prog.fns`.
     pub sigs: HashMap<FnId, FnSig>,
@@ -246,6 +250,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
     sema.load_prelude();
     let root_mod = sema.load_root(root)?;
     sema.check_all(root_mod);
+    sema.check_inline();
     if sema.sess.diags.has_errors() {
         return None;
     }
@@ -273,6 +278,8 @@ impl<'s> Sema<'s> {
             static_asserts: vec![],
             modules: vec![],
             decls: vec![],
+            deprecated_uses: std::collections::HashSet::new(),
+            inline_fns: vec![],
             prog: Program::default(),
             sigs: HashMap::new(),
             effects: HashMap::new(),
@@ -314,6 +321,56 @@ impl<'s> Sema<'s> {
 
     pub fn emit(&mut self, d: Diagnostic) {
         self.sess.diags.push(d);
+    }
+
+    /// `#inline` cannot apply to a function that can call itself (§11.10).
+    fn check_inline(&mut self) {
+        for (f, span) in std::mem::take(&mut self.inline_fns) {
+            let mut seen = std::collections::HashSet::new();
+            let mut work = vec![f];
+            let mut recursive = false;
+            while let Some(g) = work.pop() {
+                let Some(body) = &self.prog.fns[g.index()].body else { continue };
+                fn calls(e: &tir::Expr, out: &mut Vec<FnId>) {
+                    if let tir::ExprKind::Call { callee: tir::Callee::Fn(c), .. } = &e.kind {
+                        out.push(*c);
+                    }
+                    e.for_each_child(&mut |x| calls(x, out));
+                }
+                let mut out = vec![];
+                calls(body, &mut out);
+                for c in out {
+                    if c == f {
+                        recursive = true;
+                    } else if seen.insert(c) {
+                        work.push(c);
+                    }
+                }
+            }
+            if recursive {
+                let name = self.prog.fns[f.index()].name;
+                self.error(
+                    span,
+                    format!("`{}` cannot be inlined at every call site: it can call itself (§11.10)", name),
+                );
+            }
+        }
+    }
+
+    /// Warns about a use at `span` of declaration `d` if it is `#deprecated("msg")` (§20.2).
+    pub fn check_deprecated(&mut self, d: DeclId, span: Span) {
+        let decl = &self.decls[d.0 as usize];
+        let Some(attr) = decl.item.attrs.iter().find(|a| a.name.name.as_str() == "deprecated") else { return };
+        if decl.op_of.is_some() || !self.deprecated_uses.insert((d, span)) {
+            return;
+        }
+        let msg = match attr.args.as_deref() {
+            Some([ast::Expr { kind: ast::ExprKind::Str(s), .. }]) => format!(": {}", String::from_utf8_lossy(&s.bytes)),
+            _ => String::new(),
+        };
+        let w = Diagnostic::warning(span, format!("`{}` is deprecated{}", decl.name.name, msg))
+            .with_label(decl.name.span, "declared here");
+        self.emit(w);
     }
 
     /// Resolves every declaration of the root module (and, transitively, what
@@ -488,6 +545,7 @@ impl<'s> Sema<'s> {
             parent: None,
             kind,
             callconv: Default::default(),
+            hints: Default::default(),
             body: None,
         });
         self.sigs.insert(id, sig);

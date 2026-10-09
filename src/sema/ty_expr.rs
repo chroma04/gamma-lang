@@ -58,6 +58,7 @@ impl<'s> Sema<'s> {
                     return *t;
                 }
                 if let Some(d) = self.lookup_module_name(module, id.name) {
+                    self.check_deprecated(d, id.span);
                     return match self.resolve_decl(d) {
                         DeclValue::Type(t) => t,
                         DeclValue::Error => Ty::error(),
@@ -163,7 +164,10 @@ impl<'s> Sema<'s> {
                 let template = match &callee.kind {
                     ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
                         Some(d) => match self.resolve_decl(d) {
-                            DeclValue::GenericType(t) => Some(t),
+                            DeclValue::GenericType(t) => {
+                                self.check_deprecated(d, id.span);
+                                Some(t)
+                            }
                             DeclValue::Error => return Ty::error(),
                             _ => None,
                         },

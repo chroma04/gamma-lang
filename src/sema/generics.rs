@@ -207,6 +207,7 @@ impl<'s> Sema<'s> {
         let Some(body) = g.body.clone() else { return };
         let params = g.params.clone();
         let locals = g.locals.clone();
+        let hints = g.hints;
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.subst(l.ty, &map), ..l }).collect();
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
@@ -215,6 +216,7 @@ impl<'s> Sema<'s> {
         let def = &mut self.prog.fns[req.instance.index()];
         def.params = params;
         def.locals = locals;
+        def.hints = hints;
         def.body = Some(body);
     }
 

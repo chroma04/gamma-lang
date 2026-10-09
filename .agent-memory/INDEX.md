@@ -22,13 +22,14 @@
 - Structs by value over the C ABI done (mirror C types, decisions/009).
 - @asm done (§19.5 specified: pairs of (constraint, ^T place) / (constraint, value)).
 - #callconv done (M10 status). Elementwise array arithmetic done.
-- Not yet: C-backend gaps (M07 status: wide ints delegated), #fast_math, #deprecated.
+- #fast_math/#deprecated/#inline checks done (M12 file).
+- Not yet: C-backend gaps (M07 status: wide ints delegated, worktree agent-a5cea1d…).
 - Threads done (M10 status): std/thread, interp GIL (src/interp/threads.rs), C TLS + locks.
 - Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. Merge wide-int subagent work; #fast_math, #deprecated; M12.
+1. Merge wide-int subagent work; then M12 polish (guide review, diagnostics), native `gamma test`.
 2. C-backend gaps (M07 status); M12 polish (docs/guide review, diagnostics).
 3. Keep PR green; CI runs on push.
 

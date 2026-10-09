@@ -259,7 +259,10 @@ impl<'s> Sema<'s> {
     pub fn module_member(&mut self, m: ModuleId, name: ast::Ident) -> Option<DeclId> {
         let module_name = self.modules[m.0 as usize].name;
         match self.modules[m.0 as usize].scope.get(&name.name).copied() {
-            Some(d) if self.decls[d.0 as usize].item.is_pub => Some(d),
+            Some(d) if self.decls[d.0 as usize].item.is_pub => {
+                self.check_deprecated(d, name.span);
+                Some(d)
+            }
             Some(_) => {
                 self.error(name.span, format!("`{}` is private to the module `{}` (§3.3)", name.name, module_name));
                 None

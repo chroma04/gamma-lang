@@ -235,6 +235,13 @@ sum_squares :: fn(xs: []const i32) -> i32 {
 lerp :: fn(a, b, t: f32) -> f32 => a + (b - a) * t
 ```
 
+`#deprecated("message")`, on any declaration, makes every use of it a compile-time warning that quotes the message:
+
+```gamma
+#deprecated("use `lerp`")
+mix :: fn(a, b, t: f32) -> f32 => lerp(a, b, t)
+```
+
 ## Summary
 
 - Functions are values bound with `::`. `-> R` is required unless the function returns `()`, and `\ {...}` lists its effects.

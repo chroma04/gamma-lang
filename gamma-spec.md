@@ -2313,7 +2313,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#inline`, `#noinline`, `#cold` | function | inlining hints/requirements | 11.10 |
 | `#fast_math` | function | relaxed float semantics | 5.3 |
 | `#fuel(n)` | top-level declaration | compile-time step budget | 17.3 |
-| `#deprecated("msg")` | declaration | warning at uses | — |
+| `#deprecated`, `#deprecated("msg")` | declaration | a warning at each use, quoting the message | — |
 
 ### 20.3 Intrinsics
 

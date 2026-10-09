@@ -139,6 +139,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if self.lookup_local(id.name).is_none() {
                 let module = self.module;
                 if let Some(d) = self.sema.lookup_module_name(module, id.name) {
+                    self.sema.check_deprecated(d, id.span);
                     return self.callee_of(d, id.name, callee);
                 }
                 if let Some(b) = builtin_fn(id.name.as_str()) {
