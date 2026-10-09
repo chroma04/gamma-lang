@@ -27,6 +27,28 @@ enum CalleeKind {
 
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
+        // `T(5)` with a type parameter `T`: the untyped constant is typed at `T`, as
+        // `x: T = 5` would, and checked against each instantiation (§16.1).
+        if let ExprKind::Ident(id) = &callee.kind
+            && self.lookup_local(id.name).is_none()
+            && let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name)
+            && let [ast::Arg { kind: ast::ArgKind::Positional(a), .. }] = args
+            && let Some(v) = self.try_untyped(a)
+        {
+            return match v {
+                Ok(super::untyped::Untyped::Bool(_)) => {
+                    self.error(a.span, format!("a boolean constant cannot be converted to `{}`", id.name));
+                    error_expr(span)
+                }
+                Ok(v) => {
+                    let lit = self.untyped_literal(&v, a.span);
+                    let mut r = self.coerce(lit, t);
+                    r.span = span;
+                    r
+                }
+                Err(()) => error_expr(span),
+            };
+        }
         if let ExprKind::Field { base, name } = &callee.kind
             && self.module_of(base).is_none()
         {

@@ -33,7 +33,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     } else {
                         "an integer"
                     };
-                    self.error(p.span, format!("expected `{}`, found {} literal", p.target, kind));
+                    let hint = match core.kind() {
+                        TyKind::Param(_) => {
+                            let c = if kind == "a float" { "Float" } else { "Num" };
+                            format!(" (a literal at `{core}` needs `where {c}({core})`)")
+                        }
+                        _ => String::new(),
+                    };
+                    self.error(p.span, format!("expected `{}`, found {} literal{}", p.target, kind, hint));
                     self.failed_coercions.push(p.span);
                 }
             }

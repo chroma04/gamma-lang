@@ -345,7 +345,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut reported = vec![];
         for (e, span) in performed {
             if !self.declared.contains(&e) && !reported.contains(&e) {
-                let name = e.effect.name();
+                let name = e.to_string();
                 self.error(
                     span,
                     format!(

@@ -10,6 +10,16 @@ use crate::tir::{self, Expr, LocalId, Pat, PatKind};
 use crate::types::Ty;
 
 impl<'a, 's> FnCx<'a, 's> {
+    /// True if `t` is a `#c_union` type.
+    pub fn is_c_union(&self, t: Ty) -> bool {
+        match t.kind() {
+            crate::types::TyKind::Adt(id, _) => {
+                matches!(self.sema.prog.adts.get(id).map(|d| &d.kind), Some(tir::AdtKind::CUnion { .. }))
+            }
+            _ => false,
+        }
+    }
+
     pub fn checker(&self) -> Checker<'_> {
         Checker { adts: &self.sema.prog.adts, target: &self.sema.target }
     }
@@ -22,7 +32,11 @@ impl<'a, 's> FnCx<'a, 's> {
             // Integer literals as scrutinees take their fallback now.
             self.infer.unify(sty, Ty::i32()).ok();
         }
-        let sty = self.infer.resolve(scrutinee.ty);
+        let mut sty = self.infer.resolve(scrutinee.ty);
+        if self.is_c_union(sty) {
+            self.error(m.scrutinee.span, c_union_match(sty));
+            sty = Ty::error();
+        }
         let mut arms = vec![];
         for arm in &m.arms {
             self.push_scope();
@@ -185,7 +199,11 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Checks `lhs is <pattern>`.
     pub fn is_pattern_test(&mut self, lhs: Expr, p: &ast::Pattern, negated: bool, span: Span) -> Expr {
-        let ty = self.infer.resolve(lhs.ty);
+        let mut ty = self.infer.resolve(lhs.ty);
+        if self.is_c_union(ty) {
+            self.error(lhs.span, c_union_match(ty));
+            ty = Ty::error();
+        }
         let mut binds = vec![];
         let pat = self.pattern(p, ty, PatCtx::IsTest, &mut binds);
         let then = Expr { ty: Ty::bool(), kind: tir::ExprKind::Bool(!negated), span };
@@ -268,4 +286,9 @@ fn contains_wildcard(p: &ast::Pattern) -> bool {
         }
         _ => false,
     }
+}
+
+/// The error for matching a value of `#c_union` type `t` (§5.11.1).
+pub(super) fn c_union_match(t: Ty) -> String {
+    format!("`{}` is a `#c_union`: it has no tag, so it cannot be matched; read one of its fields instead (§5.11.1)", t)
 }

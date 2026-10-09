@@ -1,0 +1,15 @@
+//! stage: check
+// A `#c_union` has no tag, so it cannot be matched (§5.11.1).
+W :: #c_union union { a: u32, b: f32 }
+
+main :: fn() {
+    w := W(a: 1)
+    x := match w {                    //~ ERROR `W` is a `#c_union`: it has no tag, so it cannot be matched
+        .a(v) => v
+        _ => 0
+    }
+    _ = x
+    if w is .a(_) {                   //~ ERROR `W` is a `#c_union`
+    }
+    _ = w.a                           // reading a field is how a `#c_union` is used
+}

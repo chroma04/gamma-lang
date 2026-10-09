@@ -357,6 +357,19 @@ impl<'a, 's> FnCx<'a, 's> {
         self.handled.truncate(n);
         self.labels.pop();
         self.pop_scope();
+        // Whether this `with` handles a perform must not depend on type arguments (§16.6).
+        let mut ambiguous = vec![];
+        for (p, at) in &self.performed[start..] {
+            if let Some(h) = handled.iter().find(|h| super::decls::may_coincide(p, h)) {
+                ambiguous.push((*at, format!(
+                    "this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)",
+                    p, h
+                )));
+            }
+        }
+        for (at, msg) in ambiguous {
+            self.error(at, msg);
+        }
         // Effects handled here are not performed by the `with` (§12.3).
         let mut i = start;
         while i < self.performed.len() {

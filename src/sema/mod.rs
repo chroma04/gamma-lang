@@ -420,6 +420,17 @@ impl<'s> Sema<'s> {
                 && name.name.as_str() == "static_assert"
             {
                 self.static_assert(module, args.as_deref().unwrap_or(&[]), e.span);
+            } else if let ast::ItemKind::Intrinsic(e) = &item.kind
+                && let ast::ExprKind::Intrinsic { name, args } = &e.kind
+                && name.name.as_str() == "compile_error"
+            {
+                // In a taken `when` branch, typically (§3.6, §20.3).
+                let msg = match args.as_deref().and_then(|a| a.first()).map(|a| &a.kind) {
+                    Some(ast::ArgKind::Positional(m)) => self.const_string(module, m),
+                    _ => None,
+                };
+                let msg = msg.unwrap_or_else(|| "`@compile_error` takes a constant string message".into());
+                self.error(e.span, msg);
             } else {
                 self.error(item.span, "only `@static_assert` may appear as a top-level declaration");
             }

@@ -1,0 +1,7 @@
+// `T(c)` types an untyped constant at a type parameter, like `x: T = c` (§16.1).
+K :: 10
+g :: fn(T: type, x: T) -> T where Num(T) => x * T(5) + T(K)
+h :: fn(T: type) -> T where Float(T) => T(1.5)
+main :: fn() \ {Out} {
+    print("{} {} {}\n", (g(u8, 2), g(f64, 0.5), h(f32)))
+}
