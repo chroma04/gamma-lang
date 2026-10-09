@@ -1,0 +1,150 @@
+// Custom allocators as effect handlers: a tracking allocator that wraps whatever
+// allocator is current, a bump allocator over a fixed buffer, and std/arena.
+arena :: import "std/arena"
+
+// ---- tracking allocator ----------------------------------------------------------
+
+Tracker :: struct {
+    inner: Allocator
+    live: usize = 0
+    peak: usize = 0
+    allocs: u32 = 0
+    frees: u32 = 0
+    biggest: usize = 0
+}
+
+track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    t := data.cast(^Tracker)
+    p := t.inner.vt.alloc(t.inner.data, size, align) else return null
+    t.live += size
+    t.peak = t.peak.max(t.live)
+    t.allocs += 1
+    t.biggest = t.biggest.max(size)
+    return p
+}
+
+track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    t := data.cast(^Tracker)
+    t.live -= size
+    t.frees += 1
+    t.inner.vt.free(t.inner.data, p, size, align)
+}
+
+TRACK_VT :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
+
+handler Alloc for ^Tracker {
+    current(self) => Allocator(data: self, vt: &TRACK_VT)
+}
+
+tracker :: fn() -> Tracker \ {Alloc} => Tracker(inner: current())
+
+report :: fn(label: string, t: ^const Tracker) \ {Out} {
+    print("{}: live={} peak={} allocs={} frees={} biggest={}\n",
+          (label, t.live, t.peak, t.allocs, t.frees, t.biggest))
+}
+
+// ---- bump allocator over a caller-supplied buffer --------------------------------
+
+Page :: #align(16) struct { bytes: [2048]u8 }
+
+Bump :: struct {
+    buf: []u8
+    used: usize = 0
+    refused: u32 = 0
+}
+
+align_up :: fn(n, a: usize) -> usize => (n + a - 1) / a * a
+
+bump_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    b := data.cast(^Bump)
+    start := align_up(b.buf.ptr.addr() + b.used, align) - b.buf.ptr.addr()
+    if start + size > b.buf.len {
+        b.refused += 1
+        return null
+    }
+    b.used = start + size
+    return b.buf[start..].ptr
+}
+
+bump_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+bump_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {}
+
+BUMP_VT :: AllocVtable(alloc: bump_alloc, resize: bump_resize, free: bump_free)
+
+handler Alloc for ^Bump {
+    current(self) => Allocator(data: self, vt: &BUMP_VT)
+}
+
+// ---- code under test -------------------------------------------------------------
+
+Matrix :: struct { rows, cols: usize, cells: []i64 }
+
+make_matrix :: fn(rows, cols: usize) -> AllocError!Matrix \ {Alloc} {
+    cells := try make_fill(i64, rows * cols, 0)
+    return Matrix(rows: rows, cols: cols, cells: cells)
+}
+
+free_matrix :: fn(m: Matrix) \ {Alloc} { free(i64, m.cells) }
+
+two_matrices :: fn(n: usize) -> AllocError!i64 \ {Alloc} {
+    a := try make_matrix(n, n)
+    defer free_matrix(a)
+    b := try make_matrix(n, n)     // may fail: `a` is released by the defer
+    defer free_matrix(b)
+    for i in 0..n { a.cells[i * n + i] = 1; b.cells[i * n + i] = i64(i.trunc(u32)) + 2 }
+    total: i64 = 0
+    for x in a.cells { total += x }
+    for x in b.cells { total += x }
+    return total
+}
+
+main :: fn() \ {Out, Alloc} {
+    t := tracker()
+    r := with &t { two_matrices(10) }
+    print("tracked result: {}\n", r)
+    report("after 10x10", &t)
+
+    with &t {
+        names := list(string)
+        defer names.deinit()
+        ws := [_]string("alpha", "beta", "gamma", "delta", "epsilon")
+        for w in ws {
+            _ = names.push(w)
+        }
+        report("inside list scope", &t)
+    }
+    report("after list", &t)
+
+    // A bump allocator over 2 KiB: the first matrices fit, the larger ones fail cleanly.
+    page: Page = ---
+    bump := Bump(buf: page.bytes[..])
+    sizes := [_]usize(4, 8, 12, 16)
+    for n in sizes {
+        res := with &bump { two_matrices(n) }
+        match res {
+            !.OutOfMemory => print("n={}: out of memory (used {} of {}, refused {})\n", (n, bump.used, page.bytes.len, bump.refused))
+            v => print("n={}: total {} (used {})\n", (n, v, bump.used))
+        }
+        bump.used = 0
+    }
+
+    // Stacking handlers: the tracker wraps the bump allocator.
+    bump.used = 0
+    t2 := with &bump { tracker() }
+    r2 := with &t2 { two_matrices(6) }
+    print("stacked: {} ", r2)
+    report("tracker over bump", &t2)
+
+    // std/arena: free everything at once.
+    a := arena.new()
+    defer a.deinit()
+    t3 := with a.allocator() { tracker() }
+    with &t3 {
+        for i in 0..5 {
+            _ = two_matrices(i + 1)
+        }
+    }
+    report("tracker over arena", &t3)
+}

@@ -1,0 +1,40 @@
+Point :: struct { x, y: i32 }
+
+require :: fn(ok: bool, msg: string = "requirement failed", loc: SourceLocation = @caller_location()) \ {Out} {
+    if not ok {
+        print("{} (line {}, in {})\n", (msg, loc.line, loc.function))
+    }
+}
+
+here :: fn() -> u32 => @location().line
+
+Tally :: struct { bytes: usize = 0, calls: u32 = 0 }
+
+leaf :: fn(n: u32) -> u32 => n + 1
+worker :: fn(a: ^u32) -> u32 => leaf(a^)
+
+main :: fn() \ {Out} {
+    require(1 + 1 is 2)
+    require(1 + 1 is 3)
+    require(false, "custom message")
+    print("{}\n", here())
+    p := Point(x: 1, y: 2)
+    q := Point(x: 1, y: 2)
+    r := Point(x: 2, y: 1)
+    print("{} {} {}\n", (@hash(p, 0) is @hash(q, 0), @hash(p, 0) is @hash(r, 0), @hash(p, 1) is @hash(p, 0)))
+    print("{}\n", @hash(u32(42), 7) is @hash(u32(42), 7))
+    print("{} {}\n", (@type_name(@type_of(p.x)), @size_of(@type_of(p))))
+    print("{} {}\n", (@sqrt(16.0), @fma(2.0, 3.0, 4.0)))
+    t := Tally()
+    @write(fn(b) { t.bytes += b.len; t.calls += 1 }, "{} + {} = {}", (1, 2, 3))
+    print("sink saw {} bytes\n", t.bytes)
+    print("{} {}\n", (@bitreverse(u8(1)), @bitreverse(u16(0x00F0))))
+    print("{} {}\n", (@expect_true(1 < 2), @offset_of(Point, y)))
+    when target.ptr_bits is 64 {
+        print("64-bit\n")
+    } else {
+        print("other\n")
+    }
+    print("{} {}\n", (@stack_size(worker) >= @min_stack, @min_stack >= 16384))
+    @static_assert(@size_of(Point) is 8, "Point is 8 bytes")
+}

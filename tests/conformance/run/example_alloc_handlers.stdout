@@ -1,0 +1,10 @@
+tracked result: 75
+after 10x10: live=0 peak=1600 allocs=2 frees=2 biggest=800
+inside list scope: live=128 peak=1600 allocs=4 frees=3 biggest=800
+after list: live=0 peak=1600 allocs=4 frees=4 biggest=800
+n=4: total 18 (used 256)
+n=8: total 52 (used 1024)
+n=12: out of memory (used 1152 of 2048, refused 1)
+n=16: out of memory (used 2048 of 2048, refused 2)
+stacked: 33 tracker over bump: live=0 peak=576 allocs=2 frees=2 biggest=288
+tracker over arena: live=0 peak=400 allocs=10 frees=10 biggest=200

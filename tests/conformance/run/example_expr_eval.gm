@@ -1,0 +1,151 @@
+// Tokenizer + recursive-descent evaluator with error handling.
+Token :: union {
+    Num: i64
+    Plus
+    Minus
+    Star
+    Slash
+    Percent
+    LParen
+    RParen
+    End
+}
+
+EvalError :: union {
+    BadChar: usize
+    UnexpectedToken: usize
+    DivByZero
+    Overflow
+    Unbalanced
+}
+
+Lexer :: struct {
+    src: string
+    pos: usize = 0
+}
+
+next_token :: fn(lx: ^Lexer) -> EvalError!Token {
+    while lx.pos < lx.src.len and lx.src[lx.pos] is ' ' {
+        lx.pos += 1
+    }
+    if lx.pos >= lx.src.len { return Token.End }
+    c := lx.src[lx.pos]
+    if c in '0'..='9' {
+        n: i64 = 0
+        while lx.pos < lx.src.len and lx.src[lx.pos] in '0'..='9' {
+            d := i64(lx.src[lx.pos] - '0')
+            n = n *? 10 else return !.Overflow
+            n = n +? d else return !.Overflow
+            lx.pos += 1
+        }
+        return Token.Num(n)
+    }
+    start := lx.pos
+    lx.pos += 1
+    return match c {
+        '+' => Token.Plus
+        '-' => Token.Minus
+        '*' => Token.Star
+        '/' => Token.Slash
+        '%' => Token.Percent
+        '(' => Token.LParen
+        ')' => Token.RParen
+        _ => return !.BadChar(start)
+    }
+}
+
+Parser :: struct {
+    lx: Lexer
+    cur: Token
+}
+
+advance :: fn(p: ^Parser) -> EvalError!() {
+    p.cur = try next_token(&p.lx)
+    return ()
+}
+
+primary :: fn(p: ^Parser) -> EvalError!i64 {
+    match p.cur {
+        .Num(n) => {
+            try advance(p)
+            return n
+        }
+        .Minus => {
+            try advance(p)
+            v := try primary(p)
+            return 0 -? v else !.Overflow
+        }
+        .LParen => {
+            try advance(p)
+            v := try expr(p)
+            if p.cur is not .RParen { return !.Unbalanced }
+            try advance(p)
+            return v
+        }
+        _ => return !.UnexpectedToken(p.lx.pos)
+    }
+}
+
+term :: fn(p: ^Parser) -> EvalError!i64 {
+    acc := try primary(p)
+    while true {
+        op := p.cur
+        if op is not .Star and op is not .Slash and op is not .Percent { break }
+        try advance(p)
+        rhs := try primary(p)
+        acc = match op {
+            .Star => acc *? rhs else return !.Overflow
+            .Slash => if rhs is 0 { return !.DivByZero } else { acc / rhs }
+            _ => if rhs is 0 { return !.DivByZero } else { acc % rhs }
+        }
+    }
+    return acc
+}
+
+expr :: fn(p: ^Parser) -> EvalError!i64 {
+    acc := try term(p)
+    while true {
+        op := p.cur
+        if op is not .Plus and op is not .Minus { break }
+        try advance(p)
+        rhs := try term(p)
+        acc = if op is .Plus { acc +? rhs else return !.Overflow } else { acc -? rhs else return !.Overflow }
+    }
+    return acc
+}
+
+evaluate :: fn(src: string) -> EvalError!i64 {
+    p := Parser(lx: Lexer(src: src), cur: Token.End)
+    try advance(&p)
+    v := try expr(&p)
+    if p.cur is not .End { return !.UnexpectedToken(p.lx.pos) }
+    return v
+}
+
+main :: fn() \ {Out} {
+    inputs := [_]string(
+        "1 + 2 * 3",
+        "(1 + 2) * 3",
+        "10 / 3 % 2",
+        "-(4 - 10) * 7",
+        "2 * (3 + 4",
+        "8 / (4 - 4)",
+        "7 $ 3",
+        "1 +",
+        "9223372036854775807 + 1",
+        "99999999999999999999",
+        "100 - 1 - 1 - 1",
+        "",
+    )
+    for s in inputs {
+        r := evaluate(s)
+        match r {
+            !.BadChar(at) => print("{} -> bad char at {}\n", (s, at))
+            !.UnexpectedToken(at) => print("{} -> unexpected token near {}\n", (s, at))
+            !.DivByZero => print("{} -> division by zero\n", s)
+            !.Overflow => print("{} -> overflow\n", s)
+            !.Unbalanced => print("{} -> unbalanced parentheses\n", s)
+            v => print("{} = {}\n", (s, v))
+        }
+    }
+}

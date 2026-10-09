@@ -1,0 +1,5 @@
+fixed n=10: 285
+fixed n=100: 328350
+fixed n=3000: !.OutOfMemory
+arena: 1123875250
+arena slices: 300 true

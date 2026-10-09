@@ -1,0 +1,162 @@
+// Fibers: generators built on `ctl` operations, a two-stage pipeline made by nesting
+// `with ... on` blocks, and a round-robin scheduler that keeps continuations in a List.
+STACK :: 32768
+
+Emit :: effect {
+    emit: ctl(x: i64)
+}
+
+fib_gen :: fn(limit: i64) \ {Emit} {
+    a: i64 = 0
+    b: i64 = 1
+    while a <= limit {
+        emit(a)
+        t := a + b
+        a = b
+        b = t
+    }
+}
+
+// Collect up to `take` values from the generator, abandoning it afterwards.
+collect :: fn(limit: i64, take: usize, out: []i64) -> usize \ {Out} {
+    stack: [STACK]u8 = ---
+    n: usize = 0
+    with (handler Emit {
+        emit(x, k) => {
+            if n is take {
+                discard k
+                break
+            }
+            out[n] = x
+            n += 1
+            resume k()
+        }
+    }) on stack[..] {
+        defer print("  generator unwound\n")
+        fib_gen(limit)
+    }
+    return n
+}
+
+// ---- A pipeline: source -> filter -> sink ---------------------------------------
+
+Out2 :: effect {
+    pass: ctl(x: i64)
+}
+
+// The filter stage's clause runs on the outer fiber, so it may perform the outer `pass`.
+filter_stage :: fn(limit: i64) \ {Out2} {
+    stack: [STACK]u8 = ---
+    with (handler Emit {
+        emit(x, k) => {
+            if x % 2 is 0 { pass(x * 10) }
+            resume k()
+        }
+    }) on stack[..] {
+        fib_gen(limit)
+    }
+}
+
+pipeline :: fn(limit: i64) -> (count: u32, sum: i64) {
+    stack: [3 * STACK]u8 = ---     // the filter stage's own stack lives on this one
+    count: u32 = 0
+    sum: i64 = 0
+    with (handler Out2 {
+        pass(x, k) => {
+            count += 1
+            sum += x
+            resume k()
+        }
+    }) on stack[..] {
+        filter_stage(limit)
+    }
+    return (count: count, sum: sum)
+}
+
+// ---- Round-robin scheduler ------------------------------------------------------
+
+Task :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(id: u32) -> never \ {Task, Out}, id: u32)
+    exit: ctl() -> never
+}
+
+Sched :: struct {
+    ready: List(cont(()))
+    stacks: []u8
+    used: usize = 0
+    live: u32 = 1
+    switches: u32 = 0
+}
+
+pop_front :: fn(s: ^Sched) -> cont(()) {
+    if s.ready.items.len is 0 { trap("deadlock: no task is ready") }
+    k := s.ready.items[0]
+    for i in 1..s.ready.items.len {
+        s.ready.items[i - 1] = s.ready.items[i]
+    }
+    _ = s.ready.pop()
+    s.switches += 1
+    return k
+}
+
+handler Task for ^Sched \ {Alloc, Out} {
+    yield_now(self, k) => {
+        _ = self.ready.push(k)
+        r := pop_front(self)
+        resume r()
+    }
+    spawn(self, entry, id, k) => {
+        mem := self.stacks[self.used * STACK..(self.used + 1) * STACK]
+        self.used += 1
+        self.live += 1
+        _ = self.ready.push(@fiber(entry, id, mem))
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { break }
+        r := pop_front(self)
+        resume r()
+    }
+}
+
+worker :: fn(id: u32) -> never \ {Task, Out} {
+    defer print("  worker {} cleaned up\n", id)
+    steps := id + 1
+    for i in 0..steps {
+        print("  worker {} step {}/{}\n", (id, i + 1, steps))
+        yield_now()
+    }
+    exit()
+}
+
+run_scheduler :: fn() \ {Out, Alloc} {
+    mem: [3 * STACK]u8 = ---
+    main_stack: [STACK]u8 = ---
+    s := Sched(ready: list(cont(())), stacks: mem[..])
+    with &s on main_stack[..] {
+        spawn(worker, 1)
+        spawn(worker, 2)
+        spawn(worker, 3)
+        print("  main spawned 3 workers\n")
+        exit()
+    }
+    print("  all done: {} stacks, {} switches, ready queue {}\n", (s.used, s.switches, s.ready.items.len))
+    s.ready.deinit()
+}
+
+main :: fn() \ {Out, Alloc} {
+    vals: [64]i64 = ---
+    print("take 10 of fib:\n")
+    n := collect(1_000_000, 10, vals[..])
+    print("  {} values: {}\n", (n, vals[0..n]))
+    print("take all fib <= 100:\n")
+    n = collect(100, 64, vals[..])
+    print("  {} values: {}\n", (n, vals[0..n]))
+    r := pipeline(1000)
+    print("pipeline: {} evens, sum {}\n", (r.count, r.sum))
+    print("scheduler:\n")
+    run_scheduler()
+}

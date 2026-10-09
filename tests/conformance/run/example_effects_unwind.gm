@@ -1,0 +1,84 @@
+Log :: effect {
+    log: fn(msg: string)
+}
+
+Fail :: effect {
+    fail: esc(code: i32) -> never
+}
+
+Choice :: effect {
+    pick: esc(n: u32) -> u32
+}
+
+inner :: fn(depth: u32) -> u32 \ {Log, Fail} {
+    defer log("inner defer")
+    log("inner start")
+    if depth is 0 { fail(42) }
+    return inner(depth - 1) + 1
+}
+
+middle :: fn(depth: u32) -> u32 \ {Log, Fail} {
+    defer log("middle defer")
+    errdefer log("middle errdefer")
+    return inner(depth) * 2
+}
+
+run_nested :: fn() \ {Out} {
+    outer :: handler Log {
+        log(m) => print("outer: {}\n", m)
+    }
+    with outer {
+        quiet_count := 0
+        inner_h :: handler Log {
+            log(m) => {
+                quiet_count += 1
+                log(m)         // goes to the enclosing (outer) handler
+            }
+        }
+        with inner_h {
+            log("hello")
+            log("world")
+        }
+        print("forwarded {}\n", quiet_count)
+    }
+}
+
+run_fail :: fn(depth: u32) -> i32 \ {Out} {
+    printer :: handler Log {
+        log(m) => print("  {}\n", m)
+    }
+    r := with printer, (handler Fail { fail(c) => break c }) {
+        middle(depth).trunc(i32)
+    }
+    return r
+}
+
+find_first :: fn(limit: u32) -> ?u32 \ {Out} {
+    // `return` from inside a `with` inside a loop
+    for i in 1..limit {
+        r := with (handler Choice { pick(n) => n * 2 }) {
+            pick(i)
+        }
+        if r > 10 { return r }
+    }
+    return null
+}
+
+labelled :: fn() -> u32 \ {Out} {
+    total: u32 = 0
+    outer: for i in 0..5 {
+        for j in 0..5 {
+            with (handler Choice { pick(n) => { if n > 6 { break outer } else { n } } }) {
+                total += pick(u32(i) + u32(j))
+            }
+        }
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    run_nested()
+    print("result {}\n", run_fail(2))
+    print("find {} {}\n", (find_first(10), find_first(3)))
+    print("labelled {}\n", labelled())
+}

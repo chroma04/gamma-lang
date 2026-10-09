@@ -1,0 +1,196 @@
+//! stage: test
+// A bounded LRU cache with expiry (using the Clock effect) and a note log persisted
+// through the Fs effect. The tests run against the fake clock, the in-memory file system
+// and a leak-checking heap, so they are deterministic and clean up after themselves.
+fs :: import "std/fs"
+
+Slot :: struct {
+    key: u32
+    value: i64
+    stamp: u64        // logical time of last use
+    expires: u64      // monotonic ns; 0 = never
+    used: bool = false
+}
+
+Lru :: struct {
+    slots: []Slot
+    clock: u64 = 0
+    hits: u32 = 0
+    misses: u32 = 0
+    evictions: u32 = 0
+}
+
+lru :: fn(capacity: usize) -> AllocError!Lru \ {Alloc} {
+    slots := try make_fill(Slot, capacity, Slot(key: 0, value: 0, stamp: 0, expires: 0))
+    return Lru(slots: slots)
+}
+
+drop :: fn(c: ^Lru) \ {Alloc} {
+    free(Slot, c.slots)
+}
+
+find_slot :: fn(c: ^Lru, key: u32) -> ?usize {
+    for i in 0..c.slots.len {
+        if c.slots[i].used and c.slots[i].key is key { return i }
+    }
+    return null
+}
+
+put :: fn(c: ^Lru, key: u32, value: i64, ttl: Duration) \ {Clock} {
+    c.clock += 1
+    expires: u64 = if ttl.ns is 0 { 0 } else { now().ns + ttl.ns }
+    if i := find_slot(c, key) {
+        c.slots[i] = Slot(key: key, value: value, stamp: c.clock, expires: expires, used: true)
+        return
+    }
+    // free slot, else evict the least recently used
+    victim: usize = 0
+    for i in 0..c.slots.len {
+        if not c.slots[i].used {
+            victim = i
+            break
+        }
+        if c.slots[i].stamp < c.slots[victim].stamp { victim = i }
+    }
+    if c.slots[victim].used { c.evictions += 1 }
+    c.slots[victim] = Slot(key: key, value: value, stamp: c.clock, expires: expires, used: true)
+}
+
+get :: fn(c: ^Lru, key: u32) -> ?i64 \ {Clock} {
+    c.clock += 1
+    idx := find_slot(c, key)
+    if idx is null {
+        c.misses += 1
+        return null
+    }
+    s := &c.slots[idx?]
+    if s.expires is not 0 and now().ns >= s.expires {
+        s.used = false
+        c.misses += 1
+        return null
+    }
+    s.stamp = c.clock
+    c.hits += 1
+    return s.value
+}
+
+// ---- persistence ---------------------------------------------------------------------------------
+
+save :: fn(c: ^const Lru, path: string) -> fs.ReadError!() \ {Fs} {
+    f := try open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
+    defer close(f)
+    for s in c.slots {
+        if not s.used { continue }
+        line: [48]u8 = ---
+        n := render(s.key, s.value, line[..])
+        try fs.write_all_to(f, line[0..n])
+    }
+    return ()
+}
+
+render :: fn(key: u32, value: i64, out: []u8) -> usize {
+    n: usize = 0
+    n += put_num(u64(key), out[n..])
+    out[n] = '='
+    n += 1
+    v := value
+    if v < 0 {
+        out[n] = '-'
+        n += 1
+        v = -v
+    }
+    n += put_num(v.trunc(u64), out[n..])
+    out[n] = '\n'
+    return n + 1
+}
+
+put_num :: fn(x: u64, out: []u8) -> usize {
+    tmp: [20]u8 = ---
+    k: usize = 0
+    v := x
+    while true {
+        tmp[k] = '0' + (v % 10).trunc(u8)
+        k += 1
+        v /= 10
+        if v is 0 { break }
+    }
+    for i in 0..k { out[i] = tmp[k - 1 - i] }
+    return k
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+test "hits, misses and LRU eviction" {
+    c := lru(3) else return
+    defer c.drop()
+    c.put(1, 10, ms(0))
+    c.put(2, 20, ms(0))
+    c.put(3, 30, ms(0))
+    expect(c.get(1) is 10)                 // 1 becomes most recent; 2 is now the oldest
+    c.put(4, 40, ms(0))                    // evicts 2
+    expect(c.get(2) is null)
+    expect(c.get(3) is 30)
+    expect(c.get(4) is 40)
+    expect(c.hits is 3 and c.misses is 1 and c.evictions is 1)
+}
+
+test "updating a key does not evict" {
+    c := lru(2) else return
+    defer c.drop()
+    c.put(7, 1, ms(0))
+    c.put(8, 2, ms(0))
+    c.put(7, 100, ms(0))
+    expect(c.evictions is 0)
+    expect(c.get(7) is 100)
+}
+
+test "entries expire on the fake clock" {
+    c := lru(4) else return
+    defer c.drop()
+    c.put(1, 11, ms(50))
+    c.put(2, 22, secs(10))
+    c.put(3, 33, ms(0))
+    sleep(ms(49))
+    expect(c.get(1) is 11)
+    sleep(ms(1))
+    expect(c.get(1) is null)               // exactly at the deadline: expired
+    sleep(secs(5))
+    expect(c.get(2) is 22)
+    sleep(secs(5))
+    expect(c.get(2) is null)
+    expect(c.get(3) is 33)                 // no ttl: lives forever
+}
+
+test "saved cache round-trips through the in-memory file system" {
+    c := lru(4) else return
+    defer c.drop()
+    c.put(5, -50, ms(0))
+    c.put(6, 60, ms(0))
+    c.put(1234567, 9007199254740993, ms(0))
+    save(&c, "cache.txt") else return
+    data := fs.read_all("cache.txt") else return
+    defer free(u8, data)
+    expect(data.len is 36)
+    expect(data[0..5] is "5=-50")
+    info := stat("cache.txt") else return
+    expect(info.size is 36)
+}
+
+test "a failing allocation is reported, not fatal" {
+    tiny: [64]u8 = ---
+    result := with Allocator(data: &tiny, vt: &NO_MEMORY) { lru(1000) }
+    expect(result is !.OutOfMemory)
+}
+
+refuse_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 => null
+refuse_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+refuse_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {}
+NO_MEMORY :: AllocVtable(alloc: refuse_alloc, resize: refuse_resize, free: refuse_free)
+
+test "put_num handles zero and large values" {
+    buf: [24]u8 = ---
+    n := put_num(0, buf[..])
+    expect(buf[0..n] is "0")
+    n = put_num(18446744073709551615, buf[..])
+    expect(buf[0..n] is "18446744073709551615")
+}

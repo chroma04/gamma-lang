@@ -1,0 +1,40 @@
+flags Flags(syn: true, ack: false, fin: false, rst: true, prio: 5) = 89
+wire: 202 254 89 1 44 1 2 3 4 
+decoded: Header(magic: 51966, flags: 89, len: 300, seq: 16909060)
+bad magic: null, short: null
+seq 16909060 len 300 flags prio 5
+bswap: 67305985 65226
+checksum of 'hello world!': 28176
+checksum of odd length: 15261
+varint 0: 1 bytes: 0 
+  -> 0
+varint 1: 1 bytes: 1 
+  -> 1
+varint 127: 1 bytes: 127 
+  -> 127
+varint 128: 2 bytes: 128 1 
+  -> 128
+varint 300: 2 bytes: 172 2 
+  -> 300
+varint 16384: 3 bytes: 128 128 1 
+  -> 16384
+varint 4294967295: 5 bytes: 255 255 255 255 15 
+  -> 4294967295
+varint 18446744073709551615: 10 bytes: 255 255 255 255 255 255 255 255 255 1 
+  -> 18446744073709551615
+truncated varint: null
+base64() = 
+base64(f) = Zg==
+base64(fo) = Zm8=
+base64(foo) = Zm9v
+base64(foob) = Zm9vYg==
+base64(fooba) = Zm9vYmE=
+base64(foobar) = Zm9vYmFy
+fnv1a("") = 14695981039346656037
+fnv1a("a") = 12638187200555641996
+fnv1a("foobar") = 9625390261332436968
+bits set: 8, has 100: true, has 101: false
+3^100 = 515377520732011331036461129765621272702107522001
+clz 31 ctz 7 popcount 8
+-8000000 777216 0
+44 255 null

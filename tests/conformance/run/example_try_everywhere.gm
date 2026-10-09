@@ -1,0 +1,67 @@
+Err1 :: union { Bad: u32, Worse }
+
+Visit :: effect {
+    visit: fn(n: u32) -> u32
+}
+
+check :: fn(n: u32) -> Err1!u32 {
+    if n > 100 { return !.Worse }
+    if n is 13 { return !.Bad(n) }
+    return n * 2
+}
+
+sum_with :: fn(xs: []const u32, f: fn(u32) -> Err1!u32) -> Err1!u32 {
+    total: u32 = 0
+    for x in xs { total += try f(x) }
+    return total
+}
+
+// `try` inside a function literal returns from the literal
+fwd :: fn(xs: []const u32) -> Err1!u32 {
+    return sum_with(xs, fn(n) -> Err1!u32 {
+        v := try check(n)
+        return v + 1
+    })
+}
+
+// `try` inside a handler clause returns from the enclosing function
+run :: fn(xs: []const u32) -> Err1!u32 \ {Out} {
+    total: u32 = 0
+    h :: handler Visit {
+        visit(n) => {
+            v := try check(n)
+            total += v
+            v
+        }
+    }
+    with h {
+        for x in xs { _ = visit(x) }
+    }
+    return total
+}
+
+opt_chain :: fn(a, b: ?u32) -> ?u32 {
+    x := try a
+    y := try b
+    return x + y
+}
+
+nested_try :: fn(xs: []const u32) -> Err1!u32 {
+    r := try check(try check(xs[0]))
+    return r
+}
+
+main :: fn() \ {Out} {
+    ok := [_]u32(1, 2, 3)
+    bad := [_]u32(1, 13, 3)
+    worse := [_]u32(1, 200, 13)
+    print("{} {} {}\n", (fwd(ok[..]), fwd(bad[..]), fwd(worse[..])))
+    print("{} {} {}\n", (run(ok[..]), run(bad[..]), run(worse[..])))
+    print("{} {} {}\n", (opt_chain(1, 2), opt_chain(null, 2), opt_chain(1, null)))
+    print("{} {} {}\n", (nested_try(ok[..]), nested_try(bad[1..]), nested_try(worse[1..])))
+    rs := [_](Err1!u32)(1, !.Worse, !.Bad(5))
+    for r in rs {
+        print("{} ", r)
+    }
+    print("\n")
+}

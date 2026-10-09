@@ -1,0 +1,156 @@
+// Error unions, propagation with `try`, error lifting, defer/errdefer ordering, optional
+// chains and failing iterators, using a tiny key=value config parser and a "transaction".
+ParseError :: union { Empty, MissingEquals: usize, BadNumber: string, Range: (lo: i64, hi: i64) }
+StoreError :: union { Full, Duplicate: string, Parse: ParseError }
+
+Entry :: struct {
+    key: string = ""
+    value: i64 = 0
+}
+
+Store :: struct {
+    entries: [4]Entry = [4]Entry(fill: Entry())
+    len: usize = 0
+}
+
+trim :: fn(s: string) -> string {
+    lo: usize = 0
+    hi := s.len
+    while lo < hi and s[lo] is ' ' { lo += 1 }
+    while hi > lo and s[hi - 1] is ' ' { hi -= 1 }
+    return s[lo..hi]
+}
+
+parse_int :: fn(s: string) -> ParseError!i64 {
+    if s.len is 0 { return !.Empty }
+    neg := s[0] is '-'
+    digits := if neg { s[1..] } else { s }
+    if digits.len is 0 { return !.BadNumber(s) }
+    v: i64 = 0
+    for c in bytes(digits) {
+        if c not in '0'..='9' { return !.BadNumber(s) }
+        v = v *? 10 else return !.BadNumber(s)
+        v = v +? i64(c - '0') else return !.BadNumber(s)
+    }
+    return if neg { -v } else { v }
+}
+
+bounded :: fn(v: i64, lo, hi: i64) -> ParseError!i64 {
+    if v < lo or v > hi { return !.Range(lo: lo, hi: hi) }
+    return v
+}
+
+split_pair :: fn(line: string) -> ParseError!(key: string, val: string) {
+    for i in 0..line.len {
+        if line[i] is '=' { return (key: trim(line[..i]), val: trim(line[i + 1..])) }
+    }
+    return !.MissingEquals(line.len)
+}
+
+get :: fn(s: ^const Store, key: string) -> ?i64 {
+    for i in 0..s.len {
+        if s.entries[i].key is key { return s.entries[i].value }
+    }
+    return null
+}
+
+add :: fn(s: ^Store, line: string) -> StoreError!() {
+    pair := try split_pair(line)                   // ParseError lifts into StoreError.Parse
+    v := try bounded(try parse_int(pair.val), -1000, 1000)
+    if get(s, pair.key) is not null { return !.Duplicate(pair.key) }
+    if s.len is s.entries.len { return !.Full }
+    s.entries[s.len] = Entry(key: pair.key, value: v)
+    s.len += 1
+    return ()
+}
+
+// ---- cleanup ordering -----------------------------------------------------------------------
+
+Trace :: effect {
+    note: fn(msg: string)
+}
+
+step :: fn(name: string, fail: bool) -> StoreError!() \ {Trace} {
+    note(name)
+    defer note("  defer: leave step")
+    errdefer note("  errdefer: undo step")
+    if fail { return !.Full }
+    return ()
+}
+
+transaction :: fn(fail_at: u32) -> StoreError!u32 \ {Trace} {
+    defer note("  defer: transaction closed")
+    errdefer note("  errdefer: rollback")
+    for i in 0..3 {
+        defer note("  defer: end of iteration")
+        try step("step", i.trunc(u32) is fail_at)
+    }
+    return 3
+}
+
+// A failing iterator: yields parsed numbers, returns an error at the first bad token.
+numbers :: fn(items: []const string) -> ParseError!u32 \ {Yield(i64)} {
+    count: u32 = 0
+    for it in items {
+        yield(try parse_int(trim(it)))
+        count += 1
+    }
+    return count
+}
+
+sum_numbers :: fn(items: []const string) -> ParseError!i64 {
+    total: i64 = 0
+    n := try for v in numbers(items) {
+        total += v
+    }
+    return total * i64(n)
+}
+
+describe :: fn(e: StoreError) \ {Out} {
+    match e {
+        .Full => print("store full\n")
+        .Duplicate(k) => print("duplicate key {}\n", k)
+        .Parse(p) => match p {
+            .Empty => print("empty value\n")
+            .MissingEquals(at) => print("no '=' in {}-byte line\n", at)
+            .BadNumber(s) => print("bad number '{}'\n", s)
+            .Range(lo, hi) => print("out of range [{}, {}]\n", (lo, hi))
+        }
+    }
+}
+
+main :: fn() \ {Out} {
+    store := Store()
+    lines := [_]string("a = 10", "b=-20", "c = 5x", "d", "e =", "a = 1", "f = 5000", "g = 7", "h = 8", "i = 9")
+    for line in lines {
+        if done := add(&store, line) {
+            print("ok:   {}\n", line)
+        } else e => {
+            print("fail: {} -> ", line)
+            describe(e)
+        }
+    }
+    print("stored {}: a={} b={} g={} z={}\n", (store.len, get(&store, "a"), get(&store, "b"), get(&store, "g"), get(&store, "z")))
+
+    // optional chaining via else
+    z := get(&store, "z") else get(&store, "g") else 0
+    print("fallback chain: {}\n", z)
+    total := (get(&store, "a") else 0) + (get(&store, "b") else 0)
+    print("a+b = {}\n", total)
+
+    print("sums:\n")
+    good := [_]string("1", " 2", "3 ")
+    bad := [_]string("4", "x", "6")
+    print("  {}\n", sum_numbers(good[..]))
+    print("  {}\n", sum_numbers(bad[..]))
+
+    trace :: handler Trace {
+        note(msg) => print("{}\n", msg)
+    }
+    with trace {
+        r := transaction(9)
+        print("result: {}\n", r)
+        r2 := transaction(1)
+        print("result: {}\n", r2)
+    }
+}

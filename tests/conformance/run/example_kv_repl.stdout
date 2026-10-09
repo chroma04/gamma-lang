@@ -1,0 +1,20 @@
+OK
+OK
+5
+15
+13
+line 6: no such key bananas
+line 7: bad number 3x
+line 8: missing key
+line 9: unknown command FLY
+OK
+6 over 2 keys
+pears=13
+deleted pears
+line 15: no such key pears
+line 16: no such key pears
+OK
+line 18: bad number overflow
+9223372036854775800 over 2 keys
+20 lines, 18 commands run, 7 failed
+cleanup done

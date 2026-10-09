@@ -1,0 +1,7 @@
+test "hits, misses and LRU eviction" ... ok
+test "updating a key does not evict" ... ok
+test "entries expire on the fake clock" ... ok
+test "saved cache round-trips through the in-memory file system" ... ok
+test "a failing allocation is reported, not fatal" ... ok
+test "put_num handles zero and large values" ... ok
+6 passed, 0 failed

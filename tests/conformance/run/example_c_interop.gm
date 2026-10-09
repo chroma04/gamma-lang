@@ -1,0 +1,116 @@
+// Interop with C: libc string functions, variadic snprintf into a Gamma buffer, qsort with a
+// Gamma comparator over structs, strtol with an out-pointer, and a C-layout struct from div().
+c :: import "std/c"
+
+DivT :: struct {
+    quot: c.c_int
+    rem: c.c_int
+}
+
+Record :: struct {
+    id: c.c_int
+    score: f64
+    tag: [4]u8
+}
+
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> c.c_size_t \ {}
+    strcmp :: fn(a, b: cstring) -> c.c_int \ {}
+    memcmp :: fn(a, b: rawptr, n: c.c_size_t) -> c.c_int \ {}
+    toupper :: fn(ch: c.c_int) -> c.c_int \ {}
+    abs :: fn(x: c.c_int) -> c.c_int \ {}
+    div :: fn(n, d: c.c_int) -> DivT \ {}
+    snprintf :: fn(buf: [^]u8, n: c.c_size_t, fmt: cstring, ...) -> c.c_int
+    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long
+    qsort :: fn(base: rawptr, n, size: c.c_size_t, cmp: ^fn(a, b: rawptr) -> c.c_int)
+    memset :: fn(p: rawptr, v: c.c_int, n: c.c_size_t) -> rawptr
+}
+
+// Gamma view of a C string: slice it with both bounds.
+sgn :: fn(x: c.c_int) -> i32 => if x < 0 { -1 } else if x > 0 { 1 } else { 0 }
+
+view :: fn(s: cstring) -> string => s[0..libc.strlen(s)]
+
+shout :: fn(s: string, out: []u8) -> string \ {Sys} {
+    n := s.len.min(out.len)
+    for i in 0..n {
+        out[i] = libc.toupper(c.c_int(s[i])).trunc(u8)
+    }
+    return out[0..n]
+}
+
+by_score_desc :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const Record)
+    y := b.cast(^const Record)
+    if x.score > y.score { return -1 }
+    if x.score < y.score { return 1 }
+    return if x.id < y.id { -1 } else if x.id > y.id { 1 } else { 0 }
+}
+
+by_cstr :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const cstring)^
+    y := b.cast(^const cstring)^
+    return libc.strcmp(x, y)
+}
+
+parse_ints :: fn(text: cstring, out: []i64) -> usize \ {Sys} {
+    cur := text
+    n: usize = 0
+    while n < out.len {
+        end: cstring = cur
+        v := libc.strtol(cur, &end, 10)
+        if end.addr() is cur.addr() { break }     // nothing was consumed
+        out[n] = i64(v)
+        n += 1
+        cur = end
+    }
+    return n
+}
+
+main :: fn() \ {Out, Sys} {
+    s := c"gamma-lang"
+    print("strlen = {}, view = {}\n", (libc.strlen(s), view(s)))
+    print("strcmp: {} {} {}\n", (sgn(libc.strcmp(c"abc", c"abc")), sgn(libc.strcmp(c"abc", c"abd")), sgn(libc.strcmp(c"b", c"a"))))
+
+    up: [16]u8 = ---
+    print("shout: {}\n", shout("mixed Case 42", up[..]))
+
+    d := libc.div(-17, 5)
+    print("div(-17, 5) = {} rem {}; abs = {}\n", (d.quot, d.rem, libc.abs(-99)))
+
+    // snprintf with every kind of variadic argument
+    buf: [96]u8 = ---
+    n := libc.snprintf(buf[..].ptr, buf.len, c"%d|%5.2f|%s|%x|%c|%lld", c.c_int(-5), 3.14159, c"str", c.c_uint(255), c.c_int(65), i64(1) << 40)
+    print("snprintf wrote {}: {}\n", (n, buf[0..n.trunc(usize)]))
+
+    // memcmp / memset on Gamma arrays
+    a := [8]u8(fill: 7)
+    b := [8]u8(fill: 7)
+    print("memcmp equal: {}\n", libc.memcmp(&a, &b, 8) is 0)
+    b[5] = 9
+    print("memcmp differs: {}\n", libc.memcmp(&a, &b, 8) < 0)
+    _ = libc.memset(&b, 0, 4)
+    print("after memset: {}\n", b)
+
+    // qsort over structs (comparator is a Gamma function called from C)
+    recs := [_]Record(
+        Record(id: 1, score: 2.5, tag: [4]u8('a', 'b', 'c', 0)),
+        Record(id: 2, score: 9.0, tag: [4]u8('d', 'e', 'f', 0)),
+        Record(id: 3, score: 2.5, tag: [4]u8('g', 'h', 'i', 0)),
+        Record(id: 4, score: -1.0, tag: [4]u8('j', 'k', 'l', 0)),
+        Record(id: 5, score: 7.25, tag: [4]u8('m', 'n', 'o', 0)),
+    )
+    libc.qsort(&recs, recs.len, @size_of(Record), by_score_desc)
+    for r in recs { print("{}:{} ", (r.id, r.score)) }
+    print("\n")
+    print("sizeof Record = {}, align = {}\n", (@size_of(Record), @align_of(Record)))
+
+    words := [_]cstring(c"pear", c"apple", c"fig", c"banana", c"cherry")
+    libc.qsort(&words, words.len, @size_of(cstring), by_cstr)
+    for w in words { print("{} ", view(w)) }
+    print("\n")
+
+    nums: [8]i64 = ---
+    cnt := parse_ints(c"12 -7 0x1f 300 junk 5", nums[..])
+    print("parsed {}: {}\n", (cnt, nums[0..cnt]))
+}

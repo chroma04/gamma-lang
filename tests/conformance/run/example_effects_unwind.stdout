@@ -1,0 +1,14 @@
+outer: hello
+outer: world
+forwarded 2
+  inner start
+  inner start
+  inner start
+  inner defer
+  inner defer
+  inner defer
+  middle errdefer
+  middle defer
+result 42
+find 12 null
+labelled 63

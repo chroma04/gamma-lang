@@ -1,0 +1,62 @@
+// Generic helpers that take closures: the generic function bodies use plain loops over
+// slices, while the call sites capture locals in their closures.
+first_n :: fn(T: type, xs: []const T, n: usize, out: []T) -> usize {
+    k: usize = 0
+    for x in xs {
+        if k is n { break }
+        out[k] = x
+        k += 1
+    }
+    return k
+}
+
+last_index_where :: fn(T: type, xs: []const T, pred: fn(T) -> bool) -> ?usize {
+    found: ?usize = null
+    i: usize = 0
+    while i < xs.len {
+        if pred(xs[i]) { found = i }
+        i += 1
+    }
+    return found
+}
+
+Acc :: struct(T: type) {
+    total: T
+    n: u32 = 0
+}
+
+add :: fn(T: type, a: ^Acc(T), x: T) where Num(T) {
+    a.total += x
+    a.n += 1
+}
+
+each_into :: fn(T: type, xs: []const T, a: ^Acc(T), f: fn(T) -> T) where Num(T) {
+    for i in 0..xs.len { a.add(f(xs[i])) }
+}
+
+apply_all :: fn(T: type, xs: []T, f: fn(^T)) {
+    for i in 0..xs.len { f(&xs[i]) }
+}
+
+main :: fn() \ {Out} {
+    nums := [_]u32(3, 4, 5)
+    out: [2]u32 = ---
+    print("{} {}\n", (first_n(u32, nums[..], 2, out[..]), out))
+    words := [_]string("a", "bb", "ccc")
+    ws: [5]string = [5]string(fill: "")
+    print("{}\n", first_n(string, words[..], 5, ws[..]))
+    cutoff: u32 = 5
+    print("{} {}\n", (last_index_where(u32, nums[..], fn(x) => x < cutoff), last_index_where(u32, nums[..], fn(x) => x > 9)))
+    a := Acc(f64)(total: 0.5)
+    fs := [_]f64(1.5, 2.5)
+    offset := 10.0
+    each_into(f64, fs[..], &a, fn(x) => x + offset)
+    print("{} {}\n", (a.total, a.n))
+    b := Acc(i8)(total: 100)
+    xs := [_]i8(10, 10)
+    each_into(i8, xs[..], &b, fn(x) => x)
+    print("{} {}\n", (b.total, b.n))
+    bumped: u32 = 0
+    apply_all(u32, out[..], fn(p) { p^ += 100; bumped += 1 })
+    print("{} {}\n", (out, bumped))
+}

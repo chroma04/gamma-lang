@@ -1,0 +1,38 @@
+Rec :: struct { k: u8, v: u8 }
+
+lt :: fn(a, b: ^const Rec) -> bool => a.k < b.k
+
+sum_slice :: fn(xs: []const u32) -> u32 {
+    t: u32 = 0
+    for x in xs { t += x }
+    return t
+}
+
+main :: fn() \ {Out} {
+    a := [_]u32(5, 3, 9, 1, 7)
+    s := a[..]
+    print("{} {}\n", (s.starts_with(a[0..2]), s.ends_with(a[3..])))
+    p := &a
+    print("{}\n", sum_slice(p))
+    q: ^[5]u32 = &a
+    print("{} {}\n", (sum_slice(q), q.len))
+    print("{} {}\n", (3 in a, 4 in s))
+    print("{} {}\n", (3 in (1, 2, 3), 9 not in (1, 2, 3)))
+    r := [_]Rec(Rec(k: 2, v: 1), Rec(k: 1, v: 2), Rec(k: 2, v: 3), Rec(k: 1, v: 4))
+    r[..].stable_sort_by(lt)
+    print("{}\n", r)
+    r[..].stable_sort_by_key(fn(x) => 255 - x.k)
+    print("{}\n", r)
+    b := a
+    b[..].stable_sort()
+    print("{}\n", b)
+    print("{} {} {}\n", (u32(2).pow(10), u32(2).pow_wrap(40), u32(2).pow_sat(40)))
+    print("{}\n", u32(2).pow_checked(40))
+    cur := a[..].cursor()
+    while x := cur.next() { print("{} ", x) }
+    print("\n")
+    print("{} {}\n", (a[..].max(), a[..].min()))
+    pp := a[..].get_ptr(1)
+    if x := pp { x^ = 100 }
+    print("{}\n", a)
+}

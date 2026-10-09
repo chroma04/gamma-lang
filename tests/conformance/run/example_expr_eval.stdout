@@ -1,0 +1,12 @@
+1 + 2 * 3 = 7
+(1 + 2) * 3 = 9
+10 / 3 % 2 = 1
+-(4 - 10) * 7 = 42
+2 * (3 + 4 -> unbalanced parentheses
+8 / (4 - 4) -> division by zero
+7 $ 3 -> bad char at 2
+1 + -> unexpected token near 3
+9223372036854775807 + 1 -> overflow
+99999999999999999999 -> overflow
+100 - 1 - 1 - 1 = 97
+ -> unexpected token near 0
