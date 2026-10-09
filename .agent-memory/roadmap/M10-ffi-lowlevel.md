@@ -16,5 +16,7 @@ Structs by value across the C ABI done: mirror C types (decisions/009), test run
 #thread_local is per thread in both back ends.
 @asm done: Builtin::Asm{outputs,inputs} (args: template Str, (constraint Str, ptr)*, (Str, val)*,
 clobber Str*); Program::needs_native() makes `gamma run` use C; cgen `__asm__ volatile`.
-Not yet: #callconv (delegated), const relocs of
+#callconv done: types::CallConv{C,Win64} on FnTy + FnDef (SysV→C; x86-64 only); plain-only;
+no coercion across conventions or to `fn`; cgen conv_attr → ms_abi. Conformance `//! arch:` directive.
+Not yet: const relocs of
 plain fns stored at effectful fnptr types (would need tagging), errno-style TLS foreign globals.
