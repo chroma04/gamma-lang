@@ -470,7 +470,7 @@ pub fn compile(code: &str, libs: &[String], exe: &Path) -> Result<Build, String>
     std::fs::write(&c_file, code).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
     let out = std::process::Command::new(&cc)
-        .args(["-std=gnu11", "-O2", "-w", "-fwrapv", "-o"])
+        .args(["-std=gnu11", "-O2", "-w", "-fwrapv", "-ffp-contract=off", "-o"])
         .arg(exe)
         .arg(&c_file)
         .args(libs.iter().map(|l| format!("-l{}", l)))

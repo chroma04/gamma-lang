@@ -2314,7 +2314,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@unreachable()` | `never`; checked: traps in Debug/Checked, UB in Fast | no | 18 |
 | `@expect_true(b)`, `@expect_false(b)` | `bool`; branch-probability hint | yes | — |
 | `@prefetch(p)` | `()`; hint | no | — |
-| `@clz(x)`, `@ctz(x)`, `@popcount(x)`, `@bswap(x)`, `@bitreverse(x)` | integer | yes | — |
+| `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
+| `@bswap(x)` (whole bytes only), `@bitreverse(x)` | `x`'s type | yes | — |
 | `@sqrt(x)`, `@fma(a, b, c)` and the IEEE operations of `std/math` | float | yes | — |
 
 ---

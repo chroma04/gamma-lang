@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 1, 2026-10-08) — PR chroma04/gamma-lang#1 open, subscribed, CI green
+## State (session 1, 2026-10-08/09) — PR chroma04/gamma-lang#1 open, subscribed, CI green
 - Pipeline works end to end: lexer → parser → sema → TIR → interpreter. `gamma run file.gm`.
 - Done: M0–M4; M5 mostly: generic fns/structs/unions (decisions/006), compile-time value params
   on fns and types incl. fn-pointer/string/plain-data args (decisions/007), sema-time const eval
@@ -15,15 +15,17 @@
 - M10 interop mostly done (roadmap/M10 status, decisions/009): foreign, #global, #export, std/c,
   atomics, volatile; #bits/#c_union in both backends.
 - M8 fibers done in sema, interpreter and C (roadmap/M08 status, decisions/010).
-- M11 started (roadmap/M11 status): In/Clock/Rand ambient effects, rune/runes, core/slice.
+- M11 mostly done (roadmap/M11 status): all ambient effects with system + test handlers,
+  std io/fs/fmt/arena/fixed_buffer/c; std/math in flight (agent).
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
-- Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, @stack_size,
-  std (M11), C-backend gaps (M07 status), threads/@asm (M10),.
+- Not yet: §16.6 distinctness, @stack_size, cursor(), C-backend gaps (M07 status),
+  threads/@asm/#callconv (M10).
+- Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. M11 std (io/fs/fmt/… via foreign + Sys handlers).
-2. M3/M5 leftovers; C-backend gaps (M07 status); threads (M10).
+1. Merge std/math; then M10 threads (+std/thread), @stack_size, cursor(), §16.6 distinctness.
+2. C-backend gaps (M07 status); M12 polish (docs/guide review, diagnostics).
 3. Keep PR green; CI runs on push.
 
 ## Map

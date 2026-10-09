@@ -7,12 +7,11 @@ checks per build mode (Debug/Checked/Fast), traps with locations, integers of an
 interpreter and C backend.
 
 ## Status (design: decisions/008)
-Done: src/cgen/{mod,types,func,expr,arith,helpers}.rs + runtime/gm_rt.{h,c} (+ rt_test.c,
-tests/runtime.rs, delegated). All 22 run tests pass on both backends; harness runs every run
-test via `--backend=c` (GAMMA_TEST_C=0 skips; probe cached). Generated C is ASan/UBSan clean.
-`gamma build [-o]`, `gamma run --backend=c` (arg0 = source path on unix).
-Not yet: fibers/ctl/resume, foreign fns, #global, #bits fields, ints >128 bits, float pow,
-elementwise array ops, Fast/Checked mode flags (Options{checks,debug} exist; CLI always debug),
-static handler specialization (D.3), stack-overflow trap (C just segfaults), `gamma test` native.
+Done: src/cgen/{mod,types,func,expr,arith,helpers,fiber}.rs + runtime/gm_rt.{h,c} (+ rt_test.c,
+tests/runtime.rs). Every run test runs on both backends (GAMMA_TEST_C=0 skips); ASan/UBSan clean;
+gcc and clang (macOS CI = clang). Fibers, foreign fns, #global, #bits all done.
+`gamma build [-o]`, `gamma run --backend=c`, `--mode=debug|checked|fast` (Options{checks,debug}).
+Not yet: ints >128 bits, elementwise array ops, static handler specialization (D.3),
+main-stack overflow trap (C segfaults; fiber stacks are checked), `gamma test` native.
 Gotchas: Const is a place (static gm_cN) — `&CONST` must not copy; pattern types needed
-finalizing (sema fix); defers run by a ladder must save/clear gm_unw.
+finalizing (sema fix); defers run by a ladder must save/clear gm_unw; `(T){}` not `(T){0}`.

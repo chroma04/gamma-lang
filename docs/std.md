@@ -127,6 +127,19 @@ Both free or resize only their most recent allocation; everything else stays unt
 `deinit` (an arena) or `reset` (a fixed buffer). A full fixed buffer fails with
 `OutOfMemory`; an arena takes a bigger chunk from its parent.
 
+## `std/math`
+
+Elementary functions on `f64`, written in Gamma (ports of the FreeBSD/fdlibm algorithms),
+so results are bit-for-bit the same in the interpreter, in compiled code and at compile
+time. Every function is correctly rounded or within 1 ulp; special values follow C99
+Annex F.
+
+- Constants: `pi`, `e`, `tau`, `ln2`, `ln10`, `sqrt2`, `inf`, `nan`.
+- `sqrt`, `cbrt`, `hypot`; `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`.
+- `sin`, `cos`, `tan` (with full argument reduction), `asin`, `acos`, `atan`, `atan2`;
+  `sinh`, `cosh`, `tanh`.
+- `floor`, `ceil`, `trunc`, `round` (half away from zero), `fmod`/`rem`, `copysign`, `abs`.
+
 ## `std/c`
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring

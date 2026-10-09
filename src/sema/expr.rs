@@ -746,6 +746,57 @@ impl<'a, 's> FnCx<'a, 's> {
         false
     }
 
+    /// `@sqrt(x)`, `@fma(a, b, c)` on floats and the bit operations on integers (§20.3).
+    fn numeric_intrinsic(&mut self, n: &str, args: &[ast::Arg], span: Span) -> Expr {
+        let arity = if n == "fma" { 3 } else { 1 };
+        if args.len() != arity || args.iter().any(|a| !matches!(a.kind, ast::ArgKind::Positional(_))) {
+            self.error(span, format!("`@{}` takes {} argument(s)", n, arity));
+            return error_expr(span);
+        }
+        let mut vals = vec![];
+        for a in args {
+            let ast::ArgKind::Positional(e) = &a.kind else { unreachable!() };
+            let v = self.expr(e, vals.first().map(|v: &Expr| v.ty));
+            let v = match vals.first() {
+                Some(first) => self.coerce(v, first.ty),
+                None => v,
+            };
+            vals.push(v);
+        }
+        let float = matches!(n, "sqrt" | "fma");
+        // Untyped literals take the usual fallback types (§6.1).
+        let t0 = self.infer.resolve(vals[0].ty);
+        if t0.is_infer() {
+            let fallback = if float { Ty::f64() } else { Ty::i32() };
+            let _ = self.infer.unify(t0, fallback);
+        }
+        let t = self.infer.resolve(vals[0].ty);
+        let ok = if float { t.is_float() } else { t.is_integer() };
+        if !ok {
+            if !t.is_error() {
+                let want = if float { "a float" } else { "an integer" };
+                self.error(span, format!("`@{}` needs {} of a known type, not `{}`", n, want, t));
+            }
+            return error_expr(span);
+        }
+        let (op, ty) = match n {
+            "sqrt" => (tir::Builtin::Sqrt, t),
+            "fma" => (tir::Builtin::Fma, t),
+            "clz" => (tir::Builtin::Clz, Ty::int(false, 32)),
+            "ctz" => (tir::Builtin::Ctz, Ty::int(false, 32)),
+            "popcount" => (tir::Builtin::Popcount, Ty::int(false, 32)),
+            "bswap" => {
+                let bits = self.sema.with_layouts(|l| l.size_of(t)) * 8;
+                if !matches!(t.kind(), TyKind::Int(i) if i.bits as u64 == bits) && !matches!(t.kind(), TyKind::Usize | TyKind::Isize) {
+                    self.error(span, format!("`@bswap` needs an integer of whole bytes, not `{}`", t));
+                }
+                (tir::Builtin::Bswap, t)
+            }
+            _ => (tir::Builtin::Bitreverse, t),
+        };
+        mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+    }
+
     /// Intrinsics that are compile-time constants (§20.3).
     fn intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
         let type_arg = |cx: &mut Self, i: usize| -> Option<Ty> {
@@ -893,6 +944,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             },
             "fiber" => self.fiber_intrinsic(args, span),
+            "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" => {
+                self.numeric_intrinsic(name.name.as_str(), args, span)
+            }
             // The smallest fiber stack (§14.1), in bytes.
             "min_stack" => usize_const(tir::MIN_STACK),
             "type_name" => {
