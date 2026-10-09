@@ -7,7 +7,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast;
 use crate::tir::{self, Expr, FnId};
-use crate::types::{CallConv, FnTy, Ty, TyKind};
+use crate::types::{CallConv, EffectRef, EffectSet, FnTy, Ty, TyKind};
 
 fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
     Expr { ty, kind, span }
@@ -124,8 +124,18 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         // Effects in the literal's own set are performed where it is called; the
         // others are performed where it is written (§11.6, §12.3).
+        let mut own = vec![];
         for (e, sp) in performed {
             if !effects.contains(&e) {
+                if wants_pointer && name.is_none() {
+                    let n = e.effect.name();
+                    self.error(
+                        sp,
+                        format!("a function pointer performs only the effects in its type, and `{}` is not among them (§11.7)", n),
+                    );
+                    continue;
+                }
+                own.push(e.clone());
                 if name.is_some() && !captures {
                     let n = e.effect.name();
                     self.error(
@@ -142,6 +152,13 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let parent = if captures { self.fn_id } else { None };
         self.sema.prog.fns[fn_id.index()].parent = parent;
+        // The value carries the handler context where it is written for its own effects,
+        // so the function takes that context like any effectful function.
+        if !own.is_empty() {
+            let mut all: Vec<EffectRef> = effects.effects.to_vec();
+            all.extend(own);
+            self.sema.prog.fns[fn_id.index()].effects = EffectSet::new(all);
+        }
         self.nested.push(NestedFn { fn_id, params: param_ids, locals, body });
         // A literal written where a pointer with a calling convention is expected has it.
         let callconv = match &expected {

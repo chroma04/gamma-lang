@@ -486,18 +486,44 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, "`print` takes a template string and, optionally, the arguments");
             return error_expr(span);
         }
-        let template = positional[0];
-        let ExprKind::Str(t) = &template.kind else {
-            self.error(template.span, "the template of `print` must be a string literal");
+        let Some((pieces, values, mut stmts)) = self.template_args(positional[0], positional.get(1).copied(), span)
+        else {
             return error_expr(span);
+        };
+        let (effect, name) =
+            if to_out { (self.sema.prog.ambient.out, "Out") } else { (self.sema.prog.ambient.err, "Err") };
+        let Some(effect) = effect else {
+            self.error(span, format!("the `{}` effect is not available", name));
+            return error_expr(span);
+        };
+        let eref = EffectRef { effect, args: Box::new([]) };
+        self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
+        let write = mk(
+            Ty::unit(),
+            tir::ExprKind::Write { sink: WriteSink::Perform { effect: eref, op: 0 }, pieces, args: values },
+            span,
+        );
+        if stmts.is_empty() {
+            return write;
+        }
+        stmts.push(Stmt::Expr(write));
+        super::func::block_of(stmts, span)
+    }
+
+    /// The pieces of a `@write` template (§21.6.1) and the argument values for its
+    /// placeholders, with statements that must run first.
+    fn template_args(&mut self, template: &ast::Expr, args: Option<&ast::Expr>, span: Span) -> Option<TemplateArgs> {
+        let ExprKind::Str(t) = &template.kind else {
+            self.error(template.span, "the template must be a string literal");
+            return None;
         };
         let Some(pieces) = parse_template(&t.bytes) else {
             self.error(template.span, "invalid template: use `{}` for an argument and `{{` / `}}` for braces");
-            return error_expr(span);
+            return None;
         };
         let n = pieces.len() - 1;
         let mut stmts = vec![];
-        let values: Vec<Expr> = match (n, positional.get(1)) {
+        let values: Vec<Expr> = match (n, args) {
             (0, None) => vec![],
             (0, Some(a)) => {
                 let v = self.expr(a, None);
@@ -516,7 +542,7 @@ impl<'a, 's> FnCx<'a, 's> {
                             a.span,
                             format!("the template has {} placeholders but {} arguments are given", n, elems.len()),
                         );
-                        return error_expr(span);
+                        return None;
                     }
                     elems.iter().map(|e| self.expr(&e.value, None)).collect()
                 } else {
@@ -541,29 +567,62 @@ impl<'a, 's> FnCx<'a, 's> {
                                     n, n
                                 ),
                             );
-                            return error_expr(span);
+                            return None;
                         }
                     }
                 }
             }
             (_, None) => {
                 self.error(span, format!("the template has {} placeholder(s) but no arguments are given", n));
-                return error_expr(span);
+                return None;
             }
         };
-        let (effect, name) =
-            if to_out { (self.sema.prog.ambient.out, "Out") } else { (self.sema.prog.ambient.err, "Err") };
-        let Some(effect) = effect else {
-            self.error(span, format!("the `{}` effect is not available", name));
+        Some((pieces, values, stmts))
+    }
+
+    /// `@write(sink, template, args)` (§21.6.1): formatting into a second-class function.
+    pub fn write_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let positional: Vec<&ast::Expr> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Positional(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        if positional.len() != args.len() || !(2..=3).contains(&positional.len()) {
+            self.error(span, "`@write` takes a sink, a template string and, optionally, the arguments");
+            return error_expr(span);
+        }
+        let bytes = Ty::intern(TyKind::Slice { elem: Ty::int(false, 8), is_const: true });
+        let sink_ty = Ty::intern(TyKind::Fn(Box::new(crate::types::FnTy {
+            params: Box::new([bytes]),
+            ret: Ty::unit(),
+            effects: EffectSet::empty(),
+            variadic: false,
+            callconv: Default::default(),
+        })));
+        let sink = self.expr(positional[0], Some(sink_ty));
+        let st = self.infer.resolve(sink.ty);
+        match st.kind() {
+            // The sink's effects are the effects of the `@write`.
+            TyKind::Fn(sig) | TyKind::FnPtr(sig)
+                if sig.params.len() == 1 && sig.params[0] == bytes && sig.ret.is_unit() =>
+            {
+                let effects = sig.effects.clone();
+                self.record_effects(&effects, span);
+            }
+            TyKind::Error => return error_expr(span),
+            _ => {
+                self.error(positional[0].span, format!("a `@write` sink is a `fn(bytes: []const u8)`, not `{}`", st));
+                return error_expr(span);
+            }
+        }
+        let Some((pieces, values, mut stmts)) = self.template_args(positional[1], positional.get(2).copied(), span)
+        else {
             return error_expr(span);
         };
-        let eref = EffectRef { effect, args: Box::new([]) };
-        self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
-        let write = mk(
-            Ty::unit(),
-            tir::ExprKind::Write { sink: WriteSink::Perform { effect: eref, op: 0 }, pieces, args: values },
-            span,
-        );
+        let write =
+            mk(Ty::unit(), tir::ExprKind::Write { sink: WriteSink::Fn(Box::new(sink)), pieces, args: values }, span);
         if stmts.is_empty() {
             return write;
         }
@@ -571,6 +630,10 @@ impl<'a, 's> FnCx<'a, 's> {
         super::func::block_of(stmts, span)
     }
 }
+
+/// A template's literal pieces, the values for its placeholders, and statements that
+/// must run before them.
+type TemplateArgs = (Vec<Rc<[u8]>>, Vec<Expr>, Vec<Stmt>);
 
 /// Splits a `@write` template into the literal pieces around `{}` placeholders.
 pub fn parse_template(t: &[u8]) -> Option<Vec<Rc<[u8]>>> {

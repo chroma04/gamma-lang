@@ -7,6 +7,10 @@ greet2 :: fn() \ {Out} {
     print("hi\n")
 }
 
+Sized :: effect(N: usize) {                  //~ ERROR effect parameters are types
+    take: fn(n: usize)
+}
+
 main :: fn() \ {Out} {
     greet2()
 }

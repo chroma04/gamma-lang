@@ -1403,7 +1403,7 @@ effect_lit = 'effect' [ '(' param % ',' ')' ] '{' { op_decl terminator } '}'
 op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' type ]
 ```
 
-An `effect` literal creates a nominal effect type. Its parameters are compile-time values (usually types). Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
+An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`); an effect is instantiated by applying it to type arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
 Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. If `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal), and exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — that instantiation is used, and the arguments are typed accordingly. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 

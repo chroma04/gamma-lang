@@ -508,7 +508,7 @@ impl<'s> Sema<'s> {
             let is_type =
                 p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
             if !is_type {
-                self.error(p.span, "effect parameters other than types are not supported yet");
+                self.error(p.span, "effect parameters are types: `effect(T: type)` (§12.1)");
             }
             for n in &p.names {
                 let pid = crate::types::ParamId::fresh(n.name);

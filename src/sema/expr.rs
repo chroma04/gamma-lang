@@ -985,6 +985,24 @@ impl<'a, 's> FnCx<'a, 's> {
             },
             "fiber" => self.fiber_intrinsic(args, span),
             "asm" => self.asm(args, span),
+            "write" => self.write_intrinsic(args, span),
+            // A hint that `p` will be read soon; it has no effect on the program.
+            "prefetch" => match args {
+                [ast::Arg { kind: ast::ArgKind::Positional(p), .. }] => {
+                    let v = self.expr(p, None);
+                    let t = self.infer.resolve(v.ty);
+                    if !t.is_error()
+                        && !matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr)
+                    {
+                        self.error(p.span, format!("`@prefetch` takes a pointer, not `{}`", t));
+                    }
+                    super::func::block_of(vec![tir::Stmt::Expr(v)], span)
+                }
+                _ => {
+                    self.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`");
+                    error_expr(span)
+                }
+            },
             "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
