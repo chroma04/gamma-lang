@@ -150,6 +150,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 if let Some(t) = builtin_type(id.name.as_str()) {
                     return Some(CalleeKind::Type(t));
                 }
+            } else if let Some(LocalBinding::NestedFn(f)) = self.lookup_local(id.name) {
+                // A nested named function is called directly (and may be generic).
+                return Some(CalleeKind::Fn(*f));
             } else if let Some(LocalBinding::Label) = self.lookup_local(id.name) {
                 self.error(callee.span, format!("`{}` is a label", id.name));
                 return None;

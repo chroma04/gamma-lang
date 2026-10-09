@@ -1364,6 +1364,8 @@ Function pointers may be stored anywhere, compared with `is`, and passed to C wh
 
 A `name :: fn(…) { … }` binding inside a function body whose literal captures nothing declares a **nested function**: its body refers only to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), to its own parameters and locals, and to itself by name. It is equivalent to a private top-level function and is first-class. If the literal refers to any other local of the enclosing function, the binding is instead an immutable local holding a second-class function value (§11.6), which cannot refer to itself.
 
+A nested function may be generic (§16.1); it is then always a nested function, and its body refers only to top-level names, to its own parameters and locals, and to itself. A function literal used as a value cannot be generic, since a function value has a single type.
+
 ### 11.9 Recursion
 
 Functions may call themselves and each other recursively. Second-class function literals cannot refer to themselves.

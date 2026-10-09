@@ -25,7 +25,8 @@
 - #fast_math/#deprecated/#inline checks done (M12 file).
 - Wide ints in C done; spreads (§11.4) done.
 - `if … else e =>` captures done (if_expr lowers last branch to a Match).
-- Not yet: qualified consts in patterns, generic fn literals, non-type
+- Generic nested fns done (declared via decls::declare_fn with a synthetic Item; Sema.nested_generic).
+- Not yet: qualified consts in patterns, non-type
   effect params, consts needing temporaries (sema "not supported yet" errors); native `gamma test`.
 - Threads done (M10 status): std/thread, interp GIL (src/interp/threads.rs), C TLS + locks.
 - Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).

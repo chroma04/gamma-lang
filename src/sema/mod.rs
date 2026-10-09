@@ -177,6 +177,8 @@ pub struct Sema<'s> {
     deprecated_uses: std::collections::HashSet<(DeclId, Span)>,
     /// `#inline` functions, checked for recursion once every body is known.
     pub inline_fns: Vec<(FnId, Span)>,
+    /// Generic nested functions (§11.8), declared like top-level ones, by name.
+    pub nested_generic: HashMap<FnId, ast::Ident>,
     pub prog: Program,
     /// Signatures of functions in `prog.fns`.
     pub sigs: HashMap<FnId, FnSig>,
@@ -280,6 +282,7 @@ impl<'s> Sema<'s> {
             decls: vec![],
             deprecated_uses: std::collections::HashSet::new(),
             inline_fns: vec![],
+            nested_generic: HashMap::new(),
             prog: Program::default(),
             sigs: HashMap::new(),
             effects: HashMap::new(),

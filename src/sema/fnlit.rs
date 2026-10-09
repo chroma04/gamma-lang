@@ -17,8 +17,11 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Checks a function literal used as a value. `name` is set for a nested
     /// named function `name :: fn …`, which may call itself.
     pub fn fn_literal(&mut self, lit: &ast::FnLit, expect: Option<Ty>, name: Option<Symbol>, span: Span) -> Expr {
-        if !lit.where_.is_empty() {
-            self.error(lit.span, "generic function literals are not supported yet");
+        if name.is_none() && is_generic(lit) {
+            self.error(
+                lit.span,
+                "a function literal used as a value cannot be generic; bind it with `name :: fn …` (§11.8)",
+            );
             return error_expr(span);
         }
         let expected = expect.map(|t| self.infer.resolve(t)).and_then(|t| match t.kind() {
@@ -199,6 +202,9 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `name :: fn …` inside a function body.
     pub fn nested_fn_binding(&mut self, name: crate::syntax::ast::Ident, lit: &ast::FnLit, span: Span) -> tir::Stmt {
+        if is_generic(lit) {
+            return self.nested_generic_fn(name, lit, span);
+        }
         let v = self.fn_literal(lit, None, Some(name.name), span);
         match v.kind {
             tir::ExprKind::Closure(_) => {
@@ -214,5 +220,49 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ => tir::Stmt::Expr(super::func::unit(span)),
         }
+    }
+}
+
+/// Whether a function literal has compile-time parameters or constraints (§16.1).
+fn is_generic(lit: &ast::FnLit) -> bool {
+    !lit.where_.is_empty()
+        || lit.sig.params.iter().any(|p| {
+            p.comptime
+                || p.ty
+                    .as_ref()
+                    .is_some_and(|t| matches!(&t.kind, ast::ExprKind::Ident(i) if i.name.as_str() == "type"))
+        })
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// A generic nested function `name :: fn(T: type, …)`. It captures nothing (§11.8), so
+    /// it is declared like a private top-level function of the module: checked once and
+    /// instantiated per call. Its body sees the module's names and its own, not the
+    /// enclosing function's locals.
+    fn nested_generic_fn(&mut self, name: ast::Ident, lit: &ast::FnLit, span: Span) -> tir::Stmt {
+        let synthetic = ast::NodeId(u32::MAX);
+        let init = ast::Expr { id: synthetic, kind: ast::ExprKind::Fn(Box::new(lit.clone())), span };
+        let binding = ast::Binding {
+            id: synthetic,
+            names: vec![name],
+            ty: None,
+            kind: ast::BindingKind::Const,
+            init: Box::new(init),
+            span,
+        };
+        let item = std::rc::Rc::new(ast::Item {
+            id: synthetic,
+            span,
+            doc: None,
+            attrs: vec![],
+            is_pub: false,
+            kind: ast::ItemKind::Binding(binding),
+        });
+        let module = self.module;
+        if let super::DeclValue::Fn(f) = self.sema.declare_fn(module, name, lit, &item) {
+            self.sema.nested_generic.insert(f, name);
+            self.declare(name.name, LocalBinding::NestedFn(f), name.span);
+        }
+        tir::Stmt::Expr(super::func::unit(span))
     }
 }

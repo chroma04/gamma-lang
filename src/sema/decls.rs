@@ -270,7 +270,13 @@ impl<'s> Sema<'s> {
     }
 
     /// Resolves the signature of a top-level function and queues its body.
-    fn declare_fn(&mut self, module: ModuleId, name: ast::Ident, lit: &ast::FnLit, item: &Rc<ast::Item>) -> DeclValue {
+    pub(super) fn declare_fn(
+        &mut self,
+        module: ModuleId,
+        name: ast::Ident,
+        lit: &ast::FnLit,
+        item: &Rc<ast::Item>,
+    ) -> DeclValue {
         let Some(sig) = self.resolve_fn_sig(module, &lit.sig, true, &lit.where_) else { return DeclValue::Error };
         // A struct may not have both a field and a method named alike (§7.10).
         if let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) {

@@ -153,8 +153,13 @@ impl<'s> Sema<'s> {
         }
         let numeric: Vec<_> =
             sig.generics.iter().copied().filter(|p| self.param_has(*p, super::generics::Constraint::Num)).collect();
+        let own_name = self.nested_generic.get(&fn_id).copied();
         let mut cx = FnCx::new(self, module, sig.ret, sig.effects.clone());
         cx.fn_id = Some(fn_id);
+        // A generic nested function can call itself by name (§11.8).
+        if let Some(n) = own_name {
+            cx.declare(n.name, LocalBinding::NestedFn(fn_id), n.span);
+        }
         cx.infer.numeric_params = numeric;
         let mut params = vec![];
         for p in &sig.params {
