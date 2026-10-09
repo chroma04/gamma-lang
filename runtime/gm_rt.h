@@ -14,6 +14,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
 
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
@@ -120,6 +124,17 @@ static void gm_set_args(int argc, char **argv);
 static const void *gm_args(size_t *count);
 /* Looks up an environment variable; returns false if unset. */
 static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);
+
+/* ---- system services (behind the core library's default handlers, §12.9) --------- */
+
+/* Operations that can fail return a count, or an error code: -1 - i for the i-th
+ * variant of IoError other than Other, and -1000 - errno for Other(errno). */
+static int64_t gm_io_error(int err);
+static int64_t gm_sys_read(uint8_t *p, size_t n);   /* standard input */
+static uint64_t gm_clock_now(void);                 /* monotonic nanoseconds */
+static int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds */
+static void gm_clock_sleep(uint64_t ns);
+static void gm_rand_fill(uint8_t *p, size_t n);
 
 /* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
 

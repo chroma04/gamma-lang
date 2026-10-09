@@ -158,10 +158,8 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Break { label, value } => self.break_expr(*label, value.as_deref(), span),
             ExprKind::Continue { label } => self.continue_expr(*label, span),
             ExprKind::Resume { cont, value } => self.resume_expr(cont, value.as_deref(), span),
-            ExprKind::For(_) => {
-                self.error(span, "`for` is not supported as a value yet; use it as a statement");
-                error_expr(span)
-            }
+            // A `for` loop's value is `()` (§8.4).
+            ExprKind::For(f) => self.for_loop(f),
             ExprKind::Intrinsic { name, args } => self.intrinsic(*name, args.as_deref().unwrap_or(&[]), span),
             ExprKind::DotIdent(name) => match expect.map(|t| self.infer.resolve(t)) {
                 Some(t) => self.construct_variant(super::call::strip_wrappers(t), *name, None, span),
@@ -781,6 +779,23 @@ impl<'a, 's> FnCx<'a, 's> {
                     (tir::Builtin::HeapFree, Ty::unit())
                 };
                 mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+            }
+            n if self.sema.modules[self.module.0 as usize].is_prelude
+                && tir::SysOp::ALL.iter().any(|op| op.signature().0 == n) =>
+            {
+                let op = *tir::SysOp::ALL.iter().find(|op| op.signature().0 == n).unwrap();
+                let (_, params, ret) = op.signature();
+                if args.len() != params.len() {
+                    self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
+                    return error_expr(span);
+                }
+                let mut vals = vec![];
+                for (a, t) in args.iter().zip(params) {
+                    let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
+                    let v = self.expr(e, Some(t));
+                    vals.push(self.coerce(v, t));
+                }
+                mk(ret, tir::ExprKind::Builtin { op: tir::Builtin::Sys(op), args: vals }, span)
             }
             "hash" => {
                 let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =

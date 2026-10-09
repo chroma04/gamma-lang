@@ -679,6 +679,7 @@ impl<'a> Machine<'a> {
                 self.trap(e.span, msg)
             }
             Builtin::Fiber => self.eval_fiber(a, e.span, args),
+            Builtin::Sys(op) => self.eval_sys(a, e, op, args),
             Builtin::HeapAlloc => {
                 let sb = self.eval_bytes(a, &args[0])?;
                 let ab = self.eval_bytes(a, &args[1])?;

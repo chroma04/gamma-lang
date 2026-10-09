@@ -2333,7 +2333,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect` |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2487,8 +2487,9 @@ IoError :: union {
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
 Duration :: struct { pub ns: u64 }
-// methods: i.since(earlier) -> Duration (checked: not earlier than `earlier`), i.add(d) -> Instant,
-// d.add(d2), d.sub(d2) (checked), d.ms() -> u64, and constructors ns(n), us(n), ms(n), secs(n) -> Duration
+// methods: i.since(earlier) -> Duration (checked: not earlier than `earlier`), i.after(d) -> Instant,
+// d.plus(d2), d.minus(d2) (checked), d.to_ms() -> u64 (whole milliseconds);
+// constructors ns(n), us(n), ms(n), secs(n) -> Duration (n: u64; checked)
 SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
 
 Out   :: effect { write_out: fn(bytes: []const u8) }

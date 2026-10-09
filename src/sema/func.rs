@@ -766,7 +766,7 @@ impl<'a, 's> FnCx<'a, 's> {
         e
     }
 
-    fn for_loop(&mut self, f: &ast::ForExpr) -> Expr {
+    pub fn for_loop(&mut self, f: &ast::ForExpr) -> Expr {
         let span = f.span;
         let ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } = &f.iter.kind else {
             if matches!(f.iter.kind, ExprKind::Call { .. }) {

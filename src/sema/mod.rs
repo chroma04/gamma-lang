@@ -397,38 +397,54 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// The function the runtime calls: `main`, wrapped so that `Alloc` is handled
-    /// by the system heap when `main` performs it (§3.7, §12.9).
+    /// The function the runtime calls: `main`, wrapped in the core library's default
+    /// handlers for the ambient effects it performs that the runtime does not serve
+    /// directly: `Alloc` (the system heap) and `In`, `Clock`, `Rand` (§3.7, §12.9).
     fn entry_point(&mut self, main: FnId, sig: &FnSig) -> FnId {
-        let Some(alloc) = self.prog.ambient.alloc else { return main };
-        if !sig.effects.effects.iter().any(|e| e.effect == alloc) {
+        let a = self.prog.ambient.clone();
+        let performs = |e: Option<EffectId>| e.is_some_and(|e| sig.effects.effects.iter().any(|r| r.effect == e));
+        let mut providers = vec![];
+        if performs(a.alloc) {
+            providers.push("heap_allocator");
+        }
+        if performs(a.input) || performs(a.clock) || performs(a.rand) {
+            providers.push("system_io");
+        }
+        let span = self.prog.fns[main.index()].span;
+        let mut handlers = vec![];
+        let mut handled = vec![];
+        for name in providers {
+            let Some(&d) = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern(name)))
+            else {
+                continue;
+            };
+            let DeclValue::Fn(f) = self.resolve_decl(d) else { continue };
+            let ty = self.sigs[&f].ret;
+            let decls = self.handlers_for(ty);
+            for d in &decls {
+                handled.push(self.prog.handler_decls[d.index()].effect.effect);
+            }
+            let value = tir::Expr { ty, kind: tir::ExprKind::Call { callee: tir::Callee::Fn(f), args: vec![] }, span };
+            handlers.push(tir::HandlerValue::Decl { decls, value });
+        }
+        if handlers.is_empty() {
             return main;
         }
-        let Some(&heap) =
-            self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern("heap_allocator")))
-        else {
-            return main;
-        };
-        let DeclValue::Fn(heap) = self.resolve_decl(heap) else { return main };
-        let allocator = self.sigs[&heap].ret;
-        let decls = self.handlers_for(allocator);
-        let span = self.prog.fns[main.index()].span;
-        let effects = EffectSet::new(sig.effects.effects.iter().filter(|e| e.effect != alloc).cloned().collect());
-        let entry_sig =
-            FnSig { module: sig.module, params: vec![], ret: sig.ret, effects: effects.clone(), generics: vec![] };
+        let effects =
+            EffectSet::new(sig.effects.effects.iter().filter(|e| !handled.contains(&e.effect)).cloned().collect());
+        let entry_sig = FnSig { module: sig.module, params: vec![], ret: sig.ret, effects, generics: vec![] };
         let entry = self.new_fn(Symbol::intern("<entry>"), span, entry_sig, tir::FnKind::Named);
-        let call = |f: FnId, ty: Ty| tir::Expr {
-            ty,
-            kind: tir::ExprKind::Call { callee: tir::Callee::Fn(f), args: vec![] },
-            span,
-        };
         let with = tir::Expr {
             ty: sig.ret,
             kind: tir::ExprKind::With {
                 label: tir::LabelId(0),
-                handlers: vec![tir::HandlerValue::Decl { decls, value: call(heap, allocator) }],
+                handlers,
                 on: None,
-                body: Box::new(call(main, sig.ret)),
+                body: Box::new(tir::Expr {
+                    ty: sig.ret,
+                    kind: tir::ExprKind::Call { callee: tir::Callee::Fn(main), args: vec![] },
+                    span,
+                }),
             },
             span,
         };
@@ -439,7 +455,7 @@ impl<'s> Sema<'s> {
     /// True if `e` is one of the ambient effects of §12.9.
     pub fn is_ambient(&self, e: &EffectRef) -> bool {
         let a = &self.prog.ambient;
-        [a.out, a.err, a.env, a.alloc, a.sys].contains(&Some(e.effect))
+        [a.out, a.err, a.env, a.alloc, a.sys, a.input, a.clock, a.rand].contains(&Some(e.effect))
     }
 
     /// Layout computations over the program's nominal types.

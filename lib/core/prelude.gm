@@ -28,6 +28,95 @@ pub Env :: effect {
     exit: esc(code: u8) -> never
 }
 
+/// Why an input or output operation failed (§21.7).
+pub IoError :: union {
+    NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    Other: i32                                  // OS error code
+}
+
+/// Standard input (§12.9, §21.7): `read` returns 0 at the end of the input.
+pub In :: effect {
+    read: fn(buf: []u8) -> IoError!usize
+}
+
+/// A point in time on a monotonic clock, since an unspecified epoch.
+pub Instant :: struct { pub ns: u64 }
+
+/// A length of time.
+pub Duration :: struct { pub ns: u64 }
+
+/// Time (§12.9, §21.7): `wall` gives Unix time in nanoseconds.
+pub Clock :: effect {
+    now: fn() -> Instant
+    wall: fn() -> i64
+    sleep: fn(d: Duration)
+}
+
+/// Random bytes (§12.9, §21.7).
+pub Rand :: effect {
+    fill: fn(buf: []u8)
+}
+
+/// `n` nanoseconds.
+pub ns :: fn(n: u64) -> Duration => Duration(ns: n)
+/// `n` microseconds.
+pub us :: fn(n: u64) -> Duration => Duration(ns: n * 1_000)
+/// `n` milliseconds.
+pub ms :: fn(n: u64) -> Duration => Duration(ns: n * 1_000_000)
+/// `n` seconds.
+pub secs :: fn(n: u64) -> Duration => Duration(ns: n * 1_000_000_000)
+
+/// The time from `earlier` to `i` (checked: `earlier` must not be later).
+pub since :: fn(i: Instant, earlier: Instant) -> Duration => Duration(ns: i.ns - earlier.ns)
+/// The instant `d` after `i`.
+pub after :: fn(i: Instant, d: Duration) -> Instant => Instant(ns: i.ns + d.ns)
+/// The sum of two durations.
+pub plus :: fn(d: Duration, e: Duration) -> Duration => Duration(ns: d.ns + e.ns)
+/// `d` less `e` (checked: `e` must not be longer).
+pub minus :: fn(d: Duration, e: Duration) -> Duration => Duration(ns: d.ns - e.ns)
+/// The whole milliseconds in `d`.
+pub to_ms :: fn(d: Duration) -> u64 => d.ns / 1_000_000
+
+// The default handlers of `In`, `Clock` and `Rand` (§12.9), installed around `main`.
+
+SystemIo :: struct {}
+
+/// The result of a system read or write: a count, or an error code.
+io_result :: fn(n: i64) -> IoError!usize {
+    if n >= 0 { return n.trunc(usize) }
+    if n <= -1000 { return !.Other((-1000 - n).trunc(i32)) }
+    e: IoError = match -1 - n {
+        0 => .NotFound
+        1 => .PermissionDenied
+        2 => .AlreadyExists
+        3 => .WouldBlock
+        4 => .Interrupted
+        5 => .BrokenPipe
+        6 => .ConnectionReset
+        7 => .InvalidInput
+        8 => .UnexpectedEof
+        _ => .NoSpace
+    }
+    return !e
+}
+
+handler In for SystemIo {
+    read(self, buf) => io_result(@sys_read(buf))
+}
+
+handler Clock for SystemIo {
+    now(self) => Instant(ns: @clock_now())
+    wall(self) => @clock_wall()
+    sleep(self, d) => @clock_sleep(d.ns)
+}
+
+handler Rand for SystemIo {
+    fill(self, buf) => @rand_fill(buf)
+}
+
+system_io :: fn() -> SystemIo => SystemIo()
+
 // Standard iterators (§13.3, §21.4).
 
 /// The integers `lo, lo + 1, …, hi - 1`.
@@ -213,10 +302,42 @@ leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
     return 1
 }
 
+// The test handlers of `In`, `Clock` and `Rand` (§12.9): empty input, a fake clock that
+// `sleep` advances, and a generator with a fixed seed.
+
+TestIo :: struct {
+    clock: u64
+    seed: u64
+}
+
+handler In for ^TestIo {
+    read(self, buf) => 0
+}
+
+handler Clock for ^TestIo {
+    now(self) => Instant(ns: self.clock)
+    wall(self) => 1_700_000_000_000_000_000 + self.clock.trunc(i64)
+    sleep(self, d) => { self.clock += d.ns }
+}
+
+handler Rand for ^TestIo {
+    fill(self, buf) => {
+        // splitmix64
+        for i in 0..buf.len {
+            self.seed +%= 0x9e3779b97f4a7c15
+            z := self.seed
+            z = (z ~ (z >> 30)) *% 0xbf58476d1ce4e5b9
+            z = (z ~ (z >> 27)) *% 0x94d049bb133111eb
+            buf[i] = (z ~ (z >> 31)).trunc(u8)
+        }
+    }
+}
+
 /// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
-run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env}) -> u8 \ {Out, Err, Env} {
+run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    r := with Allocator(data: &t, vt: &TRACKING) { body() }
+    io := TestIo(clock: 0, seed: 0)
+    r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
     if !e := r {
         eprint("error: {}\n", e)
         return 1
@@ -225,9 +346,10 @@ run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env}) -> u8 \ {O
 }
 
 /// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
-run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env}) -> u8 \ {Out, Err, Env} {
+run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    with Allocator(data: &t, vt: &TRACKING) { body() }
+    io := TestIo(clock: 0, seed: 0)
+    with Allocator(data: &t, vt: &TRACKING), &io { body() }
     return leaked(&t)
 }
 

@@ -8,7 +8,7 @@
 use super::func::FnGen;
 use super::types::{Repr, int_cty};
 use super::{CResult, unsupported};
-use crate::tir::{AdtKind, BinOp, Builtin, Expr, Flavor, UnOp};
+use crate::tir::{AdtKind, BinOp, Builtin, Expr, Flavor, SysOp, UnOp};
 use crate::types::{FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
 
@@ -306,6 +306,29 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 return Ok(self.unit());
             }
             Builtin::Fiber => return self.fiber_builtin(e, args),
+            Builtin::Sys(op) => {
+                let mut vals = vec![];
+                for a in args {
+                    let v = self.expr(a)?;
+                    vals.push((self.addr_of(a.ty, &v), v));
+                }
+                let slice = |fg: &mut Self, i: usize| {
+                    let a: &String = &vals[i].0;
+                    format!("(uint8_t *){}, {}", fg.slice_ptr(a), fg.slice_len(a))
+                };
+                let call = match op {
+                    SysOp::Read => format!("gm_sys_read({})", slice(self, 0)),
+                    SysOp::ClockNow => "gm_clock_now()".into(),
+                    SysOp::ClockWall => "gm_clock_wall()".into(),
+                    SysOp::Sleep => format!("gm_clock_sleep({})", vals[0].1),
+                    SysOp::RandFill => format!("gm_rand_fill({})", slice(self, 0)),
+                };
+                if t.is_unit() {
+                    self.line(&format!("{};", call));
+                    return Ok(self.unit());
+                }
+                return Ok(self.tmp(t, &call));
+            }
             Builtin::Unreachable => {
                 self.line(&format!("gm_trap(\"reached `@unreachable()`\", {});", loc));
                 return Ok(self.zero(t));

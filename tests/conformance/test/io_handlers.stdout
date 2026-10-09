@@ -1,0 +1,4 @@
+test "input is empty" ... ok
+test "sleeping advances the fake clock without waiting" ... ok
+test "random bytes are reproducible" ... ok
+3 passed, 0 failed

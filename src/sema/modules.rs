@@ -47,17 +47,23 @@ impl<'s> Sema<'s> {
         {
             self.yield_effect = Some(e);
         }
-        for (name, slot) in [("Out", 0), ("Err", 1), ("Env", 2), ("Alloc", 3), ("Sys", 4)] {
+        for (name, slot) in
+            [("Out", 0), ("Err", 1), ("Env", 2), ("Alloc", 3), ("Sys", 4), ("In", 5), ("Clock", 6), ("Rand", 7)]
+        {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
             {
-                match slot {
-                    0 => self.prog.ambient.out = Some(e),
-                    1 => self.prog.ambient.err = Some(e),
-                    2 => self.prog.ambient.env = Some(e),
-                    3 => self.prog.ambient.alloc = Some(e),
-                    _ => self.prog.ambient.sys = Some(e),
-                }
+                let a = &mut self.prog.ambient;
+                *match slot {
+                    0 => &mut a.out,
+                    1 => &mut a.err,
+                    2 => &mut a.env,
+                    3 => &mut a.alloc,
+                    4 => &mut a.sys,
+                    5 => &mut a.input,
+                    6 => &mut a.clock,
+                    _ => &mut a.rand,
+                } = Some(e);
             }
         }
     }

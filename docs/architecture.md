@@ -156,23 +156,31 @@ lowers each function body to TIR.
 
 The core library is ordinary Gamma source in `lib/core/`, compiled into the
 tool. The prelude (`prelude.gm`) is visible in every module: it declares the
-ambient effects (`Out`, `Err`, `Env`, `Alloc`), the standard iterators and
-allocation (`Allocator`, `new`, `make`, `free`, …). The containers live in
+ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`), the
+standard iterators and allocation (`Allocator`, `new`, `make`, `free`, …). The containers live in
 their own core modules, `list.gm` and `map.gm`; only their types and
 constructors (`List`, `list`, `HashMap`, `map`, `map_with`) are re-exported to
 the universe scope, and their other functions are reached as methods, which
 resolve in the receiver type's module (§21.5).
 
 Core modules see the prelude's private declarations and may use a few
-host-facing intrinsics (`@heap_alloc`, `@heap_free`). They may also use `is`
+host-facing intrinsics: `@heap_alloc` and `@heap_free`, and the system
+services behind the default handlers (`@sys_read`, `@clock_now`,
+`@clock_wall`, `@clock_sleep`, `@rand_fill`; `tir::SysOp`). Services that can
+fail return a count or a negative error code that the prelude turns into an
+`IoError`, so both back ends report errors identically. They may also use `is`
 and `@hash` on unconstrained type parameters: the map's public constructors
 require `Eq` exactly when the default hashing is used. The whole core library
 is checked on every compilation, so mistakes in it surface immediately.
 
-The program's entry is a synthesized function that calls `main`. When `main`
-performs `Alloc`, the entry installs the heap allocator around the call:
-`with heap_allocator() { main() }`. The ambient effects with host-provided
-handlers (`Out`, `Err`, `Env`) are installed by the runtime itself.
+The program's entry is a synthesized function that calls `main` inside the
+prelude's default handlers for the ambient effects it performs:
+`with heap_allocator(), system_io() { main() }`, where `system_io()` handles
+`In`, `Clock` and `Rand` through the intrinsics above. The ambient effects with
+host-provided handlers (`Out`, `Err`, `Env`) are installed by the runtime
+itself. Tests run under the prelude's test handlers instead (`run_test`): a
+leak-checking allocator, empty input, a fake clock that `sleep` advances, and a
+random generator with a fixed seed.
 
 ### Types
 

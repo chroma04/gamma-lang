@@ -36,7 +36,15 @@ impl<'s> Sema<'s> {
     /// The effects a test may perform: the ambient effects (§12.9).
     fn test_effects(&self, with_alloc: bool) -> EffectSet {
         let a = &self.prog.ambient;
-        let ids = [a.out, a.err, a.env, if with_alloc { a.alloc } else { None }];
+        let ids = [
+            a.out,
+            a.err,
+            a.env,
+            if with_alloc { a.alloc } else { None },
+            if with_alloc { a.input } else { None },
+            if with_alloc { a.clock } else { None },
+            if with_alloc { a.rand } else { None },
+        ];
         EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
     }
 

@@ -34,6 +34,7 @@ pub mod memory;
 pub mod num;
 mod ops;
 mod stmt;
+mod sys;
 mod value;
 
 #[cfg(test)]

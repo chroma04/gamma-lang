@@ -553,6 +553,64 @@ static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
     return true;
 }
 
+/* ---- system services ---------------------------------------------------------------- */
+
+static int64_t gm_io_error(int err) {
+    switch (err) {
+    case ENOENT: return -1;
+    case EACCES: case EPERM: return -2;
+    case EEXIST: return -3;
+    case EAGAIN: return -4;
+    case EINTR: return -5;
+    case EPIPE: return -6;
+    case ECONNRESET: return -7;
+    case EINVAL: return -8;
+    case ENOSPC: return -10;
+    default: return -1000 - (int64_t)err;
+    }
+}
+
+static int64_t gm_sys_read(uint8_t *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        ssize_t r = read(0, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static uint64_t gm_clock_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
+
+static int64_t gm_clock_wall(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (int64_t)t.tv_sec * 1000000000 + (int64_t)t.tv_nsec;
+}
+
+static void gm_clock_sleep(uint64_t ns) {
+    gm_flush();
+    struct timespec t = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)}, rest;
+    while (nanosleep(&t, &rest) != 0 && errno == EINTR) t = rest;
+}
+
+static void gm_rand_fill(uint8_t *p, size_t n) {
+    static int fd = -1;
+    if (fd < 0) fd = open("/dev/urandom", O_RDONLY);
+    while (n > 0) {
+        ssize_t r = fd < 0 ? -1 : read(fd, p, n);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR) continue;
+            gm_trap("cannot read random bytes", NULL, 0, 0);
+        }
+        p += r;
+        n -= (size_t)r;
+    }
+}
+
 /* ---- heap ------------------------------------------------------------------------ */
 
 /* Blocks are over-allocated and aligned by hand so that any power-of-two alignment works on

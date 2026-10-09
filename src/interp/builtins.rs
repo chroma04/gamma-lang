@@ -319,6 +319,7 @@ impl<'a> Machine<'a> {
             | Builtin::RangeLen
             | Builtin::HeapAlloc
             | Builtin::Fiber
+            | Builtin::Sys(_)
             | Builtin::HeapFree
             | Builtin::Assert
             | Builtin::Expect

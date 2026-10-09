@@ -1,0 +1,8 @@
+4 lines, 55 bytes
+eof again: 0
+slept at least 5 ms: true
+later: 1000000000
+durations: 3000 2000007 1500
+wall clock after 2020: true
+random buffers differ: true
+.Other(5) .NotFound

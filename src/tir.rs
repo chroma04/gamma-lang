@@ -55,6 +55,82 @@ id_type! {
     HandlerDeclId;
 }
 
+/// The system services used by the core library's default handlers (§12.9). They are
+/// intrinsics available only to core modules. Operations that can fail return an `i64`:
+/// a count when non-negative, otherwise an error code (see [`io_error_code`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SysOp {
+    /// `@sys_read(buf: []u8) -> i64`: reads standard input.
+    Read,
+    /// `@clock_now() -> u64`: monotonic nanoseconds.
+    ClockNow,
+    /// `@clock_wall() -> i64`: Unix time in nanoseconds.
+    ClockWall,
+    /// `@clock_sleep(ns: u64)`.
+    Sleep,
+    /// `@rand_fill(buf: []u8)`: bytes from the operating system's generator.
+    RandFill,
+}
+
+impl SysOp {
+    /// The intrinsic's name, its parameter types and its result type.
+    pub fn signature(self) -> (&'static str, Vec<Ty>, Ty) {
+        let buf = Ty::intern(crate::types::TyKind::Slice { elem: Ty::u8(), is_const: false });
+        match self {
+            SysOp::Read => ("sys_read", vec![buf], Ty::int(true, 64)),
+            SysOp::ClockNow => ("clock_now", vec![], Ty::int(false, 64)),
+            SysOp::ClockWall => ("clock_wall", vec![], Ty::int(true, 64)),
+            SysOp::Sleep => ("clock_sleep", vec![Ty::int(false, 64)], Ty::unit()),
+            SysOp::RandFill => ("rand_fill", vec![buf], Ty::unit()),
+        }
+    }
+
+    pub const ALL: [SysOp; 5] = [SysOp::Read, SysOp::ClockNow, SysOp::ClockWall, SysOp::Sleep, SysOp::RandFill];
+}
+
+/// The error codes of [`SysOp`] results: `-1 - i` for the `i`-th variant of
+/// `IoError` other than `Other`, and `-1000 - errno` for `Other(errno)`.
+pub fn io_error_code(kind: IoErrorKind) -> i64 {
+    match kind {
+        IoErrorKind::Other(code) => -1000 - code as i64,
+        k => -1 - k.index() as i64,
+    }
+}
+
+/// The variants of the core library's `IoError` (§21.7), in declaration order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoErrorKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    WouldBlock,
+    Interrupted,
+    BrokenPipe,
+    ConnectionReset,
+    InvalidInput,
+    UnexpectedEof,
+    NoSpace,
+    Other(i32),
+}
+
+impl IoErrorKind {
+    fn index(self) -> usize {
+        match self {
+            IoErrorKind::NotFound => 0,
+            IoErrorKind::PermissionDenied => 1,
+            IoErrorKind::AlreadyExists => 2,
+            IoErrorKind::WouldBlock => 3,
+            IoErrorKind::Interrupted => 4,
+            IoErrorKind::BrokenPipe => 5,
+            IoErrorKind::ConnectionReset => 6,
+            IoErrorKind::InvalidInput => 7,
+            IoErrorKind::UnexpectedEof => 8,
+            IoErrorKind::NoSpace => 9,
+            IoErrorKind::Other(_) => 10,
+        }
+    }
+}
+
 /// `@min_stack`: the smallest fiber stack, in bytes (§14.1).
 pub const MIN_STACK: u64 = 16384;
 
@@ -94,6 +170,12 @@ pub struct Ambient {
     pub alloc: Option<EffectId>,
     /// `Sys`, which has no operations (§12.10).
     pub sys: Option<EffectId>,
+    /// `In { read }`
+    pub input: Option<EffectId>,
+    /// `Clock { now, wall, sleep }`
+    pub clock: Option<EffectId>,
+    /// `Rand { fill }`
+    pub rand: Option<EffectId>,
 }
 
 impl Program {
@@ -831,6 +913,8 @@ pub enum Builtin {
     VolatileLoad,
     /// `@volatile_store(p, v)`.
     VolatileStore,
+    /// A system service behind a default handler of the core library (§12.9).
+    Sys(SysOp),
     /// `@fiber(f, arg, stack)` in a `ctl` clause (§14.6) → `cont(())`: a new fiber of the
     /// clause's `with`, about to call the function pointer `f` with `arg`.
     Fiber,

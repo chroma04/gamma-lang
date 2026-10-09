@@ -10,7 +10,8 @@
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
-//!   (empty if the file does not exist).
+//!   (empty if the file does not exist). If a sibling `<name>.stdin` exists, it
+//!   is the program's standard input; otherwise the input is empty.
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
@@ -170,13 +171,21 @@ fn c_backend_available() -> bool {
     })
 }
 
+/// Gives the command the file `input` as standard input, if it exists.
+fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
+    if input.exists() {
+        let f = fs::File::open(input).map_err(|e| format!("{}: {}", input.display(), e))?;
+        cmd.stdin(f);
+    }
+    Ok(())
+}
+
 /// Runs a `run` test through the C back end and compares it with the expectations.
 fn run_c(target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_gamma"))
-        .args(["run", "--backend=c", "--diag-format=short"])
-        .arg(target)
-        .output()
-        .map_err(|e| format!("cannot run gamma: {}", e))?;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    cmd.args(["run", "--backend=c", "--diag-format=short"]).arg(target);
+    set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
+    let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let expected = fs::read_to_string(golden).unwrap_or_default();
     let mut problems = vec![];
@@ -217,6 +226,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         cmd.arg("--dump");
     }
     cmd.arg(&target);
+    set_stdin(&mut cmd, &path.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
