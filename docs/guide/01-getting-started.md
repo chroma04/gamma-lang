@@ -174,6 +174,8 @@ test "cubes" ... FAILED
 
 The command exits with status 1 if any test failed.
 
+Tests run in the interpreter by default. A module that calls C functions or contains `@asm` cannot run there, so its tests are compiled with the C back end instead, and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
+
 ## Where to go next
 
 [Chapter 2](02-basics.md) covers the everyday vocabulary: bindings, literals, numeric types and operators.

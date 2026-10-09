@@ -26,8 +26,9 @@
 //! expected output of `name.test` is the sibling `name.stdout`.
 //!
 //! Every `run` test that expects no errors also runs through the C back end
-//! (`gamma run --backend=c`) and must give the same output and exit status,
-//! unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
+//! (`gamma run --backend=c`), and every such `test` test through
+//! `gamma test --backend=c`. Both must give the same output and exit status as
+//! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
@@ -186,10 +187,11 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs a `run` test through the C back end and compares it with the expectations.
-fn run_c(target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
+/// Runs a `run` or `test` test (`command`) through the C back end and compares it
+/// with the expectations.
+fn run_c(command: &str, target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
-    cmd.args(["run", "--backend=c", "--diag-format=short"]).arg(target);
+    cmd.args([command, "--backend=c", "--diag-format=short"]).arg(target);
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -306,12 +308,12 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         }
     }
 
-    if exp.stage == Stage::Run
+    if matches!(exp.stage, Stage::Run | Stage::Test)
         && !expects_errors
         && problems.is_empty()
         && !bless
         && c_backend_available()
-        && let Err(p) = run_c(&target, &path.with_extension("stdout"), exp.exit)
+        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), exp.exit)
     {
         problems.push(p);
     }

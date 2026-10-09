@@ -59,6 +59,23 @@ pub struct Generated {
 
 /// Translates `prog` (whose entry is `entry`) to C source.
 pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options) -> CResult<Generated> {
+    generate_entries(prog, sources, &[entry], false, opts)
+}
+
+/// Translates `prog` to C source whose `main` runs one of `entries`, chosen by the
+/// decimal index in its first command-line argument (`gamma test`). Each entry runs
+/// exactly as the entry of [`generate`] does.
+pub fn generate_tests(prog: &Program, sources: &SourceMap, entries: &[FnId], opts: &Options) -> CResult<Generated> {
+    generate_entries(prog, sources, entries, true, opts)
+}
+
+fn generate_entries(
+    prog: &Program,
+    sources: &SourceMap,
+    entries: &[FnId],
+    select: bool,
+    opts: &Options,
+) -> CResult<Generated> {
     let target = Target::host();
     let lookup = |id: AdtId| prog.adts.get(&id);
     let layouts = Layouts::new(target, &lookup);
@@ -81,7 +98,9 @@ pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options
         handler_done: vec![false; prog.handlers.len()],
         decl_done: vec![false; prog.handler_decls.len()],
     };
-    g.queue(entry);
+    for &entry in entries {
+        g.queue(entry);
+    }
     for (_, f) in &prog.exports {
         g.queue(*f);
     }
@@ -90,7 +109,7 @@ pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options
     }
     let consts = g.gen_consts()?;
     let exports = g.gen_exports()?;
-    let main = g.gen_main(entry)?;
+    let main = g.gen_main(entries, select)?;
     let mut out = String::new();
     out.push_str(RT_H);
     out.push('\n');
@@ -345,12 +364,24 @@ impl<'a> Gen<'a> {
 
     /// The C `main`: installs the native ambient handlers, runs the entry function and
     /// turns its result into the exit status (as the interpreter's `run_main`).
-    fn gen_main(&mut self, entry: FnId) -> CResult<String> {
-        let def = &self.prog.fns[entry.index()];
-        let ret = def.ret;
-        let rc = self.ty.cty(ret);
-        let mut s =
-            String::from("int main(int argc, char **argv) {\n    gm_set_args(argc, argv);\n    gm_thread_stack();\n");
+    /// The C `main`. With `select` it runs the entry whose index is the first
+    /// argument; otherwise `entries` is the one entry to run.
+    fn gen_main(&mut self, entries: &[FnId], select: bool) -> CResult<String> {
+        let mut s = String::new();
+        let mut calls = String::new();
+        for (i, &entry) in entries.iter().enumerate() {
+            s.push_str(&self.gen_entry(entry, i)?);
+            let _ = writeln!(calls, "        case {i}: return gm_entry{i}(cx);");
+        }
+        s.push_str("int main(int argc, char **argv) {\n");
+        if select {
+            // The program sees only its own name; the index selects the entry.
+            s.push_str("    if (argc < 2) { fputs(\"usage: test-binary INDEX\\n\", stderr); return 2; }\n");
+            s.push_str("    long which = strtol(argv[1], NULL, 10);\n    gm_set_args(1, argv);\n");
+        } else {
+            s.push_str("    gm_set_args(argc, argv);\n");
+        }
+        s.push_str("    gm_thread_stack();\n");
         let _ = writeln!(s, "    gm_debug = {};", self.opts.debug as u8);
         s.push_str("    gm_init_consts();\n    gm_node *cx = NULL;\n");
         let a = self.prog.ambient.clone();
@@ -363,6 +394,22 @@ impl<'a> Gen<'a> {
                 );
             }
         }
+        if select {
+            let _ = writeln!(s, "    switch (which) {{\n{calls}        default: return 2;\n    }}");
+        } else {
+            s.push_str("    return gm_entry0(cx);\n");
+        }
+        s.push_str("}\n");
+        Ok(s)
+    }
+
+    /// `static int gm_entry<n>(gm_node *cx)`: runs `entry` under the ambient handlers
+    /// `cx` and returns the process exit status.
+    fn gen_entry(&mut self, entry: FnId, n: usize) -> CResult<String> {
+        let def = &self.prog.fns[entry.index()];
+        let ret = def.ret;
+        let rc = self.ty.cty(ret);
+        let mut s = format!("static int gm_entry{n}(gm_node *cx) {{\n");
         if self.is_plain(entry) {
             if ret.is_unit() || ret.is_never() {
                 let _ = writeln!(s, "    {}();\n    {} r = GM_ZERO({});", self.fn_name(entry), rc, rc);
@@ -372,6 +419,7 @@ impl<'a> Gen<'a> {
         } else {
             let _ = writeln!(s, "    {} r = {}(NULL, cx, NULL);", rc, self.fn_name(entry));
         }
+        s.push_str("    (void)cx;\n");
         s.push_str("    if (gm_unw.kind == GM_EXIT) { gm_flush(); return gm_unw.code; }\n");
         match ret.kind() {
             TyKind::Result { err, ok } => {

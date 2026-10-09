@@ -289,6 +289,13 @@ C translation unit (`src/cgen/`), prefixed by the runtime (`runtime/gm_rt.h`,
 the conformance runner checks this: every `run` test also runs natively and
 must print the same output and exit with the same status.
 
+`gamma test` uses the C back end for modules that need it (foreign functions,
+`@asm`) or with `--backend=c`. `cgen::generate_tests` emits one program whose
+`main` runs the test entry selected by its first argument, exactly as the
+ordinary `main` runs a program's entry; the driver builds it once and runs it
+per test, passing a test iff the exit status is 0. A trap's message and
+location reach the report from standard error.
+
 **Values.** Scalars (integers up to 128 bits, floats, `bool`, pointers) are
 native C values. Every other type is a *blob*, a struct holding its bytes with
 the Gamma layout's size and alignment, whose fields are read and written with
