@@ -1,0 +1,16 @@
+//! stage: check
+// Errors in destructuring bindings and multiple assignment (§4.5, §4.7).
+pair :: fn() -> (i32, i32) => (1, 2)
+
+main :: fn() {
+    a, b, c := pair()                       //~ ERROR 3 names cannot destructure a tuple of 2 elements
+    d, e := 5                               //~ ERROR destructuring needs a tuple
+    f, g :: pair()
+    f, g = (3, 4)                           //~ ERROR cannot assign to `f`: it is immutable
+    h := 1
+    k := 2
+    h, k = (1, 2, 3)                        //~ ERROR needs a tuple of 2 elements
+    h, k += (1, 1)                          //~ ERROR a compound assignment takes one place
+    h, k = (true, 2)                        //~ ERROR found `(bool, {integer})`
+    _ = (a, b, c, d, e, g)
+}

@@ -523,10 +523,62 @@ impl<'a, 's> FnCx<'a, 's> {
         ex
     }
 
+    /// `a, b := e`: binds the elements of a tuple (§4.5).
+    fn destructure(&mut self, b: &ast::Binding) -> Stmt {
+        let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
+        let init = if let ExprKind::Uninit = b.init.kind {
+            match annot {
+                Some(t) if self.is_plain_data(t) => Expr { ty: t, kind: tir::ExprKind::Uninit, span: b.init.span },
+                _ => {
+                    self.error(b.init.span, "`---` needs a plain-data tuple type annotation");
+                    error_expr(b.init.span)
+                }
+            }
+        } else {
+            let ex = self.expr(&b.init, annot);
+            match annot {
+                Some(t) => self.coerce(ex, t),
+                None => ex,
+            }
+        };
+        let t = self.infer.resolve(init.ty);
+        let elems: Vec<Ty> = match t.kind() {
+            TyKind::Tuple { elems, .. } if elems.len() == b.names.len() => elems.to_vec(),
+            TyKind::Tuple { elems, .. } => {
+                self.error(
+                    b.span,
+                    format!("{} names cannot destructure a tuple of {} elements", b.names.len(), elems.len()),
+                );
+                vec![Ty::error(); b.names.len()]
+            }
+            TyKind::Error => vec![Ty::error(); b.names.len()],
+            _ => {
+                self.error(b.init.span, format!("destructuring needs a tuple, but this is `{}` (§4.5)", t));
+                vec![Ty::error(); b.names.len()]
+            }
+        };
+        let mutable = b.kind == ast::BindingKind::Var;
+        let mut locals = vec![];
+        let mut declared = vec![];
+        for (name, ty) in b.names.iter().zip(elems) {
+            if name.name.as_str() == "_" {
+                locals.push(None);
+                continue;
+            }
+            let id = self.new_local(name.name, ty, mutable, name.span);
+            locals.push(Some(id));
+            declared.push((name.name, id, name.span));
+        }
+        // The names are in scope only after the initializer (§4.6).
+        for (n, id, sp) in declared {
+            self.declare(n, LocalBinding::Var(id), sp);
+        }
+        Stmt::LetTuple { locals, init }
+    }
+
     fn binding(&mut self, b: &ast::Binding) -> Stmt {
         if b.names.len() != 1 {
-            self.error(b.span, "destructuring bindings are not supported yet");
-            return Stmt::Expr(unit(b.span));
+            return self.destructure(b);
         }
         let name = b.names[0];
         if let ExprKind::Fn(lit) = &b.init.kind
@@ -591,10 +643,77 @@ impl<'a, 's> FnCx<'a, 's> {
         t.is_error() || self.sema.is_plain(t)
     }
 
+    /// `a, b = e`: assigns the elements of a tuple; every element is computed before any
+    /// store (§4.7).
+    fn assign_tuple(&mut self, places: &[ast::Expr], op: ast::AssignOp, value: &ast::Expr, span: Span) -> Stmt {
+        if op != ast::AssignOp::Assign {
+            self.error(span, "a compound assignment takes one place");
+        }
+        let mut targets = vec![];
+        for p in places {
+            if let ExprKind::Underscore = p.kind {
+                targets.push(None);
+                continue;
+            }
+            if !self.assignable_name(p) {
+                let _ = self.expr(value, None);
+                return Stmt::Expr(unit(span));
+            }
+            let place = self.expr(p, None);
+            self.require_mutable_place(&place, p.span);
+            targets.push(Some(place));
+        }
+        let expect = targets.iter().map(|t| t.as_ref().map(|p| p.ty)).collect::<Option<Vec<Ty>>>().map(Ty::tuple);
+        let v = self.expr(value, expect);
+        let vt = self.infer.resolve(v.ty);
+        let elems: Vec<Ty> = match vt.kind() {
+            TyKind::Tuple { elems, .. } if elems.len() == targets.len() => elems.to_vec(),
+            TyKind::Error => return Stmt::Expr(unit(span)),
+            _ => {
+                self.error(
+                    value.span,
+                    format!(
+                        "assigning to {} places needs a tuple of {} elements, not `{}`",
+                        targets.len(),
+                        targets.len(),
+                        vt
+                    ),
+                );
+                return Stmt::Expr(unit(span));
+            }
+        };
+        let target_ty = Ty::tuple(targets.iter().zip(&elems).map(|(t, e)| t.as_ref().map_or(*e, |p| p.ty)).collect());
+        let v = self.assign_coerce(v, target_ty);
+        Stmt::AssignTuple { places: targets, value: v }
+    }
+
+    /// For an assignment to a plain name: whether it names mutable storage (reports it if not).
+    fn assignable_name(&mut self, place_ast: &ast::Expr) -> bool {
+        let ExprKind::Ident(id) = &place_ast.kind else { return true };
+        let immutable = match self.lookup_local_at(id.name) {
+            Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
+            Some(_) => true,
+            // A `#global` is mutable storage (§19.3).
+            None => {
+                let module = self.module;
+                !matches!(
+                    self.sema.lookup_module_name(module, id.name).map(|d| self.sema.resolve_decl(d)),
+                    Some(super::decls::DeclValue::Global { .. })
+                )
+            }
+        };
+        if immutable {
+            self.error(
+                place_ast.span,
+                format!("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name),
+            );
+        }
+        !immutable
+    }
+
     fn assign(&mut self, places: &[ast::Expr], op: ast::AssignOp, value: &ast::Expr, span: Span) -> Stmt {
         if places.len() != 1 {
-            self.error(span, "multiple assignment is not supported yet");
-            return Stmt::Expr(unit(span));
+            return self.assign_tuple(places, op, value, span);
         }
         let place_ast = &places[0];
         if let ExprKind::Underscore = place_ast.kind {
@@ -608,27 +727,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 span,
             });
         }
-        if let ExprKind::Ident(id) = &place_ast.kind {
-            let immutable = match self.lookup_local_at(id.name) {
-                Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
-                Some(_) => true,
-                // A `#global` is mutable storage (§19.3).
-                None => {
-                    let module = self.module;
-                    !matches!(
-                        self.sema.lookup_module_name(module, id.name).map(|d| self.sema.resolve_decl(d)),
-                        Some(super::decls::DeclValue::Global { .. })
-                    )
-                }
-            };
-            if immutable {
-                self.error(
-                    place_ast.span,
-                    format!("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name),
-                );
-                let _ = self.expr(value, None);
-                return Stmt::Expr(unit(span));
-            }
+        if !self.assignable_name(place_ast) {
+            let _ = self.expr(value, None);
+            return Stmt::Expr(unit(span));
         }
         let place = self.expr(place_ast, None);
         self.require_mutable_place(&place, place_ast.span);

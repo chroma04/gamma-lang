@@ -18,6 +18,13 @@ std/thread, std/c; real Fs/Net/Clock/Rand default handlers; arena + fixed-buffer
   fs_* SysOps (interp: Rust std::fs + handle table in SysState; C: POSIX, dir table).
   Effect ops callable as methods (methods.rs op_method). Not yet in test_effects (needs MemFs).
 
+- Done: efficient sorts merged (introsort + SymMerge stable, agent). std/io (Reader.next_line,
+  FileIn/FileOut/StringIn/Capture handlers), std/fs (read_all/write_all/append/copy/exists),
+  docs/std.md (keep it updated with every std addition).
+- In flight (worktree agents, based on 63ad639): MemFs test handler (prelude + tests_decl),
+  std/math (pure Gamma, fdlibm ports), std/fmt (bases, padding, exact float fixed/sci).
+  NOTE: worktree agents start from old `main`; tell them to `git reset --hard <branch tip>`.
+
 ## Next
-3. In-memory test Fs (MemFs in prelude, add Fs to test_effects/run_test); then Net.
-4. std/fmt, std/math, std/io (buffered reader/writer), std/time, arena allocator.
+3. Merge agents' work (review!). Then Net (+ loopback test handler), std/time, arena allocator,
+   `cursor()` (§13.4).

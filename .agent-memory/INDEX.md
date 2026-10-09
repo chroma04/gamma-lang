@@ -18,8 +18,7 @@
 - M11 started (roadmap/M11 status): In/Clock/Rand ambient effects, rune/runes, core/slice.
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
 - Not yet: §16.6 distinctness, sort builtins, make_aligned, runes, @stack_size,
-  std (M11), C-backend gaps (M07 status), threads/@asm (M10), multiple
-  assignment/destructuring stmt, `using` ptr coercion, struct patterns with generic type names.
+  std (M11), C-backend gaps (M07 status), threads/@asm (M10), `using` ptr coercion, struct patterns with generic type names.
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
