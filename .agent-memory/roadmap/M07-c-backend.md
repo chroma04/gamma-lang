@@ -12,7 +12,9 @@ tests/runtime.rs). Every run test runs on both backends (GAMMA_TEST_C=0 skips); 
 gcc and clang (macOS CI = clang). Fibers, foreign fns, #global, #bits all done.
 `gamma build [-o]`, `gamma run --backend=c`, `--mode=debug|checked|fast` (Options{checks,debug}).
 Elementwise array ops done (sema finalize Numeric peels arrays; cgen/elementwise.rs loops).
-Not yet: ints >128 bits (delegated), static handler specialization (D.3),
+Wide ints (>128 bits) done: runtime gm_w* routines (LE two's complement, ext. on write), cgen/wide.rs;
+std/fmt hex/bin of wide ints still traps (library). Stack check disabled under ASan (GM_ASAN).
+Not yet: static handler specialization (D.3),
 `gamma test` native. Main/thread stack overflow traps in checked builds (gm_stack_limit TLS,
 gm_thread_stack(), 256 KiB reserve; fast mode segfaults = UB).
 Gotchas: Const is a place (static gm_cN) — `&CONST` must not copy; pattern types needed

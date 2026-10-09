@@ -373,7 +373,20 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 /* Checked builds: traps if a frame at address `p` is below the running fiber's limit. */
 /* Checked builds compare each frame's address with the lowest address the running stack
    may use: the fiber's limit, or the thread's (§14.1, §18). */
+#if defined(__SANITIZE_ADDRESS__)
+#define GM_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define GM_ASAN 1
+#endif
+#endif
+#ifdef GM_ASAN
+/* AddressSanitizer may place frames on a separate "fake stack", so frame addresses say
+   nothing about the stack's depth; the sanitizer reports overflows itself. */
+#define GM_STACK_CHECK(p) ((void)(p))
+#else
 #define GM_STACK_CHECK(p) do { if ((uintptr_t)(p) < gm_stack_limit) gm_stack_overflow(); } while (0)
+#endif
 static _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 static _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
 static _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
