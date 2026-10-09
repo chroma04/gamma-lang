@@ -133,6 +133,13 @@ impl<'a, 's> FnCx<'a, 's> {
     /// returns it as a pattern.
     pub fn is_pattern_operand(&mut self, rhs: &ast::Expr, lhs_ty: Ty) -> Option<ast::Pattern> {
         let pat = expr_to_pattern(rhs)?;
+        // `T.V(…)` is a variant pattern only if `T` names a type; `x.method(…)` is a value.
+        if let PatternKind::Path { path, .. } = &pat.kind
+            && let ExprKind::Field { base, .. } = &path.kind
+            && self.type_of_name(base).is_none()
+        {
+            return None;
+        }
         if contains_wildcard(&pat) || self.omits_payload(&pat, lhs_ty) || self.binds_unknown_name(&pat) {
             return Some(pat);
         }
