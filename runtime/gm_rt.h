@@ -70,6 +70,65 @@ typedef struct { uint8_t *data; size_t len, cap; } gm_buf;
 static void gm_buf_push(gm_buf *b, const void *data, size_t len);
 static void gm_buf_free(gm_buf *b);
 
+/* ---- integers wider than 128 bits ------------------------------------------------
+ *
+ * An integer of `bits` bits (any width of at least 1 bit works) occupies
+ * GM_WBYTES(bits) bytes: little-endian two's complement in whole 64-bit words, as the
+ * Gamma layout has it. The bits above `bits` are padding. Operands are read as if the
+ * padding were the sign extension (`sgn`) or zero, and results are written that way, so
+ * the routines accept any padding and always leave it normalized.
+ *
+ * `r` may be the same buffer as an operand, except in gm_wconv. Arithmetic routines store
+ * the wrapped result and return whether the exact result overflowed the type. Shift amounts
+ * must be less than `bits`. */
+#define GM_WBYTES(bits) ((((size_t)(bits) + 63) / 64) * 8)
+
+static bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+static bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+static bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+static bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+/* Quotient into q and remainder into rm (either may be NULL), truncating toward zero.
+ * Returns 0, 1 for a zero divisor, or 2 for MIN / -1 (the quotient overflows). */
+static int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+/* r = a ** n, wrapped; returns whether the exact power overflowed. */
+static bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn);
+static void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+static void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+static void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+static void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+/* Left shift (wrapped; returns whether bits that matter were shifted out) and right shift
+ * (arithmetic if `sgn`). */
+static bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
+static void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
+/* A shift amount (an unsigned integer of `abits` bits), clamped to 2^64 - 1. */
+static uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits);
+/* Traps: "shift amount <amt> too large for <ty>". */
+static _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
+                                    uint32_t line, uint32_t col);
+static int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);  /* -1, 0 or 1 */
+static int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn);                   /* -1, 0 or 1 */
+static void gm_wmin(uint8_t *r, uint32_t bits, bool sgn);
+static void gm_wmax(uint8_t *r, uint32_t bits, bool sgn);
+/* Converts between any two integer types, given as storage sizes in bytes and widths; the
+ * buffers must differ. The result is wrapped to the target. Returns bit 0: the value fits
+ * the target, bit 1: the source is negative. */
+static int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
+                    uint32_t abits, bool asgn);
+/* The value rounded to nearest (ties to even) to `mant` significant bits, as a double. */
+static double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant);
+/* Stores the integral double x into r. Returns 0, 1 (x is below the type's range), 2 (above
+ * it) or 3 (NaN); r is zero unless the result is 0. */
+static int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x);
+static uint32_t gm_wclz(const uint8_t *a, uint32_t bits);
+static uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
+static uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
+static void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits);
+static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+/* Mixes the value into the FNV-1a state h as its minimal two's-complement little-endian bytes. */
+static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn);
+/* Appends the decimal form. */
+static void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn);
+
 /* ---- type descriptors (for formatting, spec §21.6.1) -------------------------- */
 
 typedef enum {
