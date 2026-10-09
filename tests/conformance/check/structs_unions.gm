@@ -41,3 +41,6 @@ f :: fn() {
 }
 
 main :: fn() {}
+
+Counter :: struct { count: u32 }
+count :: fn(c: ^Counter) -> u32 => c.count     //~ ERROR has a field `count`, so a method of that name could never be called
