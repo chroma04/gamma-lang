@@ -1169,24 +1169,87 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn if_expr(&mut self, i: &ast::IfExpr, value: bool, expect: Option<Ty>) -> Expr {
         let value = value && i.else_.is_some();
         let mut arms: Vec<(Vec<tir::CondPart>, Expr)> = vec![];
-        for (cond, block) in &i.branches {
+        let capture = match &i.else_ {
+            Some(ast::IfElse::Capture { name, body }) => Some((*name, &**body)),
+            _ => None,
+        };
+        // With `else e => d`, the last branch becomes a `match` on its result (§8.2).
+        let mut captured: Option<(Expr, tir::Pat, Expr, tir::Pat)> = None;
+        for (k, (cond, block)) in i.branches.iter().enumerate() {
             self.push_scope();
+            if let Some((name, body)) = capture
+                && k + 1 == i.branches.len()
+            {
+                let [ast::CondPart::Bind { pat, value: x }] = cond.parts.as_slice() else {
+                    self.error(cond.span, "`else e =>` needs a condition that is a single binding on a result (§8.2)");
+                    self.pop_scope();
+                    return error_expr(i.span);
+                };
+                let tir::CondPart::Match { pat: p, value: v } = self.binding_cond(pat, x) else { unreachable!() };
+                let then = self.block_expected(block, value, expect);
+                self.pop_scope();
+                let vt = self.infer.resolve(v.ty);
+                let TyKind::Result { err, .. } = vt.kind() else {
+                    if !vt.is_error() {
+                        self.error(x.span, format!("`else e =>` captures the error of a result, but this is `{}`", vt));
+                    }
+                    return error_expr(i.span);
+                };
+                if !matches!(&p.kind, tir::PatKind::Ok(q) if self.checker().irrefutable(q)) {
+                    self.error(pat.span, "with `else e =>`, the condition may fail only on an error (§8.2)");
+                }
+                self.push_scope();
+                let id = self.new_local(name.name, *err, false, name.span);
+                self.declare(name.name, super::func::LocalBinding::Var(id), name.span);
+                let mut d = self.expr(body, if value { expect } else { None });
+                self.pop_scope();
+                if !value && !d.ty.is_never() {
+                    // As a statement, the fallback's value is discarded.
+                    let sp = d.span;
+                    d = mk(
+                        Ty::unit(),
+                        tir::ExprKind::Block(Box::new(tir::Block {
+                            stmts: vec![tir::Stmt::Expr(d)],
+                            tail: None,
+                            span: sp,
+                        })),
+                        sp,
+                    );
+                }
+                let err_pat = tir::Pat {
+                    ty: vt,
+                    kind: tir::PatKind::Err(Box::new(tir::Pat {
+                        ty: *err,
+                        kind: tir::PatKind::Bind(id),
+                        span: name.span,
+                    })),
+                    span: name.span,
+                };
+                captured = Some((v, p, then, err_pat));
+                // The fallback joins like an `else` block.
+                arms.push((vec![], d));
+                continue;
+            }
             let c = self.cond(cond);
             let b = self.block_expected(block, value, expect);
             self.pop_scope();
             arms.push((c, b));
         }
+        // `captured` holds the last branch; `arms` ends with its fallback.
         let else_ = match &i.else_ {
             Some(ast::IfElse::Block(b)) => Some(self.block_expected(b, value, expect)),
-            Some(ast::IfElse::Capture { name, .. }) => {
-                self.error(name.span, "error captures are not supported yet");
-                None
-            }
-            None => None,
+            _ => None,
+        };
+        let else_ = match captured.as_ref() {
+            Some(_) => arms.pop().map(|(_, d)| d),
+            None => else_,
         };
         // Join branch types (§7.12).
         let ty = if value {
             let mut tys: Vec<Ty> = arms.iter().map(|(_, b)| b.ty).collect();
+            if let Some((_, _, then, _)) = &captured {
+                tys.push(then.ty);
+            }
             if let Some(e) = &else_ {
                 tys.push(e.ty);
             }
@@ -1195,13 +1258,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 None => tys.iter().copied().find(|t| !t.is_never()).unwrap_or(Ty::never()),
             }
         } else {
-            let all_never =
-                else_.as_ref().is_some_and(|e| e.ty.is_never()) && arms.iter().all(|(_, b)| b.ty.is_never());
+            let all_never = else_.as_ref().is_some_and(|e| e.ty.is_never())
+                && arms.iter().all(|(_, b)| b.ty.is_never())
+                && captured.as_ref().is_none_or(|(_, _, then, _)| then.ty.is_never());
             if all_never { Ty::never() } else { Ty::unit() }
         };
         let mut arms: Vec<(Vec<tir::CondPart>, Expr)> =
             if value { arms.into_iter().map(|(c, b)| (c, self.join_branch(b, ty))).collect() } else { arms };
         let mut else_ = if value { else_.map(|e| self.join_branch(e, ty)) } else { else_ };
+        if let Some((v, p, then, err_pat)) = captured {
+            let then = if value { self.join_branch(then, ty) } else { then };
+            let d = else_.take().expect("a captured fallback");
+            let span = then.span;
+            let arms =
+                vec![tir::Arm { pat: p, guard: None, body: then }, tir::Arm { pat: err_pat, guard: None, body: d }];
+            else_ = Some(mk(ty, tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span));
+        }
         // Build the chain from the end.
         let mut result = None;
         while let Some((cond, then)) = arms.pop() {
@@ -1210,7 +1282,8 @@ impl<'a, 's> FnCx<'a, 's> {
             else_ = Some(e);
             result = else_.clone();
         }
-        let mut r = result.unwrap_or_else(|| unit(i.span));
+        // With a capture and no earlier branch, the whole `if` is the `match`.
+        let mut r = result.or(else_).unwrap_or_else(|| unit(i.span));
         r.span = i.span;
         r
     }

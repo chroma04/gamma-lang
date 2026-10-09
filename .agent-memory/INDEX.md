@@ -24,7 +24,8 @@
 - #callconv done (M10 status). Elementwise array arithmetic done.
 - #fast_math/#deprecated/#inline checks done (M12 file).
 - Wide ints in C done; spreads (§11.4) done.
-- Not yet: `if … else e =>` captures, qualified consts in patterns, generic fn literals, non-type
+- `if … else e =>` captures done (if_expr lowers last branch to a Match).
+- Not yet: qualified consts in patterns, generic fn literals, non-type
   effect params, consts needing temporaries (sema "not supported yet" errors); native `gamma test`.
 - Threads done (M10 status): std/thread, interp GIL (src/interp/threads.rs), C TLS + locks.
 - Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).
