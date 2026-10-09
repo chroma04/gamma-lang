@@ -1,0 +1,23 @@
+trap: bottom
+  at tests/conformance/run/backtrace_long.gm:5:17 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  ... 11 more calls
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:6:12 in down
+  called from tests/conformance/run/backtrace_long.gm:10:19 in main

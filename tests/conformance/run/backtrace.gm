@@ -1,0 +1,19 @@
+//! exit: 134
+//! stderr
+// Debug builds report the calls that led to a trap (§18.3), leaving out core-library frames.
+Stack :: struct { items: [4]i32, n: usize }
+
+top :: fn(s: ^const Stack) -> i32 {
+    assert(s.n > 0, "top of an empty stack")
+    return s.items[s.n - 1]
+}
+
+apply :: fn(f: fn(x: i32) -> i32, x: i32) -> i32 => f(x)
+
+main :: fn() \ {Out} {
+    s := Stack(items: [4]i32(1, 2, 3, 4), n: 2)
+    print("{}\n", top(&s))
+    empty := Stack(items: [4]i32(0, 0, 0, 0), n: 0)
+    r := apply(fn(x: i32) -> i32 => x + top(&empty), 1)
+    print("{}\n", r)
+}

@@ -252,6 +252,7 @@ Exceptions to maximal munch:
 - `---` is always one token, so `a---b` is ill-formed; write `a - -b`.
 - A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
 - The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
+- `==` and `!=` are not tokens; the character pairs are ill-formed (equality is written `is` and `is not`, §7.6). Implementations should say so and may read them as `is` and `is not` to continue.
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -335,7 +336,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -365,7 +366,7 @@ main :: fn() -> u8 \ {...}               // exit status
 main :: fn() -> E!() \ {...}             // E is any type
 ```
 
-The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes a description of the error value (its type name and variant name) to standard error and exits with status 1.
+The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes `error: ` and the error value to standard error, formatted as by `{}` (§21.6) and, for a union, preceded by its type name (`error: ConfigError.Missing`), and exits with status 1.
 
 Command-line arguments and the environment are obtained through the `Env` effect.
 
@@ -585,7 +586,7 @@ Only the first field can be `using`, so there is no ambiguity and no multiple em
 
 Fields are laid out in declaration order. Each field is placed at the next offset that is a multiple of its alignment; the struct's alignment is the maximum field alignment (1 if empty), and its size is rounded up to a multiple of its alignment. This is the C layout algorithm, so a struct whose fields are all C-compatible types (§19.1) is layout-compatible with the corresponding C struct.
 
-- `#packed` places every field at the next byte offset, with alignment 1.
+- `#packed` places every field at the next byte offset, with alignment 1. Fields are read and written directly, but a pointer or slice into a field of a `#packed` struct may not be formed when what it points to has alignment above 1 (`&h.count` with `count: u32` is a compile error; `&h.flags` with `flags: u8` is allowed): such a pointer could be misaligned.
 - `#align(n)` on the struct raises its alignment to `n` (a power of two). On a field, it raises that field's alignment.
 - An empty struct has size 0.
 
@@ -657,7 +658,7 @@ A function pointer is one code address in size, C-compatible when its signature 
 
 ### 5.16 Ranges
 
-`a..b` has type `Range(T)` and `a..=b` has type `RangeIncl(T)`, where `T` is an integer type (or, for `Range`, any type with `Ord`). Both are predeclared structs with fields `lo` and `hi`. They are ordinary values: they can be stored, passed, iterated (§13.3), used with `in`, and used to slice.
+`a..b` has type `Range(T)` and `a..=b` has type `RangeIncl(T)`, where `T` is an integer type (or, for `Range`, any type with `Ord`). Both are predeclared structs with fields `lo` and `hi`. They are ordinary values: they can be stored, passed, iterated (§13.3), used with `in`, and used to slice. `a[r]` with `r: Range(usize)` (or `RangeIncl(usize)`) is `a[r.lo..r.hi]` (or `a[r.lo..=r.hi]`). When a range expression is used as a value rather than directly in `for`, `in` or slicing, its `T` comes from the expected range type if there is one, and otherwise from the bounds; untyped bounds that nothing else fixes take `usize` at that point (§6.1).
 
 ### 5.17 `never`
 
@@ -718,7 +719,7 @@ PI   :: 3.14159265358979323846
 TAU  :: 2 * PI
 ```
 
-Its value is computed exactly (integers are unbounded; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
+Its value is computed exactly (integers are unbounded; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
 
 Untyped constants are permitted at top level and as locals. A typed constant is written `MAX: usize : 4096`.
 
@@ -832,13 +833,13 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 **Type operators.** In type expressions, the prefix forms `?T`, `^T`, `^const T`, `[]T`, `[]const T`, `[N]T`, `[^]T`, `[^]const T` apply to the entire type that follows (so `?^T` is `?(^T)` and `[]?u8` is a slice of `?u8`). The infix `E!T` is right-associative and looser than every prefix form: `E!?^T` is `E!(?(^T))`. A type expression used as a value argument (`list(?u8)`) parses the same way.
 
-**`else` forms.** After `else`: the keyword `if` continues an `if` chain; `{` begins an `else` block of an `if`; an identifier immediately followed by `=>` begins an error capture (§10.4); anything else is the fallback operand of `e else d`.
+**`else` forms.** After `else`: the keyword `if` continues an `if` chain; `{` begins an `else` block of an `if`, or the block fallback of `x else { … }` (§10.4); an identifier immediately followed by `=>` begins an error capture (§10.4); anything else is the fallback operand of `e else d`.
 
 ### 7.4 Arithmetic
 
 #### 7.4.1 Operand types
 
-Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs (fieldwise on the underlying integer).
+Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs whose fields are all `bool` or integers (on the underlying integer, so fieldwise).
 
 A unary `-` applied directly to an untyped literal is part of the literal for typing purposes: `-128i8` and `x: i8 = -128` are valid.
 
@@ -1541,7 +1542,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Rand` | `fill: fn(buf: []u8)` | OS-seeded generator | fixed seed |
 | `Fs` | file-system operations (§21.7) | real file system | in-memory file system |
 | `Net` | socket operations (§21.7) | real sockets | loopback fake |
-| `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | empty |
+| `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | no arguments and no variables; `exit` ends the test, which passes only with code 0 |
 | `Sys` | none (§12.10) | — | not replaceable |
 
 Any of these may also be handled by user handlers; only `Sys` cannot.
@@ -1578,8 +1579,9 @@ is defined as follows.
 
 1. **The source.** `e` must be one of:
    - a call `f(a1, …, an)` (including a method call, §7.10) whose callee's effect set contains exactly one instantiation `Yield(T)`;
-   - a range `lo..hi` or `lo..=hi` of an integer type, meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
-   - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order.
+   - a range `lo..hi` or `lo..=hi` of an integer type, or a value of type `Range(T)` or `RangeIncl(T)` with an integer `T` (§5.16), meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
+   - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order;
+   - any other expression of array type, such as an array constructor or a call that returns an array (and has no `Yield` effect): the array is evaluated into a hidden variable that lives as long as the loop, which is then iterated as an array place.
    Any other form is a compile error. `T` is the type of the yielded values.
 
 2. **Evaluation.** The callee and arguments `a1 … an` are evaluated first, left to right, **in the context outside the loop**. Then the call is made in a context where `Yield(T)` is handled by the loop's handler and every other effect is handled as outside the loop. Second-class arguments therefore keep their own (outer) context (§11.6).
@@ -1870,7 +1872,7 @@ with arena.allocator() {
 }
 ```
 
-Freeing memory through an allocator other than the one that allocated it is undefined behavior. Debug builds tag every allocation with its allocator and trap on a mismatch, reporting both call sites.
+An allocator's `resize` and `free` receive the size and alignment that the block was allocated (or last resized) with; the core functions and library containers guarantee this. Freeing memory through an allocator other than the one that allocated it is undefined behavior. Debug builds tag every allocation with its allocator and trap on a mismatch, reporting both call sites.
 
 A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was given.
 
@@ -1886,7 +1888,7 @@ Assignment, argument passing and return copy values bitwise, like C. Copying a s
 
 ### 15.5 Alignment
 
-Every object is aligned to at least its type's alignment. Allocators must return memory aligned to the requested alignment (any power of two up to the page size). `make_aligned(T, n, align)` requests a larger alignment.
+Every object is aligned to at least its type's alignment. Allocators must return memory aligned to the requested alignment (any power of two up to the page size). `make_aligned(T, n, align)` requests a larger alignment; its storage is released with `free_aligned(s, align)`.
 
 ---
 
@@ -1907,7 +1909,7 @@ max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 ```
 
 - **Checked once.** The body is type-checked once, where it is written, treating each type parameter as an opaque type that supports only what its constraints grant (§16.3). An error in a generic body is reported there, whether or not the function is ever called.
-- **Monomorphized.** Each distinct set of type arguments produces a separate compiled function. Instantiation never fails type-checking, with two exceptions, both reported at the instantiating call: an untyped literal used at type `T` is checked against each instantiation (`T(300)` where `T` is `u8`), and an `@write` template is checked against its arguments (§21.6.1).
+- **Monomorphized.** Each distinct set of type arguments produces a separate compiled function. Instantiation never fails type-checking, with two exceptions, both reported at the instantiating call: an untyped literal used at type `T` is checked against each instantiation (`T(300)` where `T` is `u8`), and an `@write` template is checked against its arguments (§21.6.1). `T(c)` for an untyped constant `c` types `c` at `T`, exactly as `x: T = c` does (it needs `Num(T)`, or `Float(T)` for a float constant); `T(x)` for a typed `x` is not available, since no conversion to every type `T` is lossless: use `x.trunc(T)`, `x.sat(T)` or `x.checked(T)`.
 - Type parameters and `::` parameters are compile-time; parameters declared with `:` whose type is not `type` are ordinary run-time parameters.
 - **Type arguments must be first-class run-time types.** A second-class function type `fn(…)`, `type`, an effect type, or any type containing one is not a valid argument for a type parameter (of a function or of a generic type). This is checked at each instantiation. Without it, `Box(fn() -> i32)` could store a second-class value and let it outlive its frame.
 
@@ -1917,7 +1919,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 
 - A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
-- Untyped literal arguments do not determine a type parameter; they take the inferred type.
+- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 
 ```
@@ -1941,7 +1943,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Ord(T)` | integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, `.trunc` / `.checked` / `.sat` |
-| `Signed(T)` | signed integer and float types | unary `-` |
+| `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
@@ -1993,7 +1995,10 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 
 Effects may have parameters (`Yield(T)`). An effect set may mention type parameters of the enclosing generic function: `\ {Yield(T)}`. There is no abstraction over effect sets themselves (§12.8).
 
-**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Inside a generic function or type, any two instantiations of the same generic effect that are simultaneously in scope — in the declared effect set, handled by an enclosing `with` (for the implicit `with` of a `for` loop, §13.2, this concerns only the loop's source call, since the loop body's own performs are handled outside the loop), or in a second-class parameter's type — must be either identical or **provably distinct**: they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`.
+**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Two instantiations of the same generic effect are **provably distinct** if they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). Inside a generic function or type, two instantiations that are neither identical nor provably distinct may not meet in either of these ways:
+
+- both in one effect set: the declared effect set, or that set together with the effect set of a second-class parameter's type. `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`;
+- one performed inside a `with` that handles the other: `with (handler Yield(u32) { … }) { yield(x) }` with `x: T` is a compile error, since whether the handler catches the `yield` would depend on `T`. The implicit `with` of a `for` loop handles only the loop's source call (§13.2); performs in the loop body are handled outside the loop and are not affected by it.
 
 ### 16.7 Restrictions
 
@@ -2120,7 +2125,8 @@ In addition to performing all checks, a Debug build must:
 - fill `---` storage, freed allocations and dead stack frames with recognizable patterns (`0xAA`, `0xDD`);
 - tag each allocation with its allocator and trap when it is freed through a different one, reporting both sites;
 - place guard pages (or equivalent probes) on fiber stacks;
-- use the leak-checking allocator for tests.
+- use the leak-checking allocator for tests;
+- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library and shorten long reports.
 
 Debug builds may skip optimizations, including handler specialization; this never changes meaning.
 
@@ -2359,7 +2365,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2369,13 +2375,14 @@ new          :: fn(T: type, init: T) -> AllocError!^T \ {Alloc}
 make         :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T)
 make_fill    :: fn(T: type, n: usize, x: T) -> AllocError![]T \ {Alloc}
 make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T)
-free         :: fn(T: type, s: []T) \ {Alloc}
-destroy      :: fn(T: type, p: ^T) \ {Alloc}
+free         :: fn(T: type, s: []const T) \ {Alloc}
+free_aligned :: fn(T: type, s: []const T, align: usize) \ {Alloc}
+destroy      :: fn(T: type, p: ^const T) \ {Alloc}
 ```
 
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
 
-`free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op.
+`free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op. Storage from `make_aligned(T, n, align)` is released with `free_aligned(s, align)`, passing the same `align`, so that the allocator gets back the alignment it allocated with.
 
 Each of these functions also has a final parameter `site: SourceLocation = @caller_location()` (bound only by name, §11.3). Debug builds use the sites to report where a block freed through the wrong allocator was allocated and freed (§18.3).
 
@@ -2438,6 +2445,8 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
+get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
+get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
 len      :: fn(m: ^const HashMap(…)) -> usize
@@ -2446,7 +2455,7 @@ clear    :: fn(m: ^HashMap(…))                                      // keeps t
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `get_or_put` are invalidated by the next insertion or removal.
 
 ### 21.6 Diagnostics and output
 
@@ -2469,7 +2478,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 @write(sink, template, args)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
 **Template.** `{}` is a placeholder; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
 

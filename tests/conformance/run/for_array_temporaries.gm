@@ -1,0 +1,7 @@
+// `for` over an array constructor or a call returning an array (§13.2).
+squares :: fn() -> [4]u32 => [4]u32(1, 4, 9, 16)
+main :: fn() \ {Out} {
+    for x in [3]i32(5, 6, 7) { print("{} ", x) }
+    for x in squares() { print("{} ", x) }
+    print("\n")
+}

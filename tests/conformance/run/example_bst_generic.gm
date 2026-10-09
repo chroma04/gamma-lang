@@ -1,0 +1,174 @@
+// A generic binary search tree with heap-allocated nodes (?^Node links), iterative and
+// recursive traversals, an in-order iterator via Yield, deletion, and a `using` embedding
+// example for a tagged-record hierarchy.
+Node :: struct(K, V: type) {
+    key: K
+    value: V
+    left: ?^Node(K, V) = null
+    right: ?^Node(K, V) = null
+}
+
+Tree :: struct(K, V: type) {
+    root: ?^Node(K, V) = null
+    size: usize = 0
+}
+
+tree :: fn(K, V: type) -> Tree(K, V) => Tree(K, V)()
+
+insert :: fn(K, V: type, t: ^Tree(K, V), key: K, value: V) -> AllocError!bool \ {Alloc} where Ord(K) {
+    link: ^?^Node(K, V) = &t.root
+    while true {
+        n := link^ else break
+        if key is n.key {
+            n.value = value
+            return false
+        }
+        link = if key < n.key { &n.left } else { &n.right }
+    }
+    link^ = try new(Node(K, V), Node(K, V)(key: key, value: value))
+    t.size += 1
+    return true
+}
+
+find :: fn(K, V: type, t: ^const Tree(K, V), key: K) -> ?V where Ord(K) {
+    cur := t.root
+    while n := cur {
+        if key is n.key { return n.value }
+        cur = if key < n.key { n.left } else { n.right }
+    }
+    return null
+}
+
+height :: fn(K, V: type, n: ?^const Node(K, V)) -> u32 {
+    p := n else return 0
+    return 1 + height(p.left).max(height(p.right))
+}
+
+in_order :: fn(K, V: type, n: ?^const Node(K, V)) \ {Yield((K, V))} {
+    p := n else return
+    in_order(p.left)
+    yield((p.key, p.value))
+    in_order(p.right)
+}
+
+entries :: fn(K, V: type, t: ^const Tree(K, V)) \ {Yield((K, V))} {
+    in_order(t.root)
+}
+
+min_node :: fn(K, V: type, start: ^Node(K, V)) -> ^Node(K, V) {
+    cur := start
+    while l := cur.left { cur = l }
+    return cur
+}
+
+// Removes `key`; returns whether it was present.
+remove :: fn(K, V: type, t: ^Tree(K, V), key: K) -> bool \ {Alloc} where Ord(K) {
+    link: ^?^Node(K, V) = &t.root
+    while true {
+        n := link^ else return false
+        if key is n.key {
+            if n.left is null and n.right is null {
+                link^ = null
+            } else if n.left is null {
+                link^ = n.right
+            } else if n.right is null {
+                link^ = n.left
+            } else {
+                // two children: copy the in-order successor here, then unlink it
+                succ := min_node(n.right?)
+                n.key = succ.key
+                n.value = succ.value
+                // remove the successor from the right subtree
+                sub: ^?^Node(K, V) = &n.right
+                while s := sub^ {
+                    if s.left is null { break }
+                    sub = &s.left
+                }
+                victim := sub^?
+                sub^ = victim.right
+                destroy(victim)
+                t.size -= 1
+                return true
+            }
+            destroy(n)
+            t.size -= 1
+            return true
+        }
+        link = if key < n.key { &n.left } else { &n.right }
+    }
+}
+
+free_nodes :: fn(K, V: type, n: ?^Node(K, V)) \ {Alloc} {
+    p := n else return
+    free_nodes(p.left)
+    free_nodes(p.right)
+    destroy(p)
+}
+
+clear :: fn(K, V: type, t: ^Tree(K, V)) \ {Alloc} {
+    free_nodes(t.root)
+    t.root = null
+    t.size = 0
+}
+
+// ---- `using` embedding -----------------------------------------------------------------
+
+Animal :: struct {
+    name: string
+    legs: u8
+}
+
+Dog :: struct {
+    using base: Animal
+    tricks: u32 = 0
+}
+
+describe :: fn(a: ^const Animal) \ {Out} {
+    print("{} has {} legs\n", (a.name, a.legs))
+}
+
+teach :: fn(d: ^Dog) { d.tricks += 1 }
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    t := tree(i32, string)
+    defer t.clear()
+    keys := [_]i32(50, 30, 70, 20, 40, 60, 80, 35, 45, 65, 30)
+    names := [_]string("fifty", "thirty", "seventy", "twenty", "forty", "sixty", "eighty", "t-five", "f-five", "s-five", "THIRTY")
+    for i in 0..keys.len {
+        fresh := try t.insert(keys[i], names[i])
+        if not fresh { print("updated {}\n", keys[i]) }
+    }
+    print("size {}, height {}\n", (t.size, height(t.root)))
+    print("find 40 = {}, find 41 = {}, find 30 = {}\n", (t.find(40), t.find(41), t.find(30)))
+
+    for k, v in t.entries() { print("{}={} ", (k, v)) }
+    print("\n")
+
+    doomed := [_]i32(20, 70, 50, 99, 30)
+    for k in doomed {
+        print("remove {}: {}, size {}\n", (k, t.remove(k), t.size))
+    }
+    for k, v in t.entries() { print("{}={} ", (k, v)) }
+    print("\n")
+    print("height now {}\n", height(t.root))
+    root := t.root?
+    print("root key {}\n", root.key)
+
+    // string-keyed tree
+    words := tree(string, u32)
+    defer words.clear()
+    ws := [_]string("pear", "apple", "fig", "kiwi", "apple", "date")
+    for w in ws {
+        _ = try words.insert(w, w.len.trunc(u32))
+    }
+    for k, v in words.entries() { print("{}:{} ", (k, v)) }
+    print("\n")
+
+    // `using` embedding: &dog coerces to ^Animal
+    dog := Dog(base: Animal(name: "Rex", legs: 4))
+    teach(&dog)
+    teach(&dog)
+    describe(&dog)
+    print("{} knows {} tricks; name via promotion: {}\n", (dog.name, dog.tricks, dog.base.name))
+    return ()
+}

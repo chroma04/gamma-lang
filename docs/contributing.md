@@ -24,6 +24,21 @@ cargo test --all-targets
 Run them before sending a change. Formatting uses the settings in
 `rustfmt.toml`.
 
+## Formatting Gamma code
+
+`gamma fmt <file or directory>...` rewrites `.gm` files in the canonical style;
+`gamma fmt --check` only lists the files that would change (exit status 1 if
+there are any), and `gamma fmt -` filters standard input to standard output. The
+formatter (`src/fmt.rs`) works on tokens and never changes meaning: it keeps the
+line breaks of the source, collapses runs of blank lines, indents by bracket
+nesting (four spaces), normalizes the spacing inside a line and copies comments
+and literals verbatim. Trailing comments and the columns of aligned `::`/`=>`
+keep their spacing. Files with lexical errors are not formatted. `tests/fmt.rs`
+checks that formatting keeps the tokens and is idempotent for every `.gm` file in
+`lib/` and `tests/conformance/`. The library itself is kept formatted (the same test fails
+otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
+reformatted, since some pin columns in their expected output.
+
 ## Tests
 
 There are two kinds of tests.
@@ -41,7 +56,7 @@ outcome against expectations written in the file:
 
 main :: fn() {
     x := 1 + 2 * 3
-    y := a & b | c          //~ ERROR mixing bitwise operators
+    y := a & b | c          //~ ERROR cannot mix
 }
 ```
 
@@ -49,6 +64,9 @@ main :: fn() {
 | --- | --- |
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
+| `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, …) |
+| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `fast`; default `debug`) |
+| `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
@@ -56,7 +74,8 @@ main :: fn() {
 
 Every error and warning the compiler reports must be expected by an annotation,
 and every annotation must be matched. The expected standard output of a `run` or
-`test` test is the sibling file `<name>.stdout`.
+`test` test is the sibling file `<name>.stdout` (empty if absent), and the sibling
+file `<name>.stdin`, if present, is the program's standard input.
 
 A test of several modules is a directory whose name ends in `.test`, such as
 `tests/conformance/run/imports.test/`. The program's root module is its `main/`

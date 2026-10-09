@@ -36,8 +36,8 @@ Unlike C, an array never decays to a pointer. Passing an array to a function tha
 
 ```gamma
 slices_demo :: fn() \ {Out} {
-    data := [_]u8(1, 2, 3, 4, 5, 6)
-    mid := data[1..4]                  // []u8 viewing 2, 3, 4
+    data := [_]i32(1, 2, 3, 4, 5, 6)
+    mid := data[1..4]                  // []i32 viewing 2, 3, 4
     mid[0] = 20                        // writes through: data[1] is now 20
     head := data[..2]                  // open-ended bounds only appear in brackets
     tail := data[4..]
@@ -369,6 +369,23 @@ lossy_demo :: fn(big: u32, f: f64, g: f32) \ {Out} {
 There is no conversion from an integer to `bool` (write `x is not 0`), none from integers to unions (use `from_tag`), none between distinct struct types, and none from a slice to a pointer (use `.ptr`).
 
 > **Common mistake.** There are no C-style casts. `(u8)x` and `x as u8` do not exist. Write `u8(x)` if it is lossless, or choose `x.trunc(u8)`, `x.checked(u8)` or `x.sat(u8)` to say what should happen when it is not.
+
+## Type aliases
+
+Binding a type expression to a name makes an alias, a second name for the same type, not a new type:
+
+```gamma
+Bytes :: []u8
+Matrix3 :: [3][3]f64
+
+alias_demo :: fn(xs: []const i32) {
+    Elem :: @type_of(xs[0])             // a local alias: i32
+    total: Elem = 0
+    for x in xs { total += x }
+}
+```
+
+Only `struct`, `union` and `effect` literals create new types, and they are declared at top level. Aliases may also appear inside a function, where they are visible for the rest of the block.
 
 ## Summary
 

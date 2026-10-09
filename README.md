@@ -30,7 +30,7 @@ under active construction:
 | Semantic analysis | the language: effects, handlers and fibers, generics with compile-time parameters, compile-time evaluation and `when`, modules, imports, tests, and C interop |
 | Interpreter / compile-time evaluator | implemented, except calls to foreign code (`gamma run` compiles such programs instead) |
 | Native code generation (via C) | the language, including fibers and foreign functions (`gamma build`, `gamma run --backend=c`) |
-| Standard library | core library (output, environment, iterators, allocation, `List`, `HashMap`); `std` planned |
+| Standard library | core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network); `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/math`, `std/arena`, `std/fixed_buffer`, `std/thread`, `std/c` |
 
 ## Building
 
@@ -45,12 +45,18 @@ Available commands today:
 
 ```sh
 gamma run file.gm            # type-check and run a program (a file or a module directory)
+gamma run --backend=c file.gm  # compile through C and run (default backend: interp)
+gamma build file.gm -o prog  # compile to a native executable via the system C compiler
 gamma check file.gm          # type-check only
 gamma test file.gm           # run the `test` declarations of a module
 gamma lex file.gm            # print the token stream
 gamma parse file.gm          # check syntax
 gamma parse --dump file.gm   # print the syntax tree
+gamma fmt file.gm            # format source files in place (files or directories)
+gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
 ```
+
+`run`, `build` and `test` also take `--mode=debug|checked|fast` (default `debug`).
 
 ## Testing
 

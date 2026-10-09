@@ -1,0 +1,247 @@
+// std/str: trimming, searching, splitting, case, integer parsing, builder and join.
+str :: import "std/str"
+
+show_split :: fn(s, sep: string) \ {Out} {
+    print("split({}, {}):", (s, sep))
+    for p in str.split(s, sep) { print(" <{}>", p) }
+    print("\n", ())
+}
+
+show_lines :: fn(s: string) \ {Out} {
+    n: usize = 0
+    for l in str.lines(s) {
+        print("<{}>", l)
+        n += 1
+    }
+    print(" ({} lines)\n", n)
+}
+
+show_fields :: fn(s: string) \ {Out} {
+    n: usize = 0
+    for f in str.fields(s) {
+        print("<{}>", f)
+        n += 1
+    }
+    print(" ({} fields)\n", n)
+}
+
+show_once :: fn(s, sep: string) \ {Out} {
+    if r := str.split_once(s, sep) {
+        print("split_once({}, {}): <{}> <{}>\n", (s, sep, r.before, r.after))
+    } else {
+        print("split_once({}, {}): none\n", (s, sep))
+    }
+}
+
+pr :: fn(T: type, s: string) \ {Out} where Int(T) {
+    print("{}: {}\n", (s, str.parse_int(T, s)))
+}
+
+main :: fn() \ {Out, Alloc} {
+    // trim
+    print("[{}] [{}] [{}]\n", (str.trim("  a b \t\n"), str.trim_start("  a b  "), str.trim_end("  a b  ")))
+    print("[{}] [{}] [{}]\n", (str.trim(""), str.trim(" \t\r\n\x0b\x0c "), str.trim("x")))
+    print("[{}] [{}]\n", (str.trim_start("\x0b\x0cq"), str.trim_end("q\x0b\x0c")))
+
+    // find, rfind, contains
+    print("{} {} {}\n", (str.find("hello world", "o"), str.find("hello world", "o w"), str.find("hello", "xyz")))
+    print("{} {} {}\n", (str.find("hello", ""), str.find("", ""), str.find("", "a")))
+    print("{} {} {}\n", (str.find("abab", "ab"), str.rfind("abab", "ab"), str.rfind("abab", "ba")))
+    print("{} {} {}\n", (str.rfind("hello", ""), str.rfind("", ""), str.rfind("ab", "abc")))
+    print("{} {} {}\n", (str.find("aab", "ab"), str.find("abc", "abc"), str.find("abc", "abcd")))
+    print("{} {} {}\n", (str.contains("hello", "ell"), str.contains("hello", "elo"), str.contains("", "")))
+
+    // split_once
+    show_once("key=value", "=")
+    show_once("a=b=c", "=")
+    show_once("=x", "=")
+    show_once("x=", "=")
+    show_once("nosep", "=")
+    show_once("a::b", "::")
+    show_once("abc", "")
+    show_once("", "=")
+
+    // split
+    show_split("a,b,c", ",")
+    show_split("a,,b,", ",")
+    show_split(",a", ",")
+    show_split(",", ",")
+    show_split("", ",")
+    show_split("abc", "")
+    show_split("a--b---c", "--")
+    show_split("nosep", ",")
+
+    // lines
+    show_lines("one\ntwo\nthree")
+    show_lines("one\ntwo\n")
+    show_lines("a\r\nb\r\n")
+    show_lines("\n")
+    show_lines("")
+    show_lines("a\n\nb")
+    show_lines("a\r")
+    show_lines("\r\n")
+
+    // fields
+    show_fields("  the quick\tbrown \n fox  ")
+    show_fields("")
+    show_fields("   \t\n")
+    show_fields("single")
+    show_fields("a\x0bb\x0cc")
+
+    // case
+    print("{} {} {}\n", (str.eq_ignore_case("HeLLo", "hello"), str.eq_ignore_case("a", "ab"), str.eq_ignore_case("", "")))
+    print("{} {}\n", (str.eq_ignore_case("a[", "A{"), str.eq_ignore_case("@", "`")))
+    cbuf: [32]u8 = ---
+    print("{} {}\n", (str.to_lower("Hello, WORLD 123 [@`{", cbuf[..]), str.to_upper("Hello, world 123 [@`{", cbuf[..])))
+    print("[{}] [{}]\n", (str.to_lower("", cbuf[0..0]), str.to_upper("abc", cbuf[0..3])))
+
+    // parse_int: decimal and signs
+    pr(i32, "0")
+    pr(i32, "42")
+    pr(i32, "+42")
+    pr(i32, "-42")
+    pr(i32, "-0")
+    pr(i32, "007")
+    pr(u32, "+7")
+    pr(u32, "-1")
+    pr(u32, "-0")
+    // errors
+    pr(i32, "")
+    pr(i32, "-")
+    pr(i32, "+")
+    pr(i32, "12a")
+    pr(i32, "a12")
+    pr(i32, " 1")
+    pr(i32, "1 ")
+    pr(i32, "1.5")
+    pr(i32, "--1")
+    // prefixes
+    pr(u32, "0xff")
+    pr(u32, "0XFF")
+    pr(u32, "0o17")
+    pr(u32, "0b101")
+    pr(u32, "0B101")
+    pr(i32, "-0x10")
+    pr(i32, "+0b11")
+    pr(u32, "0x")
+    pr(u32, "0b")
+    pr(u32, "0b102")
+    pr(u32, "0o8")
+    pr(u32, "0xg")
+    pr(u32, "0")
+    pr(u32, "0x0")
+    pr(u32, "0b0")
+    pr(u32, "0z")
+    pr(u32, "0_1")
+    // underscores
+    pr(u32, "1_000")
+    pr(u32, "1_0_0")
+    pr(u32, "0xff_ff")
+    pr(u32, "0b1111_0000")
+    pr(u32, "_1")
+    pr(u32, "1_")
+    pr(u32, "1__0")
+    pr(u32, "0x_f")
+    pr(u32, "_")
+    pr(i32, "-_1")
+    // overflow bounds
+    pr(u8, "255")
+    pr(u8, "256")
+    pr(u8, "0xff")
+    pr(u8, "0x100")
+    pr(u8, "0b11111111")
+    pr(u8, "0b100000000")
+    pr(u8, "300")
+    pr(u8, "2550")
+    pr(i8, "127")
+    pr(i8, "128")
+    pr(i8, "-128")
+    pr(i8, "-129")
+    pr(i8, "-0x80")
+    pr(i8, "-0x81")
+    pr(i8, "0x7f")
+    pr(i8, "0x80")
+    pr(u16, "65535")
+    pr(u16, "65536")
+    pr(i16, "-32768")
+    pr(i16, "-32769")
+    pr(u32, "4294967295")
+    pr(u32, "4294967296")
+    pr(i32, "-2147483648")
+    pr(i32, "2147483648")
+    pr(u64, "18446744073709551615")
+    pr(u64, "18446744073709551616")
+    pr(u64, "99999999999999999999")
+    pr(u64, "0xffff_ffff_ffff_ffff")
+    pr(u64, "0x1_0000_0000_0000_0000")
+    pr(i64, "9223372036854775807")
+    pr(i64, "9223372036854775808")
+    pr(i64, "-9223372036854775808")
+    pr(i64, "-9223372036854775809")
+    pr(i64, "-0x8000000000000000")
+    pr(usize, "123456")
+    pr(u128, "340282366920938463463374607431768211455")
+    pr(u128, "340282366920938463463374607431768211456")
+    // overflow is reported even before a later bad digit; the first problem wins
+    pr(u8, "999x")
+    pr(u8, "9x99")
+    // error values can be matched
+    match str.parse_int(u8, "12z") {
+        !.Empty => print("empty\n", ())
+        !.InvalidDigit(at) => print("invalid at {}\n", at)
+        !.Overflow => print("overflow\n", ())
+        r => print("ok {}\n", r)
+    }
+    v := str.parse_int(i16, "-1_234") else 0
+    print("v = {}\n", v)
+
+    // builder
+    store: [16]u8 = ---
+    b := str.builder(store[..])
+    print("[{}] {}\n", (b.str(), b.len()))
+    b.push("")
+    b.push("hello")
+    b.push_byte(',')
+    b.push_byte(' ')
+    b.push("wor")
+    print("[{}] {}\n", (b.str(), b.len()))
+    b.push("ld!!!!")
+    print("[{}] {}\n", (b.str(), b.len()))
+    b.reset()
+    print("[{}] {}\n", (b.str(), b.len()))
+    b.push("again")
+    @write(fn(bytes) => b.push(bytes), "{}+{}", (1, 2))
+    print("[{}] {}\n", (str.str(&b), str.len(&b)))
+    b.reset()
+    b.write("{}-{}", ("x", 7))
+    b.write("!", ())
+    print("[{}]\n", b.str())
+    exact: [3]u8 = ---
+    e := str.builder(exact[..])
+    e.push("ab")
+    e.push_byte('c')
+    print("[{}]\n", e.str())
+    e.push("")
+    e.reset()
+    e.push("xyz")
+    print("[{}]\n", e.str())
+
+    // join
+    parts := [_]string("alpha", "beta", "", "gamma")
+    j := str.join(parts[..], ", ") else return
+    defer free(j)
+    print("[{}] {}\n", (j, j.len))
+    j2 := str.join(parts[0..1], "--") else return
+    defer free(j2)
+    print("[{}]\n", j2)
+    j3 := str.join(parts[0..0], "--") else return
+    defer free(j3)
+    print("[{}] {}\n", (j3, j3.len))
+    j4 := str.join(parts[1..3], "") else return
+    defer free(j4)
+    print("[{}]\n", j4)
+    both := [_]string("", "")
+    j5 := str.join(both[..], "|") else return
+    defer free(j5)
+    print("[{}]\n", j5)
+}

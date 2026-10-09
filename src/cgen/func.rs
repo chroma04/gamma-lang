@@ -40,6 +40,8 @@ pub struct FnGen<'g, 'a> {
     /// Set while generating the body of a `with … on`, moved into a function of its
     /// own: its ladder ends at the fiber's base.
     pub outlined: bool,
+    /// The bytes of the temporaries declared so far, for the stack check.
+    pub temp_bytes: u64,
 }
 
 /// Generates function `f` into `g`.
@@ -106,6 +108,7 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         cx: "cx".into(),
         no_check: false,
         outlined: false,
+        temp_bytes: 0,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
     if def.hints.fast_math {
@@ -117,8 +120,19 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     fg.line(&format!("struct gm_fr{} F;", f.0));
     // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
     if fg.g.opts.checks {
-        fg.line("GM_STACK_CHECK(&F);");
+        fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);");
     }
+    // Debug builds keep a backtrace chain (see gm_bt in the runtime).
+    let pop = if fg.g.opts.debug {
+        let name = match fg.g.prog.backtrace_name(f, fg.g.sources) {
+            Some(n) => super::c_string(n.as_bytes()),
+            None => "NULL".into(),
+        };
+        fg.line(&format!("gm_bt B = {{ gm_bt_top, {name}, NULL, 0, 0 }}; gm_bt_top = &B;"));
+        "gm_bt_top = B.prev; "
+    } else {
+        ""
+    };
     fg.line("F.h.up = (gm_frame *)env;");
     let clause_lit = matches!(def.kind, FnKind::Clause);
     fg.line(&format!("F.h.clause_lit = {} && env != NULL;", clause_lit as u8));
@@ -133,7 +147,7 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         fg.line(&format!("F.ret = {};", v));
     }
     // Debug builds fill a dead frame with 0xDD (§18.3).
-    let kill = if fg.g.opts.debug { "memset(&F, 0xDD, sizeof F); " } else { "" };
+    let kill = if fg.g.opts.debug { format!("{pop}memset(&F, 0xDD, sizeof F); ") } else { String::new() };
     if void_ret {
         let _ = write!(fg.out, "gm_fret:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n");
     } else if kill.is_empty() {
@@ -145,7 +159,9 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         let tail = format!("{{ {ct} gm_r = F.ret; {kill}return {r}; }}");
         let _ = write!(fg.out, "gm_fret:\n    {tail}\ngm_fprop:\n    {tail}\n}}\n");
     }
-    let out = std::mem::take(&mut fg.out);
+    // The epilogue copies the result (and a plain function converts it).
+    fg.temp_bytes += 2 * fg.g.ty.size(def.ret);
+    let out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
     g.bodies.push_str(&out);
     Ok(())
 }
@@ -192,6 +208,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Declares a temporary of type `t` initialized to `init`; returns its name.
     pub fn tmp(&mut self, t: Ty, init: &str) -> String {
+        self.temp_bytes += self.g.ty.size(t);
         let c = self.g.ty.cty(t);
         let n = format!("t{}", self.fresh());
         self.line(&format!("{} {} = {};", c, n, init));
@@ -200,6 +217,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Declares an uninitialized temporary of type `t`.
     pub fn tmp_uninit(&mut self, t: Ty) -> String {
+        self.temp_bytes += self.g.ty.size(t);
         let c = self.g.ty.cty(t);
         let n = format!("t{}", self.fresh());
         self.line(&format!("{} {};", c, n));
@@ -238,6 +256,18 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         let (p, f) = self.frame_up(levels);
         format!("((struct gm_fr{} *){})->{}", f.0, p, field)
+    }
+
+    /// True if `e` reads a place whose type is large enough that copying it through a
+    /// C temporary would cost noticeable stack.
+    pub fn big_place(&mut self, e: &Expr) -> bool {
+        let place = match &e.kind {
+            ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_) | ExprKind::Global(_) => true,
+            ExprKind::Field { base, .. } => self.g.ty.bits_layout(base.ty).is_none(),
+            ExprKind::Index { .. } | ExprKind::VariantPayload { .. } => true,
+            _ => false,
+        };
+        place && self.g.ty.size(e.ty) > 256
     }
 
     // --- non-local exits ---------------------------------------------------------------------
@@ -362,6 +392,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     fn stmt(&mut self, s: &'a Stmt) -> CResult<()> {
         match s {
+            // A large value read from a place is copied directly, without a temporary.
+            Stmt::Let { local, init: Some(init) } if self.big_place(init) => {
+                let a = self.place_addr(init)?;
+                self.line(&format!("memmove(&F.l{}, {}, sizeof F.l{});", local.0, a, local.0));
+            }
             Stmt::Let { local, init } => {
                 if let Some(init) = init {
                     let v = self.expr(init)?;
@@ -396,6 +431,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!(
                     "GM_ST({uc}, {a}, ({uc})(((unsigned __int128)GM_LD({uc}, {a}) & ~({m} << {off})) | ((({raw}) & {m}) << {off})));"
                 ));
+            }
+            Stmt::Assign { place, value } if self.big_place(value) => {
+                let p = self.place_addr(place)?;
+                let a = self.place_addr(value)?;
+                self.line(&format!("memmove({}, {}, {});", p, a, self.g.ty.size(value.ty)));
             }
             Stmt::Assign { place, value } => {
                 let p = self.place_addr(place)?;

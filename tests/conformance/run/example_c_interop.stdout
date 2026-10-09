@@ -1,0 +1,12 @@
+strlen = 10, view = gamma-lang
+strcmp: 0 -1 1
+shout: MIXED CASE 42
+div(-17, 5) = -3 rem -2; abs = 99
+snprintf wrote 31: -5| 3.14|str|ff|A|1099511627776
+memcmp equal: true
+memcmp differs: true
+after memset: [0, 0, 0, 0, 7, 9, 7, 7]
+2:9 5:7.25 1:2.5 3:2.5 4:-1 
+sizeof Record = 24, align = 8
+apple banana cherry fig pear 
+parsed 3: [12, -7, 0]

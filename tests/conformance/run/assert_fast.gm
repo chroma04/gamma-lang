@@ -1,0 +1,11 @@
+//! mode: fast
+// Fast builds remove `assert` without evaluating its arguments (§21.6).
+bump :: fn(p: ^u32) -> bool {
+    p^ += 1
+    return true
+}
+main :: fn() \ {Out} {
+    n: u32 = 0
+    assert(bump(&n), "x")
+    print("n={}\n", n)
+}

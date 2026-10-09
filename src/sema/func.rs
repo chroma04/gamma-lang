@@ -22,6 +22,8 @@ pub enum LocalBinding {
     Label,
     /// A nested named function (§11.8), which captures nothing.
     NestedFn(FnId),
+    /// A local type alias (`T :: []u8`, §3.5).
+    Type(Ty),
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +84,9 @@ pub struct FnCx<'a, 's> {
     /// The frame depth (index into `outer`, or `outer.len()` for the current
     /// function) that owns each entry of `scopes`.
     scope_depths: Vec<u32>,
+    /// For each scope, the length of `sema.type_params` when it began: local type
+    /// aliases are visible to type expressions through that list.
+    scope_types: Vec<usize>,
     /// Nested function bodies, finalized together with the enclosing body.
     pub nested: Vec<NestedFn>,
     /// Set while checking a handler clause (§12.5): how its exits behave.
@@ -232,6 +237,7 @@ impl<'a, 's> FnCx<'a, 's> {
             captures: false,
             outer: vec![],
             scope_depths: vec![0],
+            scope_types: vec![],
             nested: vec![],
             clause: None,
             handled: vec![],
@@ -345,7 +351,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut reported = vec![];
         for (e, span) in performed {
             if !self.declared.contains(&e) && !reported.contains(&e) {
-                let name = e.effect.name();
+                let name = e.to_string();
                 self.error(
                     span,
                     format!(
@@ -389,11 +395,15 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn push_scope(&mut self) {
         self.scopes.push(vec![]);
         self.scope_depths.push(self.depth());
+        self.scope_types.push(self.sema.type_params.len());
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
         self.scope_depths.pop();
+        if let Some(n) = self.scope_types.pop() {
+            self.sema.type_params.truncate(n);
+        }
     }
 
     pub fn local_ty(&self, id: LocalId) -> Ty {
@@ -600,6 +610,14 @@ impl<'a, 's> FnCx<'a, 's> {
             && b.ty.is_none()
         {
             return self.nested_fn_binding(name, lit, b.span);
+        }
+        if b.kind == ast::BindingKind::Const
+            && b.ty.is_none()
+            && let Some(t) = self.local_type_init(&b.init)
+        {
+            self.declare(name.name, LocalBinding::Type(t), name.span);
+            self.sema.type_params.push((name.name, t));
+            return Stmt::Expr(unit(b.span));
         }
         let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
         // An immutable binding of an untyped constant expression is an untyped constant (§6.2).
@@ -905,6 +923,13 @@ impl<'a, 's> FnCx<'a, 's> {
             int_only: true,
             signed_only: false,
         });
+        self.range_loop(f, lo, hi, elem, inclusive)
+    }
+
+    /// A `for` loop over the integers from `lo` to `hi` (of type `elem`), excluding
+    /// `hi` unless `inclusive`.
+    pub fn range_loop(&mut self, f: &ast::ForExpr, lo: Expr, hi: Expr, elem: Ty, inclusive: bool) -> Expr {
+        let span = f.span;
         // { lo_t := lo; hi_t := hi; i := lo_t; going := lo_t <(=) hi_t;
         //   loop going { p :: i; body } step { if i is hi_t { going = false } else { i += 1 } } }
         // The half-open form uses `i < hi_t` as the condition and `i += 1` as the step.
@@ -981,6 +1006,59 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     // --- type expressions inside bodies ---
+
+    /// The type that the initializer `e` of a local `::` binding denotes, if it is a
+    /// type expression: the binding is then a local alias (§3.5).
+    fn local_type_init(&mut self, e: &ast::Expr) -> Option<Ty> {
+        match &e.kind {
+            ExprKind::OptionalType(_)
+            | ExprKind::PtrType { .. }
+            | ExprKind::SliceType { .. }
+            | ExprKind::ManyPtrType { .. }
+            | ExprKind::ArrayType { .. }
+            | ExprKind::ErrorUnionType { .. }
+            | ExprKind::FnType(_)
+            | ExprKind::ContType(_) => Some(self.resolve_type(e)),
+            ExprKind::Intrinsic { name, .. } if name.name.as_str() == "type_of" => Some(self.resolve_type(e)),
+            ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Effect(_) => {
+                self.error(
+                    e.span,
+                    "types are declared at top level; inside a function only aliases are allowed (§3.5)",
+                );
+                Some(Ty::error())
+            }
+            ExprKind::Paren(inner) => self.local_type_init(inner),
+            ExprKind::Ident(id) => {
+                if let Some(b) = self.lookup_local(id.name) {
+                    return match b {
+                        LocalBinding::Type(t) => Some(*t),
+                        _ => None,
+                    };
+                }
+                if let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    return Some(t);
+                }
+                let module = self.module;
+                if let Some(d) = self.sema.lookup_module_name(module, id.name) {
+                    return match self.sema.resolve_decl(d) {
+                        super::DeclValue::Type(t) => Some(t),
+                        _ => None,
+                    };
+                }
+                super::builtins::builtin_type(id.name.as_str())
+            }
+            ExprKind::Field { base, name } => {
+                let module = self.module;
+                let m = self.sema.module_named(module, base)?;
+                let d = self.sema.module_member(m, *name)?;
+                match self.sema.resolve_decl(d) {
+                    super::DeclValue::Type(t) => Some(t),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 
     pub fn resolve_type(&mut self, e: &ast::Expr) -> Ty {
         // `@type_of(e)`: the type of `e`, which is checked but not evaluated, so

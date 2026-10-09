@@ -1,0 +1,4 @@
+pub Log :: effect { log: fn(n: u32) }
+pub Gen :: effect(T: type) { emit: fn(x: T) }
+pub Counter :: struct { pub total: u32 }
+handler Log for ^Counter { log(self, n) => { self.total += n } }

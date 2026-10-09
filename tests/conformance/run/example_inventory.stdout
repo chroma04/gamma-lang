@@ -1,0 +1,17 @@
+register hammer: ok
+register apple: ok
+register robot: ok
+register hammer again: sku 1 already registered
+receive hammers: ok
+receive apples: ok
+receive ghosts: unknown sku 99
+ship 4 hammers: ok
+ship 500 apples: only 200 in stock, wanted 500
+ship 1 robot: only 0 in stock, wanted 1
+ship 50 apples: ok
+--- stock ---
+1 hammer (tool): 6 units, worth 7500 cents
+2 apple (food): 150 units, worth 6000 cents
+3 robot (toy): 0 units, worth 0 cents
+total value: 13500 cents
+audit: 210 added, 54 removed, 4 rejected (8 events kept, 0 dropped)

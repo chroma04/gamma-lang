@@ -1,0 +1,5 @@
+F(a: true, b: true, rest: 7)
+F(a: false, b: false, rest: 1)
+F(a: true, b: true, rest: 6)
+F(a: false, b: true, rest: 58)
+F(a: false, b: true, rest: 2)

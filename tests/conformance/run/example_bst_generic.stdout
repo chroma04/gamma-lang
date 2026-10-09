@@ -1,0 +1,15 @@
+updated 30
+size 10, height 4
+find 40 = "forty", find 41 = null, find 30 = "THIRTY"
+20=twenty 30=THIRTY 35=t-five 40=forty 45=f-five 50=fifty 60=sixty 65=s-five 70=seventy 80=eighty 
+remove 20: true, size 9
+remove 70: true, size 8
+remove 50: true, size 7
+remove 99: false, size 7
+remove 30: true, size 6
+35=t-five 40=forty 45=f-five 60=sixty 65=s-five 80=eighty 
+height now 3
+root key 60
+apple:5 date:4 fig:3 kiwi:4 pear:4 
+Rex has 4 legs
+Rex knows 2 tricks; name via promotion: Rex

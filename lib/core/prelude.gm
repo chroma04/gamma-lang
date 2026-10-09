@@ -470,18 +470,38 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 }
 
 /// Releases a slice obtained from `make` or `make_fill` under the current allocator.
-pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Alloc} {
+/// Memory from `make_aligned` is released with `free_aligned`.
+pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, @align_of(T))
 }
 
+/// Releases a slice obtained from `make_aligned(T, s.len, align)` under the current
+/// allocator; `align` must be the alignment it was requested with.
+pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation = @caller_location()) \ {Alloc} {
+    if s.len is 0 { return }
+    a := current()
+    @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, align.max(@align_of(T)))
+}
+
 /// Releases an object obtained from `new` under the current allocator.
-pub destroy :: fn(T: type, p: ^T, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub destroy :: fn(T: type, p: ^const T, site: SourceLocation = @caller_location()) \ {Alloc} {
     a := current()
     @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
+}
+
+/// The value of `lo..hi`: from `lo` up to, not including, `hi` (§5.16).
+pub Range :: struct(T: type) {
+    pub lo, hi: T
+}
+
+/// The value of `lo..=hi`: from `lo` up to and including `hi` (§5.16).
+pub RangeIncl :: struct(T: type) {
+    pub lo, hi: T
 }
 
 /// Where a piece of source code is (§21.7): the result of `@location()`.
@@ -538,6 +558,13 @@ test_wall :: fn(io: ^TestIo) -> i64 => 1_700_000_000_000_000_000 + io.clock.trun
 
 handler In for ^TestIo {
     read(self, buf) => 0
+}
+
+// Tests see no arguments and no environment variables; `exit` still ends the test.
+handler Env for ^TestIo \ {Env} {
+    args(self) => empty_slice(string)
+    var(self, name) => null
+    exit(self, code) => exit(code)
 }
 
 handler Clock for ^TestIo {

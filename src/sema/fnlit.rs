@@ -128,7 +128,7 @@ impl<'a, 's> FnCx<'a, 's> {
         for (e, sp) in performed {
             if !effects.contains(&e) {
                 if wants_pointer && name.is_none() {
-                    let n = e.effect.name();
+                    let n = e.to_string();
                     self.error(
                         sp,
                         format!("a function pointer performs only the effects in its type, and `{}` is not among them (§11.7)", n),
@@ -137,7 +137,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 own.push(e.clone());
                 if name.is_some() && !captures {
-                    let n = e.effect.name();
+                    let n = e.to_string();
                     self.error(
                         sp,
                         format!(

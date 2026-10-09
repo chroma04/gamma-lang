@@ -427,6 +427,13 @@ impl<'a> Gen<'a> {
                 let d = self.ty.desc(*err);
                 let _ = writeln!(s, "    if (r.b[{}]) {{", offs[0]);
                 s.push_str("        gm_buf b = {0};\n        gm_buf_push(&b, \"error: \", 7);\n");
+                // A union's value is named with its type: `E.NotFound` (§3.7).
+                if let TyKind::Adt(id, _) = err.kind()
+                    && matches!(self.prog.adts.get(id).map(|d| &d.kind), Some(crate::tir::AdtKind::Union { .. }))
+                {
+                    let name = err.to_string();
+                    let _ = writeln!(s, "        gm_buf_push(&b, {}, {});", c_string(name.as_bytes()), name.len());
+                }
                 let _ = writeln!(s, "        gm_format(&b, {}, r.b + {}, true);", d, offs[1]);
                 s.push_str("        gm_buf_push(&b, \"\\n\", 1);\n        gm_flush();\n");
                 s.push_str("        gm_write_err(b.data, b.len);\n        return 1;\n    }\n");

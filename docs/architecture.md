@@ -55,6 +55,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | the `gamma` command-line tool |
+| `src/fmt.rs` | the source formatter behind `gamma fmt` (token based, see `docs/contributing.md`) |
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |
@@ -247,7 +248,8 @@ out-of-bounds, misaligned or null pointers are detected and reported as traps
 and function calls consume the flows aimed at them; everything else propagates
 them, running deferred statements on the way. `errdefer` statements run when a
 function returns an error value, or when its frame is unwound by a flow whose
-target lies in a caller.
+target lies in a caller. In Debug builds a trap collects each call it leaves on the
+way out (the function and its call site) for the backtrace that `gamma run` prints.
 
 **Effects.** The handler context is a persistent linked list from effects to
 installed handlers, passed down the evaluation. `with` extends it; performing an
@@ -334,6 +336,10 @@ runs its *ladder*: the pending deferred statements from the innermost scope
 outwards, with a test at each loop and `with` for whether it is the exit's
 target. A deferred statement run by a ladder sets the exit aside while it runs.
 Traps print their message and stop the process (status 134) without unwinding.
+In Debug builds each function also links a small record (`gm_bt`) into a
+per-thread chain on entry, unlinks it on exit, and stores the location of each
+call it makes in it; a trap prints the chain as a backtrace. Each fiber keeps its
+own chain, which continues into the chain of the `with` running it.
 
 **Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
 and AArch64 that save the callee-saved registers. The body of a `with … on` is
@@ -350,7 +356,7 @@ consumed is always detected. In Debug and Checked builds every function entry
 compares its frame's address with the lowest address the running stack may use:
 the fiber's limit, or, on a thread's own stack, the bottom of that stack (found
 with `pthread_getattr_np` or `pthread_get_stackaddr_np` at the start of `main`
-and of each thread) plus a reserve for reporting the overflow.
+and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. Large values read from a place are copied with `memmove` rather than through a C temporary.
 
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.

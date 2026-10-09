@@ -1,0 +1,34 @@
+// Domain types: public data, private invariants, methods that live next to the type.
+pub Category :: union { Tool, Food, Toy }
+
+pub Item :: struct {
+    pub sku: u32
+    pub name: string
+    pub category: Category
+    qty: u32 = 0
+    cents: u64
+}
+
+pub item :: fn(sku: u32, name: string, category: Category, cents: u64) -> Item {
+    return Item(sku: sku, name: name, category: category, qty: 0, cents: cents)
+}
+
+pub quantity :: fn(i: ^const Item) -> u32 => i.qty
+
+pub value :: fn(i: ^const Item) -> u64 => u64(i.qty) * i.cents
+
+pub StockError :: union { Insufficient: (have: u32, want: u32), Unknown: u32, Duplicate: u32 }
+
+pub add_stock :: fn(i: ^Item, n: u32) { i.qty += n }
+
+pub remove_stock :: fn(i: ^Item, n: u32) -> StockError!() {
+    if n > i.qty { return !.Insufficient(have: i.qty, want: n) }
+    i.qty -= n
+    return ()
+}
+
+pub label :: fn(c: Category) -> string => match c {
+    .Tool => "tool"
+    .Food => "food"
+    .Toy => "toy"
+}

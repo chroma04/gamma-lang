@@ -1,0 +1,14 @@
+//! stage: check
+// Pointer arithmetic exists only on many-pointers of one element type (§5.5).
+main :: fn() {
+    a := [3]i32(7, 8, 9)
+    p: [^]i32 = &a
+    b := [3]u8(1, 2, 3)
+    q: [^]u8 = &b
+    x: i32 = 1
+    _ = p + x   //~ ERROR a pointer offset must be a `usize` or an `isize`
+    _ = p + p   //~ ERROR cannot add `[^]i32` and `[^]i32`
+    _ = p - q   //~ ERROR cannot subtract `[^]i32` and `[^]u8`
+    r: ^i32 = &a[0]
+    _ = r + 1   //~ ERROR `^i32` has no arithmetic
+}

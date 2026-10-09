@@ -1,0 +1,12 @@
+//! exit: 134
+// Appending beyond the builder's buffer traps.
+str :: import "std/str"
+
+main :: fn() \ {Out} {
+    store: [4]u8 = ---
+    b := str.builder(store[..])
+    b.push("abcd")
+    print("full: {}\n", b.str())
+    b.push_byte('e')
+    print("not reached\n", ())
+}

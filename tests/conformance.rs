@@ -8,6 +8,10 @@
 //!   `gamma test`. The default is `run`.
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
+//! - `//! stderr` also compares the standard error of a `run` or `test` test
+//!   with the sibling `<name>.stderr`, for tests of trap reports.
+//! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in
+//!   that build mode (default: debug).
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
 //!   architecture, for tests of features that exist on some targets only.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
@@ -50,6 +54,10 @@ enum Stage {
 struct Expectations {
     stage: Stage,
     dump: bool,
+    /// Compare standard error with `<name>.stderr`.
+    stderr: bool,
+    /// The build mode for `run` and `test`, if not the default.
+    mode: Option<String>,
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
@@ -58,7 +66,8 @@ struct Expectations {
 }
 
 fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
-    let mut e = Expectations { stage: Stage::Run, dump: false, exit: 0, arch: None, diags: vec![] };
+    let mut e =
+        Expectations { stage: Stage::Run, dump: false, stderr: false, mode: None, exit: 0, arch: None, diags: vec![] };
     for path in files {
         let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
         parse_file_expectations(path, &src, &mut e)?;
@@ -82,6 +91,10 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 };
             } else if directive == "dump" {
                 e.dump = true;
+            } else if directive == "stderr" {
+                e.stderr = true;
+            } else if let Some(mode) = directive.strip_prefix("mode:") {
+                e.mode = Some(mode.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -189,9 +202,20 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
 
 /// Runs a `run` or `test` test (`command`) through the C back end and compares it
 /// with the expectations.
-fn run_c(command: &str, target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
+fn run_c(
+    command: &str,
+    target: &Path,
+    golden: &Path,
+    exp: &Expectations,
+    stderr_golden: Option<&Path>,
+) -> Result<(), String> {
+    let exit = exp.exit;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
-    cmd.args([command, "--backend=c", "--diag-format=short"]).arg(target);
+    cmd.args([command, "--backend=c", "--diag-format=short"]);
+    if let Some(m) = &exp.mode {
+        cmd.arg(format!("--mode={}", m));
+    }
+    cmd.arg(target);
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -208,6 +232,17 @@ fn run_c(command: &str, target: &Path, golden: &Path, exit: i32) -> Result<(), S
     }
     if expected != stdout {
         problems.push(format!("[C back end] output differs from {}:\n{}", golden.display(), diff(&expected, &stdout)));
+    }
+    if let Some(g) = stderr_golden {
+        let expected = fs::read_to_string(g).unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if expected != stderr {
+            problems.push(format!(
+                "[C back end] standard error differs from {}:\n{}",
+                g.display(),
+                diff(&expected, &stderr)
+            ));
+        }
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
@@ -236,6 +271,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if exp.dump {
         cmd.arg("--dump");
     }
+    if let (Some(m), Stage::Run | Stage::Test) = (&exp.mode, exp.stage) {
+        cmd.arg(format!("--mode={}", m));
+    }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
@@ -244,7 +282,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let mut problems = vec![];
 
     // Diagnostics.
-    let mut reported = parse_reported(&stderr, &files);
+    // With `//! stderr`, the golden file accounts for all of standard error.
+    let mut reported = if exp.stderr { vec![] } else { parse_reported(&stderr, &files) };
     let mut unmatched_expected = vec![];
     for (file, line, sev, msg) in &exp.diags {
         let at =
@@ -308,12 +347,27 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         }
     }
 
+    // Golden standard error.
+    let stderr_golden = path.with_extension("stderr");
+    let stderr_golden = (exp.stderr && matches!(exp.stage, Stage::Run | Stage::Test) && !expects_errors)
+        .then_some(stderr_golden.as_path());
+    if let Some(g) = stderr_golden {
+        if bless {
+            fs::write(g, &stderr).map_err(|e| format!("cannot write {}: {}", g.display(), e))?;
+        } else {
+            let expected = fs::read_to_string(g).unwrap_or_default();
+            if expected != stderr {
+                problems.push(format!("standard error differs from {}:\n{}", g.display(), diff(&expected, &stderr)));
+            }
+        }
+    }
+
     if matches!(exp.stage, Stage::Run | Stage::Test)
         && !expects_errors
         && problems.is_empty()
         && !bless
         && c_backend_available()
-        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), exp.exit)
+        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), &exp, stderr_golden)
     {
         problems.push(p);
     }
@@ -363,20 +417,30 @@ fn conformance() {
     let filter = std::env::var("GAMMA_TEST_FILTER").ok();
     let bless = std::env::var("BLESS").is_ok_and(|v| v == "1");
     let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut failures = BTreeMap::new();
-    let mut count = 0;
-    for f in &files {
-        let rel = f.strip_prefix(base).unwrap_or(f).to_path_buf();
-        if let Some(filter) = &filter
-            && !rel.to_string_lossy().contains(filter.as_str())
-        {
-            continue;
+    let selected: Vec<PathBuf> = files
+        .iter()
+        .map(|f| f.strip_prefix(base).unwrap_or(f).to_path_buf())
+        .filter(|rel| filter.as_ref().is_none_or(|flt| rel.to_string_lossy().contains(flt.as_str())))
+        .collect();
+    let count = selected.len();
+    // Each test runs `gamma` in processes of its own, so tests run in parallel.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(BTreeMap::new());
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(rel) = selected.get(i) else { break };
+                    if let Err(msg) = run_one(rel, bless) {
+                        failures.lock().unwrap().insert(rel.display().to_string(), msg);
+                    }
+                }
+            });
         }
-        count += 1;
-        if let Err(msg) = run_one(&rel, bless) {
-            failures.insert(rel.display().to_string(), msg);
-        }
-    }
+    });
+    let failures = failures.into_inner().unwrap();
     for (name, msg) in &failures {
         eprintln!("FAIL {}\n{}\n", name, msg);
     }

@@ -16,7 +16,7 @@ A conforming implementation provides three build modes. They differ only in what
 
 The one rule behind every check (§18.1): **it traps in Debug and Checked builds and is removed in Fast builds.** There is no syntax to disable a check locally; the way to remove checks is to choose Fast for the whole build. Implementations also remove checks they can prove cannot fail, in every mode; the design expects loops such as `for i in 0..xs.len { xs[i] }` and `for x in xs` to compile to check-free code in Checked builds (Appendix D.7 of the specification).
 
-Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool does not compile programs yet.
+Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool takes `--mode=debug|checked|fast` on `run`, `build` and `test` (the default is `debug`).
 
 ## Checked operations
 
@@ -75,6 +75,17 @@ divide :: fn(a, b: i32) -> ?i32 {
 ## Traps
 
 A **trap** terminates the process at once. Debug and Checked builds first report the source location and reason on standard error. A trap is *not* an exception: it cannot be caught, it does not unwind, it does not run `defer` statements, and it never returns to any handler. Recoverable failure uses results and optionals ([chapter 5](05-optionals-and-errors.md)); a trap means "this program has a bug".
+
+Debug builds (the default) also report how the program got there: each call leading to the trap, innermost first, with the function it lies in. Frames of the core library are left out, and a very deep recursion is shortened to its first and last calls:
+
+```
+trap: index 5 out of bounds for length 3
+  at shapes.gm:12:9 in area
+  called from shapes.gm:20:14 in total
+  called from shapes.gm:31:19 in main
+```
+
+Running out of stack is a trap too, reported as `stack overflow`, however large the frames involved.
 
 `trap(msg)` traps unconditionally in every build mode, and has type `never`, so it fits anywhere an expression is needed:
 

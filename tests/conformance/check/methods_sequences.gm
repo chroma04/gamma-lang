@@ -32,7 +32,7 @@ f :: fn(xs: []const i32, b: u8, x: f64) -> i32 {
     for v in arr { total += i32(v) }
     pairs := [2](u8, u8)((1, 2), (3, 4))
     for i, j in pairs { total += i32(i) }
-    for v in [2]u8(1, 2) { }               //~ ERROR not a temporary array
+    for v in [2]u8(1, 2) { total += i32(v) } // a temporary array is iterated from a hidden copy
     if 3 in 0..10 and b not in (0, 1, 2) and 'x' in "xyz" { }
     if Dir.N < Dir.S and "ab" < "b" { }
     if xs < xs { }

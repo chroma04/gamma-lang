@@ -53,6 +53,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line(&format!("{w}.body_cx = {cx};"));
         self.line(&format!("gm_fiber *{fb} = gm_fiber_new(&{w}, (uint8_t *){p}, {l}, {body_fn}, 0, {loc});"));
         self.line(&format!("{fb}->frame = &F; {fb}->env = env; {fb}->inst = inst; {fb}->cx = {cx};"));
+        // The clauses of its `ctl` operations run here, as if called by the `with`.
+        self.call_site(e.span);
         self.line(&format!("gm_with_go(&{w}, {fb});"));
         self.line("for (;;) {");
         self.indent += 1;
@@ -88,6 +90,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
             fg.line(&format!("struct gm_fr{fid} *gm_Fp = (struct gm_fr{fid} *)fb->frame;"));
             fg.line("void *env = fb->env; gm_node *cx = fb->cx; gm_node *inst = fb->inst;");
             fg.line("(void)env; (void)cx; (void)inst;");
+            // The body belongs to the frame of the enclosing function, whose record the
+            // driver's chain ends with: its record stands in for that one.
+            if fg.g.opts.debug {
+                let fname = match fg.g.prog.backtrace_name(fg.fid, fg.g.sources) {
+                    Some(n) => super::c_string(n.as_bytes()),
+                    None => "NULL".into(),
+                };
+                fg.line(&format!(
+                    "gm_bt B = {{ gm_bt_top ? gm_bt_top->prev : NULL, {fname}, NULL, 0, 0 }}; gm_bt_top = &B;"
+                ));
+            }
             fg.out.push_str("#define F (*gm_Fp)\n");
             let v = fg.expr(body)?;
             if !body.ty.is_never() && !ty.is_never() {

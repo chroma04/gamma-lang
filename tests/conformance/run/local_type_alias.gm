@@ -1,0 +1,25 @@
+// Type aliases inside function bodies, including `@type_of` and aliases of type parameters (§3.5).
+P :: struct { x: i32 }
+sum :: fn(T: type, xs: []const T) -> T where Num(T) {
+    Acc :: T
+    t: Acc = 0
+    for x in xs { t += x }
+    return t
+}
+main :: fn() \ {Out} {
+    x: i16 = 1
+    T :: @type_of(x)
+    Bytes :: []const u8
+    Q :: P
+    y: T = 2
+    b: Bytes = "hi"
+    q := Q(x: 7)
+    w := T(40)
+    {
+        T2 :: ?T
+        n: T2 = null
+        print("{}\n", n)
+    }
+    xs := [3]u8(1, 2, 3)
+    print("{} {} {} {} {} {}\n", (y, b, q.x, w, @type_name(T), sum(u8, xs[..])))
+}

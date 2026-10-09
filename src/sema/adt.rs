@@ -417,6 +417,33 @@ fn s_empty() -> Vec<ast::Constraint> {
 }
 
 impl<'s> Sema<'s> {
+    /// The core library's generic `Range` or `RangeIncl` struct (§5.16).
+    pub fn range_template(&mut self, inclusive: bool) -> Option<AdtId> {
+        let name = crate::symbol::Symbol::intern(if inclusive { "RangeIncl" } else { "Range" });
+        let d = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&name).copied())?;
+        match self.resolve_decl(d) {
+            super::DeclValue::GenericType(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// If `t` is `Range(T)` or `RangeIncl(T)`: whether it is inclusive, and `T`.
+    pub fn range_of(&mut self, t: Ty) -> Option<(bool, Ty)> {
+        let TyKind::Adt(id, args) = t.kind() else { return None };
+        let template = id.template();
+        let inclusive = if Some(template) == self.range_template(false) {
+            false
+        } else if Some(template) == self.range_template(true) {
+            true
+        } else {
+            return None;
+        };
+        match args.first() {
+            Some(crate::types::GenericArg::Type(e)) => Some((inclusive, *e)),
+            _ => None,
+        }
+    }
+
     /// The instance of generic struct or union `template` for `args` (§16.4).
     pub fn instantiate_adt(&mut self, template: AdtId, args: Vec<Ty>) -> Ty {
         let gargs: Box<[crate::types::GenericArg]> = args.iter().map(|t| crate::types::GenericArg::Type(*t)).collect();

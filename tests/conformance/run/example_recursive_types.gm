@@ -1,0 +1,97 @@
+Tree :: struct {
+    name: string
+    children: List(Tree)
+}
+
+Json :: union {
+    Null
+    Num: f64
+    Str: string
+    Arr: []Json
+    Obj: ^JsonObj
+}
+
+JsonObj :: struct {
+    keys: []string
+    vals: []Json
+}
+
+Expr :: union {
+    Lit: i64
+    Neg: ^Expr
+    Bin: ^BinNode
+}
+
+BinNode :: struct {
+    op: u8
+    l: ^Expr
+    r: ^Expr
+}
+
+eval :: fn(e: ^const Expr) -> i64 => match e^ {
+    .Lit(n) => n
+    .Neg(p) => -eval(p)
+    .Bin(b) => match b.op {
+        '+' => eval(b.l) + eval(b.r)
+        '*' => eval(b.l) * eval(b.r)
+        _ => 0
+    }
+}
+
+depth :: fn(t: ^const Tree) -> u32 {
+    d: u32 = 0
+    for c in t.children.items { d = d.max(depth(&c)) }
+    return d + 1
+}
+
+count :: fn(j: Json) -> u32 => match j {
+    .Null => 1
+    .Num(_) => 1
+    .Str(_) => 1
+    .Arr(items) => {
+        n: u32 = 1
+        for x in items { n += count(x) }
+        n
+    }
+    .Obj(o) => {
+        n: u32 = 1
+        for x in o.vals { n += count(x) }
+        n
+    }
+}
+
+free_tree :: fn(t: ^Tree) {
+    for c in each_ptr(t.children.items) { free_tree(c) }
+    t.children.deinit()
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    root := Tree(name: "root", children: list(Tree))
+    defer free_tree(&root)
+    for i in 0..3 {
+        child := Tree(name: "c", children: list(Tree))
+        for j in 0..i {
+            try child.children.push(Tree(name: "g", children: list(Tree)))
+        }
+        try root.children.push(child)
+    }
+    print("depth {}\n", depth(&root))
+
+    inner := [_]Json(Json.Num(1), Json.Str("x"), Json.Null)
+    keys := [_]string("a", "b")
+    vals := [_]Json(Json.Arr(inner[..]), Json.Num(2))
+    obj := JsonObj(keys: keys[..], vals: vals[..])
+    top := Json.Obj(&obj)
+    print("count {}\n", count(top))
+
+    one := Expr.Lit(1)
+    two := Expr.Lit(2)
+    three := Expr.Lit(3)
+    n := Expr.Neg(&two)
+    sum := BinNode(op: '+', l: &one, r: &n)
+    s := Expr.Bin(&sum)
+    prod := BinNode(op: '*', l: &s, r: &three)
+    p := Expr.Bin(&prod)
+    print("{}\n", eval(&p))
+    return ()
+}

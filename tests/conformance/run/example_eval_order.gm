@@ -1,0 +1,72 @@
+Counter :: struct { n: u32 = 0 }
+
+next :: fn(c: ^Counter) -> usize {
+    c.n += 1
+    return (c.n - 1).trunc(usize)
+}
+
+trace :: fn(c: ^Counter, label: string, v: i32) -> i32 \ {Out} {
+    print("{}{} ", (label, c.n))
+    c.n += 1
+    return v
+}
+
+modify :: fn(a: [3]i32, p: ^[3]i32) -> i32 {
+    p^[0] = 99
+    return a[0]
+}
+
+main :: fn() \ {Out} {
+    c := Counter()
+    arr := [_]i32(10, 20, 30, 40)
+    arr[next(&c)] += 5
+    arr[next(&c)] *= 2
+    print("{} calls={}\n", (arr, c.n))
+
+    // evaluation order
+    c.n = 0
+    x := trace(&c, "a", 1) + trace(&c, "b", 2) * trace(&c, "c", 3)
+    print("= {}\n", x)
+    t := (trace(&c, "p", 1), trace(&c, "q", 2), trace(&c, "r", 3))
+    print("= {}\n", t)
+
+    // swap via tuple assignment, including element places
+    a, b := (1, 2)
+    a, b = (b, a)
+    arr[0], arr[3] = (arr[3], arr[0])
+    print("{} {} {}\n", (a, b, arr))
+
+    // short circuit
+    c.n = 0
+    ok := trace(&c, "s", 0) is 1 and trace(&c, "t", 1) is 1
+    ok2 := trace(&c, "u", 1) is 1 or trace(&c, "v", 1) is 1
+    print("{} {} n={}\n", (ok, ok2, c.n))
+
+    // parameters are distinct objects
+    orig := [3]i32(1, 2, 3)
+    r := modify(orig, &orig)
+    print("{} {}\n", (r, orig))
+
+    // defer in loops sees the variable's value at exit time
+    total: u32 = 0
+    for i in 0..3 {
+        defer total += 10
+        total += u32(i)
+    }
+    print("total {}\n", total)
+
+    // closures capture by reference
+    count := 0
+    inc :: fn() { count += 1 }
+    inc()
+    inc()
+    print("count {}\n", count)
+
+    // checked arithmetic in narrow types
+    m: i8 = -128
+    print("{} {} {}\n", (m +% -1, m -| 1, m *? 2))
+    print("{}\n", (m.checked(i8)))
+    k: u8 = 255
+    print("{} {}\n", (k <<% 1, k <<? 1))
+    print("{} {}\n", (i16(-32768) +? i16(-1) else 7, -7 % 3))
+}

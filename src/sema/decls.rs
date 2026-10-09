@@ -430,14 +430,7 @@ impl<'s> Sema<'s> {
     pub fn check_distinct(&mut self, span: crate::source::Span, refs: &[EffectRef]) {
         for (i, a) in refs.iter().enumerate() {
             for b in &refs[i + 1..] {
-                if a.effect != b.effect || a == b {
-                    continue;
-                }
-                let distinct = a.args.iter().zip(b.args.iter()).any(|(x, y)| match (x, y) {
-                    (GenericArg::Type(x), GenericArg::Type(y)) => provably_distinct(*x, *y),
-                    _ => false,
-                });
-                if !distinct {
+                if may_coincide(a, b) {
                     self.error(
                         span,
                         format!(
@@ -496,6 +489,25 @@ impl<'s> Sema<'s> {
                 };
             }
             self.error(e.span, format!("unknown effect `{}`", id.name));
+            return None;
+        }
+        // `m.E` — an effect declared in another module.
+        if let ExprKind::Field { base, name } = &e.kind
+            && let Some(m) = self.module_named(module, base)
+        {
+            let d = self.module_member(m, *name)?;
+            return match self.resolve_decl(d) {
+                DeclValue::Effect(eff) => Some(EffectRef { effect: eff, args: Box::new([]) }),
+                DeclValue::Error => None,
+                _ => {
+                    self.error(e.span, format!("`{}` is not an effect", name.name));
+                    None
+                }
+            };
+        }
+        if let ExprKind::Field { base, .. } = &e.kind
+            && self.names_error(module, base)
+        {
             return None;
         }
         self.error(e.span, "expected an effect name");
@@ -600,6 +612,17 @@ fn non_constant_part(t: Ty) -> Option<Ty> {
 
 /// Whether types `a` and `b` differ for every substitution of their type parameters:
 /// both are concrete and unequal, or their outermost constructors differ (§16.6).
+/// True if `a` and `b` are different instantiations of one effect that are not provably
+/// distinct: they are the same effect for some type arguments (§16.6).
+pub fn may_coincide(a: &EffectRef, b: &EffectRef) -> bool {
+    a.effect == b.effect
+        && a != b
+        && !a.args.iter().zip(b.args.iter()).any(|(x, y)| match (x, y) {
+            (GenericArg::Type(x), GenericArg::Type(y)) => provably_distinct(*x, *y),
+            _ => false,
+        })
+}
+
 fn provably_distinct(a: Ty, b: Ty) -> bool {
     use super::generics::has_param;
     if !has_param(a) && !has_param(b) {

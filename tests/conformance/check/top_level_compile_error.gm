@@ -1,0 +1,17 @@
+//! stage: check
+// `@compile_error` at top level, in the taken branch of a `when` (§3.6, §20.3).
+when target.ptr_bits is 16 {
+    Word :: u16
+} else {
+    @compile_error("unsupported pointer width")   //~ ERROR unsupported pointer width
+}
+
+when target.ptr_bits is 64 {
+    Big :: u64
+} else {
+    @compile_error("not taken")
+}
+
+main :: fn() {
+    _ = Big(1)
+}

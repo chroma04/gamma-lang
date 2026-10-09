@@ -8,12 +8,36 @@
 
 /* ---- traps ---------------------------------------------------------------- */
 
+/* Prints the callers in the backtrace chain; past GM_BT_MAX of them, only the first and
+ * last GM_BT_MAX / 2. */
+#define GM_BT_MAX 20
+static void gm_backtrace(void) {
+    size_t n = 0;
+    if (gm_bt_top == NULL) return;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev)
+        if (b->fn != NULL && b->file != NULL) n++;
+    size_t i = 0;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev) {
+        if (b->fn == NULL || b->file == NULL) continue;
+        if (n <= GM_BT_MAX || i < GM_BT_MAX / 2 || i >= n - GM_BT_MAX / 2)
+            fprintf(stderr, "  called from %s:%u:%u in %s\n", b->file, (unsigned)b->line, (unsigned)b->col, b->fn);
+        else if (i == GM_BT_MAX / 2)
+            fprintf(stderr, "  ... %llu more calls\n", (unsigned long long)(n - GM_BT_MAX));
+        i++;
+    }
+}
+
 static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
     gm_flush();
     fputs("trap: ", stderr);
     if (len > 0) fwrite(msg, 1, len, stderr);
     fputc('\n', stderr);
-    if (file != NULL) fprintf(stderr, "  at %s:%u:%u\n", file, (unsigned)line, (unsigned)col);
+    if (file != NULL) {
+        fprintf(stderr, "  at %s:%u:%u", file, (unsigned)line, (unsigned)col);
+        if (gm_bt_top != NULL && gm_bt_top->fn != NULL) fprintf(stderr, " in %s", gm_bt_top->fn);
+        fputc('\n', stderr);
+    }
+    gm_backtrace();
     fflush(stderr);
     /* The status of a process terminated by `abort` (SIGABRT). */
     exit(134);
@@ -1846,11 +1870,51 @@ static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
 static _Thread_local gm_fiber *gm_fiber_pool;
 
 static _Noreturn void gm_stack_overflow(void) {
-    gm_trap(gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow", NULL, 0, 0);
+    const char *msg = gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow";
+    /* In Debug builds, the call that overflowed is the last one the caller recorded. */
+    gm_bt *b = gm_bt_top;
+    if (b != NULL && b->file != NULL) gm_trap(msg, b->file, b->line, b->col);
+    gm_trap(msg, NULL, 0, 0);
 }
 
 /* The space kept below a thread's limit for reporting the overflow. */
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
+
+#ifndef GM_ASAN
+/* A fault just below a thread's stack limit is an overflow that a function's prologue
+ * hit before its stack check ran (compilers probe each page of a large frame): report it
+ * as the trap it is. Any other fault gets the default action. */
+static void gm_segv(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    uintptr_t a = (uintptr_t)si->si_addr;
+    uintptr_t limit = gm_thread_stack_limit;
+    if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
+        gm_stack_overflow();
+    signal(sig, SIG_DFL);
+}
+
+static void gm_overflow_install(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = gm_segv;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+}
+
+/* Gives the calling thread a stack for gm_segv, and installs it once per process. */
+static void gm_overflow_handler(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    size_t size = (size_t)64 << 10;
+    stack_t ss;
+    ss.ss_sp = malloc(size);
+    ss.ss_size = size;
+    ss.ss_flags = 0;
+    if (ss.ss_sp == NULL || sigaltstack(&ss, NULL) != 0) return;
+    pthread_once(&once, gm_overflow_install);
+}
+#endif
 
 static void gm_thread_stack(void) {
     uintptr_t low = 0;
@@ -1870,6 +1934,9 @@ static void gm_thread_stack(void) {
     /* Without a known stack (other systems), nothing is checked. */
     gm_thread_stack_limit = low != 0 && size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
     gm_stack_limit = gm_thread_stack_limit;
+#ifndef GM_ASAN
+    if (gm_thread_stack_limit != 0) gm_overflow_handler();
+#endif
 }
 
 /* Makes `fb` (NULL: the thread's own stack) the running stack. */
@@ -1944,11 +2011,16 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
 
 static void gm_with_go(gm_with *w, gm_fiber *fb) {
     gm_fiber *me = gm_cur_fiber;
+    gm_bt *bt = gm_bt_top;
     gm_set_cur_fiber(fb);
+    if (!fb->started) fb->bt = bt;
+    gm_bt_top = fb->bt;
     fb->state = GM_FB_RUNNING;
     fb->started = 1;
     w->event = 0;
     gm_rt_switch(&w->driver_sp, fb->sp, NULL);
+    fb->bt = gm_bt_top;
+    gm_bt_top = bt;
     gm_set_cur_fiber(me);
 }
 

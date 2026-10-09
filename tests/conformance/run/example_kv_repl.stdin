@@ -1,0 +1,21 @@
+SET apples 5
+SET pears 12
+GET apples
+INCR apples 10
+INCR pears
+GET bananas
+SET kiwis 3x
+SET
+FLY away
+
+  SET   apples   -7
+SUM
+MAX
+DEL pears
+DEL pears
+GET pears
+SET big 9223372036854775807
+INCR big
+SUM
+QUIT
+GET apples

@@ -1,0 +1,18 @@
+.Ok(20)
+.Ok(2000) (trace events 6)
+.Ok(0)
+.Failed(code: 4, msg: "division by zero")
+.Failed(code: 2, msg: "stack underflow")
+.Failed(code: 1, msg: "stack overflow")
+.Ok(2)
+  warning #1: value over the limit
+  warning #2: value over the limit
+  warning #3: value over the limit
+  checked_sum finished
+lenient: 21
+  warning #1: value over the limit
+  warning #2: value over the limit
+  checked_sum finished
+strict:  12
+  checked_sum finished
+none over limit: 5

@@ -367,6 +367,28 @@ impl Program {
     pub fn func(&self, id: FnId) -> &FnDef {
         &self.fns[id.index()]
     }
+
+    /// How trap backtraces name function `f`, or `None` for functions of the core
+    /// library and the `<entry>` functions that call `main` and tests, whose frames
+    /// backtraces leave out.
+    pub fn backtrace_name(&self, f: FnId, sources: &crate::source::SourceMap) -> Option<String> {
+        let def = self.func(f);
+        if def.span != Span::DUMMY && sources.file(def.span.file).path.starts_with("<core>") {
+            return None;
+        }
+        if def.name.as_str() == "<entry>" {
+            return None;
+        }
+        let name = def.name.as_str();
+        let parent = def.parent.and_then(|p| self.backtrace_name(p, sources));
+        Some(match (def.kind, parent) {
+            (FnKind::Clause, Some(p)) if name.starts_with('<') => format!("{} in {}", name, p),
+            (FnKind::Clause, Some(p)) => format!("`{}` clause in {}", name, p),
+            (FnKind::Clause, None) => format!("`{}` clause", name),
+            (FnKind::Literal, Some(p)) if name.starts_with('<') => format!("{} in {}", name, p),
+            _ => name.to_string(),
+        })
+    }
     pub fn adt(&self, id: AdtId) -> &AdtDef {
         &self.adts[&id]
     }
@@ -800,6 +822,15 @@ pub enum ExprKind {
         pieces: Vec<Rc<[u8]>>,
         args: Vec<Expr>,
     },
+    /// A `Write` whose template is a compile-time `string` parameter of a generic
+    /// function: each instance splits the template and its arguments (§16.1). `tmp`
+    /// holds the arguments when they are a tuple of several values.
+    WriteDeferred {
+        sink: WriteSink,
+        template: Box<Expr>,
+        args: Option<Box<Expr>>,
+        tmp: LocalId,
+    },
 }
 
 /// Where `@write` sends its output.
@@ -1050,6 +1081,12 @@ pub enum Builtin {
     Cast,
     /// `p.addr()`.
     Addr,
+    /// `p + n` and `p - n` on a many-pointer (`n: usize` or `isize`), moving by
+    /// whole elements; the address wraps.
+    PtrAdd,
+    PtrSub,
+    /// `p - q` on many-pointers: the distance in elements, as `isize`.
+    PtrDiff,
     /// `n.to_ptr(P)` → `?P`.
     ToPtr,
     /// `u.tag()`.
@@ -1254,6 +1291,15 @@ impl Expr {
                 }
                 args.iter().for_each(f);
             }
+            ExprKind::WriteDeferred { sink, template, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                f(template);
+                if let Some(a) = args {
+                    f(a);
+                }
+            }
             _ => {}
         }
     }
@@ -1422,6 +1468,15 @@ impl Expr {
                     f(x);
                 }
                 args.iter_mut().for_each(f);
+            }
+            ExprKind::WriteDeferred { sink, template, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                f(template);
+                if let Some(a) = args {
+                    f(a);
+                }
             }
             _ => {}
         }

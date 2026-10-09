@@ -215,7 +215,7 @@ A named function converts implicitly to a function pointer (or to a second-class
 
 ### Nested named functions
 
-A `name :: fn(...)` binding written inside a function body is a **nested function**. It is equivalent to a private top-level function: it may use top-level names, compile-time constants and its own parameters, but not the enclosing function's other locals. It is first-class, so it converts to a function pointer.
+A `name :: fn(...)` binding written inside a function body is a **nested function**. It is equivalent to a private top-level function: it may use top-level names, compile-time constants and its own parameters and locals, but not the enclosing function's other locals. It is first-class, so it converts to a function pointer. If the body does use another local of the enclosing function, the binding is instead an immutable local holding a second-class `fn` value, which cannot call itself.
 
 ```gamma
 sum_squares :: fn(xs: []const i32) -> i32 {

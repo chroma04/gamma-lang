@@ -1,0 +1,40 @@
+// A multi-module program: model (types and invariants) and store (a container written
+// against an audit effect, plus a journalling handler type). `main` wires them together.
+model :: import "../model"
+store :: import "../store"
+
+report :: fn(label: string, r: store.Failure!()) \ {Out} {
+    match r {
+        !.Stock(.Insufficient(have, want)) => print("{}: only {} in stock, wanted {}\n", (label, have, want))
+        !.Stock(.Unknown(sku)) => print("{}: unknown sku {}\n", (label, sku))
+        !.Stock(.Duplicate(sku)) => print("{}: sku {} already registered\n", (label, sku))
+        !.Memory(_) => print("{}: out of memory\n", label)
+        _ => print("{}: ok\n", label)
+    }
+}
+
+main :: fn() \ {Out, Alloc} {
+    s := store.store()
+    defer s.deinit()
+    journal := store.Journal()
+    with &journal {
+        report("register hammer", s.register(model.item(1, "hammer", .Tool, 1250)))
+        report("register apple", s.register(model.item(2, "apple", .Food, 40)))
+        report("register robot", s.register(model.item(3, "robot", .Toy, 4999)))
+        report("register hammer again", s.register(model.item(1, "hammer2", .Tool, 1)))
+        report("receive hammers", store.receive(&s, 1, 10))
+        report("receive apples", store.receive(&s, 2, 200))
+        report("receive ghosts", store.receive(&s, 99, 1))
+        report("ship 4 hammers", store.ship(&s, 1, 4))
+        report("ship 500 apples", store.ship(&s, 2, 500))
+        report("ship 1 robot", store.ship(&s, 3, 1))
+        report("ship 50 apples", store.ship(&s, 2, 50))
+    }
+    print("--- stock ---\n")
+    for it in s.items.items {
+        print("{} {} ({}): {} units, worth {} cents\n", (it.sku, it.name, model.label(it.category), it.quantity(), it.value()))
+    }
+    print("total value: {} cents\n", s.total_value())
+    sm := store.summary(&journal)
+    print("audit: {} added, {} removed, {} rejected ({} events kept, {} dropped)\n", (sm.added, sm.removed, sm.rejected, journal.count, journal.dropped))
+}

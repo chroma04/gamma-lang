@@ -53,7 +53,8 @@ The core functions that allocate perform `Alloc`, which is why you see `\ {Alloc
 | `make(T, n)` | allocate `n` uninitialized `T` (plain-data `T` only), giving `AllocError![]T` |
 | `make_fill(T, n, x)` | allocate `n` copies of `x`, for any `T` |
 | `make_aligned(T, n, align)` | like `make`, with a larger alignment |
-| `free(s)` | release a slice from `make`, `make_fill` or `make_aligned` |
+| `free(s)` | release a slice from `make` or `make_fill` |
+| `free_aligned(s, align)` | release a slice from `make_aligned`, with the same `align` |
 | `destroy(p)` | release a pointer from `new` |
 
 Allocation can fail, so each of these returns a result and you handle it the usual way, with `try` in a function that returns an `AllocError!...`:
@@ -159,6 +160,18 @@ map_demo :: fn() -> AllocError!() \ {Alloc, Out} {
 The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `map_with`; see [chapter 10](10-generics.md).
 
 Besides `put`, `get` and `remove`, a map has `contains(k)`, `len()`, `clear()` (which keeps the storage) and `entries()`, an iterator over `(key, value)` pairs in an unspecified order: `for e in ages.entries() { print("{} {}\n", (e.key, e.value)) }`.
+
+`get` returns a copy of the value. To update a value in place, `get_ptr(k)` returns a `?^V` pointing into the map, and `get_or_put(k, default)` returns an `AllocError!^V` after storing `default` if `k` was absent, which makes counting a one-liner. A pointer is valid until the next insertion or removal:
+
+```gamma
+counts := map(string, u32)
+defer counts.deinit()
+for w in words {
+    c := try counts.get_or_put(w, 0)
+    c^ += 1
+}
+if p := counts.get_ptr("ada") { p^ = 0 }
+```
 
 Because maps compare with `is`, a float key never finds a NaN, as `nan is nan` is false. Key such maps by `x.bits(u64)` instead.
 

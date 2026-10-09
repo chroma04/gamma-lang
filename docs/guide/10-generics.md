@@ -60,7 +60,7 @@ mistakes :: fn(x: u8, y: u16) {
 
 ### Checked once
 
-The body of a generic function is type-checked *once*, where it is written, treating `T` as an opaque type that supports only what its constraints grant. Mistakes are reported in the generic function itself, even if no one calls it. This is the opposite of C++ templates, where errors appear at instantiation, deep inside a call. Instantiation never fails type-checking, with two exceptions: an untyped literal used at type `T` is checked against each instantiation (`T(300)` fails for `u8`), and an `@write` template (the machinery behind `print`) is checked against its arguments.
+The body of a generic function is type-checked *once*, where it is written, treating `T` as an opaque type that supports only what its constraints grant. Mistakes are reported in the generic function itself, even if no one calls it. This is the opposite of C++ templates, where errors appear at instantiation, deep inside a call. Instantiation never fails type-checking, with two exceptions: an untyped literal used at type `T` is checked against each instantiation (`x: T = 300` fails for `u8`), and an `@write` template (the machinery behind `print`) is checked against its arguments.
 
 ## Constraints
 
@@ -72,7 +72,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | `Ord(T)` | integers, floats, enums; tuples, arrays and slices of these | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
-| `Signed(T)` | signed integers and floats | unary `-` |
+| `Signed(T)` | signed integers and floats | `Num`, plus unary `-` |
 | `Float(T)` | floats | `Num`, plus the float methods |
 | `Plain(T)` | plain-data types | `---` at `T`, and `.bits` to and from `T` |
 
@@ -221,21 +221,23 @@ Effects can take parameters, as in `Yield(T)`, and an effect set can mention a f
 
 ```gamma
 repeat_each :: fn(T: type, xs: []const T, times: u32) \ {Yield(T)} {
-    n := 0u32
-    while n < times {
+    for _ in 0..times {
         for x in xs { yield(x) }
-        n += 1
     }
 }
 ```
 
-Because generic bodies are checked once, which handler a `yield` reaches must not depend on what `T` turns out to be. The rule: any two instantiations of the same effect that are in scope at once must be identical or *provably* different. `Yield(i32)` and `Yield(u8)` are provably different; `Yield(T)` and `Yield(u32)` are not, since `T` might be `u32`. So the following is a compile error, which is the reason the example above uses a `while` loop:
+The outer loop handles the `Yield(u32)` of `0..times`, but only for that source call: a `yield` in a loop's body always goes to the handlers outside the loop, so `yield(x)` reaches the caller's `Yield(T)` handler.
+
+Because generic bodies are checked once, which handler a `yield` reaches must not depend on what `T` turns out to be. The rule: two instantiations of the same effect that meet (in one effect set, or one performed inside a `with` handling the other) must be identical or *provably* different. `Yield(i32)` and `Yield(u8)` are provably different; `Yield(T)` and `Yield(u32)` are not, since `T` might be `u32`. So this is a compile error:
 
 ```gamma
-bad_repeat :: fn(T: type, xs: []const T, times: u32) \ {Yield(T)} {
-    for _ in 0..times {              // error: this loop handles Yield(u32), and T might be u32
-        for x in xs { yield(x) }
+bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
+    total := 0u32
+    with (handler Yield(u32) { yield(v) => { total += v } }) {
+        for x in xs { yield(x) }     // error: the `with` handles Yield(u32), and T might be u32
     }
+    return total
 }
 ```
 

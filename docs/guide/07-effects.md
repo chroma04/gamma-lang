@@ -48,6 +48,8 @@ This is what `\ {Out}` on `main` has meant all along: `print` performs the `Out`
 >
 > Add `\ {Out}` to `helper`, or install a handler for `Out` around the call.
 
+An effect declared `pub` in another module is named through the module, like its types and functions: `\ {log.Log}` in an effect set, `handler log.Log { ... }` for a handler, and `log.log(...)` to perform its operation.
+
 ## Handling an effect
 
 A **handler literal** supplies one *clause* for each operation. A `with` expression installs handlers around a block:

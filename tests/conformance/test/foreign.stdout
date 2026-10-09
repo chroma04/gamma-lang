@@ -3,13 +3,13 @@ test "abs of a negative" ... ok
 test "output is captured" ... FAILED
     length 8
     expectation failed: wrong length
-      at tests/conformance/test/foreign.gm:23:5
+      at tests/conformance/test/foreign.gm:23:5 in test "output is captured"
 test "errors fail" ... FAILED
     error: .TooLong
 test "traps" ... FAILED
     before the trap
     index 5 out of bounds for length 3
-      at tests/conformance/test/foreign.gm:36:12
+      at tests/conformance/test/foreign.gm:36:12 in test "traps"
 test "leaks are caught" ... FAILED
     leaked 4 bytes
 test "allocation is balanced" ... ok

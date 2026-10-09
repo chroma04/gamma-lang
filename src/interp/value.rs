@@ -12,6 +12,15 @@ use std::rc::Rc;
 pub struct Trap {
     pub message: String,
     pub span: Span,
+    /// In Debug builds, the calls the trap left, innermost first: each called
+    /// function and the location of its call.
+    pub trace: Vec<(FnId, Span)>,
+}
+
+impl Trap {
+    pub fn new(message: impl Into<String>, span: Span) -> Trap {
+        Trap { message: message.into(), span, trace: Vec::new() }
+    }
 }
 
 /// A value of the language: first-class data in target layout, or a second-class value.
@@ -164,5 +173,5 @@ pub enum Flow {
 pub type R<T = Value> = Result<T, Box<Flow>>;
 
 pub fn trap_flow(span: Span, message: impl Into<String>) -> Box<Flow> {
-    Box::new(Flow::Trap(Trap { message: message.into(), span }))
+    Box::new(Flow::Trap(Trap::new(message, span)))
 }

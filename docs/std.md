@@ -68,11 +68,14 @@ literals; a failed name lookup is `.Other(0)`.
 - Handlers that redirect the ambient effects, so code written against `In` and
   `Out` works on files and strings unchanged:
   - `with io.FileIn(f: file) { … }`: `In` reads the file.
-  - `with &io.FileOut(f: file) { … }`: `Out` and `Err` write to the file; the first
-    error is kept in the handler's `err` field.
-  - `with &io.StringIn(data: text) { … }`: `In` reads a string.
-  - `with &io.Capture(buf: storage[..]) { … }`: `Out` writes into a buffer;
-    `capture.text()` returns what was written.
+  - `with &out { … }` where `out := io.FileOut(f: file)`: `Out` and `Err` write to the
+    file; the first error is kept in the handler's `err` field.
+  - `with &input { … }` where `input := io.StringIn(data: text)`: `In` reads a string.
+  - `with &cap { … }` where `cap := io.Capture(buf: storage[..])`: `Out` writes into a
+    buffer; `cap.text()` returns what was written.
+
+  A handler that keeps state (`FileOut`, `StringIn`, `Capture`) is installed by address,
+  so it must first be bound to a name.
 
 ## `std/fs`
 
@@ -107,6 +110,47 @@ print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary
 - Floats: `fixed(x, decimals)`, `sci(x, digits)` and `general(x, precision)`, correctly
   rounded like C's `%.*f`, `%.*e` and `%.*g`.
 
+## `std/str`
+
+Byte-oriented string utilities. A `string` is a `[]const u8`, so indices are byte
+indices and case rules are ASCII only. Strings are slices, which have no user-defined
+methods, so these are called as functions: `str.trim(s)`. Results are slices of the
+arguments (or of a buffer you supply); only `join` allocates.
+
+```gamma
+str :: import "std/str"
+
+for line in str.lines(text) {
+    if kv := str.split_once(str.trim(line), "=") {
+        port := str.parse_int(u16, str.trim(kv.after)) else 8080
+        print("{} -> {}\n", (kv.before, port))
+    }
+}
+```
+
+- Trimming: `trim`, `trim_start`, `trim_end` (ASCII whitespace: space, `\t`, `\n`, `\r`,
+  `\v`, `\f`).
+- Searching: `find(s, needle) -> ?usize` (an empty needle is found at 0), `rfind` (an
+  empty needle is found at `s.len`) and `contains`.
+- Splitting: `split_once(s, sep) -> ?(before: string, after: string)` and the iterators
+  `split(s, sep)` (adjacent or terminal separators give empty pieces; an empty `sep`
+  yields `s` once), `lines(s)` (splits on `\n`, drops a `\r` before it, no empty line
+  after a final `\n`) and `fields(s)` (runs of non-whitespace).
+- Case: `eq_ignore_case(a, b)`, and `to_lower(s, buf)` and `to_upper(s, buf)`, which
+  write into `buf` and return the part used; a buffer shorter than `s` traps.
+- `parse_int(T, s) -> ParseError!T` for any integer type: an optional sign (`-` only
+  for signed types), an optional `0x`, `0o` or `0b` prefix, digits with single `_`
+  separators between them, and nothing else. The most negative value of a signed type
+  parses. Errors are `ParseError`: `.Empty`, `.InvalidDigit(at: index)` (a bad
+  character, a misplaced `_`, or missing digits, in which case `at` is the index where
+  a digit was expected) and `.Overflow`. The first problem found from the left wins.
+- `Builder`: appends into a buffer you supply, allocating nothing.
+  `b := str.builder(buf[..])`, then `b.push(s)`, `b.push_byte(c)`, `b.str()`,
+  `b.len()` and `b.reset()`. `b.write(template, args)` appends formatted text, exactly as
+  `print` would write it: `b.write("{} of {}", (n, total))`. Appending beyond the buffer traps.
+- `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
+  from the current allocator; release it with `free`.
+
 ## `std/arena` and `std/fixed_buffer`
 
 Allocators to install with `with` (§15.2):
@@ -132,8 +176,8 @@ Both free or resize only their most recent allocation; everything else stays unt
 
 Elementary functions on `f64`, written in Gamma (ports of the FreeBSD/fdlibm algorithms),
 so results are bit-for-bit the same in the interpreter, in compiled code and at compile
-time. Every function is correctly rounded or within 1 ulp; special values follow C99
-Annex F.
+time. Every function is within 1 ulp of the exact result (`pow`: within 2 ulp); special values
+follow C99 Annex F.
 
 - Constants: `pi`, `e`, `tau`, `ln2`, `ln10`, `sqrt2`, `inf`, `nan`.
 - `sqrt`, `cbrt`, `hypot`; `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`.

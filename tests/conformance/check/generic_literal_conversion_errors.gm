@@ -1,0 +1,10 @@
+//! stage: check
+// `T(c)` is checked against each instantiation; other conversions to `T` are not lossless (§16.1).
+g :: fn(T: type) -> T where Num(T) => T(300)
+unconstrained :: fn(T: type) -> T => T(5)   //~ ERROR a literal at `T` needs `where Num(T)`
+from_value :: fn(T: type, x: u32) -> T where Num(T) => T(x)   //~ ERROR would be a conversion to a type parameter
+
+main :: fn() {
+    _ = g(u16)
+    _ = g(u8)                         //~ ERROR the literal 300 does not fit in `u8`
+}

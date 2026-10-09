@@ -105,7 +105,7 @@ pub(super) fn panic_trap(p: Box<dyn std::any::Any + Send>) -> Trap {
         .cloned()
         .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
         .unwrap_or_else(|| "unknown panic".into());
-    Trap { message: format!("internal error: interpreter panicked: {}", msg), span: Span::DUMMY }
+    Trap::new(format!("internal error: interpreter panicked: {}", msg), Span::DUMMY)
 }
 
 /// The lowest stack address the evaluator may use on the current thread, whose
@@ -128,7 +128,7 @@ pub fn run_main(
     stderr: &mut dyn Write,
 ) -> Outcome {
     let Some(main) = prog.main else {
-        return Outcome::Trap(Trap { message: "the program has no `main` function".into(), span: Span::DUMMY });
+        return Outcome::Trap(Trap::new("the program has no `main` function", Span::DUMMY));
     };
     run_entry(prog, cfg, main, args, stdout, stderr)
 }
@@ -187,9 +187,7 @@ fn run_main_inner(
         Err(f) => match *f {
             Flow::Exit(c) => Outcome::Exit(c),
             Flow::Trap(t) => Outcome::Trap(t),
-            _ => {
-                Outcome::Trap(Trap { message: "internal error: control flow escaped `main`".into(), span: Span::DUMMY })
-            }
+            _ => Outcome::Trap(Trap::new("internal error: control flow escaped `main`", Span::DUMMY)),
         },
     };
     if let Some(w) = m.out.as_mut() {
@@ -216,6 +214,10 @@ impl Machine<'_> {
                 if self.res_is_err(ret, &b) {
                     let payload = self.res_payload(ret, &b);
                     let mut out = b"error: ".to_vec();
+                    // A union's value is named with its type: `E.NotFound` (§3.7).
+                    if self.union_def(*err).is_some() {
+                        out.extend_from_slice(err.to_string().as_bytes());
+                    }
                     if self.format_value(&mut out, *err, &payload, true).is_err() {
                         out.extend_from_slice(b"<unprintable error>");
                     }
@@ -273,8 +275,8 @@ fn eval_const_inner(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<Cons
         Ok(v) => Ok(v),
         Err(f) => match *f {
             Flow::Trap(t) => Err(t),
-            Flow::Exit(_) => Err(Trap { message: "`Env.exit` at compile time".into(), span: expr.span }),
-            _ => Err(Trap { message: "internal error: control flow escaped a constant".into(), span: expr.span }),
+            Flow::Exit(_) => Err(Trap::new("`Env.exit` at compile time", expr.span)),
+            _ => Err(Trap::new("internal error: control flow escaped a constant", expr.span)),
         },
     }
 }

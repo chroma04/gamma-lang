@@ -1,0 +1,24 @@
+gen 0: 5 cells
+.#.
+..#
+###
+gen 1: 5 cells
+gen 2: 5 cells
+gen 3: 5 cells
+gen 4: 5 cells
+.#.
+..#
+###
+bounds (min_x: 1, max_x: 3, min_y: 1, max_y: 3)
+a: [0, 3]
+b: [0, 1]
+c: [0, 1, 2]
+d: [1, 2]
+e: [2, 3]
+z: absent
+5 null null
+present key with null value: true
+missing key: true
+2 "again" null
+removed "two-one", then null
+len 1

@@ -30,6 +30,26 @@ fn pat(ty: Ty, kind: PatKind, span: Span) -> Pat {
 impl<'a, 's> FnCx<'a, 's> {
     /// Checks `p` against a scrutinee of type `ty`. Bindings are collected into
     /// `binds` (name, local, span); the caller declares them in scope afterwards.
+    /// Binds the names of pattern `p` at the error type, for a pattern that could not
+    /// be checked.
+    fn bind_unchecked(&mut self, p: &ast::Pattern, ctx: PatCtx, binds: &mut Vec<(Symbol, tir::LocalId, Span)>) {
+        match &p.kind {
+            PatternKind::Bind(name) if ctx != PatCtx::IsTest => {
+                if !binds.iter().any(|(n, _, _)| *n == name.name) {
+                    let id = self.new_local(name.name, Ty::error(), false, name.span);
+                    binds.push((name.name, id, name.span));
+                }
+            }
+            PatternKind::Err(inner) => self.bind_unchecked(inner, ctx, binds),
+            PatternKind::Path { args: Some(args), .. } | PatternKind::Tuple(args) => {
+                for a in args {
+                    self.bind_unchecked(&a.pat, ctx, binds);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn pattern(
         &mut self,
         p: &ast::Pattern,
@@ -39,6 +59,7 @@ impl<'a, 's> FnCx<'a, 's> {
     ) -> Pat {
         let ty = self.infer.resolve(ty);
         if ty.is_error() {
+            self.bind_unchecked(p, ctx, binds);
             return pat(ty, PatKind::Wild, p.span);
         }
         // Implicit unwrapping of optionals and results in refutable contexts (§9.3).
@@ -115,7 +136,20 @@ impl<'a, 's> FnCx<'a, 's> {
                 let fields = self.sub_patterns(args, elems, names.as_deref(), ctx, binds, p.span, false);
                 pat(ty, PatKind::Fields(fields), p.span)
             }
-            PatternKind::Path { path, args } => self.path_pattern(path, args.as_deref(), ty, ctx, binds, p.span),
+            PatternKind::Path { path, args } => {
+                let (errors, nbinds) = (self.sema.sess.diags.error_count(), binds.len());
+                let r = self.path_pattern(path, args.as_deref(), ty, ctx, binds, p.span);
+                // After an error, still bind the names so that uses of them don't cascade.
+                if matches!(r.kind, PatKind::Wild)
+                    && self.sema.sess.diags.error_count() > errors
+                    && binds.len() == nbinds
+                {
+                    for a in args.iter().flatten() {
+                        self.bind_unchecked(&a.pat, ctx, binds);
+                    }
+                }
+                r
+            }
         }
     }
 
@@ -386,6 +420,10 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let u = union_ty.unwrap();
         let Some((variants, _)) = self.sema.union_variants(u) else {
+            if self.is_c_union(u) {
+                self.error(span, super::matching::c_union_match(u));
+                return pat(ty, PatKind::Wild, span);
+            }
             self.error(span, format!("`.{}` matches a union variant, but this is `{}`", vname.name, u));
             return pat(ty, PatKind::Wild, span);
         };

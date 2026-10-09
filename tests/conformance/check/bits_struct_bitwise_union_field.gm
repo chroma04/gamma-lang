@@ -1,0 +1,16 @@
+//! stage: check
+// Bitwise operators need a `#bits` struct whose fields are all `bool` or integers (§7.4.1).
+Kind :: union(u2) { Plain, Fancy, Odd }
+
+Mode :: #bits(u8) struct {
+    read: bool
+    sort: Kind
+    _: u5
+}
+
+main :: fn() {
+    a := Mode(read: true, sort: .Odd)
+    b := Mode(read: false, sort: .Fancy)
+    _ = a | b                         //~ ERROR `|` applies only to `#bits` structs whose fields are all `bool` or integers
+    _ = ~a                            //~ ERROR `~` applies only to `#bits` structs
+}

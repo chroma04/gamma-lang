@@ -1,0 +1,12 @@
+// Effects of another module, named `m.E` in effect sets and handlers (§12).
+eff :: import "../eff"
+work :: fn() \ {eff.Log} { eff.log(1); eff.log(2) }
+gen :: fn() \ {eff.Gen(i32)} { eff.emit(-4) }
+main :: fn() \ {Out} {
+    total: u32 = 0
+    with (handler eff.Log { log(n) => { total += n } }) { work() }
+    c := eff.Counter(total: 10)
+    with &c { work() }
+    with (handler eff.Gen(i32) { emit(x) => print("emit {}\n", x) }) { gen() }
+    print("{} {}\n", (total, c.total))
+}

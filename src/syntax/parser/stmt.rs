@@ -42,6 +42,11 @@ impl Parser<'_> {
     /// this fails only if the `{` is missing.
     pub(super) fn parse_block(&mut self) -> PResult<Block> {
         let start = self.lo();
+        if self.at(Punct::Assign) {
+            // Most likely `if x = 1 {`.
+            let span = self.span();
+            return self.fail(span, "expected `{` to begin a block, found `=`; to compare values, use `is` (§7.6)");
+        }
         self.expect(Punct::LBrace, "to begin a block")?;
         let stmts = self.unrestricted(|p| p.nest(|p| Ok(p.parse_block_body())))?;
         let id = self.ids.next();

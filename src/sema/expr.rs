@@ -75,6 +75,9 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Paren(inner) => self.expr(inner, expect),
             ExprKind::Tuple(elems) => self.tuple(elems, expect, span),
             ExprKind::Unary { op, operand } => self.unary(*op, operand, expect, span),
+            ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
+                self.range_value(*op == ast::BinOp::RangeIncl, lhs, rhs, expect, span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
@@ -246,6 +249,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.error(span, format!("`{}` is a label, not a value", name));
                     error_expr(span)
                 }
+                LocalBinding::Type(t) if t.is_error() => error_expr(span),
+                LocalBinding::Type(t) => {
+                    self.error(span, format!("expected a value, found the type `{}`", t));
+                    error_expr(span)
+                }
             };
         }
         if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
@@ -345,6 +353,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = self.literal_var(VarKind::Float);
                 mk(ty, tir::ExprKind::UntypedFloat(Rc::new(r.clone())), span)
             }
+            Untyped::NegZero => {
+                let zero = self.untyped_literal(&Untyped::Float(num_traits::Zero::zero()), span);
+                mk(zero.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(zero) }, span)
+            }
             Untyped::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
         }
     }
@@ -411,6 +423,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::UnOp::BitNot => {
                 let v = self.expr(operand, expect);
+                let st = self.infer.resolve(v.ty);
+                if let Some(u) = self.bits_operand(st, "~", span) {
+                    let x = self.bits_convert(v, u);
+                    let n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    return self.bits_convert(n, st);
+                }
                 self.obligations.push(Obligation::Numeric {
                     ty: v.ty,
                     span,
@@ -532,6 +550,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = if opt { Ty::optional(lhs.ty) } else { lhs.ty };
                 mk(ty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
             }
+            B::Add(ast::Flavor::Checked) | B::Sub(ast::Flavor::Checked)
+                if matches!(self.infer.resolve(lhs.ty).kind(), TyKind::ManyPtr { .. }) =>
+            {
+                self.pointer_arith(op, lhs, rhs, span)
+            }
+            B::Add(_) | B::Sub(_)
+                if matches!(self.infer.resolve(lhs.ty).kind(), TyKind::Ptr { .. } | TyKind::Rawptr) =>
+            {
+                let t = self.infer.resolve(lhs.ty);
+                self.expr(rhs, None);
+                self.error(span, format!("`{}` has no arithmetic: only many-pointers `[^]T` do (§5.5)", t));
+                error_expr(span)
+            }
             B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 let r = self.expr(rhs, Some(lhs.ty));
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
@@ -548,6 +579,20 @@ impl<'a, 's> FnCx<'a, 's> {
             B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
                 let r = self.expr(rhs, Some(lhs.ty));
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
+                let st = self.infer.resolve(ty);
+                if op != B::Div
+                    && op != B::Rem
+                    && let Some(u) = self.bits_operand(st, op.as_str(), span)
+                {
+                    let top = match op {
+                        B::BitAnd => tir::BinOp::BitAnd,
+                        B::BitOr => tir::BinOp::BitOr,
+                        _ => tir::BinOp::BitXor,
+                    };
+                    let (l, r) = (self.bits_convert(lhs, u), self.bits_convert(r, u));
+                    let n = mk(u, tir::ExprKind::Binary { op: top, lhs: Box::new(l), rhs: Box::new(r) }, span);
+                    return self.bits_convert(n, st);
+                }
                 let int_only = op != B::Div;
                 self.obligations.push(Obligation::Numeric { ty, span, op: op.as_str(), int_only, signed_only: false });
                 let top = match op {
@@ -561,10 +606,91 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
             B::Range | B::RangeIncl => {
-                self.error(span, "ranges are supported only in `for` loops so far");
+                self.error(span, "a range cannot be an operand here; put it in parentheses");
                 error_expr(span)
             }
         }
+    }
+
+    /// The underlying integer of `t` if it is a `#bits` struct, for the bitwise operator
+    /// `op` (§7.4.1); reports an error if some field is not a `bool` or an integer.
+    fn bits_operand(&mut self, t: Ty, op: &str, span: Span) -> Option<Ty> {
+        let u = self.sema.bits_struct_ty(t)?;
+        if !self.sema.is_plain(t) {
+            self.error(
+                span,
+                format!("`{}` applies only to `#bits` structs whose fields are all `bool` or integers", op),
+            );
+        }
+        Some(u)
+    }
+
+    /// Converts between a `#bits` struct and its underlying integer.
+    fn bits_convert(&mut self, v: Expr, to: Ty) -> Expr {
+        let span = v.span;
+        mk(to, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
+    }
+
+    /// `lo..hi` or `lo..=hi` as a value: a `Range(T)` or `RangeIncl(T)` (§5.16).
+    fn range_value(&mut self, inclusive: bool, lo: &ast::Expr, hi: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        let Some(template) = self.sema.range_template(inclusive) else {
+            self.error(span, "the core library's range types are not available");
+            return error_expr(span);
+        };
+        // The bound type comes from the expected range type, if there is one.
+        let want = expect.and_then(|t| {
+            let t = self.infer.resolve(t);
+            self.sema.range_of(t).filter(|(i, _)| *i == inclusive).map(|(_, e)| e)
+        });
+        let l = self.expr(lo, want);
+        let h = self.expr(hi, Some(want.unwrap_or(l.ty)));
+        let mut elem = match want {
+            Some(w) => w,
+            None => self.unify_operands(l.ty, h.ty, span, "range bounds"),
+        };
+        // The struct type needs a concrete `T` now: untyped bounds take the range
+        // fallback (§6.1).
+        if self.infer.resolve(elem).has_infer() {
+            let _ = self.infer.unify(elem, Ty::usize());
+        }
+        elem = self.infer.resolve(elem);
+        // `Range(T)` needs `Ord(T)`; `RangeIncl(T)` an integer type (§5.16).
+        if inclusive {
+            let op = "..=";
+            self.obligations.push(Obligation::Numeric { ty: elem, span, op, int_only: true, signed_only: false });
+        } else {
+            self.obligations.push(Obligation::Ord { ty: elem, span });
+        }
+        let (l, h) = (self.coerce(l, elem), self.coerce(h, elem));
+        let ty = self.sema.instantiate_adt(template, vec![elem]);
+        mk(ty, tir::ExprKind::Aggregate(vec![l, h]), span)
+    }
+
+    /// `p + n`, `p - n` and `p - q` on a many-pointer `p` (§5.5).
+    fn pointer_arith(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        let lt = self.infer.resolve(lhs.ty);
+        let r = self.expr(rhs, None);
+        let rt = self.infer.resolve(r.ty);
+        let b = |op, ty, args| mk(ty, tir::ExprKind::Builtin { op, args }, span);
+        let sub = matches!(op, ast::BinOp::Sub(_));
+        if let TyKind::ManyPtr { elem, .. } = rt.kind() {
+            let TyKind::ManyPtr { elem: le, .. } = lt.kind() else { unreachable!() };
+            if !sub || elem != le {
+                self.error(span, format!("cannot {} `{}` and `{}`", if sub { "subtract" } else { "add" }, lt, rt));
+                return error_expr(span);
+            }
+            // The distance does not depend on `const`: make both sides read-only.
+            let ro = Ty::intern(TyKind::ManyPtr { elem: *elem, is_const: true });
+            let (l, r) = (self.coerce(lhs, ro), self.coerce(r, ro));
+            return b(tir::Builtin::PtrDiff, Ty::isize(), vec![l, r]);
+        }
+        if rt.is_infer() {
+            self.unify_operands(r.ty, Ty::usize(), span, "a pointer offset");
+        } else if rt != Ty::usize() && rt != Ty::isize() && !rt.is_error() {
+            self.error(r.span, format!("a pointer offset must be a `usize` or an `isize`, not `{}`", rt));
+            return error_expr(span);
+        }
+        b(if sub { tir::Builtin::PtrSub } else { tir::Builtin::PtrAdd }, lt, vec![lhs, r])
     }
 
     /// Makes two operands of `is` the same type: unify, or coerce one to the other.
@@ -603,6 +729,19 @@ impl<'a, 's> FnCx<'a, 's> {
         let b = self.expr(base, None);
         let b = self.auto_deref_array(b);
         let i = self.expr(index, None);
+        // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
+        let it = self.infer.resolve(i.ty);
+        if let Some((inclusive, elem)) = self.sema.range_of(it) {
+            let r = self.temp(it, span);
+            let field = |n| {
+                let base = Box::new(mk(it, tir::ExprKind::Local(r), span));
+                mk(elem, tir::ExprKind::Field { base, index: n }, span)
+            };
+            let s = self.slice_of(b, base.span, Some(field(0)), Some(field(1)), inclusive, span);
+            let ty = s.ty;
+            let block = tir::Block { stmts: vec![tir::Stmt::Let { local: r, init: Some(i) }], tail: Some(s), span };
+            return mk(ty, tir::ExprKind::Block(Box::new(block)), span);
+        }
         if !self.infer.require_unsigned(i.ty, Fallback::Usize) && !i.ty.is_error() {
             let t = self.infer.resolve(i.ty);
             self.error(i.span, format!("an index must have an unsigned integer type, not `{}`", t));

@@ -1,0 +1,5 @@
+test "no environment" ... ok
+test "exit 0 passes" ... ok
+test "exit 3 fails" ... FAILED
+    before
+2 passed, 1 failed

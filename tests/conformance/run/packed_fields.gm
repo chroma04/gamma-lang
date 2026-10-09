@@ -1,0 +1,15 @@
+// Fields of `#packed` structs are read and written directly (§5.10.4).
+H :: #packed struct {
+    a: u8
+    b: u16
+    c: u32
+}
+main :: fn() \ {Out} {
+    h := H(a: 1, b: 513, c: 70000)
+    x := h.b
+    h.c = 7
+    h.b += 1
+    p := &h
+    print("{} {} {} {}\n", (x, h.b, h.c, p.c))
+    print("{}\n", h)
+}

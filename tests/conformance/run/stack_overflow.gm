@@ -1,11 +1,22 @@
 //! exit: 134
-// Running out of the thread's stack is a checked error (§18), as on a fiber (§14.1).
-deep :: fn(n: u64) -> u64 {
+// Running out of stack is a trap, not a crash (§18), however large the frames.
+Big :: struct { data: [50000]u32 }
+
+down :: fn(n: u64) -> u64 {
     if n is 0 { return 0 }
-    return deep(n - 1) + 1
+    return down(n - 1) + 1
+}
+
+deep :: fn(b: Big, n: u32) -> u32 {
+    if n is 0 { return b.data[0] }
+    c := b
+    c.data[0] += 1
+    return deep(c, n - 1)
 }
 
 main :: fn() \ {Out} {
-    print("{}\n", deep(10000))
-    print("{}\n", deep(1000000000))
+    b: Big = ---
+    b.data[0] = 0
+    print("{}\n", deep(b, 1))
+    print("{}\n", down(100_000_000))
 }

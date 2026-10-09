@@ -1,0 +1,32 @@
+purchase with change
+  state: collecting 25 cents
+  state: collecting 50 cents
+  state: collecting 60 cents
+  log [.Warn] not enough credit
+  state: collecting 60 cents
+  state: collecting 60 cents
+  state: collecting 60 cents
+  totals: info=0 warn=1 alert=0
+too little then cancel
+  log [.Warn] insert coins first
+  state: idle
+  state: collecting 10 cents
+  log [.Warn] not enough credit
+  state: collecting 10 cents
+  log [.Info] refund
+  state: idle
+  totals: info=1 warn=2 alert=0
+vandalism
+  state: collecting 5 cents
+  state: collecting 30 cents
+  state: collecting 40 cents
+  log [.Info] candy
+  state: dispensing candy (change 5)
+  log [.Warn] take your item first
+  state: dispensing candy (change 5)
+  state: out of order (kicked while dispensing)
+  log [.Alert] kicked while dispensing
+  state: out of order (kicked while dispensing)
+  totals: info=1 warn=1 alert=1
+.Dime .Insert(.Nickel) .Dispensing(item: .Candy, change: 5)
+.Quarter null

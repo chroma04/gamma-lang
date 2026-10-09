@@ -1,0 +1,317 @@
+// std/str: byte-oriented string utilities.
+//
+// A `string` is a `[]const u8`, and every function here works on bytes: an index is a
+// byte index and case rules are ASCII only. Functions that return a `string` return a
+// slice of their argument (or of the buffer the caller supplied), so nothing is copied
+// and nothing allocates, with the one exception of `join`.
+//
+// Strings are slices, so these are free functions (`str.trim(s)`), not methods.
+//
+//     str :: import "std/str"
+//     for line in str.lines(text) { … }
+//     n := try str.parse_int(u32, "0xff")
+
+// ---------------------------------------------------------------------------------
+// Trimming
+// ---------------------------------------------------------------------------------
+
+is_space :: fn(c: u8) -> bool => c is ' ' or c is '\t' or c is '\n' or c is '\r' or c is 0x0b or c is 0x0c
+
+/// `s` without leading ASCII whitespace (space, `\t`, `\n`, `\r`, `\v`, `\f`).
+pub trim_start :: fn(s: string) -> string {
+    i: usize = 0
+    while i < s.len and is_space(s[i]) { i += 1 }
+    return s[i..s.len]
+}
+
+/// `s` without trailing ASCII whitespace.
+pub trim_end :: fn(s: string) -> string {
+    n := s.len
+    while n > 0 and is_space(s[n - 1]) { n -= 1 }
+    return s[0..n]
+}
+
+/// `s` without leading and trailing ASCII whitespace.
+pub trim :: fn(s: string) -> string => trim_end(trim_start(s))
+
+// ---------------------------------------------------------------------------------
+// Searching
+// ---------------------------------------------------------------------------------
+
+// Whether `needle` occurs in `s` at byte `at` (the caller ensures it fits).
+matches_at :: fn(s, needle: string, at: usize) -> bool {
+    for j in 0..needle.len {
+        if s[at + j] is not needle[j] { return false }
+    }
+    return true
+}
+
+/// The byte index of the first occurrence of `needle` in `s`, or `null`. An empty
+/// `needle` is found at index 0.
+pub find :: fn(s, needle: string) -> ?usize {
+    if needle.len > s.len { return null }
+    last := s.len - needle.len
+    i: usize = 0
+    while i <= last {
+        if matches_at(s, needle, i) { return i }
+        i += 1
+    }
+    return null
+}
+
+/// The byte index of the last occurrence of `needle` in `s`, or `null`. An empty
+/// `needle` is found at `s.len`.
+pub rfind :: fn(s, needle: string) -> ?usize {
+    if needle.len > s.len { return null }
+    i := s.len - needle.len + 1
+    while i > 0 {
+        i -= 1
+        if matches_at(s, needle, i) { return i }
+    }
+    return null
+}
+
+/// Whether `needle` occurs in `s`.
+pub contains :: fn(s, needle: string) -> bool => find(s, needle) is not null
+
+// ---------------------------------------------------------------------------------
+// Splitting
+// ---------------------------------------------------------------------------------
+
+/// Splits `s` at the first occurrence of `sep`: the text before it and the text after
+/// it, or `null` if `sep` does not occur. An empty `sep` splits at the start.
+pub split_once :: fn(s, sep: string) -> ?(before: string, after: string) {
+    i := find(s, sep) else return null
+    return (before: s[0..i], after: s[i + sep.len..s.len])
+}
+
+/// The pieces of `s` between occurrences of `sep`, in order. Adjacent separators give
+/// empty pieces, and so do separators at either end (`"a,,b,"` gives `a`, ``, `b`, ``).
+/// An empty `sep` does not split: `s` is yielded once.
+pub split :: fn(s, sep: string) \ {Yield(string)} {
+    if sep.len is 0 {
+        yield(s)
+        return
+    }
+    rest := s
+    while true {
+        if i := find(rest, sep) {
+            yield(rest[0..i])
+            rest = rest[i + sep.len..rest.len]
+        } else {
+            yield(rest)
+            return
+        }
+    }
+}
+
+/// The lines of `s`, split on `\n` with a `\r` before it dropped. A final line without
+/// a terminator is yielded; there is no empty line after a terminating `\n`.
+pub lines :: fn(s: string) \ {Yield(string)} {
+    start: usize = 0
+    while start < s.len {
+        end := start
+        while end < s.len and s[end] is not '\n' { end += 1 }
+        line_end := end
+        if line_end > start and s[line_end - 1] is '\r' { line_end -= 1 }
+        yield(s[start..line_end])
+        start = end + 1
+    }
+}
+
+/// The maximal runs of non-whitespace bytes of `s` (ASCII whitespace separates them);
+/// empty fields are skipped.
+pub fields :: fn(s: string) \ {Yield(string)} {
+    i: usize = 0
+    while true {
+        while i < s.len and is_space(s[i]) { i += 1 }
+        if i >= s.len { return }
+        start := i
+        while i < s.len and not is_space(s[i]) { i += 1 }
+        yield(s[start..i])
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Case
+// ---------------------------------------------------------------------------------
+
+lower_byte :: fn(c: u8) -> u8 => if c >= 'A' and c <= 'Z' { c + 32 } else { c }
+
+upper_byte :: fn(c: u8) -> u8 => if c >= 'a' and c <= 'z' { c - 32 } else { c }
+
+/// Whether `a` and `b` are equal when ASCII letters are compared without case.
+pub eq_ignore_case :: fn(a, b: string) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if lower_byte(a[i]) is not lower_byte(b[i]) { return false }
+    }
+    return true
+}
+
+/// `s` with ASCII capitals made lowercase, written into `buf`; returns the part of
+/// `buf` written. Traps if `buf` is shorter than `s`.
+pub to_lower :: fn(s: string, buf: []u8) -> string {
+    if buf.len < s.len { trap("str: buffer too small for the converted string") }
+    for i in 0..s.len { buf[i] = lower_byte(s[i]) }
+    return buf[0..s.len]
+}
+
+/// `s` with ASCII lowercase letters made capitals, written into `buf`; see `to_lower`.
+pub to_upper :: fn(s: string, buf: []u8) -> string {
+    if buf.len < s.len { trap("str: buffer too small for the converted string") }
+    for i in 0..s.len { buf[i] = upper_byte(s[i]) }
+    return buf[0..s.len]
+}
+
+// ---------------------------------------------------------------------------------
+// Parsing integers
+// ---------------------------------------------------------------------------------
+
+/// Why `parse_int` failed.
+pub ParseError :: union {
+    /// The string is empty.
+    Empty
+    /// A byte that is not a digit (or a misplaced `_`, or a missing digit) at this index;
+    /// `at` is `s.len` when digits are missing at the end.
+    InvalidDigit: (at: usize)
+    /// The value does not fit the type.
+    Overflow
+}
+
+// The value of the digit byte `c` (0 to 35), or 255 if it is not alphanumeric.
+digit_value :: fn(c: u8) -> u8 {
+    if c >= '0' and c <= '9' { return c - '0' }
+    if c >= 'a' and c <= 'z' { return c - 'a' + 10 }
+    if c >= 'A' and c <= 'Z' { return c - 'A' + 10 }
+    return 255
+}
+
+/// Parses the integer in `s` as a `T`.
+///
+/// The syntax is an optional sign (`+`, or `-` for signed types only), an optional
+/// `0x`, `0o` or `0b` prefix (any case) and one or more digits of that base (decimal
+/// without a prefix); a single `_` may separate two digits (`1_000`). Nothing else is
+/// allowed, not even whitespace. The most negative value of a signed type parses. The
+/// first problem found, scanning from the left, is the error.
+pub parse_int :: fn(T: type, s: string) -> ParseError!T where Int(T) {
+    if s.len is 0 { return !.Empty }
+    zero: T = 0
+    signed := (zero -% 1) < zero
+    i: usize = 0
+    neg := false
+    if s[0] is '-' {
+        if not signed { return !.InvalidDigit(at: 0) }
+        neg = true
+        i = 1
+    } else if s[0] is '+' {
+        i = 1
+    }
+    base: u8 = 10
+    if i + 1 < s.len and s[i] is '0' {
+        c := lower_byte(s[i + 1])
+        if c is 'x' { base = 16 } else if c is 'o' { base = 8 } else if c is 'b' { base = 2 }
+        if base is not 10 { i += 2 }
+    }
+    // The base as a `T`; it is at most 16, which every integer type of 8 bits or more holds.
+    tb: T = if base is 16 { 16 } else if base is 8 { 8 } else if base is 2 { 2 } else { 10 }
+    acc: T = 0
+    after_digit := false
+    while i < s.len {
+        c := s[i]
+        if c is '_' {
+            if not after_digit { return !.InvalidDigit(at: i) }
+            after_digit = false
+            i += 1
+            continue
+        }
+        d := digit_value(c)
+        if d >= base { return !.InvalidDigit(at: i) }
+        dv := d.checked(T) else return !.Overflow
+        // A negative number accumulates downwards, so that the minimum value fits.
+        acc = acc *? tb else return !.Overflow
+        if neg {
+            acc = acc -? dv else return !.Overflow
+        } else {
+            acc = acc +? dv else return !.Overflow
+        }
+        after_digit = true
+        i += 1
+    }
+    if not after_digit { return !.InvalidDigit(at: s.len) }
+    return acc
+}
+
+// ---------------------------------------------------------------------------------
+// Building strings in caller memory
+// ---------------------------------------------------------------------------------
+
+/// Appends text to a buffer you supply. It allocates nothing; appending beyond the
+/// buffer's length is a trap (`"str: builder is full"`). Create one with `builder`.
+///
+/// To format into a builder, use it as the sink of `@write` (§21.6.1):
+/// `@write(fn(bytes) => b.push(bytes), "{} of {}", (n, total))`.
+pub Builder :: struct {
+    buf: []u8
+    used: usize
+}
+
+/// A builder that appends to `buf`, starting empty.
+pub builder :: fn(buf: []u8) -> Builder => Builder(buf: buf, used: 0)
+
+/// Appends the bytes of `s`. Traps if they do not fit.
+pub push :: fn(b: ^Builder, s: string) {
+    if s.len > b.buf.len - b.used { trap("str: builder is full") }
+    b.buf[b.used..b.used + s.len].copy_from(s)
+    b.used += s.len
+}
+
+/// Appends one byte. Traps if the builder is full.
+pub push_byte :: fn(b: ^Builder, c: u8) {
+    if b.used >= b.buf.len { trap("str: builder is full") }
+    b.buf[b.used] = c
+    b.used += 1
+}
+
+/// What has been appended so far (valid until the builder is next changed).
+pub str :: fn(b: ^const Builder) -> string => b.buf[0..b.used]
+
+/// The number of bytes appended.
+pub len :: fn(b: ^const Builder) -> usize => b.used
+
+/// Forgets everything appended, keeping the buffer.
+pub reset :: fn(b: ^Builder) {
+    b.used = 0
+}
+
+/// Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
+/// `b.write("{} of {}", (n, total))`. Traps like `push` if the result does not fit.
+pub write :: fn(A: type, b: ^Builder, template :: string, args: A) {
+    @write(fn(bytes: []const u8) => push(b, bytes), template, args)
+}
+
+// ---------------------------------------------------------------------------------
+// Joining
+// ---------------------------------------------------------------------------------
+
+/// The `parts` with `sep` between them, in memory from the current allocator. The result
+/// is a `[]u8` (it converts to a `string` where one is wanted) so that it can be given
+/// back with `free`.
+pub join :: fn(parts: []const string, sep: string) -> AllocError![]u8 \ {Alloc} {
+    n: usize = 0
+    for i in 0..parts.len {
+        if i > 0 { n += sep.len }
+        n += parts[i].len
+    }
+    out := try make(u8, n)
+    at: usize = 0
+    for i in 0..parts.len {
+        if i > 0 {
+            out[at..at + sep.len].copy_from(sep)
+            at += sep.len
+        }
+        out[at..at + parts[i].len].copy_from(parts[i])
+        at += parts[i].len
+    }
+    return out
+}

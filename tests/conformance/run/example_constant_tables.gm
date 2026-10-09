@@ -1,0 +1,51 @@
+Planet :: struct {
+    name: string
+    mass: f64
+    moons: u8 = 0
+}
+
+PLANETS :: [_]Planet(
+    Planet(name: "Mercury", mass: 0.33),
+    Planet(name: "Earth", mass: 5.97, moons: 1),
+    Planet(name: "Jupiter", mass: 1898.0, moons: 95),
+)
+
+NAMES :: [_]string("zero", "one", "two", "three")
+PRIMES :: [_]u32(2, 3, 5, 7, 11, 13)
+ORIGIN :: Planet(name: "origin", mass: 0)
+SQUARES :: squares(8)
+
+squares :: fn(N :: usize) -> [N]u32 {
+    out: [N]u32 = ---
+    for i in 0..N { out[i] = (i * i).trunc(u32) }
+    return out
+}
+
+Color :: union(u8) { Red = 1, Green = 2, Blue = 4 }
+
+main :: fn() \ {Out} {
+    for p in PLANETS { print("{} {} {}\n", (p.name, p.mass, p.moons)) }
+    print("{} {}\n", (NAMES[2], NAMES.len))
+    for n in NAMES { print("{} ", n) }
+    print("\n")
+    print("{} {}\n", (ORIGIN, SQUARES))
+    ps := PRIMES[..]
+    print("{} {} {} {}\n", (ps.index_of(7), ps.index_of(8), ps.binary_search(11), ps.min()))
+    print("{} {} {}\n", (ps.first(), ps.last(), ps.get(10)))
+    a := u32(3)
+    print("{} {} {} {}\n", (a.pow(4), a.abs_diff(10), a.clamp(5, 9), a.max(2)))
+    print("{} {}\n", (i32(-5).abs(), i32(-5).min(3)))
+    print("\x41\u{1F600}\u{e9}|{}|\n", `raw\n`)
+    print("{}\n", "tab\there")
+    ml :: `line one
+line two`
+    print("{}\n", ml)
+    h: f16 = 1.5
+    print("{} {}\n", (h, h * 2))
+    big: u256 = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF
+    print("{}\n", big)
+    print("{} {} {}\n", (0b1010_1010, 0o777, 1_000_000))
+    print("{} {}\n", (u8(true), u8(false)))
+    c: Color = .Blue
+    print("{} {}\n", (c, u8(c)))
+}

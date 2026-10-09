@@ -1,0 +1,22 @@
+take 10 of fib:
+  generator unwound
+  10 values: [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+take all fib <= 100:
+  generator unwound
+  12 values: [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
+pipeline: 6 evens, sum 7980
+scheduler:
+  main spawned 3 workers
+  worker 1 step 1/2
+  worker 2 step 1/3
+  worker 3 step 1/4
+  worker 1 step 2/2
+  worker 2 step 2/3
+  worker 3 step 2/4
+  worker 1 cleaned up
+  worker 2 step 3/3
+  worker 3 step 3/4
+  worker 2 cleaned up
+  worker 3 step 4/4
+  worker 3 cleaned up
+  all done: 3 stacks, 12 switches, ready queue 0

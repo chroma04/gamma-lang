@@ -206,17 +206,22 @@ pub center :: fn(s: string, width: usize, fill: u8, buf: []u8) -> string {
 /// Zero-pads a formatted number to `width` bytes, keeping the sign and any `0x`, `0o` or
 /// `0b` prefix first: `-42` becomes `-0042` and `0xff` becomes `0x00ff`.
 ///
-/// Text whose first character after the sign and prefix is not a digit (`nan`, `inf`)
+/// Text whose first character after the sign and prefix is not a digit of its base
+/// (`nan`, `inf`, or hex digits without `0x`)
 /// is padded with spaces on the left instead. See `pad_left` for the details.
 pub zero_pad :: fn(s: string, width: usize, buf: []u8) -> string {
     if s.len >= width { return s }
     if width > buf.len { trap("fmt: buffer too small for the padded string") }
     head: usize = 0
     if head < s.len and (s[head] is '-' or s[head] is '+') { head += 1 }
+    hex := false
     if head + 2 < s.len and s[head] is '0' and (s[head + 1] is 'x' or s[head + 1] is 'o' or s[head + 1] is 'b') {
+        hex = s[head + 1] is 'x'
         head += 2
     }
-    if head >= s.len or s[head] not in '0'..='9' {
+    c: u8 = if head < s.len { s[head] } else { ' ' }
+    digit := c in '0'..='9' or (hex and (c in 'a'..='f' or c in 'A'..='F'))
+    if not digit {
         return pad_left(s, width, ' ', buf)
     }
     pad := width - s.len
