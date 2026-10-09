@@ -719,6 +719,33 @@ impl<'a, 's> FnCx<'a, 's> {
         self.struct_field(inner, name, span)
     }
 
+    /// Whether pointer type `src` is `^Outer` (or `^const Outer`) and `target` is
+    /// `^S` (resp. `^const S`) for a struct `S` embedded by `using`, directly or through
+    /// the embedded structs' own `using` fields.
+    pub fn embeds(&mut self, src: Ty, target: Ty) -> bool {
+        let (TyKind::Ptr { is_const: sc, pointee: outer }, TyKind::Ptr { is_const: tc, pointee: inner }) =
+            (src.kind(), target.kind())
+        else {
+            return false;
+        };
+        if *sc && !*tc {
+            return false;
+        }
+        let mut cur = *outer;
+        for _ in 0..64 {
+            let TyKind::Adt(id, _) = cur.kind() else { return false };
+            if !self.sema.adts.get(id).is_some_and(|a| a.has_using) {
+                return false;
+            }
+            let Some(fields) = self.sema.struct_fields(cur) else { return false };
+            cur = fields[0].ty;
+            if cur == *inner {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Intrinsics that are compile-time constants (§20.3).
     fn intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
         let type_arg = |cx: &mut Self, i: usize| -> Option<Ty> {
@@ -1288,6 +1315,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
             return mk(target, tir::ExprKind::Coerce { kind: Coercion::FnToPtr, expr: Box::new(e) }, span);
+        }
+        // `^Outer` → `^S` through `using` fields (§5.10.3); free, like the other pointer
+        // coercions.
+        if self.embeds(src, target) {
+            let span = e.span;
+            return mk(target, tir::ExprKind::Coerce { kind: Coercion::PtrToPtr, expr: Box::new(e) }, span);
         }
         match self.coercion_steps(src, target) {
             Some(steps) => apply_steps(e, steps),

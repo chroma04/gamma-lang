@@ -225,6 +225,17 @@ impl<'a, 's> FnCx<'a, 's> {
                 let t = self.type_arg(args, 0, span)?;
                 Some(b(Builtin::Cast, t, vec![recv]))
             }
+            // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.
+            (TyKind::Ptr { is_const, pointee }, "downcast_unchecked") => {
+                let (is_const, pointee) = (*is_const, *pointee);
+                let outer = self.type_arg(args, 0, span)?;
+                let target = Ty::ptr(is_const, outer);
+                if !self.embeds(Ty::ptr(is_const, outer), Ty::ptr(is_const, pointee)) {
+                    self.error(span, format!("`{}` does not embed `{}` with `using`", outer, pointee));
+                    return Some(error_expr(span));
+                }
+                Some(mk(target, tir::ExprKind::Coerce { kind: tir::Coercion::PtrToPtr, expr: Box::new(recv) }, span))
+            }
             // The length of a C string, up to its NUL (§5.7).
             (TyKind::ManyPtr { elem, .. }, "cstr_len") if *elem == Ty::u8() => {
                 self.arity(args, 0, n, span);

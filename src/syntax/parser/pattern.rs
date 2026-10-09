@@ -120,7 +120,13 @@ impl Parser<'_> {
     /// qualified lower bound.
     fn parse_path_pattern(&mut self) -> PResult<Pattern> {
         let start = self.lo();
-        let path = self.parse_qualified_path()?;
+        let mut path = self.parse_qualified_path()?;
+        // `G(args)(f: p, …)`: the first parentheses instantiate a generic struct type.
+        if self.at(Punct::LParen) && self.after_parens_is(Punct::LParen) {
+            let (args, trailing_comma) = self.parse_call_args()?;
+            let span = self.span_from(start);
+            path = self.mk_expr(ExprKind::Call { callee: Box::new(path), args, trailing_comma }, span);
+        }
         if self.at(Punct::LParen) {
             let args = self.parse_pat_args()?;
             let span = self.span_from(start);
@@ -138,6 +144,26 @@ impl Parser<'_> {
                 let span = self.span_from(start);
                 Ok(self.mk_pat(PatternKind::Path { path: Box::new(path), args: None }, span))
             }
+        }
+    }
+
+    /// Whether the token after the parenthesized group starting here is `p`.
+    fn after_parens_is(&self, p: Punct) -> bool {
+        let mut depth = 0usize;
+        let mut i = 0;
+        loop {
+            match self.nth(i) {
+                TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => depth += 1,
+                TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return self.nth(i + 1).is_punct(p);
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
         }
     }
 

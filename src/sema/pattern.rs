@@ -271,10 +271,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     return pat(ty, PatKind::Wild, span);
                 }
             },
-            ExprKind::Ident(n) => {
-                // `S(f: p, …)` — a struct pattern.
-                let Some(t) = self.type_of_name(path) else {
-                    self.error(path.span, format!("`{}` is not a struct type", n.name));
+            ExprKind::Ident(_) | ExprKind::Call { .. } => {
+                // `S(f: p, …)` or `G(T)(f: p, …)` — a struct pattern.
+                let t = match &path.kind {
+                    ExprKind::Ident(_) => self.type_of_name(path),
+                    _ => Some(self.resolve_type(path)).filter(|t| !t.is_error()),
+                };
+                let Some(t) = t else {
+                    self.error(path.span, "expected a struct type");
                     return pat(ty, PatKind::Wild, span);
                 };
                 if t != ty {
@@ -282,7 +286,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     return pat(ty, PatKind::Wild, span);
                 }
                 let Some(fields) = self.sema.struct_fields(t).map(|f| f.to_vec()) else {
-                    self.error(path.span, format!("`{}` is not a struct type", n.name));
+                    self.error(path.span, format!("`{}` is not a struct type", t));
                     return pat(ty, PatKind::Wild, span);
                 };
                 if let Some(f) = self.hidden_field(t) {

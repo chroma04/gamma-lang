@@ -1,0 +1,17 @@
+//! stage: check
+// Errors in `using` coercions and downcasts (§5.10.3).
+Entity :: struct { id: u32 }
+Player :: struct { using base: Entity; name: string }
+Other :: struct { id: u32 }
+
+hurt :: fn(e: ^Entity) {}
+
+main :: fn() {
+    p := Player(base: Entity(id: 1), name: "x")
+    c: ^const Player = &p
+    hurt(c)                                         //~ ERROR expected `^Entity`, found `^const Player`
+    e: ^Entity = &p
+    _ = e.downcast_unchecked(Other)                 //~ ERROR `Other` does not embed `Entity` with `using`
+    o := Other(id: 2)
+    hurt(&o)                                        //~ ERROR expected `^Entity`, found `^Other`
+}

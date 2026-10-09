@@ -1,0 +1,30 @@
+// `using` embedding (§5.10.3): promoted fields, `^Outer` → `^S` coercions through
+// several levels, and `downcast_unchecked`. Struct patterns on generic types (§9).
+Entity :: struct { id: u32; hp: i32 }
+Player :: struct { using base: Entity; name: string }
+Hero :: struct { using player: Player; level: u8 }
+Box :: struct(T: type) { v: T; tag: string }
+
+hurt :: fn(e: ^Entity) { e.hp -= 1 }
+show :: fn(e: ^const Entity) -> i32 => e.hp
+rename :: fn(p: ^Player, n: string) { p.name = n }
+
+main :: fn() \ {Out} {
+    h := Hero(player: Player(base: Entity(id: 7, hp: 10), name: "ada"), level: 3)
+    hurt(&h)                          // two levels: ^Hero → ^Entity
+    rename(&h, "grace")
+    print("{} {} {} {}\n", (h.hp, show(&h), h.id, h.name))
+    e: ^Entity = &h
+    back := e.downcast_unchecked(Hero)
+    print("{} {}\n", (back.level, back.name))
+    c: ^const Entity = &h
+    print("{}\n", c.downcast_unchecked(Player).name)
+
+    boxes := [3]Box(i32)(Box(i32)(v: 4, tag: "a"), Box(i32)(v: 5, tag: "b"), Box(i32)(v: 4, tag: "c"))
+    for b in boxes {
+        match b {
+            Box(i32)(v: 4, tag) => print("four {}\n", tag)
+            Box(i32)(v, tag: _) => print("other {}\n", v)
+        }
+    }
+}
