@@ -6,6 +6,13 @@
 //! with the size and alignment of the Gamma layout, so values have exactly the
 //! bytes the interpreter gives them. Fields are read and written with `memcpy`
 //! at the layout's offsets.
+//!
+//! Blobs do not cross the C ABI the way C structs do (a struct of two floats is
+//! passed in floating-point registers, a blob of 8 bytes in an integer register), so
+//! a struct or `#c_union` whose fields are all C-compatible (§19.1) also gets a
+//! *mirror*: a C type with the same fields and layout. Functions with the plain C
+//! calling convention take and return mirrors, and values are copied between a
+//! blob and its mirror at those calls.
 
 use crate::layout::{Layouts, is_nullable_pointer};
 use crate::tir::{AdtKind, Program};
@@ -22,6 +29,9 @@ pub struct Types<'a> {
     desc_fwd: String,
     desc_parts: String,
     desc_defs: String,
+    /// Mirror C types by Gamma type (`None`: the type has none).
+    mirrors: HashMap<Ty, Option<String>>,
+    mirror_defs: String,
 }
 
 /// How a type is represented in C.
@@ -55,6 +65,8 @@ impl<'a> Types<'a> {
             desc_fwd: String::new(),
             desc_parts: String::new(),
             desc_defs: String::new(),
+            mirrors: HashMap::new(),
+            mirror_defs: String::new(),
         }
     }
 
@@ -107,6 +119,93 @@ impl<'a> Types<'a> {
                 blob_name(s, a)
             }
         }
+    }
+
+    /// The mirror of `t`: a C type with its fields, for a C-compatible struct,
+    /// `#c_union` or `#bits` struct (the latter is its integer). `None` for other types.
+    pub fn mirror(&mut self, t: Ty) -> Option<String> {
+        if let Some(m) = self.mirrors.get(&t) {
+            return m.clone();
+        }
+        let m = self.make_mirror(t);
+        self.mirrors.insert(t, m.clone());
+        m
+    }
+
+    fn make_mirror(&mut self, t: Ty) -> Option<String> {
+        let TyKind::Adt(id, _) = t.kind() else { return None };
+        let def = self.prog.adts.get(id)?;
+        let (keyword, fields, packed, align) = match &def.kind {
+            AdtKind::Struct { bits: Some(u), .. } => return Some(self.cty(*u)),
+            AdtKind::Struct { fields, packed, align, bits: None } => ("struct", fields, *packed, *align),
+            AdtKind::CUnion { fields } => ("union", fields, false, None),
+            AdtKind::Union { .. } => return None,
+        };
+        if fields.is_empty() || self.size(t) == 0 {
+            return None;
+        }
+        let mut members = vec![];
+        for (i, f) in fields.iter().enumerate() {
+            let (ty, dims) = self.field_cty(f.ty)?;
+            let al = f.align.map_or(String::new(), |a| format!("_Alignas({}) ", a));
+            members.push(format!("{}{} f{}{};", al, ty, i, dims));
+        }
+        let name = format!("gm_cs{}", self.mirrors.len());
+        let mut attrs = vec![];
+        if packed {
+            attrs.push("packed".to_string());
+        }
+        if let Some(a) = align {
+            attrs.push(format!("aligned({})", a));
+        }
+        let attrs = if attrs.is_empty() { String::new() } else { format!(" __attribute__(({}))", attrs.join(", ")) };
+        let _ =
+            writeln!(self.mirror_defs, "typedef {} {}{} {{ {} }} {};", keyword, attrs, name, members.join(" "), name);
+        // The C compiler must agree with the Gamma layout.
+        let _ = write!(
+            self.mirror_defs,
+            "_Static_assert(sizeof({n}) == {} && _Alignof({n}) == {}",
+            self.size(t),
+            self.align(t),
+            n = name
+        );
+        for (i, off) in self.offsets(t).iter().enumerate().take(fields.len()) {
+            let _ = write!(self.mirror_defs, " && offsetof({}, f{}) == {}", name, i, off);
+        }
+        let _ = writeln!(self.mirror_defs, ", \"layout of `{}`\");", t);
+        Some(name)
+    }
+
+    /// The C type of a mirror's field of type `t`, and the array dimensions that follow
+    /// the field's name.
+    fn field_cty(&mut self, t: Ty) -> Option<(String, String)> {
+        match self.repr(t) {
+            Repr::Bool => return Some(("_Bool".into(), String::new())),
+            Repr::Int { .. } | Repr::Float(_) | Repr::Ptr => return Some((self.cty(t), String::new())),
+            Repr::Closure | Repr::Handler => return None,
+            Repr::Blob => {}
+        }
+        match t.kind() {
+            TyKind::Array { len, elem } if *len > 0 => {
+                let (ty, dims) = self.field_cty(*elem)?;
+                Some((ty, format!("[{}]{}", len, dims)))
+            }
+            TyKind::Adt(..) => Some((self.mirror(t)?, String::new())),
+            _ => None,
+        }
+    }
+
+    /// The C type of `t` in the plain C calling convention: its mirror if it has one.
+    pub fn plain_cty(&mut self, t: Ty) -> String {
+        match self.mirror(t) {
+            Some(m) => m,
+            None => self.cty(t),
+        }
+    }
+
+    /// The definitions of the mirrors used.
+    pub fn mirror_defs(&self) -> &str {
+        &self.mirror_defs
     }
 
     /// Typedefs of the blob types used.

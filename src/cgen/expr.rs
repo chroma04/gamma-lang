@@ -883,6 +883,27 @@ impl<'g, 'a> FnGen<'g, 'a> {
         format!("{} (*)({})", r, ps.join(", "))
     }
 
+    /// The value `v` of type `t` as the plain C convention passes it (its mirror).
+    pub fn plain_value(&mut self, t: Ty, v: &str) -> String {
+        match self.g.ty.mirror(t) {
+            Some(m) => format!("GM_CONV({}, {})", m, v),
+            None => v.to_string(),
+        }
+    }
+
+    /// A value of type `t` received in the plain C convention, as a Gamma value.
+    pub fn gamma_value(&mut self, t: Ty, v: &str) -> String {
+        match self.g.ty.mirror(t) {
+            Some(_) => format!("GM_CONV({}, {})", self.g.ty.cty(t), v),
+            None => v.to_string(),
+        }
+    }
+
+    /// The arguments `vals` of types `tys` in the plain C convention.
+    fn plain_args(&mut self, vals: &[String], tys: &[Ty]) -> Vec<String> {
+        vals.iter().zip(tys).map(|(v, t)| self.plain_value(*t, v)).collect()
+    }
+
     /// Emits a call whose value has type `ret`.
     fn call_result(&mut self, ret: Ty, call: &str) -> String {
         if ret.is_never() {
@@ -905,21 +926,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
             None => "NULL".into(),
         };
         let name = self.g.callee_name(f);
-        let r = if let crate::tir::FnKind::Foreign { .. } = def.kind {
+        let r = if self.g.is_plain(f) {
             // C's `_Bool` crosses the boundary as 0 or 1 either way.
-            let call = format!("{}({})", name, vals.join(", "));
-            if def.ret.is_unit() {
-                self.line(&format!("{};", call));
-                self.zero(e.ty)
-            } else {
-                self.call_result(e.ty, &call)
-            }
-        } else if self.g.is_plain(f) {
-            let call = format!("{}({})", name, vals.join(", "));
+            let tys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
+            let mut args = self.plain_args(&vals[..tys.len().min(vals.len())], &tys);
+            args.extend(vals[tys.len().min(vals.len())..].iter().cloned()); // variadic
+            let call = format!("{}({})", name, args.join(", "));
             if def.ret.is_unit() || def.ret.is_never() {
                 self.line(&format!("{};", call));
                 self.zero(e.ty)
             } else {
+                let call = self.gamma_value(def.ret, &call);
                 self.call_result(e.ty, &call)
             }
         } else {
@@ -976,15 +993,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
         ret: Ty,
         hidden: bool,
     ) -> String {
-        let plain_ret = if ret.is_unit() || ret.is_never() { "void".to_string() } else { self.g.ty.cty(ret) };
+        let plain_ret = if ret.is_unit() || ret.is_never() { "void".to_string() } else { self.g.ty.plain_cty(ret) };
         let mut ps = vec![];
         for p in tys {
-            ps.push(self.g.ty.cty(*p));
+            ps.push(self.g.ty.plain_cty(*p));
         }
         let plain_ty = format!("{} (*)({})", plain_ret, if ps.is_empty() { "void".into() } else { ps.join(", ") });
         let p = self.tmp(Ty::intern(TyKind::Rawptr), code);
         let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
-        let plain_call = format!("(({})((uintptr_t){} & ~(uintptr_t)1))({})", plain_ty, p, vals.join(", "));
+        let plain_args = self.plain_args(vals, tys);
+        let plain_call = format!("(({})((uintptr_t){} & ~(uintptr_t)1))({})", plain_ty, p, plain_args.join(", "));
+        let plain_call = self.gamma_value(ret, &plain_call);
         let emit_plain = |fg: &mut Self| match &res {
             Some(r) if !ret.is_unit() => fg.line(&format!("{} = {};", r, plain_call)),
             _ => fg.line(&format!("{};", plain_call)),

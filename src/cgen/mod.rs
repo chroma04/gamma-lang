@@ -97,6 +97,7 @@ pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options
     let _ = writeln!(out, "static int gm_checks = {};", opts.checks as u8);
     out.push_str(helpers::SUPPORT);
     out.push_str(&g.ty.blob_typedefs());
+    out.push_str(g.ty.mirror_defs());
     out.push_str(&g.ty.descriptors());
     out.push_str(&g.static_defs);
     out.push_str(&g.frames);
@@ -321,7 +322,11 @@ impl<'a> Gen<'a> {
             for (i, p) in def.params.iter().enumerate() {
                 let t = def.locals[p.index()].ty;
                 params.push(format!("{} a{}", self.c_abi_type(t, def.span)?, i));
-                args.push(format!("({})a{}", self.ty.cty(t), i));
+                // The function takes mirrors itself (it has the plain convention).
+                args.push(match self.ty.mirror(t) {
+                    Some(_) => format!("a{}", i),
+                    None => format!("({})a{}", self.ty.cty(t), i),
+                });
             }
             let call = format!("{}({})", self.fn_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
@@ -329,7 +334,8 @@ impl<'a> Gen<'a> {
                 let _ = writeln!(s, "void {}({}) {{ {}; }}", sym, params, call);
             } else {
                 let r = self.c_abi_type(def.ret, def.span)?;
-                let _ = writeln!(s, "{} {}({}) {{ return ({}){}; }}", r, sym, params, r, call);
+                let call = if self.ty.mirror(def.ret).is_some() { call } else { format!("({}){}", r, call) };
+                let _ = writeln!(s, "{} {}({}) {{ return {}; }}", r, sym, params, call);
             }
         }
         Ok(s)
@@ -463,7 +469,10 @@ impl<'a> Gen<'a> {
         match self.ty.repr(t) {
             Repr::Bool => Ok("_Bool".into()),
             Repr::Int { .. } | Repr::Float(_) | Repr::Ptr => Ok(self.ty.cty(t)),
-            _ => unsupported(span, format!("passing `{}` by value to or from C", t)),
+            _ => match self.ty.mirror(t) {
+                Some(m) => Ok(m),
+                None => unsupported(span, format!("passing `{}` by value to or from C", t)),
+            },
         }
     }
 }

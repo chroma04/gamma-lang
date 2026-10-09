@@ -37,6 +37,8 @@
 #define GM_LD(T, p) ({ T gm_ld_v_; memcpy(&gm_ld_v_, (const void *)(p), sizeof(T)); gm_ld_v_; })
 /* Stores the value v of C type T at address p (any alignment). */
 #define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
+/* The value v as C type T of the same size: a blob as its mirror or back. */
+#define GM_CONV(T, v) ({ __typeof__(v) gm_cv_s_ = (v); T gm_cv_d_; memcpy(&gm_cv_d_, &gm_cv_s_, sizeof(T)); gm_cv_d_; })
 /* A zero value of C type T (scalar or blob). */
 #define GM_ZERO(T) ((T){})
 

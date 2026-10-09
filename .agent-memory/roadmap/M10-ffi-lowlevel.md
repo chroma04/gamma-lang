@@ -12,6 +12,7 @@ yield/sys_write (std modules may use SysOp intrinsics: Module.is_std); C runtime
 gm_unw/gm_cur_fiber/fiber pool + gm_rt_lock for shared tables, -pthread; interp
 src/interp/threads.rs = OS threads + fair ticket GIL (tick() in call_function/eval_loop,
 without_gil() around blocking sys ops; streams Arc'd), fatal trap stops all threads.
-Not yet: structs by value across C ABI, #callconv, @asm, thread-local `#thread_local` in interp
-is per-program (not per thread), const relocs of
+Structs by value across the C ABI done: mirror C types (decisions/009), test run/ffi_structs.
+#thread_local is per thread in both back ends.
+Not yet: #callconv, @asm, const relocs of
 plain fns stored at effectful fnptr types (would need tagging), errno-style TLS foreign globals.

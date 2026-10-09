@@ -29,7 +29,20 @@ Not C-compatible: tagged unions, optionals of non-pointers, results, slices, tup
 c :: import "std/c"
 ```
 
-Struct layout is C's: fields in declaration order, each aligned to its own alignment, the size rounded up to the struct's alignment. So a struct with C-compatible fields has the same layout as the corresponding C struct, and `?^T` is a nullable C pointer.
+Struct layout is C's: fields in declaration order, each aligned to its own alignment, the size rounded up to the struct's alignment. So a struct with C-compatible fields has the same layout as the corresponding C struct, and `?^T` is a nullable C pointer. Such structs can also be passed and returned by value, exactly as C passes the corresponding struct:
+
+```gamma
+DivT :: struct {
+    quot: c.c_int
+    rem: c.c_int
+}
+
+libc :: foreign "c" {
+    div :: fn(n, d: c.c_int) -> DivT \ {}
+}
+
+d := libc.div(17, 5)          // d.quot is 3, d.rem is 2
+```
 
 ## Calling C: `foreign`
 

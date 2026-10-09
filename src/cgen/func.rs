@@ -69,11 +69,19 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     // docs/architecture.md); the others take the hidden env, cx and inst first.
     let plain = g.is_plain(f);
     let void_ret = plain && def.ret.is_unit();
-    let ret = if void_ret { "void".to_string() } else { g.ty.cty(def.ret) };
+    let ret = if void_ret {
+        "void".to_string()
+    } else if plain {
+        g.ty.plain_cty(def.ret)
+    } else {
+        g.ty.cty(def.ret)
+    };
     let mut params =
         if plain { vec![] } else { vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()] };
     for (i, p) in def.params.iter().enumerate() {
-        params.push(format!("{} a{}", g.ty.cty(def.locals[p.index()].ty), i));
+        let t = def.locals[p.index()].ty;
+        let c = if plain { g.ty.plain_cty(t) } else { g.ty.cty(t) };
+        params.push(format!("{} a{}", c, i));
     }
     if params.is_empty() {
         params.push("void".into());
@@ -106,7 +114,9 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     fg.line(&format!("F.h.clause_lit = {} && env != NULL;", clause_lit as u8));
     fg.line("(void)inst;");
     for (i, p) in def.params.iter().enumerate() {
-        fg.line(&format!("F.l{} = a{};", p.0, i));
+        let t = def.locals[p.index()].ty;
+        let a = if plain { fg.gamma_value(t, &format!("a{}", i)) } else { format!("a{}", i) };
+        fg.line(&format!("F.l{} = {};", p.0, a));
     }
     let v = fg.expr(body)?;
     if !body.ty.is_never() {
@@ -115,7 +125,8 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     if void_ret {
         fg.out.push_str("gm_fret:\n    return;\ngm_fprop:\n    return;\n}\n");
     } else {
-        fg.out.push_str("gm_fret:\n    return F.ret;\ngm_fprop:\n    return F.ret;\n}\n");
+        let r = if plain { fg.plain_value(def.ret, "F.ret") } else { "F.ret".into() };
+        let _ = write!(fg.out, "gm_fret:\n    return {r};\ngm_fprop:\n    return {r};\n}}\n");
     }
     let out = std::mem::take(&mut fg.out);
     g.bodies.push_str(&out);

@@ -346,6 +346,16 @@ labels, so they never clash with the runtime's C headers. The interpreter
 cannot call C, so `gamma run` uses this back end for programs with foreign
 functions.
 
-Not yet supported natively: structs passed by value to or from C, and integers wider than 128 bits; the back end reports
+Blobs do not cross the C ABI as C structs do: a struct of two `double`s goes in
+floating-point registers, a 16-byte blob in integer registers. So a struct,
+`#c_union` or `#bits` struct whose fields are all C-compatible also gets a
+*mirror* C type with the same fields (`Types::mirror`), with static assertions
+that the C compiler lays it out exactly as Gamma does. Plain-convention
+signatures (foreign functions, exports, functions with at most `{Sys}`, and
+calls through their pointers) take and return mirrors, and values are copied
+between blob and mirror with `GM_CONV` at those calls; the C compiler removes
+the copies.
+
+Not yet supported natively: integers wider than 128 bits; the back end reports
 them as errors.
 
