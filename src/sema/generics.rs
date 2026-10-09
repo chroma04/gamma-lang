@@ -550,7 +550,10 @@ impl<'a, 's> FnCx<'a, 's> {
             } else {
                 let bound: Vec<(ParamId, Ty)> = binds.iter().map(|(k, v)| (*k, *v)).collect();
                 let expect = self.sema.subst(p.ty, &bound);
-                let v = self.expr(e, (!has_param(expect)).then_some(expect));
+                // A function type with parameters still unbound still helps a function
+                // literal argument: it takes the parts that are known.
+                let partial = matches!(expect.kind(), TyKind::Fn(_) | TyKind::FnPtr(_));
+                let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
                 let t = self.infer.resolve(v.ty);
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(p.ty, t, &mut b2);

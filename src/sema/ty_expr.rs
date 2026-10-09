@@ -18,6 +18,13 @@ impl<'s> Sema<'s> {
                 builtin_type(id.name.as_str()).is_some()
             }
             ExprKind::Paren(inner) => self.looks_like_type(module, inner),
+            // `[3]i32(1, 2, 3)` and `?T(x)` construct values (§A.7 rule 12), unless the call
+            // instantiates a generic type: `[4]List(i32)`.
+            ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner)
+                if matches!(inner.kind, ExprKind::Call { .. }) =>
+            {
+                self.looks_like_type(module, inner)
+            }
             ExprKind::Tuple(elems) => elems.iter().all(|el| self.looks_like_type(module, &el.value)),
             ExprKind::OptionalType(_)
             | ExprKind::PtrType { .. }

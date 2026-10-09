@@ -1,6 +1,7 @@
 //! Function literals (§11.1, §11.6) and nested named functions (§11.8).
 
 use super::func::{FnCx, LocalBinding, NestedFn, error_expr};
+use super::generics::has_param;
 use super::{FnSig, ParamInfo};
 use crate::source::Span;
 use crate::symbol::Symbol;
@@ -36,7 +37,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 let i = params.len();
                 let ty = match (annotated, &expected) {
                     (Some(t), _) => t,
-                    (None, Some(sig)) if i < sig.params.len() => sig.params[i],
+                    // Parts of the expectation that mention type parameters still to be
+                    // inferred (a generic call's `K`) say nothing yet.
+                    (None, Some(sig)) if i < sig.params.len() && !has_param(sig.params[i]) => sig.params[i],
                     _ => {
                         self.error(
                             n.span,
@@ -57,7 +60,7 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         }
         let ret_annot = lit.sig.ret.as_ref().map(|r| self.resolve_type(r));
-        let ret_known = ret_annot.or(expected.as_ref().map(|s| s.ret));
+        let ret_known = ret_annot.or(expected.as_ref().map(|s| s.ret).filter(|r| !has_param(*r)));
         let effects = match &lit.sig.effects {
             Some(list) => {
                 let module = self.module;
