@@ -601,7 +601,9 @@ static void gm_clock_sleep(uint64_t ns) {
 static void gm_rand_fill(void *vp, size_t n) {
     static int fd = -1;
     uint8_t *p = (uint8_t *)vp;
+    pthread_mutex_lock(&gm_rt_lock);
     if (fd < 0) fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    pthread_mutex_unlock(&gm_rt_lock);
     while (n > 0) {
         ssize_t r = fd < 0 ? -1 : read(fd, p, n);
         if (r <= 0) {
@@ -718,6 +720,7 @@ static int64_t gm_fs_open_dir(const void *path, size_t len) {
     int err = errno;
     free(s);
     if (d == NULL) return gm_io_error(err);
+    pthread_mutex_lock(&gm_rt_lock);
     size_t i = 0;
     while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
     if (i == gm_ndirs) {
@@ -728,10 +731,16 @@ static int64_t gm_fs_open_dir(const void *path, size_t len) {
         gm_ndirs = gm_ndirs * 2 + 4;
     }
     gm_dirs[i] = d;
+    pthread_mutex_unlock(&gm_rt_lock);
     return (int64_t)i + 1;
 }
 
-static DIR *gm_dir(int64_t d) { return d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL; }
+static DIR *gm_dir(int64_t d) {
+    pthread_mutex_lock(&gm_rt_lock);
+    DIR *dir = d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL;
+    pthread_mutex_unlock(&gm_rt_lock);
+    return dir;
+}
 
 static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
     DIR *dir = gm_dir(d);
@@ -751,7 +760,9 @@ static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
 static int64_t gm_fs_close_dir(int64_t d) {
     DIR *dir = gm_dir(d);
     if (dir == NULL) return gm_io_error(EBADF);
+    pthread_mutex_lock(&gm_rt_lock);
     gm_dirs[d - 1] = NULL;
+    pthread_mutex_unlock(&gm_rt_lock);
     return GM_RET_ERR(closedir(dir) != 0);
 }
 
@@ -935,7 +946,9 @@ static void *gm_heap_alloc(size_t size, size_t align) {
     memcpy(p - sizeof(void *), &raw, sizeof raw);
     if (gm_debug != 0) {
         memset(p, 0xAA, size);
+        pthread_mutex_lock(&gm_rt_lock);
         gm_hb_record(a, size);
+        pthread_mutex_unlock(&gm_rt_lock);
     }
     return p;
 }
@@ -953,6 +966,7 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
         return;
     }
     char msg[160];
+    pthread_mutex_lock(&gm_rt_lock);
     gm_hblock *b = gm_hb_find((uintptr_t)p);
     if (b != NULL && b->state == GM_HB_FREED) {
         snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
@@ -963,9 +977,51 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
                  (unsigned long long)(uintptr_t)p, (unsigned long long)size);
         gm_trap(msg, file, line, col);
     }
-    memset(p, 0xDD, size);
     b->state = GM_HB_FREED;
+    pthread_mutex_unlock(&gm_rt_lock);
+    memset(p, 0xDD, size);
     gm_heap_release(p);
+}
+
+/* ---- threads ---------------------------------------------------------------------------- */
+
+typedef struct { pthread_t t; void (*f)(void *); void *arg; } gm_thread;
+
+static void *gm_thread_main(void *p) {
+    gm_thread *t = (gm_thread *)p;
+    t->f(t->arg);
+    return NULL;
+}
+
+static int64_t gm_thread_spawn(void *f, void *arg) {
+    gm_thread *t = (gm_thread *)malloc(sizeof *t);
+    if (t == NULL) return gm_io_error(ENOMEM);
+    t->f = (void (*)(void *))f;
+    t->arg = arg;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8u << 20);
+    int r = pthread_create(&t->t, &attr, gm_thread_main, t);
+    pthread_attr_destroy(&attr);
+    if (r != 0) {
+        free(t);
+        return gm_io_error(r);
+    }
+    return (int64_t)(intptr_t)t;
+}
+
+static int64_t gm_thread_join(int64_t h) {
+    gm_thread *t = (gm_thread *)(intptr_t)h;
+    int r = pthread_join(t->t, NULL);
+    free(t);
+    return r == 0 ? 0 : gm_io_error(r);
+}
+
+static void gm_thread_yield(void) { sched_yield(); }
+
+static void gm_sys_write(int32_t fd, const void *p, size_t n) {
+    if (fd == 2) gm_write_err((const uint8_t *)p, n);
+    else gm_write_out((const uint8_t *)p, n);
 }
 
 /* ---- handler contexts and non-local exits ---------------------------------------------- */
@@ -1111,7 +1167,7 @@ static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
 
 /* ---- fibers ---------------------------------------------------------------------------- */
 
-static gm_fiber *gm_fiber_pool;
+static _Thread_local gm_fiber *gm_fiber_pool;
 
 static _Noreturn void gm_stack_overflow(void) {
     gm_trap("stack overflow on a fiber stack", NULL, 0, 0);

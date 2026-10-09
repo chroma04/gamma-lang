@@ -1,6 +1,6 @@
 /* Tests of the C back end's runtime. Built and run by tests/runtime.rs:
  *
- *     cc -std=gnu11 -O1 -Wall -Werror -Wno-unused-function -I runtime runtime/rt_test.c
+ *     cc -std=gnu11 -O1 -pthread -Wall -Werror -Wno-unused-function -I runtime runtime/rt_test.c
  *
  * With no arguments it runs every check and exits non-zero if any failed. With a case name
  * (`trap`, `double-free`, `invalid-free`, `wrong-size`, `args`) it runs that one scenario,

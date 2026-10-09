@@ -146,6 +146,9 @@ impl<'s> Sema<'s> {
         let package = self.package_of(&key);
         let m = self.add_module(Symbol::intern(&name), files, false);
         self.modules[m.0 as usize].dir = Some(dir.to_path_buf());
+        // Standard library modules may use the system intrinsics, like the core library.
+        let std = std_root().canonicalize().unwrap_or_else(|_| std_root());
+        self.modules[m.0 as usize].is_std = key.starts_with(&std);
         self.modules[m.0 as usize].package = Some(package);
         self.module_by_dir.insert(key, m);
         // Its top-level `when`s are processed now that its directory is known.

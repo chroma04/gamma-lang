@@ -16,8 +16,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub struct SysState {
     files: HashMap<i64, std::fs::File>,
     dirs: HashMap<i64, std::fs::ReadDir>,
-    streams: HashMap<i64, std::net::TcpStream>,
-    listeners: HashMap<i64, std::net::TcpListener>,
+    // Shared, so a blocking call can use one while other threads run (§19.6).
+    streams: HashMap<i64, std::sync::Arc<std::net::TcpStream>>,
+    listeners: HashMap<i64, std::sync::Arc<std::net::TcpListener>>,
     last: i64,
 }
 
@@ -101,12 +102,17 @@ impl<'a> Machine<'a> {
                 let (ptr, len) = self.slice_parts(&vals[0]);
                 let mut buf = vec![0u8; len as usize];
                 let _ = self.out.as_mut().map(|w| w.flush());
-                let n = loop {
-                    match std::io::stdin().lock().read(&mut buf) {
-                        Ok(n) => break n,
-                        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(err) => return Ok(int(self, e.ty, error_code(&err) as i128)),
+                let r = self.without_gil(|| {
+                    loop {
+                        match std::io::stdin().lock().read(&mut buf) {
+                            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                            r => break r,
+                        }
                     }
+                });
+                let n = match r {
+                    Ok(n) => n,
+                    Err(err) => return Ok(int(self, e.ty, error_code(&err) as i128)),
                 };
                 self.store(e.span, ptr, &buf[..n], 1)?;
                 Ok(int(self, e.ty, n as i128))
@@ -121,7 +127,7 @@ impl<'a> Machine<'a> {
             }
             SysOp::Sleep => {
                 let ns = self.int_of(args[0].ty, &vals[0]).to_u64_sat();
-                std::thread::sleep(std::time::Duration::from_nanos(ns));
+                self.without_gil(|| std::thread::sleep(std::time::Duration::from_nanos(ns)));
                 Ok(Value::unit())
             }
             SysOp::FsOpen
@@ -149,6 +155,32 @@ impl<'a> Machine<'a> {
             | SysOp::NetClose => {
                 let n = self.net_op(e, op, args, &vals)?;
                 Ok(int(self, e.ty, n as i128))
+            }
+            SysOp::ThreadSpawn => {
+                let f = self.ptr_of(&vals[0]);
+                let h = self.spawn_thread(e.span, f, Value::Bytes(vals[1].clone()))?;
+                Ok(int(self, e.ty, h as i128))
+            }
+            SysOp::ThreadJoin => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let r = self.join_thread(h)?;
+                Ok(int(self, e.ty, r as i128))
+            }
+            SysOp::ThreadYield => {
+                self.yield_thread()?;
+                Ok(Value::unit())
+            }
+            SysOp::SysWrite => {
+                let fd = self.int_arg(&args[0], &vals[0]);
+                let data = self.read_str(e.span, &vals[1])?;
+                let w = if fd == 2 { self.errw.as_mut() } else { self.out.as_mut() };
+                if let Some(w) = w {
+                    let _ = w.write_all(&data);
+                    if fd == 2 {
+                        let _ = w.flush();
+                    }
+                }
+                Ok(Value::unit())
             }
             SysOp::RandFill => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
@@ -318,11 +350,12 @@ impl<'a> Machine<'a> {
         };
         Ok(match op {
             SysOp::NetConnect => {
-                let r = addr(self)?.and_then(|a| TcpStream::connect(&a[..]));
+                let a = addr(self)?;
+                let r = self.without_gil(|| a.and_then(|a| TcpStream::connect(&a[..])));
                 let sys = &mut self.sys;
                 code(r.map(|s| {
                     let h = sys.handle();
-                    sys.streams.insert(h, s);
+                    sys.streams.insert(h, s.into());
                     h
                 }))
             }
@@ -331,7 +364,7 @@ impl<'a> Machine<'a> {
                 let sys = &mut self.sys;
                 code(r.map(|l| {
                     let h = sys.handle();
-                    sys.listeners.insert(h, l);
+                    sys.listeners.insert(h, l.into());
                     h
                 }))
             }
@@ -347,22 +380,22 @@ impl<'a> Machine<'a> {
             }
             SysOp::NetAccept => {
                 let h = self.int_arg(&args[0], &vals[0]);
-                let r = match self.sys.listeners.get(&h) {
-                    Some(l) => l.accept().map(|(s, _)| s),
+                let r = match self.sys.listeners.get(&h).cloned() {
+                    Some(l) => self.without_gil(|| l.accept().map(|(s, _)| s)),
                     None => Err(bad_handle()),
                 };
                 let sys = &mut self.sys;
                 code(r.map(|s| {
                     let h = sys.handle();
-                    sys.streams.insert(h, s);
+                    sys.streams.insert(h, s.into());
                     h
                 }))
             }
             SysOp::NetSend => {
                 let h = self.int_arg(&args[0], &vals[0]);
                 let data = self.read_str(e.span, &vals[1])?;
-                code(match self.sys.streams.get_mut(&h) {
-                    Some(s) => s.write(&data).map(|n| n as i64),
+                code(match self.sys.streams.get(&h).cloned() {
+                    Some(s) => self.without_gil(|| (&*s).write(&data).map(|n| n as i64)),
                     None => Err(bad_handle()),
                 })
             }
@@ -370,8 +403,8 @@ impl<'a> Machine<'a> {
                 let h = self.int_arg(&args[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
                 let mut buf = vec![0u8; len as usize];
-                let r = match self.sys.streams.get_mut(&h) {
-                    Some(s) => s.read(&mut buf),
+                let r = match self.sys.streams.get(&h).cloned() {
+                    Some(s) => self.without_gil(|| (&*s).read(&mut buf)),
                     None => Err(bad_handle()),
                 };
                 match r {

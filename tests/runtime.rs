@@ -25,7 +25,7 @@ fn build() -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok()?;
     let exe = dir.join(if cfg!(windows) { "rt_test.exe" } else { "rt_test" });
     let out = Command::new(&cc)
-        .args(["-std=gnu11", "-O1", "-Wall", "-Werror", "-Wno-unused-function", "-I"])
+        .args(["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-I"])
         .arg(root().join("runtime"))
         .arg(root().join("runtime/rt_test.c"))
         .arg("-o")

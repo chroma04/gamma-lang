@@ -63,6 +63,9 @@ pub struct Module {
     /// True for the core library's modules (the prelude's public names are in
     /// the universe scope).
     pub is_prelude: bool,
+    /// True for the standard library's modules (under the std root), which may use the
+    /// system intrinsics.
+    pub is_std: bool,
     /// The module's directory (`None` for the core library), for relative imports.
     pub dir: Option<std::path::PathBuf>,
     /// The package the module belongs to (an index into `Sema::packages`).

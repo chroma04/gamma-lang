@@ -266,6 +266,13 @@ count, so consuming one twice, or from the wrong `with`, is detected. Fiber
 stack usage is estimated per call from the size of each frame's locals, so
 running out of a fiber's stack traps as in compiled code.
 
+**Threads.** Each Gamma thread runs on an OS thread of its own, sharing the
+machine under a fair global lock (`src/interp/threads.rs`): a thread holds it while
+it evaluates and hands it on every few thousand calls or loop iterations and around
+calls that may block. A trap on any thread is recorded and stops every thread at its
+next turn. The lock is created by the first `@thread_spawn`, so single-threaded
+programs never take it.
+
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so
 the value can later be placed in a compiled program's read-only data.

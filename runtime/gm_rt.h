@@ -23,6 +23,8 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <pthread.h>
+#include <sched.h>
 
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
@@ -166,6 +168,17 @@ static int64_t gm_net_send(int64_t h, const void *p, size_t n);
 static int64_t gm_net_recv(int64_t h, void *p, size_t n);
 static int64_t gm_net_close(int64_t h);
 
+/* ---- threads (§19.6) ----------------------------------------------------------------
+ *
+ * A thread runs a plain function `void f(void *arg)`. Fibers, handler contexts and the exit in
+ * progress are per thread; the runtime's own shared tables are guarded by gm_rt_lock. */
+static pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
+static int64_t gm_thread_join(int64_t h);
+static void gm_thread_yield(void);
+/* Writes to standard output (fd 1, buffered like Out) or standard error (fd 2). */
+static void gm_sys_write(int32_t fd, const void *p, size_t n);
+
 /* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
 
 /* Returns NULL when out of memory. In debug builds (gm_debug != 0) the block is filled with
@@ -207,7 +220,8 @@ enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT, GM_RESUME, GM_CANCEL 
 /* C11 memory orders, indexed by the tag of `MemoryOrder` (§19.6). */
 static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
 typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
-static gm_unwind gm_unw;
+/* Each thread has its own exit in progress (§19.6). */
+static _Thread_local gm_unwind gm_unw;
 
 /* The innermost handler of effect `eff` in context `cx`, or NULL. */
 static gm_node *gm_find(gm_node *cx, uint32_t eff);
@@ -285,7 +299,7 @@ static gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*sta
 static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 /* Checked builds: traps if a frame at address `p` is below the running fiber's limit. */
 #define GM_STACK_CHECK(p) do { if (gm_cur_fiber && (uintptr_t)(p) < gm_cur_fiber->limit) gm_stack_overflow(); } while (0)
-static gm_fiber *gm_cur_fiber;      /* the running fiber, or NULL on the main stack */
+static _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 static _Noreturn void gm_stack_overflow(void);
 /* Driver: switches to `fb` until something happens on `w` (an event). */
 static void gm_with_go(gm_with *w, gm_fiber *fb);

@@ -8,4 +8,7 @@ main :: fn() \ {Out} {
     print("{} {} {}\n", (@sqrt(2.0f32), @sqrt(f64(2)), @fma(0.1, 10.0, -1.0)))
     z: i8 = -1
     print("{} {}\n", (@popcount(z), @bitreverse(i8(1))))
+    zero: u16 = 0
+    wide: u128 = 0
+    print("{} {} {} {}\n", (@clz(zero), @ctz(zero), @clz(wide), @ctz(wide)))
 }

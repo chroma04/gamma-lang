@@ -116,6 +116,15 @@ pub enum SysOp {
     NetRecv,
     /// `@net_close(h: i64) -> i64`: closes a connection or a listening socket.
     NetClose,
+    /// `@thread_spawn(f: ^fn(arg: rawptr) \ {Sys}, arg: rawptr) -> i64`: a new thread
+    /// running `f(arg)` with no handlers installed (§19.6); its handle.
+    ThreadSpawn,
+    /// `@thread_join(h: i64) -> i64`: waits for the thread to finish.
+    ThreadJoin,
+    /// `@thread_yield()`: lets other threads run.
+    ThreadYield,
+    /// `@sys_write(fd: i32, bytes: []const u8)`: standard output (1) or error (2).
+    SysWrite,
 }
 
 /// Flags of [`SysOp::FsOpen`].
@@ -161,10 +170,15 @@ impl SysOp {
             SysOp::NetSend => ("net_send", vec![i64, Ty::string()], i64),
             SysOp::NetRecv => ("net_recv", vec![i64, buf], i64),
             SysOp::NetClose => ("net_close", vec![i64], i64),
+            // The function's type is checked separately: any `^fn(arg: rawptr) \ {Sys}`.
+            SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
+            SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
+            SysOp::ThreadYield => ("thread_yield", vec![], Ty::unit()),
+            SysOp::SysWrite => ("sys_write", vec![Ty::int(true, 32), Ty::string()], Ty::unit()),
         }
     }
 
-    pub const ALL: [SysOp; 25] = [
+    pub const ALL: [SysOp; 29] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -190,6 +204,10 @@ impl SysOp {
         SysOp::NetSend,
         SysOp::NetRecv,
         SysOp::NetClose,
+        SysOp::ThreadSpawn,
+        SysOp::ThreadJoin,
+        SysOp::ThreadYield,
+        SysOp::SysWrite,
     ];
 }
 

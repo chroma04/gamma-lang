@@ -1,0 +1,56 @@
+// Threads (§19.6): std/thread, atomics and a mutex. Each worker adds to a shared atomic
+// counter and, under the mutex, to a plain one; both totals are exact.
+thread :: import "std/thread"
+
+Shared :: struct {
+    atomic_total: u64
+    locked_total: u64
+    m: thread.Mutex
+}
+
+work :: fn(arg: rawptr) \ {Sys} {
+    s := arg.cast(^Shared)
+    for i in 0..1000 {
+        _ = @atomic_add(&s.atomic_total, 1, .Relaxed)
+        s.m.lock()
+        s.locked_total += 2
+        s.m.unlock()
+    }
+}
+
+greet :: fn(arg: rawptr) \ {Sys} {
+    n := arg.cast(^u32)
+    thread.defaults(fn() \ {Out} { print("hello from thread {}\n", n^) })
+}
+
+// Waits for the main thread's signal, then answers: a handshake through atomics.
+ping :: fn(arg: rawptr) \ {Sys} {
+    flags := arg.cast(^[2]u32)
+    while @atomic_load(&flags[0], .Acquire) is 0 {}
+    @atomic_store(&flags[1], 7, .Release)
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    s := Shared(atomic_total: 0, locked_total: 0, m: thread.mutex())
+    ts: [4]thread.Thread = ---
+    for i in 0..4 {
+        ts[i] = try thread.spawn(work, (&s).cast(rawptr))
+    }
+    for i in 0..4 { ts[i].join() }
+    print("{} {}\n", (s.atomic_total, s.locked_total))
+
+    // One at a time, so the output order is fixed.
+    for k in 1..4 {
+        n: u32 = k
+        t := try thread.spawn(greet, (&n).cast(rawptr))
+        t.join()
+    }
+    flags := [2]u32(0, 0)
+    p := try thread.spawn(ping, (&flags).cast(rawptr))
+    @atomic_store(&flags[0], 1, .Release)
+    while @atomic_load(&flags[1], .Acquire) is 0 { thread.yield_now() }
+    p.join()
+    print("handshake: {}\n", flags[1])
+    print("try_lock: {} {}\n", (s.m.try_lock(), s.m.try_lock()))
+    s.m.unlock()
+}

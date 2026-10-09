@@ -35,6 +35,7 @@ pub mod num;
 mod ops;
 mod stmt;
 mod sys;
+mod threads;
 mod value;
 
 #[cfg(test)]

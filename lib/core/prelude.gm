@@ -244,7 +244,22 @@ handler Net for SystemIo {
     close_listener(self, l) => { _ = @net_close(l.handle) }
 }
 
-system_io :: fn() -> SystemIo => SystemIo()
+/// The default handlers of `In`, `Clock`, `Rand`, `Fs` and `Net`, for code that starts
+/// without handlers: a new thread, or a function exported to C (§19.4, §19.6).
+pub system_io :: fn() -> SystemIo => SystemIo()
+
+SystemOutput :: struct {}
+
+handler Out for SystemOutput {
+    write_out(self, bytes) => @sys_write(1, bytes)
+}
+
+handler Err for SystemOutput {
+    write_err(self, bytes) => @sys_write(2, bytes)
+}
+
+/// The default handlers of `Out` and `Err`: standard output and standard error.
+pub system_output :: fn() -> SystemOutput => SystemOutput()
 
 // Standard iterators (§13.3, §21.4).
 

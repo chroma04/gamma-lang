@@ -36,13 +36,13 @@ const STACK_RESERVE: u64 = 8192;
 /// Values crossing between fiber threads. Only one thread runs at a time and
 /// every handoff goes through a channel, so the `Rc`s inside are never used
 /// concurrently.
-pub struct Sendable<T>(T);
+pub struct Sendable<T>(pub(super) T);
 // SAFETY: see the type's documentation.
 unsafe impl<T> Send for Sendable<T> {}
 
 impl<T> Sendable<T> {
     /// Unwraps the value (a method, so that closures capture the whole wrapper).
-    fn into_inner(self) -> T {
+    pub(super) fn into_inner(self) -> T {
         self.0
     }
 }
@@ -117,7 +117,7 @@ struct FiberRec {
 }
 
 /// The per-thread part of the machine, saved across a handoff.
-struct ThreadState {
+pub(super) struct ThreadState {
     temps: Vec<u64>,
     fiber_stack: u64,
     depth: u32,
@@ -130,7 +130,7 @@ fn aborted() -> Box<Flow> {
 }
 
 impl<'a> Machine<'a> {
-    fn save_thread(&mut self) -> ThreadState {
+    pub(super) fn save_thread(&mut self) -> ThreadState {
         ThreadState {
             temps: std::mem::take(&mut self.temps),
             fiber_stack: self.fiber_stack,
@@ -140,7 +140,7 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn restore_thread(&mut self, s: ThreadState) {
+    pub(super) fn restore_thread(&mut self, s: ThreadState) {
         self.temps = s.temps;
         self.fiber_stack = s.fiber_stack;
         self.depth = s.depth;

@@ -16,15 +16,16 @@
   atomics, volatile; #bits/#c_union in both backends.
 - M8 fibers done in sema, interpreter and C (roadmap/M08 status, decisions/010).
 - M11 mostly done (roadmap/M11 status): all ambient effects with system + test handlers,
-  std io/fs/fmt/arena/fixed_buffer/c; std/math in flight (agent).
+  std io/fs/fmt/math/thread/arena/fixed_buffer/c (docs/std.md).
 - Core modules (is_prelude=true) may: use @heap_*, see prelude privates, use `is`/@hash on params.
 - Not yet: §16.6 distinctness, @stack_size, cursor(), C-backend gaps (M07 status),
-  threads/@asm/#callconv (M10).
+  @asm/#callconv/structs by value over C ABI (M10).
+- Threads done (M10 status): std/thread, interp GIL (src/interp/threads.rs), C TLS + locks.
 - Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.
 
 ## Next steps
-1. Merge std/math; then M10 threads (+std/thread), @stack_size, cursor(), §16.6 distinctness.
+1. @stack_size, cursor(), §16.6 distinctness; #thread_local per thread in interp; @asm.
 2. C-backend gaps (M07 status); M12 polish (docs/guide review, diagnostics).
 3. Keep PR green; CI runs on push.
 

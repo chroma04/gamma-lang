@@ -86,6 +86,8 @@ pub struct Machine<'a> {
     frame_costs: HashMap<FnId, u64>,
     /// Open files and directories of the file-system services.
     pub sys: super::sys::SysState,
+    /// The program's threads (§19.6).
+    pub threads: super::threads::Threads,
 }
 
 pub const MAX_DEPTH: u32 = 200_000;
@@ -126,6 +128,7 @@ impl<'a> Machine<'a> {
             fiber_stack: u64::MAX,
             frame_costs: HashMap::new(),
             sys: Default::default(),
+            threads: Default::default(),
             code_end,
         }
     }

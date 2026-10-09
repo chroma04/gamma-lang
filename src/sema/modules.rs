@@ -111,6 +111,7 @@ impl<'s> Sema<'s> {
             name,
             scope: HashMap::new(),
             is_prelude,
+            is_std: false,
             dir: None,
             package: None,
             pending_whens: vec![],

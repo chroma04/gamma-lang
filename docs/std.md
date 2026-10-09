@@ -140,6 +140,38 @@ Annex F.
   `sinh`, `cosh`, `tanh`.
 - `floor`, `ceil`, `trunc`, `round` (half away from zero), `fmod`/`rem`, `copysign`, `abs`.
 
+## `std/thread`
+
+Threads (§19.6). A thread runs a plain function `^fn(arg: rawptr) \ {Sys}` and starts with
+no handlers; `thread.defaults(fn() { … })` runs a closure under the default handlers of
+every ambient effect.
+
+```gamma
+thread :: import "std/thread"
+
+work :: fn(arg: rawptr) \ {Sys} {
+    counter := arg.cast(^u64)
+    _ = @atomic_add(counter, 1, .Relaxed)
+    thread.defaults(fn() { print("done\n") })
+}
+
+n: u64 = 0
+t := try thread.spawn(work, (&n).cast(rawptr))
+t.join()
+```
+
+- `spawn(f, arg) -> IoError!Thread`, `t.join()`, `yield_now()`.
+- `Mutex`: `mutex()`, `m.lock()`, `m.try_lock()`, `m.unlock()`.
+- Shared memory needs atomics or a mutex; a data race is undefined behavior. Handlers,
+  second-class functions and continuations never cross threads.
+- The default handlers are also available directly, for code that starts without any:
+  `heap_allocator()`, `system_io()` (`In`, `Clock`, `Rand`, `Fs`, `Net`) and
+  `system_output()` (`Out`, `Err`).
+
+The interpreter runs threads one at a time, switching between them often and whenever
+one blocks, so programs behave as they do compiled, without data races in the
+interpreter itself.
+
 ## `std/c`
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring

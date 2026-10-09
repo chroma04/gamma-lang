@@ -787,7 +787,9 @@ impl<'a, 's> FnCx<'a, 's> {
             "popcount" => (tir::Builtin::Popcount, Ty::int(false, 32)),
             "bswap" => {
                 let bits = self.sema.with_layouts(|l| l.size_of(t)) * 8;
-                if !matches!(t.kind(), TyKind::Int(i) if i.bits as u64 == bits) && !matches!(t.kind(), TyKind::Usize | TyKind::Isize) {
+                if !matches!(t.kind(), TyKind::Int(i) if i.bits as u64 == bits)
+                    && !matches!(t.kind(), TyKind::Usize | TyKind::Isize)
+                {
                     self.error(span, format!("`@bswap` needs an integer of whole bytes, not `{}`", t));
                 }
                 (tir::Builtin::Bswap, t)
@@ -863,7 +865,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
             }
-            n if self.sema.modules[self.module.0 as usize].is_prelude
+            n if (self.sema.modules[self.module.0 as usize].is_prelude
+                || self.sema.modules[self.module.0 as usize].is_std)
                 && tir::SysOp::ALL.iter().any(|op| op.signature().0 == n) =>
             {
                 let op = *tir::SysOp::ALL.iter().find(|op| op.signature().0 == n).unwrap();
@@ -873,8 +876,27 @@ impl<'a, 's> FnCx<'a, 's> {
                     return error_expr(span);
                 }
                 let mut vals = vec![];
-                for (a, t) in args.iter().zip(params) {
+                for (i, (a, t)) in args.iter().zip(params).enumerate() {
                     let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
+                    if op == tir::SysOp::ThreadSpawn && i == 0 {
+                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6).
+                        let v = self.expr(e, None);
+                        let vt = self.infer.resolve(v.ty);
+                        let ok = match vt.kind() {
+                            TyKind::FnPtr(sig) => {
+                                sig.params.len() == 1
+                                    && matches!(sig.params[0].kind(), TyKind::Rawptr)
+                                    && sig.ret.is_unit()
+                                    && self.sema.within_sys(&sig.effects)
+                            }
+                            _ => false,
+                        };
+                        if !ok && !vt.is_error() {
+                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) \\ {{Sys}}`, not `{}`", vt));
+                        }
+                        vals.push(v);
+                        continue;
+                    }
                     let v = self.expr(e, Some(t));
                     vals.push(self.coerce(v, t));
                 }
@@ -1391,6 +1413,16 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.embeds(src, target) {
             let span = e.span;
             return mk(target, tir::ExprKind::Coerce { kind: Coercion::PtrToPtr, expr: Box::new(e) }, span);
+        }
+        // A second-class function may stand where one with more effects is expected: the
+        // callee handles those effects for it (§11.6, §12.3).
+        if let (TyKind::Fn(a), TyKind::Fn(b)) = (src.kind(), target.kind())
+            && a.params == b.params
+            && a.ret == b.ret
+            && a.effects.is_subset_of(&b.effects)
+        {
+            let span = e.span;
+            return mk(target, tir::ExprKind::Coerce { kind: Coercion::FnToPtr, expr: Box::new(e) }, span);
         }
         match self.coercion_steps(src, target) {
             Some(steps) => apply_steps(e, steps),

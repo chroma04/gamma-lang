@@ -1,0 +1,6 @@
+4000 8000
+hello from thread 1
+hello from thread 2
+hello from thread 3
+handshake: 7
+try_lock: true false

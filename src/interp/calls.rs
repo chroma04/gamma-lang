@@ -90,6 +90,7 @@ impl<'a> Machine<'a> {
         if (&marker as *const u8 as usize) < self.stack_floor {
             return self.trap(span, "stack overflow");
         }
+        self.tick()?;
         if args.len() != f.params.len() {
             return self.trap(
                 span,

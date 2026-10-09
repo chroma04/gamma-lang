@@ -356,6 +356,7 @@ impl<'a> Machine<'a> {
         let mark = self.temps.len();
         loop {
             self.kill_temps(mark);
+            self.tick()?;
             if !self.eval_conds(a, cond)? {
                 return Ok(Value::unit());
             }
