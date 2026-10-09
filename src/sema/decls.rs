@@ -130,9 +130,11 @@ impl<'s> Sema<'s> {
                         self.error(attr.span, "`#deprecated` takes an optional message: `#deprecated(\"use g\")`");
                     }
                 }
-                "packed" | "align" | "bits" | "c_union" | "link_name" => {
-                    self.error(attr.span, format!("attribute `#{}` is not supported here yet", attr.name.name))
-                }
+                "packed" | "align" | "bits" | "c_union" => self.error(
+                    attr.span,
+                    format!("`#{}` goes directly before a `struct` or `union` literal (§20.2)", attr.name.name),
+                ),
+                "link_name" => self.error(attr.span, "`#link_name` applies to a member of a `foreign` block (§19.2)"),
                 other => self.error(attr.span, format!("unknown attribute `#{}` (§20.2)", other)),
             }
         }

@@ -23,3 +23,10 @@
   Generic calls: `generic_call_spread` evaluates spreads (and non-trivial earlier args) into
   named locals `<argN>` and rewrites the AST args to `<argN>.k` / `name: <argN>.name`.
 - `(T1, T2)(…)` tuple-type construction: classify_callee checks Tuple + looks_like_type.
+- `if v := r {…} else e => d`: if_expr turns the last branch into Match{Ok(p) => then, Err(e) => d}.
+- Generic nested fns: fnlit::nested_generic_fn builds a synthetic Item and calls
+  decls::declare_fn; Sema.nested_generic maps FnId → name so check_fn_body declares it (recursion).
+- Qualified consts in patterns: pattern.rs const_pattern_value evaluates to a literal.
+- Consts needing temps: check_const_expr wraps them in a `<constant>` FnDef + Call.
+- `[2]P(…)[1].y`: expr::hoist_prefix rewrites the AST (prefix applies to the construction).
+- Non-capturing literal with own effects: FnDef.effects gets them (so cgen isn't plain).

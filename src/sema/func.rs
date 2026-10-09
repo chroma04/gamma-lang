@@ -495,7 +495,10 @@ impl<'a, 's> FnCx<'a, 's> {
         match &s.kind {
             StmtKind::Binding { attrs, binding } => {
                 for a in attrs {
-                    self.error(a.span, format!("attribute `#{}` is not supported here yet", a.name.name));
+                    self.error(
+                        a.span,
+                        format!("attribute `#{}` does not apply to a local binding (§20.2)", a.name.name),
+                    );
                 }
                 self.binding(binding)
             }
