@@ -505,6 +505,11 @@ impl<'s> Sema<'s> {
                 }
             };
         }
+        if let ExprKind::Field { base, .. } = &e.kind
+            && self.names_error(module, base)
+        {
+            return None;
+        }
         self.error(e.span, "expected an effect name");
         None
     }

@@ -417,20 +417,30 @@ fn conformance() {
     let filter = std::env::var("GAMMA_TEST_FILTER").ok();
     let bless = std::env::var("BLESS").is_ok_and(|v| v == "1");
     let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut failures = BTreeMap::new();
-    let mut count = 0;
-    for f in &files {
-        let rel = f.strip_prefix(base).unwrap_or(f).to_path_buf();
-        if let Some(filter) = &filter
-            && !rel.to_string_lossy().contains(filter.as_str())
-        {
-            continue;
+    let selected: Vec<PathBuf> = files
+        .iter()
+        .map(|f| f.strip_prefix(base).unwrap_or(f).to_path_buf())
+        .filter(|rel| filter.as_ref().is_none_or(|flt| rel.to_string_lossy().contains(flt.as_str())))
+        .collect();
+    let count = selected.len();
+    // Each test runs `gamma` in processes of its own, so tests run in parallel.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(BTreeMap::new());
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(rel) = selected.get(i) else { break };
+                    if let Err(msg) = run_one(rel, bless) {
+                        failures.lock().unwrap().insert(rel.display().to_string(), msg);
+                    }
+                }
+            });
         }
-        count += 1;
-        if let Err(msg) = run_one(&rel, bless) {
-            failures.insert(rel.display().to_string(), msg);
-        }
-    }
+    });
+    let failures = failures.into_inner().unwrap();
     for (name, msg) in &failures {
         eprintln!("FAIL {}\n{}\n", name, msg);
     }

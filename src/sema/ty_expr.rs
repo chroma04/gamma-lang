@@ -237,10 +237,21 @@ impl<'s> Sema<'s> {
                     }
                 }
             }
+            // `m.T` where `m` failed to resolve (a bad import, already reported).
+            ExprKind::Field { base, .. } if self.names_error(module, base) => Ty::error(),
             _ => {
                 self.error(e.span, "expected a type");
                 Ty::error()
             }
+        }
+    }
+
+    /// True if `e` is a name whose declaration has errors (already reported).
+    pub fn names_error(&mut self, module: ModuleId, e: &ast::Expr) -> bool {
+        let ExprKind::Ident(id) = &e.kind else { return false };
+        match self.lookup_module_name(module, id.name) {
+            Some(d) => matches!(self.resolve_decl(d), super::DeclValue::Error),
+            None => false,
         }
     }
 
