@@ -966,6 +966,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             },
             "fiber" => self.fiber_intrinsic(args, span),
+            "asm" => self.asm(args, span),
             "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
@@ -1716,6 +1717,122 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
     }
 
+    /// `@asm(template, outputs, inputs, clobbers)` (§19.5).
+    fn asm(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let exprs: Vec<&ast::Expr> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ast::ArgKind::Positional(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        let [template, outputs, inputs, clobbers] = exprs.as_slice() else {
+            self.error(
+                span,
+                "`@asm` takes a template, outputs, inputs and clobbers: `@asm(template, outputs, inputs, clobbers)`",
+            );
+            return error_expr(span);
+        };
+        if exprs.len() != args.len() {
+            self.error(span, "`@asm` takes positional arguments only");
+        }
+        let sys = self.sema.sys_set();
+        self.record_effects(&sys, span);
+        let str_expr = |s: String, span: Span| mk(Ty::string(), tir::ExprKind::Str(Rc::from(s.as_bytes())), span);
+        let mut vals = vec![];
+        let mut ok = true;
+        match self.const_str_here(template) {
+            Some(s) => vals.push(str_expr(s, template.span)),
+            None => {
+                self.error(template.span, "the template of `@asm` must be a compile-time string");
+                ok = false;
+            }
+        }
+        let mut counts = [0u32; 2];
+        for (k, list) in [outputs, inputs].into_iter().enumerate() {
+            for entry in asm_entries(list, true) {
+                let parts = match &entry.kind {
+                    ast::ExprKind::Tuple(parts) => parts.as_slice(),
+                    _ => &[],
+                };
+                let [c, operand] = parts else {
+                    self.error(entry.span, "an `@asm` operand is a pair: `(constraint, operand)`");
+                    ok = false;
+                    continue;
+                };
+                let Some(cs) = self.const_str_here(&c.value) else {
+                    self.error(c.value.span, "an `@asm` constraint must be a compile-time string");
+                    ok = false;
+                    continue;
+                };
+                let v = self.expr(&operand.value, None);
+                let t = self.infer.resolve(v.ty);
+                let scalar = |t: Ty| {
+                    matches!(t.kind(), TyKind::Int(i) if matches!(i.bits, 8 | 16 | 32 | 64))
+                        || matches!(
+                            t.kind(),
+                            TyKind::Usize
+                                | TyKind::Isize
+                                | TyKind::Bool
+                                | TyKind::Rawptr
+                                | TyKind::Ptr { .. }
+                                | TyKind::ManyPtr { .. }
+                                | TyKind::FnPtr(_)
+                        )
+                        || matches!(t.kind(), TyKind::Float(f) if *f != crate::types::FloatTy::F16)
+                        || matches!(t.kind(), TyKind::Optional(p) if crate::layout::is_nullable_pointer(*p))
+                };
+                let fine = if k == 0 {
+                    // An output is written through a pointer to its place.
+                    matches!(t.kind(), TyKind::Ptr { is_const: false, pointee } if scalar(*pointee))
+                } else {
+                    scalar(t) || t.is_error()
+                };
+                if !fine && !t.is_error() {
+                    let what = if k == 0 { "an output needs a `^T` pointer to" } else { "an input must be" };
+                    self.error(
+                        operand.value.span,
+                        format!("{} an integer, float, `bool` or pointer, not `{}`", what, t),
+                    );
+                    ok = false;
+                }
+                vals.push(str_expr(cs, c.value.span));
+                vals.push(v);
+                counts[k] += 1;
+            }
+        }
+        for c in asm_entries(clobbers, false) {
+            match self.const_str_here(c) {
+                Some(s) => vals.push(str_expr(s, c.span)),
+                None => {
+                    self.error(c.span, "an `@asm` clobber must be a compile-time string");
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            return error_expr(span);
+        }
+        let op = tir::Builtin::Asm { outputs: counts[0], inputs: counts[1] };
+        mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vals }, span)
+    }
+
+    /// The value of `e` if it is a compile-time string, checked in the current scope.
+    fn const_str_here(&mut self, e: &ast::Expr) -> Option<String> {
+        let v = self.expr(e, Some(Ty::string()));
+        if let tir::ExprKind::Str(b) = &v.kind {
+            return Some(String::from_utf8_lossy(b).into_owned());
+        }
+        if v.ty.is_error() || !matches!(v.kind, tir::ExprKind::Const(_)) {
+            return None;
+        }
+        let c = self.sema.eval_tir_const(&v)?;
+        match self.sema.const_key(&c, e.span)? {
+            crate::types::ConstKey::Str(s) => Some(String::from_utf8_lossy(&s).into_owned()),
+            _ => None,
+        }
+    }
+
     /// The core library's `MemoryOrder`.
     fn memory_order_ty(&mut self) -> Ty {
         let d = self.sema.prelude.and_then(|p| {
@@ -1725,5 +1842,24 @@ impl<'a, 's> FnCx<'a, 's> {
             Some(DeclValue::Type(t)) => t,
             _ => Ty::error(),
         }
+    }
+}
+
+/// The entries of an `@asm` operand or clobber list: `()`, one entry, or a tuple of
+/// entries. An operand entry is itself a pair `(constraint, operand)`, so a pair whose
+/// first element is a string literal is one entry.
+fn asm_entries(list: &ast::Expr, pairs: bool) -> Vec<&ast::Expr> {
+    let list = match &list.kind {
+        ast::ExprKind::Paren(inner) => inner,
+        _ => list,
+    };
+    match &list.kind {
+        ast::ExprKind::Tuple(elems)
+            if pairs && matches!(elems.first().map(|e| &e.value.kind), Some(ast::ExprKind::Str(_))) =>
+        {
+            vec![list]
+        }
+        ast::ExprKind::Tuple(elems) => elems.iter().map(|e| &e.value).collect(),
+        _ => vec![list],
     }
 }

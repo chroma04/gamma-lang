@@ -14,5 +14,7 @@ src/interp/threads.rs = OS threads + fair ticket GIL (tick() in call_function/ev
 without_gil() around blocking sys ops; streams Arc'd), fatal trap stops all threads.
 Structs by value across the C ABI done: mirror C types (decisions/009), test run/ffi_structs.
 #thread_local is per thread in both back ends.
-Not yet: #callconv, @asm, const relocs of
+@asm done: Builtin::Asm{outputs,inputs} (args: template Str, (constraint Str, ptr)*, (Str, val)*,
+clobber Str*); Program::needs_native() makes `gamma run` use C; cgen `__asm__ volatile`.
+Not yet: #callconv (delegated), const relocs of
 plain fns stored at effectful fnptr types (would need tagging), errno-style TLS foreign globals.

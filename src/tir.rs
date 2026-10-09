@@ -302,6 +302,19 @@ pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
     c
 }
 
+impl Program {
+    /// Whether the program contains code only a native build can run: calls of
+    /// foreign functions or inline assembly.
+    pub fn needs_native(&self) -> bool {
+        fn asm(e: &Expr) -> bool {
+            let mut found = matches!(e.kind, ExprKind::Builtin { op: Builtin::Asm { .. }, .. });
+            e.for_each_child(&mut |c| found = found || asm(c));
+            found
+        }
+        self.fns.iter().any(|f| matches!(f.kind, FnKind::Foreign { .. }) || f.body.as_ref().is_some_and(asm))
+    }
+}
+
 /// A whole program, ready to run.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -1095,6 +1108,13 @@ pub enum Builtin {
     HeapAlloc,
     /// Frees a heap block `(p, size, align)` obtained from `HeapAlloc`.
     HeapFree,
+    /// `@asm(template, outputs, inputs, clobbers)` (§19.5). The arguments are the
+    /// template (a `Str`), then a constraint (`Str`) and a pointer for each output,
+    /// then a constraint and a value for each input, then each clobber (`Str`).
+    Asm {
+        outputs: u32,
+        inputs: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------

@@ -2233,7 +2233,17 @@ All of these perform `Sys`.
 | --- | --- |
 | `@volatile_load(p)` | load `p^` (`p: ^const T`, `T` integer, float, pointer or `#bits`), never elided, merged or reordered with other volatile accesses |
 | `@volatile_store(p, v)` | store `v` to `p^` likewise |
-| `@asm(template, outputs, inputs, clobbers)` | inline assembly; the template and constraint syntax are those of the target's GCC-compatible assembler. Misuse is UB. |
+| `@asm(template, outputs, inputs, clobbers)` | inline assembly (below) |
+
+`@asm(template, outputs, inputs, clobbers)` is a statement-like expression of type `()` that executes inline assembly:
+
+- `template` is a compile-time string in the syntax of the target's GCC-compatible assembler, with operands referred to as `%0`, `%1`, … (outputs first, then inputs) as in GNU C.
+- `outputs` is a list of pairs `(constraint, p)`, where `constraint` is a compile-time string such as `"=r"` or `"+r"` and `p: ^T` points to the place the operand is written to (and read from, for `+`).
+- `inputs` is a list of pairs `(constraint, v)` with values `v`.
+- `clobbers` is a list of compile-time strings naming registers, `"cc"` or `"memory"`.
+- A list is written `()` when empty, as its single entry, or as a tuple of entries: `("=r", &x)` is one output, `(("=r", &x), ("=r", &y))` two.
+- Operand types are integers of 8 to 64 bits, `usize`, `isize`, `f32`, `f64`, `bool` and pointers (`T` for outputs).
+- The assembly is never removed, duplicated or reordered with other `@asm` or volatile accesses. Its meaning, and any misuse of constraints, registers or memory, is up to the target: violating the compiler's assumptions is undefined behavior. It is never evaluated at compile time.
 
 ### 19.6 Threads and atomics
 

@@ -255,7 +255,19 @@ uart_write :: fn(byte: u8) \ {Sys} {
 }
 ```
 
-`@asm(template, outputs, inputs, clobbers)` provides inline assembly in the syntax of the target's GCC-compatible assembler; it also needs `Sys`, and misusing it is undefined behavior.
+`@asm(template, outputs, inputs, clobbers)` provides inline assembly in the syntax of the target's GCC-compatible assembler, with GNU C's operand constraints. Outputs are pairs of a constraint and a pointer to the place written; inputs are pairs of a constraint and a value; clobbers are strings. Each list is `()`, a single entry, or a tuple of entries:
+
+```gamma
+add :: fn(a, b: u32) -> u32 \ {Sys} {
+    r := a
+    @asm("addl %1, %0", ("+r", &r), ("r", b), "cc")   // x86-64
+    return r
+}
+
+barrier :: fn() \ {Sys} => @asm("", (), (), "memory")
+```
+
+It needs `Sys`, misusing it is undefined behavior, and it is never evaluated at compile time. The interpreter cannot run assembly, so `gamma run` compiles programs that use it, as it does for programs with foreign functions. Use `when target.arch is …` to provide each architecture's version.
 
 ## Where the safety net ends
 

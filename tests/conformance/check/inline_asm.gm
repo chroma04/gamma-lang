@@ -1,0 +1,21 @@
+//! stage: check
+// The operands of `@asm` (§19.5).
+
+P :: struct { x: i32 }
+
+bad :: fn(n: i32) \ {Sys} {
+    x: i32 = 0
+    p := P(x: 1)
+    @asm(n, (), (), ())                              //~ ERROR template of `@asm` must be a compile-time string
+    @asm("nop", ("=r", x), (), ())                   //~ ERROR an output needs a `^T` pointer
+    @asm("nop", (), ("r", p), ())                    //~ ERROR an input must be an integer, float, `bool` or pointer, not `P`
+    @asm("nop", (), (), (n,))                        //~ ERROR clobber must be a compile-time string
+    @asm("nop", (&x,), (), ())                       //~ ERROR an `@asm` operand is a pair
+    @asm("nop")                                      //~ ERROR takes a template, outputs, inputs and clobbers
+}
+
+no_sys :: fn() {
+    @asm("nop", (), (), ())                          //~ ERROR performs the effect `Sys`
+}
+
+main :: fn() {}

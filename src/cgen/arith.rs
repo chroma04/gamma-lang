@@ -8,7 +8,7 @@
 use super::func::FnGen;
 use super::types::{Repr, int_cty};
 use super::{CResult, unsupported};
-use crate::tir::{AdtKind, BinOp, Builtin, Expr, Flavor, UnOp};
+use crate::tir::{AdtKind, BinOp, Builtin, Expr, ExprKind, Flavor, UnOp};
 use crate::types::{FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
 
@@ -281,6 +281,38 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     // --- builtins -----------------------------------------------------------------------------------
 
+    /// `@asm` (§19.5): a volatile GNU C `asm` statement. Outputs are written through
+    /// their pointers.
+    fn asm(&mut self, args: &'a [Expr], outputs: usize, inputs: usize) -> CResult<String> {
+        let text = |e: &Expr| match &e.kind {
+            ExprKind::Str(s) => super::types::c_string(s),
+            _ => unreachable!("`@asm` strings are literals"),
+        };
+        let mut outs = vec![];
+        for i in 0..outputs {
+            let (c, p) = (&args[1 + 2 * i], &args[2 + 2 * i]);
+            let TyKind::Ptr { pointee, .. } = p.ty.kind() else { unreachable!("an `@asm` output is a pointer") };
+            let ct = self.g.ty.cty(*pointee);
+            let pv = self.expr(p)?;
+            outs.push(format!("{}(*({} *){})", text(c), ct, pv));
+        }
+        let mut ins = vec![];
+        for i in 0..inputs {
+            let (c, v) = (&args[1 + 2 * (outputs + i)], &args[2 + 2 * (outputs + i)]);
+            let vv = self.expr(v)?;
+            ins.push(format!("{}({})", text(c), vv));
+        }
+        let clobbers: Vec<String> = args[1 + 2 * (outputs + inputs)..].iter().map(text).collect();
+        self.line(&format!(
+            "__asm__ volatile ({} : {} : {} : {});",
+            text(&args[0]),
+            outs.join(", "),
+            ins.join(", "),
+            clobbers.join(", ")
+        ));
+        Ok(self.unit())
+    }
+
     pub fn builtin(&mut self, e: &'a Expr, op: Builtin, args: &'a [Expr]) -> CResult<String> {
         let t = e.ty;
         let loc = self.loc(e);
@@ -306,6 +338,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 return Ok(self.unit());
             }
             Builtin::Fiber => return self.fiber_builtin(e, args),
+            Builtin::Asm { outputs, inputs } => return self.asm(args, outputs as usize, inputs as usize),
             // `@name(args)` calls the runtime's `gm_name`, with slices passed as a pointer
             // and a length.
             Builtin::Sys(op) => {

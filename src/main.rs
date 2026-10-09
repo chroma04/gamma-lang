@@ -159,8 +159,8 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    // The interpreter cannot call C, so programs with foreign functions run natively.
-    let uses_c = prog.fns.iter().any(|f| matches!(f.kind, gamma::tir::FnKind::Foreign { .. }));
+    // The interpreter cannot call C or run assembly, so such programs run natively.
+    let uses_c = prog.needs_native();
     if opts.c_backend || uses_c {
         return run_native(&sess, &prog, path, opts);
     }

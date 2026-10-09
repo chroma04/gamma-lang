@@ -331,6 +331,7 @@ impl<'a> Machine<'a> {
             | Builtin::Fence
             | Builtin::VolatileLoad
             | Builtin::VolatileStore => self.trap(span, "internal error: builtin needs special evaluation"),
+            Builtin::Asm { .. } => self.trap(span, "inline assembly (`@asm`) runs only in compiled code"),
         }
     }
 
