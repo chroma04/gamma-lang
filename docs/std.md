@@ -146,8 +146,8 @@ for line in str.lines(text) {
   a digit was expected) and `.Overflow`. The first problem found from the left wins.
 - `Builder`: appends into a buffer you supply, allocating nothing.
   `b := str.builder(buf[..])`, then `b.push(s)`, `b.push_byte(c)`, `b.str()`,
-  `b.len()` and `b.reset()`. Appending beyond the buffer traps. A builder is a sink for
-  `@write`, which formats like `print`: `@write(fn(bytes) => b.push(bytes), "{} of {}", (n, total))`.
+  `b.len()` and `b.reset()`. `b.write(template, args)` appends formatted text, exactly as
+  `print` would write it: `b.write("{} of {}", (n, total))`. Appending beyond the buffer traps.
 - `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
   from the current allocator; release it with `free`.
 

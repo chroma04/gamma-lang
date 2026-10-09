@@ -1,0 +1,24 @@
+// Templates from constants and from `string` compile-time parameters (§21.6.1, §16.2).
+str :: import "std/str"
+GREETING :: "hello, {}!\n"
+
+log :: fn(A: type, level: string, template :: string, args: A) \ {Out} {
+    print("[{}] ", level)
+    print(template, args)
+    print("\n")
+}
+
+format_into :: fn(A: type, b: ^str.Builder, template :: string, args: A) {
+    @write(fn(bytes: []const u8) => b.push(bytes), template, args)
+}
+
+main :: fn() \ {Out} {
+    log("info", "started", ())
+    log("warn", "disk {}% full", 93)
+    log("error", "{} failed after {} tries", ("upload", 3))
+    print(GREETING, "world")
+    buf: [64]u8 = ---
+    b := str.builder(buf[..])
+    format_into(&b, "{}+{}={}", (1, 2, 3))
+    print("{}\n", b.str())
+}

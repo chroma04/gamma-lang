@@ -308,7 +308,67 @@ impl<'s> Sema<'s> {
         let mut done = children.into_iter().map(|c| self.mono_expr(cx, c));
         e.for_each_child_mut(&mut |c| *c = done.next().unwrap());
         self.mono_pats(cx, &mut e);
+        if let tir::ExprKind::WriteDeferred { .. } = e.kind {
+            return self.resolve_write(cx, e);
+        }
         e
+    }
+
+    /// Splits the template of a `WriteDeferred`, now a string, and its arguments
+    /// (§21.6.1), reporting a mismatch at the instantiating call (§16.1).
+    fn resolve_write(&mut self, cx: &mut MonoCx, e: Expr) -> Expr {
+        let span = e.span;
+        let tir::ExprKind::WriteDeferred { sink, template, args, tmp } = e.kind else { unreachable!() };
+        let tir::ExprKind::Str(t) = &template.kind else {
+            self.error(cx.span, "internal error: a template parameter without a string value");
+            return e_unit(span);
+        };
+        let Some(pieces) = super::call::parse_template(t) else {
+            self.error(
+                cx.span,
+                "invalid template (in an instantiation used here): use `{}` for an argument and `{{` / `}}` for braces",
+            );
+            return e_unit(span);
+        };
+        let n = pieces.len() - 1;
+        let at = |cx: &MonoCx| cx.span;
+        let write = |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, args }, span };
+        match (n, args) {
+            (0, None) => write(vec![]),
+            (0, Some(a)) if a.ty.is_unit() => write(vec![]),
+            (1, Some(a)) => write(vec![*a]),
+            (_, Some(a)) => match a.ty.kind() {
+                TyKind::Tuple { elems, .. } if elems.len() == n => {
+                    let elems = elems.clone();
+                    let local = |ty| Expr { ty, kind: tir::ExprKind::Local(tmp), span };
+                    let fields = (0..n)
+                        .map(|i| Expr {
+                            ty: elems[i],
+                            kind: tir::ExprKind::Field { base: Box::new(local(a.ty)), index: i as u32 },
+                            span,
+                        })
+                        .collect();
+                    let stmts = vec![tir::Stmt::Let { local: tmp, init: Some(*a) }, tir::Stmt::Expr(write(fields))];
+                    super::func::block_of(stmts, span)
+                }
+                _ => {
+                    let msg = format!(
+                        "the template has {} placeholders, so the arguments must be a tuple of {} values, not `{}` (in an instantiation used here)",
+                        n, n, a.ty
+                    );
+                    self.error(at(cx), msg);
+                    e_unit(span)
+                }
+            },
+            (_, a) => {
+                let msg = match a {
+                    None => format!("the template has {} placeholder(s) but no arguments are given (in an instantiation used here)", n),
+                    Some(_) => "the template has no `{}` placeholders, so the arguments must be `()` (in an instantiation used here)".to_string(),
+                };
+                self.error(at(cx), msg);
+                e_unit(span)
+            }
+        }
     }
 
     /// Substitutes types inside the patterns directly owned by `e`.
@@ -609,6 +669,8 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         }
         let mut binds: HashMap<ParamId, Ty> = HashMap::new();
+        // Arguments whose types still contain untyped literals.
+        let mut literal_args: Vec<(Ty, Ty)> = vec![];
         let mut values: Vec<Option<Expr>> = vec![None; sig.params.len()];
         let mut sources: Vec<(usize, &ast::Expr)> =
             positional.iter().enumerate().map(|(k, e)| (targets[k], *e)).collect();
@@ -654,6 +716,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 let partial = matches!(expect.kind(), TyKind::Fn(_) | TyKind::FnPtr(_));
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
                 let t = self.infer.resolve(v.ty);
+                if t.has_infer() {
+                    literal_args.push((p.ty, v.ty));
+                }
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(p.ty, t, &mut b2);
                 for (k, v2) in b2 {
@@ -680,6 +745,24 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         let _ = receiver;
+        // A type parameter that only untyped literals determine takes their fallback
+        // types (§16.2): `log("{}", 5)` makes it `i32`.
+        if sig.generics.iter().any(|p| !binds.contains_key(p) && !self.sema.value_params.contains_key(p)) {
+            for (pty, aty) in std::mem::take(&mut literal_args) {
+                let free: Vec<ParamId> = sig.generics.iter().copied().filter(|p| !binds.contains_key(p)).collect();
+                let mut mentions = false;
+                pty.walk(&mut |x| mentions |= matches!(x.kind(), TyKind::Param(p) if free.contains(p)));
+                if !mentions {
+                    continue;
+                }
+                let t = self.infer.settle(aty);
+                let mut b2 = HashMap::new();
+                super::effects::match_params_pub(pty, t, &mut b2);
+                for (k, v2) in b2 {
+                    binds.entry(k).or_insert(v2);
+                }
+            }
+        }
         let mut targs = vec![];
         for pid in &sig.generics {
             match binds.get(pid) {
@@ -809,4 +892,8 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => Some(v),
         }
     }
+}
+
+fn e_unit(span: Span) -> Expr {
+    super::func::unit(span)
 }

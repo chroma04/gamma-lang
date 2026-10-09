@@ -564,6 +564,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!("gm_trap_bytes({}, {}, {});", p, l, loc));
                 Ok(self.zero(t))
             }
+            ExprKind::WriteDeferred { .. } => {
+                unsupported(e.span, "a template in a generic function that was not instantiated")
+            }
             ExprKind::Write { sink, pieces, args } => {
                 let sink_v = match sink {
                     WriteSink::Fn(x) => Some((self.expr(x)?, x.ty)),

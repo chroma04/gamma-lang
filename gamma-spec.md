@@ -1919,7 +1919,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 
 - A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
-- Untyped literal arguments do not determine a type parameter; they take the inferred type.
+- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 
 ```
@@ -2375,9 +2375,9 @@ new          :: fn(T: type, init: T) -> AllocError!^T \ {Alloc}
 make         :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T)
 make_fill    :: fn(T: type, n: usize, x: T) -> AllocError![]T \ {Alloc}
 make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T)
-free         :: fn(T: type, s: []T) \ {Alloc}
-free_aligned :: fn(T: type, s: []T, align: usize) \ {Alloc}
-destroy      :: fn(T: type, p: ^T) \ {Alloc}
+free         :: fn(T: type, s: []const T) \ {Alloc}
+free_aligned :: fn(T: type, s: []const T, align: usize) \ {Alloc}
+destroy      :: fn(T: type, p: ^const T) \ {Alloc}
 ```
 
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
@@ -2445,6 +2445,8 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
+get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
+get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
 len      :: fn(m: ^const HashMap(…)) -> usize
@@ -2453,7 +2455,7 @@ clear    :: fn(m: ^HashMap(…))                                      // keeps t
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `get_or_put` are invalidated by the next insertion or removal.
 
 ### 21.6 Diagnostics and output
 
@@ -2476,7 +2478,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 @write(sink, template, args)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
 **Template.** `{}` is a placeholder; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
 

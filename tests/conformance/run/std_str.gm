@@ -212,6 +212,10 @@ main :: fn() \ {Out, Alloc} {
     b.push("again")
     @write(fn(bytes) => b.push(bytes), "{}+{}", (1, 2))
     print("[{}] {}\n", (str.str(&b), str.len(&b)))
+    b.reset()
+    b.write("{}-{}", ("x", 7))
+    b.write("!", ())
+    print("[{}]\n", b.str())
     exact: [3]u8 = ---
     e := str.builder(exact[..])
     e.push("ab")

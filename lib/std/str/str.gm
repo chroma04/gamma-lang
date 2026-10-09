@@ -227,8 +227,7 @@ pub parse_int :: fn(T: type, s: string) -> ParseError!T where Int(T) {
         }
         d := digit_value(c)
         if d >= base { return !.InvalidDigit(at: i) }
-        dv: T = 0
-        for _ in 0..d { dv += 1 }
+        dv := d.checked(T) else return !.Overflow
         // A negative number accumulates downwards, so that the minimum value fits.
         acc = acc *? tb else return !.Overflow
         if neg {
@@ -283,6 +282,12 @@ pub len :: fn(b: ^const Builder) -> usize => b.used
 /// Forgets everything appended, keeping the buffer.
 pub reset :: fn(b: ^Builder) {
     b.used = 0
+}
+
+/// Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
+/// `b.write("{} of {}", (n, total))`. Traps like `push` if the result does not fit.
+pub write :: fn(A: type, b: ^Builder, template :: string, args: A) {
+    @write(fn(bytes: []const u8) => push(b, bytes), template, args)
 }
 
 // ---------------------------------------------------------------------------------

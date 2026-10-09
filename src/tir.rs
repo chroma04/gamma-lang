@@ -822,6 +822,15 @@ pub enum ExprKind {
         pieces: Vec<Rc<[u8]>>,
         args: Vec<Expr>,
     },
+    /// A `Write` whose template is a compile-time `string` parameter of a generic
+    /// function: each instance splits the template and its arguments (§16.1). `tmp`
+    /// holds the arguments when they are a tuple of several values.
+    WriteDeferred {
+        sink: WriteSink,
+        template: Box<Expr>,
+        args: Option<Box<Expr>>,
+        tmp: LocalId,
+    },
 }
 
 /// Where `@write` sends its output.
@@ -1282,6 +1291,15 @@ impl Expr {
                 }
                 args.iter().for_each(f);
             }
+            ExprKind::WriteDeferred { sink, template, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                f(template);
+                if let Some(a) = args {
+                    f(a);
+                }
+            }
             _ => {}
         }
     }
@@ -1450,6 +1468,15 @@ impl Expr {
                     f(x);
                 }
                 args.iter_mut().for_each(f);
+            }
+            ExprKind::WriteDeferred { sink, template, args, .. } => {
+                if let WriteSink::Fn(x) = sink {
+                    f(x);
+                }
+                f(template);
+                if let Some(a) = args {
+                    f(a);
+                }
             }
             _ => {}
         }

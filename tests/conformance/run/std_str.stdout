@@ -131,6 +131,7 @@ v = -1234
 [hello, world!!!!] 16
 [] 0
 [again1+2] 8
+[x-7!]
 [abc]
 [xyz]
 [alpha, beta, , gamma] 20

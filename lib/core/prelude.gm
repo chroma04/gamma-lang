@@ -471,7 +471,7 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 
 /// Releases a slice obtained from `make` or `make_fill` under the current allocator.
 /// Memory from `make_aligned` is released with `free_aligned`.
-pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
@@ -480,7 +480,7 @@ pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Al
 
 /// Releases a slice obtained from `make_aligned(T, s.len, align)` under the current
 /// allocator; `align` must be the alignment it was requested with.
-pub free_aligned :: fn(T: type, s: []T, align: usize, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
@@ -488,7 +488,7 @@ pub free_aligned :: fn(T: type, s: []T, align: usize, site: SourceLocation = @ca
 }
 
 /// Releases an object obtained from `new` under the current allocator.
-pub destroy :: fn(T: type, p: ^T, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub destroy :: fn(T: type, p: ^const T, site: SourceLocation = @caller_location()) \ {Alloc} {
     a := current()
     @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))

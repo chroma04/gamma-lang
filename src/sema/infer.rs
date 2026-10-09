@@ -188,6 +188,32 @@ impl InferTable {
         }
     }
 
+    /// Gives the unresolved variables in `ty` their fallback types now (§6.1).
+    pub fn settle(&mut self, ty: Ty) -> Ty {
+        let t = self.resolve(ty);
+        let mut vars = vec![];
+        t.walk(&mut |x| {
+            if let TyKind::Infer(v) = x.kind() {
+                vars.push(v.0);
+            }
+        });
+        for v in vars {
+            let r = self.root(v) as usize;
+            if self.vars[r].resolved.is_none() {
+                let var = &self.vars[r];
+                let fixed = match (var.kind, var.fallback) {
+                    (VarKind::Float, _) => Ty::f64(),
+                    (VarKind::Int, Fallback::Usize) => Ty::usize(),
+                    (VarKind::Int, Fallback::U32) => Ty::u32(),
+                    (VarKind::Int, Fallback::I32) if var.unsigned => Ty::u32(),
+                    (VarKind::Int, Fallback::I32) => Ty::i32(),
+                };
+                self.vars[r].resolved = Some(fixed);
+            }
+        }
+        self.resolve(ty)
+    }
+
     /// Gives every unresolved variable its fallback type (§6.1).
     pub fn apply_fallbacks(&mut self) {
         for i in 0..self.vars.len() as u32 {

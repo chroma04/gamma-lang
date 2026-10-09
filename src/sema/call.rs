@@ -514,10 +514,6 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, "`print` takes a template string and, optionally, the arguments");
             return error_expr(span);
         }
-        let Some((pieces, values, mut stmts)) = self.template_args(positional[0], positional.get(1).copied(), span)
-        else {
-            return error_expr(span);
-        };
         let (effect, name) =
             if to_out { (self.sema.prog.ambient.out, "Out") } else { (self.sema.prog.ambient.err, "Err") };
         let Some(effect) = effect else {
@@ -526,11 +522,42 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let eref = EffectRef { effect, args: Box::new([]) };
         self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
-        let write = mk(
-            Ty::unit(),
-            tir::ExprKind::Write { sink: WriteSink::Perform { effect: eref, op: 0 }, pieces, args: values },
-            span,
-        );
+        self.build_write(WriteSink::Perform { effect: eref, op: 0 }, positional[0], positional.get(1).copied(), span)
+    }
+
+    /// A write of `template` with `args` to `sink`. A template that is a compile-time
+    /// `string` parameter is split in each instance of the generic function (§16.1).
+    fn build_write(&mut self, sink: WriteSink, template: &ast::Expr, args: Option<&ast::Expr>, span: Span) -> Expr {
+        if let ExprKind::Ident(_) = template.kind {
+            let t = self.expr(template, Some(Ty::string()));
+            if let tir::ExprKind::ValueParam(_) = t.kind {
+                let args = args.map(|a| Box::new(self.expr(a, None)));
+                let ty = args.as_ref().map_or(Ty::unit(), |a| self.infer.resolve(a.ty));
+                let tmp = self.temp(ty, span);
+                let kind = tir::ExprKind::WriteDeferred { sink, template: Box::new(t), args, tmp };
+                return mk(Ty::unit(), kind, span);
+            }
+        }
+        let bytes: Vec<u8> = match &template.kind {
+            ExprKind::Str(t) => t.bytes.to_vec(),
+            _ => {
+                let module = self.module;
+                match self.sema.const_string(module, template) {
+                    Some(t) => t.into_bytes(),
+                    None => {
+                        self.error(
+                            template.span,
+                            "the template must be a compile-time string: a literal, a constant, or a `string` compile-time parameter",
+                        );
+                        return error_expr(span);
+                    }
+                }
+            }
+        };
+        let Some((pieces, values, mut stmts)) = self.template_args(&bytes, template.span, args, span) else {
+            return error_expr(span);
+        };
+        let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, args: values }, span);
         if stmts.is_empty() {
             return write;
         }
@@ -540,13 +567,15 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// The pieces of a `@write` template (§21.6.1) and the argument values for its
     /// placeholders, with statements that must run first.
-    fn template_args(&mut self, template: &ast::Expr, args: Option<&ast::Expr>, span: Span) -> Option<TemplateArgs> {
-        let ExprKind::Str(t) = &template.kind else {
-            self.error(template.span, "the template must be a string literal");
-            return None;
-        };
-        let Some(pieces) = parse_template(&t.bytes) else {
-            self.error(template.span, "invalid template: use `{}` for an argument and `{{` / `}}` for braces");
+    fn template_args(
+        &mut self,
+        template: &[u8],
+        template_span: Span,
+        args: Option<&ast::Expr>,
+        span: Span,
+    ) -> Option<TemplateArgs> {
+        let Some(pieces) = parse_template(template) else {
+            self.error(template_span, "invalid template: use `{}` for an argument and `{{` / `}}` for braces");
             return None;
         };
         let n = pieces.len() - 1;
@@ -645,17 +674,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 return error_expr(span);
             }
         }
-        let Some((pieces, values, mut stmts)) = self.template_args(positional[1], positional.get(2).copied(), span)
-        else {
-            return error_expr(span);
-        };
-        let write =
-            mk(Ty::unit(), tir::ExprKind::Write { sink: WriteSink::Fn(Box::new(sink)), pieces, args: values }, span);
-        if stmts.is_empty() {
-            return write;
-        }
-        stmts.push(Stmt::Expr(write));
-        super::func::block_of(stmts, span)
+        self.build_write(WriteSink::Fn(Box::new(sink)), positional[1], positional.get(2).copied(), span)
     }
 }
 
