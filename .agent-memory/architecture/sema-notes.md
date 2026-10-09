@@ -17,3 +17,9 @@
   Builtin::First/Last/RangeLen, TyKind::Handler(u32), ParamId names.
 - Interp quirks: `#c_union` Aggregate writes offset 0; InOptional inferred from types; Else
   infers rhs mode by type; Range `in` lowered in sema (seq.rs) so interp's ADT-name path unused.
+- Spreads (§11.4): `bind_args` returns (vals, stmts); with any spread every arg goes through a
+  temp in written order; callers wrap via `finish_call(pre, call, receiver)` which also hoists an
+  Indirect callee / method receiver. `spread_parts` (construct.rs) expands tuples/structs.
+  Generic calls: `generic_call_spread` evaluates spreads (and non-trivial earlier args) into
+  named locals `<argN>` and rewrites the AST args to `<argN>.k` / `name: <argN>.name`.
+- `(T1, T2)(…)` tuple-type construction: classify_callee checks Tuple + looks_like_type.

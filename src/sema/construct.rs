@@ -168,7 +168,38 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Binds `v` to a temporary (appending the `let` to `stmts`) unless it is a
     /// constant, and returns an expression reading it.
-    fn bind_temp(&mut self, v: Expr, stmts: &mut Vec<Stmt>) -> Expr {
+    /// The parts of a spread `..e` (§11.4), evaluated once into a temporary by `stmts`:
+    /// an unnamed tuple's elements (without names), or a named tuple's elements or a
+    /// struct's fields (with names). `None` (after reporting) if `e` cannot be spread.
+    pub(super) fn spread_parts(&mut self, e: &ast::Expr, stmts: &mut Vec<Stmt>) -> Option<Vec<(Option<Symbol>, Expr)>> {
+        let v = self.expr(e, None);
+        let vt = self.infer.resolve(v.ty);
+        let (elems, names): (Vec<Ty>, Option<Vec<Symbol>>) = match vt.kind() {
+            TyKind::Tuple { elems, names } => (elems.to_vec(), names.as_ref().map(|n| n.to_vec())),
+            TyKind::Error => return None,
+            _ => match self.sema.struct_fields(vt) {
+                Some(fs) if self.hidden_field(vt).is_none() => {
+                    (fs.iter().map(|f| f.ty).collect(), Some(fs.iter().map(|f| f.name).collect()))
+                }
+                _ => {
+                    self.error(e.span, format!("a spread needs a tuple or a struct with visible fields, not `{}`", vt));
+                    return None;
+                }
+            },
+        };
+        let base = self.bind_temp(v, stmts);
+        let parts = elems
+            .iter()
+            .enumerate()
+            .map(|(k, t)| {
+                let proj = mk(*t, tir::ExprKind::Field { base: Box::new(base.clone()), index: k as u32 }, e.span);
+                (names.as_ref().map(|n| n[k]), proj)
+            })
+            .collect();
+        Some(parts)
+    }
+
+    pub(super) fn bind_temp(&mut self, v: Expr, stmts: &mut Vec<Stmt>) -> Expr {
         if is_constant(&v) {
             return v;
         }
@@ -232,27 +263,55 @@ impl<'a, 's> FnCx<'a, 's> {
     ) -> Expr {
         let mut slots: Vec<Option<Expr>> = vec![None; elems.len()];
         let mut next = 0;
+        // With spreads, every value goes through a temporary, in the order written.
+        let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        let mut stmts = vec![];
         for arg in args {
-            match &arg.kind {
+            let parts = match &arg.kind {
                 ArgKind::Positional(e) => {
                     if next >= elems.len() {
                         self.error(e.span, format!("too many values for `{}`", ty));
                         continue;
                     }
-                    slots[next] = Some(self.field_value(e, elems[next]));
-                    next += 1;
+                    let v = self.field_value(e, elems[next]);
+                    vec![(None, v, e.span)]
                 }
                 ArgKind::Named(n, e) => {
                     let Some(i) = names.and_then(|ns| ns.iter().position(|x| *x == n.name)) else {
                         self.error(n.span, format!("`{}` has no element named `{}`", ty, n.name));
                         continue;
                     };
-                    if slots[i].is_some() {
-                        self.error(n.span, format!("element `{}` is given twice", n.name));
-                    }
-                    slots[i] = Some(self.field_value(e, elems[i]));
+                    let v = self.field_value(e, elems[i]);
+                    vec![(Some(n.name), v, n.span)]
                 }
-                ArgKind::Spread(e) => self.error(e.span, "spreads are not supported here yet"),
+                ArgKind::Spread(e) => match self.spread_parts(e, &mut stmts) {
+                    Some(ps) => ps.into_iter().map(|(n, v)| (n, v, e.span)).collect(),
+                    None => continue,
+                },
+            };
+            for (name, v, at) in parts {
+                let i = match name {
+                    None => {
+                        if next >= elems.len() {
+                            self.error(at, format!("too many values for `{}`", ty));
+                            break;
+                        }
+                        next += 1;
+                        next - 1
+                    }
+                    Some(n) => match names.and_then(|ns| ns.iter().position(|x| *x == n)) {
+                        Some(i) => i,
+                        None => {
+                            self.error(at, format!("`{}` has no element named `{}`", ty, n));
+                            continue;
+                        }
+                    },
+                };
+                if slots[i].is_some() {
+                    self.error(at, format!("element {} of `{}` is given twice", i, ty));
+                }
+                let v = self.coerce(v, elems[i]);
+                slots[i] = Some(if spreading { self.bind_temp(v, &mut stmts) } else { v });
             }
         }
         let mut values = vec![];
@@ -265,7 +324,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        mk(ty, tir::ExprKind::Aggregate(values), span)
+        let agg = mk(ty, tir::ExprKind::Aggregate(values), span);
+        if stmts.is_empty() {
+            return agg;
+        }
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
     }
 
     /// `[N]T(e1, …)`, `[_]T(…)` and `[N]T(fill: x)` (§7.11).
@@ -281,9 +344,26 @@ impl<'a, 's> FnCx<'a, 's> {
             return mk(Ty::array(len, elem), tir::ExprKind::ArrayFill(Box::new(v)), span);
         }
         let mut values = vec![];
+        // `[N]T(..t)` spreads a tuple's elements (§7.13); with spreads, every value goes
+        // through a temporary, in the order written.
+        let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        let mut stmts = vec![];
         for arg in args {
             match &arg.kind {
-                ArgKind::Positional(e) => values.push(self.field_value(e, elem)),
+                ArgKind::Positional(e) => {
+                    let v = self.field_value(e, elem);
+                    values.push(if spreading { self.bind_temp(v, &mut stmts) } else { v });
+                }
+                ArgKind::Spread(e) => {
+                    let Some(parts) = self.spread_parts(e, &mut stmts) else { return error_expr(span) };
+                    for (name, v) in parts {
+                        if name.is_some() {
+                            self.error(e.span, "array elements are written positionally; this spread has named parts");
+                            return error_expr(span);
+                        }
+                        values.push(self.coerce(v, elem));
+                    }
+                }
                 _ => self.error(arg.span, "array elements are written positionally"),
             }
         }
@@ -292,7 +372,12 @@ impl<'a, 's> FnCx<'a, 's> {
         {
             self.error(span, format!("`[{}]{}` needs exactly {} elements, but {} are given", n, elem, n, values.len()));
         }
-        mk(Ty::array(values.len() as u64, elem), tir::ExprKind::Array(values), span)
+        let t = Ty::array(values.len() as u64, elem);
+        let arr = mk(t, tir::ExprKind::Array(values), span);
+        if stmts.is_empty() {
+            return arr;
+        }
+        mk(t, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(arr), span })), span)
     }
 }
 

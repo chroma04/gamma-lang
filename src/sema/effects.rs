@@ -185,9 +185,14 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         };
         let module = self.sema.effects[&eff].module;
-        let vals = self.bind_args(&op_info.params, module, args, span, "operation");
+        let (vals, pre) = self.bind_args(&op_info.params, module, args, span, "operation");
         self.performed.push((eref.clone(), span));
-        mk(op_info.ret, tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals }, span)
+        let call = mk(
+            op_info.ret,
+            tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals },
+            span,
+        );
+        self.finish_call(pre, call, false)
     }
 
     /// The parameter and result types of a clause for operation `op` of an instantiated effect.

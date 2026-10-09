@@ -446,9 +446,11 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let rest: Vec<ParamInfo> = sig.params[1..].to_vec();
         let mut bound = vec![recv];
-        bound.extend(self.bind_args(&rest, sig.module, args, span, "method"));
+        let (vals, pre) = self.bind_args(&rest, sig.module, args, span, "method");
+        bound.extend(vals);
         self.record_effects(&sig.effects, span);
-        Some(mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args: bound }, span))
+        let call = mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args: bound }, span);
+        Some(self.finish_call(pre, call, true))
     }
 }
 
@@ -484,10 +486,12 @@ impl<'a, 's> FnCx<'a, 's> {
             return Some(error_expr(span));
         };
         let mut vals = vec![recv];
-        vals.extend(self.bind_args(&o.params[1..], module, args, span, "operation"));
+        let (rest, pre) = self.bind_args(&o.params[1..], module, args, span, "operation");
+        vals.extend(rest);
         let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
         self.performed.push((eref.clone(), span));
-        Some(mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span))
+        let call = mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span);
+        Some(self.finish_call(pre, call, true))
     }
 }
 

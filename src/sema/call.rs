@@ -42,12 +42,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 let n = sig.params.len();
                 let variadic = self.sema.variadic_fns.contains(&f) && args.len() > n;
                 let (fixed, extra) = if variadic { args.split_at(n) } else { (args, &[][..]) };
-                let mut args = self.bind_args(&sig.params, sig.module, fixed, span, "function");
+                let (mut args, pre) = self.bind_args(&sig.params, sig.module, fixed, span, "function");
                 for a in extra {
                     args.push(self.variadic_arg(a));
                 }
                 self.record_effects(&sig.effects, span);
-                mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args }, span)
+                let call = mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args }, span);
+                self.finish_call(pre, call, false)
             }
             CalleeKind::Op(eff, op) => self.perform_op(eff, op, args, span),
             CalleeKind::Type(t) => self.conversion(t, args, span),
@@ -80,9 +81,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     })
                     .collect();
                 let module = self.module;
-                let args = self.bind_args(&params, module, args, span, "function");
+                let (args, pre) = self.bind_args(&params, module, args, span, "function");
                 self.record_effects(&sig.effects, span);
-                mk(sig.ret, tir::ExprKind::Call { callee: Callee::Indirect(Box::new(v)), args }, span)
+                let call = mk(sig.ret, tir::ExprKind::Call { callee: Callee::Indirect(Box::new(v)), args }, span);
+                self.finish_call(pre, call, false)
             }
         }
     }
@@ -153,7 +155,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 return None;
             }
         }
-        if is_type_syntax(callee) {
+        // `(i32, string)(…)` constructs a tuple (§7.11).
+        let module = self.module;
+        if is_type_syntax(callee)
+            || (matches!(&callee.kind, ExprKind::Tuple(es) if !es.is_empty())
+                && self.sema.looks_like_type(module, callee))
+        {
             let t = self.resolve_type(callee);
             return if t.is_error() { None } else { Some(CalleeKind::Type(t)) };
         }
@@ -165,7 +172,10 @@ impl<'a, 's> FnCx<'a, 's> {
         Some(CalleeKind::Value(self.expr(callee, None)))
     }
 
-    /// Binds call arguments to parameters (§11.3) and coerces each to its type.
+    /// Binds call arguments to parameters (§11.3) and coerces each to its type. With
+    /// spread arguments (§11.4), every argument is evaluated into a temporary, in the
+    /// order written, by the returned statements, which must run before the call
+    /// (see [`FnCx::finish_call`]).
     pub fn bind_args(
         &mut self,
         params: &[ParamInfo],
@@ -173,10 +183,16 @@ impl<'a, 's> FnCx<'a, 's> {
         args: &[ast::Arg],
         span: Span,
         what: &str,
-    ) -> Vec<Expr> {
+    ) -> (Vec<Expr>, Vec<Stmt>) {
         let mut bound: Vec<Option<Expr>> = vec![None; params.len()];
         let mut next_positional = 0;
         let mut seen_named = false;
+        let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        let mut stmts = vec![];
+        // Named arguments given explicitly (a spread supplying one later is an error).
+        let mut explicit = vec![false; params.len()];
+        // After a spread fails, missing arguments are not reported again.
+        let mut spread_failed = false;
         for arg in args {
             match &arg.kind {
                 ArgKind::Positional(e) => {
@@ -189,7 +205,11 @@ impl<'a, 's> FnCx<'a, 's> {
                         continue;
                     }
                     let p = &params[next_positional];
-                    bound[next_positional] = Some(self.arg_value(e, p.ty));
+                    let mut v = self.arg_value(e, p.ty);
+                    if spreading {
+                        v = self.bind_temp(v, &mut stmts);
+                    }
+                    bound[next_positional] = Some(v);
                     next_positional += 1;
                 }
                 ArgKind::Named(name, e) => {
@@ -199,13 +219,65 @@ impl<'a, 's> FnCx<'a, 's> {
                         let _ = self.expr(e, None);
                         continue;
                     };
-                    if bound[i].is_some() {
+                    if explicit[i] || (bound[i].is_some() && !spreading) {
                         self.error(name.span, format!("parameter `{}` is given more than once", name.name));
                     }
-                    bound[i] = Some(self.arg_value(e, params[i].ty));
+                    explicit[i] = true;
+                    // A later explicit named argument overrides one supplied by a spread.
+                    let mut v = self.arg_value(e, params[i].ty);
+                    if spreading {
+                        v = self.bind_temp(v, &mut stmts);
+                    }
+                    bound[i] = Some(v);
                 }
                 ArgKind::Spread(e) => {
-                    self.error(e.span, "spread arguments are not supported yet");
+                    let Some(parts) = self.spread_parts(e, &mut stmts) else {
+                        spread_failed = true;
+                        continue;
+                    };
+                    for (name, proj) in parts {
+                        let i = match name {
+                            // An unnamed tuple's elements are positional arguments.
+                            None => {
+                                if seen_named {
+                                    self.error(e.span, "positional arguments must come before named arguments");
+                                    spread_failed = true;
+                                    break;
+                                }
+                                if next_positional >= params.len() {
+                                    self.error(
+                                        e.span,
+                                        format!("too many arguments: the {} takes {}", what, params.len()),
+                                    );
+                                    spread_failed = true;
+                                    break;
+                                }
+                                next_positional += 1;
+                                next_positional - 1
+                            }
+                            Some(n) => {
+                                seen_named = true;
+                                let Some(i) = params.iter().position(|p| p.name == n) else {
+                                    self.error(
+                                        e.span,
+                                        format!(
+                                            "the {} has no parameter named `{}` (supplied by this spread)",
+                                            what, n
+                                        ),
+                                    );
+                                    spread_failed = true;
+                                    break;
+                                };
+                                if explicit[i] || bound[i].is_some() {
+                                    self.error(e.span, format!("parameter `{}` is given more than once", n));
+                                    spread_failed = true;
+                                    break;
+                                }
+                                i
+                            }
+                        };
+                        bound[i] = Some(self.coerce(proj, params[i].ty));
+                    }
                 }
             }
         }
@@ -228,14 +300,42 @@ impl<'a, 's> FnCx<'a, 's> {
                             }
                         }
                         None => {
-                            self.error(span, format!("missing argument for parameter `{}`", p.name));
+                            if !spread_failed {
+                                self.error(span, format!("missing argument for parameter `{}`", p.name));
+                            }
                             out.push(error_expr(span));
                         }
                     }
                 }
             }
         }
-        out
+        (out, stmts)
+    }
+
+    /// `call` preceded by the statements that evaluate its arguments (from
+    /// [`FnCx::bind_args`]). The callee value of an indirect call, and with `receiver`
+    /// the first argument, were evaluated before the arguments, so they move into
+    /// temporaries ahead of them.
+    pub fn finish_call(&mut self, pre: Vec<Stmt>, mut call: Expr, receiver: bool) -> Expr {
+        if pre.is_empty() {
+            return call;
+        }
+        let mut stmts = vec![];
+        if let tir::ExprKind::Call { callee, args } = &mut call.kind {
+            if let Callee::Indirect(c) = callee {
+                let sp = c.span;
+                let v = std::mem::replace(&mut **c, error_expr(sp));
+                **c = self.bind_temp(v, &mut stmts);
+            }
+            if receiver && let Some(a) = args.first_mut() {
+                let sp = a.span;
+                let v = std::mem::replace(a, error_expr(sp));
+                *a = self.bind_temp(v, &mut stmts);
+            }
+        }
+        stmts.extend(pre);
+        let (ty, span) = (call.ty, call.span);
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span)
     }
 
     fn arg_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {

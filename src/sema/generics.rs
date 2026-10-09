@@ -464,7 +464,91 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A generic call; `receiver`, if given, is the method receiver bound to the first
     /// run-time parameter (§7.10).
+    /// A generic call with spread arguments (§11.4). Type inference works on the
+    /// written arguments, so each spread (and each argument before one, to keep the
+    /// written evaluation order) is evaluated into a local first, and the spread is
+    /// replaced by arguments naming that local's elements.
+    fn generic_call_spread(&mut self, f: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
+        let mut stmts = vec![];
+        let receiver = receiver.map(|r| self.bind_temp(r, &mut stmts));
+        let last_spread = args.iter().rposition(|a| matches!(a.kind, ArgKind::Spread(_))).unwrap_or(0);
+        let synthetic = |kind: ast::ExprKind, span: Span| ast::Expr { id: ast::NodeId(u32::MAX), kind, span };
+        let mut written = vec![];
+        for (k, a) in args.iter().enumerate() {
+            let (e, named) = match &a.kind {
+                ArgKind::Spread(e) => (e, None),
+                ArgKind::Positional(e) if k < last_spread => (e, Some(None)),
+                ArgKind::Named(n, e) if k < last_spread => (e, Some(Some(*n))),
+                _ => {
+                    written.push(a.clone());
+                    continue;
+                }
+            };
+            // A literal or a name has no effects, so it can stay where it is.
+            if named.is_some()
+                && matches!(e.kind, ast::ExprKind::Ident(_) | ast::ExprKind::Int(_) | ast::ExprKind::Str(_))
+            {
+                written.push(a.clone());
+                continue;
+            }
+            let v = self.expr(e, None);
+            let vt = self.infer.resolve(v.ty);
+            let name = crate::symbol::Symbol::intern(&format!("<arg{}>", self.locals.len()));
+            let local = self.new_local(name, vt, false, e.span);
+            stmts.push(tir::Stmt::Let { local, init: Some(v) });
+            self.declare(name, super::func::LocalBinding::Var(local), e.span);
+            let base = || synthetic(ast::ExprKind::Ident(ast::Ident { name, span: e.span }), e.span);
+            match named {
+                Some(None) => written.push(ast::Arg { kind: ArgKind::Positional(base()), span: a.span }),
+                Some(Some(n)) => written.push(ast::Arg { kind: ArgKind::Named(n, base()), span: a.span }),
+                None => {
+                    let parts: Vec<Option<crate::symbol::Symbol>> = match vt.kind() {
+                        TyKind::Tuple { elems, names: None } => vec![None; elems.len()],
+                        TyKind::Tuple { names: Some(ns), .. } => ns.iter().map(|n| Some(*n)).collect(),
+                        TyKind::Error => return error_expr(span),
+                        _ => match self.sema.struct_fields(vt) {
+                            Some(fs) if self.hidden_field(vt).is_none() => fs.iter().map(|f| Some(f.name)).collect(),
+                            _ => {
+                                self.error(
+                                    e.span,
+                                    format!("a spread needs a tuple or a struct with visible fields, not `{}`", vt),
+                                );
+                                return error_expr(span);
+                            }
+                        },
+                    };
+                    for (i, p) in parts.into_iter().enumerate() {
+                        let arg = match p {
+                            None => ArgKind::Positional(synthetic(
+                                ast::ExprKind::TupleField {
+                                    base: Box::new(base()),
+                                    index: i as u32,
+                                    index_span: e.span,
+                                },
+                                e.span,
+                            )),
+                            Some(n) => {
+                                let id = ast::Ident { name: n, span: e.span };
+                                ArgKind::Named(
+                                    id,
+                                    synthetic(ast::ExprKind::Field { base: Box::new(base()), name: id }, e.span),
+                                )
+                            }
+                        };
+                        written.push(ast::Arg { kind: arg, span: e.span });
+                    }
+                }
+            }
+        }
+        let call = self.generic_call_with(f, receiver, &written, span);
+        let ty = call.ty;
+        Expr { ty, kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span }
+    }
+
     pub fn generic_call_with(&mut self, f: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
+        if args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_))) {
+            return self.generic_call_spread(f, receiver, args, span);
+        }
         let sig = self.sema.sigs[&f].clone();
         let recv_index = receiver.as_ref().and_then(|_| sig.params.iter().position(|p| p.generic.is_none()));
         let named: Vec<crate::symbol::Symbol> = args
@@ -481,10 +565,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => None,
             })
             .collect();
-        if args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_))) {
-            self.error(span, "spread arguments are not supported in generic calls yet");
-            return error_expr(span);
-        }
         // A compile-time value parameter is inferable only if another parameter's
         // type mentions it (§16.2).
         let inferable = |i: usize| match sig.params[i].generic {

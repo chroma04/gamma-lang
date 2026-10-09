@@ -1,0 +1,62 @@
+// Spread arguments `..e` (§11.4) in calls, methods, operations and constructions.
+
+Window :: struct {
+    title: string
+    w: i32 = 640
+    h: i32 = 480
+}
+
+area :: fn(w, h: i32) -> i32 => w * h
+describe :: fn(title: string, w, h: i32) -> string => title
+
+// Arguments are evaluated once each, in the order written.
+note :: fn(s: string, v: i32) -> i32 \ {Out} {
+    print("{} ", s)
+    return v
+}
+
+pair :: fn(s: string) -> (i32, i32) \ {Out} {
+    print("{} ", s)
+    return (2, 3)
+}
+
+sub3 :: fn(a, b, c: i32) -> i32 => a - b - c
+
+P :: struct { x: i32, y: i32 }
+
+norm1 :: fn(p: P, scale: i32) -> i32 => (p.x + p.y) * scale
+
+Log :: effect {
+    log: fn(level: u8, msg: string)
+}
+
+biggest :: fn(T: type, a, b: T) -> T where Ord(T) => if a > b { a } else { b }
+
+main :: fn() \ {Out} {
+    t: (i32, i32) = (6, 7)
+    print("{}\n", area(..t))
+    win := Window(title: "main")
+    // A struct spreads its fields as named arguments; a later named argument overrides.
+    print("{} {}\n", (area(w: win.w, h: win.h), area(..(w: 2, h: 5))))
+    print("{}\n", describe(..win, title: "other"))
+    print("{}\n", sub3(note("a", 10), ..pair("b")))
+    print("\n")
+    print("{}\n", sub3(..pair("c"), note("d", 1)))
+    print("\n")
+
+    // Methods and effect operations.
+    p := P(x: 1, y: 2)
+    print("{}\n", p.norm1(..(4,)))
+    with (handler Log { log(level, msg) => print("[{}] {}\n", (level, msg)) }) {
+        entry: (u8, string) = (3, "spread into an operation")
+        log(..entry)
+    }
+
+    // Generic calls infer from the spread values.
+    print("{}\n", biggest(..t))
+
+    // Constructions.
+    a := [3]i32(1, ..t)
+    tup := (i32, i32, i32)(..t, 9)
+    print("{} {}\n", (a, tup))
+}
