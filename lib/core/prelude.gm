@@ -470,11 +470,21 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 }
 
 /// Releases a slice obtained from `make` or `make_fill` under the current allocator.
+/// Memory from `make_aligned` is released with `free_aligned`.
 pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, @align_of(T))
+}
+
+/// Releases a slice obtained from `make_aligned(T, s.len, align)` under the current
+/// allocator; `align` must be the alignment it was requested with.
+pub free_aligned :: fn(T: type, s: []T, align: usize, site: SourceLocation = @caller_location()) \ {Alloc} {
+    if s.len is 0 { return }
+    a := current()
+    @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, align.max(@align_of(T)))
 }
 
 /// Releases an object obtained from `new` under the current allocator.

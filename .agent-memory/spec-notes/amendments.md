@@ -30,3 +30,6 @@
   followed, ambient performs are errors, includes run-time reserve, ≥ @min_stack). §14.6: @fiber's
   S minus the clause's own effect is required where the handler is (a literal can't know siblings).
 - §20.3: @clz/@ctz/@popcount give u32; @bswap (whole bytes)/@bitreverse keep the operand type.
+- §6.2: untyped float constants carry a zero sign (Untyped::NegZero; IEEE sign rules for exact
+  zero results); lowered as `-(0.0)`.
+- §21.2/§15.2/§15.5: `free_aligned(T, s, align)`; allocator free/resize get the alloc-time size+align.

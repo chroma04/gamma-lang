@@ -9,6 +9,8 @@ use num_traits::{Signed, ToPrimitive, Zero};
 pub enum Untyped {
     Int(BigInt),
     Float(BigRational),
+    /// The float constant negative zero, which a rational cannot represent.
+    NegZero,
     Bool(bool),
 }
 
@@ -16,7 +18,7 @@ impl Untyped {
     pub fn describe(&self) -> &'static str {
         match self {
             Untyped::Int(_) => "integer constant",
-            Untyped::Float(_) => "float constant",
+            Untyped::Float(_) | Untyped::NegZero => "float constant",
             Untyped::Bool(_) => "boolean constant",
         }
     }
@@ -25,6 +27,7 @@ impl Untyped {
         match self {
             Untyped::Int(i) => Some(BigRational::from_integer(i.clone())),
             Untyped::Float(r) => Some(r.clone()),
+            Untyped::NegZero => Some(BigRational::zero()),
             Untyped::Bool(_) => None,
         }
     }
@@ -34,7 +37,9 @@ impl Untyped {
 pub fn negate(v: &Untyped) -> Result<Untyped, String> {
     match v {
         Untyped::Int(i) => Ok(Untyped::Int(-i)),
+        Untyped::Float(r) if r.is_zero() => Ok(Untyped::NegZero),
         Untyped::Float(r) => Ok(Untyped::Float(-r)),
+        Untyped::NegZero => Ok(Untyped::Float(BigRational::zero())),
         Untyped::Bool(_) => Err("cannot negate a boolean constant".into()),
     }
 }
@@ -76,7 +81,7 @@ pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
                 }));
             }
             let (x, y) = (num(a)?, num(b)?);
-            Ok(Float(match op {
+            let r = match op {
                 BinOp::Add(_) => x + y,
                 BinOp::Sub(_) => x - y,
                 BinOp::Mul(_) => x * y,
@@ -86,7 +91,8 @@ pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
                     }
                     x / y
                 }
-            }))
+            };
+            Ok(float_result(op, a, b, r))
         }
         BinOp::Rem | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl(_) | BinOp::Shr => {
             let (Int(x), Int(y)) = (a, b) else {
@@ -115,6 +121,33 @@ pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
     }
 }
 
+/// A float-valued arithmetic result, with the sign IEEE arithmetic gives a zero result.
+fn float_result(op: BinOp, a: &Untyped, b: &Untyped, r: BigRational) -> Untyped {
+    if !r.is_zero() {
+        return Untyped::Float(r);
+    }
+    let neg = |v: &Untyped| matches!(v, Untyped::NegZero) || is_negative(v);
+    let negative = match op {
+        // An exact zero sum is negative only when both addends are negative zeros.
+        BinOp::Add(_) => matches!((a, b), (Untyped::NegZero, Untyped::NegZero)),
+        BinOp::Sub(_) => matches!(a, Untyped::NegZero) && !matches!(b, Untyped::NegZero) && is_zero(b),
+        _ => neg(a) != neg(b),
+    };
+    if negative { Untyped::NegZero } else { Untyped::Float(r) }
+}
+
+fn is_negative(v: &Untyped) -> bool {
+    match v {
+        Untyped::Int(i) => i.is_negative(),
+        Untyped::Float(r) => r.is_negative(),
+        _ => false,
+    }
+}
+
+fn is_zero(v: &Untyped) -> bool {
+    v.as_rational().is_some_and(|r| r.is_zero())
+}
+
 fn num(v: &Untyped) -> Result<BigRational, String> {
     v.as_rational().ok_or_else(|| "expected a numeric constant".to_string())
 }
@@ -123,6 +156,7 @@ fn num(v: &Untyped) -> Result<BigRational, String> {
 mod tests {
     use super::*;
     use crate::syntax::ast::Flavor;
+    use num_traits::One;
 
     fn int(i: i64) -> Untyped {
         Untyped::Int(BigInt::from(i))
@@ -144,5 +178,22 @@ mod tests {
             binary(BinOp::Shl(Flavor::Checked), &int(1), &int(100)).unwrap(),
             Untyped::Int(BigInt::from(1) << 100)
         );
+    }
+
+    #[test]
+    fn signed_zero() {
+        let zero = Untyped::Float(BigRational::zero());
+        let one = Untyped::Float(BigRational::one());
+        let nz = negate(&zero).unwrap();
+        assert_eq!(nz, Untyped::NegZero);
+        assert_eq!(negate(&nz), Ok(zero.clone()));
+        assert_eq!(binary(BinOp::Mul(Flavor::Checked), &nz, &one), Ok(Untyped::NegZero));
+        assert_eq!(binary(BinOp::Mul(Flavor::Checked), &nz, &int(-2)), Ok(zero.clone()));
+        assert_eq!(binary(BinOp::Div, &zero, &int(-2)), Ok(Untyped::NegZero));
+        assert_eq!(binary(BinOp::Add(Flavor::Checked), &nz, &nz), Ok(Untyped::NegZero));
+        assert_eq!(binary(BinOp::Add(Flavor::Checked), &nz, &zero), Ok(zero.clone()));
+        assert_eq!(binary(BinOp::Sub(Flavor::Checked), &nz, &zero), Ok(Untyped::NegZero));
+        assert_eq!(binary(BinOp::Sub(Flavor::Checked), &one, &one), Ok(zero.clone()));
+        assert_eq!(binary(BinOp::Is, &nz, &zero), Ok(Untyped::Bool(true)));
     }
 }

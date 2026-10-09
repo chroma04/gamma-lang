@@ -1,0 +1,13 @@
+// Untyped float constants keep the sign of zero (§6.2).
+NZ :: -0.0
+NZ2 :: NZ * 2
+PZ :: NZ + 0.0
+M :: -(0.0 * -1)
+main :: fn() \ {Out} {
+    a: f64 = NZ
+    b: f32 = NZ2
+    c: f64 = PZ
+    d: f64 = M
+    print("{} {} {} {}\n", (a, b, c, d))
+    print("{}\n", 1.0 / NZ)
+}

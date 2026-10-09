@@ -1,0 +1,4 @@
+aligned: true
+alloc 64 free 64
+alloc 8 free 8
+frees 2

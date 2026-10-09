@@ -1,0 +1,38 @@
+// `free_aligned` hands the allocator back the alignment `make_aligned` asked for (§21.2, §15.2).
+Recorder :: struct {
+    inner: Allocator
+    alloc_align, free_align, frees: usize
+}
+
+rec_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    r := data.cast(^Recorder)
+    r.alloc_align = align
+    return r.inner.vt.alloc(r.inner.data, size, align)
+}
+
+rec_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+rec_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    r := data.cast(^Recorder)
+    r.free_align = align
+    r.frees += 1
+    r.inner.vt.free(r.inner.data, p, size, align)
+}
+
+RECORDER :: AllocVtable(alloc: rec_alloc, resize: rec_resize, free: rec_free)
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    r := Recorder(inner: current(), alloc_align: 0, free_align: 0, frees: 0)
+    with Allocator(data: (&r).cast(rawptr), vt: &RECORDER) {
+        s := try make_aligned(u32, 4, 64)
+        print("aligned: {}\n", s.ptr.addr() % 64 is 0)
+        free_aligned(s, 64)
+        print("alloc {} free {}\n", (r.alloc_align, r.free_align))
+        t := try make_aligned(u64, 2, 2)      // the type's own alignment wins
+        free_aligned(t, 2)
+        print("alloc {} free {}\n", (r.alloc_align, r.free_align))
+        e := try make_aligned(u8, 0, 128)     // empty: nothing allocated or freed
+        free_aligned(e, 128)
+    }
+    print("frees {}\n", r.frees)
+}

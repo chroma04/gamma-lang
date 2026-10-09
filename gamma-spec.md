@@ -718,7 +718,7 @@ PI   :: 3.14159265358979323846
 TAU  :: 2 * PI
 ```
 
-Its value is computed exactly (integers are unbounded; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
+Its value is computed exactly (integers are unbounded; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
 
 Untyped constants are permitted at top level and as locals. A typed constant is written `MAX: usize : 4096`.
 
@@ -1870,7 +1870,7 @@ with arena.allocator() {
 }
 ```
 
-Freeing memory through an allocator other than the one that allocated it is undefined behavior. Debug builds tag every allocation with its allocator and trap on a mismatch, reporting both call sites.
+An allocator's `resize` and `free` receive the size and alignment that the block was allocated (or last resized) with; the core functions and library containers guarantee this. Freeing memory through an allocator other than the one that allocated it is undefined behavior. Debug builds tag every allocation with its allocator and trap on a mismatch, reporting both call sites.
 
 A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was given.
 
@@ -1886,7 +1886,7 @@ Assignment, argument passing and return copy values bitwise, like C. Copying a s
 
 ### 15.5 Alignment
 
-Every object is aligned to at least its type's alignment. Allocators must return memory aligned to the requested alignment (any power of two up to the page size). `make_aligned(T, n, align)` requests a larger alignment.
+Every object is aligned to at least its type's alignment. Allocators must return memory aligned to the requested alignment (any power of two up to the page size). `make_aligned(T, n, align)` requests a larger alignment; its storage is released with `free_aligned(s, align)`.
 
 ---
 
@@ -2359,7 +2359,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2370,12 +2370,13 @@ make         :: fn(T: type, n: usize) -> AllocError![]T \ {Alloc} where Plain(T)
 make_fill    :: fn(T: type, n: usize, x: T) -> AllocError![]T \ {Alloc}
 make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} where Plain(T)
 free         :: fn(T: type, s: []T) \ {Alloc}
+free_aligned :: fn(T: type, s: []T, align: usize) \ {Alloc}
 destroy      :: fn(T: type, p: ^T) \ {Alloc}
 ```
 
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
 
-`free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op.
+`free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op. Storage from `make_aligned(T, n, align)` is released with `free_aligned(s, align)`, passing the same `align`, so that the allocator gets back the alignment it allocated with.
 
 Each of these functions also has a final parameter `site: SourceLocation = @caller_location()` (bound only by name, §11.3). Debug builds use the sites to report where a block freed through the wrong allocator was allocated and freed (§18.3).
 

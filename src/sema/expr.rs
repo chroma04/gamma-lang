@@ -345,6 +345,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = self.literal_var(VarKind::Float);
                 mk(ty, tir::ExprKind::UntypedFloat(Rc::new(r.clone())), span)
             }
+            Untyped::NegZero => {
+                let zero = self.untyped_literal(&Untyped::Float(num_traits::Zero::zero()), span);
+                mk(zero.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(zero) }, span)
+            }
             Untyped::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
         }
     }
