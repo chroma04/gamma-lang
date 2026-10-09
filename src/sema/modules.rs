@@ -15,6 +15,7 @@ const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
 const CORE_MODULES: &[(&str, &str, &[&str])] = &[
     ("list", include_str!("../../lib/core/list.gm"), &["List", "list"]),
     ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "map", "map_with"]),
+    ("slice", include_str!("../../lib/core/slice.gm"), &[]),
 ];
 
 impl<'s> Sema<'s> {
@@ -222,6 +223,17 @@ impl<'s> Sema<'s> {
     }
 
     /// The module that a module-binding name (`m` in `m.T`) denotes in `module`.
+    /// Function `name` of core module `core/<module>`.
+    pub fn core_fn(&mut self, module: &str, name: &str) -> Option<crate::tir::FnId> {
+        let mname = Symbol::intern(&format!("core/{}", module));
+        let m = *self.core_modules.iter().find(|m| self.modules[m.0 as usize].name == mname)?;
+        let d = *self.modules[m.0 as usize].scope.get(&Symbol::intern(name))?;
+        match self.resolve_decl(d) {
+            super::DeclValue::Fn(f) => Some(f),
+            _ => None,
+        }
+    }
+
     pub fn module_named(&mut self, module: ModuleId, e: &ast::Expr) -> Option<ModuleId> {
         let ast::ExprKind::Ident(id) = &e.kind else { return None };
         let d = self.lookup_module_name(module, id.name)?;

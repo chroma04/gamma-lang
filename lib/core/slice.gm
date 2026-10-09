@@ -1,0 +1,177 @@
+// core/slice: the builtin methods of arrays and slices that are written in Gamma
+// (§21.3). `a.sort()` calls `sort(a[..])` here; nothing is re-exported to the
+// universe scope. All sorts are in place and allocate nothing.
+
+/// Exchanges the elements at `i` and `j`.
+pub swap :: fn(T: type, s: []T, i, j: usize) {
+    t := s[i]
+    s[i] = s[j]
+    s[j] = t
+}
+
+/// Sets every element to `x`.
+pub fill :: fn(T: type, s: []T, x: T) {
+    for i in 0..s.len { s[i] = x }
+}
+
+/// Copies `src` into `s`, which must have the same length (checked); they may overlap.
+pub copy_from :: fn(T: type, s: []T, src: []const T) {
+    assert(s.len is src.len, "copy_from needs slices of equal length")
+    if s.ptr.addr() <= src.ptr.addr() {
+        for i in 0..s.len { s[i] = src[i] }
+    } else {
+        i := s.len
+        while i > 0 {
+            i -= 1
+            s[i] = src[i]
+        }
+    }
+}
+
+/// Sorts `s` in ascending order (not stable).
+pub sort :: fn(T: type, s: []T) where Ord(T) {
+    i: usize = 1
+    while i < s.len {
+        j := i
+        while j > 0 and s[j] < s[j - 1] {
+            s.swap(j, j - 1)
+            j -= 1
+        }
+        i += 1
+    }
+}
+
+/// Sorts `s` so that `less` holds between no element and an earlier one (not stable).
+pub sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    stable_sort_by(s, less)
+}
+
+/// Sorts `s` by the keys `key` computes (not stable).
+pub sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
+    stable_sort_by_key(s, key)
+}
+
+/// Sorts `s` in ascending order, keeping equal elements in their order.
+pub stable_sort :: fn(T: type, s: []T) where Ord(T) {
+    sort(s)
+}
+
+/// Sorts `s` by `less`, keeping equivalent elements in their order.
+pub stable_sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    i: usize = 1
+    while i < s.len {
+        j := i
+        while j > 0 and less(&s[j], &s[j - 1]) {
+            s.swap(j, j - 1)
+            j -= 1
+        }
+        i += 1
+    }
+}
+
+/// Sorts `s` by the keys `key` computes, keeping elements with equal keys in their order.
+pub stable_sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
+    i: usize = 1
+    while i < s.len {
+        j := i
+        while j > 0 and key(&s[j]) < key(&s[j - 1]) {
+            s.swap(j, j - 1)
+            j -= 1
+        }
+        i += 1
+    }
+}
+
+/// The index of the first element equal to `x`.
+pub index_of :: fn(T: type, s: []const T, x: T) -> ?usize where Eq(T) {
+    for i in 0..s.len {
+        if s[i] is x { return i }
+    }
+    return null
+}
+
+/// Whether `s` begins with the elements of `p`.
+pub starts_with :: fn(T: type, s: []const T, p: []const T) -> bool where Eq(T) {
+    if p.len > s.len { return false }
+    return s[0..p.len] is p
+}
+
+/// Whether `s` ends with the elements of `p`.
+pub ends_with :: fn(T: type, s: []const T, p: []const T) -> bool where Eq(T) {
+    if p.len > s.len { return false }
+    return s[s.len - p.len..s.len] is p
+}
+
+/// The smallest element, or `null` if `s` is empty.
+pub min :: fn(T: type, s: []const T) -> ?T where Ord(T) {
+    if s.len is 0 { return null }
+    m := s[0]
+    for x in s {
+        if x < m { m = x }
+    }
+    return m
+}
+
+/// The largest element, or `null` if `s` is empty.
+pub max :: fn(T: type, s: []const T) -> ?T where Ord(T) {
+    if s.len is 0 { return null }
+    m := s[0]
+    for x in s {
+        if x > m { m = x }
+    }
+    return m
+}
+
+/// Searches the sorted `s` for `x`: whether it was found, and the index of the first
+/// element not less than `x` (where `x` would be inserted).
+pub binary_search :: fn(T: type, s: []const T, x: T) -> (found: bool, at: usize) where Ord(T) {
+    lo: usize = 0
+    hi := s.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if s[mid] < x { lo = mid + 1 } else { hi = mid }
+    }
+    return (found: lo < s.len and s[lo] is x, at: lo)
+}
+
+/// Whether `s` is well-formed UTF-8.
+pub utf8_valid :: fn(s: []const u8) -> bool {
+    i: usize = 0
+    while i < s.len {
+        b := s[i]
+        n: usize = 0
+        lo: u8 = 0x80
+        hi: u8 = 0xbf
+        if b < 0x80 {
+            i += 1
+            continue
+        } else if b >= 0xc2 and b <= 0xdf {
+            n = 1
+        } else if b is 0xe0 {
+            n = 2
+            lo = 0xa0
+        } else if b >= 0xe1 and b <= 0xef {
+            n = 2
+            if b is 0xed { hi = 0x9f }
+        } else if b is 0xf0 {
+            n = 3
+            lo = 0x90
+        } else if b >= 0xf1 and b <= 0xf3 {
+            n = 3
+        } else if b is 0xf4 {
+            n = 3
+            hi = 0x8f
+        } else {
+            return false
+        }
+        if i + n >= s.len { return false }
+        c := s[i + 1]
+        if c < lo or c > hi { return false }
+        for k in 2..n + 1 {
+            d := s[i + k]
+            if d < 0x80 or d > 0xbf { return false }
+        }
+        i += n + 1
+    }
+    return true
+}

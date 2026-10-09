@@ -521,6 +521,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
+        // The receiver binds first, so that the arguments are checked against what it fixes.
+        let receiver = match (recv_index, receiver) {
+            (Some(i), Some(r)) => {
+                let t = self.infer.resolve(r.ty);
+                super::effects::match_params_pub(sig.params[i].ty, t, &mut binds);
+                values[i] = Some(r);
+                None
+            }
+            (_, r) => r,
+        };
         for (i, e) in &sources {
             let p = &sig.params[*i];
             if let Some(pid) = p.generic
@@ -538,7 +548,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 let t = self.resolve_type(e);
                 binds.insert(pid, t);
             } else {
-                let v = self.expr(e, None);
+                let bound: Vec<(ParamId, Ty)> = binds.iter().map(|(k, v)| (*k, *v)).collect();
+                let expect = self.sema.subst(p.ty, &bound);
+                let v = self.expr(e, (!has_param(expect)).then_some(expect));
                 let t = self.infer.resolve(v.ty);
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(p.ty, t, &mut b2);
@@ -565,11 +577,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 values[*i] = Some(v);
             }
         }
-        if let (Some(i), Some(r)) = (recv_index, receiver) {
-            let t = self.infer.resolve(r.ty);
-            super::effects::match_params_pub(sig.params[i].ty, t, &mut binds);
-            values[i] = Some(r);
-        }
+        let _ = receiver;
         let mut targs = vec![];
         for pid in &sig.generics {
             match binds.get(pid) {

@@ -286,11 +286,37 @@ impl<'a, 's> FnCx<'a, 's> {
                 let op = if n == "first" { Builtin::First } else { Builtin::Last };
                 Some(b(op, Ty::optional(elem), vec![base]))
             }
+            _ if SLICE_FNS.contains(&n) => Some(self.slice_fn(base, n, args, span)),
             _ => {
                 self.error(span, format!("the slice method `.{}` is not supported yet", n));
                 Some(error_expr(span))
             }
         }
+    }
+
+    /// A method of arrays and slices written in Gamma, in the core module `core/slice`:
+    /// `a.sort()` calls `sort(a[..])` (§21.3).
+    fn slice_fn(&mut self, base: Expr, n: &str, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(f) = self.sema.core_fn("slice", n) else {
+            self.error(span, format!("the slice method `.{}` is missing from the core library", n));
+            return error_expr(span);
+        };
+        let bt = self.infer.resolve(base.ty);
+        let recv = match bt.kind() {
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
+                let elem = *elem;
+                let m = self.place_mutability(&base);
+                if m.is_none() {
+                    self.error(span, format!("`.{}` needs an array variable, not a temporary", n));
+                    return error_expr(span);
+                }
+                let is_const = m != Some(true);
+                let p = mk(Ty::ptr(is_const, bt), tir::ExprKind::AddrOf(Box::new(base)), span);
+                self.coerce(p, Ty::intern(TyKind::Slice { elem, is_const }))
+            }
+            _ => base,
+        };
+        self.generic_call_with(f, Some(recv), args, span)
     }
 
     /// `x.bits(T)`: reinterpret plain data of the same size (§6.6).
@@ -396,6 +422,26 @@ impl<'a, 's> FnCx<'a, 's> {
         Some(mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args: bound }, span))
     }
 }
+
+/// The methods of arrays and slices implemented by `core/slice`.
+const SLICE_FNS: &[&str] = &[
+    "swap",
+    "fill",
+    "copy_from",
+    "sort",
+    "sort_by",
+    "sort_by_key",
+    "stable_sort",
+    "stable_sort_by",
+    "stable_sort_by_key",
+    "index_of",
+    "starts_with",
+    "ends_with",
+    "min",
+    "max",
+    "binary_search",
+    "utf8_valid",
+];
 
 /// The unsigned integer type of the same width (`abs_diff`).
 fn unsigned_of(t: Ty) -> Ty {

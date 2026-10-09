@@ -75,6 +75,14 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
                 match_params(*a, *b, binds);
             }
         }
+        (TyKind::Fn(f), TyKind::Fn(g)) | (TyKind::FnPtr(f), TyKind::FnPtr(g)) | (TyKind::Fn(f), TyKind::FnPtr(g))
+            if f.params.len() == g.params.len() =>
+        {
+            for (a, b) in f.params.iter().zip(g.params.iter()) {
+                match_params(*a, *b, binds);
+            }
+            match_params(f.ret, g.ret, binds);
+        }
         _ => {}
     }
 }
