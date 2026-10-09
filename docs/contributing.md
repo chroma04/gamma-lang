@@ -24,6 +24,19 @@ cargo test --all-targets
 Run them before sending a change. Formatting uses the settings in
 `rustfmt.toml`.
 
+## Formatting Gamma code
+
+`gamma fmt <file or directory>...` rewrites `.gm` files in the canonical style;
+`gamma fmt --check` only lists the files that would change (exit status 1 if
+there are any), and `gamma fmt -` filters standard input to standard output. The
+formatter (`src/fmt.rs`) works on tokens and never changes meaning: it keeps the
+line breaks of the source, collapses runs of blank lines, indents by bracket
+nesting (four spaces), normalizes the spacing inside a line and copies comments
+and literals verbatim. Trailing comments and the columns of aligned `::`/`=>`
+keep their spacing. Files with lexical errors are not formatted. `tests/fmt.rs`
+checks that formatting keeps the tokens and is idempotent for every `.gm` file in
+`lib/` and `tests/conformance/`.
+
 ## Tests
 
 There are two kinds of tests.

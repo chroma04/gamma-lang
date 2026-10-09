@@ -6,6 +6,7 @@ pub mod cgen;
 pub mod diag;
 pub mod driver;
 pub mod float;
+pub mod fmt;
 pub mod interp;
 pub mod layout;
 pub mod sema;
