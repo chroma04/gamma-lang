@@ -68,11 +68,14 @@ literals; a failed name lookup is `.Other(0)`.
 - Handlers that redirect the ambient effects, so code written against `In` and
   `Out` works on files and strings unchanged:
   - `with io.FileIn(f: file) { … }`: `In` reads the file.
-  - `with &io.FileOut(f: file) { … }`: `Out` and `Err` write to the file; the first
-    error is kept in the handler's `err` field.
-  - `with &io.StringIn(data: text) { … }`: `In` reads a string.
-  - `with &io.Capture(buf: storage[..]) { … }`: `Out` writes into a buffer;
-    `capture.text()` returns what was written.
+  - `with &out { … }` where `out := io.FileOut(f: file)`: `Out` and `Err` write to the
+    file; the first error is kept in the handler's `err` field.
+  - `with &input { … }` where `input := io.StringIn(data: text)`: `In` reads a string.
+  - `with &cap { … }` where `cap := io.Capture(buf: storage[..])`: `Out` writes into a
+    buffer; `cap.text()` returns what was written.
+
+  A handler that keeps state (`FileOut`, `StringIn`, `Capture`) is installed by address,
+  so it must first be bound to a name.
 
 ## `std/fs`
 
@@ -132,8 +135,8 @@ Both free or resize only their most recent allocation; everything else stays unt
 
 Elementary functions on `f64`, written in Gamma (ports of the FreeBSD/fdlibm algorithms),
 so results are bit-for-bit the same in the interpreter, in compiled code and at compile
-time. Every function is correctly rounded or within 1 ulp; special values follow C99
-Annex F.
+time. Every function is within 1 ulp of the exact result (`pow`: within 2 ulp); special values
+follow C99 Annex F.
 
 - Constants: `pi`, `e`, `tau`, `ln2`, `ln10`, `sqrt2`, `inf`, `nan`.
 - `sqrt`, `cbrt`, `hypot`; `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`.

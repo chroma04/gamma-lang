@@ -36,8 +36,8 @@ Unlike C, an array never decays to a pointer. Passing an array to a function tha
 
 ```gamma
 slices_demo :: fn() \ {Out} {
-    data := [_]u8(1, 2, 3, 4, 5, 6)
-    mid := data[1..4]                  // []u8 viewing 2, 3, 4
+    data := [_]i32(1, 2, 3, 4, 5, 6)
+    mid := data[1..4]                  // []i32 viewing 2, 3, 4
     mid[0] = 20                        // writes through: data[1] is now 20
     head := data[..2]                  // open-ended bounds only appear in brackets
     tail := data[4..]

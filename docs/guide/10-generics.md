@@ -60,7 +60,7 @@ mistakes :: fn(x: u8, y: u16) {
 
 ### Checked once
 
-The body of a generic function is type-checked *once*, where it is written, treating `T` as an opaque type that supports only what its constraints grant. Mistakes are reported in the generic function itself, even if no one calls it. This is the opposite of C++ templates, where errors appear at instantiation, deep inside a call. Instantiation never fails type-checking, with two exceptions: an untyped literal used at type `T` is checked against each instantiation (`T(300)` fails for `u8`), and an `@write` template (the machinery behind `print`) is checked against its arguments.
+The body of a generic function is type-checked *once*, where it is written, treating `T` as an opaque type that supports only what its constraints grant. Mistakes are reported in the generic function itself, even if no one calls it. This is the opposite of C++ templates, where errors appear at instantiation, deep inside a call. Instantiation never fails type-checking, with two exceptions: an untyped literal used at type `T` is checked against each instantiation (`x: T = 300` fails for `u8`), and an `@write` template (the machinery behind `print`) is checked against its arguments.
 
 ## Constraints
 

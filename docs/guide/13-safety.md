@@ -16,7 +16,7 @@ A conforming implementation provides three build modes. They differ only in what
 
 The one rule behind every check (§18.1): **it traps in Debug and Checked builds and is removed in Fast builds.** There is no syntax to disable a check locally; the way to remove checks is to choose Fast for the whole build. Implementations also remove checks they can prove cannot fail, in every mode; the design expects loops such as `for i in 0..xs.len { xs[i] }` and `for x in xs` to compile to check-free code in Checked builds (Appendix D.7 of the specification).
 
-Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool does not compile programs yet.
+Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool takes `--mode=debug|checked|fast` on `run`, `build` and `test` (the default is `debug`).
 
 ## Checked operations
 
