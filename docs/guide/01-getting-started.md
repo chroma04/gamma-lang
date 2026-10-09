@@ -56,7 +56,7 @@ main :: fn() -> E!() \ {Out} { ... }
 
 ## The `gamma` tool
 
-> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, fibers, iterators, generics, allocation with lists and maps, modules, tests and calls to C. `gamma build` compiles a program to a native executable through the system C compiler; `gamma run --backend=c` compiles and runs it in one step. The standard library is still being built, so some examples in later chapters are rejected with a "not supported yet" message.
+> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, fibers, iterators, generics, allocation with lists and maps, modules, tests and calls to C. `gamma build` compiles a program to a native executable through the system C compiler; `gamma run --backend=c` compiles and runs it in one step. The standard library beyond the core library is a set of modules under `std/` ([the standard library reference](../std.md)).
 
 You build the tool from the repository with Cargo, then use it like this:
 
@@ -75,7 +75,7 @@ A program is a single `.gm` file or a directory of `.gm` files (one module). Arg
 
 ### Build modes
 
-The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation, and the reference tool has no such switch yet.
+The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked; the C back end always optimizes.
 
 ## Source files
 
@@ -147,7 +147,7 @@ Points worth knowing:
   ```
 
   A directory tree without a manifest is a package of its own, rooted at the root module's directory.
-- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), this guide only relies on the module `std/c` in the interop chapter. Other `std/...` modules are outside what the specification defines.
+- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), this guide only relies on the module `std/c` in the interop chapter (and mentions `std/thread` there). Other `std/...` modules are outside what the specification defines; see the [standard library reference](../std.md).
 
 ## Tests
 

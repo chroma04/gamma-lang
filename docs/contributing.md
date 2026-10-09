@@ -41,7 +41,7 @@ outcome against expectations written in the file:
 
 main :: fn() {
     x := 1 + 2 * 3
-    y := a & b | c          //~ ERROR mixing bitwise operators
+    y := a & b | c          //~ ERROR cannot mix
 }
 ```
 
@@ -49,6 +49,7 @@ main :: fn() {
 | --- | --- |
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
+| `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, …) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
@@ -56,7 +57,8 @@ main :: fn() {
 
 Every error and warning the compiler reports must be expected by an annotation,
 and every annotation must be matched. The expected standard output of a `run` or
-`test` test is the sibling file `<name>.stdout`.
+`test` test is the sibling file `<name>.stdout` (empty if absent), and the sibling
+file `<name>.stdin`, if present, is the program's standard input.
 
 A test of several modules is a directory whose name ends in `.test`, such as
 `tests/conformance/run/imports.test/`. The program's root module is its `main/`

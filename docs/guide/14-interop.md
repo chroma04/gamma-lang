@@ -41,7 +41,10 @@ libc :: foreign "c" {
     div :: fn(n, d: c.c_int) -> DivT \ {}
 }
 
-d := libc.div(17, 5)          // d.quot is 3, d.rem is 2
+div_demo :: fn() -> c.c_int {
+    d := libc.div(17, 5)      // d.quot is 3, d.rem is 2
+    return d.quot + d.rem
+}
 ```
 
 ## Calling C: `foreign`
