@@ -1,0 +1,9 @@
+//! exit: 134
+// to_lower traps when the buffer is shorter than the string.
+str :: import "std/str"
+
+main :: fn() \ {Out} {
+    store: [3]u8 = ---
+    print("{}\n", str.to_lower("ABC", store[..]))
+    print("{}\n", str.to_lower("ABCD", store[..]))
+}

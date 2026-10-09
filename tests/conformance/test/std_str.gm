@@ -1,0 +1,31 @@
+//! stage: test
+// std/str under the test handlers: `join` gives back exactly what it allocates.
+str :: import "std/str"
+
+test "join does not leak" {
+    parts := [_]string("a", "b", "c")
+    j := try str.join(parts[..], "-")
+    defer free(j)
+    assert(j.len is 5, "length")
+    assert(j[0] is 'a' and j[1] is '-' and j[4] is 'c', "contents")
+}
+
+test "join of nothing" {
+    parts := [_]string()
+    j := try str.join(parts[..], ",")
+    defer free(j)
+    assert(j.len is 0, "empty")
+}
+
+test "split yields all pieces" {
+    n: usize = 0
+    for _ in str.split("a b c d", " ") { n += 1 }
+    assert(n is 4, "pieces")
+}
+
+test "builder formats through @write" {
+    store: [32]u8 = ---
+    b := str.builder(store[..])
+    @write(fn(bytes) => b.push(bytes), "{}-{}", (7, "x"))
+    assert(b.str() is "7-x", "text")
+}

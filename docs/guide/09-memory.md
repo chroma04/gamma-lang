@@ -160,6 +160,18 @@ The element and key types are written explicitly where the compiler cannot infer
 
 Besides `put`, `get` and `remove`, a map has `contains(k)`, `len()`, `clear()` (which keeps the storage) and `entries()`, an iterator over `(key, value)` pairs in an unspecified order: `for e in ages.entries() { print("{} {}\n", (e.key, e.value)) }`.
 
+`get` returns a copy of the value. To update a value in place, `get_ptr(k)` returns a `?^V` pointing into the map, and `get_or_put(k, default)` returns an `AllocError!^V` after storing `default` if `k` was absent, which makes counting a one-liner. A pointer is valid until the next insertion or removal:
+
+```gamma
+counts := map(string, u32)
+defer counts.deinit()
+for w in words {
+    c := try counts.get_or_put(w, 0)
+    c^ += 1
+}
+if p := counts.get_ptr("ada") { p^ = 0 }
+```
+
 Because maps compare with `is`, a float key never finds a NaN, as `nan is nan` is false. Key such maps by `x.bits(u64)` instead.
 
 ## Nothing allocates behind your back

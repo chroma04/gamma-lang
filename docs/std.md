@@ -110,6 +110,47 @@ print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary
 - Floats: `fixed(x, decimals)`, `sci(x, digits)` and `general(x, precision)`, correctly
   rounded like C's `%.*f`, `%.*e` and `%.*g`.
 
+## `std/str`
+
+Byte-oriented string utilities. A `string` is a `[]const u8`, so indices are byte
+indices and case rules are ASCII only. Strings are slices, which have no user-defined
+methods, so these are called as functions: `str.trim(s)`. Results are slices of the
+arguments (or of a buffer you supply); only `join` allocates.
+
+```gamma
+str :: import "std/str"
+
+for line in str.lines(text) {
+    if kv := str.split_once(str.trim(line), "=") {
+        port := str.parse_int(u16, str.trim(kv.after)) else 8080
+        print("{} -> {}\n", (kv.before, port))
+    }
+}
+```
+
+- Trimming: `trim`, `trim_start`, `trim_end` (ASCII whitespace: space, `\t`, `\n`, `\r`,
+  `\v`, `\f`).
+- Searching: `find(s, needle) -> ?usize` (an empty needle is found at 0), `rfind` (an
+  empty needle is found at `s.len`) and `contains`.
+- Splitting: `split_once(s, sep) -> ?(before: string, after: string)` and the iterators
+  `split(s, sep)` (adjacent or terminal separators give empty pieces; an empty `sep`
+  yields `s` once), `lines(s)` (splits on `\n`, drops a `\r` before it, no empty line
+  after a final `\n`) and `fields(s)` (runs of non-whitespace).
+- Case: `eq_ignore_case(a, b)`, and `to_lower(s, buf)` and `to_upper(s, buf)`, which
+  write into `buf` and return the part used; a buffer shorter than `s` traps.
+- `parse_int(T, s) -> ParseError!T` for any integer type: an optional sign (`-` only
+  for signed types), an optional `0x`, `0o` or `0b` prefix, digits with single `_`
+  separators between them, and nothing else. The most negative value of a signed type
+  parses. Errors are `ParseError`: `.Empty`, `.InvalidDigit(at: index)` (a bad
+  character, a misplaced `_`, or missing digits, in which case `at` is the index where
+  a digit was expected) and `.Overflow`. The first problem found from the left wins.
+- `Builder`: appends into a buffer you supply, allocating nothing.
+  `b := str.builder(buf[..])`, then `b.push(s)`, `b.push_byte(c)`, `b.str()`,
+  `b.len()` and `b.reset()`. Appending beyond the buffer traps. A builder is a sink for
+  `@write`, which formats like `print`: `@write(fn(bytes) => b.push(bytes), "{} of {}", (n, total))`.
+- `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
+  from the current allocator; release it with `free`.
+
 ## `std/arena` and `std/fixed_buffer`
 
 Allocators to install with `with` (§15.2):
