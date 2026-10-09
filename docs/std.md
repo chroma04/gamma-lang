@@ -25,7 +25,7 @@ handlers, and tests run with the test handlers instead.
 | `Clock` | `now() -> Instant`, `wall() -> i64`, `sleep(d)` | system clocks | fake clock; `sleep` advances it |
 | `Rand` | `fill(buf)` | the OS's generator | fixed seed |
 | `Fs` | files and directories (below) | the real file system | in-memory file system |
-| `Net` | TCP connections (below) | real sockets | — |
+| `Net` | TCP connections (below) | real sockets | loopback fake: an in-memory network with one host (`localhost`, `127.0.0.1` and `::1`); nothing blocks, so `accept` and `recv` give `WouldBlock` instead of waiting |
 | `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | empty |
 | `Alloc` | `current() -> Allocator` | the system heap | leak-checking heap |
 

@@ -45,6 +45,7 @@ impl<'s> Sema<'s> {
             if with_alloc { a.clock } else { None },
             if with_alloc { a.rand } else { None },
             if with_alloc { a.fs } else { None },
+            if with_alloc { a.net } else { None },
         ];
         EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
     }

@@ -1,0 +1,19 @@
+test "localhost, 127.0.0.1 and ::1 are one host" ... ok
+test "other hosts fail like a failed name lookup" ... ok
+test "port 0 picks free ports counting up from 49152" ... ok
+test "a port in use cannot be listened on again" ... ok
+test "connecting to a port nobody listens on is refused" ... ok
+test "accept does not block" ... ok
+test "recv does not block" ... ok
+test "an echo exchange in both directions" ... ok
+test "partial receives into small buffers" ... ok
+test "two connections on one listener are accepted in order" ... ok
+test "data sent before the connection is accepted is kept" ... ok
+test "a closed peer reads as the end after the queued data" ... ok
+test "closing a socket invalidates its handle" ... ok
+test "closing a listener drops unaccepted connections" ... ok
+test "closed handles fail and closing twice is harmless" ... ok
+test "closing the listener leaves accepted connections open" ... ok
+test "each test starts with an empty network" ... ok
+test "many small messages keep their order" ... ok
+18 passed, 0 failed

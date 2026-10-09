@@ -503,6 +503,7 @@ TestIo :: struct {
     clock: u64
     seed: u64
     fs: MemFs
+    net: MemNet
 }
 
 /// The test handler's wall-clock time, in Unix nanoseconds.
@@ -970,12 +971,224 @@ handler Fs for ^TestIo {
     close_dir(self, d) => { mem_close_dir(&self.fs, d) }
 }
 
+// The test handler of `Net` (§12.9): a loopback fake. Every test starts with an empty
+// in-memory network, freed when the test ends, so connections never leave the process
+// and nothing is visible to the next test.
+//
+// There is one host: `"localhost"`, `"127.0.0.1"` and `"::1"` all name it, and any other
+// host fails with `.Other(0)`, as a failed name lookup does with real sockets. A listener
+// is a port and a backlog of connections that have not been accepted; `connect` succeeds
+// at once if something listens on the port (`.ConnectionRefused` otherwise) and queues
+// the connection's server end on the backlog. A connection is two ends, each with a queue
+// of the bytes the other end has sent. Tests run on one thread, so nothing can block:
+// `accept` with an empty backlog and `recv` with nothing to read while the peer is still
+// open fail with `.WouldBlock`. Handles are an index plus one and are never reused, so a
+// closed or unknown handle always fails with `.Other(9)` (EBADF on Linux); listening on a
+// port that is already taken gives `.Other(98)` (EADDRINUSE). Port 0 picks the next free
+// port from 49152 up. All storage comes from the system heap, not from the test's
+// tracking allocator, so it does not count as a leak.
+
+MemSock :: struct {
+    open: bool
+    peer: usize             // the other end of the connection
+    inbox: List(u8)         // bytes the peer has sent; those before `head` have been read
+    head: usize
+}
+
+MemListener :: struct {
+    open: bool
+    port: u16
+    backlog: List(usize)    // server ends not yet accepted; those before `head` have been
+    head: usize
+}
+
+MemNet :: struct {
+    alloc: Allocator
+    socks: List(MemSock)
+    listeners: List(MemListener)
+    next_port: u16          // where the search for a free port starts
+}
+
+MEM_PORT_FIRST :: 49152
+
+/// An empty network.
+mem_net :: fn() -> MemNet {
+    a := heap_allocator()
+    return with a {
+        MemNet(alloc: a, socks: list(MemSock), listeners: list(MemListener), next_port: MEM_PORT_FIRST)
+    }
+}
+
+/// Frees everything.
+mem_net_free :: fn(n: ^MemNet) {
+    for i in 0..n.socks.items.len { n.socks.items[i].inbox.deinit() }
+    for i in 0..n.listeners.items.len { n.listeners.items[i].backlog.deinit() }
+    n.socks.deinit()
+    n.listeners.deinit()
+}
+
+is_loopback :: fn(host: string) -> bool =>
+    same_bytes(host, "localhost") or same_bytes(host, "127.0.0.1") or same_bytes(host, "::1")
+
+/// The open listener on `port`.
+find_listener :: fn(n: ^MemNet, port: u16) -> ?usize {
+    for i in 0..n.listeners.items.len {
+        l := &n.listeners.items[i]
+        if l.open and l.port is port { return i }
+    }
+    return null
+}
+
+/// The first unused port at or after `next_port`, wrapping from 65535 to 49152.
+free_port :: fn(n: ^MemNet) -> IoError!u16 {
+    tries: u32 = 0
+    while tries < 16384 {
+        p := n.next_port
+        n.next_port = if p is 65535 { MEM_PORT_FIRST } else { p + 1 }
+        if find_listener(n, p) is null { return p }
+        tries += 1
+    }
+    return !.Other(98)
+}
+
+get_sock :: fn(n: ^MemNet, s: Socket) -> IoError!^MemSock {
+    if s.handle < 1 or s.handle > n.socks.items.len.trunc(i64) { return !.Other(9) }
+    p := &n.socks.items[(s.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+get_listener :: fn(n: ^MemNet, l: Listener) -> IoError!^MemListener {
+    if l.handle < 1 or l.handle > n.listeners.items.len.trunc(i64) { return !.Other(9) }
+    p := &n.listeners.items[(l.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+mem_listen :: fn(n: ^MemNet, host: string, port: u16) -> IoError!Listener {
+    if not is_loopback(host) { return !.Other(0) }
+    p := port
+    if port is 0 {
+        p = try free_port(n)
+    } else if find_listener(n, port) is not null {
+        return !.Other(98)
+    }
+    a := n.alloc
+    l := with a {
+        MemListener(open: true, port: p, backlog: list(usize), head: 0)
+    }
+    n.listeners.push(l) else return !.NoSpace
+    return Listener(handle: n.listeners.items.len.trunc(i64))
+}
+
+mem_local_port :: fn(n: ^MemNet, l: Listener) -> IoError!u16 {
+    p := try get_listener(n, l)
+    return p.port
+}
+
+mem_connect :: fn(n: ^MemNet, host: string, port: u16) -> IoError!Socket {
+    if not is_loopback(host) { return !.Other(0) }
+    li := find_listener(n, port) else return !.ConnectionRefused
+    client := n.socks.items.len
+    a := n.alloc
+    c := with a { MemSock(open: true, peer: client + 1, inbox: list(u8), head: 0) }
+    s := with a { MemSock(open: true, peer: client, inbox: list(u8), head: 0) }
+    n.socks.push(c) else return !.NoSpace
+    if !e := n.socks.push(s) {
+        _ = n.socks.pop()
+        return !.NoSpace
+    }
+    if !e := n.listeners.items[li].backlog.push(client + 1) {
+        _ = n.socks.pop()
+        _ = n.socks.pop()
+        return !.NoSpace
+    }
+    return Socket(handle: (client + 1).trunc(i64))
+}
+
+mem_accept :: fn(n: ^MemNet, l: Listener) -> IoError!Socket {
+    p := try get_listener(n, l)
+    if p.head >= p.backlog.items.len { return !.WouldBlock }
+    i := p.backlog.items[p.head]
+    p.head += 1
+    if p.head is p.backlog.items.len {
+        p.backlog.clear()
+        p.head = 0
+    }
+    return Socket(handle: (i + 1).trunc(i64))
+}
+
+mem_send :: fn(n: ^MemNet, s: Socket, bytes: []const u8) -> IoError!usize {
+    p := try get_sock(n, s)
+    peer := &n.socks.items[p.peer]
+    if not peer.open { return !.BrokenPipe }
+    sent: usize = 0
+    while sent < bytes.len {
+        peer.inbox.push(bytes[sent]) else break
+        sent += 1
+    }
+    if sent is 0 and bytes.len > 0 { return !.NoSpace }
+    return sent
+}
+
+mem_recv :: fn(n: ^MemNet, s: Socket, buf: []u8) -> IoError!usize {
+    p := try get_sock(n, s)
+    if buf.len is 0 { return 0 }
+    avail := p.inbox.items.len - p.head
+    if avail is 0 {
+        if n.socks.items[p.peer].open { return !.WouldBlock }
+        return 0
+    }
+    count := buf.len.min(avail)
+    buf[0..count].copy_from(p.inbox.items[p.head..p.head + count])
+    p.head += count
+    if p.head is p.inbox.items.len {
+        p.inbox.clear()
+        p.head = 0
+    }
+    return count
+}
+
+/// Closes one end of a connection and drops what was waiting to be read there.
+close_end :: fn(p: ^MemSock) {
+    p.open = false
+    p.inbox.deinit()
+    p.head = 0
+}
+
+mem_close_socket :: fn(n: ^MemNet, s: Socket) {
+    p := get_sock(n, s) else return
+    close_end(p)
+}
+
+mem_close_listener :: fn(n: ^MemNet, l: Listener) {
+    p := get_listener(n, l) else return
+    for i in p.head..p.backlog.items.len {
+        close_end(&n.socks.items[p.backlog.items[i]])
+    }
+    p.open = false
+    p.backlog.deinit()
+    p.head = 0
+}
+
+handler Net for ^TestIo {
+    connect(self, host, port) => mem_connect(&self.net, host, port)
+    listen(self, host, port) => mem_listen(&self.net, host, port)
+    local_port(self, l) => mem_local_port(&self.net, l)
+    accept(self, l) => mem_accept(&self.net, l)
+    send(self, s, bytes) => mem_send(&self.net, s, bytes)
+    recv(self, s, buf) => mem_recv(&self.net, s, buf)
+    close_socket(self, s) => { mem_close_socket(&self.net, s) }
+    close_listener(self, l) => { mem_close_listener(&self.net, l) }
+}
+
 /// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
-run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs}) -> u8 \ {Out, Err, Env} {
+run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    io := TestIo(clock: 0, seed: 0, fs: mem_fs())
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
     mem_fs_free(&io.fs)
+    mem_net_free(&io.net)
     if !e := r {
         eprint("error: {}\n", e)
         return 1
@@ -984,11 +1197,12 @@ run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, 
 }
 
 /// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
-run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs}) -> u8 \ {Out, Err, Env} {
+run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    io := TestIo(clock: 0, seed: 0, fs: mem_fs())
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     with Allocator(data: &t, vt: &TRACKING), &io { body() }
     mem_fs_free(&io.fs)
+    mem_net_free(&io.net)
     return leaked(&t)
 }
 

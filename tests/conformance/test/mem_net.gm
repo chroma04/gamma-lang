@@ -1,0 +1,320 @@
+//! stage: test
+// Tests run with an in-memory loopback network as the handler of `Net` (§12.9): every
+// test starts with an empty one, connections never leave the process, and nothing can
+// block, so `accept` and `recv` with nothing to deliver fail with `WouldBlock`.
+
+// Sends all of `text`, which the fake always accepts whole.
+say :: fn(s: Socket, text: string) -> IoError!() \ {Net} {
+    n := try s.send(text)
+    if n is not text.len { return !.NoSpace }
+}
+
+// True if the next `recv` on `s` yields exactly `text`.
+hears :: fn(s: Socket, text: string) -> IoError!bool \ {Net} {
+    buf: [64]u8 = ---
+    n := try s.recv(buf[..])
+    return buf[0..n] is text
+}
+
+test "localhost, 127.0.0.1 and ::1 are one host" {
+    l := try listen("127.0.0.1", 4000)
+    expect(try l.local_port() is 4000)
+    a := try connect("localhost", 4000)
+    b := try connect("::1", 4000)
+    c := try connect("127.0.0.1", 4000)
+    s1 := try l.accept()
+    s2 := try l.accept()
+    s3 := try l.accept()
+    try say(a, "a")
+    try say(b, "b")
+    try say(c, "c")
+    expect(try hears(s1, "a"))
+    expect(try hears(s2, "b"))
+    expect(try hears(s3, "c"))
+    l2 := try listen("::1", 4001)
+    l3 := try listen("localhost", 4002)
+    expect(try l2.local_port() is 4001)
+    expect(try l3.local_port() is 4002)
+    // The same port on any spelling of the host is taken.
+    expect(listen("localhost", 4001) is !.Other(98))
+}
+
+test "other hosts fail like a failed name lookup" {
+    l := try listen("localhost", 4100)
+    expect(connect("example.com", 4100) is !.Other(0))
+    expect(connect("10.0.0.1", 4100) is !.Other(0))
+    expect(connect("", 4100) is !.Other(0))
+    expect(listen("0.0.0.0", 4101) is !.Other(0))
+    expect(listen("example.com", 0) is !.Other(0))
+    // Nothing was queued or bound by the failures.
+    expect(l.accept() is !.WouldBlock)
+    m := try listen("localhost", 4101)
+    expect(try m.local_port() is 4101)
+}
+
+test "port 0 picks free ports counting up from 49152" {
+    a := try listen("localhost", 0)
+    b := try listen("localhost", 0)
+    c := try listen("localhost", 0)
+    expect(try a.local_port() is 49152)
+    expect(try b.local_port() is 49153)
+    expect(try c.local_port() is 49154)
+    // Closing frees a port for explicit use, and a taken port is skipped.
+    b.close_listener()
+    d := try listen("localhost", 49153)
+    expect(try d.local_port() is 49153)
+    e := try listen("localhost", 49156)
+    f := try listen("localhost", 0)
+    g := try listen("localhost", 0)
+    expect(try f.local_port() is 49155)
+    expect(try g.local_port() is 49157)
+    expect(try e.local_port() is 49156)
+}
+
+test "a port in use cannot be listened on again" {
+    l := try listen("localhost", 5000)
+    expect(listen("localhost", 5000) is !.Other(98))
+    expect(listen("127.0.0.1", 5000) is !.Other(98))
+    l.close_listener()
+    again := try listen("localhost", 5000)
+    expect(try again.local_port() is 5000)
+}
+
+test "connecting to a port nobody listens on is refused" {
+    expect(connect("localhost", 6000) is !.ConnectionRefused)
+    l := try listen("localhost", 6001)
+    expect(connect("localhost", 6000) is !.ConnectionRefused)
+    expect(connect("localhost", 0) is !.ConnectionRefused)
+    c := try connect("localhost", 6001)
+    c.close_socket()
+    l.close_listener()
+    expect(connect("localhost", 6001) is !.ConnectionRefused)
+}
+
+test "accept does not block" {
+    l := try listen("localhost", 0)
+    expect(l.accept() is !.WouldBlock)
+    expect(l.accept() is !.WouldBlock)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    expect(l.accept() is !.WouldBlock)
+    try say(c, "x")
+    expect(try hears(s, "x"))
+}
+
+test "recv does not block" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    buf: [8]u8 = ---
+    expect(s.recv(buf[..]) is !.WouldBlock)
+    expect(c.recv(buf[..]) is !.WouldBlock)
+    try say(c, "hi")
+    expect(c.recv(buf[..]) is !.WouldBlock)
+    expect(try s.recv(buf[..]) is 2)
+    expect(s.recv(buf[..]) is !.WouldBlock)
+}
+
+test "an echo exchange in both directions" {
+    l := try listen("localhost", 0)
+    port := try l.local_port()
+    c := try connect("localhost", port)
+    s := try l.accept()
+    buf: [64]u8 = ---
+    msgs := [_]string("one", "two two", "three three three")
+    for msg in msgs {
+        expect(try c.send(msg) is msg.len)
+        n := try s.recv(buf[..])
+        expect(buf[0..n] is msg)
+        expect(try s.send(buf[0..n]) is n)
+        m := try c.recv(buf[..])
+        expect(buf[0..m] is msg)
+    }
+    // Several sends are one stream; one recv takes what is queued.
+    try say(c, "ab")
+    try say(c, "cd")
+    try say(c, "ef")
+    try say(s, "XY")
+    expect(try hears(s, "abcdef"))
+    expect(try hears(c, "XY"))
+    // An empty send changes nothing.
+    expect(try c.send("") is 0)
+    expect(s.recv(buf[..]) is !.WouldBlock)
+}
+
+test "partial receives into small buffers" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    try say(c, "hello, world")
+    small: [5]u8 = ---
+    expect(try s.recv(small[..]) is 5)
+    expect(small[..] is "hello")
+    expect(try s.recv(small[..]) is 5)
+    expect(small[..] is ", wor")
+    n := try s.recv(small[..])
+    expect(n is 2)
+    expect(small[0..n] is "ld")
+    expect(s.recv(small[..]) is !.WouldBlock)
+    // The queue is usable again after it drained.
+    try say(c, "again")
+    expect(try s.recv(small[..]) is 5)
+    expect(small[..] is "again")
+    // A zero-length buffer receives nothing.
+    try say(c, "z")
+    expect(try s.recv(small[0..0]) is 0)
+    expect(try hears(s, "z"))
+}
+
+test "two connections on one listener are accepted in order" {
+    l := try listen("localhost", 0)
+    port := try l.local_port()
+    first := try connect("localhost", port)
+    second := try connect("localhost", port)
+    try say(second, "from second")
+    try say(first, "from first")
+    a := try l.accept()
+    b := try l.accept()
+    expect(l.accept() is !.WouldBlock)
+    expect(try hears(a, "from first"))
+    expect(try hears(b, "from second"))
+    // Each connection has its own queues.
+    try say(a, "to first")
+    try say(b, "to second")
+    expect(try hears(first, "to first"))
+    expect(try hears(second, "to second"))
+}
+
+test "data sent before the connection is accepted is kept" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    try say(c, "early")
+    s := try l.accept()
+    expect(try hears(s, "early"))
+}
+
+test "a closed peer reads as the end after the queued data" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    try say(c, "bye")
+    c.close_socket()
+    buf: [8]u8 = ---
+    expect(try s.recv(buf[0..2]) is 2)
+    expect(try s.recv(buf[..]) is 1)
+    expect(try s.recv(buf[..]) is 0)
+    expect(try s.recv(buf[..]) is 0)
+    // Sending to a closed peer is a broken pipe.
+    expect(s.send("anyone?") is !.BrokenPipe)
+    s.close_socket()
+}
+
+test "closing a socket invalidates its handle" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    c.close_socket()
+    buf: [4]u8 = ---
+    expect(c.send("x") is !.Other(9))
+    expect(c.recv(buf[..]) is !.Other(9))
+    // Closing again is harmless, and the other end is unaffected.
+    c.close_socket()
+    expect(try s.recv(buf[..]) is 0)
+    // A peer that closes while data is unread in its own queue loses it.
+    l2 := try listen("localhost", 0)
+    c2 := try connect("localhost", try l2.local_port())
+    s2 := try l2.accept()
+    try say(c2, "lost")
+    s2.close_socket()
+    expect(c2.recv(buf[..]) is 0)
+    expect(c2.send("x") is !.BrokenPipe)
+}
+
+test "closing a listener drops unaccepted connections" {
+    l := try listen("localhost", 0)
+    port := try l.local_port()
+    kept := try connect("localhost", port)
+    dropped := try connect("localhost", port)
+    accepted := try l.accept()
+    try say(dropped, "unheard")
+    l.close_listener()
+    buf: [8]u8 = ---
+    // The client end of the dropped connection sees a closed peer.
+    expect(dropped.recv(buf[..]) is 0)
+    expect(dropped.send("x") is !.BrokenPipe)
+    // The accepted one is unaffected.
+    try say(kept, "still")
+    expect(try hears(accepted, "still"))
+    // The listener is gone.
+    expect(l.accept() is !.Other(9))
+    expect(l.local_port() is !.Other(9))
+    expect(connect("localhost", port) is !.ConnectionRefused)
+    l.close_listener()
+}
+
+test "closed handles fail and closing twice is harmless" {
+    l := try listen("localhost", 7000)
+    c := try connect("localhost", 7000)
+    s := try l.accept()
+    buf: [4]u8 = ---
+    c.close_socket()
+    c.close_socket()
+    expect(c.send("x") is !.Other(9))
+    expect(c.recv(buf[..]) is !.Other(9))
+    l.close_listener()
+    l.close_listener()
+    expect(l.accept() is !.Other(9))
+    expect(l.local_port() is !.Other(9))
+    // A closed handle is never reused for a new socket or listener.
+    l2 := try listen("localhost", 7000)
+    c2 := try connect("localhost", 7000)
+    s2 := try l2.accept()
+    expect(l.accept() is !.Other(9))
+    expect(c.send("x") is !.Other(9))
+    try say(c2, "new")
+    expect(try hears(s2, "new"))
+    expect(try s.recv(buf[..]) is 0)
+}
+
+test "closing the listener leaves accepted connections open" {
+    l := try listen("localhost", 7100)
+    c := try connect("localhost", 7100)
+    s := try l.accept()
+    l.close_listener()
+    try say(c, "ok")
+    expect(try hears(s, "ok"))
+}
+
+test "each test starts with an empty network" {
+    // The earlier tests used these ports and left connections open.
+    expect(connect("localhost", 4000) is !.ConnectionRefused)
+    expect(connect("localhost", 6001) is !.ConnectionRefused)
+    expect(connect("localhost", 7100) is !.ConnectionRefused)
+    expect(connect("localhost", 49152) is !.ConnectionRefused)
+    l := try listen("localhost", 0)
+    expect(try l.local_port() is 49152)
+    expect(l.accept() is !.WouldBlock)
+    _ = try listen("localhost", 4000)
+}
+
+test "many small messages keep their order" {
+    l := try listen("localhost", 0)
+    c := try connect("localhost", try l.local_port())
+    s := try l.accept()
+    buf: [4]u8 = ---
+    total: usize = 0
+    for i in 0..200 {
+        b: [1]u8 = ---
+        b[0] = (i % 251).trunc(u8)
+        expect(try c.send(b[..]) is 1)
+    }
+    while total < 200 {
+        n := try s.recv(buf[..])
+        for j in 0..n {
+            want := ((total + j) % 251).trunc(u8)
+            expect(buf[j] is want)
+        }
+        total += n
+    }
+    expect(s.recv(buf[..]) is !.WouldBlock)
+}
