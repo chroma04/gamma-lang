@@ -15,9 +15,9 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. bugs-open.md: std usability (string helpers, HashMap entry/get_ptr, print width specs),
-   array temporaries in `for`/slicing, import-failure cascades, big-value copies in C.
-2. Keep PR green; CI runs on push. Update the PR description at the end of each chunk.
+1. Merge the `gamma fmt` subagent work (token-based formatter) when it reports; review rules.
+2. bugs-open.md leftovers (big-value copies in C). Then: static handler specialization (D.3)?
+3. Keep PR #2 green (subscribed); CI runs on push. Update the PR description at the end of each chunk.
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md
