@@ -415,6 +415,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::UnOp::BitNot => {
                 let v = self.expr(operand, expect);
+                let st = self.infer.resolve(v.ty);
+                if let Some(u) = self.bits_operand(st, "~", span) {
+                    let x = self.bits_convert(v, u);
+                    let n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    return self.bits_convert(n, st);
+                }
                 self.obligations.push(Obligation::Numeric {
                     ty: v.ty,
                     span,
@@ -565,6 +571,20 @@ impl<'a, 's> FnCx<'a, 's> {
             B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
                 let r = self.expr(rhs, Some(lhs.ty));
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
+                let st = self.infer.resolve(ty);
+                if op != B::Div
+                    && op != B::Rem
+                    && let Some(u) = self.bits_operand(st, op.as_str(), span)
+                {
+                    let top = match op {
+                        B::BitAnd => tir::BinOp::BitAnd,
+                        B::BitOr => tir::BinOp::BitOr,
+                        _ => tir::BinOp::BitXor,
+                    };
+                    let (l, r) = (self.bits_convert(lhs, u), self.bits_convert(r, u));
+                    let n = mk(u, tir::ExprKind::Binary { op: top, lhs: Box::new(l), rhs: Box::new(r) }, span);
+                    return self.bits_convert(n, st);
+                }
                 let int_only = op != B::Div;
                 self.obligations.push(Obligation::Numeric { ty, span, op: op.as_str(), int_only, signed_only: false });
                 let top = match op {
@@ -582,6 +602,25 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// The underlying integer of `t` if it is a `#bits` struct, for the bitwise operator
+    /// `op` (§7.4.1); reports an error if some field is not a `bool` or an integer.
+    fn bits_operand(&mut self, t: Ty, op: &str, span: Span) -> Option<Ty> {
+        let u = self.sema.bits_struct_ty(t)?;
+        if !self.sema.is_plain(t) {
+            self.error(
+                span,
+                format!("`{}` applies only to `#bits` structs whose fields are all `bool` or integers", op),
+            );
+        }
+        Some(u)
+    }
+
+    /// Converts between a `#bits` struct and its underlying integer.
+    fn bits_convert(&mut self, v: Expr, to: Ty) -> Expr {
+        let span = v.span;
+        mk(to, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
     }
 
     /// `p + n`, `p - n` and `p - q` on a many-pointer `p` (§5.5).

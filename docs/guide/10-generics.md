@@ -72,7 +72,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | `Ord(T)` | integers, floats, enums; tuples, arrays and slices of these | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
-| `Signed(T)` | signed integers and floats | unary `-` |
+| `Signed(T)` | signed integers and floats | `Num`, plus unary `-` |
 | `Float(T)` | floats | `Num`, plus the float methods |
 | `Plain(T)` | plain-data types | `---` at `T`, and `.bits` to and from `T` |
 

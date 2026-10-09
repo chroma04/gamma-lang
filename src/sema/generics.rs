@@ -44,7 +44,7 @@ impl Constraint {
             Ord => &[Ord, Eq],
             Num => &[Num, Ord, Eq],
             Int => &[Int, Num, Ord, Eq, Plain],
-            Signed => &[Signed],
+            Signed => &[Signed, Num, Ord, Eq, Plain],
             Float => &[Float, Num, Ord, Eq, Plain],
             Plain => &[Plain],
         }

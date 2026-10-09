@@ -332,10 +332,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let loc = self.loc(e);
         match op {
             Builtin::Assert | Builtin::Expect => {
-                let c = self.expr(&args[0])?;
+                // Fast builds remove `assert`, argument and all (§21.6).
                 if op == Builtin::Assert && !self.checks() {
                     return Ok(self.unit());
                 }
+                let c = self.expr(&args[0])?;
                 self.line(&format!("if (!{}) {{", c));
                 self.indent += 1;
                 let m = self.expr(&args[1])?;

@@ -10,6 +10,8 @@
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
 //! - `//! stderr` also compares the standard error of a `run` or `test` test
 //!   with the sibling `<name>.stderr`, for tests of trap reports.
+//! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in
+//!   that build mode (default: debug).
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
 //!   architecture, for tests of features that exist on some targets only.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
@@ -54,6 +56,8 @@ struct Expectations {
     dump: bool,
     /// Compare standard error with `<name>.stderr`.
     stderr: bool,
+    /// The build mode for `run` and `test`, if not the default.
+    mode: Option<String>,
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
@@ -62,7 +66,8 @@ struct Expectations {
 }
 
 fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
-    let mut e = Expectations { stage: Stage::Run, dump: false, stderr: false, exit: 0, arch: None, diags: vec![] };
+    let mut e =
+        Expectations { stage: Stage::Run, dump: false, stderr: false, mode: None, exit: 0, arch: None, diags: vec![] };
     for path in files {
         let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
         parse_file_expectations(path, &src, &mut e)?;
@@ -88,6 +93,8 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.dump = true;
             } else if directive == "stderr" {
                 e.stderr = true;
+            } else if let Some(mode) = directive.strip_prefix("mode:") {
+                e.mode = Some(mode.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -195,9 +202,20 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
 
 /// Runs a `run` or `test` test (`command`) through the C back end and compares it
 /// with the expectations.
-fn run_c(command: &str, target: &Path, golden: &Path, exit: i32, stderr_golden: Option<&Path>) -> Result<(), String> {
+fn run_c(
+    command: &str,
+    target: &Path,
+    golden: &Path,
+    exp: &Expectations,
+    stderr_golden: Option<&Path>,
+) -> Result<(), String> {
+    let exit = exp.exit;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
-    cmd.args([command, "--backend=c", "--diag-format=short"]).arg(target);
+    cmd.args([command, "--backend=c", "--diag-format=short"]);
+    if let Some(m) = &exp.mode {
+        cmd.arg(format!("--mode={}", m));
+    }
+    cmd.arg(target);
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -252,6 +270,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     cmd.arg(command).arg("--diag-format=short");
     if exp.dump {
         cmd.arg("--dump");
+    }
+    if let (Some(m), Stage::Run | Stage::Test) = (&exp.mode, exp.stage) {
+        cmd.arg(format!("--mode={}", m));
     }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
@@ -345,7 +366,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         && problems.is_empty()
         && !bless
         && c_backend_available()
-        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), exp.exit, stderr_golden)
+        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), &exp, stderr_golden)
     {
         problems.push(p);
     }

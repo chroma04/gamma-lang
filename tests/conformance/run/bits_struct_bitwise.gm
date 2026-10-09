@@ -1,0 +1,17 @@
+// Bitwise operators on `#bits` structs act on the underlying integer (§7.4.1).
+F :: #bits(u8) struct {
+    a, b: bool
+    rest: u6
+}
+main :: fn() \ {Out} {
+    x := F(a: true, b: false, rest: 5)
+    y := F(a: false, b: true, rest: 3)
+    print("{}\n", x | y)
+    print("{}\n", x & y)
+    print("{}\n", x ~ y)
+    print("{}\n", ~x)
+    z := x
+    z |= y
+    z ~= x
+    print("{}\n", z)
+}

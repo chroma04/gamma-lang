@@ -50,6 +50,8 @@ main :: fn() {
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
 | `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, …) |
+| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `fast`; default `debug`) |
+| `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |

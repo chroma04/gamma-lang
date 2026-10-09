@@ -838,7 +838,7 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 #### 7.4.1 Operand types
 
-Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs (fieldwise on the underlying integer).
+Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs whose fields are all `bool` or integers (on the underlying integer, so fieldwise).
 
 A unary `-` applied directly to an untyped literal is part of the literal for typing purposes: `-128i8` and `x: i8 = -128` are valid.
 
@@ -1941,7 +1941,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Ord(T)` | integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, `.trunc` / `.checked` / `.sat` |
-| `Signed(T)` | signed integer and float types | unary `-` |
+| `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
