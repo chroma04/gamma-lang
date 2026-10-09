@@ -1,0 +1,5 @@
+test "join does not leak" ... ok
+test "join of nothing" ... ok
+test "split yields all pieces" ... ok
+test "builder formats through @write" ... ok
+4 passed, 0 failed

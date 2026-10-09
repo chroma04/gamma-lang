@@ -1,0 +1,13 @@
+empty: true
+after add: 15
+other untouched: 20
+missing: true
+len: 4
+3: 3, 1: 2, 2: 1, 7: 1
+existing: 3
+len still: 4
+big: 1000 true
+removed: true
+re-added: 77
+point: Point(x: 40, y: 4)
+custom: 3 9 9

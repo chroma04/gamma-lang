@@ -1,0 +1,77 @@
+// HashMap.get_ptr and HashMap.get_or_put: in-place access to stored values.
+
+Point :: struct { x, y: i32 }
+
+hash_len :: fn(k: ^const string, seed: u64) -> u64 => k.len.trunc(u64) +% seed
+eq_str :: fn(a, b: ^const string) -> bool => a^ is b^
+
+main :: fn() \ {Out, Alloc} {
+    m := map(u32, u64)
+    defer m.deinit()
+
+    // Absent in an empty map.
+    print("empty: {}\n", m.get_ptr(1) is null)
+
+    _ = m.put(1, 10) else return
+    _ = m.put(2, 20) else return
+    p := m.get_ptr(1) else return
+    p^ += 5
+    print("after add: {}\n", m.get(1))
+    print("other untouched: {}\n", m.get(2))
+    print("missing: {}\n", m.get_ptr(3) is null)
+
+    // Counting with get_or_put.
+    counts := map(u32, u32)
+    defer counts.deinit()
+    data := [_]u32(3, 1, 3, 3, 2, 1, 7)
+    for x in data {
+        c := counts.get_or_put(x, 0) else return
+        c^ += 1
+    }
+    print("len: {}\n", counts.len())
+    print("3: {}, 1: {}, 2: {}, 7: {}\n", (counts.get(3), counts.get(1), counts.get(2), counts.get(7)))
+
+    // An existing value is not replaced by the default.
+    q := counts.get_or_put(3, 100) else return
+    print("existing: {}\n", q^)
+    print("len still: {}\n", counts.len())
+
+    // Growth: many insertions through get_or_put keep every value reachable.
+    big := map(u32, u32)
+    defer big.deinit()
+    for i in 0..1000 {
+        v := big.get_or_put(i, i * 2) else return
+        v^ += 1
+    }
+    ok := true
+    for i in 0..1000 {
+        r := big.get_ptr(i) else return
+        if r^ is not i * 2 + 1 { ok = false }
+    }
+    print("big: {} {}\n", (big.len(), ok))
+
+    // After remove, the key is absent and get_or_put re-adds it.
+    _ = big.remove(5)
+    print("removed: {}\n", big.get_ptr(5) is null)
+    w := big.get_or_put(5, 77) else return
+    print("re-added: {}\n", w^)
+
+    // Struct values are updated through the pointer.
+    pts := map(u32, Point)
+    defer pts.deinit()
+    _ = pts.put(9, Point(x: 1, y: 2)) else return
+    pp := pts.get_ptr(9) else return
+    pp.x = 40
+    pp.y += 2
+    print("point: {}\n", pts.get(9))
+
+    // Custom hash and equality.
+    sm := map_with(string, i32, hash_len, eq_str)
+    defer sm.deinit()
+    sv := sm.get_or_put("abc", 1) else return
+    sv^ += 1
+    sv2 := sm.get_or_put("abc", 50) else return
+    sv2^ += 1
+    sv3 := sm.get_or_put("xyz", 9) else return
+    print("custom: {} {} {}\n", (sm.get("abc"), sm.get("xyz"), sv3^))
+}
