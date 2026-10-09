@@ -1,0 +1,59 @@
+// std/fixed_buffer: an allocator over a buffer the caller owns (§15.2).
+//
+//     store: [4096]u8 = ---
+//     fb := fixed_buffer.over(store[..])
+//     with fb.allocator() { … }               // allocations come from `store`
+
+/// The address `p` rounded up to a multiple of `align` (a power of two).
+align_up :: fn(p: usize, align: usize) -> usize => (p + (align - 1)) & ~(align - 1)
+
+/// Allocates from a buffer the caller owns, front to back. Freeing or resizing works
+/// only for the most recent allocation (others are kept until `reset`); when the
+/// buffer is full, allocation fails with `OutOfMemory`.
+pub FixedBuffer :: struct {
+    buf: []u8
+    used: usize
+    last: usize              // where the most recent allocation starts
+}
+
+/// A fixed-buffer allocator over `buf`.
+pub over :: fn(buf: []u8) -> FixedBuffer => FixedBuffer(buf: buf, used: 0, last: 0)
+
+/// The `Allocator` handle of `fb`, which must stay in place while the handle is used.
+pub allocator :: fn(fb: ^FixedBuffer) -> Allocator => Allocator(data: fb.cast(rawptr), vt: &FIXED)
+
+/// Forgets every allocation: the whole buffer is free again.
+pub reset :: fn(fb: ^FixedBuffer) {
+    fb.used = 0
+    fb.last = 0
+}
+
+/// The bytes allocated so far, including alignment padding.
+pub bytes_used :: fn(fb: ^const FixedBuffer) -> usize => fb.used
+
+fixed_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    fb := data.cast(^FixedBuffer)
+    base := fb.buf.ptr.addr()
+    start := align_up(base + fb.used, align) - base
+    if start > fb.buf.len or size > fb.buf.len - start { return null }
+    fb.last = start
+    fb.used = start + size
+    return fb.buf.ptr[start..fb.buf.len].ptr
+}
+
+fixed_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
+    fb := data.cast(^FixedBuffer)
+    start := p.addr() - fb.buf.ptr.addr()
+    if start is not fb.last or start + old is not fb.used { return new <= old }
+    if new > fb.buf.len - start { return false }
+    fb.used = start + new
+    return true
+}
+
+fixed_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    fb := data.cast(^FixedBuffer)
+    start := p.addr() - fb.buf.ptr.addr()
+    if start is fb.last and start + size is fb.used { fb.used = start }
+}
+
+FIXED :: AllocVtable(alloc: fixed_alloc, resize: fixed_resize, free: fixed_free)

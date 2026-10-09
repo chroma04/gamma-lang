@@ -1,0 +1,34 @@
+//! stage: test
+// An arena gives all its chunks back to its parent on `deinit`, so the test's leak
+// check passes; a fixed buffer never touches the parent.
+arena :: import "std/arena"
+fixed_buffer :: import "std/fixed_buffer"
+
+test "an arena releases every chunk" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        for i in 0..200 {
+            s := try make(u8, 1000 + i)
+            s[0] = 1
+        }
+    }
+}
+
+test "an arena can be reused after deinit" {
+    a := arena.new()
+    with a.allocator() { _ = try make(u8, 10_000) }
+    a.deinit()
+    with a.allocator() { _ = try make(u8, 10) }
+    a.deinit()
+}
+
+test "a fixed buffer allocates nothing from the parent" {
+    store: [128]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        l := list(u16)
+        for i in 0..20 { try l.push(i) }
+        expect(l.items[19] is 19)
+    }
+}

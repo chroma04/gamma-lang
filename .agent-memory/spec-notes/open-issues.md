@@ -14,3 +14,4 @@
 - Hex float requires '.', so `0x1p4` is not a literal. Kept; maybe relax later.
 - `1f32` is not a float literal (needs `.` or exponent). Kept.
 - free/destroy pass @align_of(T) to the allocator, so memory from make_aligned is freed with a smaller alignment than it was allocated with; harmless for the heap and trackers, but an allocator that needs the alignment back can't get it. Possible fix: free_aligned(s, align).
+- §7.10 says a struct may not have a field and a method candidate with the same name (compile error at the declaration); the checker does not report it yet (the field silently wins).

@@ -106,6 +106,27 @@ print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary
 - Floats: `fixed(x, decimals)`, `sci(x, digits)` and `general(x, precision)`, correctly
   rounded like C's `%.*f`, `%.*e` and `%.*g`.
 
+## `std/arena` and `std/fixed_buffer`
+
+Allocators to install with `with` (§15.2):
+
+```gamma
+arena :: import "std/arena"
+fixed_buffer :: import "std/fixed_buffer"
+
+a := arena.new()                  // chunks come from the current allocator
+defer a.deinit()                  // gives them all back
+with a.allocator() { … }
+
+store: [4096]u8 = ---
+fb := fixed_buffer.over(store[..])
+with fb.allocator() { … }         // allocations come from `store`; fb.reset() reuses it
+```
+
+Both free or resize only their most recent allocation; everything else stays until
+`deinit` (an arena) or `reset` (a fixed buffer). A full fixed buffer fails with
+`OutOfMemory`; an arena takes a bigger chunk from its parent.
+
 ## `std/c`
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring

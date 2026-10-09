@@ -1,0 +1,87 @@
+// std/arena: an allocator that takes memory from a parent allocator in growing chunks
+// and gives it all back at once (§15.2).
+//
+//     a := arena.new()                        // chunks from the current allocator
+//     defer a.deinit()                        // releases everything at once
+//     with a.allocator() { … }
+
+/// The address `p` rounded up to a multiple of `align` (a power of two).
+align_up :: fn(p: usize, align: usize) -> usize => (p + (align - 1)) & ~(align - 1)
+
+/// Allocates from chunks obtained from a parent allocator and releases them all at
+/// once with `deinit`. `free` and `resize` work only for the most recent allocation.
+pub Arena :: struct {
+    parent: Allocator
+    chunk: ?[^]u8            // the current chunk; its first bytes link to the previous one
+    size: usize              // the current chunk's size
+    used: usize
+    last: usize
+}
+
+/// The header at the start of every chunk.
+Chunk :: struct {
+    prev: ?[^]u8
+    size: usize
+}
+
+/// An empty arena whose chunks come from the current allocator.
+pub new :: fn() -> Arena \ {Alloc} => Arena(parent: current(), chunk: null, size: 0, used: 0, last: 0)
+
+/// The `Allocator` handle of `a`, which must stay in place while the handle is used.
+pub allocator :: fn(a: ^Arena) -> Allocator => Allocator(data: a.cast(rawptr), vt: &ARENA)
+
+/// Releases every chunk; the arena is empty again and can be reused.
+pub deinit :: fn(a: ^Arena) {
+    while c := a.chunk {
+        h := c.cast(^Chunk)
+        prev := h.prev
+        a.parent.vt.free(a.parent.data, c, h.size, 16)
+        a.chunk = prev
+    }
+    a.size = 0
+    a.used = 0
+    a.last = 0
+}
+
+arena_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    a := data.cast(^Arena)
+    if c := a.chunk {
+        base := c.addr()
+        start := align_up(base + a.used, align) - base
+        if start <= a.size and size <= a.size - start {
+            a.last = start
+            a.used = start + size
+            return c[start..a.size].ptr
+        }
+    }
+    // A new chunk: twice the previous one, and big enough for this request.
+    header := align_up(@size_of(Chunk), 16)
+    need := header + size + align
+    n := (a.size * 2).max(4096).max(need)
+    c := a.parent.vt.alloc(a.parent.data, n, 16) else return null
+    h := c.cast(^Chunk)
+    h.prev = a.chunk
+    h.size = n
+    a.chunk = c
+    a.size = n
+    a.used = header
+    return arena_alloc(data, size, align)
+}
+
+arena_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
+    a := data.cast(^Arena)
+    c := a.chunk else return new <= old
+    start := p.addr() - c.addr()
+    if start is not a.last or start + old is not a.used { return new <= old }
+    if new > a.size - start { return false }
+    a.used = start + new
+    return true
+}
+
+arena_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    a := data.cast(^Arena)
+    c := a.chunk else return
+    if p.addr() is c.addr() + a.last and a.last + size is a.used { a.used = a.last }
+}
+
+ARENA :: AllocVtable(alloc: arena_alloc, resize: arena_resize, free: arena_free)

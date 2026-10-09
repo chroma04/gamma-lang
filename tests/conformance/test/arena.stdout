@@ -1,0 +1,4 @@
+test "an arena releases every chunk" ... ok
+test "an arena can be reused after deinit" ... ok
+test "a fixed buffer allocates nothing from the parent" ... ok
+3 passed, 0 failed
