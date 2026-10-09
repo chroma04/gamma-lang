@@ -550,6 +550,13 @@ handler In for ^TestIo {
     read(self, buf) => 0
 }
 
+// Tests see no arguments and no environment variables; `exit` still ends the test.
+handler Env for ^TestIo \ {Env} {
+    args(self) => empty_slice(string)
+    var(self, name) => null
+    exit(self, code) => exit(code)
+}
+
 handler Clock for ^TestIo {
     now(self) => Instant(ns: self.clock)
     wall(self) => test_wall(self)

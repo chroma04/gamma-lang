@@ -365,7 +365,7 @@ main :: fn() -> u8 \ {...}               // exit status
 main :: fn() -> E!() \ {...}             // E is any type
 ```
 
-The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes a description of the error value (its type name and variant name) to standard error and exits with status 1.
+The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes `error: ` and the error value to standard error, formatted as by `{}` (§21.6) and, for a union, preceded by its type name (`error: ConfigError.Missing`), and exits with status 1.
 
 Command-line arguments and the environment are obtained through the `Env` effect.
 
@@ -1541,7 +1541,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Rand` | `fill: fn(buf: []u8)` | OS-seeded generator | fixed seed |
 | `Fs` | file-system operations (§21.7) | real file system | in-memory file system |
 | `Net` | socket operations (§21.7) | real sockets | loopback fake |
-| `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | empty |
+| `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | no arguments and no variables; `exit` ends the test, which passes only with code 0 |
 | `Sys` | none (§12.10) | — | not replaceable |
 
 Any of these may also be handled by user handlers; only `Sys` cannot.

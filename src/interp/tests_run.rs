@@ -335,7 +335,7 @@ fn main_returning_an_error_exits_with_1_and_reports() {
     let (o, out, err) = a.tb.run(id, &[]);
     assert_eq!(o, Outcome::Exit(1));
     assert_eq!(out, "");
-    assert_eq!(err, "error: .Bad(3)\n");
+    assert_eq!(err, "error: ConfigError.Bad(3)\n");
     // success
     let f = FnB::new("main2", r);
     let id = a.tb.add(f.build(ok(unit(), r)));

@@ -214,6 +214,10 @@ impl Machine<'_> {
                 if self.res_is_err(ret, &b) {
                     let payload = self.res_payload(ret, &b);
                     let mut out = b"error: ".to_vec();
+                    // A union's value is named with its type: `E.NotFound` (§3.7).
+                    if self.union_def(*err).is_some() {
+                        out.extend_from_slice(err.to_string().as_bytes());
+                    }
                     if self.format_value(&mut out, *err, &payload, true).is_err() {
                         out.extend_from_slice(b"<unprintable error>");
                     }

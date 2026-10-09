@@ -282,7 +282,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let mut problems = vec![];
 
     // Diagnostics.
-    let mut reported = parse_reported(&stderr, &files);
+    // With `//! stderr`, the golden file accounts for all of standard error.
+    let mut reported = if exp.stderr { vec![] } else { parse_reported(&stderr, &files) };
     let mut unmatched_expected = vec![];
     for (file, line, sev, msg) in &exp.diags {
         let at =
