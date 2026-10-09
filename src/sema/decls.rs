@@ -238,7 +238,10 @@ impl<'s> Sema<'s> {
             {
                 self.error(
                     name.span,
-                    format!("`{}` has a field `{}`, so a method of that name could never be called (§7.10)", s, name.name),
+                    format!(
+                        "`{}` has a field `{}`, so a method of that name could never be called (§7.10)",
+                        s, name.name
+                    ),
                 );
             }
         }

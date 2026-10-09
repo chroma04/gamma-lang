@@ -13,6 +13,8 @@ pub struct Session {
     pub sources: SourceMap,
     pub diags: Diagnostics,
     pub ids: NodeIdGen,
+    /// The build mode (§1.4): `target.mode`, and how checked operations behave.
+    pub mode: crate::interp::Mode,
 }
 
 impl Default for Session {
@@ -23,7 +25,12 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Session {
-        Session { sources: SourceMap::new(), diags: Diagnostics::new(), ids: NodeIdGen::new() }
+        Session {
+            sources: SourceMap::new(),
+            diags: Diagnostics::new(),
+            ids: NodeIdGen::new(),
+            mode: crate::interp::Mode::Debug,
+        }
     }
 
     /// Loads a file, reporting a location-less error on failure.

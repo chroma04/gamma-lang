@@ -23,6 +23,9 @@ options:
   --dump                      (parse) print the syntax tree
   --backend=interp|c          (run) run with the interpreter (default) or compile via C
   -o <file>                   (build) the executable to write (default: the input's name)
+  --mode=debug|checked|fast   (run, build, test) the build mode (default: debug): Debug and
+                              Checked trap on failed checks, Fast omits them; Debug also
+                              checks every free
 ";
 
 struct Options {
@@ -36,6 +39,8 @@ struct Options {
     c_backend: bool,
     /// `-o`: the output of `build`.
     output: Option<PathBuf>,
+    /// `--mode=…`: the build mode.
+    mode: gamma::interp::Mode,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -49,6 +54,7 @@ fn parse_args() -> Result<Options, String> {
         dump: false,
         c_backend: false,
         output: None,
+        mode: gamma::interp::Mode::Debug,
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -61,6 +67,9 @@ fn parse_args() -> Result<Options, String> {
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
+            "--mode=debug" => opts.mode = gamma::interp::Mode::Debug,
+            "--mode=checked" => opts.mode = gamma::interp::Mode::Checked,
+            "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
@@ -110,6 +119,7 @@ fn run_front_end(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut sess = Session::new();
+    sess.mode = opts.mode;
     let mut out = String::new();
     if let Some(file) = sess.load(path) {
         if opts.command == "lex" {
@@ -133,6 +143,7 @@ fn check(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut sess = Session::new();
+    sess.mode = opts.mode;
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
     eprint!("{}", sess.render_diagnostics(opts.format));
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -144,6 +155,7 @@ fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut sess = Session::new();
+    sess.mode = opts.mode;
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -152,11 +164,7 @@ fn run(opts: &Options) -> ExitCode {
     if opts.c_backend || uses_c {
         return run_native(&sess, &prog, path, opts);
     }
-    let cfg = gamma::interp::RunConfig {
-        target: gamma::layout::Target::host(),
-        mode: gamma::interp::Mode::Debug,
-        step_budget: None,
-    };
+    let cfg = gamma::interp::RunConfig { target: gamma::layout::Target::host(), mode: opts.mode, step_budget: None };
     let mut args = vec![path.display().to_string()];
     args.extend(opts.program_args.iter().cloned());
     let mut stdout = std::io::stdout();
@@ -196,14 +204,11 @@ fn test(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut sess = Session::new();
+    sess.mode = opts.mode;
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    let cfg = gamma::interp::RunConfig {
-        target: gamma::layout::Target::host(),
-        mode: gamma::interp::Mode::Debug,
-        step_budget: None,
-    };
+    let cfg = gamma::interp::RunConfig { target: gamma::layout::Target::host(), mode: opts.mode, step_budget: None };
     let (mut passed, mut failed) = (0, 0);
     for t in &prog.tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -240,7 +245,10 @@ fn test(opts: &Options) -> ExitCode {
 /// Translates the program to C and compiles it to `exe`.
 fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::Path) -> Result<(), String> {
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
-    let opts = gamma::cgen::Options { checks: true, debug: true };
+    let opts = gamma::cgen::Options {
+        checks: sess.mode != gamma::interp::Mode::Fast,
+        debug: sess.mode == gamma::interp::Mode::Debug,
+    };
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &opts).map_err(|u| match location(sess, u.span) {
         Some(at) => format!("{}: error: {}", at, u.message),
         None => format!("error: {}", u.message),
@@ -254,6 +262,7 @@ fn build(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut sess = Session::new();
+    sess.mode = opts.mode;
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };

@@ -250,10 +250,15 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
 
 impl<'s> Sema<'s> {
     fn new(sess: &'s mut Session) -> Sema<'s> {
+        let build_mode = match sess.mode {
+            crate::interp::Mode::Debug => "Debug",
+            crate::interp::Mode::Checked => "Checked",
+            crate::interp::Mode::Fast => "Fast",
+        };
         Sema {
             sess,
             target: Target::host(),
-            build_mode: "Debug",
+            build_mode,
             caller_site: None,
             fuel: consteval::STEP_BUDGET,
             allow_variadic: false,
