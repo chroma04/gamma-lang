@@ -53,7 +53,19 @@ use_optional :: fn(xs: []const i32) \ {Out} {
 }
 ```
 
-`x else d` evaluates `d` only when `x` is absent. `d` may be a `T`, another `?T` (which makes the whole thing optional, so `a else b else c` chains), or something of type `never` such as `return`, `break`, `continue` or `trap(...)`.
+`x else d` evaluates `d` only when `x` is absent. `d` may be a `T`, another `?T` (which makes the whole thing optional, so `a else b else c` chains), or something of type `never` such as `return`, `break`, `continue` or `trap(...)`. `d` may also be a block, whose value is the fallback or which leaves the function:
+
+```gamma
+first_or_report :: fn(xs: []const i32) -> i32 \ {Out} {
+    n := first_even(xs) else {
+        print("no even number\n")
+        return -1
+    }
+    return n
+}
+```
+
+(Inside an `if` or `while` condition, where `{` starts the body, put such a fallback in parentheses.)
 
 `x?` is a **checked operation**: if `x` is `null`, the program traps in Debug and Checked builds and produces an unspecified value in Fast builds. It says "this cannot fail here", so reserve it for places where that is actually true; to *handle* absence use `if`, `else` or `try`.
 

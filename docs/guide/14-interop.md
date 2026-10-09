@@ -184,6 +184,8 @@ Page :: #align(4096) struct {           // raise the alignment
 
 `@size_of`, `@align_of` and `@offset_of(S, field)` are compile-time constants, so `@static_assert` can pin a layout down ([chapter 11](11-compile-time.md)).
 
+The fields of a `#packed` struct are read and written like any others, but you cannot take a pointer or slice into one whose type needs alignment above 1 (`&h.length` above), since such a pointer could be misaligned. Copy the field to a local first.
+
 ### Bit fields: `#bits`
 
 C bit-fields have implementation-defined layout. Gamma's `#bits(U)` struct packs its fields into the unsigned integer type `U`, starting at the least significant bit, in declaration order, with exactly specified layout:
@@ -201,7 +203,7 @@ mode_demo :: fn() -> u16 {
 }
 ```
 
-The field widths must add up to the width of `U`. The struct has the size and alignment of `U`, and converting to and from `U` is plain `U(m)` and `Mode(u)` when every field is a `bool` or integer, so there are no casts. Bitwise operators work on `#bits` structs fieldwise.
+The field widths must add up to the width of `U`. The struct has the size and alignment of `U`, and converting to and from `U` is plain `U(m)` and `Mode(u)` when every field is a `bool` or integer, so there are no casts. Bitwise operators (`&`, `|`, `~`) work on `#bits` structs whose fields are all `bool` or integers, fieldwise, through the underlying integer.
 
 ### Untagged unions and reinterpretation
 

@@ -53,7 +53,8 @@ The core functions that allocate perform `Alloc`, which is why you see `\ {Alloc
 | `make(T, n)` | allocate `n` uninitialized `T` (plain-data `T` only), giving `AllocError![]T` |
 | `make_fill(T, n, x)` | allocate `n` copies of `x`, for any `T` |
 | `make_aligned(T, n, align)` | like `make`, with a larger alignment |
-| `free(s)` | release a slice from `make`, `make_fill` or `make_aligned` |
+| `free(s)` | release a slice from `make` or `make_fill` |
+| `free_aligned(s, align)` | release a slice from `make_aligned`, with the same `align` |
 | `destroy(p)` | release a pointer from `new` |
 
 Allocation can fail, so each of these returns a result and you handle it the usual way, with `try` in a function that returns an `AllocError!...`:

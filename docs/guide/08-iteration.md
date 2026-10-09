@@ -36,7 +36,23 @@ main :: fn() \ {Out} {
 - `break` exits the loop. Because `yield` is an `esc` operation, this *unwinds* the iterator's frames, so its `defer` statements run, and execution continues after the loop.
 - `return`, a labeled `break`/`continue`, and `try` inside `B` work as you would expect and also unwind the iterator on the way out.
 
-That is all there is to it. The language gives `for` three source forms: a call to a function with exactly one `Yield(T)` in its effect set, a range `lo..hi` or `lo..=hi`, and an array place or slice (which means `each(...)` of it). Anything else, such as `for x in some_struct`, is a compile error.
+That is all there is to it. The language gives `for` three source forms: a call to a function with exactly one `Yield(T)` in its effect set, a range `lo..hi` or `lo..=hi` (or a stored range value, below), and an array or slice (which means `each(...)` of it). An array that is not a variable, such as `[3]i32(5, 6, 7)` or the result of a call that returns an array, is first copied into a hidden variable that lives as long as the loop. Anything else, such as `for x in some_struct`, is a compile error.
+
+Ranges are ordinary values of the core types `Range(T)` and `RangeIncl(T)`, structs with the fields `lo` and `hi`. You can store one, pass it, iterate it later, test membership with `in`, and slice with it:
+
+```gamma
+Span :: struct { name: string, r: Range(usize) }
+
+ranges_demo :: fn() \ {Out} {
+    word := "abcdefgh"
+    sp := Span(name: "mid", r: 2..5)
+    print("{} {}\n", (sp.name, word[sp.r]))      // mid cde
+    for i in sp.r { print("{}\n", i) }           // 2, 3 and 4, one per line
+    print("{}\n", 7 in sp.r)                     // false
+}
+```
+
+When nothing else fixes the type of a stored range's bounds, they are `usize`; write `r: Range(i64) = -1..2` for another type.
 
 ## Writing iterators
 

@@ -370,6 +370,23 @@ There is no conversion from an integer to `bool` (write `x is not 0`), none from
 
 > **Common mistake.** There are no C-style casts. `(u8)x` and `x as u8` do not exist. Write `u8(x)` if it is lossless, or choose `x.trunc(u8)`, `x.checked(u8)` or `x.sat(u8)` to say what should happen when it is not.
 
+## Type aliases
+
+Binding a type expression to a name makes an alias, a second name for the same type, not a new type:
+
+```gamma
+Bytes :: []u8
+Matrix3 :: [3][3]f64
+
+alias_demo :: fn(xs: []const i32) {
+    Elem :: @type_of(xs[0])             // a local alias: i32
+    total: Elem = 0
+    for x in xs { total += x }
+}
+```
+
+Only `struct`, `union` and `effect` literals create new types, and they are declared at top level. Aliases may also appear inside a function, where they are visible for the rest of the block.
+
 ## Summary
 
 - Arrays are values, slices are `(ptr, len)`, strings are `[]const u8`, and none of them converts implicitly to a pointer.
