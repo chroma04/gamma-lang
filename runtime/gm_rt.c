@@ -8,12 +8,36 @@
 
 /* ---- traps ---------------------------------------------------------------- */
 
+/* Prints the callers in the backtrace chain; past GM_BT_MAX of them, only the first and
+ * last GM_BT_MAX / 2. */
+#define GM_BT_MAX 20
+static void gm_backtrace(void) {
+    size_t n = 0;
+    if (gm_bt_top == NULL) return;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev)
+        if (b->fn != NULL && b->file != NULL) n++;
+    size_t i = 0;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev) {
+        if (b->fn == NULL || b->file == NULL) continue;
+        if (n <= GM_BT_MAX || i < GM_BT_MAX / 2 || i >= n - GM_BT_MAX / 2)
+            fprintf(stderr, "  called from %s:%u:%u in %s\n", b->file, (unsigned)b->line, (unsigned)b->col, b->fn);
+        else if (i == GM_BT_MAX / 2)
+            fprintf(stderr, "  ... %llu more calls\n", (unsigned long long)(n - GM_BT_MAX));
+        i++;
+    }
+}
+
 static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
     gm_flush();
     fputs("trap: ", stderr);
     if (len > 0) fwrite(msg, 1, len, stderr);
     fputc('\n', stderr);
-    if (file != NULL) fprintf(stderr, "  at %s:%u:%u\n", file, (unsigned)line, (unsigned)col);
+    if (file != NULL) {
+        fprintf(stderr, "  at %s:%u:%u", file, (unsigned)line, (unsigned)col);
+        if (gm_bt_top != NULL && gm_bt_top->fn != NULL) fprintf(stderr, " in %s", gm_bt_top->fn);
+        fputc('\n', stderr);
+    }
+    gm_backtrace();
     fflush(stderr);
     /* The status of a process terminated by `abort` (SIGABRT). */
     exit(134);
@@ -1944,11 +1968,16 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
 
 static void gm_with_go(gm_with *w, gm_fiber *fb) {
     gm_fiber *me = gm_cur_fiber;
+    gm_bt *bt = gm_bt_top;
     gm_set_cur_fiber(fb);
+    if (!fb->started) fb->bt = bt;
+    gm_bt_top = fb->bt;
     fb->state = GM_FB_RUNNING;
     fb->started = 1;
     w->event = 0;
     gm_rt_switch(&w->driver_sp, fb->sp, NULL);
+    fb->bt = gm_bt_top;
+    gm_bt_top = bt;
     gm_set_cur_fiber(me);
 }
 

@@ -1,0 +1,5 @@
+trap: assertion failed: top of an empty stack
+  at tests/conformance/run/backtrace.gm:7:5 in top
+  called from tests/conformance/run/backtrace.gm:17:41 in <fn> in main
+  called from tests/conformance/run/backtrace.gm:11:53 in apply
+  called from tests/conformance/run/backtrace.gm:17:10 in main

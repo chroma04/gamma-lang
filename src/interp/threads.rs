@@ -137,7 +137,7 @@ impl<'a> Machine<'a> {
                 Ok(Ok(_)) => None,
                 Ok(Err(flow)) => match *flow {
                     Flow::Trap(t) => Some(t),
-                    _ => Some(Trap { message: "internal error: control flow left a thread".into(), span }),
+                    _ => Some(Trap::new("internal error: control flow left a thread", span)),
                 },
                 Err(p) => Some(super::panic_trap(p)),
             };

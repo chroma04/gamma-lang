@@ -119,6 +119,17 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     if fg.g.opts.checks {
         fg.line("GM_STACK_CHECK(&F);");
     }
+    // Debug builds keep a backtrace chain (see gm_bt in the runtime).
+    let pop = if fg.g.opts.debug {
+        let name = match fg.g.prog.backtrace_name(f, fg.g.sources) {
+            Some(n) => super::c_string(n.as_bytes()),
+            None => "NULL".into(),
+        };
+        fg.line(&format!("gm_bt B = {{ gm_bt_top, {name}, NULL, 0, 0 }}; gm_bt_top = &B;"));
+        "gm_bt_top = B.prev; "
+    } else {
+        ""
+    };
     fg.line("F.h.up = (gm_frame *)env;");
     let clause_lit = matches!(def.kind, FnKind::Clause);
     fg.line(&format!("F.h.clause_lit = {} && env != NULL;", clause_lit as u8));
@@ -133,7 +144,7 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         fg.line(&format!("F.ret = {};", v));
     }
     // Debug builds fill a dead frame with 0xDD (§18.3).
-    let kill = if fg.g.opts.debug { "memset(&F, 0xDD, sizeof F); " } else { "" };
+    let kill = if fg.g.opts.debug { format!("{pop}memset(&F, 0xDD, sizeof F); ") } else { String::new() };
     if void_ret {
         let _ = write!(fg.out, "gm_fret:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n");
     } else if kill.is_empty() {

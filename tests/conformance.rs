@@ -8,6 +8,8 @@
 //!   `gamma test`. The default is `run`.
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
+//! - `//! stderr` also compares the standard error of a `run` or `test` test
+//!   with the sibling `<name>.stderr`, for tests of trap reports.
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
 //!   architecture, for tests of features that exist on some targets only.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
@@ -50,6 +52,8 @@ enum Stage {
 struct Expectations {
     stage: Stage,
     dump: bool,
+    /// Compare standard error with `<name>.stderr`.
+    stderr: bool,
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
@@ -58,7 +62,7 @@ struct Expectations {
 }
 
 fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
-    let mut e = Expectations { stage: Stage::Run, dump: false, exit: 0, arch: None, diags: vec![] };
+    let mut e = Expectations { stage: Stage::Run, dump: false, stderr: false, exit: 0, arch: None, diags: vec![] };
     for path in files {
         let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
         parse_file_expectations(path, &src, &mut e)?;
@@ -82,6 +86,8 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 };
             } else if directive == "dump" {
                 e.dump = true;
+            } else if directive == "stderr" {
+                e.stderr = true;
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -189,7 +195,7 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
 
 /// Runs a `run` or `test` test (`command`) through the C back end and compares it
 /// with the expectations.
-fn run_c(command: &str, target: &Path, golden: &Path, exit: i32) -> Result<(), String> {
+fn run_c(command: &str, target: &Path, golden: &Path, exit: i32, stderr_golden: Option<&Path>) -> Result<(), String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
     cmd.args([command, "--backend=c", "--diag-format=short"]).arg(target);
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
@@ -208,6 +214,17 @@ fn run_c(command: &str, target: &Path, golden: &Path, exit: i32) -> Result<(), S
     }
     if expected != stdout {
         problems.push(format!("[C back end] output differs from {}:\n{}", golden.display(), diff(&expected, &stdout)));
+    }
+    if let Some(g) = stderr_golden {
+        let expected = fs::read_to_string(g).unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if expected != stderr {
+            problems.push(format!(
+                "[C back end] standard error differs from {}:\n{}",
+                g.display(),
+                diff(&expected, &stderr)
+            ));
+        }
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
@@ -308,12 +325,27 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         }
     }
 
+    // Golden standard error.
+    let stderr_golden = path.with_extension("stderr");
+    let stderr_golden = (exp.stderr && matches!(exp.stage, Stage::Run | Stage::Test) && !expects_errors)
+        .then_some(stderr_golden.as_path());
+    if let Some(g) = stderr_golden {
+        if bless {
+            fs::write(g, &stderr).map_err(|e| format!("cannot write {}: {}", g.display(), e))?;
+        } else {
+            let expected = fs::read_to_string(g).unwrap_or_default();
+            if expected != stderr {
+                problems.push(format!("standard error differs from {}:\n{}", g.display(), diff(&expected, &stderr)));
+            }
+        }
+    }
+
     if matches!(exp.stage, Stage::Run | Stage::Test)
         && !expects_errors
         && problems.is_empty()
         && !bless
         && c_backend_available()
-        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), exp.exit)
+        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), exp.exit, stderr_golden)
     {
         problems.push(p);
     }

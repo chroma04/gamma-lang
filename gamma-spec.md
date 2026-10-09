@@ -2120,7 +2120,8 @@ In addition to performing all checks, a Debug build must:
 - fill `---` storage, freed allocations and dead stack frames with recognizable patterns (`0xAA`, `0xDD`);
 - tag each allocation with its allocator and trap when it is freed through a different one, reporting both sites;
 - place guard pages (or equivalent probes) on fiber stacks;
-- use the leak-checking allocator for tests.
+- use the leak-checking allocator for tests;
+- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library and shorten long reports.
 
 Debug builds may skip optimizations, including handler specialization; this never changes meaning.
 

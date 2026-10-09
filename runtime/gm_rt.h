@@ -58,8 +58,21 @@ typedef struct { uint8_t b[0]; } gm_unit;
 
 /* ---- traps ---------------------------------------------------------------- */
 
+/* Debug builds keep a chain of the running Gamma functions: each pushes a gm_bt on entry,
+ * pops it on exit, and records in it the location of each call it makes. Functions of the
+ * core library have no name; backtraces leave them out. Each thread and each fiber has a
+ * chain of its own; a fiber's continues into the chain of the `with` that runs it. */
+typedef struct gm_bt {
+    struct gm_bt *prev;
+    const char *fn;
+    const char *file;
+    uint32_t line, col;
+} gm_bt;
+static _Thread_local gm_bt *gm_bt_top;
+
 /* Stops the program: flushes stdout, writes "trap: <msg>\n  at <file>:<line>:<col>\n" to
- * stderr (the second line only if file is not NULL) and exits with status 134. */
+ * stderr (the second line only if file is not NULL), followed in Debug builds by the calls
+ * leading there, and exits with status 134. */
 static _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col);
 /* As gm_trap, with a message given as bytes (not NUL-terminated). */
 static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
@@ -358,6 +371,7 @@ struct gm_fiber {
     void (*start)(gm_fiber *);  /* the code it starts with */
     /* the pending perform */
     gm_clause_thunk thunk;
+    gm_bt *bt;                  /* its backtrace chain while it is not running */
     void *req;
     void *res;                  /* where `resume` stores the operation's result */
     /* data for `start` */

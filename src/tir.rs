@@ -367,6 +367,28 @@ impl Program {
     pub fn func(&self, id: FnId) -> &FnDef {
         &self.fns[id.index()]
     }
+
+    /// How trap backtraces name function `f`, or `None` for functions of the core
+    /// library and the `<entry>` functions that call `main` and tests, whose frames
+    /// backtraces leave out.
+    pub fn backtrace_name(&self, f: FnId, sources: &crate::source::SourceMap) -> Option<String> {
+        let def = self.func(f);
+        if def.span != Span::DUMMY && sources.file(def.span.file).path.starts_with("<core>") {
+            return None;
+        }
+        if def.name.as_str() == "<entry>" {
+            return None;
+        }
+        let name = def.name.as_str();
+        let parent = def.parent.and_then(|p| self.backtrace_name(p, sources));
+        Some(match (def.kind, parent) {
+            (FnKind::Clause, Some(p)) if name.starts_with('<') => format!("{} in {}", name, p),
+            (FnKind::Clause, Some(p)) => format!("`{}` clause in {}", name, p),
+            (FnKind::Clause, None) => format!("`{}` clause", name),
+            (FnKind::Literal, Some(p)) if name.starts_with('<') => format!("{} in {}", name, p),
+            _ => name.to_string(),
+        })
+    }
     pub fn adt(&self, id: AdtId) -> &AdtDef {
         &self.adts[&id]
     }

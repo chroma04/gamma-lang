@@ -247,7 +247,8 @@ out-of-bounds, misaligned or null pointers are detected and reported as traps
 and function calls consume the flows aimed at them; everything else propagates
 them, running deferred statements on the way. `errdefer` statements run when a
 function returns an error value, or when its frame is unwound by a flow whose
-target lies in a caller.
+target lies in a caller. In Debug builds a trap collects each call it leaves on the
+way out (the function and its call site) for the backtrace that `gamma run` prints.
 
 **Effects.** The handler context is a persistent linked list from effects to
 installed handlers, passed down the evaluation. `with` extends it; performing an
@@ -334,6 +335,10 @@ runs its *ladder*: the pending deferred statements from the innermost scope
 outwards, with a test at each loop and `with` for whether it is the exit's
 target. A deferred statement run by a ladder sets the exit aside while it runs.
 Traps print their message and stop the process (status 134) without unwinding.
+In Debug builds each function also links a small record (`gm_bt`) into a
+per-thread chain on entry, unlinks it on exit, and stores the location of each
+call it makes in it; a trap prints the chain as a backtrace. Each fiber keeps its
+own chain, which continues into the chain of the `with` running it.
 
 **Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
 and AArch64 that save the callee-saved registers. The body of a `with … on` is

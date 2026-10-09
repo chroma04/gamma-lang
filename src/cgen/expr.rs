@@ -868,10 +868,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
             vals.push(self.expr(a)?);
             tys.push(a.ty);
         }
+        let cv = match callee {
+            Callee::Indirect(c) => Some(self.expr(c)?),
+            _ => None,
+        };
+        self.call_site(e.span);
         match callee {
             Callee::Fn(f) => self.call_fn(e, *f, &vals),
             Callee::Indirect(c) => {
-                let cv = self.expr(c)?;
+                let cv = cv.unwrap();
                 match c.ty.kind() {
                     TyKind::Fn(_) => self.call_closure(&cv, c.ty, &vals, &tys, e.ty),
                     TyKind::FnPtr(sig) => {
@@ -887,6 +892,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             Callee::Perform { effect, op } => self.perform(e, effect, *op, &vals, &tys, e.ty),
+        }
+    }
+
+    /// In Debug builds, records `span` as the location of the call about to be made, for
+    /// backtraces.
+    pub fn call_site(&mut self, span: crate::source::Span) {
+        if self.g.opts.debug && span != crate::source::Span::DUMMY {
+            let f = self.g.sources.file(span.file);
+            let (line, col) = f.line_col(span.lo);
+            let file = super::c_string(f.path.display().to_string().as_bytes());
+            self.line(&format!("B.file = {file}; B.line = {line}; B.col = {col};"));
         }
     }
 

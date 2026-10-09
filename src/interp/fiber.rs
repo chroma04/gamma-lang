@@ -226,7 +226,7 @@ impl<'a> Machine<'a> {
                 Some(ToDriver::Perform { fiber, node, op, mut args, span: ps }) => {
                     let epoch = self.fib.fibers.get(&fiber).map_or(0, |f| f.epoch);
                     args.push(self.cont_bytes(fiber, epoch));
-                    match self.call_clause(ps, &node, op, args) {
+                    match self.call_clause(span, &node, op, args) {
                         Err(f) if matches!(*f, Flow::Resume { .. }) => {
                             let Flow::Resume { fiber, value } = *f else { unreachable!() };
                             msg = self.switch_to(span, key, fiber, ToFiber::Resume(value))?;

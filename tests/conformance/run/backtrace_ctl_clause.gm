@@ -1,0 +1,28 @@
+//! exit: 134
+//! stderr
+// A `ctl` clause runs as if called by its `with` (§18.3).
+Ask :: effect { ask: fn(n: i32) -> i32 }
+Gen :: effect { emit: ctl(n: i32) }
+
+check :: fn(n: i32) -> i32 {
+    if n > 2 { trap("too big") }
+    return n
+}
+
+produce :: fn() \ {Ask, Gen} {
+    for i in 0..10 { emit(ask(i)) }
+}
+
+main :: fn() \ {Out} {
+    stack: [32768]u8 = ---
+    with (handler Ask { ask(n) => check(n) }) {
+        with (handler Gen {
+            emit(n, k) => {
+                print("got {}\n", check(n + 1))
+                resume k()
+            }
+        }) on stack[..] {
+            produce()
+        }
+    }
+}

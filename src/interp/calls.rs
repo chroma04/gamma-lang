@@ -131,6 +131,13 @@ impl<'a> Machine<'a> {
                     let Flow::Return { value, .. } = *flow else { unreachable!() };
                     return Ok(value);
                 }
+                let mut flow = flow;
+                if let Flow::Trap(t) = &mut *flow
+                    && self.mode == super::Mode::Debug
+                    && !self.const_mode
+                {
+                    t.trace.push((fid, span));
+                }
                 Err(flow)
             }
         }

@@ -71,7 +71,7 @@ impl<'s> Sema<'s> {
         def.ret = ret;
         def.locals = locals;
         def.body = Some(body);
-        self.test_entry(f, ret, sym, span)
+        self.test_entry(f, ret, span)
     }
 
     fn check_test_body(
@@ -98,7 +98,7 @@ impl<'s> Sema<'s> {
 
     /// `run_test(E, &test)` or `run_test_unit(&test)` from the core prelude:
     /// installs the leak-checking allocator and reports a failure.
-    fn test_entry(&mut self, f: FnId, ret: Ty, name: Symbol, span: Span) -> Option<FnId> {
+    fn test_entry(&mut self, f: FnId, ret: Ty, span: Span) -> Option<FnId> {
         let runner = if ret == Ty::unit() { "run_test_unit" } else { "run_test" };
         let d = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern(runner)).copied())?;
         let DeclValue::Fn(g) = self.resolve_decl(d) else { return None };
@@ -121,7 +121,7 @@ impl<'s> Sema<'s> {
         };
         let module = self.sigs[&f].module;
         let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(false), generics: vec![] };
-        let entry = self.new_fn(name, span, sig, tir::FnKind::Named);
+        let entry = self.new_fn(Symbol::intern("<entry>"), span, sig, tir::FnKind::Named);
         self.prog.fns[entry.index()].body = Some(call);
         Some(entry)
     }

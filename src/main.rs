@@ -174,12 +174,7 @@ fn run(opts: &Options) -> ExitCode {
         gamma::interp::Outcome::Trap(t) => {
             use std::io::Write;
             let _ = stdout.flush();
-            eprintln!("trap: {}", t.message);
-            if t.span != gamma::source::Span::DUMMY {
-                let f = sess.sources.file(t.span.file);
-                let (line, col) = f.line_col(t.span.lo);
-                eprintln!("  at {}:{}:{}", f.path.display(), line, col);
-            }
+            eprint!("trap: {}", trap_report(&sess, &prog, &t));
             // The status of a process terminated by `abort` (SIGABRT).
             ExitCode::from(134)
         }
@@ -194,6 +189,35 @@ fn location(sess: &Session, span: gamma::source::Span) -> Option<String> {
     let f = sess.sources.file(span.file);
     let (line, col) = f.line_col(span.lo);
     Some(format!("{}:{}:{}", f.path.display(), line, col))
+}
+
+/// A trap's message and where it happened: its location and, in Debug builds, the
+/// calls leading to it (the same report the C runtime prints).
+fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp::Trap) -> String {
+    let mut s = format!("{}\n", trap.message);
+    let name = |i: usize| trap.trace.get(i).and_then(|(f, _)| prog.backtrace_name(*f, &sess.sources));
+    if let Some(at) = location(sess, trap.span) {
+        s.push_str(&format!("  at {}", at));
+        if let Some(n) = name(0) {
+            s.push_str(&format!(" in {}", n));
+        }
+        s.push('\n');
+    }
+    // Each call site lies in the function that the next (outer) entry called.
+    let callers: Vec<String> = (0..trap.trace.len())
+        .filter_map(|i| Some(format!("  called from {} in {}\n", location(sess, trap.trace[i].1)?, name(i + 1)?)))
+        .collect();
+    // Past BACKTRACE_MAX callers, only the first and last BACKTRACE_MAX / 2.
+    const BACKTRACE_MAX: usize = 20;
+    let n = callers.len();
+    for (i, line) in callers.iter().enumerate() {
+        if n <= BACKTRACE_MAX || i < BACKTRACE_MAX / 2 || i >= n - BACKTRACE_MAX / 2 {
+            s.push_str(line);
+        } else if i == BACKTRACE_MAX / 2 {
+            s.push_str(&format!("  ... {} more calls\n", n - BACKTRACE_MAX));
+        }
+    }
+    s
 }
 
 /// Counts and prints the results of tests, in the format shared by both back ends.
@@ -252,10 +276,7 @@ fn test(opts: &Options) -> ExitCode {
         let reason = match outcome {
             gamma::interp::Outcome::Exit(0) => None,
             gamma::interp::Outcome::Exit(_) => Some(String::new()),
-            gamma::interp::Outcome::Trap(trap) => Some(match location(&sess, trap.span) {
-                Some(at) => format!("{}\n  at {}\n", trap.message, at),
-                None => format!("{}\n", trap.message),
-            }),
+            gamma::interp::Outcome::Trap(trap) => Some(trap_report(&sess, &prog, &trap)),
         };
         let failure = reason.map(|reason| {
             let mut detail = String::from_utf8_lossy(&out).into_owned();

@@ -1,0 +1,11 @@
+//! exit: 134
+//! stderr
+// Long backtraces show only their first and last calls (§18.3).
+down :: fn(n: u32) -> u32 {
+    if n is 0 { trap("bottom") }
+    return down(n - 1) + 1
+}
+
+main :: fn() \ {Out} {
+    print("{}\n", down(30))
+}
