@@ -30,55 +30,241 @@ pub copy_from :: fn(T: type, s: []T, src: []const T) {
 
 /// Sorts `s` in ascending order (not stable).
 pub sort :: fn(T: type, s: []T) where Ord(T) {
-    i: usize = 1
-    while i < s.len {
-        j := i
-        while j > 0 and s[j] < s[j - 1] {
-            s.swap(j, j - 1)
-            j -= 1
-        }
-        i += 1
-    }
+    introsort(s, fn(a, b: ^const T) => a^ < b^)
 }
 
 /// Sorts `s` so that `less` holds between no element and an earlier one (not stable).
 pub sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
-    stable_sort_by(s, less)
+    introsort(s, less)
 }
 
 /// Sorts `s` by the keys `key` computes (not stable).
 pub sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
-    stable_sort_by_key(s, key)
+    introsort(s, fn(a, b: ^const T) => key(a) < key(b))
 }
 
 /// Sorts `s` in ascending order, keeping equal elements in their order.
 pub stable_sort :: fn(T: type, s: []T) where Ord(T) {
-    sort(s)
+    merge_sort(s, fn(a, b: ^const T) => a^ < b^)
 }
 
 /// Sorts `s` by `less`, keeping equivalent elements in their order.
 pub stable_sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
-    i: usize = 1
-    while i < s.len {
-        j := i
-        while j > 0 and less(&s[j], &s[j - 1]) {
-            s.swap(j, j - 1)
-            j -= 1
-        }
-        i += 1
-    }
+    merge_sort(s, less)
 }
 
 /// Sorts `s` by the keys `key` computes, keeping elements with equal keys in their order.
 pub stable_sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
+    merge_sort(s, fn(a, b: ^const T) => key(a) < key(b))
+}
+
+// The sorting algorithms below never assume that `less` is a strict weak ordering:
+// every index is checked against explicit bounds, so an inconsistent `less` (floats
+// with NaN, say) can only produce a different permutation of the elements.
+
+// Ranges of at most this many elements are sorted by insertion.
+SMALL :: 16
+
+// Sorts `s` by insertion; stable.
+insertion_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
     i: usize = 1
     while i < s.len {
+        t := s[i]
         j := i
-        while j > 0 and key(&s[j]) < key(&s[j - 1]) {
-            s.swap(j, j - 1)
+        while j > 0 and less(&t, &s[j - 1]) {
+            s[j] = s[j - 1]
             j -= 1
         }
+        s[j] = t
         i += 1
+    }
+}
+
+// Restores the max-heap property below `root` in `s[0..end]`.
+sift_down :: fn(T: type, s: []T, root, end: usize, less: fn(a, b: ^const T) -> bool) {
+    r := root
+    while true {
+        child := 2 * r + 1
+        if child >= end { break }
+        if child + 1 < end and less(&s[child], &s[child + 1]) { child += 1 }
+        if not less(&s[r], &s[child]) { break }
+        s.swap(r, child)
+        r = child
+    }
+}
+
+// Sorts `s` in O(n log n) time with no extra space.
+heap_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    n := s.len
+    i := n / 2
+    while i > 0 {
+        i -= 1
+        sift_down(s, i, n, less)
+    }
+    end := n
+    while end > 1 {
+        end -= 1
+        s.swap(0, end)
+        sift_down(s, 0, end, less)
+    }
+}
+
+// Moves a median-of-three pivot of `s` (at least 3 elements) to `s[0]`, partitions the
+// rest around it and puts it between the two parts. Returns the pivot's final index.
+partition :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) -> usize {
+    n := s.len
+    a: usize = 0
+    b := n / 2
+    c := n - 1
+    if less(&s[b], &s[a]) { s.swap(a, b) }
+    if less(&s[c], &s[b]) {
+        s.swap(b, c)
+        if less(&s[b], &s[a]) { s.swap(a, b) }
+    }
+    s.swap(0, b)
+    // Invariant: s[1..i] <= pivot and s[j..n] >= pivot.
+    i: usize = 1
+    j := n
+    while true {
+        while i < j and less(&s[i], &s[0]) { i += 1 }
+        while i < j and less(&s[0], &s[j - 1]) { j -= 1 }
+        if i >= j { break }
+        s.swap(i, j - 1)
+        i += 1
+        j -= 1
+    }
+    s.swap(0, i - 1)
+    return i - 1
+}
+
+// Quicksort that falls back to heapsort when the recursion gets too deep.
+introsort_rec :: fn(T: type, s: []T, depth: usize, less: fn(a, b: ^const T) -> bool) {
+    cur := s
+    d := depth
+    while cur.len > SMALL {
+        if d is 0 {
+            heap_sort(cur, less)
+            return
+        }
+        d -= 1
+        p := partition(cur, less)
+        lo := cur[0..p]
+        hi := cur[p + 1..cur.len]
+        // Recurse into the smaller part, iterate on the larger.
+        if lo.len < hi.len {
+            introsort_rec(lo, d, less)
+            cur = hi
+        } else {
+            introsort_rec(hi, d, less)
+            cur = lo
+        }
+    }
+    insertion_sort(cur, less)
+}
+
+introsort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    depth: usize = 0
+    m := s.len
+    while m > 1 {
+        m /= 2
+        depth += 2
+    }
+    introsort_rec(s, depth, less)
+}
+
+// Reverses `s[lo..hi]`.
+reverse_range :: fn(T: type, s: []T, lo, hi: usize) {
+    i := lo
+    j := hi
+    while i + 1 < j {
+        j -= 1
+        s.swap(i, j)
+        i += 1
+    }
+}
+
+// Exchanges the blocks `s[a..m]` and `s[m..b]`.
+rotate :: fn(T: type, s: []T, a, m, b: usize) {
+    reverse_range(s, a, m)
+    reverse_range(s, m, b)
+    reverse_range(s, a, b)
+}
+
+// Merges the sorted runs `s[a..m]` and `s[m..b]` (a < m < b) in place and stably
+// (the SymMerge algorithm: split around the middle, rotate, recurse).
+sym_merge :: fn(T: type, s: []T, a, m, b: usize, less: fn(a, b: ^const T) -> bool) {
+    if m - a is 1 {
+        // Insert s[a] after the elements of s[m..b] that are less than it.
+        i := m
+        j := b
+        while i < j {
+            h := i + (j - i) / 2
+            if less(&s[h], &s[a]) { i = h + 1 } else { j = h }
+        }
+        k := a
+        while k + 1 < i {
+            s.swap(k, k + 1)
+            k += 1
+        }
+        return
+    }
+    if b - m is 1 {
+        // Insert s[m] before the elements of s[a..m] that are greater than it.
+        i := a
+        j := m
+        while i < j {
+            h := i + (j - i) / 2
+            if not less(&s[m], &s[h]) { i = h + 1 } else { j = h }
+        }
+        k := m
+        while k > i {
+            s.swap(k, k - 1)
+            k -= 1
+        }
+        return
+    }
+    mid := a + (b - a) / 2
+    n := mid + m
+    start := a
+    r := m
+    if m > mid {
+        start = n - b
+        r = mid
+    }
+    p := n - 1
+    while start < r {
+        c := start + (r - start) / 2
+        if not less(&s[p - c], &s[c]) { start = c + 1 } else { r = c }
+    }
+    end := n - start
+    if start < m and m < end { rotate(s, start, m, end) }
+    if a < start and start < mid { sym_merge(s, a, start, mid, less) }
+    if mid < end and end < b { sym_merge(s, mid, end, b, less) }
+}
+
+// Stable merge sort without extra space: sorted runs of SMALL elements, then
+// repeated in-place merges of adjacent runs.
+merge_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    n := s.len
+    lo: usize = 0
+    while lo < n {
+        hi := lo + SMALL
+        if hi > n { hi = n }
+        insertion_sort(s[lo..hi], less)
+        lo = hi
+    }
+    w: usize = SMALL
+    while w < n {
+        a: usize = 0
+        while a + w < n {
+            b := a + 2 * w
+            if b > n { b = n }
+            m := a + w
+            // Runs that are already in order need no merging.
+            if less(&s[m], &s[m - 1]) { sym_merge(s, a, m, b, less) }
+            a = b
+        }
+        w *= 2
     }
 }
 

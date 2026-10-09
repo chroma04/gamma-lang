@@ -1,0 +1,373 @@
+// The sorting and searching methods of arrays and slices (§21.3): in-place
+// introsort and in-place merge sort over many input shapes, stability,
+// inconsistent orderings, and the other slice methods.
+
+Item :: struct { key: u32, seq: u32 }
+
+// A linear congruential generator over 31 bits.
+Lcg :: struct { state: u64 }
+
+next :: fn(g: ^Lcg) -> u32 {
+    g.state = (g.state * 1103515245 + 12345) % 2147483648
+    return (g.state / 256).sat(u32)
+}
+
+// Fill `s` according to `pattern`: 0 sorted, 1 reverse, 2 all equal, 3 many duplicates,
+// 4 random, 5 organ pipe, 6 sorted with a random tail swap.
+fill_pattern :: fn(s: []u32, pattern: usize, seed: u64) {
+    g := Lcg(state: seed)
+    n := s.len
+    for i in 0..n {
+        v := i.sat(u32)
+        if pattern is 1 {
+            v = (n - i).sat(u32)
+        } else if pattern is 2 {
+            v = 7
+        } else if pattern is 3 {
+            v = next(&g) % 4
+        } else if pattern is 4 {
+            v = next(&g)
+        } else if pattern is 5 {
+            v = if i < n / 2 { i.sat(u32) } else { (n - i).sat(u32) }
+        } else if pattern is 6 {
+            v = i.sat(u32) * 3
+        }
+        s[i] = v
+    }
+    if pattern is 6 and n > 3 {
+        s.swap(n - 1, n / 3)
+    }
+}
+
+sum_of :: fn(s: []const u32) -> u64 {
+    t: u64 = 0
+    for x in s { t += u64(x) }
+    return t
+}
+
+checksum :: fn(s: []const u32) -> u64 {
+    c: u64 = 17
+    for x in s { c = (c * 31 + u64(x)) % 1000000007 }
+    return c
+}
+
+is_sorted :: fn(s: []const u32) -> bool {
+    for i in 1..s.len {
+        if s[i] < s[i - 1] { return false }
+    }
+    return true
+}
+
+key_of :: fn(x: ^const u32) -> u32 => x^
+
+// Sorts with the sort variant `v`.
+run_variant :: fn(v: usize, s: []u32) {
+    if v is 0 {
+        s.sort()
+    } else if v is 1 {
+        s.sort_by(fn(a, b) => a^ < b^)
+    } else if v is 2 {
+        s.sort_by_key(fn(x: ^const u32) => x^)
+    } else if v is 3 {
+        s.stable_sort()
+    } else if v is 4 {
+        s.stable_sort_by(fn(a, b) => a^ < b^)
+    } else {
+        s.stable_sort_by_key(key_of)
+    }
+}
+
+// Sorts `src` with every variant; reports whether all give the same sorted
+// permutation of the input, and the checksum of the result.
+check_variants :: fn(name: string, src: []const u32) \ {Out} {
+    buf := [2048]u32(fill: 0)
+    ref := [2048]u32(fill: 0)
+    n := src.len
+    ok := true
+    for v in 0..6 {
+        s := buf[0..n]
+        s.copy_from(src)
+        run_variant(v, s)
+        if not is_sorted(s) or sum_of(s) is not sum_of(src) { ok = false }
+        if v is 0 {
+            r := ref[0..n]
+            r.copy_from(s)
+        } else if s is ref[0..n] {
+        } else {
+            ok = false
+        }
+    }
+    print("{} n={} ok={} checksum={}\n", (name, n, ok, checksum(ref[0..n])))
+}
+
+sort_shapes :: fn() \ {Out} {
+    patterns := [_]string("sorted", "reverse", "equal", "dups", "random", "organ", "almost")
+    sizes := [_]usize(0, 1, 2, 3, 10, 16, 17, 33, 100, 129, 1000, 2000)
+    data := [2048]u32(fill: 0)
+    for p in 0..patterns.len {
+        for size in sizes {
+            s := data[0..size]
+            fill_pattern(s, p, u64(size * 7 + p))
+            check_variants(patterns[p], s)
+        }
+    }
+}
+
+// Sorting through array receivers and sub-slices.
+receivers :: fn() \ {Out} {
+    a := [_]i32(5, -3, 9, 0, 9, -7, 2, 2)
+    a.sort()
+    print("{}\n", a)
+    b := [_]i32(5, -3, 9, 0, 9, -7, 2, 2)
+    b.sort_by(fn(x, y) => x^ > y^)
+    print("{}\n", b)
+    c := [_]i32(5, -3, 9, 0, 9, -7, 2, 2)
+    c[2..7].stable_sort()
+    print("{}\n", c)
+    d := [_]i32(5, -3, 9, 0, 9, -7, 2, 2)
+    d[..4].stable_sort_by(fn(x, y) => x^ > y^)
+    d[4..].sort_by_key(fn(x: ^const i32) => -x^)
+    print("{}\n", d)
+    e := [_]f64(2.5, -1.0, 3.25, 0.0, -8.5)
+    e.stable_sort()
+    print("{}\n", e)
+    words := [_]string("pear", "fig", "apple", "kiwi", "banana")
+    words.sort()
+    print("{}\n", words)
+    words.sort_by_key(fn(w: ^const string) => (w.len, w^))
+    print("{}\n", words)
+    one := [_]u32(1)
+    empty := one[0..0]
+    empty.sort()
+    empty.stable_sort()
+    print("{}\n", empty.len)
+}
+
+abs_i32 :: fn(x: ^const i32) -> i32 => if x^ < 0 { -x^ } else { x^ }
+
+computed_keys :: fn() \ {Out} {
+    a := [_]i32(3, -1, -3, 2, 1, -2, 0, 3, -3, 1)
+    a.stable_sort_by_key(abs_i32)
+    print("{}\n", a)
+    b := [_]i32(3, -1, -3, 2, 1, -2, 0, 3, -3, 1)
+    b.sort_by_key(abs_i32)
+    ks := [_]i32(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    for i in 0..b.len { ks[i] = if b[i] < 0 { -b[i] } else { b[i] } }
+    print("{}\n", ks)
+    print("{} {}\n", (b.min() else 99, b.max() else 99))
+}
+
+// Items with duplicate keys: stable sorts keep the original order of equal keys.
+make_items :: fn(items: []Item, nkeys: u32, seed: u64) {
+    g := Lcg(state: seed)
+    for i in 0..items.len {
+        items[i] = Item(key: next(&g) % nkeys, seq: i.sat(u32))
+    }
+}
+
+items_ordered :: fn(items: []const Item, stable: bool) -> bool {
+    for i in 1..items.len {
+        if items[i].key < items[i - 1].key { return false }
+        if stable and items[i].key is items[i - 1].key and items[i].seq < items[i - 1].seq {
+            return false
+        }
+    }
+    return true
+}
+
+// Whether `items` holds every `seq` in 0..n exactly once.
+is_permutation :: fn(items: []const Item) -> bool {
+    seen := [1024]bool(fill: false)
+    for it in items {
+        if it.seq >= 1024 or seen[it.seq] { return false }
+        seen[it.seq] = true
+    }
+    return true
+}
+
+stability :: fn() \ {Out} {
+    store := [1000]Item(fill: Item(key: 0, seq: 0))
+    ns := [_]usize(2, 15, 40, 300, 1000)
+    keysets := [_]u32(2, 5, 50)
+    for n in ns {
+        for nkeys in keysets {
+            items := store[0..n]
+            make_items(items, nkeys, u64(n) + u64(nkeys))
+            items.stable_sort_by_key(fn(it: ^const Item) => it.key)
+            a := items_ordered(items, true) and is_permutation(items)
+            make_items(items, nkeys, u64(n) + u64(nkeys))
+            items.stable_sort_by(fn(x, y) => x.key < y.key)
+            b := items_ordered(items, true) and is_permutation(items)
+            // Sorting by descending key, ties still in original order.
+            make_items(items, nkeys, u64(n) + u64(nkeys))
+            items.stable_sort_by(fn(x, y) => x.key > y.key)
+            c := true
+            for i in 1..n {
+                if items[i].key > items[i - 1].key { c = false }
+                if items[i].key is items[i - 1].key and items[i].seq < items[i - 1].seq { c = false }
+            }
+            // The unstable sorts order by key and permute the items.
+            make_items(items, nkeys, u64(n) + u64(nkeys))
+            items.sort_by_key(fn(it: ^const Item) => it.key)
+            d := items_ordered(items, false) and is_permutation(items)
+            make_items(items, nkeys, u64(n) + u64(nkeys))
+            items.sort_by(fn(x, y) => x.key < y.key)
+            e := items_ordered(items, false) and is_permutation(items)
+            print("n={} keys={} {} {} {} {} {}\n", (n, nkeys, a, b, c, d, e))
+        }
+    }
+}
+
+// A sum of the non-NaN values and their count, after sorting with each variant.
+nan_sorts :: fn() \ {Out} {
+    zero := 0.0
+    nan := zero / zero
+    buf := [600]f64(fill: 0.0)
+    ns := [_]usize(1, 2, 5, 20, 100, 600)
+    strides := [_]usize(2, 3, 7)
+    for n in ns {
+        for stride in strides {
+            for v in 0..6 {
+                s := buf[0..n]
+                g := Lcg(state: u64(n * stride))
+                for i in 0..n {
+                    s[i] = if i % stride is 0 { nan } else { f64(next(&g) % 1000) }
+                }
+                if v is 0 {
+                    s.sort()
+                } else if v is 1 {
+                    s.sort_by(fn(a, b) => a^ < b^)
+                } else if v is 2 {
+                    s.sort_by_key(fn(x: ^const f64) => x^)
+                } else if v is 3 {
+                    s.stable_sort()
+                } else if v is 4 {
+                    s.stable_sort_by(fn(a, b) => a^ < b^)
+                } else {
+                    s.stable_sort_by_key(fn(x: ^const f64) => x^)
+                }
+                count: usize = 0
+                total := 0.0
+                for x in s {
+                    if not x.is_nan() {
+                        count += 1
+                        total += x
+                    }
+                }
+                if v is 0 {
+                    print("n={} stride={} len={} non_nan={} total={}\n", (n, stride, s.len, count, total))
+                }
+            }
+        }
+    }
+}
+
+// An ordering that disagrees with itself from call to call: the result must still be a
+// permutation, and the sort must terminate without trapping.
+chaotic :: fn() \ {Out} {
+    ns := [_]usize(2, 3, 17, 50, 400, 1000)
+    for n in ns {
+        for v in 0..5 {
+            data := [1000]u32(fill: 0)
+            s := data[0..n]
+            for i in 0..n { s[i] = (i * 5 % 997).sat(u32) }
+            before := sum_of(s)
+            g := Lcg(state: u64(n * 11 + v))
+            if v is 0 {
+                s.sort_by(fn(a, b) => next(&g) % 2 is 0)
+            } else if v is 1 {
+                s.stable_sort_by(fn(a, b) => next(&g) % 2 is 0)
+            } else if v is 2 {
+                s.sort_by(fn(a, b) => true)
+            } else if v is 3 {
+                s.stable_sort_by(fn(a, b) => true)
+            } else {
+                s.sort_by_key(fn(x: ^const u32) => next(&g) % 8)
+                s.stable_sort_by_key(fn(x: ^const u32) => next(&g) % 8)
+            }
+            print("n={} v={} len={} same_sum={}\n", (n, v, s.len, sum_of(s) is before))
+        }
+    }
+}
+
+searching :: fn() \ {Out} {
+    a := [_]i32(1, 3, 3, 5, 7)
+    probes := [_]i32(0, 1, 2, 3, 4, 5, 7, 8)
+    for x in probes {
+        r := a.binary_search(x)
+        print("search {}: {} {}\n", (x, r.found, r.at))
+    }
+    e: []const i32 = a[0..0]
+    r := e.binary_search(4)
+    print("empty: {} {}\n", (r.found, r.at))
+    one := [_]i32(4)
+    print("{} {}\n", (one.binary_search(4).found, one.binary_search(5).at))
+    print("{} {} {} {}\n", (a.index_of(3) else 99, a.index_of(7) else 99, a.index_of(2) else 99, e.index_of(1) else 99))
+    print("{} {} {} {}\n", (a.starts_with(a[0..2]), a.starts_with(a[1..3]), a.ends_with(a[3..5]), a.ends_with(a[2..4])))
+    print("{} {} {} {}\n", (a.starts_with(a[0..0]), a.ends_with(a[0..0]), e.starts_with(a[0..1]), e.ends_with(a[4..5])))
+    print("{} {} {} {}\n", (a.starts_with(a[..]), a.ends_with(a[..]), a.min() else 99, a.max() else 99))
+    print("{} {}\n", (e.min() is null, e.max() is null))
+    f := [_]f64(1.5, -2.5, 8.0)
+    print("{} {}\n", (f.min() else 0.0, f.max() else 0.0))
+}
+
+mutation :: fn() \ {Out} {
+    a := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    a.swap(0, 9)
+    a.swap(4, 4)
+    a[2..5].swap(0, 2)
+    print("{}\n", a)
+    a[3..7].fill(42)
+    print("{}\n", a)
+    a.fill(1)
+    print("{}\n", a)
+    // Overlapping copies, in both directions.
+    b := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    b[0..7].copy_from(b[3..10])
+    print("{}\n", b)
+    c := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    c[3..10].copy_from(c[0..7])
+    print("{}\n", c)
+    d := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    d[1..9].copy_from(d[2..10])
+    d[2..9].copy_from(d[1..8])
+    print("{}\n", d)
+    e := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    e[..5].copy_from(e[..5])
+    e[5..5].copy_from(e[0..0])
+    other := [_]u32(9, 9, 9)
+    e[4..7].copy_from(other[..])
+    print("{}\n", e)
+}
+
+utf8 :: fn() \ {Out} {
+    ok := [_]string(
+        "", "abc", "h\xc3\xa9llo", "\xc2\x80", "\xdf\xbf", "\xe0\xa0\x80", "\xe2\x82\xac",
+        "\xed\x9f\xbf", "\xee\x80\x80", "\xef\xbf\xbf", "\xf0\x90\x80\x80", "\xf0\x9f\x98\x80",
+        "\xf4\x8f\xbf\xbf", "a\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80z",
+    )
+    bad := [_]string(
+        "\xc0\x80", "\xc1\xbf", "\xe0\x80\x80", "\xe0\x9f\xbf", "\xf0\x80\x80\x80",
+        "\xf0\x8f\xbf\xbf", "\xed\xa0\x80", "\xed\xbf\xbf", "\xf4\x90\x80\x80",
+        "\xf5\x80\x80\x80", "\xf8\x88\x80\x80\x80", "\x80", "\xbf", "\xff", "\xfe",
+        "\xc3", "\xe2\x82", "\xf0\x9f\x98", "a\xc3", "\xc3\xa9\xe2", "\xc3(", "\xe2\x28\xa1",
+        "\xe2\x82(", "\xf0\x9f\x98(", "\xc3\xc3", "a\x80b",
+    )
+    print("valid:")
+    for s in ok { print(" {}", s.utf8_valid()) }
+    print("\ninvalid:")
+    for s in bad { print(" {}", s.utf8_valid()) }
+    print("\n")
+}
+
+main :: fn() \ {Out} {
+    sort_shapes()
+    receivers()
+    computed_keys()
+    stability()
+    nan_sorts()
+    chaotic()
+    searching()
+    mutation()
+    utf8()
+}
