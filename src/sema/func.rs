@@ -195,12 +195,18 @@ impl<'s> Sema<'s> {
             cx.sema.error(span, "a constant's initializer may not perform effects");
         }
         let (ex, locals) = cx.finish(ex);
-        if !locals.is_empty() {
-            // Temporaries are not supported in constants yet.
-            self.error(e.span, "this constant expression is not supported yet");
-            return None;
+        if locals.is_empty() {
+            return Some(ex);
         }
-        Some(ex)
+        // An initializer that needs temporaries (such as one with a spread) becomes the
+        // body of a function without parameters, called where the value is needed.
+        let (ty, span) = (ex.ty, ex.span);
+        let sig = super::FnSig { module, params: vec![], ret: ty, effects: EffectSet::empty(), generics: vec![] };
+        let f = self.new_fn(Symbol::intern("<constant>"), span, sig, tir::FnKind::Named);
+        let def = &mut self.prog.fns[f.index()];
+        def.locals = locals;
+        def.body = Some(ex);
+        Some(Expr { ty, kind: tir::ExprKind::Call { callee: tir::Callee::Fn(f), args: vec![] }, span })
     }
 }
 

@@ -27,8 +27,9 @@
 - `if … else e =>` captures done (if_expr lowers last branch to a Match).
 - Generic nested fns done (declared via decls::declare_fn with a synthetic Item; Sema.nested_generic).
 - Qualified consts in patterns done (pattern.rs const_pattern_value).
+- Consts with temporaries done (wrapped in a `<constant>` fn); `[2]P(..)[1]` hoisting (hoist_prefix).
 - Not yet: non-type
-  effect params, consts needing temporaries (sema "not supported yet" errors); native `gamma test`.
+  effect params (sema "not supported yet"); native `gamma test`.
 - Threads done (M10 status): std/thread, interp GIL (src/interp/threads.rs), C TLS + locks.
 - Build modes: `--mode=debug|checked|fast` (Session.mode → target.mode, interp, cgen).
 - Trap locations point at the innermost frame (prelude line for double free); no backtrace yet.

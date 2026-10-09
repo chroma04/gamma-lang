@@ -174,6 +174,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
+            // `[2]P(…)[1].y`: the prefix and the construction come first (§A.7 rule 12).
+            ExprKind::ArrayType { .. } | ExprKind::OptionalType(_) if let Some(r) = hoist_prefix(e) => {
+                self.expr(&r, expect)
+            }
             // A type prefix before a construction applies to the whole type (§A.7 rule 12).
             ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
                 let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else {
@@ -1984,4 +1988,45 @@ fn without_call(e: &ast::Expr) -> ast::Expr {
     }
     strip(&mut t);
     t
+}
+
+/// A type prefix whose operand is a postfix chain on a construction, such as
+/// `[2]P(a, b)[1].y`, rewritten so that the prefix applies to the construction and the
+/// rest of the chain to the value it constructs: `(([2]P)(a, b))[1].y` (§A.7 rule 12).
+pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
+    let (ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner)) = &e.kind else { return None };
+    if construction_call(inner).is_some() {
+        return None;
+    }
+    fn push_down(prefix: &ast::Expr, inner: &ast::Expr) -> Option<ast::Expr> {
+        let mut out = inner.clone();
+        let next = match &mut out.kind {
+            ExprKind::Index { base, .. }
+            | ExprKind::Slice { base, .. }
+            | ExprKind::Field { base, .. }
+            | ExprKind::TupleField { base, .. } => base,
+            // A method call on the constructed value.
+            ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) => {
+                callee
+            }
+            _ => return None,
+        };
+        **next = match &next.kind {
+            // The construction itself: the prefix applies to it.
+            ExprKind::Call { callee, .. }
+                if !matches!(callee.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) =>
+            {
+                let mut p = prefix.clone();
+                match &mut p.kind {
+                    ExprKind::ArrayType { elem, .. } | ExprKind::OptionalType(elem) => **elem = (**next).clone(),
+                    _ => unreachable!(),
+                }
+                p.span = prefix.span.to(next.span);
+                p
+            }
+            _ => push_down(prefix, next)?,
+        };
+        Some(out)
+    }
+    push_down(e, inner)
 }

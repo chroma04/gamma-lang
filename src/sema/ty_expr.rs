@@ -18,6 +18,8 @@ impl<'s> Sema<'s> {
                 builtin_type(id.name.as_str()).is_some()
             }
             ExprKind::Paren(inner) => self.looks_like_type(module, inner),
+            // `[2]P(…)[1]` indexes a constructed value (§A.7 rule 12).
+            ExprKind::ArrayType { .. } | ExprKind::OptionalType(_) if super::expr::hoist_prefix(e).is_some() => false,
             // `[3]i32(1, 2, 3)` and `?T(x)` construct values (§A.7 rule 12), unless the call
             // instantiates a generic type: `[4]List(i32)`.
             ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner)
