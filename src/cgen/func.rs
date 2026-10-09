@@ -132,11 +132,18 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     if !body.ty.is_never() {
         fg.line(&format!("F.ret = {};", v));
     }
+    // Debug builds fill a dead frame with 0xDD (§18.3).
+    let kill = if fg.g.opts.debug { "memset(&F, 0xDD, sizeof F); " } else { "" };
     if void_ret {
-        fg.out.push_str("gm_fret:\n    return;\ngm_fprop:\n    return;\n}\n");
-    } else {
+        let _ = write!(fg.out, "gm_fret:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n");
+    } else if kill.is_empty() {
         let r = if plain { fg.plain_value(def.ret, "F.ret") } else { "F.ret".into() };
         let _ = write!(fg.out, "gm_fret:\n    return {r};\ngm_fprop:\n    return {r};\n}}\n");
+    } else {
+        let r = if plain { fg.plain_value(def.ret, "gm_r") } else { "gm_r".into() };
+        let ct = fg.g.ty.cty(def.ret);
+        let tail = format!("{{ {ct} gm_r = F.ret; {kill}return {r}; }}");
+        let _ = write!(fg.out, "gm_fret:\n    {tail}\ngm_fprop:\n    {tail}\n}}\n");
     }
     let out = std::mem::take(&mut fg.out);
     g.bodies.push_str(&out);
