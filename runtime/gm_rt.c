@@ -570,7 +570,7 @@ static int64_t gm_io_error(int err) {
     }
 }
 
-static int64_t gm_sys_read(uint8_t *p, size_t n) {
+static int64_t gm_sys_read(void *p, size_t n) {
     gm_flush();
     for (;;) {
         ssize_t r = read(0, p, n);
@@ -597,9 +597,10 @@ static void gm_clock_sleep(uint64_t ns) {
     while (nanosleep(&t, &rest) != 0 && errno == EINTR) t = rest;
 }
 
-static void gm_rand_fill(uint8_t *p, size_t n) {
+static void gm_rand_fill(void *vp, size_t n) {
     static int fd = -1;
-    if (fd < 0) fd = open("/dev/urandom", O_RDONLY);
+    uint8_t *p = (uint8_t *)vp;
+    if (fd < 0) fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     while (n > 0) {
         ssize_t r = fd < 0 ? -1 : read(fd, p, n);
         if (r <= 0) {
@@ -609,6 +610,148 @@ static void gm_rand_fill(uint8_t *p, size_t n) {
         p += r;
         n -= (size_t)r;
     }
+}
+
+/* A NUL-terminated copy of a path (freed by the caller), or NULL if it contains a NUL. */
+static char *gm_path(const void *p, size_t n) {
+    if (memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+#define GM_RET_ERR(cond) ((cond) ? gm_io_error(errno) : 0)
+
+static int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int rw = (flags & GM_FS_READ) && (flags & (GM_FS_WRITE | GM_FS_APPEND)) ? O_RDWR
+             : (flags & (GM_FS_WRITE | GM_FS_APPEND)) ? O_WRONLY : O_RDONLY;
+    int f = rw | O_CLOEXEC;
+    if (flags & GM_FS_APPEND) f |= O_APPEND;
+    if (flags & GM_FS_CREATE) f |= O_CREAT;
+    if (flags & GM_FS_EXCLUSIVE) f |= O_CREAT | O_EXCL;
+    if (flags & GM_FS_TRUNCATE) f |= O_TRUNC;
+    int fd = open(s, f, 0666);
+    int err = errno;
+    free(s);
+    return fd < 0 ? gm_io_error(err) : (int64_t)fd;
+}
+
+static int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(close((int)f) != 0); }
+
+static int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    for (;;) {
+        ssize_t r = read((int)f, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
+    for (;;) {
+        ssize_t r = write((int)f, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+static int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
+    if (whence > 2 || (whence == 0 && offset < 0)) return gm_io_error(EINVAL);
+    off_t r = lseek((int)f, (off_t)offset, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END);
+    return r < 0 ? gm_io_error(errno) : (int64_t)r;
+}
+
+static int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    struct stat st;
+    int r = stat(s, &st);
+    int err = errno;
+    free(s);
+    if (r != 0) return gm_io_error(err);
+#if defined(__APPLE__)
+    int64_t mtime = (int64_t)st.st_mtimespec.tv_sec * 1000000000 + st.st_mtimespec.tv_nsec;
+#else
+    int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
+#endif
+    int64_t v[3] = {(int64_t)st.st_size, S_ISDIR(st.st_mode) ? 1 : 0, mtime};
+    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    return 0;
+}
+
+/* Calls f on the NUL-terminated copy of a path. */
+static int64_t gm_path_call(const void *path, size_t len, int (*f)(const char *)) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int r = f(s);
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+static int gm_mkdir(const char *s) { return mkdir(s, 0777); }
+
+static int64_t gm_fs_remove(const void *path, size_t len) { return gm_path_call(path, len, unlink); }
+static int64_t gm_fs_make_dir(const void *path, size_t len) { return gm_path_call(path, len, gm_mkdir); }
+static int64_t gm_fs_remove_dir(const void *path, size_t len) { return gm_path_call(path, len, rmdir); }
+
+static int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
+    char *a = gm_path(from, from_len), *b = gm_path(to, to_len);
+    int r = a && b ? rename(a, b) : -1;
+    int err = a && b ? errno : EINVAL;
+    free(a);
+    free(b);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+static DIR **gm_dirs;
+static size_t gm_ndirs;
+
+static int64_t gm_fs_open_dir(const void *path, size_t len) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    DIR *d = opendir(s);
+    int err = errno;
+    free(s);
+    if (d == NULL) return gm_io_error(err);
+    size_t i = 0;
+    while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
+    if (i == gm_ndirs) {
+        DIR **t = (DIR **)realloc(gm_dirs, sizeof(DIR *) * (gm_ndirs * 2 + 4));
+        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memset(t + gm_ndirs, 0, sizeof(DIR *) * (gm_ndirs + 4));
+        gm_dirs = t;
+        gm_ndirs = gm_ndirs * 2 + 4;
+    }
+    gm_dirs[i] = d;
+    return (int64_t)i + 1;
+}
+
+static DIR *gm_dir(int64_t d) { return d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL; }
+
+static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
+    DIR *dir = gm_dir(d);
+    if (dir == NULL) return gm_io_error(EBADF);
+    for (;;) {
+        errno = 0;
+        struct dirent *e = readdir(dir);
+        if (e == NULL) return errno ? gm_io_error(errno) : 0;
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        size_t len = strlen(e->d_name);
+        if (len > n) return gm_io_error(EINVAL);
+        memcpy(p, e->d_name, len);
+        return (int64_t)len;
+    }
+}
+
+static int64_t gm_fs_close_dir(int64_t d) {
+    DIR *dir = gm_dir(d);
+    if (dir == NULL) return gm_io_error(EBADF);
+    gm_dirs[d - 1] = NULL;
+    return GM_RET_ERR(closedir(dir) != 0);
 }
 
 /* ---- heap ------------------------------------------------------------------------ */

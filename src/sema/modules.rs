@@ -48,9 +48,17 @@ impl<'s> Sema<'s> {
         {
             self.yield_effect = Some(e);
         }
-        for (name, slot) in
-            [("Out", 0), ("Err", 1), ("Env", 2), ("Alloc", 3), ("Sys", 4), ("In", 5), ("Clock", 6), ("Rand", 7)]
-        {
+        for (name, slot) in [
+            ("Out", 0),
+            ("Err", 1),
+            ("Env", 2),
+            ("Alloc", 3),
+            ("Sys", 4),
+            ("In", 5),
+            ("Clock", 6),
+            ("Rand", 7),
+            ("Fs", 8),
+        ] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
             {
@@ -63,7 +71,8 @@ impl<'s> Sema<'s> {
                     4 => &mut a.sys,
                     5 => &mut a.input,
                     6 => &mut a.clock,
-                    _ => &mut a.rand,
+                    7 => &mut a.rand,
+                    _ => &mut a.fs,
                 } = Some(e);
             }
         }

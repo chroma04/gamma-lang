@@ -70,22 +70,98 @@ pub enum SysOp {
     Sleep,
     /// `@rand_fill(buf: []u8)`: bytes from the operating system's generator.
     RandFill,
+    /// `@fs_open(path: string, flags: u32) -> i64`: a file handle. The flags are
+    /// [`FS_READ`], [`FS_WRITE`], … combined.
+    FsOpen,
+    /// `@fs_close(f: i64) -> i64`.
+    FsClose,
+    /// `@fs_read(f: i64, buf: []u8) -> i64`: 0 at the end of the file.
+    FsRead,
+    /// `@fs_write(f: i64, bytes: []const u8) -> i64`.
+    FsWrite,
+    /// `@fs_seek(f: i64, offset: i64, whence: u32) -> i64`: the new position. `whence` is
+    /// 0 (from the start), 1 (from the current position) or 2 (from the end).
+    FsSeek,
+    /// `@fs_stat(path: string, out: []i64) -> i64`: stores the size, 1 for a directory or
+    /// 0, and the modification time (Unix nanoseconds) in `out[0..3]`.
+    FsStat,
+    /// `@fs_remove(path: string) -> i64`: removes a file.
+    FsRemove,
+    /// `@fs_rename(from, to: string) -> i64`.
+    FsRename,
+    /// `@fs_make_dir(path: string) -> i64`.
+    FsMakeDir,
+    /// `@fs_remove_dir(path: string) -> i64`: removes an empty directory.
+    FsRemoveDir,
+    /// `@fs_open_dir(path: string) -> i64`: a directory handle.
+    FsOpenDir,
+    /// `@fs_next_entry(d: i64, buf: []u8) -> i64`: stores the next entry's name (never `.`
+    /// or `..`) in `buf` and returns its length; 0 after the last. A name longer than
+    /// `buf` is an `InvalidInput` error.
+    FsNextEntry,
+    /// `@fs_close_dir(d: i64) -> i64`.
+    FsCloseDir,
 }
+
+/// Flags of [`SysOp::FsOpen`].
+pub const FS_READ: u32 = 1;
+pub const FS_WRITE: u32 = 2;
+pub const FS_APPEND: u32 = 4;
+pub const FS_CREATE: u32 = 8;
+pub const FS_TRUNCATE: u32 = 16;
+pub const FS_EXCLUSIVE: u32 = 32;
 
 impl SysOp {
     /// The intrinsic's name, its parameter types and its result type.
     pub fn signature(self) -> (&'static str, Vec<Ty>, Ty) {
+        let i64 = Ty::int(true, 64);
         let buf = Ty::intern(crate::types::TyKind::Slice { elem: Ty::u8(), is_const: false });
         match self {
-            SysOp::Read => ("sys_read", vec![buf], Ty::int(true, 64)),
+            SysOp::Read => ("sys_read", vec![buf], i64),
             SysOp::ClockNow => ("clock_now", vec![], Ty::int(false, 64)),
-            SysOp::ClockWall => ("clock_wall", vec![], Ty::int(true, 64)),
+            SysOp::ClockWall => ("clock_wall", vec![], i64),
             SysOp::Sleep => ("clock_sleep", vec![Ty::int(false, 64)], Ty::unit()),
             SysOp::RandFill => ("rand_fill", vec![buf], Ty::unit()),
+            SysOp::FsOpen => ("fs_open", vec![Ty::string(), Ty::int(false, 32)], i64),
+            SysOp::FsClose => ("fs_close", vec![i64], i64),
+            SysOp::FsRead => ("fs_read", vec![i64, buf], i64),
+            SysOp::FsWrite => ("fs_write", vec![i64, Ty::string()], i64),
+            SysOp::FsSeek => ("fs_seek", vec![i64, i64, Ty::int(false, 32)], i64),
+            SysOp::FsStat => (
+                "fs_stat",
+                vec![Ty::string(), Ty::intern(crate::types::TyKind::Slice { elem: i64, is_const: false })],
+                i64,
+            ),
+            SysOp::FsRemove => ("fs_remove", vec![Ty::string()], i64),
+            SysOp::FsRename => ("fs_rename", vec![Ty::string(), Ty::string()], i64),
+            SysOp::FsMakeDir => ("fs_make_dir", vec![Ty::string()], i64),
+            SysOp::FsRemoveDir => ("fs_remove_dir", vec![Ty::string()], i64),
+            SysOp::FsOpenDir => ("fs_open_dir", vec![Ty::string()], i64),
+            SysOp::FsNextEntry => ("fs_next_entry", vec![i64, buf], i64),
+            SysOp::FsCloseDir => ("fs_close_dir", vec![i64], i64),
         }
     }
 
-    pub const ALL: [SysOp; 5] = [SysOp::Read, SysOp::ClockNow, SysOp::ClockWall, SysOp::Sleep, SysOp::RandFill];
+    pub const ALL: [SysOp; 18] = [
+        SysOp::Read,
+        SysOp::ClockNow,
+        SysOp::ClockWall,
+        SysOp::Sleep,
+        SysOp::RandFill,
+        SysOp::FsOpen,
+        SysOp::FsClose,
+        SysOp::FsRead,
+        SysOp::FsWrite,
+        SysOp::FsSeek,
+        SysOp::FsStat,
+        SysOp::FsRemove,
+        SysOp::FsRename,
+        SysOp::FsMakeDir,
+        SysOp::FsRemoveDir,
+        SysOp::FsOpenDir,
+        SysOp::FsNextEntry,
+        SysOp::FsCloseDir,
+    ];
 }
 
 /// The error codes of [`SysOp`] results: `-1 - i` for the `i`-th variant of
@@ -176,6 +252,8 @@ pub struct Ambient {
     pub clock: Option<EffectId>,
     /// `Rand { fill }`
     pub rand: Option<EffectId>,
+    /// `Fs { open, … }`
+    pub fs: Option<EffectId>,
 }
 
 impl Program {

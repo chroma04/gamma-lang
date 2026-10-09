@@ -4,10 +4,60 @@
 
 use super::machine::*;
 use super::value::*;
-use crate::tir::{Expr, IoErrorKind, SysOp, io_error_code};
+use crate::tir::{self, Expr, IoErrorKind, SysOp, io_error_code};
 use crate::types::Ty;
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Open files and directories, by handle.
+#[derive(Default)]
+pub struct SysState {
+    files: HashMap<i64, std::fs::File>,
+    dirs: HashMap<i64, std::fs::ReadDir>,
+    last: i64,
+}
+
+impl SysState {
+    fn handle(&mut self) -> i64 {
+        self.last += 1;
+        self.last + 2
+    }
+}
+
+fn path_of(bytes: Vec<u8>) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+fn name_bytes(name: std::ffi::OsString) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        name.into_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        name.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
+/// A result of a file-system call as an `i64`: the value, or an error code.
+fn code(r: std::io::Result<i64>) -> i64 {
+    r.unwrap_or_else(|e| error_code(&e))
+}
+
+fn bad_handle() -> std::io::Error {
+    std::io::Error::from_raw_os_error(9) // EBADF
+}
 
 /// The error code of a failed system call (see [`io_error_code`]).
 pub fn error_code(e: &std::io::Error) -> i64 {
@@ -71,6 +121,22 @@ impl<'a> Machine<'a> {
                 std::thread::sleep(std::time::Duration::from_nanos(ns));
                 Ok(Value::unit())
             }
+            SysOp::FsOpen
+            | SysOp::FsClose
+            | SysOp::FsRead
+            | SysOp::FsWrite
+            | SysOp::FsSeek
+            | SysOp::FsStat
+            | SysOp::FsRemove
+            | SysOp::FsRename
+            | SysOp::FsMakeDir
+            | SysOp::FsRemoveDir
+            | SysOp::FsOpenDir
+            | SysOp::FsNextEntry
+            | SysOp::FsCloseDir => {
+                let n = self.fs_op(e, op, args, &vals)?;
+                Ok(int(self, e.ty, n as i128))
+            }
             SysOp::RandFill => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
                 let mut buf = vec![0u8; len as usize];
@@ -81,5 +147,149 @@ impl<'a> Machine<'a> {
                 Ok(Value::unit())
             }
         }
+    }
+}
+
+impl<'a> Machine<'a> {
+    fn path_arg(&self, e: &Expr, v: &[u8]) -> R<PathBuf> {
+        Ok(path_of(self.read_str(e.span, v)?))
+    }
+
+    fn int_arg(&self, x: &Expr, v: &[u8]) -> i64 {
+        self.int_of(x.ty, v).to_big().try_into().unwrap_or(-1)
+    }
+
+    /// A file-system service: its result, or an error code.
+    fn fs_op(&mut self, e: &Expr, op: SysOp, args: &[Expr], vals: &[super::bytes::Bytes]) -> R<i64> {
+        Ok(match op {
+            SysOp::FsOpen => {
+                let path = self.path_arg(e, &vals[0])?;
+                let flags = self.int_arg(&args[1], &vals[1]) as u32;
+                let has = |f: u32| flags & f != 0;
+                let r = std::fs::OpenOptions::new()
+                    .read(has(tir::FS_READ))
+                    .write(has(tir::FS_WRITE))
+                    .append(has(tir::FS_APPEND))
+                    .create(has(tir::FS_CREATE) && !has(tir::FS_EXCLUSIVE))
+                    .create_new(has(tir::FS_EXCLUSIVE))
+                    .truncate(has(tir::FS_TRUNCATE))
+                    .open(path);
+                let sys = &mut self.sys;
+                code(r.map(|f| {
+                    let h = sys.handle();
+                    sys.files.insert(h, f);
+                    h
+                }))
+            }
+            SysOp::FsClose => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let sys = &mut self.sys;
+                code(sys.files.remove(&h).map(|_| 0).ok_or_else(bad_handle))
+            }
+            SysOp::FsRead => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let (ptr, len) = self.slice_parts(&vals[1]);
+                let mut buf = vec![0u8; len as usize];
+                let r = match self.sys.files.get_mut(&h) {
+                    Some(f) => f.read(&mut buf),
+                    None => Err(bad_handle()),
+                };
+                match r {
+                    Ok(n) => {
+                        self.store(e.span, ptr, &buf[..n], 1)?;
+                        n as i64
+                    }
+                    Err(err) => error_code(&err),
+                }
+            }
+            SysOp::FsWrite => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let data = self.read_str(e.span, &vals[1])?;
+                code(match self.sys.files.get_mut(&h) {
+                    Some(f) => f.write(&data).map(|n| n as i64),
+                    None => Err(bad_handle()),
+                })
+            }
+            SysOp::FsSeek => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let off = self.int_arg(&args[1], &vals[1]);
+                let whence = self.int_arg(&args[2], &vals[2]);
+                let from = match whence {
+                    0 if off >= 0 => Ok(SeekFrom::Start(off as u64)),
+                    1 => Ok(SeekFrom::Current(off)),
+                    2 => Ok(SeekFrom::End(off)),
+                    _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                };
+                code(match (self.sys.files.get_mut(&h), from) {
+                    (Some(f), Ok(from)) => f.seek(from).map(|p| p as i64),
+                    (None, _) => Err(bad_handle()),
+                    (_, Err(err)) => Err(err),
+                })
+            }
+            SysOp::FsStat => {
+                let path = self.path_arg(e, &vals[0])?;
+                match std::fs::metadata(path) {
+                    Ok(m) => {
+                        let mtime = m
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map_or(0, |d| d.as_nanos() as i64);
+                        let (ptr, len) = self.slice_parts(&vals[1]);
+                        let mut out = vec![];
+                        for v in [m.len() as i64, m.is_dir() as i64, mtime].into_iter().take(len as usize) {
+                            out.extend_from_slice(
+                                &self.int_bytes(Ty::int(true, 64), &super::num::Int::from_big(v.into())),
+                            );
+                        }
+                        self.store(e.span, ptr, &out, 8)?;
+                        0
+                    }
+                    Err(err) => error_code(&err),
+                }
+            }
+            SysOp::FsRemove => code(std::fs::remove_file(self.path_arg(e, &vals[0])?).map(|_| 0)),
+            SysOp::FsRename => {
+                let (a, b) = (self.path_arg(e, &vals[0])?, self.path_arg(e, &vals[1])?);
+                code(std::fs::rename(a, b).map(|_| 0))
+            }
+            SysOp::FsMakeDir => code(std::fs::create_dir(self.path_arg(e, &vals[0])?).map(|_| 0)),
+            SysOp::FsRemoveDir => code(std::fs::remove_dir(self.path_arg(e, &vals[0])?).map(|_| 0)),
+            SysOp::FsOpenDir => {
+                let r = std::fs::read_dir(self.path_arg(e, &vals[0])?);
+                let sys = &mut self.sys;
+                code(r.map(|d| {
+                    let h = sys.handle();
+                    sys.dirs.insert(h, d);
+                    h
+                }))
+            }
+            SysOp::FsNextEntry => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let next = match self.sys.dirs.get_mut(&h) {
+                    Some(d) => d.next().transpose(),
+                    None => Err(bad_handle()),
+                };
+                match next {
+                    Ok(None) => 0,
+                    Ok(Some(entry)) => {
+                        let name = name_bytes(entry.file_name());
+                        let (ptr, len) = self.slice_parts(&vals[1]);
+                        if name.len() as u64 > len {
+                            io_error_code(IoErrorKind::InvalidInput)
+                        } else {
+                            self.store(e.span, ptr, &name, 1)?;
+                            name.len() as i64
+                        }
+                    }
+                    Err(err) => error_code(&err),
+                }
+            }
+            SysOp::FsCloseDir => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                code(self.sys.dirs.remove(&h).map(|_| 0).ok_or_else(bad_handle))
+            }
+            _ => unreachable!(),
+        })
     }
 }

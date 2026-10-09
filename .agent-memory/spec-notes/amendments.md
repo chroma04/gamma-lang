@@ -24,3 +24,4 @@
 - §6.6: `.bits` accepts any `#bits` struct as source (resolves §5.10.5 vs §5.19 contradiction).
 - §19.6/§21.1: the memory-order type is named `MemoryOrder` (core prelude).
 - §21.7/§21.1: Instant/Duration methods renamed (i.after, d.plus/minus, d.to_ms) — the old names clashed (one module, no overloading: `add` on both types; `ms` as ctor and accessor); ns/us/ms/secs listed in the universe.
+- §21.7: Fs interface of the reference core library listed; §7.10 rule 3 explicitly covers effect operations (they are functions of the effect's module).

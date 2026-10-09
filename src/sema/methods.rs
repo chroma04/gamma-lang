@@ -363,7 +363,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let TyKind::Adt(id, _) = s.kind() else { return None };
         let module = self.sema.adts.get(id)?.module;
         let d = *self.sema.modules[module.0 as usize].scope.get(&name.name)?;
-        let DeclValue::Fn(f) = self.sema.resolve_decl(d) else { return None };
+        let f = match self.sema.resolve_decl(d) {
+            DeclValue::Fn(f) => f,
+            // An effect operation is a function too (§12.1).
+            DeclValue::Op(eff, op) => return self.op_method(recv, rty, eff, op, name, args, span),
+            _ => return None,
+        };
         let sig = self.sema.sigs[&f].clone();
         // The receiver fills the first run-time parameter (§7.10).
         let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) else {
@@ -420,6 +425,45 @@ impl<'a, 's> FnCx<'a, 's> {
         bound.extend(self.bind_args(&rest, sig.module, args, span, "method"));
         self.record_effects(&sig.effects, span);
         Some(mk(sig.ret, tir::ExprKind::Call { callee: Callee::Fn(f), args: bound }, span))
+    }
+}
+
+impl<'a, 's> FnCx<'a, 's> {
+    /// `e.op(args)` where `op` is an operation of a non-generic effect whose first
+    /// parameter takes `e` (by value or as a pointer to it): a perform.
+    #[allow(clippy::too_many_arguments)]
+    fn op_method(
+        &mut self,
+        recv: Expr,
+        rty: Ty,
+        eff: crate::types::EffectId,
+        op: u32,
+        name: ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<Expr> {
+        let info = &self.sema.effects[&eff];
+        if !info.params.is_empty() {
+            return None;
+        }
+        let module = info.module;
+        let o = info.ops[op as usize].clone();
+        let first = o.params.first()?;
+        let recv = if first.ty == rty {
+            recv
+        } else if let TyKind::Ptr { pointee, .. } = rty.kind()
+            && *pointee == first.ty
+        {
+            mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span)
+        } else {
+            self.error(span, format!("`{}` cannot take a receiver of type `{}`", name.name, rty));
+            return Some(error_expr(span));
+        };
+        let mut vals = vec![recv];
+        vals.extend(self.bind_args(&o.params[1..], module, args, span, "operation"));
+        let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
+        self.performed.push((eref.clone(), span));
+        Some(mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span))
     }
 }
 

@@ -2504,7 +2504,29 @@ Env   :: effect {
 }
 ```
 
-`Clock.wall` gives Unix time in nanoseconds. `Fs` and `Net` are declared by the core library with operations for files, directories and sockets whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+`Clock.wall` gives Unix time in nanoseconds. `Fs` and `Net` are declared by the core library with operations for files, directories and sockets whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
+
+```
+File, Dir :: struct { … }                       // handles
+OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
+FileInfo :: struct { pub size: u64; pub is_dir: bool; pub modified: i64 }   // Unix nanoseconds
+SeekFrom :: union { Start, Current, End }
+Fs :: effect {
+    open: fn(path: string, opts: OpenOptions) -> IoError!File
+    close: fn(f: File)
+    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
+    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
+    stat: fn(path: string) -> IoError!FileInfo
+    remove, make_dir, remove_dir: fn(path: string) -> IoError!()
+    rename: fn(from, to: string) -> IoError!()
+    open_dir: fn(path: string) -> IoError!Dir
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name (never . or ..); 0 after the last
+    close_dir: fn(d: Dir)
+}
+```
+
+Operations whose first parameter is a `File` or `Dir` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
 
 ---
 

@@ -14,6 +14,10 @@ std/thread, std/c; real Fs/Net/Clock/Rand default handlers; arena + fixed-buffer
   Efficient sorts + big test delegated (worktree agent); merge when it reports.
 - Missing from §21.3: `cursor()` (§13.4), `downcast_unchecked`.
 
+- Done: Fs effect (File/Dir/OpenOptions/FileInfo/SeekFrom) with SystemIo default handler over
+  fs_* SysOps (interp: Rust std::fs + handle table in SysState; C: POSIX, dir table).
+  Effect ops callable as methods (methods.rs op_method). Not yet in test_effects (needs MemFs).
+
 ## Next
-3. Fs (open/read/write/close/seek/remove/rename/mkdir/stat) + in-memory test fs; then Net.
+3. In-memory test Fs (MemFs in prelude, add Fs to test_effects/run_test); then Net.
 4. std/fmt, std/math, std/io (buffered reader/writer), std/time, arena allocator.

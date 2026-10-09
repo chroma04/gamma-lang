@@ -18,6 +18,8 @@
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
@@ -130,11 +132,27 @@ static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
 /* Operations that can fail return a count, or an error code: -1 - i for the i-th
  * variant of IoError other than Other, and -1000 - errno for Other(errno). */
 static int64_t gm_io_error(int err);
-static int64_t gm_sys_read(uint8_t *p, size_t n);   /* standard input */
+static int64_t gm_sys_read(void *p, size_t n);      /* standard input */
 static uint64_t gm_clock_now(void);                 /* monotonic nanoseconds */
 static int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds */
 static void gm_clock_sleep(uint64_t ns);
-static void gm_rand_fill(uint8_t *p, size_t n);
+static void gm_rand_fill(void *p, size_t n);
+/* Files and directories: the flags of gm_fs_open, and handles that are file descriptors
+ * (files) or indexes into a table of open directories. */
+enum { GM_FS_READ = 1, GM_FS_WRITE = 2, GM_FS_APPEND = 4, GM_FS_CREATE = 8, GM_FS_TRUNCATE = 16, GM_FS_EXCLUSIVE = 32 };
+static int64_t gm_fs_open(const void *path, size_t len, uint32_t flags);
+static int64_t gm_fs_close(int64_t f);
+static int64_t gm_fs_read(int64_t f, void *p, size_t n);
+static int64_t gm_fs_write(int64_t f, const void *p, size_t n);
+static int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
+static int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, is_dir, mtime */
+static int64_t gm_fs_remove(const void *path, size_t len);
+static int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
+static int64_t gm_fs_make_dir(const void *path, size_t len);
+static int64_t gm_fs_remove_dir(const void *path, size_t len);
+static int64_t gm_fs_open_dir(const void *path, size_t len);
+static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
+static int64_t gm_fs_close_dir(int64_t d);
 
 /* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
 

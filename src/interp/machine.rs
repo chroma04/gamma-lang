@@ -84,6 +84,8 @@ pub struct Machine<'a> {
     /// (`u64::MAX` off fibers).
     pub fiber_stack: u64,
     frame_costs: HashMap<FnId, u64>,
+    /// Open files and directories of the file-system services.
+    pub sys: super::sys::SysState,
 }
 
 pub const MAX_DEPTH: u32 = 200_000;
@@ -123,6 +125,7 @@ impl<'a> Machine<'a> {
             fib: Default::default(),
             fiber_stack: u64::MAX,
             frame_costs: HashMap::new(),
+            sys: Default::default(),
             code_end,
         }
     }

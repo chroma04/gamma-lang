@@ -58,6 +58,50 @@ pub Rand :: effect {
     fill: fn(buf: []u8)
 }
 
+/// An open file (§21.7).
+pub File :: struct { handle: i64 }
+
+/// An open directory, for listing its entries.
+pub Dir :: struct { handle: i64 }
+
+/// How `open` opens a file. The default opens an existing file for reading.
+pub OpenOptions :: struct {
+    pub read: bool = true
+    pub write: bool = false
+    pub append: bool = false        // every write goes to the end
+    pub create: bool = false        // create the file if it does not exist
+    pub truncate: bool = false      // empty the file
+    pub exclusive: bool = false     // create the file; fail if it exists
+}
+
+/// What `stat` reports about a file or directory.
+pub FileInfo :: struct {
+    pub size: u64
+    pub is_dir: bool
+    pub modified: i64               // Unix time in nanoseconds
+}
+
+/// Where `seek` measures its offset from.
+pub SeekFrom :: union { Start, Current, End }
+
+/// The file system (§12.9, §21.7). Paths are byte strings, relative to the working
+/// directory unless absolute.
+pub Fs :: effect {
+    open: fn(path: string, opts: OpenOptions) -> IoError!File
+    close: fn(f: File)
+    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
+    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
+    stat: fn(path: string) -> IoError!FileInfo
+    remove: fn(path: string) -> IoError!()
+    rename: fn(from, to: string) -> IoError!()
+    make_dir: fn(path: string) -> IoError!()
+    remove_dir: fn(path: string) -> IoError!()                  // the directory must be empty
+    open_dir: fn(path: string) -> IoError!Dir
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name into buf; 0 after the last
+    close_dir: fn(d: Dir)
+}
+
 /// `n` nanoseconds.
 pub ns :: fn(n: u64) -> Duration => Duration(ns: n)
 /// `n` microseconds.
@@ -113,6 +157,48 @@ handler Clock for SystemIo {
 
 handler Rand for SystemIo {
     fill(self, buf) => @rand_fill(buf)
+}
+
+/// The result of a system call that produces nothing.
+io_unit :: fn(n: i64) -> IoError!() {
+    _ = try io_result(n)
+    return ()
+}
+
+handler Fs for SystemIo {
+    open(self, path, o) => {
+        flags: u32 = 0
+        if o.read { flags |= 1 }
+        if o.write { flags |= 2 }
+        if o.append { flags |= 4 }
+        if o.create { flags |= 8 }
+        if o.truncate { flags |= 16 }
+        if o.exclusive { flags |= 32 }
+        h := try io_result(@fs_open(path, flags))
+        return File(handle: h.trunc(i64))
+    }
+    close(self, f) => { _ = @fs_close(f.handle) }
+    read_from(self, f, buf) => io_result(@fs_read(f.handle, buf))
+    write_to(self, f, bytes) => io_result(@fs_write(f.handle, bytes))
+    seek(self, f, offset, from) => {
+        n := try io_result(@fs_seek(f.handle, offset, from.tag().trunc(u32)))
+        return n.trunc(u64)
+    }
+    stat(self, path) => {
+        out: [3]i64 = ---
+        _ = try io_result(@fs_stat(path, out[..]))
+        return FileInfo(size: out[0].trunc(u64), is_dir: out[1] is 1, modified: out[2])
+    }
+    remove(self, path) => io_unit(@fs_remove(path))
+    rename(self, from, to) => io_unit(@fs_rename(from, to))
+    make_dir(self, path) => io_unit(@fs_make_dir(path))
+    remove_dir(self, path) => io_unit(@fs_remove_dir(path))
+    open_dir(self, path) => {
+        h := try io_result(@fs_open_dir(path))
+        return Dir(handle: h.trunc(i64))
+    }
+    next_entry(self, d, buf) => io_result(@fs_next_entry(d.handle, buf))
+    close_dir(self, d) => { _ = @fs_close_dir(d.handle) }
 }
 
 system_io :: fn() -> SystemIo => SystemIo()

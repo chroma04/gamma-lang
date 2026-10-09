@@ -8,7 +8,7 @@
 use super::func::FnGen;
 use super::types::{Repr, int_cty};
 use super::{CResult, unsupported};
-use crate::tir::{AdtKind, BinOp, Builtin, Expr, Flavor, SysOp, UnOp};
+use crate::tir::{AdtKind, BinOp, Builtin, Expr, Flavor, UnOp};
 use crate::types::{FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
 
@@ -306,23 +306,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 return Ok(self.unit());
             }
             Builtin::Fiber => return self.fiber_builtin(e, args),
+            // `@name(args)` calls the runtime's `gm_name`, with slices passed as a pointer
+            // and a length.
             Builtin::Sys(op) => {
-                let mut vals = vec![];
+                let mut cargs = vec![];
                 for a in args {
                     let v = self.expr(a)?;
-                    vals.push((self.addr_of(a.ty, &v), v));
+                    if matches!(a.ty.kind(), TyKind::Slice { .. }) {
+                        let addr = self.addr_of(a.ty, &v);
+                        cargs.push(format!("(void *){}, {}", self.slice_ptr(&addr), self.slice_len(&addr)));
+                    } else {
+                        cargs.push(v);
+                    }
                 }
-                let slice = |fg: &mut Self, i: usize| {
-                    let a: &String = &vals[i].0;
-                    format!("(uint8_t *){}, {}", fg.slice_ptr(a), fg.slice_len(a))
-                };
-                let call = match op {
-                    SysOp::Read => format!("gm_sys_read({})", slice(self, 0)),
-                    SysOp::ClockNow => "gm_clock_now()".into(),
-                    SysOp::ClockWall => "gm_clock_wall()".into(),
-                    SysOp::Sleep => format!("gm_clock_sleep({})", vals[0].1),
-                    SysOp::RandFill => format!("gm_rand_fill({})", slice(self, 0)),
-                };
+                let call = format!("gm_{}({})", op.signature().0, cargs.join(", "));
                 if t.is_unit() {
                     self.line(&format!("{};", call));
                     return Ok(self.unit());
