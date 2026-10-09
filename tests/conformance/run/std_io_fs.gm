@@ -1,0 +1,89 @@
+// std/io and std/fs: line reading, handlers that redirect `In` and `Out`, and whole-file
+// operations. Works in a fresh directory under `target/`.
+io :: import "std/io"
+fs :: import "std/fs"
+
+count :: fn() -> IoError!(lines: u32, longest: usize) \ {In} {
+    r := io.reader()
+    lines: u32 = 0
+    longest: usize = 0
+    while line := try r.next_line() {
+        lines += 1
+        longest = longest.max(line.len)
+    }
+    return (lines: lines, longest: longest)
+}
+
+hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
+
+main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
+    // Standard input, then a string, through the same function.
+    c := try count()
+    print("stdin: {} lines, longest {}\n", (c.lines, c.longest))
+    s := io.StringIn(data: "one\r\ntwo\n\nlast without newline")
+    with &s {
+        c2 := try count()
+        print("string: {} lines, longest {}\n", (c2.lines, c2.longest))
+    }
+
+    // Capture output in a buffer.
+    store: [32]u8 = ---
+    cap := io.Capture(buf: store[..])
+    with &cap { print("captured {} and {}", (1, true)) }
+    print("[{}]\n", cap.text())
+
+    // A unique scratch directory.
+    r: [6]u8 = ---
+    fill(r[..])
+    name := [_]u8('t', 'a', 'r', 'g', 'e', 't', '/', 'g', 'a', 'm', 'm', 'a', '-', 'i', 'o', '-',
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    for i in 0..6 {
+        name[16 + 2 * i] = hex(r[i] >> 4)
+        name[17 + 2 * i] = hex(r[i] & 15)
+    }
+    dir := name[..]
+    try make_dir(dir)
+    pbuf: [64]u8 = ---
+    path := join(pbuf[..], dir, "out.txt")
+    qbuf: [64]u8 = ---
+    copy_path := join(qbuf[..], dir, "copy.txt")
+
+    // `print` into a file, then read it back as `In`.
+    f := try open(path, OpenOptions(read: false, write: true, create: true))
+    out := io.FileOut(f: f)
+    with &out {
+        for i in 1..4 { print("line {}\n", i) }
+    }
+    close(f)
+    print("write error: {}\n", out.err)
+    try fs.append(path, "appended\n")
+    g := try open(path, OpenOptions())
+    with io.FileIn(f: g) {
+        c3 := try count()
+        print("file: {} lines, longest {}\n", (c3.lines, c3.longest))
+    }
+    close(g)
+
+    // Whole files.
+    try fs.copy(path, copy_path)
+    data := try fs.read_all(copy_path)
+    print("copy: {} bytes, starts {}\n", (data.len, data[0..6]))
+    free(data)
+    try fs.write_all(copy_path, "short")
+    small := try fs.read_all(copy_path)
+    print("rewritten: {}\n", small)
+    free(small)
+    print("exists: {} {}\n", (fs.exists(copy_path), fs.exists("target/definitely/not/here")))
+    if !e := fs.read_all("target/definitely/not/here") { print("missing: {}\n", e) }
+
+    try remove(path)
+    try remove(copy_path)
+    try remove_dir(dir)
+}
+
+join :: fn(buf: []u8, a: string, b: string) -> string {
+    buf[0..a.len].copy_from(a)
+    buf[a.len] = '/'
+    buf[a.len + 1..a.len + 1 + b.len].copy_from(b)
+    return buf[0..a.len + 1 + b.len]
+}

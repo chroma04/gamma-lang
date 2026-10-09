@@ -1,0 +1,72 @@
+# The standard library
+
+The **core library** (spec §21) is visible in every module without an import: the
+ambient effects, allocation, iterators, `List`, `HashMap`, formatting with `print`,
+and the builtin methods of slices, numbers and pointers. The rest of the standard
+library is a set of modules under `std/`, imported by path:
+
+```gamma
+io :: import "std/io"
+fs :: import "std/fs"
+```
+
+The `gamma` tool finds them in the directory named by `$GAMMA_STD`, or in `lib/std`
+next to the compiler's sources.
+
+## Ambient effects and their handlers
+
+`main` may perform any ambient effect (§12.9); the runtime installs the default
+handlers, and tests run with the test handlers instead.
+
+| Effect | Operations | Default handler | Test handler |
+| --- | --- | --- | --- |
+| `Out`, `Err` | `write_out`, `write_err` | stdout, stderr | captured |
+| `In` | `read(buf) -> IoError!usize` (0 at the end) | stdin | empty input |
+| `Clock` | `now() -> Instant`, `wall() -> i64`, `sleep(d)` | system clocks | fake clock; `sleep` advances it |
+| `Rand` | `fill(buf)` | the OS's generator | fixed seed |
+| `Fs` | files and directories (below) | the real file system | — |
+| `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | empty |
+| `Alloc` | `current() -> Allocator` | the system heap | leak-checking heap |
+
+Durations are built with `ns(n)`, `us(n)`, `ms(n)` and `secs(n)`; `i.since(earlier)`,
+`i.after(d)`, `d.plus(e)`, `d.minus(e)` and `d.to_ms()` work with them.
+
+### Files: `Fs`
+
+```gamma
+f := try open("notes.txt", OpenOptions(read: false, write: true, create: true, truncate: true))
+defer close(f)
+_ = try f.write_to("hello\n")
+```
+
+`open(path, options)` returns a `File`; `read_from`, `write_to` and `seek` are called
+as methods on it. `stat(path)` gives a `FileInfo` (`size`, `is_dir`, `modified`);
+`remove`, `rename`, `make_dir` and `remove_dir` change the tree; `open_dir`,
+`next_entry` (a name into your buffer, 0 after the last) and `close_dir` list a
+directory without allocating. Failures are `IoError` values.
+
+## `std/io`
+
+- `io.reader()` and `r.next_line()`: read `In` a line at a time (the line is valid
+  until the next call; lines longer than 4096 bytes come in pieces).
+- `io.read_to_list(&list)`: all of `In` into a `List(u8)`.
+- Handlers that redirect the ambient effects, so code written against `In` and
+  `Out` works on files and strings unchanged:
+  - `with io.FileIn(f: file) { … }`: `In` reads the file.
+  - `with &io.FileOut(f: file) { … }`: `Out` and `Err` write to the file; the first
+    error is kept in the handler's `err` field.
+  - `with &io.StringIn(data: text) { … }`: `In` reads a string.
+  - `with &io.Capture(buf: storage[..]) { … }`: `Out` writes into a buffer;
+    `capture.text()` returns what was written.
+
+## `std/fs`
+
+- `fs.read_all(path) -> ReadError![]u8`: a whole file, in memory from the current
+  allocator (release it with `free`).
+- `fs.write_all(path, bytes)`, `fs.append(path, bytes)`, `fs.copy(from, to)`,
+  `fs.exists(path)`, and `fs.write_all_to(file, bytes)`, which retries short writes.
+
+## `std/c`
+
+C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring
+foreign functions (§19.1).

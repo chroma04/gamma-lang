@@ -1,0 +1,9 @@
+stdin: 6 lines, longest 4096
+string: 4 lines, longest 20
+[captured 1 and true]
+write error: null
+file: 4 lines, longest 8
+copy: 30 bytes, starts line 1
+rewritten: short
+exists: true false
+missing: .Io(.NotFound)

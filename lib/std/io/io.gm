@@ -1,0 +1,139 @@
+// std/io: reading lines from `In`, and handlers that connect `In` and `Out` to files
+// and strings, so code written against the ambient effects works on any of them.
+//
+//     with io.FileIn(f: file) { count_words() }      // `In` reads the file
+//     with &io.FileOut(f: out) { report() }           // `print` writes to the file
+//     with &io.StringIn(data: "a\nb\n") { … }         // `In` reads a string
+
+/// Reads from `In` through a buffer, a line at a time.
+pub Reader :: struct {
+    buf: [4096]u8
+    start: usize
+    end: usize
+    eof: bool
+}
+
+/// A reader with an empty buffer.
+pub reader :: fn() -> Reader => Reader(buf: [4096]u8(fill: 0), start: 0, end: 0, eof: false)
+
+/// The next line, without its `\n` (or `\r\n`), or `null` at the end of the input. The
+/// line is valid until the next call. A line longer than the buffer (4096 bytes) is
+/// returned in pieces of the buffer's size.
+pub next_line :: fn(r: ^Reader) -> IoError!?string \ {In} {
+    while true {
+        // A complete line in the buffer?
+        if i := r.buf[r.start..r.end].index_of('\n') {
+            line_end := r.start + i
+            line := r.buf[r.start..line_end]
+            r.start = line_end + 1
+            return trim_cr(line)
+        }
+        if r.eof {
+            if r.start is r.end { return null }
+            line := r.buf[r.start..r.end]
+            r.start = r.end
+            return trim_cr(line)
+        }
+        // Make room: move the partial line to the front, or give up on a full buffer.
+        if r.start > 0 {
+            n := r.end - r.start
+            r.buf[0..n].copy_from(r.buf[r.start..r.end])
+            r.start = 0
+            r.end = n
+        } else if r.end is r.buf.len {
+            r.start = r.end
+            return r.buf[0..r.end]
+        }
+        n := try read(r.buf[r.end..r.buf.len])
+        if n is 0 { r.eof = true }
+        r.end += n
+    }
+}
+
+trim_cr :: fn(line: []u8) -> string {
+    if line.len > 0 and line[line.len - 1] is '\r' { return line[0..line.len - 1] }
+    return line
+}
+
+/// Reads all of `In` into `out`.
+pub read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In} {
+    buf: [4096]u8 = ---
+    while true {
+        n := try read(buf[..])
+        if n is 0 { return () }
+        for b in buf[0..n] {
+            out.push(b) else return !.NoSpace
+        }
+    }
+}
+
+/// A handler for `In` that reads the file `f`.
+pub FileIn :: struct { pub f: File }
+
+handler In for FileIn \ {Fs} {
+    read(self, buf) => self.f.read_from(buf)
+}
+
+/// A handler for `Out` (and `Err`) that writes to the file `f`. `Out` cannot fail, so
+/// the first error is kept in `err` and later output is dropped.
+pub FileOut :: struct {
+    pub f: File
+    pub err: ?IoError = null
+}
+
+write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
+    if o.err is not null { return }
+    done: usize = 0
+    while done < bytes.len {
+        n := o.f.write_to(bytes[done..bytes.len]) else e => {
+            o.err = e
+            return
+        }
+        if n is 0 {
+            o.err = .Other(0)
+            return
+        }
+        done += n
+    }
+}
+
+handler Out for ^FileOut \ {Fs} {
+    write_out(self, bytes) => write_file_out(self, bytes)
+}
+
+handler Err for ^FileOut \ {Fs} {
+    write_err(self, bytes) => write_file_out(self, bytes)
+}
+
+/// A handler for `In` that reads the string `data`.
+pub StringIn :: struct {
+    pub data: string
+    pub pos: usize = 0
+}
+
+handler In for ^StringIn {
+    read(self, buf) => {
+        n := (self.data.len - self.pos).min(buf.len)
+        buf[0..n].copy_from(self.data[self.pos..self.pos + n])
+        self.pos += n
+        return n
+    }
+}
+
+/// A handler for `Out` that keeps output in the buffer `buf` (up to its length; the
+/// rest is dropped). `text()` gives what was written.
+pub Capture :: struct {
+    pub buf: []u8
+    pub len: usize = 0
+}
+
+handler Out for ^Capture {
+    write_out(self, bytes) => {
+        n := (self.buf.len - self.len).min(bytes.len)
+        self.buf[self.len..self.len + n].copy_from(bytes[0..n])
+        self.len += n
+    }
+}
+
+/// What was written to the capture so far.
+pub text :: fn(c: ^const Capture) -> string => c.buf[0..c.len]

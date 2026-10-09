@@ -14,6 +14,7 @@ main :: fn() \ {Out} {
 
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
+- [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
 

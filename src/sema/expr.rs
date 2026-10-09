@@ -52,6 +52,11 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
             ExprKind::Null => match expect.map(|t| self.infer.shallow(t)) {
                 Some(t) if matches!(t.kind(), TyKind::Optional(_)) => mk(t, tir::ExprKind::Null, span),
+                // `null` where an `E!?T` is expected is the success value `null` (§10.3).
+                Some(t) if matches!(t.kind(), TyKind::Result { ok, .. } if matches!(ok.kind(), TyKind::Optional(_))) => {
+                    let TyKind::Result { ok, .. } = t.kind() else { unreachable!() };
+                    mk(*ok, tir::ExprKind::Null, span)
+                }
                 _ => {
                     self.error(span, "cannot infer the type of `null` here; annotate the optional type");
                     error_expr(span)
