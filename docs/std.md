@@ -97,7 +97,8 @@ fb: [400]u8 = ---
 print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary value is below 2.675)
 ```
 
-- Integers (any type from 8 to 128 bits): `dec`, `hex`, `hex_upper`, `oct`, `bin`,
+- Integers (any type of 8 bits or more, including `u256` and wider; `INT_BUF` bytes suffice up
+  to 128 bits and `max_int_len(T)` for any `T`): `dec`, `hex`, `hex_upper`, `oct`, `bin`,
   `radix(x, base)` for bases 2–36, `prefixed(x, base)` with `0x`/`0o`/`0b`, and
   `grouped(x, sep)` with thousands separators. Untyped literals need a type:
   `fmt.hex(u32(255), buf)`.

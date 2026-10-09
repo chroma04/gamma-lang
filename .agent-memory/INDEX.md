@@ -12,7 +12,7 @@
   elementwise arrays, #deprecated/#fast_math/#inline (see architecture/sema-notes.md).
 - Spec amendments are indexed in spec-notes/amendments.md.
 - Not yet: native `gamma test` (subagent working in a worktree; merge its branch when it
-  reports), std/fmt hex/bin for ints >128 bits, static handler specialization (D.3, optional).
+  reports), static handler specialization (D.3, optional). std/fmt handles any int width.
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params. Trap locations: innermost frame; no backtrace yet.
 
