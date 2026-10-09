@@ -35,7 +35,9 @@ nesting (four spaces), normalizes the spacing inside a line and copies comments
 and literals verbatim. Trailing comments and the columns of aligned `::`/`=>`
 keep their spacing. Files with lexical errors are not formatted. `tests/fmt.rs`
 checks that formatting keeps the tokens and is idempotent for every `.gm` file in
-`lib/` and `tests/conformance/`.
+`lib/` and `tests/conformance/`. The library itself is kept formatted (the same test fails
+otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
+reformatted, since some pin columns in their expected output.
 
 ## Tests
 

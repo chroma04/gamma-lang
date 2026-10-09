@@ -72,20 +72,20 @@ fn corpus_keeps_tokens_and_is_idempotent() {
 }
 
 #[test]
-fn library_is_already_formatted_up_to_known_style() {
-    // The library is written in the formatter's style; this keeps the two in step.
-    // Visually aligned parameter lists and blank-line runs are the only expected differences.
+fn library_is_formatted() {
+    // The library is kept in the formatter's style: run `gamma fmt lib` after editing it.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     gm_files(&root.join("lib"), &mut files);
-    let mut changed = 0;
-    for path in files {
-        let src = std::fs::read_to_string(&path).unwrap();
-        if format_source(&src).unwrap() != src {
-            changed += 1;
-        }
-    }
-    assert!(changed <= 3, "{} library files differ from their formatted form", changed);
+    let changed: Vec<String> = files
+        .into_iter()
+        .filter(|path| {
+            let src = std::fs::read_to_string(path).unwrap();
+            format_source(&src).unwrap() != src
+        })
+        .map(|p| p.display().to_string())
+        .collect();
+    assert!(changed.is_empty(), "not formatted (run `gamma fmt lib`): {}", changed.join(", "));
 }
 
 fn check(input: &str, expected: &str) {

@@ -122,7 +122,6 @@ ATAN_T8 :: 4.97687799461593236017e-02
 ATAN_T9 :: -3.65315727442169155270e-02
 ATAN_T10 :: 1.62858201153657823623e-02
 
-
 // atan(ax + tail) for ax >= 0 (or +inf) and a tiny correction `tail` (at most
 // about one ulp of ax), as an unevaluated sum (head, tail) whose head is the
 // rounded value. The extra tail lets `atan2` account for the rounding error of

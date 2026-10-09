@@ -15,7 +15,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Merge the `gamma fmt` subagent work (token-based formatter) when it reports; review rules.
+1. `gamma fmt` merged (src/fmt.rs, tests/fmt.rs; lib/ must stay formatted).
 2. bugs-open.md leftovers (big-value copies in C). Then: static handler specialization (D.3)?
 3. Keep PR #2 green (subscribed); CI runs on push. Update the PR description at the end of each chunk.
 

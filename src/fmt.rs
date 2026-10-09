@@ -494,8 +494,9 @@ fn layout(src: &str, toks: &[Token]) -> String {
             } else {
                 cur_base = stack.last().map_or(0, |f| f.base + 1);
                 let plain_ctx = stack.last().is_none_or(|f| f.plain);
-                let starts_cont =
-                    |j: usize| infos[j].text == "and" || infos[j].text == "or" || continues_with_name(src, &infos[j]);
+                let starts_cont = |j: usize| {
+                    matches!(infos[j].text.as_str(), "and" | "or" | "else") || continues_with_name(src, &infos[j])
+                };
                 let next_tok = items[idx..].iter().find_map(|it| if let Item::Tok(j) = it { Some(*j) } else { None });
                 let cont = plain_ctx
                     && (cont_next
