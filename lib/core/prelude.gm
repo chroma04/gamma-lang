@@ -459,7 +459,11 @@ leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
 TestIo :: struct {
     clock: u64
     seed: u64
+    fs: MemFs
 }
+
+/// The test handler's wall-clock time, in Unix nanoseconds.
+test_wall :: fn(io: ^TestIo) -> i64 => 1_700_000_000_000_000_000 + io.clock.trunc(i64)
 
 handler In for ^TestIo {
     read(self, buf) => 0
@@ -467,7 +471,7 @@ handler In for ^TestIo {
 
 handler Clock for ^TestIo {
     now(self) => Instant(ns: self.clock)
-    wall(self) => 1_700_000_000_000_000_000 + self.clock.trunc(i64)
+    wall(self) => test_wall(self)
     sleep(self, d) => { self.clock += d.ns }
 }
 
@@ -484,11 +488,451 @@ handler Rand for ^TestIo {
     }
 }
 
+// The test handler of `Fs` (§12.9): an in-memory file system. Every test starts with
+// a fresh, empty one, and it is freed when the test ends.
+//
+// The file system is a table of nodes (files and directories). A node knows its parent
+// and its name, so a directory's children are the linked nodes that name it as their
+// parent, and `rename` only changes those two fields. Open files and directories are
+// tables of handles that refer to nodes; a handle is its index plus one and is never
+// reused, so a closed or unknown handle always fails. A removed node lives on until the
+// last handle to it is closed, as on POSIX. All storage comes from the system heap, not
+// from the test's tracking allocator, so it does not count as a leak.
+//
+// Paths are split at `/`; empty components and `.` are ignored (so a leading `/` is
+// accepted and means the root, and `a//b/./c` is `a/b/c`) and `..` is rejected with
+// `InvalidInput`. Errors other than the portable `IoError` variants are the Linux errno
+// values, as with the real file system: 9 (EBADF) for a closed handle or an operation the
+// handle's mode does not allow, 16 (EBUSY) for the root directory, 20 (ENOTDIR) for a file
+// used as a directory, 21 (EISDIR) for a directory used as a file (also for `remove`,
+// which never removes directories), and 39 (ENOTEMPTY) for removing or replacing a
+// directory that has entries.
+
+MemNode :: struct {
+    used: bool              // the slot holds a node
+    linked: bool            // reachable by path
+    is_dir: bool
+    parent: usize           // the root is its own parent
+    opens: usize            // open handles
+    modified: i64
+    name: List(u8)
+    data: List(u8)          // the contents of a file
+}
+
+MemOpen :: struct {
+    open: bool
+    node: usize
+    pos: u64
+    can_read, can_write, append: bool
+}
+
+MemDir :: struct {
+    open: bool
+    node: usize
+    next: usize             // the next node slot to look at
+}
+
+MemFs :: struct {
+    alloc: Allocator
+    nodes: List(MemNode)    // node 0 is the root
+    files: List(MemOpen)
+    dirs: List(MemDir)
+}
+
+/// The largest file, so that a wild `seek` and `write` cannot exhaust the memory.
+MEM_FILE_MAX :: 1 << 30
+
+/// An empty file system, holding just the root directory.
+mem_fs :: fn() -> MemFs {
+    a := heap_allocator()
+    m := with a {
+        MemFs(alloc: a, nodes: list(MemNode), files: list(MemOpen), dirs: list(MemDir))
+    }
+    _ = new_node(&m, true, 0, "", 0)
+    return m
+}
+
+/// Frees everything.
+mem_fs_free :: fn(m: ^MemFs) {
+    for i in 0..m.nodes.items.len {
+        if m.nodes.items[i].used { release(m, i) }
+    }
+    m.nodes.deinit()
+    m.files.deinit()
+    m.dirs.deinit()
+}
+
+/// Adds a node named `name` in `parent`; its id.
+new_node :: fn(m: ^MemFs, is_dir: bool, parent: usize, name: string, now: i64) -> IoError!usize {
+    a := m.alloc
+    node := with a {
+        MemNode(used: true, linked: true, is_dir: is_dir, parent: parent, opens: 0, modified: now,
+                name: list(u8), data: list(u8))
+    }
+    if not fill_name(&node.name, name) { return !.NoSpace }
+    i: usize = 0
+    while i < m.nodes.items.len {
+        if not m.nodes.items[i].used { break }
+        i += 1
+    }
+    if i < m.nodes.items.len {
+        m.nodes.items[i] = node
+        return i
+    }
+    if !e := m.nodes.push(node) {
+        node.name.deinit()
+        node.data.deinit()
+        return !.NoSpace
+    }
+    return i
+}
+
+/// Copies `name` into the empty list `l`; on failure frees `l` and returns false.
+fill_name :: fn(l: ^List(u8), name: string) -> bool {
+    for b in name {
+        if !e := l.push(b) {
+            l.deinit()
+            return false
+        }
+    }
+    return true
+}
+
+/// Frees a node's storage and its slot.
+release :: fn(m: ^MemFs, id: usize) {
+    n := &m.nodes.items[id]
+    n.name.deinit()
+    n.data.deinit()
+    n.used = false
+    n.linked = false
+}
+
+/// Removes a node from its directory; it is freed once no handle refers to it.
+unlink :: fn(m: ^MemFs, id: usize) {
+    n := &m.nodes.items[id]
+    n.linked = false
+    if n.opens is 0 { release(m, id) }
+}
+
+same_bytes :: fn(a, b: []const u8) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+/// The linked child of directory `dir` called `name`.
+find_child :: fn(m: ^MemFs, dir: usize, name: string) -> ?usize {
+    for i in 1..m.nodes.items.len {
+        n := &m.nodes.items[i]
+        if n.used and n.linked and n.parent is dir and same_bytes(n.name.items, name) { return i }
+    }
+    return null
+}
+
+has_children :: fn(m: ^MemFs, dir: usize) -> bool {
+    for i in 1..m.nodes.items.len {
+        n := &m.nodes.items[i]
+        if n.used and n.linked and n.parent is dir { return true }
+    }
+    return false
+}
+
+/// The next component of `path` at or after `pos`, skipping empty ones and `.`.
+next_component :: fn(path: string, pos: ^usize) -> ?string {
+    i := pos^
+    while i < path.len {
+        while i < path.len and path[i] is '/' { i += 1 }
+        start := i
+        while i < path.len and path[i] is not '/' { i += 1 }
+        c := path[start..i]
+        if c.len is 0 or (c.len is 1 and c[0] is '.') { continue }
+        pos^ = i
+        return c
+    }
+    pos^ = i
+    return null
+}
+
+is_dot_dot :: fn(c: string) -> bool => c.len is 2 and c[0] is '.' and c[1] is '.'
+
+/// The node a path names.
+resolve :: fn(m: ^MemFs, path: string) -> IoError!usize {
+    cur: usize = 0
+    pos: usize = 0
+    while true {
+        c := next_component(path, &pos) else break
+        if is_dot_dot(c) { return !.InvalidInput }
+        if not m.nodes.items[cur].is_dir { return !.Other(20) }
+        cur = find_child(m, cur, c) else return !.NotFound
+    }
+    return cur
+}
+
+/// Where a path would be: the directory that holds it and its name there. The root has
+/// neither (`root` is true).
+MemPath :: struct {
+    parent: usize
+    name: string
+    root: bool
+}
+
+resolve_parent :: fn(m: ^MemFs, path: string) -> IoError!MemPath {
+    cur: usize = 0
+    pos: usize = 0
+    pending: ?string = null
+    while true {
+        c := next_component(path, &pos) else break
+        if is_dot_dot(c) { return !.InvalidInput }
+        if p := pending {
+            if not m.nodes.items[cur].is_dir { return !.Other(20) }
+            cur = find_child(m, cur, p) else return !.NotFound
+        }
+        pending = c
+    }
+    name := pending else return MemPath(parent: 0, name: "", root: true)
+    if not m.nodes.items[cur].is_dir { return !.Other(20) }
+    return MemPath(parent: cur, name: name, root: false)
+}
+
+touch :: fn(m: ^MemFs, id: usize, now: i64) {
+    m.nodes.items[id].modified = now
+}
+
+/// `open`. A directory can be opened for reading only; reading it then fails with
+/// EISDIR. Like POSIX, an access mode with neither `write` nor `append` is read-only.
+mem_open :: fn(m: ^MemFs, path: string, o: OpenOptions, now: i64) -> IoError!File {
+    p := try resolve_parent(m, path)
+    id: usize = 0
+    if not p.root {
+        if existing := find_child(m, p.parent, p.name) {
+            if o.exclusive { return !.AlreadyExists }
+            id = existing
+        } else {
+            if not (o.create or o.exclusive) { return !.NotFound }
+            id = try new_node(m, false, p.parent, p.name, now)
+            touch(m, p.parent, now)
+        }
+    } else if o.exclusive {
+        return !.AlreadyExists
+    }
+    wr := o.write or o.append
+    node := &m.nodes.items[id]
+    if node.is_dir and (wr or o.truncate) { return !.Other(21) }
+    if o.truncate {
+        node.data.clear()
+        node.modified = now
+    }
+    h := MemOpen(open: true, node: id, pos: 0, can_read: o.read or not wr, can_write: wr, append: o.append)
+    m.files.push(h) else return !.NoSpace
+    node.opens += 1
+    return File(handle: m.files.items.len.trunc(i64))
+}
+
+mem_close :: fn(m: ^MemFs, f: File) {
+    p := get_open(m, f) else return
+    p.open = false
+    n := &m.nodes.items[p.node]
+    n.opens -= 1
+    if not n.linked and n.opens is 0 { release(m, p.node) }
+}
+
+get_open :: fn(m: ^MemFs, f: File) -> IoError!^MemOpen {
+    if f.handle < 1 or f.handle > m.files.items.len.trunc(i64) { return !.Other(9) }
+    p := &m.files.items[(f.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+mem_read :: fn(m: ^MemFs, f: File, buf: []u8) -> IoError!usize {
+    p := try get_open(m, f)
+    if not p.can_read { return !.Other(9) }
+    n := &m.nodes.items[p.node]
+    if n.is_dir { return !.Other(21) }
+    size := n.data.items.len
+    if p.pos >= size.trunc(u64) { return 0 }
+    start := p.pos.trunc(usize)
+    count := buf.len.min(size - start)
+    buf[0..count].copy_from(n.data.items[start..start + count])
+    p.pos += count.trunc(u64)
+    return count
+}
+
+mem_write :: fn(m: ^MemFs, f: File, bytes: []const u8, now: i64) -> IoError!usize {
+    p := try get_open(m, f)
+    if not p.can_write { return !.Other(9) }
+    n := &m.nodes.items[p.node]
+    if p.append { p.pos = n.data.items.len.trunc(u64) }
+    if bytes.len is 0 { return 0 }
+    if p.pos > MEM_FILE_MAX or bytes.len > MEM_FILE_MAX - p.pos.trunc(usize) { return !.NoSpace }
+    start := p.pos.trunc(usize)
+    // Seeking past the end and writing leaves a gap of zeros.
+    while n.data.items.len < start {
+        n.data.push(0) else return !.NoSpace
+    }
+    written: usize = 0
+    while written < bytes.len {
+        at := start + written
+        if at < n.data.items.len {
+            n.data.items[at] = bytes[written]
+        } else {
+            n.data.push(bytes[written]) else break
+        }
+        written += 1
+    }
+    if written is 0 { return !.NoSpace }
+    p.pos += written.trunc(u64)
+    n.modified = now
+    return written
+}
+
+mem_seek :: fn(m: ^MemFs, f: File, offset: i64, from: SeekFrom) -> IoError!u64 {
+    p := try get_open(m, f)
+    base: i64 = match from {
+        .Start => 0
+        .Current => p.pos.trunc(i64)
+        .End => m.nodes.items[p.node].data.items.len.trunc(i64)
+    }
+    target := base +? offset else return !.InvalidInput
+    if target < 0 { return !.InvalidInput }
+    p.pos = target.trunc(u64)
+    return p.pos
+}
+
+mem_stat :: fn(m: ^MemFs, path: string) -> IoError!FileInfo {
+    n := &m.nodes.items[try resolve(m, path)]
+    return FileInfo(size: n.data.items.len.trunc(u64), is_dir: n.is_dir, modified: n.modified)
+}
+
+mem_remove :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    id := try resolve(m, path)
+    if m.nodes.items[id].is_dir { return !.Other(21) }
+    touch(m, m.nodes.items[id].parent, now)
+    unlink(m, id)
+    return ()
+}
+
+mem_make_dir :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    p := try resolve_parent(m, path)
+    if p.root { return !.AlreadyExists }
+    if find_child(m, p.parent, p.name) is not null { return !.AlreadyExists }
+    _ = try new_node(m, true, p.parent, p.name, now)
+    touch(m, p.parent, now)
+    return ()
+}
+
+mem_remove_dir :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    id := try resolve(m, path)
+    if id is 0 { return !.Other(16) }
+    if not m.nodes.items[id].is_dir { return !.Other(20) }
+    if has_children(m, id) { return !.Other(39) }
+    touch(m, m.nodes.items[id].parent, now)
+    unlink(m, id)
+    return ()
+}
+
+mem_rename :: fn(m: ^MemFs, from, to: string, now: i64) -> IoError!() {
+    id := try resolve(m, from)
+    dest := try resolve_parent(m, to)
+    if id is 0 or dest.root { return !.Other(16) }
+    is_dir := m.nodes.items[id].is_dir
+    // A directory cannot move into itself.
+    if is_dir {
+        a := dest.parent
+        while true {
+            if a is id { return !.InvalidInput }
+            if a is 0 { break }
+            a = m.nodes.items[a].parent
+        }
+    }
+    existing := find_child(m, dest.parent, dest.name)
+    if e := existing {
+        if e is id { return () }
+        if m.nodes.items[e].is_dir {
+            if not is_dir { return !.Other(21) }
+            if has_children(m, e) { return !.Other(39) }
+        } else if is_dir {
+            return !.Other(20)
+        }
+    }
+    // Build the new name before changing anything.
+    a := m.alloc
+    name := with a { list(u8) }
+    if not fill_name(&name, dest.name) { return !.NoSpace }
+    if e := existing { unlink(m, e) }
+    n := &m.nodes.items[id]
+    n.name.deinit()
+    n.name = name
+    touch(m, n.parent, now)
+    touch(m, dest.parent, now)
+    n.parent = dest.parent
+    return ()
+}
+
+mem_open_dir :: fn(m: ^MemFs, path: string) -> IoError!Dir {
+    id := try resolve(m, path)
+    if not m.nodes.items[id].is_dir { return !.Other(20) }
+    m.dirs.push(MemDir(open: true, node: id, next: 1)) else return !.NoSpace
+    m.nodes.items[id].opens += 1
+    return Dir(handle: m.dirs.items.len.trunc(i64))
+}
+
+get_dir :: fn(m: ^MemFs, d: Dir) -> IoError!^MemDir {
+    if d.handle < 1 or d.handle > m.dirs.items.len.trunc(i64) { return !.Other(9) }
+    p := &m.dirs.items[(d.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+/// The next entry's name, in the order of the node table. A name longer than `buf` is
+/// `InvalidInput`, and a later call with a larger buffer returns it.
+mem_next_entry :: fn(m: ^MemFs, d: Dir, buf: []u8) -> IoError!usize {
+    p := try get_dir(m, d)
+    while p.next < m.nodes.items.len {
+        n := &m.nodes.items[p.next]
+        if n.used and n.linked and n.parent is p.node {
+            len := n.name.items.len
+            if len > buf.len { return !.InvalidInput }
+            buf[0..len].copy_from(n.name.items)
+            p.next += 1
+            return len
+        }
+        p.next += 1
+    }
+    return 0
+}
+
+mem_close_dir :: fn(m: ^MemFs, d: Dir) {
+    p := get_dir(m, d) else return
+    p.open = false
+    n := &m.nodes.items[p.node]
+    n.opens -= 1
+    if not n.linked and n.opens is 0 { release(m, p.node) }
+}
+
+handler Fs for ^TestIo {
+    open(self, path, o) => mem_open(&self.fs, path, o, test_wall(self))
+    close(self, f) => { mem_close(&self.fs, f) }
+    read_from(self, f, buf) => mem_read(&self.fs, f, buf)
+    write_to(self, f, bytes) => mem_write(&self.fs, f, bytes, test_wall(self))
+    seek(self, f, offset, from) => mem_seek(&self.fs, f, offset, from)
+    stat(self, path) => mem_stat(&self.fs, path)
+    remove(self, path) => mem_remove(&self.fs, path, test_wall(self))
+    rename(self, from, to) => mem_rename(&self.fs, from, to, test_wall(self))
+    make_dir(self, path) => mem_make_dir(&self.fs, path, test_wall(self))
+    remove_dir(self, path) => mem_remove_dir(&self.fs, path, test_wall(self))
+    open_dir(self, path) => mem_open_dir(&self.fs, path)
+    next_entry(self, d, buf) => mem_next_entry(&self.fs, d, buf)
+    close_dir(self, d) => { mem_close_dir(&self.fs, d) }
+}
+
 /// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
-run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand}) -> u8 \ {Out, Err, Env} {
+run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    io := TestIo(clock: 0, seed: 0)
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs())
     r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
+    mem_fs_free(&io.fs)
     if !e := r {
         eprint("error: {}\n", e)
         return 1
@@ -497,10 +941,11 @@ run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, 
 }
 
 /// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
-run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand}) -> u8 \ {Out, Err, Env} {
+run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs}) -> u8 \ {Out, Err, Env} {
     t := TestTracker(live: 0, inner: heap_allocator())
-    io := TestIo(clock: 0, seed: 0)
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs())
     with Allocator(data: &t, vt: &TRACKING), &io { body() }
+    mem_fs_free(&io.fs)
     return leaked(&t)
 }
 
