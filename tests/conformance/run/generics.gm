@@ -1,0 +1,28 @@
+// Generic functions (§16) and the standard iterators (§13.3).
+max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := try xs.get(0)
+    for x in xs { if x > best { best = x } }
+    return best
+}
+
+sum :: fn(T: type, xs: []const T) -> T where Num(T) {
+    total: T = 0
+    for x in xs { total += x }
+    return total
+}
+
+main :: fn() \ {Out} {
+    a := [5]i32(3, 9, -2, 7, 1)
+    print("{}\n", max(a[..]))
+    f := [3]f64(0.5, 2.25, 1)
+    print("{} {}\n", (max(f[..]), sum(f[..])))
+    print("{}\n", sum(i32, a[..]))
+    for i in range(u8, 2, 5) { print("{} ", i) }
+    for i, x in enumerate(a[..]) { print("[{}]={} ", (i, x)) }
+    print("\n")
+    for p in each_ptr(a[..]) { p^ = p^ * 2 }
+    for x in reversed(a[..]) { print("{} ", x) }
+    print("\n")
+    for b in bytes("hi") { print("{} ", b) }
+    print("\n")
+}

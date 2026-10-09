@@ -1,0 +1,68 @@
+//! stage: parse
+// Spec 12.5-12.6: handler literals and handler declarations.
+
+save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
+    warnings := 0u32
+    quiet :: handler Log {
+        log(level, msg) => if level is .Warn { warnings += 1 }
+    }
+    r := with quiet { save(doc) }
+    return (r, warnings)
+}
+
+FileLogger :: struct { fd: Fd; min: Level }
+
+handler Log for ^FileLogger \ {Fs} {
+    log(self, level, msg) => if level >= self.min { _ = fs.write(self.fd, msg) }
+}
+
+handler Alloc for Allocator { current(self) => self }
+
+handler Async for ^Scheduler \ {Sys} {
+    wait(self, fd, events, k) => {
+        self.waiting.add(fd, events, k)
+        r := self.next()
+        resume r()
+    }
+    spawn(self, entry, arg, stack, k) => {
+        self.ready.push(@fiber(entry, arg, stack))
+        self.live += 1
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
+        r := self.next()
+        resume r()
+    }
+    join(self, k) => {
+        if self.live is 0 { resume k() }
+        self.joiner = k
+        r := self.next()
+        resume r()
+    }
+}
+
+handler Yield(i32) for ^Collector {
+    yield(self, x) => self.items.push(x)
+}
+
+handler m.Net for ^Loopback \ {Alloc, Sys} { send(self, data) => {}; recv(self) => {} }
+
+literals :: fn() {
+    h1 := handler Log { log(l, m) => {} }
+    h2 :: handler Yield(i32) {
+        yield(x) => {
+            total += x
+        }
+    }
+    h3 := handler m.Net {
+        send(d) => 0
+        recv() => 1
+    }
+    h4 := handler Abort {
+        abort() => break
+    }
+    h5 := handler Env { exit(code) => return }
+}

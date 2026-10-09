@@ -1,0 +1,102 @@
+// `@stack_size(f)` bounds the stack a call of `f` needs (§14.8), so it can size a
+// fiber stack.
+
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+Log :: effect {
+    log: fn(x: i32)
+}
+
+// Frames with large locals, a few levels deep.
+leaf :: fn(seed: u8) -> i32 {
+    buf: [8192]u8 = [8192]u8(fill: seed)
+    total := 0
+    for b in buf { total += i32(b) }
+    return total
+}
+
+mid :: fn(seed: u8) -> i32 {
+    buf: [4096]u8 = [4096]u8(fill: seed)
+    return leaf(seed) + i32(buf[4095])
+}
+
+top :: fn(seed: u8) -> i32 => mid(seed) + mid(seed + 1)
+
+// A sort through the core library: `less` is the literal passed here.
+sorted_sum :: fn() -> i32 {
+    xs := [5]i32(5, 3, 9, 1, 7)
+    xs.sort_by(fn(a, b: ^const i32) => a^ > b^)
+    return xs[0] * 10 + xs[4]
+}
+
+// A performed operation whose handler is installed here is a call to its clause.
+logged :: fn(n: i32) -> i32 \ {Log} {
+    log(n)
+    return n
+}
+
+with_log :: fn() -> i32 {
+    count := 0
+    with (handler Log { log(x) => { count += x } }) {
+        _ = logged(3)
+        _ = logged(4)
+    }
+    return count
+}
+
+// A fiber's work: it suspends with `ctl` performs, whose clauses run elsewhere.
+work :: fn() \ {Gen} {
+    emit(top(1))
+    emit(sorted_sum())
+    emit(with_log())
+}
+
+// A fiber started by `@fiber` runs its entry function, which never returns.
+Task :: effect {
+    start: ctl(arg: i32)
+    report: ctl(x: i32)
+    stop: ctl() -> never
+}
+
+entry :: fn(n: i32) -> never \ {Task} {
+    report(top(n.trunc(u8)))
+    report(sorted_sum())
+    stop()
+}
+
+@static_assert(@stack_size(leaf) >= @min_stack, "the result is at least @min_stack")
+@static_assert(@stack_size(top) > @stack_size(mid), "callers need more than their callees")
+
+main :: fn() \ {Out} {
+    stack: [@stack_size(work)]u8 = ---
+    with (handler Gen { emit(x, k) => { print("{}\n", x); resume k() } }) on stack[..] {
+        work()
+    }
+
+    // A fiber started by `@fiber`, on a stack sized for its entry function.
+    driver: [@min_stack]u8 = ---
+    fiber_stack: [@stack_size(entry)]u8 = ---
+    starter: ?cont(()) = null
+    with (handler Task {
+            report(x, k) => {
+                print("fiber {}\n", x)
+                resume k()
+            }
+            start(arg, k) => {
+                starter = k
+                f := @fiber(entry, arg, fiber_stack[..])
+                resume f()
+            }
+            stop(k) => {
+                discard k
+                s := starter?
+                starter = null
+                resume s()
+            }
+        }) on driver[..] {
+        start(2)
+    }
+    print("done\n")
+}

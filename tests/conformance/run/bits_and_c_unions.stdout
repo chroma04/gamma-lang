@@ -1,0 +1,6 @@
+2893 Mode(read: true, write: false, exec: true, kind: 9, level: -2, sort: .Odd)
+true 3 15 .Odd
+Flags(a: true, b: true, n: 63) 255
+23 true
+1065353216 [0, 0, 128, 63]
+3.1415927

@@ -1,0 +1,39 @@
+// `#bits` structs and `#c_union`s (§5.10.5, §5.11.1).
+Kind :: union(u2) { Plain, Fancy, Odd }
+
+Mode :: #bits(u16) struct {
+    read, write, exec: bool
+    kind: u4
+    level: i3
+    sort: Kind
+    _: u4
+}
+
+// Every field a bool or integer: converts to and from `u8` with `u8(f)`, `Flags(x)`.
+Flags :: #bits(u8) struct {
+    a, b: bool
+    n: u6
+}
+
+Word :: #c_union union {
+    as_u32: u32
+    as_f32: f32
+    bytes: [4]u8
+}
+
+main :: fn() \ {Out} {
+    m := Mode(read: true, write: false, exec: true, kind: 9, level: -2, sort: .Odd)
+    print("{} {}\n", (m.bits(u16), m))
+    m.write = true
+    m.level = 3
+    m.kind = 15
+    print("{} {} {} {}\n", (m.write, m.level, m.kind, m.sort))
+    f := Flags(0xff)
+    print("{} {}\n", (f, u8(f)))
+    f.n = 5
+    print("{} {}\n", (u8(f), f is Flags(a: true, b: true, n: 5)))
+    w := Word(as_f32: 1.0)
+    print("{} {}\n", (w.as_u32, w.bytes))
+    w.as_u32 = 0x40490fdb
+    print("{}\n", w.as_f32)
+}

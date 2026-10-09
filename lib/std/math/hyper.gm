@@ -1,0 +1,59 @@
+// Hyperbolic functions: sinh, cosh, tanh.
+//
+// For |x| below 22 the exponential is evaluated in double-double precision
+// (`expm1_dd`) and the quotient combining it is evaluated the same way, so a
+// single rounding remains and the result is within a fraction of an ulp. Above
+// that, exp(|x|) dominates and half of it is computed in double-double precision.
+
+/// The hyperbolic sine of `x`. It overflows to an infinity of the sign of `x`
+/// for `|x|` above about 710.48.
+pub sinh :: fn(x: f64) -> f64 {
+    jx := high_word(x)
+    ix := jx & 0x7fffffff
+    if ix >= 0x7ff00000 { return x + x }
+    if ix < 0x40360000 {
+        // |x| < 22: sinh = (E + E/(E+1))/2 with E = expm1(|x|)
+        if ix < 0x3e300000 { return x }
+        e := expm1_dd(abs(x))
+        q := dd_div(e, dd_add(e, (1.0, 0.0)))
+        return copysign(0.5 * dd_add(e, q).0, x)
+    }
+    // |x| in [22, overflow threshold]: sinh = sign(x) * 0.5 * exp(|x|)
+    if ix <= 0x408633CE { return copysign(half_exp_dd(abs(x)), x) }
+    return copysign(inf, x)
+}
+
+/// The hyperbolic cosine of `x`. It overflows to +inf for `|x|` above about
+/// 710.48.
+pub cosh :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix >= 0x7ff00000 { return x * x }
+    if ix < 0x40360000 {
+        // |x| < 22: cosh = (D + 1/D)/2 with D = exp(|x|) = expm1(|x|) + 1
+        if ix < 0x3c800000 { return 1.0 }
+        d := dd_add(expm1_dd(abs(x)), (1.0, 0.0))
+        return 0.5 * dd_add(d, dd_div((1.0, 0.0), d)).0
+    }
+    // |x| in [22, overflow threshold]: cosh = 0.5 * exp(|x|)
+    if ix <= 0x408633CE { return half_exp_dd(abs(x)) }
+    return inf
+}
+
+/// The hyperbolic tangent of `x`; `tanh(+-inf)` is +-1 and the sign of zero
+/// is preserved.
+pub tanh :: fn(x: f64) -> f64 {
+    jx := high_word(x)
+    ix := jx & 0x7fffffff
+    if ix >= 0x7ff00000 {
+        if jx >= 0 { return 1.0 / x + 1.0 }
+        return 1.0 / x - 1.0
+    }
+    z := 1.0
+    if ix < 0x40360000 {
+        if ix < 0x3e300000 { return x }
+        // tanh = E/(E+2) with E = expm1(2|x|)
+        e := expm1_dd(2.0 * abs(x))
+        z = dd_div(e, dd_add(e, (2.0, 0.0))).0
+    }
+    return if jx >= 0 { z } else { -z }
+}

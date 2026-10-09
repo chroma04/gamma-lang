@@ -1,0 +1,14 @@
+//! stage: check
+// Instantiations of one generic effect in scope together must be identical or provably
+// distinct (§16.6).
+
+both :: fn(T, U: type, x: T, y: U) \ {Yield(T), Yield(U)} {}            //~ ERROR `Yield(T)` and `Yield(U)` might be the same effect
+fixed :: fn(T: type, x: T) \ {Yield(T), Yield(i32)} {}                  //~ ERROR might be the same effect for some type arguments
+through_param :: fn(T: type, f: fn() \ {Yield(i32)}) \ {Yield(T)} {}   //~ ERROR `Yield(T)` and `Yield(i32)` might be the same effect
+
+// Fine: concrete and unequal, or different type constructors.
+concrete :: fn(T: type, x: T) \ {Yield(u8), Yield(i32)} {}
+shapes :: fn(T: type, x: T) \ {Yield(^T), Yield(i32)} {}
+slices :: fn(T: type, x: T) \ {Yield([]T), Yield(?T)} {}
+
+main :: fn() {}

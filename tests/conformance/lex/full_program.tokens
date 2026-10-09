@@ -1,0 +1,172 @@
+4:1 keyword import
+4:8 str Regular "std/io"
+4:16 newline
+6:1 attribute #packed
+6:8 newline
+7:1 ident Point
+7:7 punct ::
+7:10 keyword struct
+7:17 punct {
+7:19 ident x
+7:20 punct :
+7:22 ident f32
+7:25 punct ,
+7:27 ident y
+7:28 punct :
+7:30 ident f32
+7:34 punct }
+7:35 newline
+9:1 ident fib
+9:5 punct ::
+9:8 keyword fn
+9:10 punct (
+9:11 ident n
+9:12 punct :
+9:14 ident u32
+9:17 punct )
+9:19 punct ->
+9:22 ident u64
+9:26 punct {
+10:5 keyword if
+10:8 ident n
+10:10 punct <
+10:12 int 2
+10:14 punct {
+10:16 keyword return
+10:23 ident n
+10:25 punct }
+10:26 newline
+11:5 ident a
+11:6 punct ,
+11:8 ident b
+11:10 punct :=
+11:13 int 0 u64
+11:17 punct ,
+11:19 int 1 u64
+11:23 newline
+12:5 keyword for
+12:9 ident i
+12:11 keyword in
+12:14 int 0
+12:15 punct ..
+12:17 ident n
+12:19 punct {
+13:9 ident a
+13:10 punct ,
+13:12 ident b
+13:14 punct =
+13:16 ident b
+13:17 punct ,
+13:19 ident a
+13:21 punct +%
+13:24 ident b
+13:25 newline
+14:5 punct }
+14:6 newline
+15:5 ident a
+15:6 newline
+16:1 punct }
+16:2 newline
+18:1 ident main
+18:6 punct ::
+18:9 keyword fn
+18:11 punct (
+18:12 punct )
+18:14 punct {
+19:5 ident p
+19:7 punct :=
+19:10 ident Point
+19:15 punct {
+19:17 ident x
+19:19 punct =
+19:21 float 3/2
+19:24 punct ,
+19:26 ident y
+19:28 punct =
+19:30 punct -
+19:31 float 5/2
+19:38 punct }
+19:39 newline
+20:5 ident t
+20:7 punct :=
+20:10 punct (
+20:11 int 1
+20:12 punct ,
+20:14 char 99
+20:17 punct ,
+20:19 str Regular "s"
+20:22 punct )
+20:23 newline
+21:5 ident v
+21:7 punct :=
+21:10 ident t
+21:11 punct .
+21:12 int 0
+21:14 punct +
+21:16 ident t
+21:17 punct .
+21:18 int 2
+21:19 punct .
+21:20 ident len
+21:23 newline
+22:5 ident r
+22:7 punct :=
+22:10 keyword match
+22:16 ident p
+22:17 punct .
+22:18 ident x
+22:20 punct {
+23:9 float 3/2
+23:13 punct =>
+23:16 str Regular "one and a half"
+23:32 newline
+24:9 keyword else
+24:14 punct =>
+24:17 str Raw "other"
+24:24 newline
+25:5 punct }
+25:6 newline
+26:5 keyword if
+26:8 ident v
+26:10 punct is not
+26:17 keyword null
+26:22 keyword and
+26:26 ident r
+26:28 punct not in
+26:35 ident names
+27:9 keyword and
+27:13 ident ok
+27:16 punct {
+28:9 intrinsic @print
+28:15 punct (
+28:16 ident fib
+28:19 punct (
+28:20 int 10
+28:22 punct )
+28:23 punct )
+28:32 newline
+29:5 punct }
+29:6 newline
+30:5 ident buf
+30:8 punct :
+30:10 punct [
+30:11 int 4
+30:12 punct ]
+30:13 ident u8
+30:16 punct =
+30:18 punct ---
+30:21 newline
+31:5 ident x
+31:7 punct :=
+31:10 ident parse
+31:15 punct (
+31:16 ident s
+31:17 punct )
+31:19 keyword else
+31:24 ident e
+31:26 punct =>
+31:29 int 0
+31:30 newline
+32:1 punct }
+32:2 newline
+33:1 eof

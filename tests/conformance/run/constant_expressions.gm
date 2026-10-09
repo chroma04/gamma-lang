@@ -1,0 +1,18 @@
+// Constant initializers that need temporaries (spreads), and postfix operations after
+// a prefixed construction (§A.7 rule 12).
+P :: struct { x: i32, y: i32 = 5 }
+BASE :: P(x: 1)
+A :: P(..BASE, x: 2)
+T: (i32, i32) : (7, 8)
+ARR :: [3]i32(1, ..T)
+SUM :: (fn() -> i32 { s := 0; for v in ARR { s += v }; return s })()
+OPT: ?i32 : null
+D :: OPT else 4
+M :: [2]P(P(x: 1), P(x: 2, y: 3))[1].y
+main :: fn() \ {Out} {
+    print("{} {} {} {} {}\n", (A, ARR, SUM, D, M))
+    print("{} {}\n", (first(), count()))
+}
+
+first :: fn() -> u8 => [3]u8(9, 8, 7)[0]
+count :: fn() -> usize => [4]i32(fill: 0).len

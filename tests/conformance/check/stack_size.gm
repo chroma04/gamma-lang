@@ -1,0 +1,43 @@
+//! stage: check
+// `@stack_size(f)` has no value when the stack a call of `f` needs is not bounded (§14.8).
+
+Log :: effect {
+    log: fn(x: i32)
+}
+
+count :: fn(n: i32) -> i32 {
+    if n is 0 { return 0 }
+    return count(n - 1) + 1          //~ ERROR `count` is recursive
+}
+
+through_pointer :: fn(f: ^fn() -> i32) -> i32 {
+    return f()                       //~ ERROR a function value whose target is not known statically
+}
+
+logs :: fn() \ {Log} {
+    log(1)                           //~ ERROR the handler of `Log` performed here is not known statically
+}
+
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> usize \ {}
+}
+
+measure :: fn() -> usize {
+    return libc.strlen(c"abc")            //~ ERROR `strlen` is a foreign function
+}
+
+// A handler installed around the call makes the perform a call to its clause.
+handled :: fn() {
+    with (handler Log { log(x) => {} }) {
+        logs()
+    }
+}
+
+A :: @stack_size(count)
+B :: @stack_size(through_pointer)
+C :: @stack_size(logs)
+D :: @stack_size(measure)
+E :: @stack_size(handled)
+F :: @stack_size(42)                 //~ ERROR needs the name of a function
+
+main :: fn() {}

@@ -1,0 +1,58 @@
+4:1 float 0
+4:5 float 1/10
+4:9 float 1/2
+4:13 float 1
+4:17 float 3/2
+4:21 float 314159/100000
+4:29 float 100001/1000
+4:36 newline
+5:1 float 1000
+5:5 float 1000
+5:9 float 1000
+5:14 float 1/1000
+5:19 float 25000000000
+5:26 float 1/40
+5:33 float 1
+5:37 float 100000
+5:41 newline
+6:1 float 10000001/10000
+6:13 float 10000000000
+6:18 newline
+7:1 float 3/2 F32
+7:8 float 2 F64
+7:15 float 1000 F16
+7:22 float 7/20 F32
+7:31 newline
+8:1 float 1
+8:9 float 3
+8:17 float 3/4
+8:26 float 42
+8:35 float 1/16
+8:43 float 255/16
+8:51 float 3 F64
+8:62 float 33/2
+8:71 newline
+10:1 int 1
+10:2 punct ..
+10:4 int 10
+10:6 newline
+11:1 int 1
+11:2 punct ..=
+11:5 int 10
+11:7 newline
+12:1 int 1
+12:2 punct .
+12:3 ident e5
+12:5 newline
+13:1 int 1
+13:2 punct .
+13:4 int 5
+13:5 newline
+14:1 punct .
+14:2 int 5
+14:3 newline
+15:1 ident a
+15:2 punct .
+15:3 int 5
+15:4 newline
+16:1 eof

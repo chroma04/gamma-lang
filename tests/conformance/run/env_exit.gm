@@ -1,0 +1,10 @@
+//! exit: 3
+// Env: arguments and exit (§12.9). `exit` unwinds to `main`, running defers.
+main :: fn() \ {Out, Env} {
+    defer print("deferred in main\n")
+    a := args()
+    print("{} argument(s)\n", a.len)
+    missing := var("GAMMA_TEST_SURELY_UNSET_VARIABLE") else "unset"
+    print("{}\n", missing)
+    exit(3)
+}

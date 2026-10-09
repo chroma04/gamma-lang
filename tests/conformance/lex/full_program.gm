@@ -1,0 +1,32 @@
+//! stage: lex
+//! dump
+/// A small but realistic program touching most token classes.
+import "std/io"
+
+#packed
+Point :: struct { x: f32, y: f32 }
+
+fib :: fn(n: u32) -> u64 {
+    if n < 2 { return n }
+    a, b := 0u64, 1u64
+    for i in 0..n {
+        a, b = b, a +% b
+    }
+    a
+}
+
+main :: fn() {
+    p := Point{ x = 1.5, y = -0.25e1 }
+    t := (1, 'c', "s")
+    v := t.0 + t.2.len
+    r := match p.x {
+        1.5 => "one and a half"
+        else => `other`
+    }
+    if v is not null and r not in names
+        and ok {
+        @print(fib(10)) // done
+    }
+    buf: [4]u8 = ---
+    x := parse(s) else e => 0
+}

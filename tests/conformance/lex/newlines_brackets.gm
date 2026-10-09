@@ -1,0 +1,29 @@
+//! stage: lex
+//! dump
+// Newlines are ignored inside ( ) and [ ] but significant again in a nested { }.
+f(a,
+  b
+)
+x[
+  1
+]
+g(fn() {
+  a
+  b
+})
+h({
+  c
+}
+, d)
+[{
+  e
+  f
+}]
+{
+  k(
+    m
+    n
+  )
+  p
+}
+end

@@ -1,0 +1,19 @@
+4:1 ident a
+4:2 newline
+5:1 ident b
+5:2 newline
+8:1 ident c
+8:22 newline
+11:13 ident d
+11:14 newline
+12:1 ident e
+12:2 newline
+12:3 ident f
+12:4 newline
+13:1 ident g
+13:3 newline
+13:7 ident h
+13:8 newline
+15:1 ident i
+15:2 newline
+16:1 eof

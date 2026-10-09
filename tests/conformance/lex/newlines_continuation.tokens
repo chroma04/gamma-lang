@@ -1,0 +1,79 @@
+4:1 ident x
+5:1 keyword else
+5:6 ident y
+5:7 newline
+7:1 ident a
+8:1 keyword and
+8:5 ident b
+8:6 newline
+10:1 ident a
+11:1 keyword or
+11:4 ident b
+11:5 newline
+13:1 ident obj
+14:3 punct .
+14:4 ident method
+14:10 punct (
+14:11 punct )
+16:3 punct .
+16:4 ident other
+16:9 punct (
+16:10 punct )
+19:1 punct .
+19:2 ident chained
+19:9 newline
+21:1 keyword if
+21:4 ident c
+21:6 punct {
+22:3 ident a
+22:4 newline
+23:1 punct }
+24:1 keyword else
+24:6 punct {
+25:3 ident b
+25:4 newline
+26:1 punct }
+26:2 newline
+29:1 ident a
+29:2 newline
+30:1 punct ..
+30:3 ident b
+30:4 newline
+31:1 ident a
+31:2 newline
+32:1 punct .
+32:2 int 0
+32:3 newline
+33:1 ident a
+33:2 newline
+34:1 punct ...
+34:4 ident b
+34:5 newline
+35:1 ident a
+35:2 newline
+36:1 punct .
+36:3 ident b
+36:4 newline
+37:1 ident a
+37:2 newline
+38:1 keyword not
+38:5 ident b
+38:6 newline
+39:1 ident a
+39:2 newline
+40:1 keyword in
+40:4 ident b
+40:5 newline
+41:1 ident a
+41:2 newline
+42:1 ident elsewhere
+42:10 newline
+43:1 ident a
+43:2 newline
+44:1 ident android
+44:8 newline
+45:1 ident a
+45:2 newline
+46:1 ident order
+46:6 newline
+47:1 eof

@@ -1,0 +1,92 @@
+// std/fs: whole-file operations over the `Fs` effect (§21.7).
+
+/// Why reading a whole file failed.
+pub ReadError :: union {
+    Io: IoError
+    Alloc: AllocError
+}
+
+/// The contents of the file at `path`, in memory from the current allocator; release it
+/// with `free(data)`.
+pub read_all :: fn(path: string) -> ReadError![]u8 \ {Fs, Alloc} {
+    f := try open(path, OpenOptions())
+    defer close(f)
+    size := (try stat(path)).size.trunc(usize)
+    // One byte more than the reported size, so reaching the end needs no second buffer.
+    cap := size + 1
+    data := try make(u8, cap)
+    len: usize = 0
+    while true {
+        if len is cap {
+            bigger := make(u8, cap * 2) else e => {
+                free(data)
+                return !.Alloc(e)
+            }
+            bigger[0..len].copy_from(data)
+            free(data)
+            data = bigger
+            cap *= 2
+        }
+        n := f.read_from(data[len..cap]) else e => {
+            free(data)
+            return !.Io(e)
+        }
+        if n is 0 { break }
+        len += n
+    }
+    if len is cap { return data }
+    // Return exactly `len` bytes: copy into storage of the right size.
+    exact := make(u8, len) else e => {
+        free(data)
+        return !.Alloc(e)
+    }
+    exact.copy_from(data[0..len])
+    free(data)
+    return exact
+}
+
+/// Writes all of `bytes` to `f`, retrying short writes.
+pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
+    done: usize = 0
+    while done < bytes.len {
+        n := try f.write_to(bytes[done..bytes.len])
+        if n is 0 { return !.Other(0) }
+        done += n
+    }
+    return ()
+}
+
+/// Replaces the contents of the file at `path` with `bytes`, creating it if needed.
+pub write_all :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
+    f := try open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
+    defer close(f)
+    return write_all_to(f, bytes)
+}
+
+/// Appends `bytes` to the file at `path`, creating it if needed.
+pub append :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
+    f := try open(path, OpenOptions(read: false, append: true, create: true))
+    defer close(f)
+    return write_all_to(f, bytes)
+}
+
+/// Whether something exists at `path`.
+pub exists :: fn(path: string) -> bool \ {Fs} {
+    _ = stat(path) else return false
+    return true
+}
+
+/// Copies the file at `from` to `to`, replacing `to`.
+pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
+    src := try open(from, OpenOptions())
+    defer close(src)
+    dst := try open(to, OpenOptions(read: false, write: true, create: true, truncate: true))
+    defer close(dst)
+    buf: [4096]u8 = ---
+    while true {
+        n := try src.read_from(buf[..])
+        if n is 0 { break }
+        try write_all_to(dst, buf[0..n])
+    }
+    return ()
+}

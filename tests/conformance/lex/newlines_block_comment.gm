@@ -1,0 +1,14 @@
+//! stage: lex
+//! dump
+// A block comment containing a line terminator is a newline.
+a /* spans
+lines */ b
+c /* single line */ d
+e + /* spans
+lines */ f
+g /* spans
+lines */ else h
+(i /* spans
+lines */ j)
+k /* nested /* spans
+*/ lines */ l

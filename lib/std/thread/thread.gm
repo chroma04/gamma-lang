@@ -1,0 +1,64 @@
+// std/thread: threads and a mutex (§19.6).
+//
+// A thread runs a plain function `^fn(arg: rawptr) \ {Sys}` and starts with no handlers
+// installed; `defaults` installs the usual ones:
+//
+//     work :: fn(arg: rawptr) \ {Sys} {
+//         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
+//     }
+//     t := try thread.spawn(work, (&state).cast(rawptr))
+//     t.join()
+//
+// Only function pointers and data cross threads: handlers, second-class functions and
+// continuations stay on the thread that made them. Shared memory needs atomics
+// (`@atomic_*`) or a `Mutex`; a data race is undefined behavior.
+
+/// A running thread, to be joined.
+pub Thread :: struct { handle: i64 }
+
+/// Starts a thread calling `f(arg)`.
+pub spawn :: fn(f: ^fn(arg: rawptr) \ {Sys}, arg: rawptr) -> IoError!Thread \ {Sys} {
+    h := @thread_spawn(f, arg)
+    if h < 0 { return !.Other(0) }
+    return Thread(handle: h)
+}
+
+/// Waits for `t` to finish.
+pub join :: fn(t: Thread) \ {Sys} {
+    _ = @thread_join(t.handle)
+}
+
+/// Lets other threads run.
+pub yield_now :: fn() \ {Sys} => @thread_yield()
+
+/// Runs `body` under the default handlers of the ambient effects: the system heap,
+/// standard output and error, and the real input, clocks, randomness, files and network.
+pub defaults :: fn(body: fn() \ {Out, Err, Alloc, In, Clock, Rand, Fs, Net}) \ {Sys} {
+    with heap_allocator(), system_io(), system_output() { body() }
+}
+
+/// A lock. `lock` waits (spinning, then yielding) until the mutex is free.
+pub Mutex :: struct { state: u32 }
+
+/// An unlocked mutex.
+pub mutex :: fn() -> Mutex => Mutex(state: 0)
+
+/// Takes the mutex, waiting for it if another thread holds it.
+pub lock :: fn(m: ^Mutex) \ {Sys} {
+    spins: u32 = 0
+    while @atomic_cas(&m.state, 0, 1, .Acquire, .Relaxed) is not null {
+        spins += 1
+        if spins >= 100 {
+            @thread_yield()
+            spins = 0
+        }
+    }
+}
+
+/// Takes the mutex if it is free; returns whether it did.
+pub try_lock :: fn(m: ^Mutex) -> bool => @atomic_cas(&m.state, 0, 1, .Acquire, .Relaxed) is null
+
+/// Releases the mutex, which the calling thread holds.
+pub unlock :: fn(m: ^Mutex) {
+    @atomic_store(&m.state, 0, .Release)
+}

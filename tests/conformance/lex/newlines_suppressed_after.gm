@@ -1,0 +1,47 @@
+//! stage: lex
+//! dump
+// Rule 1: no newline after a binary operator, assignment, `,` `::` `:=` `:` `=>` `->` `\` `.` or opener.
+a +
+b -
+c *
+d /
+e %
+f <<
+g >>
+h &
+i |
+j ~
+k ..
+l ..=
+m <
+n <=
+o >
+p >=
+q =
+r +=
+s <<%=
+t *|
+u +?
+v -%
+w ,
+x ::
+y :=
+z :
+a =>
+b ->
+c \
+d .
+e is
+f in
+g and
+h or
+i else
+j is not
+k not in
+l (
+m )
+n [
+o ]
+p {
+q }
+r

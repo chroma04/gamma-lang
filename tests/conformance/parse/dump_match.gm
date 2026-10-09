@@ -1,0 +1,41 @@
+//! stage: parse
+//! dump
+// 8.6 and 9.1: match arms.
+
+f :: fn() {
+    match v {
+        _ => a
+        x => b
+        null => c
+        0 => d
+        -1 => e
+        'a' => f
+        "s" => g
+        true => h
+        1.5 => i
+        0..10 => j
+        0..=9 => k
+        -5..-1 => l
+        m.LOW..m.HIGH => n
+        !p => o
+        !.Err(x) => p
+        .A => q
+        .B(x, _) => r
+        .C(a: 1, b: y) => s
+        T.D(z) => t
+        m.CONST => u
+        m.T.V => v2
+        S(f: 1, g) => w
+        () => x2
+        (a) => y2
+        (a,) => z2
+        (a, b) => a3
+        (a: x, b: y) => b3
+        1, 2, 3 => c3
+        .X, .Y if cond => d3
+        n if n > 3 and n < 9 => e3
+        _ => {
+            block()
+        }
+    }
+}

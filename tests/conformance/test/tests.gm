@@ -1,0 +1,46 @@
+//! stage: test
+//! exit: 1
+// Tests (§3.8): error types from `try`, expect, captured output, leak checking.
+ParseError :: union { Empty, BadDigit: (at: usize) }
+
+parse_u16 :: fn(s: string) -> ParseError!u16 {
+    if s.len is 0 { return !.Empty }
+    n: u16 = 0
+    for i in 0..s.len {
+        c := s[i]
+        if c < '0' or c > '9' { return !.BadDigit(at: i) }
+        n = n * 10 + u16(c - '0')
+    }
+    return n
+}
+
+test "parse accepts digits" {
+    expect(try parse_u16("123") is 123)
+}
+
+test "parse rejects letters" {
+    expect(parse_u16("12a") is !.BadDigit(at: 2))
+    expect(parse_u16("") is !.Empty)
+}
+
+test "errors propagate" {
+    n := try parse_u16("9x")
+    print("unreachable {}\n", n)
+}
+
+test "expectations fail" {
+    print("some output\n")
+    expect(1 + 1 is 3, "math")
+}
+
+test "leaks are caught" {
+    p := new(i32, 5) else return
+    _ = p
+}
+
+test "lists work" {
+    l := list(u8)
+    defer l.deinit()
+    l.push(1) else return
+    expect(l.items.len is 1)
+}

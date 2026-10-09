@@ -1,0 +1,3 @@
+//! stage: check
+//~? ERROR must declare `main`
+f :: fn() {}

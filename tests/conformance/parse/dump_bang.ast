@@ -1,0 +1,46 @@
+(file
+  (item
+    (binding const b1 (bang (ident E) (ident T))))
+  (item
+    (binding const b2 (bang (ident E) (optional-type (ptr-type (ident T))))))
+  (item
+    (binding const b3 (index (res-unwrap (ident x)) (ident i))))
+  (item
+    (binding const b4 (field (opt-unwrap (res-unwrap (ident x))) f)))
+  (item
+    (binding const b5 (field (res-unwrap (ident x)) f)))
+  (item
+    (binding const b6 (bang (ident x) (paren (ident a)))))
+  (item
+    (binding const b7 (bang (ident x) (tuple (ident a) (ident b)))))
+  (item
+    (binding const b8 (res-unwrap (ident x))))
+  (item
+    (binding const b9 (call (field (res-unwrap (ident x)) f) (int 1))))
+  (item
+    (binding const b10 (res-unwrap (call (ident f) (ident x)))))
+  (item
+    (binding const b11 (bang (field (ident m) Err) (call (ident List) (ident u8)))))
+  (item
+    (binding const b12 (bang (ident a) (error-union-type (ident b) (ident c)))))
+  (item
+    (binding const b13 (unary make-err (ident e))))
+  (item
+    (binding const b14 (unary make-err (unary make-err (ident e)))))
+  (item
+    (binding const b15 (binary + (res-unwrap (ident x)) (int 1))))
+  (item
+    (binding const b16 (bang (optional-type (ident u8)) (ident bool))))
+  (item
+    (binding const b17 (bang (ident x) (field (ident y) z))))
+  (item
+    (binding const b18 (binary and (res-unwrap (ident x)) (ident y))))
+  (item
+    (binding const b19 (binary is (res-unwrap (ident x)) (dot A))))
+  (item
+    (binding const f
+      (fn
+        (params (param (names r) (ty (error-union-type (ident IoError) (ident usize))))
+          (param (names s) (ty (error-union-type (optional-type (ident E)) (ident T)))))
+        (ret (error-union-type (ident E) (ident T)))
+        (block)))))

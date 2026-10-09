@@ -1,0 +1,10 @@
+//! stage: check
+// Generic functions must be named (§11.8), and capture nothing.
+
+apply :: fn(f: fn(x: i32) -> i32) -> i32 => f(1)
+
+main :: fn() {
+    k := 3
+    _ = apply(fn(T: type, x: T) -> T => x)       //~ ERROR a function literal used as a value cannot be generic
+    scaled :: fn(T: type, x: T) -> i32 => k       //~ ERROR unknown name `k`
+}

@@ -1,0 +1,49 @@
+//! stage: test
+//! exit: 1
+// Tests of a module that calls C (§3.8, §19.2): `gamma test` runs them natively.
+c :: import "std/c"
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> usize \ {}
+    #link_name("abs") absolute :: fn(x: c.c_int) -> c.c_int \ {}
+}
+
+ParseError :: union { TooLong }
+
+test "strlen counts bytes" {
+    expect(libc.strlen(c"four") is 4)
+    expect(libc.strlen(c"") is 0)
+}
+
+test "abs of a negative" {
+    expect(libc.absolute(-7) is 7)
+}
+
+test "output is captured" {
+    print("length {}\n", libc.strlen(c"captured"))
+    expect(libc.strlen(c"abc") is 4, "wrong length")
+}
+
+test "errors fail" {
+    r: ParseError!usize = !.TooLong
+    n := try r
+    print("unreachable {}\n", n)
+}
+
+test "traps" {
+    xs := [3]i32(1, 2, 3)
+    i := usize(libc.strlen(c"12345"))
+    print("before the trap\n")
+    expect(xs[i] is 0)
+}
+
+test "leaks are caught" {
+    p := new(i32, 5) else return
+    _ = p
+}
+
+test "allocation is balanced" {
+    p := new(i32, 5) else return
+    defer destroy(i32, p)
+    p^ = c.c_int(libc.absolute(-3))
+    expect(p^ is 3)
+}

@@ -1,0 +1,129 @@
+// Structs, `#c_union`s and `#bits` structs passed by value to and from C (§19.1).
+c :: import "std/c"
+
+DivT :: struct {
+    quot: c.c_int
+    rem: c.c_int
+}
+
+LDivT :: struct {
+    quot: c.c_long
+    rem: c.c_long
+}
+
+// C's `double complex` is passed like this struct on the supported targets.
+Complex :: struct {
+    re: f64
+    im: f64
+}
+
+ComplexF :: struct {
+    re: f32
+    im: f32
+}
+
+libc :: foreign "c" {
+    div :: fn(n, d: c.c_int) -> DivT \ {}
+    ldiv :: fn(n, d: c.c_long) -> LDivT \ {}
+    // Exported below, and called through C's calling convention.
+    gm_test_mix :: fn(m: Mixed, scale: f64) -> Mixed \ {}
+    gm_test_big :: fn(b: Big) -> Big \ {}
+    gm_test_word :: fn(w: Word, f: Flags) -> u32 \ {}
+    gm_test_layout :: fn(p: Packed, a: Aligned) -> Packed \ {}
+}
+
+libm :: foreign "m" {
+    cabs :: fn(z: Complex) -> f64 \ {}
+    conj :: fn(z: Complex) -> Complex \ {}
+    cabsf :: fn(z: ComplexF) -> f32 \ {}
+}
+
+// Integers and floats mixed, nested structs and arrays.
+Pair :: struct {
+    a: u8
+    b: f32
+}
+
+Mixed :: struct {
+    id: u16
+    p: Pair
+    xs: [3]i16
+    ok: bool
+}
+
+// Larger than two registers: passed in memory.
+Big :: struct {
+    v: [6]u64
+    tag: u8
+}
+
+Word :: #c_union union {
+    as_u32: u32
+    as_f32: f32
+}
+
+Flags :: #bits(u8) struct {
+    a, b: bool
+    n: u6
+}
+
+Packed :: #packed struct {
+    a: u8
+    b: u32
+    c: u16
+}
+
+Aligned :: #align(16) struct {
+    x: u8
+    #align(8) y: u8
+}
+
+#export("gm_test_layout")
+mix_layout :: fn(p: Packed, a: Aligned) -> Packed => Packed(a: p.a + a.x, b: p.b * 2, c: p.c + u16(a.y))
+
+#export("gm_test_mix")
+scale_mixed :: fn(m: Mixed, scale: f64) -> Mixed {
+    return Mixed(
+        id: m.id + 1,
+        p: Pair(a: m.p.a * 2, b: (f64(m.p.b) * scale).round(f32)),
+        xs: [3]i16(m.xs[2], m.xs[1], m.xs[0]),
+        ok: not m.ok,
+    )
+}
+
+#export("gm_test_big")
+reverse_big :: fn(b: Big) -> Big {
+    r := b
+    for i in 0..6 { r.v[i] = b.v[5 - i] }
+    r.tag = b.tag + 1
+    return r
+}
+
+#export("gm_test_word")
+word_plus :: fn(w: Word, f: Flags) -> u32 => w.as_u32 + u32(f.n) + (if f.a { 1000 } else { 0 })
+
+// A function pointer with structs by value, called from Gamma.
+apply :: fn(f: ^fn(z: Complex) -> Complex, z: Complex) -> Complex => f(z)
+
+swap_parts :: fn(z: Complex) -> Complex => Complex(re: z.im, im: z.re)
+
+main :: fn() \ {Out} {
+    d := libc.div(17, 5)
+    print("div {} {}\n", (d.quot, d.rem))
+    l := libc.ldiv(-1000000007, 10)
+    print("ldiv {} {}\n", (l.quot, l.rem))
+    z := Complex(re: 3.0, im: 4.0)
+    print("cabs {}\n", libm.cabs(z))
+    w := libm.conj(z)
+    print("conj {} {}\n", (w.re, w.im))
+    print("cabsf {}\n", libm.cabsf(ComplexF(re: 6.0, im: 8.0)))
+    m := libc.gm_test_mix(Mixed(id: 41, p: Pair(a: 21, b: 1.5), xs: [3]i16(1, -2, 3), ok: false), 3.0)
+    print("mixed {} {} {} {} {}\n", (m.id, m.p.a, m.p.b, m.xs, m.ok))
+    b := libc.gm_test_big(Big(v: [6]u64(1, 2, 3, 4, 5, 6), tag: 9))
+    print("big {} {}\n", (b.v, b.tag))
+    print("word {}\n", libc.gm_test_word(Word(as_u32: 7), Flags(a: true, b: false, n: 5)))
+    pk := libc.gm_test_layout(Packed(a: 1, b: 50000, c: 7), Aligned(x: 2, y: 3))
+    print("layout {} {} {} {}\n", (pk.a, pk.b, pk.c, @size_of(Packed)))
+    s := apply(swap_parts, z)
+    print("apply {} {}\n", (s.re, s.im))
+}

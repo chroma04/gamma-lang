@@ -1,0 +1,33 @@
+//! stage: check
+// `#deprecated` warns at each use (§20.2); the function hints apply to functions, and
+// `#inline` to functions that cannot call themselves (§11.10).
+
+#deprecated("use `Point`")
+Pt :: struct { x, y: i32 }
+
+#deprecated
+legacy :: fn() -> i32 => 1
+
+#deprecated(42)                            //~ ERROR `#deprecated` takes an optional message
+odd :: fn() {}
+
+#fast_math                                 //~ ERROR `#fast_math` applies only to a function
+NOT_A_FN :: 3
+
+uses :: fn() -> i32 {
+    p := Pt(x: 1, y: 2)                    //~ WARNING `Pt` is deprecated: use `Point`
+    q: Pt = p                              //~ WARNING `Pt` is deprecated
+    return legacy() + q.x                  //~ WARNING `legacy` is deprecated
+}
+
+#inline                                    //~ ERROR `fact` cannot be inlined at every call site
+fact :: fn(n: u64) -> u64 => if n is 0 { 1 } else { n * fact(n - 1) }
+
+#inline                                    //~ ERROR `ping` cannot be inlined
+ping :: fn(n: u32) -> u32 => if n is 0 { 0 } else { pong(n - 1) }
+pong :: fn(n: u32) -> u32 => ping(n)
+
+#inline
+leaf :: fn(n: u32) -> u32 => n + 1
+
+main :: fn() {}

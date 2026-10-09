@@ -1,0 +1,47 @@
+4:1 ident a
+4:2 punct ?
+4:3 newline
+5:1 ident b
+5:2 punct !
+5:3 newline
+6:1 ident c
+6:2 punct ^
+6:3 newline
+7:1 ident d
+7:2 punct (
+7:3 punct )
+7:4 newline
+8:1 ident e
+8:2 punct [
+8:3 int 0
+8:4 punct ]
+8:5 newline
+9:1 int 1
+9:2 newline
+10:1 char 120
+10:4 newline
+11:1 str Regular "s"
+11:4 newline
+12:1 keyword true
+12:5 newline
+13:1 keyword null
+13:5 newline
+14:1 underscore
+14:2 newline
+15:1 keyword return
+15:7 newline
+16:1 punct ---
+16:4 newline
+17:1 punct ...
+17:4 newline
+18:1 keyword not
+18:4 newline
+19:1 intrinsic @size_of
+19:9 newline
+20:1 attribute #packed
+20:8 newline
+21:1 punct @
+21:2 newline
+22:1 ident f
+22:2 newline
+23:1 eof

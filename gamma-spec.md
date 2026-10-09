@@ -122,7 +122,7 @@ A conforming implementation provides three build modes. They differ only in the 
 
 A source file is a sequence of Unicode scalar values encoded as UTF-8. A byte-order mark at the start of a file is ignored. A file that is not valid UTF-8 is ill-formed. Source files have the extension `.gm`.
 
-Line terminators are LF (U+000A) or CR LF. A lone CR is ill-formed outside string literals' raw content, where it is also ill-formed (raw strings normalize CR LF to LF).
+Line terminators are LF (U+000A) or CR LF. A CR (U+000D) that is not immediately followed by LF is ill-formed everywhere, including inside string literals. Inside raw string literals, a CR LF line terminator is normalized to LF.
 
 The horizontal tab (U+0009) and space (U+0020) are whitespace. No other Unicode whitespace is permitted outside comments and string literals.
 
@@ -180,7 +180,10 @@ hex_lit    = '0x' hexdigit { [ '_' ] hexdigit }
 oct_lit    = '0o' octdigit { [ '_' ] octdigit }
 bin_lit    = '0b' bindigit { [ '_' ] bindigit }
 int_suffix = ( 'u' | 'i' ) width | 'usize' | 'isize'
+width      = nzdigit { digit }                   // 1 … 65535, no leading 0
 ```
+
+`digit` is `0`–`9`, `nzdigit` is `1`–`9`, `hexdigit` is `0`–`9`, `a`–`f`, `A`–`F`, `octdigit` is `0`–`7` and `bindigit` is `0` or `1`. The prefixes `0x`, `0o`, `0b` are lowercase. A literal immediately followed by an identifier character that does not form a valid suffix (`12abc`, `0x1g`) is ill-formed.
 
 A decimal literal may not have a leading `0` unless it is exactly `0` (so `017` is ill-formed, avoiding C's octal trap). Underscores separate digits and have no meaning; a literal may not begin or end with `_` and may not contain `__`. The value of an integer literal is a mathematical integer of unbounded size. A suffix fixes the type (§6.1); without one the literal is *untyped*.
 
@@ -236,16 +239,19 @@ In a string literal `\xHH` inserts one raw byte, so a string literal may hold in
 +%=  -%=  *%=  <<%= +|=  -|=  *|=  <<|=
 <    <=   >    >=
 ?    !    ^    @    #    \
-..   ..=  ---  ::   :=   :    ,    .    ;
+..   ..=  ...  ---  ::   :=   :    ,    .    ;
 =>   ->
 (    )    [    ]    {    }
 ```
+
+`...` appears only as the variadic marker of a foreign function type (§19.2).
 
 Exceptions to maximal munch:
 
 - `[^]` is three tokens, `[`, `^`, `]`; the parser recognizes the sequence.
 - `---` is always one token, so `a---b` is ill-formed; write `a - -b`.
-- A `.` immediately followed by a digit after an expression is a field access with a numeric field name (`t.0`), never part of a float literal.
+- A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
+- The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -260,10 +266,12 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `\`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** at an *arm start* inside a `match` body (§8.6), where a newline always ends the preceding arm.
-3. It is inside `( )` or `[ ]` that are themselves nested inside braces (rule: the innermost enclosing bracket decides).
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm.
+3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.
+
+A **`match` body** is the `{ }` that follows the scrutinee of a `match`: the first `{` after the `match` keyword at the same bracket depth. This is unambiguous because the head of a `match` (like the heads of `if`, `while`, `for`, `with` and `when`) cannot contain an unparenthesized `{` (§A.7, rule 4).
 
 Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 
@@ -637,7 +645,7 @@ There are two kinds of function type.
 | `fn(params) -> R \ {E}` | **function**: second-class (§11.6) | may capture locals by reference | `{E}` are handled by whoever calls it; any others it performs are handled where it was written |
 | `^fn(params) -> R \ {E}` | **function pointer**: first-class | none | exactly `{E}`, handled by whoever calls it |
 
-`-> R` may be omitted when `R` is `()`. `\ {E}` may be omitted when the set is empty. Parameter names in function types are optional and are not part of the type; parameter types, the return type, and the effect set are.
+`-> R` may be omitted when `R` is `()`. `\ {E}` may be omitted when the set is empty. Parameter names in function types are optional and are not part of the type; parameter types, the return type, and the effect set are. A function pointer type also has a calling convention, `.C` unless written otherwise (§19.2); it too is part of the type.
 
 A function pointer is one code address in size, C-compatible when its signature is (§19.1), and comparable with `is`. A top-level or nested named function (both capture nothing) converts to either kind. A function literal converts to a function pointer only if it captures nothing.
 
@@ -677,10 +685,11 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 **Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals) or to numeric types (for float literals: float types only). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
 
 - a variable binding `x := L` gives `x` the type α\_L, so later uses of `x` constrain it (an immutable `x :: L` is an untyped constant instead, §6.2);
-- the two operands of a binary operator, the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
-- a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type).
+- the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
+- a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type). If the target is `?T` or `E!T` (possibly nested), the variable becomes `T`, the type that the wrapping coercion starts from;
+- the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for a range bound or an array length, otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -772,12 +781,12 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
-| `x.bits(T)` | plain-data → plain-data | reinterpret the bytes; `@size_of` must match |
+| `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
 | `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P` |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
-`bits` accepts `bool` as a source but not as a target, and accepts no non-plain-data target, so it can never create an invalid value. `cast` between `?P` types maps null to null.
+`bits` accepts `bool` and any `#bits` struct as a source but not as a target, and accepts no non-plain-data target, so it can never create an invalid value. `cast` between `?P` types maps null to null.
 
 ### 6.7 Conversions that do not exist
 
@@ -1200,7 +1209,7 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
-- If `x: ?T`, then `d` must have type `T`, `?T`, or `never`. The result type is `T` if `d` is `T` or `never`, and `?T` if `d` is `?T`. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
+- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
 - If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), or `never`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
@@ -1267,7 +1276,7 @@ effect_set = '{' [ effect % ',' ] '}'
 ```
 
 - `a, b: i32` declares two parameters of one type.
-- `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` (falling off the end returns `()`). With an `=>` body, the expression's value is returned.
+- `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` or `E!()` (falling off the end returns `()`, which for `E!()` is a success). With an `=>` body, the expression's value is returned.
 - The effect set lists every effect the function may perform that it does not handle itself (§12.3). Omitted means empty.
 - Parameter types may be omitted only in a literal whose expected type is a known function type (e.g. an argument to a parameter of function type); they are then taken from it. When the expected return type is a type parameter still to be inferred, an `=>` literal without `-> R` has the type of its body expression, which determines that parameter: `people.sort_by_key(fn(p) => (p.last, p.first))` infers the key type.
 
@@ -1277,7 +1286,7 @@ Parameters are immutable bindings. Each parameter is a **distinct object** initi
 
 *Implementation note:* an implementation may pass a large argument by reference instead of copying when this is unobservable. See Appendix D.
 
-A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults.
+A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it, and it is not counted among the non-inferable parameters of §16.2.
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
 
@@ -1347,13 +1356,15 @@ A named function passed for a second-class parameter behaves the same way as a l
 
 ### 11.7 Function pointers
 
-`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
+`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
 
 Function pointers may be stored anywhere, compared with `is`, and passed to C when their signature is C-compatible and their effect set is empty or `{Sys}` (§19.2).
 
 ### 11.8 Nested named functions
 
-A `name :: fn(…) { … }` binding inside a function body declares a nested function. It captures nothing: its body may refer to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), and to its own parameters, but not to other locals. It is equivalent to a private top-level function and is first-class.
+A `name :: fn(…) { … }` binding inside a function body whose literal captures nothing declares a **nested function**: its body refers only to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), to its own parameters and locals, and to itself by name. It is equivalent to a private top-level function and is first-class. If the literal refers to any other local of the enclosing function, the binding is instead an immutable local holding a second-class function value (§11.6), which cannot refer to itself.
+
+A nested function may be generic (§16.1); it is then always a nested function, and its body refers only to top-level names, to its own parameters and locals, and to itself. A function literal used as a value cannot be generic, since a function value has a single type.
 
 ### 11.9 Recursion
 
@@ -1392,9 +1403,9 @@ effect_lit = 'effect' [ '(' param % ',' ')' ] '{' { op_decl terminator } '}'
 op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' type ]
 ```
 
-An `effect` literal creates a nominal effect type. Its parameters are compile-time values (usually types). Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
+An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`); an effect is instantiated by applying it to type arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. If `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal), and exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — that instantiation is used, and the arguments are typed accordingly. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 
 ### 12.2 Operation kinds
 
@@ -1422,7 +1433,7 @@ An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Y
 
 **Checking.** For every function, the effects its body performs must be a subset of its declared effect set. A `test` body and `main` are checked against the ambient set (§3.7). A top-level constant's initializer must perform no effects.
 
-**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
+**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
 
 ### 12.4 Handlers
 
@@ -1636,7 +1647,8 @@ Any user function with `Yield(T)` in its effect set is an iterator; there is no 
 Internal iteration cannot advance two iterators in lockstep without fibers. Standard containers and slices therefore also provide **cursors**: values with a `next` method returning `?T` or `?^T`, used with `while`:
 
 ```
-ca, cb := a.cursor(), b.cursor()
+ca := a.cursor()
+cb := b.cursor()
 while x := ca.next() {
     y := cb.next() else break
     combine(x, y)
@@ -1725,7 +1737,7 @@ Deferred statements cannot perform `ctl` operations (§8.8), so cancellation can
 
 `@fiber` may be used only inside the body of a `ctl` clause. `f` is a function pointer `^fn(a: A) -> never \ {S}`, `arg: A`, and `stack: []u8`. `A` must be a first-class type (§16.1): a second-class value cannot be smuggled into a fiber that may outlive its frame. It creates a new fiber belonging to the clause's `with`, whose initial state is "about to call `f(arg)` on `stack`", and returns its continuation; resuming it (with `()`) starts the call.
 
-- The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` not handled by the `with` itself are therefore required from the context outside the `with`, exactly like effects of the `with`'s body. They are part of the effects the handler requires: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects not handled by the declaration must be listed in its `\ {A}`.
+- The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` other than the clause's own effect are part of the effects the handler requires, since the clause cannot know which other handlers its `with` installs: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects other than the declaration's own must be listed in its `\ {A}`. (A fiber that needs several `ctl` operations of its scheduler gets them from one effect, as `Async` in §14.7 does.)
 - `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause discards it (a library `spawn` wraps the user's function to do this).
 - The stack rules of §14.1 apply to `stack`.
 
@@ -1749,7 +1761,11 @@ Scheduler :: struct {
 }
 
 handler Async for ^Scheduler \ {Sys} {
-    wait(self, fd, events, k) => { self.waiting.add(fd, events, k); resume self.next() }
+    wait(self, fd, events, k) => {
+        self.waiting.add(fd, events, k)
+        r := self.next()
+        resume r()
+    }
     spawn(self, entry, arg, stack, k) => {
         self.ready.push(@fiber(entry, arg, stack))
         self.live += 1
@@ -1759,16 +1775,20 @@ handler Async for ^Scheduler \ {Sys} {
         discard k
         self.live -= 1
         if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
-        resume self.next()
+        r := self.next()
+        resume r()
     }
     join(self, k) => {
         if self.live is 0 { resume k() }
         self.joiner = k
-        resume self.next()
+        r := self.next()
+        resume r()
     }
 }
 
 // next(): pop a ready continuation, or block in the poller (a Sys call) until one is ready.
+// `resume k(v)` takes the continuation from a postfix expression without its final call (§A.7),
+// so a continuation returned by a call is bound to a name first.
 ```
 
 ```
@@ -1782,7 +1802,16 @@ with &sched on main_stack[..] {
 
 ### 14.8 Stack size analysis
 
-`@stack_size(f)` is a compile-time `usize` constant: an upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls. A perform counts as a direct call to the clause when the handler is statically known (§D.3), and otherwise as an unknown call. Recursion, calls through function pointers or second-class parameters whose targets are not statically known, unknown performs, and foreign calls are compile errors in `@stack_size`. It is intended for sizing fiber stacks in embedded code.
+`@stack_size(f)` is a compile-time `usize` constant: an upper bound on the stack bytes needed by a call to the named function `f`, including everything it calls and the space the implementation reserves on a fiber stack for its run-time support. It is at least `@min_stack`, so a stack of `@stack_size(f)` bytes is big enough for a fiber that calls `f` (a `with … on` whose body just calls `f`, or a fiber made by `@fiber(f, …)`). It is intended for sizing fiber stacks in embedded code.
+
+The bound follows the calls that `f` can make, using what is statically known at each call:
+
+- A call of a named function, or through a function value whose target is statically known, counts that function. A function value is statically known when it is a function name or literal, or a parameter or immutable local bound to one along the calls being followed — so `s.sort_by(fn(a, b) => …)` counts the literal where the sort calls `less`.
+- A perform of a `fn` or `esc` operation counts as a call to the clause when the handler is statically known: installed by a `with` that the calls being followed pass through, with a handler literal or a value whose type has `handler … for` declarations (§12.6). The clause's own performs then use the handlers outside that `with` (§12.5).
+- A perform of a `ctl` operation suspends the fiber; its clause runs on another stack (§14.1).
+- A `with … on` counts its `ctl` clauses, which run on the current stack (§14.1), but not its body, which runs on the fiber's stack.
+
+Recursion, calls through function values whose targets are not statically known, performs of operations whose handlers are not statically known (including the ambient effects of §12.9, which `f` cannot see), and foreign calls are compile errors in `@stack_size`. The bound is conservative: each frame is costed generously from the sizes of its locals and temporaries, and the implementation checks fiber stacks at run time in Debug and Checked builds (§14.1).
 
 ### 14.9 Threads
 
@@ -1814,13 +1843,13 @@ Using a pointer to an object after its lifetime ends is undefined behavior (§18
 
 ```
 Allocator :: struct {
-    data: rawptr
-    vt:   ^const AllocVtable
+    pub data: rawptr
+    pub vt:   ^const AllocVtable
 }
 AllocVtable :: struct {
-    alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
-    resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
-    free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
+    pub alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
+    pub resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
+    pub free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
 }
 Alloc :: effect { current: fn() -> Allocator }
 AllocError :: union { OutOfMemory }
@@ -1892,7 +1921,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 
 ```
-biggest := max(scores) else 0        // T = i32, from scores: []i32 (array place → []const T)
+biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
 names   := list(string)              // T written explicitly
 try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted (§7.10)
 ```
@@ -1922,7 +1951,7 @@ Operations beyond these come in as function parameters (`less: fn(a, b: ^const T
 
 ### 16.4 Generic types
 
-The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of any type that supports `is` at compile time, including function values:
+The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values:
 
 ```
 HashMap :: struct(K, V: type,
@@ -1955,7 +1984,8 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
 - The body is still checked once, treating the parameter as an unknown constant of its type. `when` conditions may not depend on it (§16.7).
-- Its type must support `is` at compile time and be first-class.
+- Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
+- Inside the body, an array length that depends on a compile-time parameter must be the parameter itself: `[N]T` is allowed, `[N + 1]T` is a compile error, because the body is checked once and array types must be comparable without knowing `N`. An array `[N]T` is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown `N`), and `a.len` is `N`.
 - A compile-time value parameter that appears in the type of another parameter is inferable (`N` above, from `a: [N]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
 
@@ -1963,7 +1993,7 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 
 Effects may have parameters (`Yield(T)`). An effect set may mention type parameters of the enclosing generic function: `\ {Yield(T)}`. There is no abstraction over effect sets themselves (§12.8).
 
-**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Inside a generic function or type, any two instantiations of the same generic effect that are simultaneously in scope — in the declared effect set, handled by an enclosing `with` (including the implicit `with` of a `for` loop, §13.2), or in a second-class parameter's type — must be either identical or **provably distinct**: they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`.
+**Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Inside a generic function or type, any two instantiations of the same generic effect that are simultaneously in scope — in the declared effect set, handled by an enclosing `with` (for the implicit `with` of a `for` loop, §13.2, this concerns only the loop's source call, since the loop body's own performs are handled outside the loop), or in a second-class parameter's type — must be either identical or **provably distinct**: they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`.
 
 ### 16.7 Restrictions
 
@@ -2149,21 +2179,26 @@ Unions (tagged), optionals of non-pointers, results, slices, tuples, arrays as p
 ### 19.2 Foreign functions
 
 ```
+c    :: import "std/c"               // C's platform-dependent types (§19.1)
 libc :: foreign "c" {
-    puts   :: fn(s: cstring) -> c_int
-    qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c_int)
-    printf :: fn(fmt: cstring, ...) -> c_int
+    puts   :: fn(s: cstring) -> c.c_int
+    qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int)
+    printf :: fn(fmt: cstring, ...) -> c.c_int
     strlen :: fn(s: cstring) -> usize \ {}          // trusted: performs no effects
-    #global errno: c_int                            // a foreign variable
+    #global errno: c.c_int                            // a foreign variable
 }
 ```
 
 - `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name.
 - Parameter and result types must be C-compatible.
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
-- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least `c_int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
-- Narrowing at the boundary (`usize` lengths to `c_uint`, and so on) is never implicit: write `n.trunc(c_uint)` or `n.checked(c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
-- Calling convention: the target's C ABI. `#callconv(.Stdcall)` and similar select another where the target supports it.
+- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
+- Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
+- **Calling convention**: the target's C ABI by default. `#callconv(.X)` selects another: `.C` (the target's C ABI, the default, so it only states the default), `.SysV` (the System V AMD64 ABI) and `.Win64` (the Microsoft x64 ABI). `.SysV` and `.Win64` exist only where `target.arch` is `.X86_64`; naming them on another architecture, or naming any other convention, is an error. On the supported x86-64 targets the C ABI is System V, so `.SysV` means exactly `.C`; only `.Win64` differs.
+  - The attribute applies to a top-level function declaration, to a foreign member (it describes the C function being called), and to a `^fn` type: `#callconv(.Win64) ^fn(a: i32) -> i32`. Anywhere else it is an error.
+  - A function or function pointer type with a convention other than `.C` has the plain calling convention (§19.1): its effect set must be empty or `{Sys}`, and a function must be top-level, non-generic and capture nothing. A function literal that captures nothing and is written where such a pointer type is expected has that convention.
+  - The convention is part of a function pointer type: `#callconv(.Win64) ^fn(i32) -> i32` and `^fn(i32) -> i32` are different types and no coercion converts between them, including the effect-widening coercion of §11.6. A function with a convention other than `.C` used as a value is a `^fn` carrying its convention; it cannot become a second-class `fn` value, which always uses the language's own convention. `@fiber` (§14.6) and thread entry points (§19.6) take `.C` pointers only.
+  - Calls, direct or through a pointer of the right type, use the function's convention. An `#export`ed function (§19.4) is exported with its convention. The convention changes no Gamma semantics: the interpreter and compile-time evaluation ignore it.
 
 ### 19.3 Global variables
 
@@ -2171,7 +2206,7 @@ libc :: foreign "c" {
 #global last_error: i32 = 0
 ```
 
-`#global name: T = e` declares a mutable variable with static storage. `e` must be a compile-time constant (§17.4). Every read or write of a `#global` performs `Sys`. `#global` inside a `foreign` block declares a variable defined by foreign code (no initializer).
+`#global name: T = e` declares a mutable variable with static storage. `e` must be a compile-time constant (§17.4). Every read or write of a `#global`, and taking its address, performs `Sys`; accesses through a pointer obtained that way do not (they are ordinary memory accesses, §19.6). `#global` inside a `foreign` block declares a variable defined by foreign code (no initializer).
 
 `#thread_local` may be added to make one instance per thread.
 
@@ -2184,7 +2219,7 @@ libc :: foreign "c" {
 checksum :: fn(data: [^]const u8, len: usize) -> u32 { … }
 
 #export("gm_load")
-load :: fn(path: cstring) -> c_int \ {Sys} {
+load :: fn(path: cstring) -> c.c_int \ {Sys} {
     with heap_allocator(), stderr_log(), real_fs() {
         cfg := load_config(path_from(path)) else e => { last_error = code(e); return -1 }
         …
@@ -2192,7 +2227,7 @@ load :: fn(path: cstring) -> c_int \ {Sys} {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2204,7 +2239,17 @@ All of these perform `Sys`.
 | --- | --- |
 | `@volatile_load(p)` | load `p^` (`p: ^const T`, `T` integer, float, pointer or `#bits`), never elided, merged or reordered with other volatile accesses |
 | `@volatile_store(p, v)` | store `v` to `p^` likewise |
-| `@asm(template, outputs, inputs, clobbers)` | inline assembly; the template and constraint syntax are those of the target's GCC-compatible assembler. Misuse is UB. |
+| `@asm(template, outputs, inputs, clobbers)` | inline assembly (below) |
+
+`@asm(template, outputs, inputs, clobbers)` is a statement-like expression of type `()` that executes inline assembly:
+
+- `template` is a compile-time string in the syntax of the target's GCC-compatible assembler, with operands referred to as `%0`, `%1`, … (outputs first, then inputs) as in GNU C.
+- `outputs` is a list of pairs `(constraint, p)`, where `constraint` is a compile-time string such as `"=r"` or `"+r"` and `p: ^T` points to the place the operand is written to (and read from, for `+`).
+- `inputs` is a list of pairs `(constraint, v)` with values `v`.
+- `clobbers` is a list of compile-time strings naming registers, `"cc"` or `"memory"`.
+- A list is written `()` when empty, as its single entry, or as a tuple of entries: `("=r", &x)` is one output, `(("=r", &x), ("=r", &y))` two.
+- Operand types are integers of 8 to 64 bits, `usize`, `isize`, `f32`, `f64`, `bool` and pointers (`T` for outputs).
+- The assembly is never removed, duplicated or reordered with other `@asm` or volatile accesses. Its meaning, and any misuse of constraints, registers or memory, is up to the target: violating the compiler's assumptions is undefined behavior. It is never evaluated at compile time.
 
 ### 19.6 Threads and atomics
 
@@ -2212,7 +2257,7 @@ Gamma adopts the C11 memory model.
 
 - **Threads** are created by the library (`std/thread`), which requires `Sys`. A thread starts by calling a function pointer `^fn(arg: rawptr) \ {Sys}` (or with an empty set); it begins with no handlers installed and installs its own. Second-class values, handlers and continuations cannot cross threads, because only function pointers and data can be passed.
 - A **data race** — two accesses to the same memory location from different threads, at least one a write, at least one non-atomic, not ordered by happens-before — is undefined behavior.
-- **Atomics** are intrinsics on integer, `bool` and pointer places, with an explicit memory order `.Relaxed`, `.Acquire`, `.Release`, `.AcqRel` or `.SeqCst`, as in C11:
+- **Atomics** are intrinsics on integer, `bool` and pointer places, with an explicit memory order — a value of the core type `MemoryOrder`: `.Relaxed`, `.Acquire`, `.Release`, `.AcqRel` or `.SeqCst` — as in C11:
 
 | Intrinsic | Result |
 | --- | --- |
@@ -2264,13 +2309,13 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
-| `#callconv(.X)` | function, foreign member, `^fn` type | calling convention | 19.2 |
+| `#callconv(.X)` | top-level function, foreign member, `^fn` type | calling convention: `.C` (default), `.SysV`, `.Win64` (x86-64 only); part of a `^fn` type; plain functions only, never second-class | 19.2 |
 | `#global` | binding | mutable static storage | 19.3 |
 | `#thread_local` | `#global` | per-thread storage | 19.3 |
 | `#inline`, `#noinline`, `#cold` | function | inlining hints/requirements | 11.10 |
 | `#fast_math` | function | relaxed float semantics | 5.3 |
 | `#fuel(n)` | top-level declaration | compile-time step budget | 17.3 |
-| `#deprecated("msg")` | declaration | warning at uses | — |
+| `#deprecated`, `#deprecated("msg")` | declaration | a warning at each use, quoting the message | — |
 
 ### 20.3 Intrinsics
 
@@ -2294,7 +2339,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@unreachable()` | `never`; checked: traps in Debug/Checked, UB in Fast | no | 18 |
 | `@expect_true(b)`, `@expect_false(b)` | `bool`; branch-probability hint | yes | — |
 | `@prefetch(p)` | `()`; hint | no | — |
-| `@clz(x)`, `@ctz(x)`, `@popcount(x)`, `@bswap(x)`, `@bitreverse(x)` | integer | yes | — |
+| `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
+| `@bswap(x)` (whole bytes only), `@bitreverse(x)` | `x`'s type | yes | — |
 | `@sqrt(x)`, `@fma(a, b, c)` and the IEEE operations of `std/math` | float | yes | — |
 
 ---
@@ -2310,10 +2356,10 @@ These names are predeclared in every module, without import. The type names in t
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect` |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2330,6 +2376,8 @@ destroy      :: fn(T: type, p: ^T) \ {Alloc}
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
 
 `free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op.
+
+Each of these functions also has a final parameter `site: SourceLocation = @caller_location()` (bound only by name, §11.3). Debug builds use the sites to report where a block freed through the wrong allocator was allocated and freed (§18.3).
 
 ### 21.3 Builtin methods
 
@@ -2390,7 +2438,11 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
+contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
+len      :: fn(m: ^const HashMap(…)) -> usize
+entries  :: fn(m: ^const HashMap(…)) \ {Yield((key: K, value: V))}   // unspecified order
+clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
 deinit   :: fn(m: ^HashMap(…))
 ```
 
@@ -2433,7 +2485,7 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | --- | --- |
 | `string` or `[]u8` as an argument itself | its bytes, unchanged |
 | integers | decimal |
-| floats | the shortest decimal that reads back as the same value; `nan`, `inf`, `-inf` |
+| floats | the shortest decimal that reads back as the same value at the argument's type, without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
 | `bool` | `true`, `false` |
 | enums | `.Name` |
 | tagged unions | `.Name(payload)`; a tuple payload's elements are written directly: `.Rect(w: 2, h: 3)` |
@@ -2458,13 +2510,14 @@ print("{}\n", pos)                                           // Vec2(x: 1.5, y: 
 ```
 IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
-    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
     Other: i32                                  // OS error code
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
 Duration :: struct { pub ns: u64 }
-// methods: i.since(earlier) -> Duration (checked: not earlier than `earlier`), i.add(d) -> Instant,
-// d.add(d2), d.sub(d2) (checked), d.ms() -> u64, and constructors ns(n), us(n), ms(n), secs(n) -> Duration
+// methods: i.since(earlier) -> Duration (checked: not earlier than `earlier`), i.after(d) -> Instant,
+// d.plus(d2), d.minus(d2) (checked), d.to_ms() -> u64 (whole milliseconds);
+// constructors ns(n), us(n), ms(n), secs(n) -> Duration (n: u64; checked)
 SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
 
 Out   :: effect { write_out: fn(bytes: []const u8) }
@@ -2479,13 +2532,51 @@ Env   :: effect {
 }
 ```
 
-`Clock.wall` gives Unix time in nanoseconds. `Fs` and `Net` are declared by the core library with operations for files, directories and sockets whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+`Clock.wall` gives Unix time in nanoseconds. `Fs` and `Net` are declared by the core library with operations for files, directories and sockets whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
+
+```
+File, Dir :: struct { … }                       // handles
+OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
+FileInfo :: struct { pub size: u64; pub is_dir: bool; pub modified: i64 }   // Unix nanoseconds
+SeekFrom :: union { Start, Current, End }
+Fs :: effect {
+    open: fn(path: string, opts: OpenOptions) -> IoError!File
+    close: fn(f: File)
+    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
+    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
+    stat: fn(path: string) -> IoError!FileInfo
+    remove, make_dir, remove_dir: fn(path: string) -> IoError!()
+    rename: fn(from, to: string) -> IoError!()
+    open_dir: fn(path: string) -> IoError!Dir
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name (never . or ..); 0 after the last
+    close_dir: fn(d: Dir)
+}
+```
+
+and its `Net` (TCP) is:
+
+```
+Socket, Listener :: struct { … }               // handles
+Net :: effect {
+    connect: fn(host: string, port: u16) -> IoError!Socket
+    listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
+    local_port: fn(l: Listener) -> IoError!u16
+    accept: fn(l: Listener) -> IoError!Socket
+    send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
+    recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
+    close_socket: fn(s: Socket)
+    close_listener: fn(l: Listener)
+}
+```
+
+Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
 
 ---
 
 ## Appendix A. Grammar
 
-This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply.
+This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
 
 ### A.1 Files and declarations
 
@@ -2535,7 +2626,7 @@ tuple_type    = '(' ')' | '(' type ',' ')' | '(' type ',' type { ',' type } [ ',
 effect_set    = '{' [ effect_ref % ',' ] '}'
 effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net
 
-struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } { field_decl NL { NL } } '}'
+struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'
 field_decl    = [ 'pub' ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
               | { attribute } field_decl
               | 'when' expr '{' { field_decl NL } '}' [ 'else' '{' { field_decl NL } '}' ]
@@ -2576,7 +2667,6 @@ stmt          = binding
               | '_' '=' expr
               | defer_stmt
               | when_stmt
-when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
               | [ label ] while_stmt
               | [ label ] for_stmt
               | 'return' [ expr ]
@@ -2586,6 +2676,7 @@ when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
               | intrinsic_call
               | block                                             // a nested scope
               | expr
+when_stmt     = 'when' expr block [ 'else' ( block | when_stmt ) ]
 place_list    = expr { ',' expr }
 assign_op     = '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '<<=' | '>>=' | '&=' | '|=' | '~='
               | '+%=' | '-%=' | '*%=' | '<<%=' | '+|=' | '-|=' | '*|=' | '<<|='
@@ -2666,14 +2757,17 @@ literal_bound = [ '-' ] literal | postfix_expr '.' IDENT           // qualified 
 
 1. **Statements beginning with an identifier.** `IDENT ':'` followed by `for`, `while` or `with` is a label. `IDENT ':'` followed by anything else begins a typed binding. `IDENT '::'`, `IDENT ':='` and `IDENT ','` begin bindings (or destructuring / multiple assignment, decided by the operator after the list). Otherwise the statement is an expression or assignment.
 2. **Pattern vs expression in conditions.** In `cond_part`, the parser first tries `pattern ':='`; if no `:=` follows at the same nesting depth, the part is an expression.
-3. **`!` after an operand.** A `!` directly after an operand is a postfix unwrap, unless the operand denotes a type and the `!` is followed by a token that can begin a type, in which case it is the error-union operator. The parser produces a single node `Bang(lhs, rhs?)` and name resolution decides: if `lhs` is a type it is `E!T`; otherwise it is `lhs!` followed by any postfix operators parsed from `rhs`. In particular `x![i]` and `x!(a)` unwrap `x` and then index or call.
-4. **`{` after a condition.** In `if`, `while`, `for … in`, `match`, `with` and `when` heads, a `{` always begins the body. A struct, union, effect or handler literal in such a head must be parenthesized. (Construction uses `( )`, so this rarely matters.)
+3. **`!` after an operand.** In a type position (after `:` in a binding, parameter or field, after `->`, inside a function type, in an effect set), `!` is always the error-union operator. In an expression position, a `!` directly after an operand is ambiguous between the postfix unwrap `x!` and the error-union type `E!T`. If the token after the `!` can begin a type, the parser attempts to parse a type there; if that succeeds, it produces a single node `Bang(lhs, rhs)`, and otherwise the postfix unwrap `lhs!`. Name resolution decides a `Bang`: if `lhs` denotes a type it is `E!T`; otherwise it is `lhs!` followed by the postfix operators of `rhs`, whose leading parenthesized part is reinterpreted as an argument list (so `x!(a)` calls the unwrapped value). An attempted type parse fails on `x![i]`, `x!?.f` and `x!.f`, so those simply unwrap and continue. When the rhs is a type but `lhs` is a value (`x!?u8`), resolution reports an error.
+4. **`{` after a head.** In the heads of `if`, `while`, `for … in`, `match`, `with` and `when`, the first `{` at the head's own bracket depth always begins the body. Any construct containing a `{` — a struct, union, effect or handler literal, a function literal with a block body, or an `if`, `match`, `with` or `for` expression — must be parenthesized when it appears in such a head. (Construction uses `( )`, so this rarely matters.)
 5. **`fn` types vs literals.** In an expression position, `fn(...)` followed by `{`, `=>`, or `-> T {` / `-> T =>` (after an optional effect set and `where` clause) is a literal; otherwise it is a type.
 6. **`else` dispatch.** See §7.3.
 7. **`..` in arguments** is spread (§11.4). Ranges with missing bounds exist only inside index brackets.
 8. **Match arms.** A newline at the end of a match arm always ends it (§2.8).
 9. **`is` right operand.** The right operand of `is`/`is not` is parsed as an expression; if it contains `_` or a variant name without its required payload, it is reinterpreted as a binding-free pattern (§7.6).
 10. **`resume k(v)`** parses `k` as a postfix expression without the final call, which supplies the value.
+11. **Labels in `break` and `continue`.** In `break IDENT …` and `continue IDENT`, the identifier is a label if a `while`, `for` or `with` carrying that label lexically encloses the statement (labels are visible inside handler literal clauses written within the labeled construct, but not inside function literals or nested functions). Otherwise, for `break`, the identifier begins the value operand. `break` and `return` take an operand exactly when the next token can begin an expression.
+12. **Type prefixes before a call.** A prefix type operator (`?`, `^`, `^const`, `[]`, `[N]`, `[_]`, `[^]`, with or without `const`) applies to the postfix expression that follows it, including calls: `?List(u8)` is `?(List(u8))`. If name resolution finds that the final call of that operand is not the application of a generic type (it is a construction or conversion, so it produces a value, not a type), the call is instead applied to the whole prefixed type: `?i32(5)` is `(?i32)(5)` and `[3]u8(1, 2, 3)` is `([3]u8)(1, 2, 3)`. Postfix operations after such a construction apply to the constructed value: `[3]u8(1, 2, 3)[0]` is `(([3]u8)(1, 2, 3))[0]`.
+13. **Attributes.** Newlines directly after an attribute are not significant, so an attribute may be written on its own line before the declaration, field or literal it modifies.
 
 ---
 

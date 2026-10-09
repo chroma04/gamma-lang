@@ -1,0 +1,23 @@
+// while, for, labels, break and continue, if as an expression.
+classify :: fn(n: i32) -> string {
+    return if n < 0 { "negative" } else if n is 0 { "zero" } else { "positive" }
+}
+
+main :: fn() \ {Out} {
+    i := 0
+    while i < 5 {
+        i += 1
+        if i is 2 { continue }
+        if i is 4 { break }
+        print("{} ", i)
+    }
+    print("\n")
+    outer: for a in 0..3 {
+        for b in 0..3 {
+            if b > a { continue outer }
+            if a is 2 { break outer }
+            print("({}, {}) ", (a, b))
+        }
+    }
+    print("\n{} {} {}\n", (classify(-5), classify(0), classify(9)))
+}

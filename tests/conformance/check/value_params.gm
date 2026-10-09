@@ -1,0 +1,17 @@
+//! stage: check
+// Compile-time value parameters (§16.5).
+sized :: fn(N :: usize, a: [N + 1]u8) {}       //~ ERROR whose value is not known here
+
+listed :: fn(N :: usize) -> [N]u8 => [N]u8(1, 2)   //~ ERROR construct it with `fill:`
+
+times :: fn(n :: u8) -> u8 => n
+
+fail :: fn() -> usize => 1 / zero()
+zero :: fn() -> usize => 0
+
+main :: fn() {
+    n: u8 = 3
+    _ = times(n)                               //~ ERROR must be a constant expression
+    _ = times(300)                             //~ ERROR does not fit in `u8`
+    a: [fail()]u8 = ---                        //~ ERROR compile-time evaluation failed
+}

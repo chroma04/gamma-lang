@@ -1,0 +1,7 @@
+//! stage: lex
+// A carriage return must be followed by a line feed, everywhere.
+ab //~ ERROR carriage return
+"instring" //~ ERROR carriage return
+// in a linecomment //~ ERROR carriage return
+/* in a blockcomment */ //~ ERROR carriage return
+`in a rawstring` //~ ERROR carriage return

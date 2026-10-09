@@ -1,0 +1,7 @@
+3 2 aligned: true
+used 24
+used 8
+too big: .OutOfMemory
+used 64 with 56 more
+after reset 0
+arena total 7105

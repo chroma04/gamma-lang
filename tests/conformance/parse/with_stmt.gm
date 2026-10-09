@@ -1,0 +1,32 @@
+//! stage: parse
+// Spec 12.7 and 14.1: with.
+
+f :: fn() {
+    with h { body() }
+    with h1, h2 { body() }
+    with heap_allocator(), logger_that_allocates() { work() }
+    with (handler Log { log(l, m) => {} }) { work() }
+    with buf.out_handler() { body() }
+    r := with quiet { save(doc) }
+    with &sched on main_stack[..] {
+        spawn_task(serve, &conn_a, stack_a)       // library wrapper around `spawn`
+        spawn_task(serve, &conn_b, stack_b)
+        join()
+    }
+    with a, b on stack { }
+    with h on (make_stack()) { }
+    with arena.allocator() {
+        tmp := try make(u8, 256)
+        try names.push("ada")
+    }
+    v := with h { if x { break 5 } else { 6 } }
+    lbl: with h {
+        for i in 0..3 {
+            if i is 2 { break lbl }
+        }
+    }
+    with on { }
+    with h on on { }
+}
+
+on :: 5

@@ -1,0 +1,15 @@
+[package]
+name = "gamma"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+num-bigint = "0.4"
+num-integer = "0.1.47"
+num-rational = { version = "0.4.2", features = ["num-bigint"] }
+num-traits = "0.2.19"
+
+[profile.dev]
+# The compile-time evaluator and the test suite run noticeably faster with
+# light optimization; debug info is kept.
+opt-level = 1

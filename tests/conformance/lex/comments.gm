@@ -1,0 +1,20 @@
+//! stage: lex
+//! dump
+// Line comment
+a // trailing
+/* block */ b /* inline */ c
+/* nested /* comment */ still comment */ d
+/**/ e /***/ f /* * / */ g
+/*/ x */ h
+/* "string?" 'c' ` */ i
+/// doc comment
+j
+//// not a doc comment
+k
+///
+l
+/* multi
+   line
+   comment */ m
+// é ü € comments may hold any Unicode
+n

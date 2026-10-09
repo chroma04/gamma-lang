@@ -1,0 +1,11 @@
+//! stage: lex
+//! dump
+// Identifiers are ASCII; keywords are reserved; contextual words are identifiers.
+and break continue ctl defer discard effect else
+errdefer esc false fn for foreign handler if
+import in is match not null or pub
+resume return struct true try union using when
+while with
+const on where test type cont
+foo Foo _foo foo_1 FOO9 __ _ _1 c cc ca
+fns fn_ iff matches notin isnot

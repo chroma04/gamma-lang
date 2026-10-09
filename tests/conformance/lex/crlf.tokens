@@ -1,0 +1,11 @@
+4:1 ident a
+4:2 newline
+6:1 ident b
+6:11 newline
+7:12 ident c
+7:13 newline
+8:1 str Raw "raw\nstring"
+9:8 newline
+10:1 ident d
+10:2 newline
+11:1 eof

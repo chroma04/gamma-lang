@@ -1,0 +1,68 @@
+//! stage: parse
+// Spec 5.10: structs.
+
+Vec2 :: struct { x, y: f32 }
+
+Window :: struct {
+    pub title: string
+    size: Vec2 = Vec2(x: 800, y: 600)
+    open: bool = true
+}
+
+Derived :: struct {
+    using base: Vec2
+    pub z: f32
+}
+
+Mode :: #bits(u16) struct {
+    read, write, exec: bool    // 1 bit each
+    kind: u4
+    _: u9                      // explicit padding, unnamed
+}
+
+Wire :: #packed struct {
+    tag: u8
+    len: u16
+}
+
+Aligned :: #align(16) struct {
+    #align(8)
+    a: u8
+    b: u32
+}
+
+Empty :: struct {}
+
+Ring :: struct(T: type) { zero: T; add, mul: ^fn(a, b: T) -> T }
+
+List :: struct(T: type) { pub items: []T; cap: usize; alloc: Allocator }
+
+HashMap :: struct(K, V: type,
+                  hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,
+                  eq:   ?^fn(a, b: ^const K) -> bool = null) {
+    count: usize
+    buckets: [^]Bucket
+}
+
+Checked :: struct(T: type) where Eq(T), Ord(T) {
+    value: T
+}
+
+SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
+
+Platform :: struct {
+    id: u32
+    when target.os is .Linux {
+        fd: i32
+    } else {
+        handle: rawptr
+    }
+}
+
+use_it :: fn() {
+    w := Window(title: "hi")
+    w2 := Window(..w, title: "new")
+    v := Vec2(x: 1.5, y: -2)
+    p := Derived(base: v, z: 0)
+    pos := p.base.x
+}

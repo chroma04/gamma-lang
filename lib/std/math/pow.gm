@@ -1,0 +1,218 @@
+// pow (fdlibm / FreeBSD msun): x**y = 2**(y * log2(x)), with log2(x) carried
+// as a high and a low part so that the product keeps about 70 bits.
+
+TWO53 :: 9007199254740992.0
+POW_L1 :: 5.99999999999994648725e-01
+POW_L2 :: 4.28571428578550184252e-01
+POW_L3 :: 3.33333329818377432918e-01
+POW_L4 :: 2.72728123808534006489e-01
+POW_L5 :: 2.30660745775561754067e-01
+POW_L6 :: 2.06975017800338417784e-01
+POW_DP_H :: 5.84962487220764160156e-01
+POW_DP_L :: 1.35003920212974897128e-08
+POW_LG2 :: 6.93147180559945286227e-01
+POW_LG2_H :: 6.93147182464599609375e-01
+POW_LG2_L :: -1.90465429995776804525e-09
+POW_OVT :: 8.0085662595372944372e-17
+POW_CP :: 9.61796693925975554329e-01
+POW_CP_H :: 9.61796700954437255859e-01
+POW_CP_L :: -7.02846165095275826516e-09
+POW_IVLN2 :: 1.44269504088896338700e+00
+// 1/ln2 as a 21-bit head and a tail, so that head * t is exact for t with up to
+// 32 significant bits (fdlibm's 24-bit head is not enough for every such t).
+POW_IVLN2_H :: 0x1.7154700000000p0
+POW_IVLN2_L :: 0x1.94ae0bf85ddf4p-22
+
+/// `x` raised to the power `y`, following C99 Annex F: `pow(x, 0)` and
+/// `pow(1, y)` are 1 even for NaN, a negative `x` with a non-integral `y`
+/// gives NaN, and overflow and underflow give an infinity and a zero with the
+/// sign the exact result would have. The error is below 1 ulp in practice (0.82 ulp measured).
+pub pow :: fn(x: f64, y: f64) -> f64 {
+    hx := high_word(x)
+    lx := low_word(x)
+    hy := high_word(y)
+    ly := low_word(y)
+    ix := hx & 0x7fffffff
+    iy := hy & 0x7fffffff
+
+    // y is zero: x**0 = 1. x is 1: 1**y = 1, even if y is NaN.
+    if iy is 0 and ly is 0 { return 1.0 }
+    if hx is 0x3ff00000 and lx is 0 { return 1.0 }
+    if x.is_nan() or y.is_nan() { return x + y }
+
+    // yisint: 0 if y is not an integer, 1 if it is odd, 2 if it is even
+    // (only needed for negative x).
+    yisint: i32 = 0
+    if hx < 0 {
+        if iy >= 0x43400000 {
+            yisint = 2
+        } else if iy >= 0x3ff00000 {
+            ke := (iy >> 20) - 0x3ff
+            if ke > 20 {
+                jj := ly >> (52 - ke).trunc(u32)
+                if (jj <<% (52 - ke).trunc(u32)) is ly { yisint = 2 - (jj & 1).trunc(i32) }
+            } else if ly is 0 {
+                jj := iy >> (20 - ke).trunc(u32)
+                if (jj <<% (20 - ke).trunc(u32)) is iy { yisint = 2 - (jj & 1) }
+            }
+        }
+    }
+
+    // Special values of y.
+    if ly is 0 {
+        if iy is 0x7ff00000 {
+            if ix is 0x3ff00000 and lx is 0 { return 1.0 }
+            if ix >= 0x3ff00000 { return if hy >= 0 { y } else { 0.0 } }
+            return if hy < 0 { -y } else { 0.0 }
+        }
+        if iy is 0x3ff00000 { return if hy < 0 { 1.0 / x } else { x } }
+        if hy is 0x40000000 { return x * x }
+        if hy is 0x3fe00000 and hx >= 0 { return x.sqrt() }
+    }
+
+    ax := abs(x)
+    // Special values of x: +-0, +-inf, +-1.
+    if lx is 0 {
+        if ix is 0x7ff00000 or ix is 0 or ix is 0x3ff00000 {
+            zs := ax
+            if hy < 0 { zs = 1.0 / zs }
+            if hx < 0 {
+                if ix is 0x3ff00000 and yisint is 0 {
+                    zs = nan
+                } else if yisint is 1 {
+                    zs = -zs
+                }
+            }
+            return zs
+        }
+    }
+
+    // (x < 0) ** (non-integer) is NaN.
+    if hx < 0 and yisint is 0 { return nan }
+    // The sign of the result: -1 for a negative x and an odd integer y.
+    s := if hx < 0 and yisint is 1 { -1.0 } else { 1.0 }
+
+    // log2(|x|) = t1 + t2.
+    t1 := 0.0
+    t2 := 0.0
+    if iy > 0x41e00000 {
+        // |y| > 2**31.
+        if iy > 0x43f00000 {
+            // |y| > 2**64: must overflow or underflow.
+            if ix <= 0x3fefffff { return if hy < 0 { inf } else { 0.0 } }
+            if ix >= 0x3ff00000 { return if hy > 0 { inf } else { 0.0 } }
+        }
+        // Overflow or underflow unless x is close to 1.
+        if ix < 0x3fefffff { return if hy < 0 { s * inf } else { s * 0.0 } }
+        if ix > 0x3ff00000 { return if hy > 0 { s * inf } else { s * 0.0 } }
+        // |1 - x| <= 2**-20: log(x) = t - t^2/2 + t^3/3 - t^4/4 suffices.
+        t := ax - 1.0
+        w := (t * t) * (0.5 - t * (0.3333333333333333 - t * 0.25))
+        u := POW_IVLN2_H * t
+        v := t * POW_IVLN2_L - w * POW_IVLN2
+        t1 = clear_low(u + v)
+        t2 = v - (t1 - u)
+    } else {
+        n: i32 = 0
+        axn := ax
+        ixn := ix
+        if ixn < 0x00100000 {
+            // Subnormal x.
+            axn *= TWO53
+            n -= 53
+            ixn = high_word(axn)
+        }
+        n += (ixn >> 20) - 0x3ff
+        j := ixn & 0x000fffff
+        // Interval: |x| < sqrt(3/2) -> k = 0; < sqrt(3) -> k = 1; else halve.
+        ixn = j | 0x3ff00000
+        k: i32 = 0
+        if j <= 0x3988E {
+            k = 0
+        } else if j < 0xBB67A {
+            k = 1
+        } else {
+            k = 0
+            n += 1
+            ixn -= 0x00100000
+        }
+        axn = set_high(axn, ixn)
+        // ss = (x - bp)/(x + bp) with bp = 1 or 1.5, as s_h + s_l.
+        bp := if k is 0 { 1.0 } else { 1.5 }
+        u := axn - bp
+        v := 1.0 / (axn + bp)
+        ss := u * v
+        s_h := clear_low(ss)
+        t_h0 := from_words(((ixn >> 1) | 0x20000000) + 0x00080000 + (k << 18), 0)
+        t_l0 := axn - (t_h0 - bp)
+        s_l := v * ((u - s_h * t_h0) - s_h * t_l0)
+        // log(ax) = 2*ss + (2/3)*ss**3 + ...
+        s2 := ss * ss
+        r := s2 * s2 * (POW_L1 + s2 * (POW_L2 + s2 * (POW_L3 + s2 * (POW_L4 + s2 * (POW_L5 + s2 * POW_L6)))))
+        r += s_l * (s_h + ss)
+        s2 = s_h * s_h
+        t_h := clear_low(3.0 + s2 + r)
+        t_l := r - ((t_h - 3.0) - s2)
+        // u + v = ss * (1 + ...)
+        u2 := s_h * t_h
+        v2 := s_l * t_h + t_l * ss
+        // 2/(3 log 2) * (ss + ...)
+        p_h := clear_low(u2 + v2)
+        p_l := v2 - (p_h - u2)
+        z_h := POW_CP_H * p_h
+        dp_h := if k is 0 { 0.0 } else { POW_DP_H }
+        dp_l := if k is 0 { 0.0 } else { POW_DP_L }
+        z_l := POW_CP_L * p_h + p_l * POW_CP + dp_l
+        // log2(ax) = n + dp_h + z_h + z_l
+        tn := f64(n)
+        t1 = clear_low(((z_h + z_l) + dp_h) + tn)
+        t2 = z_l - (((t1 - tn) - dp_h) - z_h)
+    }
+
+    // Split y into y1 + y2 and compute (y1 + y2) * (t1 + t2).
+    y1 := clear_low(y)
+    p_lo := (y - y1) * t1 + y * t2
+    p_hi := y1 * t1
+    zz := p_lo + p_hi
+    j := high_word(zz)
+    i := low_word(zz)
+    if j >= 0x40900000 {
+        // z >= 1024
+        if (j - 0x40900000) is not 0 or i is not 0 { return s * inf }
+        if p_lo + POW_OVT > zz - p_hi { return s * inf }
+    } else if (j & 0x7fffffff) >= 0x4090cc00 {
+        // z <= -1075
+        if j.trunc(u32) is not 0xc090cc00 or i is not 0 { return s * 0.0 }
+        if p_lo <= zz - p_hi { return s * 0.0 }
+    }
+
+    // 2**(p_hi + p_lo): split off the integer part n.
+    absj := j & 0x7fffffff
+    kk := (absj >> 20) - 0x3ff
+    nn: i32 = 0
+    if absj > 0x3fe00000 {
+        // |z| > 0.5: n = [z + 0.5]
+        nn = j + shr(0x00100000, kk + 1)
+        kk = ((nn & 0x7fffffff) >> 20) - 0x3ff
+        tt := from_words(nn & ~shr(0x000fffff, kk), 0)
+        nn = shr((nn & 0x000fffff) | 0x00100000, 20 - kk)
+        if j < 0 { nn = -nn }
+        p_hi -= tt
+    }
+    tq := clear_low(p_lo + p_hi)
+    uq := tq * POW_LG2_H
+    vq := (p_lo - (tq - p_hi)) * POW_LG2 + tq * POW_LG2_L
+    zr := uq + vq
+    wq := vq - (zr - uq)
+    tsq := zr * zr
+    tc := zr - tsq * (EXP_P1 + tsq * (EXP_P2 + tsq * (EXP_P3 + tsq * (EXP_P4 + tsq * EXP_P5))))
+    rq := (zr * tc) / (tc - 2.0) - (wq + zr * wq)
+    zr = 1.0 - (rq - zr)
+    jz := high_word(zr) +% shl(nn, 20)
+    if (jz >> 20) <= 0 {
+        zr = scalbn(zr, nn)
+    } else {
+        zr = set_high(zr, jz)
+    }
+    return s * zr
+}

@@ -1,0 +1,31 @@
+// Destructuring bindings (§4.5) and multiple assignment (§4.7).
+divmod :: fn(a, b: u32) -> (u32, u32) => (a / b, a % b)
+
+P :: struct { x, y: i32 }
+
+main :: fn() \ {Out} {
+    q, r := divmod(17, 5)
+    print("{} {}\n", (q, r))
+    a, _, c :: (1, "ignored", 3.5)
+    print("{} {}\n", (a, c))
+    m, n: (u8, i64) = (200, -3)
+    print("{} {}\n", (m, n))
+    u, v: (u32, u32) = ---
+    u, v = (7, 8)
+    print("{} {}\n", (u, v))
+
+    // Every value is computed before any store, so these swap.
+    x := 1
+    y := 2
+    x, y = (y, x)
+    print("{} {}\n", (x, y))
+    arr := [3]i32(10, 20, 30)
+    arr[0], arr[2] = (arr[2], arr[0])
+    print("{}\n", arr)
+    p := P(x: 1, y: 2)
+    p.x, p.y, _ = (p.y, p.x, "discarded")
+    print("{}\n", p)
+    i: usize = 0
+    i, arr[i] = (2, 99)        // the place `arr[i]` is evaluated first, with i = 0
+    print("{} {}\n", (i, arr))
+}

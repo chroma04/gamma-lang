@@ -1,0 +1,23 @@
+//! stage: check
+// Literal inference (§6.1): the type of a literal comes from how it is used.
+takes_u8 :: fn(x: u8) {}
+takes_usize :: fn(x: usize) {}
+
+f :: fn() {
+    a := 0
+    takes_u8(a)
+    b := 300                    //~ ERROR does not fit in `u8`
+    takes_u8(b)
+    c := 1.5
+    d: i32 = c                  //~ ERROR expected `i32`
+    e := 0
+    takes_usize(e)
+    big: u8 = 256               //~ ERROR does not fit in `u8`
+    neg: u8 = -1                //~ ERROR does not fit in `u8`
+    ok: i8 = -128
+    m :: 4096
+    small: u16 = m
+    tiny: u8 = m                //~ ERROR does not fit in `u8`
+}
+
+main :: fn() {}

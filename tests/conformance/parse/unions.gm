@@ -1,0 +1,52 @@
+//! stage: parse
+// Spec 5.11: unions.
+
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+
+Dir :: union { N, E, S, W }
+
+Errno :: union(i32) { Ok = 0, Perm = 1, NoEnt = 2 }
+
+Tagged :: union(u8) {
+    A = 1
+    B
+    C = 10,
+}
+
+IoError :: union {
+    NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace,
+    Other: i32                                  // OS error code
+}
+
+LoadError :: union { Parse: ParseError, Io: IoError, Missing }
+
+Option :: union(T: type) { None, Some: T }
+
+Either :: union(L, R: type) where Eq(L), Eq(R) {
+    Left: L
+    Right: R
+}
+
+RawBits :: #c_union union { a: u32, b: f32 }
+
+Platform :: union {
+    Common
+    when target.os is .Linux {
+        Epoll: i32
+    } else {
+        Kqueue: i32
+    }
+}
+
+f :: fn(s: Shape) {
+    a := Shape.Circle(1.0)
+    b: Shape = .Rect(w: 2, h: 3)
+    c := .Empty
+    d := Dir.from_tag(2)
+    e := s.tag()
+}

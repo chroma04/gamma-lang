@@ -1,0 +1,21 @@
+//! stage: check
+// Top-level constants are evaluated at compile time (§17.2, §17.4).
+TOO_BIG :: 200u8 + 100u8                     //~ ERROR compile-time evaluation failed
+
+spin :: fn() -> u32 {
+    n: u32 = 0
+    while true { n +%= 1 }
+}
+
+#fuel(1000)
+FOREVER :: spin()                            //~ ERROR compile-time evaluation failed
+
+counter: u32 = 0                             //~ ERROR top-level bindings are immutable
+
+#fuel(0)                                     //~ ERROR `#fuel(n)` takes a positive integer constant
+NOFUEL :: 1u8
+
+#bogus                                       //~ ERROR unknown attribute `#bogus`
+B :: 2u8
+
+main :: fn() {}

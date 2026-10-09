@@ -1,0 +1,4 @@
+//! stage: lex
+// An unterminated raw string runs to the end of the file; the error is at the opening.
+x := ``never closed ` with one backtick //~ ERROR unterminated raw string literal
+y := 1

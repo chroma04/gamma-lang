@@ -1,0 +1,42 @@
+// std/fixed_buffer and std/arena (§15.2): allocators made current with `with`.
+fixed_buffer :: import "std/fixed_buffer"
+arena :: import "std/arena"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    // A fixed buffer: allocations come from `store`, front to back.
+    store: [64]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        a := try make(u8, 3)
+        b := try make(u64, 2)                 // aligned to 8
+        print("{} {} aligned: {}\n", (a.len, b.len, b.ptr.addr() % 8 is 0))
+        print("used {}\n", fb.bytes_used())
+        free(b)                               // the most recent allocation is given back
+        print("used {}\n", fb.bytes_used())
+        if !e := make(u8, 100) { print("too big: {}\n", e) }
+        c := try make(u8, 56)                 // exactly what is left after `a`
+        print("used {} with {} more\n", (fb.bytes_used(), c.len))
+    }
+    fb.reset()
+    print("after reset {}\n", fb.bytes_used())
+
+    // An arena: many allocations, released at once.
+    ar := arena.new()
+    defer ar.deinit()
+    total: u64 = 0
+    with ar.allocator() {
+        for i in 0..1000 {
+            p := try new(u64, 7)
+            total += p^
+            s := try make(u8, i % 50 + 1)
+            s.fill(1)
+        }
+        big := try make(u8, 100_000)          // bigger than a chunk
+        big[99_999] = 5
+        total += u64(big[99_999])
+        l := list(u32)                        // a list keeps the arena it was made with
+        for i in 0..100 { try l.push(i) }
+        total += u64(l.items.len.trunc(u32))
+    }
+    print("arena total {}\n", total)
+}

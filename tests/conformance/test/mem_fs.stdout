@@ -1,0 +1,26 @@
+test "a written file reads back" ... ok
+test "the root is an empty directory" ... ok
+test "modified is the fake clock at the last write" ... ok
+test "paths are normalized" ... ok
+test "opening a missing file" ... ok
+test "create, exclusive and truncate" ... ok
+test "append writes go to the end" ... ok
+test "access modes are enforced" ... ok
+test "each handle has its own position" ... ok
+test "seek from the start, the current position and the end" ... ok
+test "writing past the end fills the gap with zeros" ... ok
+test "making directories" ... ok
+test "removing files" ... ok
+test "an open file survives its removal" ... ok
+test "removing directories" ... ok
+test "renaming files" ... ok
+test "renaming directories moves their contents" ... ok
+test "listing a directory" ... ok
+test "a name longer than the buffer" ... ok
+test "closed and unknown handles" ... ok
+test "the file system is fresh in every test: write" ... ok
+test "the file system is fresh in every test: read" ... ok
+test "many files" ... ok
+test "large writes and reads" ... ok
+test "other effects still work next to the file system" ... ok
+25 passed, 0 failed

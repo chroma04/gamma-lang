@@ -1,0 +1,13 @@
+//! stage: parse
+// 7.4.3: shifts do not mix with arithmetic or with each other.
+
+f :: fn() {
+    a := 1 << n - 1 //~ ERROR arithmetic operand of a shift must be parenthesized
+    b := x + y << 1 //~ ERROR arithmetic operand of a shift must be parenthesized
+    c := x * y >> 2 //~ ERROR arithmetic operand of a shift must be parenthesized
+    d := a << b << c //~ ERROR shifts cannot be chained
+    e := (1 << n) - 1
+    g := 1 << (n - 1)
+    h := (a << b) << c
+    i := a <<% 1
+}

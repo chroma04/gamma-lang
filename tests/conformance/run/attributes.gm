@@ -1,0 +1,25 @@
+// `#fast_math` and `#deprecated` (§20.2), and the inlining hints.
+
+// Float contraction and reassociation are permitted here; these sums are exact either way.
+#fast_math
+dot :: fn(a, b: [4]f64) -> f64 {
+    s := 0.0
+    for i in 0..4 { s += a[i] * b[i] }
+    return s
+}
+
+#deprecated("use `dot`")
+old_dot :: fn(a, b: [4]f64) -> f64 => dot(a, b)
+
+#inline
+twice :: fn(x: i32) -> i32 => x * 2
+
+#noinline #cold
+fail_slowly :: fn() -> i32 => 7
+
+main :: fn() \ {Out} {
+    a := [4]f64(1.0, 2.0, 3.0, 4.0)
+    print("{}\n", dot(a, a))
+    print("{}\n", old_dot(a, [4]f64(fill: 1.0)))   //~ WARNING `old_dot` is deprecated
+    print("{} {}\n", (twice(21), fail_slowly()))
+}

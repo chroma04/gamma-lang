@@ -1,0 +1,15 @@
+//! stage: check
+// `@write` sinks and templates (§21.6.1); function pointers perform only the effects
+// in their type (§11.7).
+
+keep :: fn(p: ^fn(b: []const u8)) {}
+
+f :: fn(n: i32) \ {Out} {
+    @write(n, "x", ())                                       //~ ERROR a `@write` sink is a `fn(bytes: []const u8)`, not `i32`
+    @write(fn(b: []const u8) {}, "{} {}", (1,))              //~ ERROR the template has 2 placeholders but 1 arguments are given
+    @write(fn(b: []const u8) {}, "{", ())                    //~ ERROR invalid template
+    keep(fn(b: []const u8) { print("{}", b) })               //~ ERROR a function pointer performs only the effects in its type
+    @prefetch(n)                                             //~ ERROR `@prefetch` takes a pointer, not `i32`
+}
+
+main :: fn() {}

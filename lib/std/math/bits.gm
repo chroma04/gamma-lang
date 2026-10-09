@@ -1,0 +1,54 @@
+// Bit-level helpers shared by the files of std/math. Everything here is private.
+
+// Negative zero (the literal -0.0 would be an exact constant and lose its sign).
+NEG_ZERO: f64 : (0x8000_0000_0000_0000u64).bits(f64)
+
+// The high word of `x` as a signed 32-bit integer (sign bit, exponent and the
+// top 20 fraction bits).
+high_word :: fn(x: f64) -> i32 => (x.bits(u64) >> 32).trunc(i32)
+
+// The low word of `x` (the low 32 fraction bits).
+low_word :: fn(x: f64) -> u32 => x.bits(u64).trunc(u32)
+
+// The double whose high word is `hi` and whose low word is `lo`.
+from_words :: fn(hi: i32, lo: u32) -> f64 =>
+    ((u64(hi.trunc(u32)) << 32) | u64(lo)).bits(f64)
+
+// `x` with its high word replaced.
+set_high :: fn(x: f64, hi: i32) -> f64 => from_words(hi, low_word(x))
+
+// `x` with its low word replaced.
+set_low :: fn(x: f64, lo: u32) -> f64 => from_words(high_word(x), lo)
+
+// `x` with the low 32 fraction bits cleared.
+clear_low :: fn(x: f64) -> f64 => (x.bits(u64) & 0xffff_ffff_0000_0000).bits(f64)
+
+// Arithmetic shifts by a signed amount that is known to be in range.
+shr :: fn(a: i32, s: i32) -> i32 => a >> s.trunc(u32)
+shl :: fn(a: i32, s: i32) -> i32 => a <<% s.trunc(u32)
+
+// x * 2**n, correctly rounded, also when the result is subnormal.
+scalbn :: fn(x: f64, n0: i32) -> f64 {
+    y := x
+    n := n0
+    if n > 1023 {
+        y *= 0x1.0p1023
+        n -= 1023
+        if n > 1023 {
+            y *= 0x1.0p1023
+            n -= 1023
+            if n > 1023 { n = 1023 }
+        }
+    } else if n < -1022 {
+        // Scale in two steps and keep the final exponent below -53 so that
+        // the last multiplication is the only rounding.
+        y *= 0x1.0p-1022 * 0x1.0p53
+        n += 1022 - 53
+        if n < -1022 {
+            y *= 0x1.0p-1022 * 0x1.0p53
+            n += 1022 - 53
+            if n < -1022 { n = -1022 }
+        }
+    }
+    return y * from_words((0x3ff + n) << 20, 0)
+}

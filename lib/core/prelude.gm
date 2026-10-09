@@ -1,0 +1,1237 @@
+// The core prelude: declarations of the core library (spec §21) that are
+// written in Gamma. Its public names are visible in every module without an
+// import, as part of the universe scope (§21.1).
+
+/// Standard output (§12.9, §21.7).
+pub Out :: effect {
+    write_out: fn(bytes: []const u8)
+}
+
+/// Standard error (§12.9, §21.7).
+pub Err :: effect {
+    write_err: fn(bytes: []const u8)
+}
+
+/// Operations that escape Gamma's model: foreign calls, `#global` storage and
+/// the like (§12.10). It has no operations and cannot be handled.
+pub Sys :: effect {}
+
+/// The iteration effect (§13.1): an iterator is any function that performs it.
+pub Yield :: effect(T: type) {
+    yield: esc(x: T)
+}
+
+/// Command-line arguments, environment variables and process exit (§12.9, §21.7).
+pub Env :: effect {
+    args: fn() -> []const string
+    var: fn(name: string) -> ?string
+    exit: esc(code: u8) -> never
+}
+
+/// Why an input or output operation failed (§21.7).
+pub IoError :: union {
+    NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
+    Other: i32                                  // OS error code
+}
+
+/// Standard input (§12.9, §21.7): `read` returns 0 at the end of the input.
+pub In :: effect {
+    read: fn(buf: []u8) -> IoError!usize
+}
+
+/// A point in time on a monotonic clock, since an unspecified epoch.
+pub Instant :: struct { pub ns: u64 }
+
+/// A length of time.
+pub Duration :: struct { pub ns: u64 }
+
+/// Time (§12.9, §21.7): `wall` gives Unix time in nanoseconds.
+pub Clock :: effect {
+    now: fn() -> Instant
+    wall: fn() -> i64
+    sleep: fn(d: Duration)
+}
+
+/// Random bytes (§12.9, §21.7).
+pub Rand :: effect {
+    fill: fn(buf: []u8)
+}
+
+/// An open file (§21.7).
+pub File :: struct { handle: i64 }
+
+/// An open directory, for listing its entries.
+pub Dir :: struct { handle: i64 }
+
+/// How `open` opens a file. The default opens an existing file for reading.
+pub OpenOptions :: struct {
+    pub read: bool = true
+    pub write: bool = false
+    pub append: bool = false        // every write goes to the end
+    pub create: bool = false        // create the file if it does not exist
+    pub truncate: bool = false      // empty the file
+    pub exclusive: bool = false     // create the file; fail if it exists
+}
+
+/// What `stat` reports about a file or directory.
+pub FileInfo :: struct {
+    pub size: u64
+    pub is_dir: bool
+    pub modified: i64               // Unix time in nanoseconds
+}
+
+/// Where `seek` measures its offset from.
+pub SeekFrom :: union { Start, Current, End }
+
+/// The file system (§12.9, §21.7). Paths are byte strings, relative to the working
+/// directory unless absolute.
+pub Fs :: effect {
+    open: fn(path: string, opts: OpenOptions) -> IoError!File
+    close: fn(f: File)
+    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
+    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
+    stat: fn(path: string) -> IoError!FileInfo
+    remove: fn(path: string) -> IoError!()
+    rename: fn(from, to: string) -> IoError!()
+    make_dir: fn(path: string) -> IoError!()
+    remove_dir: fn(path: string) -> IoError!()                  // the directory must be empty
+    open_dir: fn(path: string) -> IoError!Dir
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name into buf; 0 after the last
+    close_dir: fn(d: Dir)
+}
+
+/// A TCP connection (§21.7).
+pub Socket :: struct { handle: i64 }
+
+/// A TCP socket listening for connections.
+pub Listener :: struct { handle: i64 }
+
+/// The network (§12.9, §21.7): TCP connections. Hosts are names or address literals
+/// (`"localhost"`, `"127.0.0.1"`, `"::1"`).
+pub Net :: effect {
+    connect: fn(host: string, port: u16) -> IoError!Socket
+    listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
+    local_port: fn(l: Listener) -> IoError!u16
+    accept: fn(l: Listener) -> IoError!Socket                     // waits for a connection
+    send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
+    recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
+    close_socket: fn(s: Socket)
+    close_listener: fn(l: Listener)
+}
+
+/// `n` nanoseconds.
+pub ns :: fn(n: u64) -> Duration => Duration(ns: n)
+/// `n` microseconds.
+pub us :: fn(n: u64) -> Duration => Duration(ns: n * 1_000)
+/// `n` milliseconds.
+pub ms :: fn(n: u64) -> Duration => Duration(ns: n * 1_000_000)
+/// `n` seconds.
+pub secs :: fn(n: u64) -> Duration => Duration(ns: n * 1_000_000_000)
+
+/// The time from `earlier` to `i` (checked: `earlier` must not be later).
+pub since :: fn(i: Instant, earlier: Instant) -> Duration => Duration(ns: i.ns - earlier.ns)
+/// The instant `d` after `i`.
+pub after :: fn(i: Instant, d: Duration) -> Instant => Instant(ns: i.ns + d.ns)
+/// The sum of two durations.
+pub plus :: fn(d: Duration, e: Duration) -> Duration => Duration(ns: d.ns + e.ns)
+/// `d` less `e` (checked: `e` must not be longer).
+pub minus :: fn(d: Duration, e: Duration) -> Duration => Duration(ns: d.ns - e.ns)
+/// The whole milliseconds in `d`.
+pub to_ms :: fn(d: Duration) -> u64 => d.ns / 1_000_000
+
+// The default handlers of `In`, `Clock` and `Rand` (§12.9), installed around `main`.
+
+SystemIo :: struct {}
+
+/// The result of a system read or write: a count, or an error code.
+io_result :: fn(n: i64) -> IoError!usize {
+    if n >= 0 { return n.trunc(usize) }
+    if n <= -1000 { return !.Other((-1000 - n).trunc(i32)) }
+    e: IoError = match -1 - n {
+        0 => .NotFound
+        1 => .PermissionDenied
+        2 => .AlreadyExists
+        3 => .WouldBlock
+        4 => .Interrupted
+        5 => .BrokenPipe
+        6 => .ConnectionReset
+        7 => .InvalidInput
+        8 => .UnexpectedEof
+        9 => .NoSpace
+        _ => .ConnectionRefused
+    }
+    return !e
+}
+
+handler In for SystemIo {
+    read(self, buf) => io_result(@sys_read(buf))
+}
+
+handler Clock for SystemIo {
+    now(self) => Instant(ns: @clock_now())
+    wall(self) => @clock_wall()
+    sleep(self, d) => @clock_sleep(d.ns)
+}
+
+handler Rand for SystemIo {
+    fill(self, buf) => @rand_fill(buf)
+}
+
+/// The result of a system call that produces nothing.
+io_unit :: fn(n: i64) -> IoError!() {
+    _ = try io_result(n)
+    return ()
+}
+
+handler Fs for SystemIo {
+    open(self, path, o) => {
+        flags: u32 = 0
+        if o.read { flags |= 1 }
+        if o.write { flags |= 2 }
+        if o.append { flags |= 4 }
+        if o.create { flags |= 8 }
+        if o.truncate { flags |= 16 }
+        if o.exclusive { flags |= 32 }
+        h := try io_result(@fs_open(path, flags))
+        return File(handle: h.trunc(i64))
+    }
+    close(self, f) => { _ = @fs_close(f.handle) }
+    read_from(self, f, buf) => io_result(@fs_read(f.handle, buf))
+    write_to(self, f, bytes) => io_result(@fs_write(f.handle, bytes))
+    seek(self, f, offset, from) => {
+        n := try io_result(@fs_seek(f.handle, offset, from.tag().trunc(u32)))
+        return n.trunc(u64)
+    }
+    stat(self, path) => {
+        out: [3]i64 = ---
+        _ = try io_result(@fs_stat(path, out[..]))
+        return FileInfo(size: out[0].trunc(u64), is_dir: out[1] is 1, modified: out[2])
+    }
+    remove(self, path) => io_unit(@fs_remove(path))
+    rename(self, from, to) => io_unit(@fs_rename(from, to))
+    make_dir(self, path) => io_unit(@fs_make_dir(path))
+    remove_dir(self, path) => io_unit(@fs_remove_dir(path))
+    open_dir(self, path) => {
+        h := try io_result(@fs_open_dir(path))
+        return Dir(handle: h.trunc(i64))
+    }
+    next_entry(self, d, buf) => io_result(@fs_next_entry(d.handle, buf))
+    close_dir(self, d) => { _ = @fs_close_dir(d.handle) }
+}
+
+handler Net for SystemIo {
+    connect(self, host, port) => {
+        h := try io_result(@net_connect(host, port))
+        return Socket(handle: h.trunc(i64))
+    }
+    listen(self, host, port) => {
+        h := try io_result(@net_listen(host, port))
+        return Listener(handle: h.trunc(i64))
+    }
+    local_port(self, l) => {
+        p := try io_result(@net_local_port(l.handle))
+        return p.trunc(u16)
+    }
+    accept(self, l) => {
+        h := try io_result(@net_accept(l.handle))
+        return Socket(handle: h.trunc(i64))
+    }
+    send(self, s, bytes) => io_result(@net_send(s.handle, bytes))
+    recv(self, s, buf) => io_result(@net_recv(s.handle, buf))
+    close_socket(self, s) => { _ = @net_close(s.handle) }
+    close_listener(self, l) => { _ = @net_close(l.handle) }
+}
+
+/// The default handlers of `In`, `Clock`, `Rand`, `Fs` and `Net`, for code that starts
+/// without handlers: a new thread, or a function exported to C (§19.4, §19.6).
+pub system_io :: fn() -> SystemIo => SystemIo()
+
+SystemOutput :: struct {}
+
+handler Out for SystemOutput {
+    write_out(self, bytes) => @sys_write(1, bytes)
+}
+
+handler Err for SystemOutput {
+    write_err(self, bytes) => @sys_write(2, bytes)
+}
+
+/// The default handlers of `Out` and `Err`: standard output and standard error.
+pub system_output :: fn() -> SystemOutput => SystemOutput()
+
+// Standard iterators (§13.3, §21.4).
+
+/// The integers `lo, lo + 1, …, hi - 1`.
+pub range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+    i := lo
+    while i < hi {
+        yield(i)
+        i += 1
+    }
+}
+
+/// The integers `lo, …, hi`, without overflowing at `hi`; nothing if `lo > hi`.
+pub range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+    if lo > hi { return }
+    i := lo
+    while true {
+        yield(i)
+        if i is hi { return }
+        i += 1
+    }
+}
+
+/// The elements of `xs`, in order.
+pub each :: fn(T: type, xs: []const T) \ {Yield(T)} {
+    for x in xs { yield(x) }
+}
+
+/// Pointers to the elements of `xs`, for modifying them in place.
+pub each_ptr :: fn(T: type, xs: []T) \ {Yield(^T)} {
+    i: usize = 0
+    while i < xs.len {
+        yield(&xs[i])
+        i += 1
+    }
+}
+
+/// Each element with its index.
+pub enumerate :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} {
+    i: usize = 0
+    for x in xs {
+        yield((i: i, x: x))
+        i += 1
+    }
+}
+
+/// The elements of `xs`, last to first.
+pub reversed :: fn(T: type, xs: []const T) \ {Yield(T)} {
+    i := xs.len
+    while i > 0 {
+        i -= 1
+        yield(xs[i])
+    }
+}
+
+/// The bytes of a string.
+pub bytes :: fn(s: string) \ {Yield(u8)} {
+    for b in s { yield(b) }
+}
+
+/// A Unicode code point.
+pub rune :: u32
+
+/// The code points of the UTF-8 text `s`. Each maximal ill-formed subsequence
+/// becomes one U+FFFD REPLACEMENT CHARACTER, as in the Unicode Standard (§3.9).
+pub runes :: fn(s: string) \ {Yield(rune)} {
+    i: usize = 0
+    while i < s.len {
+        b := s[i]
+        if b < 0x80 {
+            yield(rune(b))
+            i += 1
+            continue
+        }
+        // The number of continuation bytes, and the range of the first of them.
+        n: usize = 0
+        lo: u8 = 0x80
+        hi: u8 = 0xbf
+        c: rune = 0
+        if b >= 0xc2 and b <= 0xdf {
+            n = 1
+            c = rune(b & 0x1f)
+        } else if b >= 0xe0 and b <= 0xef {
+            n = 2
+            c = rune(b & 0x0f)
+            if b is 0xe0 { lo = 0xa0 }
+            if b is 0xed { hi = 0x9f }
+        } else if b >= 0xf0 and b <= 0xf4 {
+            n = 3
+            c = rune(b & 0x07)
+            if b is 0xf0 { lo = 0x90 }
+            if b is 0xf4 { hi = 0x8f }
+        } else {
+            yield(0xfffd)
+            i += 1
+            continue
+        }
+        k: usize = 1
+        while k <= n {
+            if i + k >= s.len { break }
+            d := s[i + k]
+            if d < lo or d > hi { break }
+            c = (c << 6) | rune(d & 0x3f)
+            lo = 0x80
+            hi = 0xbf
+            k += 1
+        }
+        if k > n {
+            yield(c)
+        } else {
+            yield(0xfffd)
+        }
+        i += k
+    }
+}
+
+// Allocation (§15.2, §21.2).
+
+/// Allocation failure.
+pub AllocError :: union { OutOfMemory }
+
+/// The operations of an allocator.
+pub AllocVtable :: struct {
+    pub alloc:  ^fn(data: rawptr, size, align: usize) -> ?[^]u8
+    pub resize: ^fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool
+    pub free:   ^fn(data: rawptr, p: [^]u8, size, align: usize)
+}
+
+/// A first-class handle to an allocator.
+pub Allocator :: struct {
+    pub data: rawptr
+    pub vt:   ^const AllocVtable
+}
+
+/// The current allocator.
+pub Alloc :: effect {
+    current: fn() -> Allocator
+}
+
+/// An `Allocator` value is a handler for `Alloc`: `with arena.allocator() { … }`.
+handler Alloc for Allocator {
+    current(self) => self
+}
+
+heap_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 => @heap_alloc(size, align)
+
+heap_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+heap_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    @heap_free(p, size, align)
+}
+
+HEAP :: AllocVtable(alloc: heap_alloc, resize: heap_resize, free: heap_free)
+
+/// The system heap; the default `Alloc` handler of `main`.
+pub heap_allocator :: fn() -> Allocator => Allocator(data: &HEAP, vt: &HEAP)
+
+/// An empty slice: a non-null, suitably aligned pointer that must not be dereferenced (§5.7).
+empty_slice :: fn(T: type) -> []T {
+    p := @align_of(T).to_ptr([^]T)?
+    return p[0..0]
+}
+
+// Debug builds record which allocator made each block from `new` and `make`, and where,
+// so that freeing it through another allocator traps reporting both sites (§18.3).
+tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
+    @alloc_tag(raw, a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+}
+
+/// A new object holding `init`.
+pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> AllocError!^T \ {Alloc} {
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T), @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
+    p := raw.cast(^T)
+    p^ = init
+    return p
+}
+
+/// `n` objects of plain data, uninitialized.
+pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
+    if n is 0 { return empty_slice(T) }
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
+    return raw.cast([^]T)[0..n]
+}
+
+/// `n` objects of plain data, uninitialized, at an address that is a multiple of
+/// `align` (a power of two; at least the type's own alignment is used).
+pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
+    if n is 0 { return empty_slice(T) }
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T) * n, align.max(@align_of(T))) else return !.OutOfMemory
+    tag(raw, a, site)
+    return raw.cast([^]T)[0..n]
+}
+
+/// `n` copies of `x`.
+pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
+    if n is 0 { return empty_slice(T) }
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
+    s := raw.cast([^]T)[0..n]
+    for i in 0..n { s[i] = x }
+    return s
+}
+
+/// Releases a slice obtained from `make` or `make_fill` under the current allocator.
+pub free :: fn(T: type, s: []T, site: SourceLocation = @caller_location()) \ {Alloc} {
+    if s.len is 0 { return }
+    a := current()
+    @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, @align_of(T))
+}
+
+/// Releases an object obtained from `new` under the current allocator.
+pub destroy :: fn(T: type, p: ^T, site: SourceLocation = @caller_location()) \ {Alloc} {
+    a := current()
+    @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
+}
+
+/// Where a piece of source code is (§21.7): the result of `@location()`.
+pub SourceLocation :: struct {
+    pub file: string
+    pub line, column: u32
+    pub function: string
+}
+
+// Running tests (§3.8, §12.9): `gamma test` calls `run_test` or `run_test_unit`
+// for each test. The test's allocations go through a tracking allocator, and
+// memory still allocated when the test ends fails it.
+
+TestTracker :: struct {
+    live: usize
+    inner: Allocator
+}
+
+track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    t := data.cast(^TestTracker)
+    p := t.inner.vt.alloc(t.inner.data, size, align) else return null
+    t.live += size
+    return p
+}
+
+track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    t := data.cast(^TestTracker)
+    t.live -= size
+    t.inner.vt.free(t.inner.data, p, size, align)
+}
+
+TRACKING :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
+
+leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
+    if t.live is 0 { return 0 }
+    eprint("leaked {} bytes\n", t.live)
+    return 1
+}
+
+// The test handlers of `In`, `Clock` and `Rand` (§12.9): empty input, a fake clock that
+// `sleep` advances, and a generator with a fixed seed.
+
+TestIo :: struct {
+    clock: u64
+    seed: u64
+    fs: MemFs
+    net: MemNet
+}
+
+/// The test handler's wall-clock time, in Unix nanoseconds.
+test_wall :: fn(io: ^TestIo) -> i64 => 1_700_000_000_000_000_000 + io.clock.trunc(i64)
+
+handler In for ^TestIo {
+    read(self, buf) => 0
+}
+
+handler Clock for ^TestIo {
+    now(self) => Instant(ns: self.clock)
+    wall(self) => test_wall(self)
+    sleep(self, d) => { self.clock += d.ns }
+}
+
+handler Rand for ^TestIo {
+    fill(self, buf) => {
+        // splitmix64
+        for i in 0..buf.len {
+            self.seed +%= 0x9e3779b97f4a7c15
+            z := self.seed
+            z = (z ~ (z >> 30)) *% 0xbf58476d1ce4e5b9
+            z = (z ~ (z >> 27)) *% 0x94d049bb133111eb
+            buf[i] = (z ~ (z >> 31)).trunc(u8)
+        }
+    }
+}
+
+// The test handler of `Fs` (§12.9): an in-memory file system. Every test starts with
+// a fresh, empty one, and it is freed when the test ends.
+//
+// The file system is a table of nodes (files and directories). A node knows its parent
+// and its name, so a directory's children are the linked nodes that name it as their
+// parent, and `rename` only changes those two fields. Open files and directories are
+// tables of handles that refer to nodes; a handle is its index plus one and is never
+// reused, so a closed or unknown handle always fails. A removed node lives on until the
+// last handle to it is closed, as on POSIX. All storage comes from the system heap, not
+// from the test's tracking allocator, so it does not count as a leak.
+//
+// Paths are split at `/`; empty components and `.` are ignored (so a leading `/` is
+// accepted and means the root, and `a//b/./c` is `a/b/c`) and `..` is rejected with
+// `InvalidInput`. Errors other than the portable `IoError` variants are the Linux errno
+// values, as with the real file system: 9 (EBADF) for a closed handle or an operation the
+// handle's mode does not allow, 16 (EBUSY) for the root directory, 20 (ENOTDIR) for a file
+// used as a directory, 21 (EISDIR) for a directory used as a file (also for `remove`,
+// which never removes directories), and 39 (ENOTEMPTY) for removing or replacing a
+// directory that has entries.
+
+MemNode :: struct {
+    used: bool              // the slot holds a node
+    linked: bool            // reachable by path
+    is_dir: bool
+    parent: usize           // the root is its own parent
+    opens: usize            // open handles
+    modified: i64
+    name: List(u8)
+    data: List(u8)          // the contents of a file
+}
+
+MemOpen :: struct {
+    open: bool
+    node: usize
+    pos: u64
+    can_read, can_write, append: bool
+}
+
+MemDir :: struct {
+    open: bool
+    node: usize
+    next: usize             // the next node slot to look at
+}
+
+MemFs :: struct {
+    alloc: Allocator
+    nodes: List(MemNode)    // node 0 is the root
+    files: List(MemOpen)
+    dirs: List(MemDir)
+}
+
+/// The largest file, so that a wild `seek` and `write` cannot exhaust the memory.
+MEM_FILE_MAX :: 1 << 30
+
+/// An empty file system, holding just the root directory.
+mem_fs :: fn() -> MemFs {
+    a := heap_allocator()
+    m := with a {
+        MemFs(alloc: a, nodes: list(MemNode), files: list(MemOpen), dirs: list(MemDir))
+    }
+    _ = new_node(&m, true, 0, "", 0)
+    return m
+}
+
+/// Frees everything.
+mem_fs_free :: fn(m: ^MemFs) {
+    for i in 0..m.nodes.items.len {
+        if m.nodes.items[i].used { release(m, i) }
+    }
+    m.nodes.deinit()
+    m.files.deinit()
+    m.dirs.deinit()
+}
+
+/// Adds a node named `name` in `parent`; its id.
+new_node :: fn(m: ^MemFs, is_dir: bool, parent: usize, name: string, now: i64) -> IoError!usize {
+    a := m.alloc
+    node := with a {
+        MemNode(used: true, linked: true, is_dir: is_dir, parent: parent, opens: 0, modified: now,
+                name: list(u8), data: list(u8))
+    }
+    if not fill_name(&node.name, name) { return !.NoSpace }
+    i: usize = 0
+    while i < m.nodes.items.len {
+        if not m.nodes.items[i].used { break }
+        i += 1
+    }
+    if i < m.nodes.items.len {
+        m.nodes.items[i] = node
+        return i
+    }
+    if !e := m.nodes.push(node) {
+        node.name.deinit()
+        node.data.deinit()
+        return !.NoSpace
+    }
+    return i
+}
+
+/// Copies `name` into the empty list `l`; on failure frees `l` and returns false.
+fill_name :: fn(l: ^List(u8), name: string) -> bool {
+    for b in name {
+        if !e := l.push(b) {
+            l.deinit()
+            return false
+        }
+    }
+    return true
+}
+
+/// Frees a node's storage and its slot.
+release :: fn(m: ^MemFs, id: usize) {
+    n := &m.nodes.items[id]
+    n.name.deinit()
+    n.data.deinit()
+    n.used = false
+    n.linked = false
+}
+
+/// Removes a node from its directory; it is freed once no handle refers to it.
+unlink :: fn(m: ^MemFs, id: usize) {
+    n := &m.nodes.items[id]
+    n.linked = false
+    if n.opens is 0 { release(m, id) }
+}
+
+same_bytes :: fn(a, b: []const u8) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+/// The linked child of directory `dir` called `name`.
+find_child :: fn(m: ^MemFs, dir: usize, name: string) -> ?usize {
+    for i in 1..m.nodes.items.len {
+        n := &m.nodes.items[i]
+        if n.used and n.linked and n.parent is dir and same_bytes(n.name.items, name) { return i }
+    }
+    return null
+}
+
+has_children :: fn(m: ^MemFs, dir: usize) -> bool {
+    for i in 1..m.nodes.items.len {
+        n := &m.nodes.items[i]
+        if n.used and n.linked and n.parent is dir { return true }
+    }
+    return false
+}
+
+/// The next component of `path` at or after `pos`, skipping empty ones and `.`.
+next_component :: fn(path: string, pos: ^usize) -> ?string {
+    i := pos^
+    while i < path.len {
+        while i < path.len and path[i] is '/' { i += 1 }
+        start := i
+        while i < path.len and path[i] is not '/' { i += 1 }
+        c := path[start..i]
+        if c.len is 0 or (c.len is 1 and c[0] is '.') { continue }
+        pos^ = i
+        return c
+    }
+    pos^ = i
+    return null
+}
+
+is_dot_dot :: fn(c: string) -> bool => c.len is 2 and c[0] is '.' and c[1] is '.'
+
+/// The node a path names.
+resolve :: fn(m: ^MemFs, path: string) -> IoError!usize {
+    cur: usize = 0
+    pos: usize = 0
+    while true {
+        c := next_component(path, &pos) else break
+        if is_dot_dot(c) { return !.InvalidInput }
+        if not m.nodes.items[cur].is_dir { return !.Other(20) }
+        cur = find_child(m, cur, c) else return !.NotFound
+    }
+    return cur
+}
+
+/// Where a path would be: the directory that holds it and its name there. The root has
+/// neither (`root` is true).
+MemPath :: struct {
+    parent: usize
+    name: string
+    root: bool
+}
+
+resolve_parent :: fn(m: ^MemFs, path: string) -> IoError!MemPath {
+    cur: usize = 0
+    pos: usize = 0
+    pending: ?string = null
+    while true {
+        c := next_component(path, &pos) else break
+        if is_dot_dot(c) { return !.InvalidInput }
+        if p := pending {
+            if not m.nodes.items[cur].is_dir { return !.Other(20) }
+            cur = find_child(m, cur, p) else return !.NotFound
+        }
+        pending = c
+    }
+    name := pending else return MemPath(parent: 0, name: "", root: true)
+    if not m.nodes.items[cur].is_dir { return !.Other(20) }
+    return MemPath(parent: cur, name: name, root: false)
+}
+
+touch :: fn(m: ^MemFs, id: usize, now: i64) {
+    m.nodes.items[id].modified = now
+}
+
+/// `open`. A directory can be opened for reading only; reading it then fails with
+/// EISDIR. Like POSIX, an access mode with neither `write` nor `append` is read-only.
+mem_open :: fn(m: ^MemFs, path: string, o: OpenOptions, now: i64) -> IoError!File {
+    p := try resolve_parent(m, path)
+    id: usize = 0
+    if not p.root {
+        if existing := find_child(m, p.parent, p.name) {
+            if o.exclusive { return !.AlreadyExists }
+            id = existing
+        } else {
+            if not (o.create or o.exclusive) { return !.NotFound }
+            id = try new_node(m, false, p.parent, p.name, now)
+            touch(m, p.parent, now)
+        }
+    } else if o.exclusive {
+        return !.AlreadyExists
+    }
+    wr := o.write or o.append
+    node := &m.nodes.items[id]
+    if node.is_dir and (wr or o.truncate) { return !.Other(21) }
+    if o.truncate {
+        node.data.clear()
+        node.modified = now
+    }
+    h := MemOpen(open: true, node: id, pos: 0, can_read: o.read or not wr, can_write: wr, append: o.append)
+    m.files.push(h) else return !.NoSpace
+    node.opens += 1
+    return File(handle: m.files.items.len.trunc(i64))
+}
+
+mem_close :: fn(m: ^MemFs, f: File) {
+    p := get_open(m, f) else return
+    p.open = false
+    n := &m.nodes.items[p.node]
+    n.opens -= 1
+    if not n.linked and n.opens is 0 { release(m, p.node) }
+}
+
+get_open :: fn(m: ^MemFs, f: File) -> IoError!^MemOpen {
+    if f.handle < 1 or f.handle > m.files.items.len.trunc(i64) { return !.Other(9) }
+    p := &m.files.items[(f.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+mem_read :: fn(m: ^MemFs, f: File, buf: []u8) -> IoError!usize {
+    p := try get_open(m, f)
+    if not p.can_read { return !.Other(9) }
+    n := &m.nodes.items[p.node]
+    if n.is_dir { return !.Other(21) }
+    size := n.data.items.len
+    if p.pos >= size.trunc(u64) { return 0 }
+    start := p.pos.trunc(usize)
+    count := buf.len.min(size - start)
+    buf[0..count].copy_from(n.data.items[start..start + count])
+    p.pos += count.trunc(u64)
+    return count
+}
+
+mem_write :: fn(m: ^MemFs, f: File, bytes: []const u8, now: i64) -> IoError!usize {
+    p := try get_open(m, f)
+    if not p.can_write { return !.Other(9) }
+    n := &m.nodes.items[p.node]
+    if p.append { p.pos = n.data.items.len.trunc(u64) }
+    if bytes.len is 0 { return 0 }
+    if p.pos > MEM_FILE_MAX or bytes.len > MEM_FILE_MAX - p.pos.trunc(usize) { return !.NoSpace }
+    start := p.pos.trunc(usize)
+    // Seeking past the end and writing leaves a gap of zeros.
+    while n.data.items.len < start {
+        n.data.push(0) else return !.NoSpace
+    }
+    written: usize = 0
+    while written < bytes.len {
+        at := start + written
+        if at < n.data.items.len {
+            n.data.items[at] = bytes[written]
+        } else {
+            n.data.push(bytes[written]) else break
+        }
+        written += 1
+    }
+    if written is 0 { return !.NoSpace }
+    p.pos += written.trunc(u64)
+    n.modified = now
+    return written
+}
+
+mem_seek :: fn(m: ^MemFs, f: File, offset: i64, from: SeekFrom) -> IoError!u64 {
+    p := try get_open(m, f)
+    base: i64 = match from {
+        .Start => 0
+        .Current => p.pos.trunc(i64)
+        .End => m.nodes.items[p.node].data.items.len.trunc(i64)
+    }
+    target := base +? offset else return !.InvalidInput
+    if target < 0 { return !.InvalidInput }
+    p.pos = target.trunc(u64)
+    return p.pos
+}
+
+mem_stat :: fn(m: ^MemFs, path: string) -> IoError!FileInfo {
+    n := &m.nodes.items[try resolve(m, path)]
+    return FileInfo(size: n.data.items.len.trunc(u64), is_dir: n.is_dir, modified: n.modified)
+}
+
+mem_remove :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    id := try resolve(m, path)
+    if m.nodes.items[id].is_dir { return !.Other(21) }
+    touch(m, m.nodes.items[id].parent, now)
+    unlink(m, id)
+    return ()
+}
+
+mem_make_dir :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    p := try resolve_parent(m, path)
+    if p.root { return !.AlreadyExists }
+    if find_child(m, p.parent, p.name) is not null { return !.AlreadyExists }
+    _ = try new_node(m, true, p.parent, p.name, now)
+    touch(m, p.parent, now)
+    return ()
+}
+
+mem_remove_dir :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
+    id := try resolve(m, path)
+    if id is 0 { return !.Other(16) }
+    if not m.nodes.items[id].is_dir { return !.Other(20) }
+    if has_children(m, id) { return !.Other(39) }
+    touch(m, m.nodes.items[id].parent, now)
+    unlink(m, id)
+    return ()
+}
+
+mem_rename :: fn(m: ^MemFs, from, to: string, now: i64) -> IoError!() {
+    id := try resolve(m, from)
+    dest := try resolve_parent(m, to)
+    if id is 0 or dest.root { return !.Other(16) }
+    is_dir := m.nodes.items[id].is_dir
+    // A directory cannot move into itself.
+    if is_dir {
+        a := dest.parent
+        while true {
+            if a is id { return !.InvalidInput }
+            if a is 0 { break }
+            a = m.nodes.items[a].parent
+        }
+    }
+    existing := find_child(m, dest.parent, dest.name)
+    if e := existing {
+        if e is id { return () }
+        if m.nodes.items[e].is_dir {
+            if not is_dir { return !.Other(21) }
+            if has_children(m, e) { return !.Other(39) }
+        } else if is_dir {
+            return !.Other(20)
+        }
+    }
+    // Build the new name before changing anything.
+    a := m.alloc
+    name := with a { list(u8) }
+    if not fill_name(&name, dest.name) { return !.NoSpace }
+    if e := existing { unlink(m, e) }
+    n := &m.nodes.items[id]
+    n.name.deinit()
+    n.name = name
+    touch(m, n.parent, now)
+    touch(m, dest.parent, now)
+    n.parent = dest.parent
+    return ()
+}
+
+mem_open_dir :: fn(m: ^MemFs, path: string) -> IoError!Dir {
+    id := try resolve(m, path)
+    if not m.nodes.items[id].is_dir { return !.Other(20) }
+    m.dirs.push(MemDir(open: true, node: id, next: 1)) else return !.NoSpace
+    m.nodes.items[id].opens += 1
+    return Dir(handle: m.dirs.items.len.trunc(i64))
+}
+
+get_dir :: fn(m: ^MemFs, d: Dir) -> IoError!^MemDir {
+    if d.handle < 1 or d.handle > m.dirs.items.len.trunc(i64) { return !.Other(9) }
+    p := &m.dirs.items[(d.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+/// The next entry's name, in the order of the node table. A name longer than `buf` is
+/// `InvalidInput`, and a later call with a larger buffer returns it.
+mem_next_entry :: fn(m: ^MemFs, d: Dir, buf: []u8) -> IoError!usize {
+    p := try get_dir(m, d)
+    while p.next < m.nodes.items.len {
+        n := &m.nodes.items[p.next]
+        if n.used and n.linked and n.parent is p.node {
+            len := n.name.items.len
+            if len > buf.len { return !.InvalidInput }
+            buf[0..len].copy_from(n.name.items)
+            p.next += 1
+            return len
+        }
+        p.next += 1
+    }
+    return 0
+}
+
+mem_close_dir :: fn(m: ^MemFs, d: Dir) {
+    p := get_dir(m, d) else return
+    p.open = false
+    n := &m.nodes.items[p.node]
+    n.opens -= 1
+    if not n.linked and n.opens is 0 { release(m, p.node) }
+}
+
+handler Fs for ^TestIo {
+    open(self, path, o) => mem_open(&self.fs, path, o, test_wall(self))
+    close(self, f) => { mem_close(&self.fs, f) }
+    read_from(self, f, buf) => mem_read(&self.fs, f, buf)
+    write_to(self, f, bytes) => mem_write(&self.fs, f, bytes, test_wall(self))
+    seek(self, f, offset, from) => mem_seek(&self.fs, f, offset, from)
+    stat(self, path) => mem_stat(&self.fs, path)
+    remove(self, path) => mem_remove(&self.fs, path, test_wall(self))
+    rename(self, from, to) => mem_rename(&self.fs, from, to, test_wall(self))
+    make_dir(self, path) => mem_make_dir(&self.fs, path, test_wall(self))
+    remove_dir(self, path) => mem_remove_dir(&self.fs, path, test_wall(self))
+    open_dir(self, path) => mem_open_dir(&self.fs, path)
+    next_entry(self, d, buf) => mem_next_entry(&self.fs, d, buf)
+    close_dir(self, d) => { mem_close_dir(&self.fs, d) }
+}
+
+// The test handler of `Net` (§12.9): a loopback fake. Every test starts with an empty
+// in-memory network, freed when the test ends, so connections never leave the process
+// and nothing is visible to the next test.
+//
+// There is one host: `"localhost"`, `"127.0.0.1"` and `"::1"` all name it, and any other
+// host fails with `.Other(0)`, as a failed name lookup does with real sockets. A listener
+// is a port and a backlog of connections that have not been accepted; `connect` succeeds
+// at once if something listens on the port (`.ConnectionRefused` otherwise) and queues
+// the connection's server end on the backlog. A connection is two ends, each with a queue
+// of the bytes the other end has sent. Tests run on one thread, so nothing can block:
+// `accept` with an empty backlog and `recv` with nothing to read while the peer is still
+// open fail with `.WouldBlock`. Handles are an index plus one and are never reused, so a
+// closed or unknown handle always fails with `.Other(9)` (EBADF on Linux); listening on a
+// port that is already taken gives `.Other(98)` (EADDRINUSE). Port 0 picks the next free
+// port from 49152 up. All storage comes from the system heap, not from the test's
+// tracking allocator, so it does not count as a leak.
+
+MemSock :: struct {
+    open: bool
+    peer: usize             // the other end of the connection
+    inbox: List(u8)         // bytes the peer has sent; those before `head` have been read
+    head: usize
+}
+
+MemListener :: struct {
+    open: bool
+    port: u16
+    backlog: List(usize)    // server ends not yet accepted; those before `head` have been
+    head: usize
+}
+
+MemNet :: struct {
+    alloc: Allocator
+    socks: List(MemSock)
+    listeners: List(MemListener)
+    next_port: u16          // where the search for a free port starts
+}
+
+MEM_PORT_FIRST :: 49152
+
+/// An empty network.
+mem_net :: fn() -> MemNet {
+    a := heap_allocator()
+    return with a {
+        MemNet(alloc: a, socks: list(MemSock), listeners: list(MemListener), next_port: MEM_PORT_FIRST)
+    }
+}
+
+/// Frees everything.
+mem_net_free :: fn(n: ^MemNet) {
+    for i in 0..n.socks.items.len { n.socks.items[i].inbox.deinit() }
+    for i in 0..n.listeners.items.len { n.listeners.items[i].backlog.deinit() }
+    n.socks.deinit()
+    n.listeners.deinit()
+}
+
+is_loopback :: fn(host: string) -> bool =>
+    same_bytes(host, "localhost") or same_bytes(host, "127.0.0.1") or same_bytes(host, "::1")
+
+/// The open listener on `port`.
+find_listener :: fn(n: ^MemNet, port: u16) -> ?usize {
+    for i in 0..n.listeners.items.len {
+        l := &n.listeners.items[i]
+        if l.open and l.port is port { return i }
+    }
+    return null
+}
+
+/// The first unused port at or after `next_port`, wrapping from 65535 to 49152.
+free_port :: fn(n: ^MemNet) -> IoError!u16 {
+    tries: u32 = 0
+    while tries < 16384 {
+        p := n.next_port
+        n.next_port = if p is 65535 { MEM_PORT_FIRST } else { p + 1 }
+        if find_listener(n, p) is null { return p }
+        tries += 1
+    }
+    return !.Other(98)
+}
+
+get_sock :: fn(n: ^MemNet, s: Socket) -> IoError!^MemSock {
+    if s.handle < 1 or s.handle > n.socks.items.len.trunc(i64) { return !.Other(9) }
+    p := &n.socks.items[(s.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+get_listener :: fn(n: ^MemNet, l: Listener) -> IoError!^MemListener {
+    if l.handle < 1 or l.handle > n.listeners.items.len.trunc(i64) { return !.Other(9) }
+    p := &n.listeners.items[(l.handle - 1).trunc(usize)]
+    if not p.open { return !.Other(9) }
+    return p
+}
+
+mem_listen :: fn(n: ^MemNet, host: string, port: u16) -> IoError!Listener {
+    if not is_loopback(host) { return !.Other(0) }
+    p := port
+    if port is 0 {
+        p = try free_port(n)
+    } else if find_listener(n, port) is not null {
+        return !.Other(98)
+    }
+    a := n.alloc
+    l := with a {
+        MemListener(open: true, port: p, backlog: list(usize), head: 0)
+    }
+    n.listeners.push(l) else return !.NoSpace
+    return Listener(handle: n.listeners.items.len.trunc(i64))
+}
+
+mem_local_port :: fn(n: ^MemNet, l: Listener) -> IoError!u16 {
+    p := try get_listener(n, l)
+    return p.port
+}
+
+mem_connect :: fn(n: ^MemNet, host: string, port: u16) -> IoError!Socket {
+    if not is_loopback(host) { return !.Other(0) }
+    li := find_listener(n, port) else return !.ConnectionRefused
+    client := n.socks.items.len
+    a := n.alloc
+    c := with a { MemSock(open: true, peer: client + 1, inbox: list(u8), head: 0) }
+    s := with a { MemSock(open: true, peer: client, inbox: list(u8), head: 0) }
+    n.socks.push(c) else return !.NoSpace
+    if !e := n.socks.push(s) {
+        _ = n.socks.pop()
+        return !.NoSpace
+    }
+    if !e := n.listeners.items[li].backlog.push(client + 1) {
+        _ = n.socks.pop()
+        _ = n.socks.pop()
+        return !.NoSpace
+    }
+    return Socket(handle: (client + 1).trunc(i64))
+}
+
+mem_accept :: fn(n: ^MemNet, l: Listener) -> IoError!Socket {
+    p := try get_listener(n, l)
+    if p.head >= p.backlog.items.len { return !.WouldBlock }
+    i := p.backlog.items[p.head]
+    p.head += 1
+    if p.head is p.backlog.items.len {
+        p.backlog.clear()
+        p.head = 0
+    }
+    return Socket(handle: (i + 1).trunc(i64))
+}
+
+mem_send :: fn(n: ^MemNet, s: Socket, bytes: []const u8) -> IoError!usize {
+    p := try get_sock(n, s)
+    peer := &n.socks.items[p.peer]
+    if not peer.open { return !.BrokenPipe }
+    sent: usize = 0
+    while sent < bytes.len {
+        peer.inbox.push(bytes[sent]) else break
+        sent += 1
+    }
+    if sent is 0 and bytes.len > 0 { return !.NoSpace }
+    return sent
+}
+
+mem_recv :: fn(n: ^MemNet, s: Socket, buf: []u8) -> IoError!usize {
+    p := try get_sock(n, s)
+    if buf.len is 0 { return 0 }
+    avail := p.inbox.items.len - p.head
+    if avail is 0 {
+        if n.socks.items[p.peer].open { return !.WouldBlock }
+        return 0
+    }
+    count := buf.len.min(avail)
+    buf[0..count].copy_from(p.inbox.items[p.head..p.head + count])
+    p.head += count
+    if p.head is p.inbox.items.len {
+        p.inbox.clear()
+        p.head = 0
+    }
+    return count
+}
+
+/// Closes one end of a connection and drops what was waiting to be read there.
+close_end :: fn(p: ^MemSock) {
+    p.open = false
+    p.inbox.deinit()
+    p.head = 0
+}
+
+mem_close_socket :: fn(n: ^MemNet, s: Socket) {
+    p := get_sock(n, s) else return
+    close_end(p)
+}
+
+mem_close_listener :: fn(n: ^MemNet, l: Listener) {
+    p := get_listener(n, l) else return
+    for i in p.head..p.backlog.items.len {
+        close_end(&n.socks.items[p.backlog.items[i]])
+    }
+    p.open = false
+    p.backlog.deinit()
+    p.head = 0
+}
+
+handler Net for ^TestIo {
+    connect(self, host, port) => mem_connect(&self.net, host, port)
+    listen(self, host, port) => mem_listen(&self.net, host, port)
+    local_port(self, l) => mem_local_port(&self.net, l)
+    accept(self, l) => mem_accept(&self.net, l)
+    send(self, s, bytes) => mem_send(&self.net, s, bytes)
+    recv(self, s, buf) => mem_recv(&self.net, s, buf)
+    close_socket(self, s) => { mem_close_socket(&self.net, s) }
+    close_listener(self, l) => { mem_close_listener(&self.net, l) }
+}
+
+/// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
+run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
+    t := TestTracker(live: 0, inner: heap_allocator())
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
+    r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
+    mem_fs_free(&io.fs)
+    mem_net_free(&io.net)
+    if !e := r {
+        eprint("error: {}\n", e)
+        return 1
+    }
+    return leaked(&t)
+}
+
+/// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
+run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
+    t := TestTracker(live: 0, inner: heap_allocator())
+    io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
+    with Allocator(data: &t, vt: &TRACKING), &io { body() }
+    mem_fs_free(&io.fs)
+    mem_net_free(&io.net)
+    return leaked(&t)
+}
+
+/// The memory order of an atomic operation (§19.6), as in C11.
+pub MemoryOrder :: union { Relaxed, Acquire, Release, AcqRel, SeqCst }

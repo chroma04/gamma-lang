@@ -1,0 +1,365 @@
+// std/fmt: integer bases, padding, grouping, and exactly rounded float formatting (§21.6.1).
+fmt :: import "std/fmt"
+
+// Prints each formatted string between brackets so padding is visible.
+show :: fn(s: string) \ {Out} {
+    print("[{}]\n", s)
+}
+
+ints :: fn() \ {Out} {
+    buf := [fmt.INT_BUF]u8(fill: 0)
+    b := buf[..]
+
+    // Zero and ordinary values in every named base.
+    show(fmt.dec(i32, 0, b))
+    show(fmt.dec(i32, 42, b))
+    show(fmt.dec(i32, -42, b))
+    show(fmt.hex(i32, 255, b))
+    show(fmt.hex_upper(i32, 255, b))
+    show(fmt.hex(u32, 0xdead_beef, b))
+    show(fmt.hex_upper(u32, 0xdead_beef, b))
+    show(fmt.oct(i32, 511, b))
+    show(fmt.bin(i32, 10, b))
+    show(fmt.hex(i32, -255, b))
+    show(fmt.oct(i32, -8, b))
+    show(fmt.bin(i32, -5, b))
+    show(fmt.bin(i32, 0, b))
+
+    // The extremes of each width, in decimal, hex and binary.
+    show(fmt.dec(i8(-128), b))
+    show(fmt.dec(i8(127), b))
+    show(fmt.dec(u8(255), b))
+    show(fmt.hex(i8(-128), b))
+    show(fmt.bin(i8(-128), b))
+    show(fmt.bin(u8(255), b))
+    show(fmt.dec(i16(-32768), b))
+    show(fmt.dec(u16(65535), b))
+    show(fmt.dec(i32(-2147483648), b))
+    show(fmt.dec(u32(4294967295), b))
+    show(fmt.hex(u32(4294967295), b))
+    show(fmt.dec(i64(-9223372036854775808), b))
+    show(fmt.dec(i64(9223372036854775807), b))
+    show(fmt.hex(i64(-9223372036854775808), b))
+    show(fmt.dec(u64(18446744073709551615), b))
+    show(fmt.hex(u64(18446744073709551615), b))
+    show(fmt.oct(u64(18446744073709551615), b))
+    show(fmt.bin(u64(18446744073709551615), b))
+    show(fmt.dec(i128(-170141183460469231731687303715884105728), b))
+    show(fmt.dec(i128(170141183460469231731687303715884105727), b))
+    show(fmt.hex(i128(-170141183460469231731687303715884105728), b))
+    show(fmt.dec(u128(340282366920938463463374607431768211455), b))
+    show(fmt.hex(u128(340282366920938463463374607431768211455), b))
+    show(fmt.hex_upper(u128(340282366920938463463374607431768211455), b))
+    show(fmt.oct(u128(340282366920938463463374607431768211455), b))
+    show(fmt.bin(u128(340282366920938463463374607431768211455), b))
+    show(fmt.bin(i128(-170141183460469231731687303715884105728), b))
+    show(fmt.dec(usize(12345), b))
+    show(fmt.dec(isize(-12345), b))
+    show(fmt.dec(i24(-8388608), b))
+
+    // Arbitrary bases 2 to 36.
+    show(fmt.radix(i32, 35, 36, b))
+    show(fmt.radix(i32, 36, 36, b))
+    show(fmt.radix_upper(i32, 123456789, 36, b))
+    show(fmt.radix(i32, 123456789, 36, b))
+    show(fmt.radix(i32, -100, 7, b))
+    show(fmt.radix(i32, 1000, 3, b))
+    show(fmt.radix(i8(-128), 36, b))
+    show(fmt.radix(u64(18446744073709551615), 36, b))
+    show(fmt.radix(u128(340282366920938463463374607431768211455), 36, b))
+    show(fmt.radix_upper(u128(340282366920938463463374607431768211455), 2, b))
+    for base in 2..37 {
+        show(fmt.radix(i32(-2024), base, b))
+    }
+
+    // Prefixes.
+    show(fmt.prefixed(i32, 255, 16, b))
+    show(fmt.prefixed_upper(i32, 255, 16, b))
+    show(fmt.prefixed(i32, -255, 16, b))
+    show(fmt.prefixed(i32, 8, 8, b))
+    show(fmt.prefixed(i32, 5, 2, b))
+    show(fmt.prefixed(i32, 0, 16, b))
+    show(fmt.prefixed(u128(340282366920938463463374607431768211455), 2, b))
+    show(fmt.prefixed(i128(-170141183460469231731687303715884105728), 2, b))
+
+    // Thousands separators.
+    show(fmt.grouped(i32, 0, ',', b))
+    show(fmt.grouped(i32, 7, ',', b))
+    show(fmt.grouped(i32, 999, ',', b))
+    show(fmt.grouped(i32, 1000, ',', b))
+    show(fmt.grouped(i32, 1234567, ',', b))
+    show(fmt.grouped(i32, -1234567, '_', b))
+    show(fmt.grouped(i32, -999, ',', b))
+    show(fmt.grouped(i32, -1000, ' ', b))
+    show(fmt.grouped(i64(-9223372036854775808), ',', b))
+    show(fmt.grouped(u128(340282366920938463463374607431768211455), '.', b))
+    show(fmt.grouped(i8(-128), ',', b))
+    show(fmt.grouped(u16(65535), ',', b))
+    print("{} {} {}\n", (fmt.max_int_len(u8), fmt.max_int_len(i128), fmt.max_grouped_len(u128)))
+}
+
+padding :: fn() \ {Out} {
+    buf := [64]u8(fill: 0)
+    b := buf[..]
+
+    // Widths smaller than, equal to and larger than the text.
+    show(fmt.pad_left("abc", 2, ' ', b))
+    show(fmt.pad_left("abc", 3, ' ', b))
+    show(fmt.pad_left("abc", 4, ' ', b))
+    show(fmt.pad_left("abc", 8, '.', b))
+    show(fmt.pad_left("", 3, '*', b))
+    show(fmt.pad_right("abc", 2, ' ', b))
+    show(fmt.pad_right("abc", 3, ' ', b))
+    show(fmt.pad_right("abc", 4, ' ', b))
+    show(fmt.pad_right("abc", 8, '.', b))
+    show(fmt.pad_right("", 3, '*', b))
+    show(fmt.center("abc", 2, ' ', b))
+    show(fmt.center("abc", 3, ' ', b))
+    show(fmt.center("abc", 4, '-', b))
+    show(fmt.center("abc", 5, '-', b))
+    show(fmt.center("abc", 6, '-', b))
+    show(fmt.center("abc", 9, '=', b))
+    show(fmt.center("ab", 7, ' ', b))
+    show(fmt.center("", 4, '#', b))
+
+    // Zero padding keeps the sign and the prefix first.
+    show(fmt.zero_pad("42", 5, b))
+    show(fmt.zero_pad("-42", 5, b))
+    show(fmt.zero_pad("+42", 5, b))
+    show(fmt.zero_pad("-42", 3, b))
+    show(fmt.zero_pad("-42", 2, b))
+    show(fmt.zero_pad("0", 4, b))
+    show(fmt.zero_pad("-3.14", 8, b))
+    show(fmt.zero_pad("0xff", 8, b))
+    show(fmt.zero_pad("-0b101", 10, b))
+    show(fmt.zero_pad("0o17", 6, b))
+    show(fmt.zero_pad("nan", 6, b))
+    show(fmt.zero_pad("-inf", 6, b))
+    show(fmt.zero_pad("-", 3, b))
+    show(fmt.zero_pad("", 3, b))
+
+    // Combining with the number formatters, in the same buffer and in two.
+    num := [fmt.INT_BUF]u8(fill: 0)
+    show(fmt.pad_left(fmt.dec(i32, -7, num[..]), 6, ' ', b))
+    show(fmt.zero_pad(fmt.dec(i32, -7, num[..]), 6, b))
+    show(fmt.zero_pad(fmt.hex(i32, 255, num[..]), 6, b))
+    show(fmt.zero_pad(fmt.prefixed(i32, 255, 16, num[..]), 8, b))
+    show(fmt.zero_pad(fmt.fixed(-2.5, 1, num[..]), 8, b))
+    show(fmt.pad_right(fmt.bin(i32, 5, b), 8, '0', b))
+    show(fmt.pad_left(fmt.hex_upper(i32, 48879, b), 8, '0', b))
+    show(fmt.center(fmt.dec(i32, 1, b), 5, '*', b))
+    show(fmt.zero_pad(fmt.dec(i32, -42, b), 8, b))
+}
+
+fixed_cases :: fn() \ {Out} {
+    buf := [fmt.fixed_buf_len(40)]u8(fill: 0)
+    b := buf[..]
+
+    show(fmt.fixed(0.0, 0, b))
+    show(fmt.fixed(0.0, 2, b))
+    show(fmt.fixed(1.0, 0, b))
+    show(fmt.fixed(1.0, 3, b))
+    show(fmt.fixed(-1.0, 3, b))
+    show(fmt.fixed(3.14159, 2, b))
+    show(fmt.fixed(3.14159, 4, b))
+    show(fmt.fixed(3.14159, 10, b))
+    show(fmt.fixed(-3.14159, 1, b))
+
+    // Ties are decided on the exact binary value, to even.
+    show(fmt.fixed(0.125, 2, b))
+    show(fmt.fixed(0.375, 2, b))
+    show(fmt.fixed(0.625, 2, b))
+    show(fmt.fixed(0.875, 2, b))
+    show(fmt.fixed(-0.125, 2, b))
+    show(fmt.fixed(-0.375, 2, b))
+    show(fmt.fixed(0.5, 0, b))
+    show(fmt.fixed(1.5, 0, b))
+    show(fmt.fixed(2.5, 0, b))
+    show(fmt.fixed(3.5, 0, b))
+    show(fmt.fixed(-0.5, 0, b))
+    show(fmt.fixed(-1.5, 0, b))
+    show(fmt.fixed(-2.5, 0, b))
+    show(fmt.fixed(0.25, 1, b))
+    show(fmt.fixed(0.35, 1, b))
+    show(fmt.fixed(0.45, 1, b))
+    show(fmt.fixed(2.675, 2, b))
+    show(fmt.fixed(1.005, 2, b))
+    show(fmt.fixed(1.015625, 2, b))
+    show(fmt.fixed(1.015625, 5, b))
+    show(fmt.fixed(1.015625, 6, b))
+    show(fmt.fixed(0.5e-2, 2, b))
+
+    // Carries, including into a new leading digit.
+    show(fmt.fixed(9.999, 2, b))
+    show(fmt.fixed(9.5, 0, b))
+    show(fmt.fixed(0.999, 0, b))
+    show(fmt.fixed(0.999, 2, b))
+    show(fmt.fixed(99.995, 2, b))
+    show(fmt.fixed(999999.9999999, 3, b))
+    show(fmt.fixed(-9.999, 2, b))
+    show(fmt.fixed(0.09999, 2, b))
+    show(fmt.fixed(0.0049, 2, b))
+    show(fmt.fixed(0.0051, 2, b))
+    show(fmt.fixed(0.4, 0, b))
+    show(fmt.fixed(0.6, 0, b))
+
+    // Signed zero and values that round to zero.
+    show(fmt.fixed(-0.0, 0, b))
+    show(fmt.fixed(-0.0, 2, b))
+    show(fmt.fixed(-0.001, 2, b))
+    show(fmt.fixed(0.001, 2, b))
+    show(fmt.fixed(-1e-300, 3, b))
+
+    // Magnitudes.
+    show(fmt.fixed(123456789.987654321, 0, b))
+    show(fmt.fixed(123456789.987654321, 3, b))
+    show(fmt.fixed(123456789.987654321, 9, b))
+    show(fmt.fixed(123456789.987654321, 20, b))
+    show(fmt.fixed(0.1, 20, b))
+    show(fmt.fixed(0.1, 30, b))
+    show(fmt.fixed(0.3, 20, b))
+    show(fmt.fixed(1e15, 2, b))
+    show(fmt.fixed(1e21, 0, b))
+    show(fmt.fixed(9007199254740993.0, 1, b))
+    show(fmt.fixed(18446744073709551616.0, 0, b))
+    show(fmt.fixed(1e22, 0, b))
+    show(fmt.fixed(1.5e-7, 10, b))
+    show(fmt.fixed(1e-10, 5, b))
+    show(fmt.fixed(5e-324, 5, b))
+    show(fmt.fixed(f32(0.1), 10, b))
+    show(fmt.fixed(f32(16777216.0), 1, b))
+    show(fmt.fixed(f32(3.4028235e38), 0, b))
+
+    big := [fmt.fixed_buf_len(5)]u8(fill: 0)
+    show(fmt.fixed(1e300, 0, big[..]))
+    show(fmt.fixed(-1.7976931348623157e308, 2, big[..]))
+    show(fmt.fixed(1e100, 5, big[..]))
+    show(fmt.fixed(5e-324, 5, big[..]))
+
+    // Digits past the 767 significant ones of the smallest value are exact zeros: the full
+    // expansion of 2^-1074 has 1074 decimals, the last being 5.
+    huge := [fmt.fixed_buf_len(1080)]u8(fill: 0)
+    s := fmt.fixed(5e-324, 1080, huge[..])
+    print("{} {} {}\n", (s.len, s[0..40], s[s.len - 8..]))
+    s2 := fmt.fixed(5e-324, 1074, huge[..])
+    print("{} {}\n", (s2.len, s2[s2.len - 8..]))
+    s3 := fmt.fixed(5e-324, 750, huge[..])
+    print("{} {}\n", (s3.len, s3[s3.len - 8..]))
+
+    // Non-finite values.
+    inf := 1.0 / 0.0
+    nan := inf - inf
+    show(fmt.fixed(inf, 2, b))
+    show(fmt.fixed(-inf, 2, b))
+    show(fmt.fixed(nan, 2, b))
+    show(fmt.fixed(inf, 0, b))
+    print("{} {}\n", (fmt.fixed_buf_len(0), fmt.fixed_buf_len(10)))
+}
+
+sci_cases :: fn() \ {Out} {
+    buf := [fmt.sci_buf_len(30)]u8(fill: 0)
+    b := buf[..]
+
+    show(fmt.sci(0.0, 0, b))
+    show(fmt.sci(0.0, 3, b))
+    show(fmt.sci(-0.0, 3, b))
+    show(fmt.sci(1.0, 0, b))
+    show(fmt.sci(1.0, 3, b))
+    show(fmt.sci(1234.5, 3, b))
+    show(fmt.sci(1234.5, 0, b))
+    show(fmt.sci(1234.5678, 2, b))
+    show(fmt.sci(-1234.5678, 6, b))
+    show(fmt.sci(0.000123456, 3, b))
+    show(fmt.sci(0.5, 0, b))
+    show(fmt.sci(1.5, 0, b))
+    show(fmt.sci(2.5, 0, b))
+    show(fmt.sci(3.5, 0, b))
+    show(fmt.sci(0.125, 1, b))
+    show(fmt.sci(0.375, 1, b))
+    show(fmt.sci(9.5, 0, b))
+    show(fmt.sci(9.999, 2, b))
+    show(fmt.sci(99999.0, 3, b))
+    show(fmt.sci(0.00099999, 2, b))
+    show(fmt.sci(123456789.987654321, 8, b))
+    show(fmt.sci(123456789.987654321, 20, b))
+    show(fmt.sci(0.1, 25, b))
+    show(fmt.sci(1e100, 3, b))
+    show(fmt.sci(1e99, 3, b))
+    show(fmt.sci(1e-99, 3, b))
+    show(fmt.sci(1e-100, 3, b))
+    show(fmt.sci(1e300, 5, b))
+    show(fmt.sci(1.7976931348623157e308, 16, b))
+    show(fmt.sci(1.7976931348623157e308, 3, b))
+    show(fmt.sci(2.2250738585072014e-308, 16, b))
+    show(fmt.sci(5e-324, 0, b))
+    show(fmt.sci(5e-324, 10, b))
+    show(fmt.sci(5e-324, 30, b))
+    show(fmt.sci(1e22, 0, b))
+    show(fmt.sci(f32(0.1), 12, b))
+    show(fmt.sci(6.02214076e23, 8, b))
+    show(fmt.sci(1.0 / 0.0, 3, b))
+    show(fmt.sci(-1.0 / 0.0, 3, b))
+    show(fmt.sci(0.0 / 0.0 * 0.0, 3, b))
+    print("{} {}\n", (fmt.sci_buf_len(0), fmt.sci_buf_len(20)))
+}
+
+general_cases :: fn() \ {Out} {
+    buf := [fmt.general_buf_len(40)]u8(fill: 0)
+    b := buf[..]
+
+    show(fmt.general(0.0, 6, b))
+    show(fmt.general(-0.0, 6, b))
+    show(fmt.general(1.0, 6, b))
+    show(fmt.general(0.5, 6, b))
+    show(fmt.general(100.0, 6, b))
+    show(fmt.general(123456.0, 6, b))
+    show(fmt.general(1234567.0, 6, b))
+    show(fmt.general(123456.7, 6, b))
+    show(fmt.general(1e10, 6, b))
+    show(fmt.general(1e5, 6, b))
+    show(fmt.general(1e6, 6, b))
+    show(fmt.general(0.0001, 6, b))
+    show(fmt.general(0.00001, 6, b))
+    show(fmt.general(0.000123456789, 6, b))
+    show(fmt.general(3.14159265358979, 3, b))
+    show(fmt.general(3.14159265358979, 10, b))
+    show(fmt.general(3.14159265358979, 0, b))
+    show(fmt.general(3.14159265358979, 1, b))
+    show(fmt.general(2.5, 1, b))
+    show(fmt.general(0.1, 17, b))
+    show(fmt.general(0.1, 25, b))
+    show(fmt.general(999999.5, 6, b))
+    show(fmt.general(99999.95, 6, b))
+    show(fmt.general(-1.5e-7, 4, b))
+    show(fmt.general(1e300, 6, b))
+    show(fmt.general(5e-324, 6, b))
+    show(fmt.general(1.0 / 0.0, 6, b))
+    show(fmt.general(-1.0 / 0.0, 6, b))
+    print("{} {}\n", (fmt.general_buf_len(0), fmt.general_buf_len(17)))
+}
+
+// Integers of any width (here 200 and 256 bits) in every base.
+wide_ints :: fn() \ {Out} {
+    buf := [fmt.max_int_len(i256)]u8(fill: 0)
+    big: u200 = 1
+    big = (big << 199) + 12345
+    print("{}\n", fmt.dec(big, buf[..]))
+    print("{}\n", fmt.hex(big, buf[..]))
+    print("{}\n", fmt.prefixed_upper(big, 16, buf[..]))
+    neg: i256 = -1
+    neg = neg << 200
+    print("{}\n", fmt.radix(neg, 36, buf[..]))
+    print("{}\n", fmt.bin(i256(-5), buf[..]))
+    g := [fmt.max_grouped_len(u200)]u8(fill: 0)
+    print("{}\n", fmt.grouped(big, ',', g[..]))
+    print("{}\n", fmt.grouped(i256(-1234567), '_', g[..]))
+}
+
+main :: fn() \ {Out} {
+    ints()
+    wide_ints()
+    padding()
+    fixed_cases()
+    sci_cases()
+    general_cases()
+}

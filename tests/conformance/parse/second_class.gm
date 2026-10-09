@@ -1,0 +1,26 @@
+//! stage: parse
+// Spec 11.6: second-class functions and effect polymorphism.
+
+retry :: fn(times: u32, op: fn() -> IoError!()) -> IoError!() {
+    for _ in 1..times { if op() is not !_ { return () } }
+    return op()                         // last attempt: its error is ours
+}
+
+demo :: fn() {
+    retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
+}
+
+capture_output :: fn(body: fn() \ {Out}) -> string \ {Alloc} {
+    buf := string_builder()
+    with buf.out_handler() { body() }         // body's Out is handled here
+    return buf.finish()
+}
+
+apply :: fn(f: fn(i32) -> i32, x: i32) -> i32 => f(x)
+
+use_apply :: fn() {
+    r := apply(fn(n) => n + 1, 5)
+    s := apply(fn(n: i32) -> i32 { return n * 2 }, 5)
+    k :: fn(n: i32) -> i32 => n
+    t := apply(k, 1)
+}

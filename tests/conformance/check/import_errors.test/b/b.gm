@@ -1,0 +1,2 @@
+a :: import "../a"                     //~ ERROR import cycle: a -> b -> a
+pub B :: 2

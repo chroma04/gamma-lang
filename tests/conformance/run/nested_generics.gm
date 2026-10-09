@@ -1,0 +1,18 @@
+// Nested named functions may be generic (§11.8, §16.1): they capture nothing, so each
+// is checked once and instantiated per use like a top-level generic function.
+
+main :: fn() \ {Out} {
+    twice :: fn(T: type, x: T) -> (T, T) => (x, x)
+    biggest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+        if xs.len is 0 { return null }
+        rest := biggest(xs[1..]) else return xs[0]
+        return if xs[0] > rest { xs[0] } else { rest }
+    }
+    fill :: fn(T: type, N :: usize, x: T) -> [N]T => [N]T(fill: x)
+
+    print("{} {}\n", (twice(i32(4)), twice("ab")))
+    nums := [5]i32(3, 9, 2, 7, 1)
+    words := [3]string("pear", "apple", "zucchini")
+    print("{} {}\n", (biggest(nums[..]), biggest(words[..])))
+    print("{}\n", fill(u8, 3, 7))
+}

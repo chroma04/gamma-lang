@@ -1,0 +1,1 @@
+pub twice :: fn(n: i32) -> i32 => n * 2

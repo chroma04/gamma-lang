@@ -1,0 +1,6 @@
+# A package with one path dependency.
+[package]
+name = "imports"
+
+[dependencies]
+json = { path = "deps/json" }

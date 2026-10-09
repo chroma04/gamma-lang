@@ -1,0 +1,26 @@
+//! stage: parse
+// Malformed struct, union and effect literals recover field by field.
+
+S :: struct {
+    a: i32
+    b //~ ERROR expected `:` and a type after the field name, found newline
+    c: u8
+    d: = 3 //~ ERROR expected a type, found `=`
+    e: bool
+    f: i32, g: i32              // fields may also be separated by commas
+}
+
+U :: union {
+    A: i32
+    B C //~ ERROR expected `,` or a newline after the variant, found identifier `C`
+    D =
+} //~ ERROR expected an expression, found `}`
+
+E :: effect {
+    a: fn(x: i32)
+    b: sleep(x: i32) //~ ERROR expected `fn`, `esc` or `ctl`, found identifier `sleep`
+    c: ctl()
+}
+
+P :: struct(T :: type) { } //~ ERROR parameters of a type are always compile-time
+Q :: struct(T) { } //~ ERROR type parameters must be named and typed

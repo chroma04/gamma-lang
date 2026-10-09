@@ -1,0 +1,36 @@
+//! stage: parse
+// One error per mistake: the parser skips to the end of the statement or
+// declaration and carries on, so later code is still checked.
+
+first :: fn() {
+    a := foo(1 2) //~ ERROR expected `)` to close the argument list
+    b := bar(
+        1,
+        2 3 //~ ERROR expected `)` to close the argument list
+    )
+    c := if { } //~ ERROR expected an expression, found `{`
+    d := 5
+    for x in { } //~ ERROR expected an expression, found `{`
+    e := 6
+    if a == b { } //~ ERROR expected `{` to begin a block, found `=`
+    f := 7
+}
+
+second :: fn() {
+    // an error inside a nested block does not disturb the outer one
+    x := fn() {
+        y := * 3 //~ ERROR expected an expression, found `*`
+        z := 1
+    }
+    w := 2
+    u := / 4 //~ ERROR expected an expression, found `/`
+}
+
+third :: 1 + ? //~ ERROR expected an expression, found newline
+
+fourth :: 4
+
+:: //~ ERROR expected a declaration, found `::`
+fifth :: 5
+= 6 //~ ERROR expected a declaration, found `=`
+sixth :: 6

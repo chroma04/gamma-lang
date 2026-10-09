@@ -1,0 +1,31 @@
+//! stage: lex
+// Malformed numeric literals. Each line has exactly one error.
+017 //~ ERROR leading zero
+00 //~ ERROR leading zero
+0_7 //~ ERROR leading zero
+12abc //~ ERROR invalid suffix `abc`
+0x1g //~ ERROR invalid suffix `g`
+1u0 //~ ERROR invalid integer width
+1u01 //~ ERROR invalid integer width
+1u65536 //~ ERROR invalid integer width
+1u //~ ERROR invalid suffix `u`
+1f32 //~ ERROR invalid suffix `f32` for integer literal
+1.5u8 //~ ERROR invalid suffix `u8` for float literal
+1.5f33 //~ ERROR invalid suffix `f33` for float literal
+0x //~ ERROR expected hexadecimal digits after `0x`
+0b //~ ERROR expected binary digits after `0b`
+0o //~ ERROR expected octal digits after `0o`
+0b12 //~ ERROR invalid digit `2` in binary literal
+0o8 //~ ERROR invalid digit `8` in octal literal
+0XFF //~ ERROR prefixes must be lowercase
+0B1 //~ ERROR prefixes must be lowercase
+0x_1 //~ ERROR separators
+1_ //~ ERROR separators
+1__0 //~ ERROR separators
+0x1_ //~ ERROR separators
+1.5_ //~ ERROR separators
+1e //~ ERROR invalid suffix `e`
+1e+ //~ ERROR invalid suffix `e`
+0x1.8 //~ ERROR require a `p` exponent
+1e99999999 //~ ERROR exponent is too large
+t.01 //~ ERROR leading zero

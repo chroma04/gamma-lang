@@ -1,0 +1,13 @@
+//! stage: lex
+//! dump
+// Maximal munch, and where it stops.
+a<<?=b
+a<<%=b a<<|=b a>>=b a>>b a>=b
+a+%b a+|b a+?b a-?b
+a+-b a--b a-->b
+a==b a!=b !a !!a
+x..y x..=y x...y x....y
+a::b a:=b a:b a: =b
+a=>b a->b a-=>b
+a*?b a*%=b a*|b
+[^]u8 [^]const u8 ^const T []?u8

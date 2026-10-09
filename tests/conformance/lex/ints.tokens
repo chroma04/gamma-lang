@@ -1,0 +1,52 @@
+4:1 int 0
+4:3 int 7
+4:5 int 42
+4:8 int 1000000
+4:18 int 123456789
+4:29 newline
+5:1 int 0
+5:5 int 255
+5:10 int 3735928559
+5:22 int 3735928559
+5:33 int 7986
+5:39 newline
+6:1 int 0
+6:5 int 15
+6:10 int 63
+6:15 newline
+7:1 int 0
+7:5 int 10
+7:12 int 240
+7:23 newline
+8:1 int 18446744073709551616
+8:22 int 340282366920938463463374607431768211455
+8:61 newline
+9:1 int 79228162514264337593543950335
+9:32 newline
+10:1 int 1 u8
+10:5 int 2 i8
+10:9 int 255 u8
+10:15 int 3 u16
+10:20 int 4 i32
+10:25 int 5 u64
+10:30 int 6 i128
+10:36 int 7 u1
+10:40 int 8 i65535
+10:48 int 9 usize
+10:55 int 10 isize
+10:62 newline
+11:1 int 255 u8
+11:8 int 15 i16
+11:16 int 5 u3
+11:24 int 10 u8
+11:29 newline
+12:1 int 1 usize
+12:8 int 1 isize
+12:14 newline
+13:1 ident x
+13:2 punct .
+13:3 int 0
+13:5 punct +
+13:7 int 1
+13:8 newline
+14:1 eof

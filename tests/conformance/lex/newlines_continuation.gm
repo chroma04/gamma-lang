@@ -1,0 +1,46 @@
+//! stage: lex
+//! dump
+// Rule 2: a following `else`, `and`, `or` or `.name` continues the line.
+x
+else y
+
+a
+and b
+
+a
+or b
+
+obj
+  .method()
+  // a comment between
+  .other()
+
+/* block */
+.chained
+
+if c {
+  a
+}
+else {
+  b
+}
+
+// These do not continue:
+a
+..b
+a
+.0
+a
+...b
+a
+. b
+a
+not b
+a
+in b
+a
+elsewhere
+a
+android
+a
+order

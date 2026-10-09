@@ -1,0 +1,22 @@
+//! exit: 134
+// Consuming a continuation twice is a checked error (§14.2 rule 1).
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+main :: fn() \ {Out} {
+    stack: [32768]u8 = ---
+    saved: ?cont(()) = null
+    with (handler Gen {
+        emit(x, k) => {
+            print("emit {}\n", x)
+            if s := saved { resume s() }
+            saved = k
+            resume k()
+        }
+    }) on stack[..] {
+        emit(1)
+        emit(2)
+    }
+    print("unreachable\n")
+}

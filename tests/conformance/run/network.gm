@@ -1,0 +1,37 @@
+// The `Net` effect with its default handler, real TCP sockets on the loopback
+// interface (§12.9, §21.7). One program is both server and client: the connection
+// waits in the listener's backlog until `accept`.
+
+send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net} {
+    done: usize = 0
+    while done < bytes.len {
+        done += try s.send(bytes[done..bytes.len])
+    }
+    return ()
+}
+
+main :: fn() -> IoError!() \ {Out, Net} {
+    l := try listen("127.0.0.1", 0)
+    port := try l.local_port()
+    print("listening on a port: {}\n", port > 0)
+
+    client := try connect("127.0.0.1", port)
+    server := try l.accept()
+    try send_all(client, "ping from the client")
+    buf: [64]u8 = ---
+    n := try server.recv(buf[..])
+    print("server got: {}\n", buf[0..n])
+    try send_all(server, "pong")
+    n = try client.recv(buf[..])
+    print("client got: {}\n", buf[0..n])
+
+    // Closing one end: the other sees the end of the stream.
+    close_socket(client)
+    print("after close: {}\n", try server.recv(buf[..]))
+    close_socket(server)
+    close_listener(l)
+
+    // Nobody listens on the port any more.
+    if !e := connect("127.0.0.1", port) { print("refused: {}\n", e) }
+    if !e := connect("no-such-host.invalid", 80) { print("unknown host: {}\n", e.tag() > 0) }
+}

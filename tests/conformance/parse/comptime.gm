@@ -1,0 +1,29 @@
+//! stage: parse
+// Spec 17: compile-time evaluation, static assertions.
+
+crc_table :: fn(poly: u32) -> [256]u32 {
+    table: [256]u32 = ---
+    for i in 0..256 {
+        c := u32(i)
+        for _ in 0..8 {
+            c = if c & 1 is 1 { poly ~ (c >> 1) } else { c >> 1 }
+        }
+        table[i] = c
+    }
+    return table
+}
+
+CRC32 :: crc_table(0xEDB88320)
+
+@static_assert(@size_of(Header) is 16, "Header must match the on-disk format")
+@static_assert(CRC32[1] is 0x77073096)
+
+N :: 8 * 4
+buf: [N]u8 : zeros()
+pair: (u8, u8) : (1, 2)
+
+f :: fn() {
+    @static_assert(@size_of(u32) is 4, "u32 is four bytes")
+    local :: crc_table(1)
+    arr: [@size_of(u64)]u8 = ---
+}

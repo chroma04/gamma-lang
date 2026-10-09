@@ -1,0 +1,4 @@
+//! stage: lex
+// An unterminated block comment swallows the rest of the file.
+a /* never closed, nested /* once */ //~ ERROR unterminated block comment
+b

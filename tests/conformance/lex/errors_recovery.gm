@@ -1,0 +1,11 @@
+//! stage: lex
+//! dump
+// Lexing continues after an error and produces a best-effort token.
+a 12abc b //~ ERROR invalid suffix `abc`
+c "x\qy" d //~ ERROR unknown escape sequence
+e $ f //~ ERROR unexpected character
+g ) h //~ ERROR unmatched closing
+i 'xy' j //~ ERROR exactly one character
+k 017 l //~ ERROR leading zero
+m c"a\0b" n //~ ERROR NUL
+o 0x p //~ ERROR expected hexadecimal digits

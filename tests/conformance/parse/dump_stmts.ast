@@ -1,0 +1,62 @@
+(file
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (binding const a (int 1))
+          (binding var b (int 2))
+          (binding const c (ty (ident u8)) (int 3))
+          (binding var d (ty (ident u8)) (int 4))
+          (binding var e (ty (array-type (int 4) (ident u8))) uninit)
+          (binding var (names f g) (call (ident pair)))
+          (binding const (names h i) (call (ident pair)))
+          (binding var (names j k) (ty (tuple (ident u8) (ident u8))) (call (ident pair)))
+          (binding var (names _ l) (call (ident pair)))
+          (assign = (places underscore) (call (ident call)))
+          (assign = (places (ident n)) (int 1))
+          (assign += (places (ident n)) (int 1))
+          (assign -= (places (ident n)) (int 1))
+          (assign *= (places (ident n)) (int 1))
+          (assign /= (places (ident n)) (int 1))
+          (assign %= (places (ident n)) (int 1))
+          (assign <<= (places (ident n)) (int 1))
+          (assign >>= (places (ident n)) (int 1))
+          (assign &= (places (ident n)) (int 1))
+          (assign |= (places (ident n)) (int 1))
+          (assign ~= (places (ident n)) (int 1))
+          (assign +%= (places (ident n)) (int 1))
+          (assign -%= (places (ident n)) (int 1))
+          (assign *%= (places (ident n)) (int 1))
+          (assign <<%= (places (ident n)) (int 1))
+          (assign +|= (places (ident n)) (int 1))
+          (assign -|= (places (ident n)) (int 1))
+          (assign *|= (places (ident n)) (int 1))
+          (assign <<|= (places (ident n)) (int 1))
+          (assign = (places (ident a) (ident b)) (tuple (ident b) (ident a)))
+          (assign = (places (index (field (deref (ident p)) x) (int 0))) (int 1))
+          (defer (expr (call (ident cleanup))))
+          (errdefer (assign = (places (ident x)) (int 0)))
+          (defer
+            (block
+              (expr (call (ident a)))
+              (expr (call (ident b)))))
+          (discard (ident k))
+          (block
+            (binding var nested (int 1)))
+          (when-stmt (ident A)
+            (block
+              (expr (call (ident a))))
+            (else
+              (when-stmt (ident B)
+                (block
+                  (expr (call (ident b))))
+                (else
+                  (block
+                    (expr (call (ident c))))))))
+          (while (label lbl) (cond (bool true))
+            (block
+              (expr (break (label lbl)))))
+          (binding-stmt (attr inline) (binding const helper (fn (params) (block))))
+          (expr (ident foo))
+          (expr (return))
+          (expr (return (int 1))))))))

@@ -1,0 +1,15 @@
+//! stage: check
+// `else e =>` on an `if` (§8.2).
+
+E :: union { Bad }
+get :: fn() -> E!i32 => 1
+opt :: fn() -> ?i32 => null
+
+f :: fn(b: bool) {
+    if v := get() and b { _ = v } else e => {}      //~ ERROR needs a condition that is a single binding on a result
+    if v := opt() { _ = v } else e => {}            //~ ERROR captures the error of a result, but this is `?i32`
+    if 3 := get() {} else e => {}                   //~ ERROR the condition may fail only on an error
+    if v := get() { _ = v } else e => { _ = e + 1 } //~ ERROR the operands of `+` have different types: `E`
+}
+
+main :: fn() {}

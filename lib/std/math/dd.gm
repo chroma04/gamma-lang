@@ -1,0 +1,115 @@
+// Double-double arithmetic (a value is the unevaluated sum of two doubles,
+// about 106 bits), used where the plain fdlibm formulas lose more than one ulp.
+// Everything here is private. All results are normalized: hi is the sum rounded
+// to nearest.
+//
+// The error-free transformations are those of Knuth, Dekker and Bailey ("QD
+// library"). There is no fused multiply-add, so products are split with
+// Dekker's method; arguments must stay below 2**995 in magnitude.
+
+// a + b = s + e exactly.
+two_sum :: fn(a: f64, b: f64) -> (f64, f64) {
+    s := a + b
+    bb := s - a
+    return (s, (a - (s - bb)) + (b - bb))
+}
+
+// a + b = s + e exactly, if |a| >= |b| or a is zero.
+fast_two_sum :: fn(a: f64, b: f64) -> (f64, f64) {
+    s := a + b
+    return (s, b - (s - a))
+}
+
+// a * b = p + e exactly.
+two_prod :: fn(a: f64, b: f64) -> (f64, f64) {
+    p := a * b
+    ca := 134217729.0 * a
+    ah := ca - (ca - a)
+    al := a - ah
+    cb := 134217729.0 * b
+    bh := cb - (cb - b)
+    bl := b - bh
+    return (p, ((ah * bh - p) + ah * bl + al * bh) + al * bl)
+}
+
+dd_add :: fn(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    s := two_sum(a.0, b.0)
+    t := two_sum(a.1, b.1)
+    u := fast_two_sum(s.0, s.1 + t.0)
+    return fast_two_sum(u.0, u.1 + t.1)
+}
+
+dd_neg :: fn(a: (f64, f64)) -> (f64, f64) => (-a.0, -a.1)
+
+dd_sub :: fn(a: (f64, f64), b: (f64, f64)) -> (f64, f64) => dd_add(a, dd_neg(b))
+
+dd_mul :: fn(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    p := two_prod(a.0, b.0)
+    return fast_two_sum(p.0, p.1 + (a.0 * b.1 + a.1 * b.0))
+}
+
+// A double-double times a double.
+dd_mul_d :: fn(a: (f64, f64), b: f64) -> (f64, f64) {
+    p := two_prod(a.0, b)
+    return fast_two_sum(p.0, p.1 + a.1 * b)
+}
+
+dd_div :: fn(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    q1 := a.0 / b.0
+    r := dd_sub(a, dd_mul_d(b, q1))
+    q2 := r.0 / b.0
+    r = dd_sub(r, dd_mul_d(b, q2))
+    q3 := r.0 / b.0
+    q := fast_two_sum(q1, q2)
+    return dd_add(q, (q3, 0.0))
+}
+
+// ln 2 as three doubles.
+DD_LN2_1 :: 6.931471805599452862e-01
+DD_LN2_2 :: 2.319046813846299558e-17
+DD_LN2_3 :: 5.707708438416212066e-34
+
+// exp(x) = 2**k * (1 + e) for |x| < 746, returned as (e, k) with e a
+// double-double of magnitude below about 0.42 (relative error about 2**-90).
+exp_parts_dd :: fn(x: f64) -> ((f64, f64), i32) {
+    // x = k*ln2 + r with |r| <= ln2/2.
+    k := (x * INV_LN2 + (if x < 0.0 { -0.5 } else { 0.5 })).trunc(i32)
+    kf := f64(k)
+    kl := dd_add(two_prod(kf, DD_LN2_1), dd_add((kf * DD_LN2_2, 0.0), (kf * DD_LN2_3, 0.0)))
+    r := dd_sub((x, 0.0), kl)
+    // exp(r) = exp(r/256)^256: expm1 by a Taylor series for the small argument
+    // r1 = r/256, then eight doublings e -> 2e + e^2.
+    r1 := (r.0 * 0.00390625, r.1 * 0.00390625)
+    term := r1
+    sum := r1
+    n := 2
+    while n <= 11 {
+        term = dd_mul(term, r1)
+        term = dd_div(term, (f64(n), 0.0))
+        sum = dd_add(sum, term)
+        n += 1
+    }
+    for _ in 0..8 {
+        sum = dd_add((2.0 * sum.0, 2.0 * sum.1), dd_mul(sum, sum))
+    }
+    return (sum, k)
+}
+
+// exp(x) - 1 as a double-double, for |x| < 46.
+expm1_dd :: fn(x: f64) -> (f64, f64) {
+    parts := exp_parts_dd(x)
+    e := parts.0
+    k := parts.1
+    if k is 0 { return e }
+    // 2**k * (1 + e) - 1 = 2**k * e + (2**k - 1)
+    scale := from_words((0x3ff + k) << 20, 0)
+    return dd_add((scale * e.0, scale * e.1), two_sum(scale, -1.0))
+}
+
+// exp(x) / 2, correctly rounded up to about 2**-60 relative, for 22 <= x <=
+// 711: an infinity when that overflows.
+half_exp_dd :: fn(x: f64) -> f64 {
+    parts := exp_parts_dd(x)
+    m := dd_add((1.0, 0.0), parts.0)
+    return scalbn(m.0, parts.1 - 1)
+}

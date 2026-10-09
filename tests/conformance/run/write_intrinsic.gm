@@ -1,0 +1,40 @@
+// `@write(sink, template, args)` (§21.6.1): structural formatting into any sink, and
+// second-class literals that perform effects of their own (§11.6).
+
+Line :: struct {
+    buf: [64]u8
+    len: usize
+}
+
+// A sink that appends to a fixed buffer, allocating nothing.
+append :: fn(l: ^Line, bytes: []const u8) {
+    for b in bytes {
+        if l.len < 64 {
+            l.buf[l.len] = b
+            l.len += 1
+        }
+    }
+}
+
+apply :: fn(f: fn(b: []const u8), s: []const u8) => f(s)
+
+Pos :: struct { x: f64, y: f64 }
+
+main :: fn() \ {Out} {
+    line := Line(buf: [64]u8(fill: 0), len: 0)
+    @write(fn(b: []const u8) { append(&line, b) }, "{} + {} = {}", (2, 3, 2 + 3))
+    print("{} ({} bytes)\n", (line.buf[0..line.len], line.len))
+
+    // The sink sees consecutive pieces of the output.
+    pieces := 0
+    @write(fn(b: []const u8) { pieces += 1 }, "a{}b{}c", (Pos(x: 1.5, y: -2.0), [2]bool(true, false)))
+    print("{} pieces\n", pieces)
+
+    // A literal that performs `Out` uses the handlers where it is written.
+    @write(fn(b: []const u8) { print("[{}]", b) }, "x={} y={}\n", (1, ?i32(null)))
+    apply(fn(b: []const u8) { print("{}\n", b.len) }, "four")
+
+    x: i32 = 7
+    @prefetch(&x)
+    print("{}\n", x)
+}

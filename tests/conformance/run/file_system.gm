@@ -1,0 +1,76 @@
+// The `Fs` effect with its default handler, the real file system (§12.9, §21.7).
+// The test works in a fresh directory under `target/`.
+
+hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
+
+main :: fn() -> IoError!() \ {Out, Fs, Rand} {
+    // A unique directory name: target/gamma-fs-<random hex>.
+    r: [6]u8 = ---
+    fill(r[..])
+    name := [_]u8('t', 'a', 'r', 'g', 'e', 't', '/', 'g', 'a', 'm', 'm', 'a', '-', 'f', 's', '-',
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    for i in 0..6 {
+        name[16 + 2 * i] = hex(r[i] >> 4)
+        name[17 + 2 * i] = hex(r[i] & 15)
+    }
+    dir := name[..]
+    try make_dir(dir)
+    print("made the directory: {}\n", (try stat(dir)).is_dir)
+
+    path_buf: [64]u8 = ---
+    path := join(path_buf[..], dir, "notes.txt")
+
+    // Write, then append.
+    f := try open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
+    print("wrote {} bytes\n", try f.write_to("hello, "))
+    close(f)
+    g := try open(path, OpenOptions(read: false, append: true))
+    _ = try g.write_to("file system\n")
+    close(g)
+    print("size {}\n", (try stat(path)).size)
+
+    // Read it back in small pieces, then seek and read again.
+    h := try open(path, OpenOptions())
+    buf: [5]u8 = ---
+    print("read:")
+    while true {
+        n := try h.read_from(buf[..])
+        if n is 0 { break }
+        print(" [{}]", buf[0..n])
+    }
+    print("\n")
+    print("seek to {}\n", try h.seek(-5, .End))
+    n := try h.read_from(buf[..])
+    print("tail: {}", buf[0..n])
+    close(h)
+
+    // Errors.
+    if !e := open("target/no/such/file", OpenOptions()) { print("missing: {}\n", e) }
+    if !e := make_dir(dir) { print("again: {}\n", e) }
+    if !e := open(path, OpenOptions(write: true, exclusive: true)) { print("exclusive: {}\n", e) }
+    if !e := remove_dir(dir) { print("not empty: {}\n", e.tag() > 0) }
+
+    // List, rename and remove.
+    other_buf: [64]u8 = ---
+    other := join(other_buf[..], dir, "renamed.txt")
+    try rename(path, other)
+    d := try open_dir(dir)
+    entry: [64]u8 = ---
+    while true {
+        len := try d.next_entry(entry[..])
+        if len is 0 { break }
+        print("entry: {}\n", entry[0..len])
+    }
+    close_dir(d)
+    try remove(other)
+    try remove_dir(dir)
+    if !e := stat(dir) { print("gone: {}\n", e) }
+}
+
+/// `a/b` in `buf`.
+join :: fn(buf: []u8, a: string, b: string) -> string {
+    buf[0..a.len].copy_from(a)
+    buf[a.len] = '/'
+    buf[a.len + 1..a.len + 1 + b.len].copy_from(b)
+    return buf[0..a.len + 1 + b.len]
+}

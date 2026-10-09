@@ -1,0 +1,15 @@
+//! stage: lex
+//! dump
+// Newlines terminate statements; blank lines and comments collapse.
+a
+b
+
+
+c // trailing comment
+// whole-line comment
+
+/* block */ d
+e;f
+g ; ; h
+;
+i;

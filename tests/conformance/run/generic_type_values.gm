@@ -1,0 +1,30 @@
+// Value parameters of generic types (§16.4): array lengths and functions.
+Ring :: struct(T: type, N: usize) {
+    items: [N]T
+    head: usize = 0
+}
+
+push :: fn(T: type, N :: usize, r: ^Ring(T, N), x: T) {
+    r.items[r.head % N] = x
+    r.head += 1
+}
+
+Keyed :: struct(K: type, key: ?^fn(x: K) -> u64 = null) {
+    k: K
+}
+
+hash_of :: fn(K: type, key :: ?^fn(x: K) -> u64, x: Keyed(K, key)) -> u64 {
+    f := key else return 0
+    return f(x.k)
+}
+
+ident :: fn(x: u32) -> u64 => u64(x) * 10
+
+main :: fn() \ {Out} {
+    r := Ring(u8, 3)(items: [3]u8(fill: 0))
+    for i in 1..=5 { r.push(u8(i)) }
+    print("{}\n", r)
+    a := Keyed(u32)(k: 4)
+    b := Keyed(u32, key: ident)(k: 4)
+    print("{} {}\n", (hash_of(a), hash_of(b)))
+}

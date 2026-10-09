@@ -1,0 +1,29 @@
+//! stage: parse
+//! dump
+// 2.5: literals as the parser sees them.
+
+l1 :: 0
+l2 :: 1_000_000
+l3 :: 0xFF
+l4 :: 0b1010_1010u8
+l5 :: 0o777i32
+l6 :: 100usize
+l7 :: 3.14
+l8 :: 1.5e3f32
+l9 :: 0.5f64
+l10 :: 'a'
+l11 :: '\n'
+l12 :: '\u{1F600}'
+l13 :: "tab\there"
+l14 :: "\x41\x00\xff"
+l15 :: `raw\n`
+l16 :: c"hello"
+l17 :: true
+l18 :: false
+l19 :: null
+l20 :: ---
+l21 :: _
+l22 :: -128i8
+l23 :: 340282366920938463463374607431768211456
+l24 :: ""
+l25 :: "é"

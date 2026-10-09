@@ -1,0 +1,28 @@
+// Elementwise array arithmetic (§7.4.6) and nested array construction.
+
+scale :: fn(v: [3]f64, k: f64) -> [3]f64 => v * [3]f64(fill: k)
+
+main :: fn() \ {Out} {
+    a := [3]i32(1, 2, 3)
+    b := [3]i32(10, 20, 30)
+    print("{} {} {} {}\n", (a + b, b - a, a * b, b / a))
+    print("{}\n", -a)
+    print("{}\n", scale([3]f64(1.0, 2.5, -4.0), 2.0))
+    print("{}\n", -[2]f64(0.0, 1.5))
+
+    // Overflow flavors apply per element.
+    x := [3]u8(200, 100, 5)
+    y := [3]u8(100, 100, 5)
+    print("{} {} {}\n", (x +% y, x +| y, y -| x))
+    print("{}\n", [2]i8(-128, 127) *% [2]i8(-1, 2))
+
+    // Nested arrays: the operation applies at every level.
+    m := [2][2]i32([2]i32(1, 2), [2]i32(3, 4))
+    print("{}\n", m + m * m)
+    z := [2][3]u16(fill: [3]u16(fill: 7))
+    print("{}\n", z - [2][3]u16(fill: [3]u16(1, 2, 3)))
+
+    // Prefixes before a construction apply to the whole type (§A.7 rule 12).
+    o := ?[2]u8([2]u8(1, 2))
+    print("{} {}\n", (o, [2]?i32(5, null)))
+}

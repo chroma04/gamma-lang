@@ -1,0 +1,10 @@
+//! stage: parse
+// Brace-delimited lists may be written on one line (§A intro, §A.2).
+FileLogger :: struct { fd: Fd, min: Level }
+P :: struct { x, y: f32, z: u8, }
+Log :: effect { log: fn(msg: string) }
+f :: fn() {
+    h :: handler Log { log(m) => {} }
+    x := match a { .A => 1; .B => 2 }
+}
+lib :: foreign "c" { puts :: fn(s: cstring) -> i32 }

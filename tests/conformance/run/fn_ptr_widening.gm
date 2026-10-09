@@ -1,0 +1,23 @@
+// Function pointers with no effects are C function pointers; widening one to a type
+// with effects, or using a plain function as a second-class value, still calls it right.
+Log :: effect { log: fn(s: string) }
+
+twice :: fn(x: i32) -> i32 => x * 2
+shout :: fn(x: i32) -> i32 \ {Log} {
+    log("shout")
+    return x * 10
+}
+
+apply :: fn(f: ^fn(x: i32) -> i32 \ {Log}, x: i32) -> i32 \ {Log} => f(x)
+apply_fn :: fn(f: fn(x: i32) -> i32, x: i32) -> i32 => f(x)
+
+main :: fn() \ {Out} {
+    with (handler Log { log(s) => print("log: {}\n", s) }) {
+        p: ^fn(x: i32) -> i32 = twice
+        q: ^fn(x: i32) -> i32 \ {Log} = p
+        print("{} {}\n", (apply(q, 4), apply(shout, 4)))
+        print("{} {}\n", (apply(twice, 5), apply_fn(twice, 6)))
+        r: ?^fn(x: i32) -> i32 = twice
+        if f := r { print("{}\n", f(7)) }
+    }
+}

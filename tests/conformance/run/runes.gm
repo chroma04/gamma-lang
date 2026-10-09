@@ -1,0 +1,12 @@
+// `rune`, `runes` (with U+FFFD for each maximal ill-formed subsequence) and `make_aligned` (§21.1, §21.2, §21.4).
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    for r in runes("aé€😀") { print("{} ", r) }
+    print("\n")
+    for r in runes("a\xffb\xe2\x82c\xed\xa0\x80d\xf4\x90\x80\x80\xc0\xaf") { print("{} ", r) }
+    print("\n")
+    x: rune = 'z'
+    print("{}\n", x)
+    s := try make_aligned(u8, 10, 64)
+    print("{} {}\n", (s.len, s.ptr.addr() % 64))
+    free(s)
+}

@@ -1,0 +1,93 @@
+(file
+  (item
+    (binding const S1
+      (struct
+        (field (names x y) (ident f32)))))
+  (item
+    (binding const S2
+      (struct
+        (field pub (names title) (ident string))
+        (field (names size) (ident Vec2)
+          (default (call (ident Vec2) (named x (int 800)) (named y (int 600)))))
+        (field using (names base) (ident Base))
+        (field (attr align (args (int 8))) pub using (names other) (ident Other))
+        (field (names _) (ident u9)))))
+  (item
+    (binding const S3
+      (struct
+        (params (param (names T) (ty (ident type)))
+          (param (names n) (ty (ident usize)) (default (int 4))))
+        (where (constraint Eq (ident T)))
+        (field (names items) (array-type (ident n) (ident T))))))
+  (item
+    (binding const S4
+      (attributed (attr packed)
+        (struct
+          (field (names a) (ident u8))
+          (field (names b) (ident u16))))))
+  (item
+    (binding const S5
+      (struct
+        (field (names id) (ident u32))
+        (when-members
+          (binary is (field (ident target) os) (dot Linux))
+          (then
+            (field (names fd) (ident i32)))
+          (else
+            (field (names handle) (ident rawptr)))))))
+  (item
+    (binding const U1
+      (union
+        (variant Circle (payload (ident f32)))
+        (variant Rect (payload (tuple (named w (ident f32)) (named h (ident f32)))))
+        (variant Empty))))
+  (item
+    (binding const U2
+      (union
+        (tag (ident u8))
+        (variant A (value (int 1)))
+        (variant B)
+        (variant C (value (int 10))))))
+  (item
+    (binding const U3
+      (union
+        (params (param (names T) (ty (ident type))))
+        (variant None)
+        (variant Some (payload (ident T))))))
+  (item
+    (binding const U4
+      (union
+        (params (param (names K V) (ty (ident type))))
+        (where (constraint Eq (ident K)))
+        (variant Left (payload (ident K)))
+        (variant Right (payload (ident V))))))
+  (item
+    (binding const U5
+      (attributed (attr c_union)
+        (union
+          (variant a (payload (ident u32)))
+          (variant b (payload (ident f32)))))))
+  (item
+    (binding const U6
+      (union
+        (variant A)
+        (variant B (payload (ident i32)))
+        (when-members
+          (ident X)
+          (then
+            (variant C))
+          (else
+            (variant D))))))
+  (item
+    (binding const E1
+      (effect
+        (op log fn (params (param (names msg) (ty (ident string))))))))
+  (item
+    (binding const E2
+      (effect
+        (params (param (names T) (ty (ident type))))
+        (op yield esc (params (param (names x) (ty (ident T)))))
+        (op abort esc (params) (ret (ident never)))
+        (op suspend ctl (params (param (names what) (ty (ident W)))) (ret (ident R))))))
+  (item
+    (binding const E3 (effect))))

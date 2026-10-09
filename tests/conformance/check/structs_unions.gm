@@ -1,0 +1,46 @@
+//! stage: check
+// Structs (§5.10) and unions (§5.11): declaration, construction, field access.
+Vec2 :: struct { x, y: f32 }
+
+Window :: struct {
+    pub title: string
+    size: Vec2 = Vec2(x: 800, y: 600)
+    open: bool = true
+}
+
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+
+Dir :: union { N, E, S, W }
+Errno :: union(i32) { Ok = 0, Perm = 1, NoEnt = 2 }
+Bad :: union { A = 1 }              //~ ERROR explicit tag type
+Node :: struct { value: i32, next: ?^Node }
+Loop :: struct { inner: Loop }      //~ ERROR infinitely large
+
+f :: fn() {
+    w := Window(title: "hi")
+    w.size.x = 3.5
+    t := w.title
+    v := Vec2(x: 1)                 //~ ERROR missing field `y`
+    u := Vec2(1, 2)                 //~ ERROR named arguments only
+    q := Vec2(x: 1, y: 2, z: 3)     //~ ERROR has no field `z`
+    s: Shape = .Circle(1.5)
+    r: Shape = .Rect(w: 2, h: 3)
+    e := Shape.Empty
+    d: Dir = .N
+    bad: Dir = .Up                  //~ ERROR has no variant `Up`
+    arr := [3]u8(1, 2, 3)
+    filled := [4]i32(fill: 7)
+    inferred := [_]u16(1, 2)
+    opt := ?i32(5)
+    none := ?i32(null)
+    n := w.nope                     //~ ERROR has no field `nope`
+}
+
+main :: fn() {}
+
+Counter :: struct { count: u32 }
+count :: fn(c: ^Counter) -> u32 => c.count     //~ ERROR has a field `count`, so a method of that name could never be called

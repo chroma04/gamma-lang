@@ -1,0 +1,414 @@
+// core/slice: the builtin methods of arrays and slices that are written in Gamma
+// (§21.3). `a.sort()` calls `sort(a[..])` here; nothing is re-exported to the
+// universe scope. All sorts are in place and allocate nothing.
+
+/// Exchanges the elements at `i` and `j`.
+pub swap :: fn(T: type, s: []T, i, j: usize) {
+    t := s[i]
+    s[i] = s[j]
+    s[j] = t
+}
+
+/// Sets every element to `x`.
+pub fill :: fn(T: type, s: []T, x: T) {
+    for i in 0..s.len { s[i] = x }
+}
+
+/// Copies `src` into `s`, which must have the same length (checked); they may overlap.
+pub copy_from :: fn(T: type, s: []T, src: []const T) {
+    assert(s.len is src.len, "copy_from needs slices of equal length")
+    if s.ptr.addr() <= src.ptr.addr() {
+        for i in 0..s.len { s[i] = src[i] }
+    } else {
+        i := s.len
+        while i > 0 {
+            i -= 1
+            s[i] = src[i]
+        }
+    }
+}
+
+/// Sorts `s` in ascending order (not stable).
+pub sort :: fn(T: type, s: []T) where Ord(T) {
+    introsort(s, fn(a, b: ^const T) => a^ < b^)
+}
+
+/// Sorts `s` so that `less` holds between no element and an earlier one (not stable).
+pub sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    introsort(s, less)
+}
+
+/// Sorts `s` by the keys `key` computes (not stable).
+pub sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
+    introsort(s, fn(a, b: ^const T) => key(a) < key(b))
+}
+
+/// Sorts `s` in ascending order, keeping equal elements in their order.
+pub stable_sort :: fn(T: type, s: []T) where Ord(T) {
+    merge_sort(s, fn(a, b: ^const T) => a^ < b^)
+}
+
+/// Sorts `s` by `less`, keeping equivalent elements in their order.
+pub stable_sort_by :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    merge_sort(s, less)
+}
+
+/// Sorts `s` by the keys `key` computes, keeping elements with equal keys in their order.
+pub stable_sort_by_key :: fn(T, K: type, s: []T, key: fn(x: ^const T) -> K) where Ord(K) {
+    merge_sort(s, fn(a, b: ^const T) => key(a) < key(b))
+}
+
+// The sorting algorithms below never assume that `less` is a strict weak ordering:
+// every index is checked against explicit bounds, so an inconsistent `less` (floats
+// with NaN, say) can only produce a different permutation of the elements.
+
+// Ranges of at most this many elements are sorted by insertion.
+SMALL :: 16
+
+// Sorts `s` by insertion; stable.
+insertion_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    i: usize = 1
+    while i < s.len {
+        t := s[i]
+        j := i
+        while j > 0 and less(&t, &s[j - 1]) {
+            s[j] = s[j - 1]
+            j -= 1
+        }
+        s[j] = t
+        i += 1
+    }
+}
+
+// Restores the max-heap property below `root` in `s[0..end]`.
+sift_down :: fn(T: type, s: []T, root, end: usize, less: fn(a, b: ^const T) -> bool) {
+    r := root
+    while true {
+        child := 2 * r + 1
+        if child >= end { break }
+        if child + 1 < end and less(&s[child], &s[child + 1]) { child += 1 }
+        if not less(&s[r], &s[child]) { break }
+        s.swap(r, child)
+        r = child
+    }
+}
+
+// Sorts `s` in O(n log n) time with no extra space.
+heap_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    n := s.len
+    i := n / 2
+    while i > 0 {
+        i -= 1
+        sift_down(s, i, n, less)
+    }
+    end := n
+    while end > 1 {
+        end -= 1
+        s.swap(0, end)
+        sift_down(s, 0, end, less)
+    }
+}
+
+// Moves a median-of-three pivot of `s` (at least 3 elements) to `s[0]`, partitions the
+// rest around it and puts it between the two parts. Returns the pivot's final index.
+partition :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) -> usize {
+    n := s.len
+    a: usize = 0
+    b := n / 2
+    c := n - 1
+    if less(&s[b], &s[a]) { s.swap(a, b) }
+    if less(&s[c], &s[b]) {
+        s.swap(b, c)
+        if less(&s[b], &s[a]) { s.swap(a, b) }
+    }
+    s.swap(0, b)
+    // Invariant: s[1..i] <= pivot and s[j..n] >= pivot.
+    i: usize = 1
+    j := n
+    while true {
+        while i < j and less(&s[i], &s[0]) { i += 1 }
+        while i < j and less(&s[0], &s[j - 1]) { j -= 1 }
+        if i >= j { break }
+        s.swap(i, j - 1)
+        i += 1
+        j -= 1
+    }
+    s.swap(0, i - 1)
+    return i - 1
+}
+
+// Quicksort that falls back to heapsort when a range has been partitioned too often.
+// Instead of recursing, the larger part of each partition waits on a fixed stack
+// while the smaller part is sorted: each waiting range is at least twice the size
+// of the next, so no more than 64 ever wait, and the sort's stack use has a bound.
+introsort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    depth: usize = 0
+    m := s.len
+    while m > 1 {
+        m /= 2
+        depth += 2
+    }
+    los: [64]usize = ---
+    his: [64]usize = ---
+    depths: [64]usize = ---
+    n: usize = 0
+    lo: usize = 0
+    hi := s.len
+    while true {
+        if hi - lo <= SMALL {
+            insertion_sort(s[lo..hi], less)
+        } else if depth is 0 {
+            heap_sort(s[lo..hi], less)
+        } else {
+            p := lo + partition(s[lo..hi], less)
+            depth -= 1
+            if p - lo < hi - (p + 1) {
+                los[n] = p + 1
+                his[n] = hi
+                hi = p
+            } else {
+                los[n] = lo
+                his[n] = p
+                lo = p + 1
+            }
+            depths[n] = depth
+            n += 1
+            continue
+        }
+        if n is 0 { break }
+        n -= 1
+        lo = los[n]
+        hi = his[n]
+        depth = depths[n]
+    }
+}
+
+// Reverses `s[lo..hi]`.
+reverse_range :: fn(T: type, s: []T, lo, hi: usize) {
+    i := lo
+    j := hi
+    while i + 1 < j {
+        j -= 1
+        s.swap(i, j)
+        i += 1
+    }
+}
+
+// Exchanges the blocks `s[a..m]` and `s[m..b]`.
+rotate :: fn(T: type, s: []T, a, m, b: usize) {
+    reverse_range(s, a, m)
+    reverse_range(s, m, b)
+    reverse_range(s, a, b)
+}
+
+// Merges the sorted runs `s[a..m]` and `s[m..b]` (a < m < b) in place and stably
+// (the SymMerge algorithm: split around the middle, rotate, merge both halves).
+// The second half's merge waits on a fixed stack while the first is done; each
+// half is at most half as long as its range, so no more than 64 ever wait.
+sym_merge :: fn(T: type, s: []T, a0, m0, b0: usize, less: fn(a, b: ^const T) -> bool) {
+    pa: [64]usize = ---
+    pm: [64]usize = ---
+    pb: [64]usize = ---
+    n: usize = 0
+    a := a0
+    m := m0
+    b := b0
+    while true {
+        if m - a is 1 {
+            // Insert s[a] after the elements of s[m..b] that are less than it.
+            i := m
+            j := b
+            while i < j {
+                h := i + (j - i) / 2
+                if less(&s[h], &s[a]) { i = h + 1 } else { j = h }
+            }
+            k := a
+            while k + 1 < i {
+                s.swap(k, k + 1)
+                k += 1
+            }
+        } else if b - m is 1 {
+            // Insert s[m] before the elements of s[a..m] that are greater than it.
+            i := a
+            j := m
+            while i < j {
+                h := i + (j - i) / 2
+                if not less(&s[m], &s[h]) { i = h + 1 } else { j = h }
+            }
+            k := m
+            while k > i {
+                s.swap(k, k - 1)
+                k -= 1
+            }
+        } else {
+            mid := a + (b - a) / 2
+            sum := mid + m
+            start := a
+            r := m
+            if m > mid {
+                start = sum - b
+                r = mid
+            }
+            p := sum - 1
+            while start < r {
+                c := start + (r - start) / 2
+                if not less(&s[p - c], &s[c]) { start = c + 1 } else { r = c }
+            }
+            end := sum - start
+            if start < m and m < end { rotate(s, start, m, end) }
+            if mid < end and end < b {
+                pa[n] = mid
+                pm[n] = end
+                pb[n] = b
+                n += 1
+            }
+            if a < start and start < mid {
+                m = start
+                b = mid
+                continue
+            }
+        }
+        if n is 0 { break }
+        n -= 1
+        a = pa[n]
+        m = pm[n]
+        b = pb[n]
+    }
+}
+
+// Stable merge sort without extra space: sorted runs of SMALL elements, then
+// repeated in-place merges of adjacent runs.
+merge_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
+    n := s.len
+    lo: usize = 0
+    while lo < n {
+        hi := lo + SMALL
+        if hi > n { hi = n }
+        insertion_sort(s[lo..hi], less)
+        lo = hi
+    }
+    w: usize = SMALL
+    while w < n {
+        a: usize = 0
+        while a + w < n {
+            b := a + 2 * w
+            if b > n { b = n }
+            m := a + w
+            // Runs that are already in order need no merging.
+            if less(&s[m], &s[m - 1]) { sym_merge(s, a, m, b, less) }
+            a = b
+        }
+        w *= 2
+    }
+}
+
+/// The index of the first element equal to `x`.
+pub index_of :: fn(T: type, s: []const T, x: T) -> ?usize where Eq(T) {
+    for i in 0..s.len {
+        if s[i] is x { return i }
+    }
+    return null
+}
+
+/// Whether `s` begins with the elements of `p`.
+pub starts_with :: fn(T: type, s: []const T, p: []const T) -> bool where Eq(T) {
+    if p.len > s.len { return false }
+    return s[0..p.len] is p
+}
+
+/// Whether `s` ends with the elements of `p`.
+pub ends_with :: fn(T: type, s: []const T, p: []const T) -> bool where Eq(T) {
+    if p.len > s.len { return false }
+    return s[s.len - p.len..s.len] is p
+}
+
+/// The smallest element, or `null` if `s` is empty.
+pub min :: fn(T: type, s: []const T) -> ?T where Ord(T) {
+    if s.len is 0 { return null }
+    m := s[0]
+    for x in s {
+        if x < m { m = x }
+    }
+    return m
+}
+
+/// The largest element, or `null` if `s` is empty.
+pub max :: fn(T: type, s: []const T) -> ?T where Ord(T) {
+    if s.len is 0 { return null }
+    m := s[0]
+    for x in s {
+        if x > m { m = x }
+    }
+    return m
+}
+
+/// Searches the sorted `s` for `x`: whether it was found, and the index of the first
+/// element not less than `x` (where `x` would be inserted).
+pub binary_search :: fn(T: type, s: []const T, x: T) -> (found: bool, at: usize) where Ord(T) {
+    lo: usize = 0
+    hi := s.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if s[mid] < x { lo = mid + 1 } else { hi = mid }
+    }
+    return (found: lo < s.len and s[lo] is x, at: lo)
+}
+
+/// Whether `s` is well-formed UTF-8.
+pub utf8_valid :: fn(s: []const u8) -> bool {
+    i: usize = 0
+    while i < s.len {
+        b := s[i]
+        n: usize = 0
+        lo: u8 = 0x80
+        hi: u8 = 0xbf
+        if b < 0x80 {
+            i += 1
+            continue
+        } else if b >= 0xc2 and b <= 0xdf {
+            n = 1
+        } else if b is 0xe0 {
+            n = 2
+            lo = 0xa0
+        } else if b >= 0xe1 and b <= 0xef {
+            n = 2
+            if b is 0xed { hi = 0x9f }
+        } else if b is 0xf0 {
+            n = 3
+            lo = 0x90
+        } else if b >= 0xf1 and b <= 0xf3 {
+            n = 3
+        } else if b is 0xf4 {
+            n = 3
+            hi = 0x8f
+        } else {
+            return false
+        }
+        if i + n >= s.len { return false }
+        c := s[i + 1]
+        if c < lo or c > hi { return false }
+        for k in 2..n + 1 {
+            d := s[i + k]
+            if d < 0x80 or d > 0xbf { return false }
+        }
+        i += n + 1
+    }
+    return true
+}
+
+/// A position in a slice, for advancing through several sequences in lockstep (§13.4).
+pub Cursor :: struct(T: type) {
+    items: []const T
+    pos: usize
+}
+
+/// A cursor at the start of `s`.
+pub cursor :: fn(T: type, s: []const T) -> Cursor(T) => Cursor(T)(items: s, pos: 0)
+
+/// The next element, or `null` after the last.
+pub next :: fn(T: type, c: ^Cursor(T)) -> ?T {
+    if c.pos >= c.items.len { return null }
+    x := c.items[c.pos]
+    c.pos += 1
+    return x
+}

@@ -1,0 +1,20 @@
+//! exit: 134
+// Running out of a fiber's stack is a checked error (§14.1).
+Gen :: effect {
+    emit: ctl(x: i32)
+}
+
+deep :: fn(n: i32) -> i32 \ {Gen} {
+    if n is 0 {
+        emit(0)
+        return 0
+    }
+    return deep(n - 1) + 1
+}
+
+main :: fn() \ {Out} {
+    stack: [20000]u8 = ---
+    with (handler Gen { emit(x, k) => resume k() }) on stack[..] {
+        print("{}\n", deep(100000))
+    }
+}

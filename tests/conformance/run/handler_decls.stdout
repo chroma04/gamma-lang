@@ -1,0 +1,6 @@
+#1: step
+#2: step
+a = 30, seen 2
+#3: step
+failed: too big
+b = -1, seen 3

@@ -1,0 +1,59 @@
+//! stage: check
+// Optionals and results (§10).
+ParseError :: union { Empty, BadDigit: (at: usize) }
+IoError :: union { NotFound, Other: i32 }
+LoadError :: union { Parse: ParseError, Io: IoError, Missing }
+Twice :: union { A: IoError, B: IoError }
+
+parse :: fn(s: string) -> ParseError!u16 {
+    if s.len is 0 { return !.Empty }
+    n: u16 = 0
+    for i in 0..s.len {
+        c := s[i]
+        if c < '0' or c > '9' { return !.BadDigit(at: i) }
+        n = n *? 10 else return !.Empty
+        n = n +? u16(c - '0') else return !.Empty
+    }
+    return n
+}
+
+read :: fn(path: string) -> IoError!string {
+    return !.NotFound
+}
+
+load :: fn(path: string) -> LoadError!u16 {
+    text := try read(path)                // IoError lifts to .Io
+    port := try parse(text)               // ParseError lifts to .Parse
+    return port
+}
+
+ambiguous :: fn() -> Twice!() {
+    _ = try read("x")                     //~ ERROR several variants
+    return ()
+}
+
+find :: fn(k: u8) -> ?u8 {
+    if k > 3 { return null }
+    return k
+}
+
+twice :: fn(k: u8) -> ?u8 {
+    v := try find(k)
+    return v +? v
+}
+
+conversions :: fn(k: u8) -> LoadError!u8 {
+    a := find(k)? + 1
+    b := find(k) else 0
+    c := try (find(k) else !.Missing)
+    d := read("p") else e => "fallback"
+    e := find(k) else e => 1              //~ ERROR no error value to capture
+    f := try find(k)                      //~ ERROR does not convert
+    return a +| b
+}
+
+no_try :: fn() {
+    x := try find(1)                      //~ ERROR needs the function to return
+}
+
+main :: fn() {}

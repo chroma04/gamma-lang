@@ -1,0 +1,13 @@
+made the directory: true
+wrote 7 bytes
+size 19
+read: [hello] [, fil] [e sys] [tem
+]
+seek to 14
+tail: stem
+missing: .NotFound
+again: .AlreadyExists
+exclusive: .AlreadyExists
+not empty: true
+entry: renamed.txt
+gone: .NotFound

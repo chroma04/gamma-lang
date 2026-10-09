@@ -1,0 +1,4 @@
+pub MAX: u8 : 200
+pub MIN :: 10
+pub NAME :: "gamma"
+pub ON: bool : true

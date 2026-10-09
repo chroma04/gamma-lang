@@ -1,0 +1,13 @@
+//! stage: lex
+//! dump
+// Integer literals: radix prefixes, separators, suffixes, unbounded values.
+0 7 42 1_000_000 123_456_789
+0x0 0xFF 0xdead_beef 0xDEADbeef 0x1f32
+0o0 0o17 0o7_7
+0b0 0b1010 0b1111_0000
+18446744073709551616 340282366920938463463374607431768211455
+0xffff_ffff_ffff_ffff_ffff_ffff
+1u8 2i8 255u8 3u16 4i32 5u64 6i128 7u1 8i65535 9usize 10isize
+0xFFu8 0o17i16 0b101u3 1_0u8
+1usize 1isize
+x.0 + 1

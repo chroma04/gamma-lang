@@ -1,0 +1,16 @@
+//! exit: 134
+// A trap on any thread stops the whole program (§18, §19.6).
+thread :: import "std/thread"
+
+boom :: fn(arg: rawptr) \ {Sys} {
+    n := arg.cast(^u8)
+    n^ = n^ + 200          // overflows: 100 + 200 does not fit in a u8
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    print("before\n")
+    n: u8 = 100
+    t := try thread.spawn(boom, (&n).cast(rawptr))
+    t.join()
+    print("unreachable\n")
+}

@@ -1,0 +1,31 @@
+4:1 ident a
+4:3 int 12
+4:9 ident b
+4:41 newline
+5:1 ident c
+5:3 str Regular "xy"
+5:10 ident d
+5:45 newline
+6:1 ident e
+6:5 ident f
+6:37 newline
+7:1 ident g
+7:5 ident h
+7:34 newline
+8:1 ident i
+8:3 char 120
+8:8 ident j
+8:41 newline
+9:1 ident k
+9:3 int 17
+9:7 ident l
+9:31 newline
+10:1 ident m
+10:3 str C "a\x00b"
+10:11 ident n
+10:26 newline
+11:1 ident o
+11:3 int 0
+11:6 ident p
+11:45 newline
+12:1 eof
