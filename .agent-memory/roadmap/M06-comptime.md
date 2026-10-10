@@ -10,5 +10,5 @@ Done: `when` (top level incl. nested, struct/union bodies, statements; generic-p
 top-level consts evaluated in sema (ConstDef.value set), #fuel, §17.4 type check (not the
 "pointer into static data" check — interp's to_const_value handles relocs), @static_assert,
 @compile_error, @location/@caller_location (Sema.caller_site), @type_of, @unreachable,
-@expect_*. Not yet: opportunistic local consts, compile-time call-stack in errors,
+@expect_*. Compile-time call stack in errors done (s4). Not yet: opportunistic local consts,
 provenance-tracking UB detection, `target.mode` from a real build-mode flag.

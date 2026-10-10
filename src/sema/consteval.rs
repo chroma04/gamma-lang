@@ -33,6 +33,19 @@ impl<'s> Sema<'s> {
                 if t.span != Span::DUMMY && t.span != e.span {
                     d = d.with_label(t.span, "the evaluation stopped here");
                 }
+                // The compile-time call stack, innermost call first (§17.1).
+                const SHOWN: usize = 12;
+                for (f, call) in t.trace.iter().take(SHOWN) {
+                    if *call == Span::DUMMY || *call == e.span {
+                        continue;
+                    }
+                    let name = self.prog.backtrace_name(*f, &self.sess.sources);
+                    let what = name.map_or("a core library function".to_string(), |n| format!("`{}`", n));
+                    d = d.with_label(*call, format!("{} was called here", what));
+                }
+                if t.trace.len() > SHOWN {
+                    d = d.with_note(format!("{} more calls are not shown", t.trace.len() - SHOWN));
+                }
                 self.emit(d);
                 None
             }

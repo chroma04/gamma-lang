@@ -145,9 +145,10 @@ impl<'a> Machine<'a> {
                     return Ok(value);
                 }
                 let mut flow = flow;
+                // Debug builds and compile-time evaluation report the calls a trap left
+                // (§18.3, §17.1).
                 if let Flow::Trap(t) = &mut *flow
-                    && self.mode == super::Mode::Debug
-                    && !self.const_mode
+                    && (self.mode == super::Mode::Debug || self.const_mode)
                 {
                     t.trace.push((fid, span));
                 }

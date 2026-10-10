@@ -1,0 +1,14 @@
+//! stage: check
+// A failed compile-time evaluation reports where it stopped and the calls that led there (§17.1).
+inner :: fn(x: u8) -> u8 => x + 200    //~ NOTE the evaluation stopped here
+middle :: fn(x: u8) -> u8 {
+    y := inner(x)                       //~ NOTE `inner` was called here
+    return y
+}
+TABLE :: build()                //~ ERROR compile-time evaluation failed: integer overflow
+build :: fn() -> [4]u8 {
+    t := [4]u8(fill: 0)
+    for i in 0..4 { t[i] = middle(u8(i) * 30) }     //~ NOTE `middle` was called here
+    return t
+}
+main :: fn() {}
