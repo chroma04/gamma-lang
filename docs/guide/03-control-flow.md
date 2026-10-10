@@ -300,6 +300,8 @@ describe_shape :: fn(s: Shape) -> f32 \ {Out} => match s {
 }
 ```
 
+The elements of a tuple payload are written directly (`.Rect(w, h)`); a single name instead binds the whole tuple, so `.Rect(r) => r.w * r.h` works too.
+
 > **Common mistake: a bare name always binds.** A pattern that is a bare identifier is *never* a comparison with an existing constant; it introduces a new binding that matches everything. In C, `case LIMIT:` compares; here the equivalent would silently capture. To prevent that mistake, the compiler rejects a bare identifier pattern that names a visible constant:
 >
 > ```gamma

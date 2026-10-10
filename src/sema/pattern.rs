@@ -495,6 +495,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 let p = match pt.kind() {
                     // `.Rect(_)` ignores the whole payload.
                     _ if one && matches!(args[0].pat.kind, PatternKind::Wildcard) => pat(pt, PatKind::Wild, span),
+                    // One name for a payload of several elements binds the whole tuple:
+                    // `.Rect(r)` gives `r.w` and `r.h` (§9.2).
+                    TyKind::Tuple { elems, .. }
+                        if one && elems.len() > 1 && matches!(args[0].pat.kind, PatternKind::Bind(_)) =>
+                    {
+                        self.pattern(&args[0].pat, pt, ctx, binds)
+                    }
                     // A tuple payload's elements are written directly: `.Rect(w, h)` (§9.2).
                     TyKind::Tuple { elems, names } => {
                         let fs = self.sub_patterns(args, elems, names.as_deref(), ctx, binds, span, false);
