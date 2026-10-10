@@ -1,0 +1,16 @@
+  iter 0: x = 1.000000000000
+  iter 1: x = 1.500000000000
+  iter 2: x = 1.416666666667
+  iter 3: x = 1.414215686275
+  iter 4: x = 1.414213562375
+  iter 5: x = 1.414213562373
+sqrt(2) = 1.414213562373095 after 6 trace steps, 6 function evaluations
+cycling newton gives: nan
+flat start gives: nan
+dottie number 0.739085133215 using 46 calls
+no bracket: true
+adaptive simpson of sin on [0, pi] = 2.0000000000 with 473 evaluations
+integral of 1/(1+x^2) = 0.785398163397 (pi/4 = 0.785398163397)
+gauss5 of exp on [0,1] = 1.718281828458 (e-1 = 1.718281828459)
+gauss5 is exact to degree 9: 0.10000000000000 vs 0.10000000000000
+integral of sqrt on [0,1] = 0.666666667 (2/3 = 0.666666667), error 1.0e-12

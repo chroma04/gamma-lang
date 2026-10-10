@@ -1,0 +1,195 @@
+// PCG32 and xorshift64* generators behind a user-defined Rng effect, driving a Monte Carlo pi estimate, dice statistics and Conway's Life on a torus.
+fmt :: import "std/fmt"
+
+Rng :: effect {
+    next_u32: fn() -> u32
+}
+
+// ---- PCG32 (O'Neill), with the reference seeding ----
+Pcg32 :: struct {
+    state: u64
+    inc: u64
+}
+
+pcg_next :: fn(p: ^Pcg32) -> u32 {
+    old := p.state
+    p.state = old *% 6364136223846793005 +% p.inc
+    xorshifted := (((old >> 18) ~ old) >> 27).trunc(u32)
+    rot := (old >> 59).trunc(u32)
+    return @rotr(xorshifted, rot)
+}
+
+pcg_new :: fn(initstate, initseq: u64) -> Pcg32 {
+    p := Pcg32(state: 0, inc: (initseq <<% 1) | 1)
+    _ = pcg_next(&p)
+    p.state +%= initstate
+    _ = pcg_next(&p)
+    return p
+}
+
+handler Rng for ^Pcg32 {
+    next_u32(self) => pcg_next(self)
+}
+
+// ---- xorshift64* ----
+XorShift :: struct {
+    s: u64
+}
+
+xs_next64 :: fn(g: ^XorShift) -> u64 {
+    x := g.s
+    x = x ~ (x >> 12)
+    x = x ~ (x <<% 25)
+    x = x ~ (x >> 27)
+    g.s = x
+    return x *% 2685821657736338717
+}
+
+handler Rng for ^XorShift {
+    next_u32(self) => (xs_next64(self) >> 32).trunc(u32)
+}
+
+// ---- generic consumers of the Rng effect ----
+next_u64 :: fn() -> u64 \ {Rng} {
+    hi := u64(next_u32())
+    lo := u64(next_u32())
+    return (hi << 32) | lo
+}
+
+// Unbiased bounded integer (rejection of the short final bucket).
+below :: fn(n: u32) -> u32 \ {Rng} {
+    // 2^32 mod n, computed without a 64-bit division
+    threshold := (0 -% n) % n
+    while true {
+        r := next_u32()
+        if r >= threshold { return r % n }
+    }
+}
+
+unit :: fn() -> f64 \ {Rng} {
+    bits := next_u64() >> 11
+    return bits.round(f64) * (1.0 / 9007199254740992.0)
+}
+
+monte_carlo_pi :: fn(samples: u32) -> f64 \ {Rng} {
+    inside: u32 = 0
+    for _ in 0..samples {
+        x := unit()
+        y := unit()
+        if x * x + y * y < 1.0 { inside += 1 }
+    }
+    return 4.0 * inside.round(f64) / samples.round(f64)
+}
+
+roll_two_dice :: fn(counts: ^[13]u32, rolls: u32) \ {Rng} {
+    for _ in 0..rolls {
+        s := below(6) + below(6) + 2
+        counts[s] += 1
+    }
+}
+
+// ---- Life on a 16x16 torus ----
+W :: 16
+Grid :: [W][W]u8
+
+life_step :: fn(g: ^const Grid) -> Grid {
+    out := Grid(fill: [W]u8(fill: 0))
+    for y in 0..W {
+        for x in 0..W {
+            n: u32 = 0
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    if dy is 1 and dx is 1 { continue }
+                    yy := (y + dy + W - 1) % W
+                    xx := (x + dx + W - 1) % W
+                    n += u32(g[yy][xx])
+                }
+            }
+            alive := g[y][x] is 1
+            if n is 3 or (alive and n is 2) { out[y][x] = 1 }
+        }
+    }
+    return out
+}
+
+population :: fn(g: ^const Grid) -> u32 {
+    n: u32 = 0
+    for row in g^ {
+        for c in row { n += u32(c) }
+    }
+    return n
+}
+
+main :: fn() \ {Out} {
+    // Reference vector from the PCG paper's demo: seed (42, 54).
+    p := pcg_new(42, 54)
+    print("pcg32 (42,54):")
+    for _ in 0..6 { print(" {}", pcg_next(&p)) }
+    print("\n")
+
+    xs := XorShift(s: 88172645463325252)
+    print("xorshift64*:")
+    for _ in 0..3 { print(" {}", xs_next64(&xs)) }
+    print("\n")
+
+    // The same Monte Carlo code under two different generators.
+    fb: [64]u8 = ---
+    a := pcg_new(2024, 1)
+    pi_a := with &a { monte_carlo_pi(100000) }
+    print("pi (pcg32)       = {}\n", fmt.fixed(pi_a, 5, fb[..]))
+    b := XorShift(s: 0x9E3779B97F4A7C15)
+    pi_b := with &b { monte_carlo_pi(100000) }
+    print("pi (xorshift64*) = {}\n", fmt.fixed(pi_b, 5, fb[..]))
+
+    // Dice: totals of two dice, 36000 rolls.
+    counts := [13]u32(fill: 0)
+    g := pcg_new(7, 11)
+    with &g { roll_two_dice(&counts, 36000) }
+    print("dice:")
+    total: u32 = 0
+    for s in 2..13 {
+        print(" {}:{}", (s, counts[s]))
+        total += counts[s]
+    }
+    print("\ntotal {}\n", total)
+
+    // A glider on a 16x16 torus returns to its starting place after 64 generations.
+    grid := Grid(fill: [W]u8(fill: 0))
+    grid[0][1] = 1
+    grid[1][2] = 1
+    grid[2][0] = 1
+    grid[2][1] = 1
+    grid[2][2] = 1
+    start := grid
+    for gen in 0..64 {
+        grid = life_step(&grid)
+        if gen is 3 {
+            print("after 4 generations the glider moved by one cell: {}\n", grid[1][2] is 1 and grid[2][3] is 1 and grid[3][1] is 1 and grid[3][2] is 1 and grid[3][3] is 1)
+        }
+    }
+    print("glider back home after 64 generations: {}\n", grid is start)
+
+    // A random soup: population over time.
+    soup := Grid(fill: [W]u8(fill: 0))
+    r := pcg_new(99, 5)
+    with &r {
+        for y in 0..W {
+            for x in 0..W { soup[y][x] = u8(below(100) < 35) }
+        }
+    }
+    print("soup population:")
+    for gen in 0..12 {
+        print(" {}", population(&soup))
+        soup = life_step(&soup)
+    }
+    print("\n")
+
+    // Rule 90 on a 64-cell ring in one machine word: Sierpinski triangle.
+    row: u64 = 1 << 32
+    for _ in 0..8 {
+        line: [64]u8 = ---
+        for i in 0..64 { line[i] = if (row >> u32(63 - i)) & 1 is 1 { '#' } else { '.' } }
+        print("{}\n", line[16..48])
+        row = (row <<% 1) ~ (row >> 1)
+    }
+}

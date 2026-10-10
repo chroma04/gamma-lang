@@ -1,0 +1,10 @@
+impulse spectrum flat: true
+constant: X[0] = 8.000000, others tiny: true
+cosine bins: 3=8.000 13=8.000
+Parseval holds: true
+round trip error < 1e-24: true
+fft convolution:    [4, 13, 28, 34, 32, 21]
+direct convolution: [4, 13, 28, 34, 32, 21]
+equal: true
+[1, 4, 10, 20, 35, 56, 84, 120, 165, 202, 232, 256, 267, 264, 246, 212, 161, 92, 85, 58, 10, 12, 9, 0]
+big equal: true

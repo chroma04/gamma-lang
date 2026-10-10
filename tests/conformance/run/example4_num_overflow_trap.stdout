@@ -1,0 +1,6 @@
+10! checked=3628800 wrapping=3628800 saturating=3628800
+11! checked=39916800 wrapping=39916800 saturating=39916800
+12! checked=479001600 wrapping=479001600 saturating=479001600
+13! checked=null wrapping=1932053504 saturating=4294967295
+14! checked=null wrapping=1278945280 saturating=4294967295
+12! = 479001600

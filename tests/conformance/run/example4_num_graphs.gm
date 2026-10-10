@@ -1,0 +1,360 @@
+// Graph algorithms on fixed-capacity structures: BFS, iterative DFS, topological sort, union-find with Kruskal, Dijkstra and A* over a generic binary heap.
+Edge :: struct {
+    a, b: u32
+    w: u32
+}
+
+N_NODES :: 9
+EDGES :: [_]Edge(
+    Edge(a: 0, b: 1, w: 4),
+    Edge(a: 0, b: 7, w: 8),
+    Edge(a: 1, b: 2, w: 8),
+    Edge(a: 1, b: 7, w: 11),
+    Edge(a: 2, b: 3, w: 7),
+    Edge(a: 2, b: 8, w: 2),
+    Edge(a: 2, b: 5, w: 4),
+    Edge(a: 3, b: 4, w: 9),
+    Edge(a: 3, b: 5, w: 14),
+    Edge(a: 4, b: 5, w: 10),
+    Edge(a: 5, b: 6, w: 2),
+    Edge(a: 6, b: 7, w: 1),
+    Edge(a: 6, b: 8, w: 6),
+    Edge(a: 7, b: 8, w: 7),
+)
+
+// Adjacency in compressed sparse row form, undirected.
+Csr :: struct {
+    start: [N_NODES + 1]usize
+    to: [EDGES.len * 2]u32
+    wt: [EDGES.len * 2]u32
+}
+
+build_csr :: fn() -> Csr {
+    c := Csr(start: [N_NODES + 1]usize(fill: 0), to: [EDGES.len * 2]u32(fill: 0), wt: [EDGES.len * 2]u32(fill: 0))
+    for e in EDGES {
+        c.start[usize(e.a) + 1] += 1
+        c.start[usize(e.b) + 1] += 1
+    }
+    for i in 0..N_NODES { c.start[i + 1] += c.start[i] }
+    fill := c.start     // next free slot per node
+    for e in EDGES {
+        c.to[fill[usize(e.a)]] = e.b
+        c.wt[fill[usize(e.a)]] = e.w
+        fill[usize(e.a)] += 1
+        c.to[fill[usize(e.b)]] = e.a
+        c.wt[fill[usize(e.b)]] = e.w
+        fill[usize(e.b)] += 1
+    }
+    return c
+}
+
+// ---- generic binary min-heap ----
+Heap :: struct(T: type, N: usize) {
+    items: [N]T
+    len: usize = 0
+}
+
+heap_push :: fn(T: type, N :: usize, h: ^Heap(T, N), x: T) -> bool where Ord(T) {
+    if h.len is N { return false }
+    i := h.len
+    h.len += 1
+    h.items[i] = x
+    while i > 0 {
+        parent := (i - 1) / 2
+        if h.items[parent] <= h.items[i] { break }
+        h.items.swap(parent, i)
+        i = parent
+    }
+    return true
+}
+
+heap_pop :: fn(T: type, N :: usize, h: ^Heap(T, N)) -> ?T where Ord(T) {
+    if h.len is 0 { return null }
+    top := h.items[0]
+    h.len -= 1
+    h.items[0] = h.items[h.len]
+    i: usize = 0
+    while true {
+        l := 2 * i + 1
+        r := l + 1
+        m := i
+        if l < h.len and h.items[l] < h.items[m] { m = l }
+        if r < h.len and h.items[r] < h.items[m] { m = r }
+        if m is i { break }
+        h.items.swap(m, i)
+        i = m
+    }
+    return top
+}
+
+// ---- union-find ----
+Dsu :: struct(N: usize) {
+    parent: [N]u32
+    size: [N]u32
+    sets: u32
+}
+
+dsu :: fn(N :: usize) -> Dsu(N) {
+    d := Dsu(N)(parent: [N]u32(fill: 0), size: [N]u32(fill: 1), sets: N.trunc(u32))
+    for i in 0..N { d.parent[i] = i.trunc(u32) }
+    return d
+}
+
+find :: fn(N :: usize, d: ^Dsu(N), x: u32) -> u32 {
+    root := x
+    while d.parent[usize(root)] is not root { root = d.parent[usize(root)] }
+    cur := x
+    while d.parent[usize(cur)] is not root {          // path compression
+        next := d.parent[usize(cur)]
+        d.parent[usize(cur)] = root
+        cur = next
+    }
+    return root
+}
+
+union_sets :: fn(N :: usize, d: ^Dsu(N), a, b: u32) -> bool {
+    ra := find(N, d, a)
+    rb := find(N, d, b)
+    if ra is rb { return false }
+    if d.size[usize(ra)] < d.size[usize(rb)] {
+        d.parent[usize(ra)] = rb
+        d.size[usize(rb)] += d.size[usize(ra)]
+    } else {
+        d.parent[usize(rb)] = ra
+        d.size[usize(ra)] += d.size[usize(rb)]
+    }
+    d.sets -= 1
+    return true
+}
+
+bfs :: fn(g: ^const Csr, src: u32) -> [N_NODES]i32 {
+    dist := [N_NODES]i32(fill: -1)
+    queue: [N_NODES]u32 = ---
+    head: usize = 0
+    tail: usize = 0
+    queue[tail] = src
+    tail += 1
+    dist[usize(src)] = 0
+    while head < tail {
+        u := queue[head]
+        head += 1
+        for k in g.start[usize(u)]..g.start[usize(u) + 1] {
+            v := g.to[k]
+            if dist[usize(v)] < 0 {
+                dist[usize(v)] = dist[usize(u)] + 1
+                queue[tail] = v
+                tail += 1
+            }
+        }
+    }
+    return dist
+}
+
+// Iterative DFS preorder using an explicit stack and visiting neighbours in index order.
+dfs_order :: fn(g: ^const Csr, src: u32, out: []u32) -> usize {
+    seen := [N_NODES]bool(fill: false)
+    stack: [N_NODES * 2]u32 = ---
+    sp: usize = 0
+    stack[0] = src
+    sp = 1
+    n: usize = 0
+    while sp > 0 {
+        sp -= 1
+        u := stack[sp]
+        if seen[usize(u)] { continue }
+        seen[usize(u)] = true
+        out[n] = u
+        n += 1
+        // push in reverse so that smaller neighbours pop first
+        k := g.start[usize(u) + 1]
+        while k > g.start[usize(u)] {
+            k -= 1
+            v := g.to[k]
+            if not seen[usize(v)] {
+                stack[sp] = v
+                sp += 1
+            }
+        }
+    }
+    return n
+}
+
+dijkstra :: fn(g: ^const Csr, src: u32) -> [N_NODES]u32 {
+    inf :: 0xFFFF_FFFF
+    dist := [N_NODES]u32(fill: inf)
+    pq := Heap((u32, u32), 64)(items: [64](u32, u32)(fill: (0, 0)))
+    dist[usize(src)] = 0
+    _ = pq.heap_push((0, src))
+    while top := pq.heap_pop() {
+        d, u := top
+        if d > dist[usize(u)] { continue }
+        for k in g.start[usize(u)]..g.start[usize(u) + 1] {
+            v := g.to[k]
+            nd := d + g.wt[k]
+            if nd < dist[usize(v)] {
+                dist[usize(v)] = nd
+                _ = pq.heap_push((nd, v))
+            }
+        }
+    }
+    return dist
+}
+
+kruskal :: fn() -> (weight: u32, picked: usize) {
+    sorted := EDGES
+    sorted.sort_by_key(fn(e) => (e.w, e.a, e.b))
+    d := dsu(N_NODES)
+    total: u32 = 0
+    picked: usize = 0
+    for e in sorted {
+        if union_sets(N_NODES, &d, e.a, e.b) {
+            total += e.w
+            picked += 1
+        }
+    }
+    return (total, picked)
+}
+
+// Topological order of a DAG by Kahn's algorithm; ties broken by smallest index.
+topo :: fn(N :: usize, edges: []const (u32, u32), out: []u32) -> usize {
+    indeg := [N]u32(fill: 0)
+    for e in edges { indeg[usize(e.1)] += 1 }
+    ready := Heap(u32, N)(items: [N]u32(fill: 0))
+    for i in 0..N {
+        if indeg[i] is 0 { _ = ready.heap_push(i.trunc(u32)) }
+    }
+    n: usize = 0
+    while u := ready.heap_pop() {
+        out[n] = u
+        n += 1
+        for e in edges {
+            if e.0 is u {
+                indeg[usize(e.1)] -= 1
+                if indeg[usize(e.1)] is 0 { _ = ready.heap_push(e.1) }
+            }
+        }
+    }
+    return n
+}
+
+// ---- A* on a grid ----
+MAP :: [_]string(
+    "S..#........",
+    ".#.#.######.",
+    ".#...#....#.",
+    ".#####.##.#.",
+    ".......#..#.",
+    "######.#.##.",
+    "....#..#....",
+    ".##.#.##.##.",
+    ".#..#.....#.",
+    ".#.####.#.#.",
+    ".#......#..G",
+    "............",
+)
+ROWS :: MAP.len
+COLS :: 12
+
+abs_diff_u :: fn(a, b: usize) -> usize => if a > b { a - b } else { b - a }
+
+CELLS :: ROWS * COLS
+
+// Returns the path length (number of steps) and draws the path into `canvas`, or null if unreachable.
+astar :: fn(canvas: ^[ROWS][COLS]u8, start, goal: usize) -> ?u32 \ {Out} {
+    inf :: 0xFFFF_FFFF
+    g := [CELLS]u32(fill: inf)
+    from := [CELLS]usize(fill: CELLS)
+    open := Heap((u32, u32), 256)(items: [256](u32, u32)(fill: (0, 0)))
+    gr := goal / COLS
+    gc := goal % COLS
+    g[start] = 0
+    _ = open.heap_push((0, start.trunc(u32)))
+    expanded: u32 = 0
+    while top := open.heap_pop() {
+        _, node32 := top
+        node := usize(node32)
+        expanded += 1
+        if node is goal {
+            // walk back along `from`, drawing '*'
+            cur := from[goal]
+            while cur is not start {
+                canvas[cur / COLS][cur % COLS] = '*'
+                cur = from[cur]
+            }
+            print("expanded {} nodes\n", expanded)
+            return g[goal]
+        }
+        r := node / COLS
+        c := node % COLS
+        for dir in 0..4 {
+            nr := r
+            nc := c
+            if dir is 0 {
+                if r is 0 { continue }
+                nr = r - 1
+            } else if dir is 1 {
+                if c + 1 >= COLS { continue }
+                nc = c + 1
+            } else if dir is 2 {
+                if r + 1 >= ROWS { continue }
+                nr = r + 1
+            } else {
+                if c is 0 { continue }
+                nc = c - 1
+            }
+            if MAP[nr][nc] is '#' { continue }
+            nxt := nr * COLS + nc
+            ng := g[node] + 1
+            if ng < g[nxt] {
+                g[nxt] = ng
+                from[nxt] = node
+                h := abs_diff_u(nr, gr) + abs_diff_u(nc, gc)
+                _ = open.heap_push((ng + h.trunc(u32), nxt.trunc(u32)))
+            }
+        }
+    }
+    return null
+}
+
+main :: fn() \ {Out} {
+    g := build_csr()
+    print("bfs hops from 0: {}\n", bfs(&g, 0))
+    order: [N_NODES]u32 = ---
+    n := dfs_order(&g, 0, order[..])
+    print("dfs order: {}\n", order[0..n])
+    print("dijkstra from 0: {}\n", dijkstra(&g, 0))
+    mst_w, mst_n := kruskal()
+    print("mst weight {} using {} edges\n", (mst_w, mst_n))
+
+    dag := [_](u32, u32)((5, 2), (5, 0), (4, 0), (4, 1), (2, 3), (3, 1))
+    ord: [6]u32 = ---
+    k := topo(6, dag[..], ord[..])
+    print("topological order ({}): {}\n", (k, ord))
+    cyc := [_](u32, u32)((0, 1), (1, 2), (2, 0), (2, 3))
+    ord2: [4]u32 = ---
+    print("cyclic graph sorts {} of 4 nodes\n", topo(4, cyc[..], ord2[..]))
+
+    d := dsu(10)
+    _ = union_sets(10, &d, 1, 2)
+    _ = union_sets(10, &d, 3, 4)
+    _ = union_sets(10, &d, 2, 4)
+    print("dsu: {} sets, 1~3: {}, 1~5: {}, repeat union: {}\n", (d.sets, find(10, &d, 1) is find(10, &d, 3), find(10, &d, 1) is find(10, &d, 5), union_sets(10, &d, 1, 3)))
+
+    // A* across the maze from S to G.
+    canvas: [ROWS][COLS]u8 = ---
+    start: usize = 0
+    goal: usize = 0
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            canvas[r][c] = MAP[r][c]
+            if MAP[r][c] is 'S' { start = r * COLS + c }
+            if MAP[r][c] is 'G' { goal = r * COLS + c }
+        }
+    }
+    if len := astar(&canvas, start, goal) {
+        print("path length {}\n", len)
+    } else {
+        print("no path\n")
+    }
+    for r in 0..ROWS { print("{}\n", canvas[r][..]) }
+}

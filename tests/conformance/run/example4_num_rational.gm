@@ -1,0 +1,201 @@
+// Generic exact rationals Ratio(T) with overflow-checked arithmetic, continued fractions, convergents of sqrt(2) and pi, harmonic numbers and Egyptian fractions.
+gcd :: fn(T: type, a, b: T) -> T where Int(T) {
+    x := a
+    y := b
+    while y is not 0 {
+        t := x % y
+        x = y
+        y = t
+    }
+    return x
+}
+
+Ratio :: struct(T: type) {
+    num: T
+    den: T       // always positive; gcd(num, den) is 1
+}
+
+Invalid :: union { ZeroDenominator, Overflow }
+
+// Builds the canonical form of n/d.
+make_ratio :: fn(T: type, n, d: T) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+    if d is 0 { return !.ZeroDenominator }
+    g := gcd(n.abs(), d.abs())
+    nn := n / g
+    dd := d / g
+    if dd < 0 {
+        nn = 0 -? nn else return !.Overflow
+        dd = 0 -? dd else return !.Overflow
+    }
+    return Ratio(T)(num: nn, den: dd)
+}
+
+whole :: fn(T: type, n: T) -> Ratio(T) where Int(T) => Ratio(T)(num: n, den: 1)
+
+add :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+    g := gcd(a.den, b.den)
+    // a/b + c/d = (a*(d/g) + c*(b/g)) / (b/g*d)
+    left := a.num *? (b.den / g) else return !.Overflow
+    right := b.num *? (a.den / g) else return !.Overflow
+    n := left +? right else return !.Overflow
+    d := (a.den / g) *? b.den else return !.Overflow
+    return try make_ratio(n, d)
+}
+
+mul :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+    // cross-cancel first to postpone overflow
+    g1 := gcd(a.num.abs(), b.den)
+    g2 := gcd(b.num.abs(), a.den)
+    n := (a.num / g1) *? (b.num / g2) else return !.Overflow
+    d := (a.den / g2) *? (b.den / g1) else return !.Overflow
+    return try make_ratio(n, d)
+}
+
+recip :: fn(T: type, a: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+    return try make_ratio(a.den, a.num)
+}
+
+neg :: fn(T: type, a: Ratio(T)) -> Ratio(T) where Signed(T) => Ratio(T)(num: -a.num, den: a.den)
+
+// Compares by cross-multiplying in 128 bits, which cannot overflow for 64-bit parts.
+less :: fn(T: type, a, b: Ratio(T)) -> bool where Int(T), Signed(T) {
+    return a.num.trunc(i128) * b.den.trunc(i128) < b.num.trunc(i128) * a.den.trunc(i128)
+}
+
+to_f64 :: fn(T: type, a: Ratio(T)) -> f64 where Int(T) => a.num.round(f64) / a.den.round(f64)
+
+show :: fn(T: type, a: Ratio(T)) \ {Out} where Int(T) {
+    if a.den is 1 {
+        print("{}", a.num)
+    } else {
+        print("{}/{}", (a.num, a.den))
+    }
+}
+
+// Continued fraction expansion [a0; a1, a2, ...] of n/d (Euclid's algorithm).
+continued_fraction :: fn(n, d: i64, out: []i64) -> usize {
+    x := n
+    y := d
+    k: usize = 0
+    while y is not 0 and k < out.len {
+        q := x / y
+        out[k] = q
+        k += 1
+        t := x - q * y
+        x = y
+        y = t
+    }
+    return k
+}
+
+// Convergents h/k of a continued fraction.
+convergent :: fn(terms: []const i64, upto: usize) -> Ratio(i64) {
+    h1: i64 = 1
+    h0: i64 = 0
+    k1: i64 = 0
+    k0: i64 = 1
+    for i in 0..=upto {
+        a := terms[i]
+        h2 := a * h1 + h0
+        k2 := a * k1 + k0
+        h0 = h1
+        h1 = h2
+        k0 = k1
+        k1 = k2
+    }
+    return Ratio(i64)(num: h1, den: k1)
+}
+
+main :: fn() \ {Out} {
+    // Basic canonical form and arithmetic.
+    a := make_ratio(i64, 6, -8) else { return }
+    b := make_ratio(i64, 5, 12) else { return }
+    print("6/-8 = ")
+    show(a)
+    print("\n")
+    s := add(a, b) else { return }
+    p := mul(a, b) else { return }
+    print("a + b = ")
+    show(s)
+    print(", a * b = ")
+    show(p)
+    print(", 1/a = ")
+    show(recip(a) else { return })
+    print("\n")
+    print("a < b: {}, b < a: {}, -a < a: {}\n", (less(a, b), less(b, a), less(neg(a), a)))
+    print("zero denominator: {}\n", make_ratio(i64, 1, 0) is !.ZeroDenominator)
+
+    // Harmonic numbers H_n exactly: H_20 = 55835135/15519504.
+    h := whole(i64, 0)
+    for k in 1..=20 {
+        term := make_ratio(i64, 1, k.trunc(i64)) else { return }
+        h = add(h, term) else { print("overflow at {}\n", k)
+            return }
+        if k in (1, 2, 3, 10, 20) {
+            print("H_{} = ", k)
+            show(h)
+            print("\n")
+        }
+    }
+    print("H_20 ~ {}\n", to_f64(h))
+
+    // The same sum overflows i32 earlier, and the overflow is detected rather than wrapped.
+    h32 := whole(i32, 0)
+    reached: u32 = 0
+    for k in 1..=40 {
+        term := make_ratio(i32, 1, k.trunc(i32)) else { return }
+        h32 = add(h32, term) else {
+            print("i32 harmonic sum overflows at k={}\n", k)
+            break
+        }
+        reached += 1
+    }
+    print("terms added in i32: {}\n", reached)
+
+    // Continued fractions: 415/93 = [4; 2, 6, 7].
+    terms: [20]i64 = ---
+    n := continued_fraction(415, 93, terms[..])
+    print("415/93 = {}\n", terms[0..n])
+    // The golden ratio's convergents are Fibonacci ratios: 1, 2, 3/2, 5/3, 8/5, ...
+    print("phi convergents:")
+    ones := [_]i64(1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+    for i in 0..10 {
+        print(" ")
+        show(convergent(ones[..], i))
+    }
+    print("\n")
+    // sqrt(2) = [1; 2, 2, 2, ...]
+    twos := [_]i64(1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2)
+    print("sqrt2 convergents:")
+    for i in 0..8 {
+        print(" ")
+        show(convergent(twos[..], i))
+    }
+    print("\n")
+    last := convergent(twos[..], 11)
+    err := (to_f64(last) - 1.4142135623730951).abs()
+    print("convergent 11 = {}/{}, error below 1e-8: {}\n", (last.num, last.den, err < 1e-8))
+
+    // pi from a double: its continued fraction gives the famous 22/7, 333/106, 355/113.
+    // 3.14159265358979323846 approximated by 31415926535897932 / 10^16 (exact integer arithmetic).
+    pterms: [12]i64 = ---
+    pn := continued_fraction(31415926535897932, 10000000000000000, pterms[..])
+    print("pi = {}\n", pterms[0..8])
+    print("pi convergents:")
+    for i in 0..6 {
+        print(" ")
+        show(convergent(pterms[..], i))
+    }
+    print("\n")
+
+    // Egyptian fractions by the greedy algorithm: 4/13 = 1/4 + 1/18 + 1/468.
+    rest := make_ratio(i64, 4, 13) else { return }
+    print("4/13 =")
+    while rest.num > 0 {
+        d := (rest.den + rest.num - 1) / rest.num       // ceil(den / num)
+        print(" 1/{}", d)
+        unit := make_ratio(i64, 1, d) else { return }
+        rest = add(rest, neg(unit)) else { return }
+    }
+    print("\n")
+}

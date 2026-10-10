@@ -1,0 +1,16 @@
+exact e^-1 = 0.3678794412
+steps  euler-error   rk4-error
+10  1.9201e-02  3.3324e-07
+20  9.3935e-03  1.9976e-08   ratios 2.0 16.7
+40  4.6470e-03  1.2227e-09   ratios 2.0 16.3
+80  2.3113e-03  7.5629e-11   ratios 2.0 16.2
+pendulum t=10, euler: theta=-0.206 omega=-2.309
+pendulum t=10, rk4:   theta=-0.348853 omega=-1.979579
+energy drift euler > 1e-3: true
+energy drift rk4  < 1e-8: true
+period: 2.84 (small-angle theory 2.84)
+after one orbit: x=1.000000 y=0.000000
+orbit energy -0.500000 -> -0.500000
+euler orbit radius after one turn: 1.127 (spirals outward)
+ellipse energy: -0.250000 (expected -0.25 at a=2)
+half period: x=-3.0000 y=0.0000

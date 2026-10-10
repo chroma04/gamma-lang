@@ -1,0 +1,21 @@
+bfs hops from 0: [0, 1, 2, 3, 4, 3, 2, 1, 2]
+dfs order: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+dijkstra from 0: [0, 4, 12, 19, 21, 11, 9, 8, 14]
+mst weight 37 using 8 edges
+topological order (6): [4, 5, 0, 2, 3, 1]
+cyclic graph sorts 0 of 4 nodes
+dsu: 7 sets, 1~3: true, 1~5: false, repeat union: false
+expanded 34 nodes
+path length 23
+S..#........
+*#.#.######.
+*#...#....#.
+*#####.##.#.
+*******#..#.
+######*#.##.
+....#**#....
+.##.#*##.##.
+.#..#*****#.
+.#.####.#*#.
+.#......#**G
+............

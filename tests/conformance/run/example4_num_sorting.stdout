@@ -1,0 +1,18 @@
+first values: [40002, 40326, -24266, 20995, -38502, -30288]
+builtin sort ok: true  checksum -349980620
+insertion sort of first 500: true
+merge sort matches: true
+quick sort matches: true
+heap sort matches:  true
+degenerate quick sorts: true true true
+degenerate heap/merge: true true
+binary_search(present): found=true value matches=true
+binary_search(absent): found=false at end=true
+min -49987 max 49958 first -49987 last 49958
+index_of(probe) <= 1234: true
+[-7.75, -1.25, 0, 2, 2, 3.5, 10000000000]
+["apple", "banana", "cherry", "date", "elderberry", "fig", "grape", "kiwi", "lemon", "pear"]
+[(25, "bob"), (25, "cy"), (30, "abe"), (30, "al"), (30, "ann"), (41, "dee")]
+stable by age: [(25, "bob"), (25, "cy"), (30, "ann"), (30, "al"), (30, "abe"), (41, "dee")]
+by name:       [(30, "abe"), (30, "al"), (30, "ann"), (25, "bob"), (25, "cy"), (41, "dee")]
+descending: 49959 49942 -49983

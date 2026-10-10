@@ -1,0 +1,47 @@
+1/3: f64 0.3333333333333333 f32 0.33333334
+0.1f32 widened to f64: 0.10000000149011612
+0.1 + 0.2 = 0.30000000000000004, 0.1f32 + 0.2f32 = 0.3
+big and small: 1e21 100000000000000000000 1.5e-7 0.000001
+f32 limits: 16777216 3.4028235e38 1e-45
+f64 limits: 1.7976931348623157e308 5e-324
+pi: 3.141592653589793 3.1415927
+0.1 x 100000: f32 naive 9998.557, f32 kahan 10000, f64 naive 10000.000000018848
+zeros: 0 -0 equal: true sign bits: false true
+1/+0 = inf, 1/-0 = -inf
+nan: nan false true nan
+sqrt(-1) = nan, sqrt(2) = 1.4142135623730951
+inf - inf = nan, inf * 0 = nan, inf + 1 = inf
+classify: true true true false
+min/max with nan: 1 1 -2 0
+comparisons with nan: false false false false
+bits: 4607182418800017408 3221225472
+from bits: 3.141592653589793 1.5
+max subnormal f64: 2.225073858507201e-308
+min normal f32: 1.1754944e-38
+nan payload kept in f32 bits: 2143289344
+round: 2 4 -2 0 0 2 -2
+trunc: 2 -2 1 -1
+floor: 2 -3 -1 -2
+ceil:  3 -2 0 -1
+checked: null 3000000000 null
+sat: 2147483647 -2147483648 255 0
+2^53+1 -> 9007199254740992
+i64 max -> 9223372036854776000
+2^24+1 -> f32 16777216
+u128 max -> 3.402823669209385e38
+narrowing: inf 1 0.1
+f64 -> f32 -> f64: 0.10000000149011612
+f16: 0.1 65500 inf
+f16 sum 0.1 x 10: 1
+f16 bits of 1.0 = 15360
+f16 -> f32: 0.099975586
+f16 epsilon steps: 1.001 1
+exp(1) = 2.718281828459
+sin(1e6) = -0.349993502171
+atan2(1, -1) = 2.356194490192
+pow(2, 0.5) = 1.414213562373  pow(-8, 1/3) = nan
+log(0) = -inf  log(-1) = nan
+fmod(-7.5, 2) = -1.5  round(-2.5) = -3  floor(-0.5) = -1
+hypot(3e200, 4e200) = 4.9999999999999995e200
+1234.57 | 1.235e+03 | 1234.57 | 1.23e-05
+rounding ties: 0.12 0.38 2 4

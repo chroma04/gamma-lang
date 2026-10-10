@@ -1,0 +1,104 @@
+// A matrix type generic over element type and dimensions with a Num constraint: Fibonacci by matrix power in u64, f32 rotations, and checked products in u8.
+Matrix :: struct(T: type, R, C: usize) {
+    d: [R][C]T
+}
+
+zero :: fn(T: type, R, C :: usize) -> Matrix(T, R, C) where Num(T) {
+    return Matrix(T, R, C)(d: [R][C]T(fill: [C]T(fill: 0)))
+}
+
+eye :: fn(T: type, N :: usize) -> Matrix(T, N, N) where Num(T) {
+    m := zero(T, N, N)
+    for i in 0..N { m.d[i][i] = 1 }
+    return m
+}
+
+mul :: fn(T: type, R, K, C :: usize, a: ^const Matrix(T, R, K), b: ^const Matrix(T, K, C)) -> Matrix(T, R, C) where Num(T) {
+    out := zero(T, R, C)
+    for i in 0..R {
+        for j in 0..C {
+            acc: T = 0
+            for k in 0..K { acc += a.d[i][k] * b.d[k][j] }
+            out.d[i][j] = acc
+        }
+    }
+    return out
+}
+
+// Square matrix power by repeated squaring.
+power :: fn(T: type, N :: usize, m: Matrix(T, N, N), e: u32) -> Matrix(T, N, N) where Num(T) {
+    result := eye(T, N)
+    base := m
+    k := e
+    while true {
+        if k & 1 is 1 { result = mul(&result, &base) }
+        k >>= 1
+        if k is 0 { break }
+        base = mul(&base, &base)      // no squaring after the last bit: it could overflow
+    }
+    return result
+}
+
+trace :: fn(T: type, N :: usize, m: ^const Matrix(T, N, N)) -> T where Num(T) {
+    t: T = 0
+    for i in 0..N { t += m.d[i][i] }
+    return t
+}
+
+transpose :: fn(T: type, R, C :: usize, m: ^const Matrix(T, R, C)) -> Matrix(T, C, R) where Num(T) {
+    out := zero(T, C, R)
+    for i in 0..R {
+        for j in 0..C { out.d[j][i] = m.d[i][j] }
+    }
+    return out
+}
+
+// Checked product for integer matrices: null if any intermediate overflows T.
+mul_checked :: fn(T: type, R, K, C :: usize, a: ^const Matrix(T, R, K), b: ^const Matrix(T, K, C)) -> ?Matrix(T, R, C) where Int(T) {
+    out := zero(T, R, C)
+    for i in 0..R {
+        for j in 0..C {
+            acc: T = 0
+            for k in 0..K {
+                p := a.d[i][k] *? b.d[k][j] else return null
+                acc = acc +? p else return null
+            }
+            out.d[i][j] = acc
+        }
+    }
+    return out
+}
+
+main :: fn() \ {Out} {
+    // Fibonacci numbers: [[1,1],[1,0]]^n = [[F(n+1), F(n)], [F(n), F(n-1)]]
+    fibm := Matrix(u64, 2, 2)(d: [2][2]u64([2]u64(1, 1), [2]u64(1, 0)))
+    for n in [_]u32(1, 10, 50, 90) {
+        p := power(u64, 2, fibm, n)
+        print("F({}) = {}\n", (n, p.d[0][1]))
+    }
+
+    // The same code on f64 with a rotation matrix: ten steps of 36 degrees is the identity.
+    c := 0.8090169943749475
+    s := 0.5877852522924731
+    rot := Matrix(f64, 2, 2)(d: [2][2]f64([2]f64(c, -s), [2]f64(s, c)))
+    r10 := power(f64, 2, rot, 10)
+    dev := (r10.d[0][0] - 1.0).abs() + r10.d[0][1].abs() + r10.d[1][0].abs() + (r10.d[1][1] - 1.0).abs()
+    print("rotation^10 close to identity: {}\n", dev < 1e-14)
+    print("trace(rot) = {}\n", trace(f64, 2, &rot))
+
+    // f32 and i32 versions of the same shape.
+    m32 := Matrix(f32, 2, 3)(d: [2][3]f32([3]f32(1.0, 2.0, 3.0), [3]f32(4.0, 5.0, 6.0)))
+    t32 := transpose(&m32)
+    g := mul(&m32, &t32)
+    print("f32 gram: {}\n", g)
+    mi := Matrix(i32, 3, 2)(d: [3][2]i32([2]i32(1, -2), [2]i32(3, 4), [2]i32(-5, 6)))
+    mit := transpose(&mi)
+    sq := mul(&mi, &mit)
+    print("i32 3x3: {}\n", sq)
+
+    // Checked products in u8: [[1,2],[3,4]]^2 fits, [[10,20],[30,4]]^2 does not.
+    small := Matrix(u8, 2, 2)(d: [2][2]u8([2]u8(1, 2), [2]u8(3, 4)))
+    large := Matrix(u8, 2, 2)(d: [2][2]u8([2]u8(10, 20), [2]u8(30, 4)))
+    print("small squared: {}\n", mul_checked(&small, &small))
+    print("large squared: {}\n", mul_checked(&large, &large))
+}

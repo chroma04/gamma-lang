@@ -1,0 +1,132 @@
+// ODE integration with Euler and RK4 over [N]f64 state vectors using elementwise array arithmetic: convergence orders, pendulum and Kepler orbit energy.
+math :: import "std/math"
+fmt :: import "std/fmt"
+
+// Vector helpers. (Elementwise `+` on `[N]f64` is rejected inside a function generic in N, so these loop.)
+axpy :: fn(N :: usize, a: f64, x, y: [N]f64) -> [N]f64 {
+    r: [N]f64 = ---
+    for i in 0..N { r[i] = y[i] + a * x[i] }
+    return r
+}
+
+euler_step :: fn(N :: usize, f: fn([N]f64, f64) -> [N]f64, y: [N]f64, t, h: f64) -> [N]f64 {
+    return axpy(N, h, f(y, t), y)
+}
+
+rk4_step :: fn(N :: usize, f: fn([N]f64, f64) -> [N]f64, y: [N]f64, t, h: f64) -> [N]f64 {
+    k1 := f(y, t)
+    k2 := f(axpy(N, h / 2.0, k1, y), t + h / 2.0)
+    k3 := f(axpy(N, h / 2.0, k2, y), t + h / 2.0)
+    k4 := f(axpy(N, h, k3, y), t + h)
+    r: [N]f64 = ---
+    for i in 0..N { r[i] = y[i] + (h / 6.0) * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) }
+    return r
+}
+
+Method :: union { Euler, Rk4 }
+
+integrate :: fn(N :: usize, m: Method, f: fn([N]f64, f64) -> [N]f64, y0: [N]f64, t_end: f64, steps: u32) -> [N]f64 {
+    h := t_end / steps.round(f64)
+    y := y0
+    t := 0.0
+    for i in 0..steps {
+        y = match m {
+            .Euler => euler_step(N, f, y, t, h)
+            .Rk4   => rk4_step(N, f, y, t, h)
+        }
+        t = (i + 1).round(f64) * h
+    }
+    return y
+}
+
+// y' = -y has the solution e^-t.
+decay :: fn(y: [1]f64, t: f64) -> [1]f64 => [1]f64(-y[0])
+
+// theta'' = -(g/L) sin(theta), state = (theta, omega)
+G_OVER_L :: 9.81 / 2.0
+
+pendulum :: fn(y: [2]f64, t: f64) -> [2]f64 => [2]f64(y[1], -G_OVER_L * math.sin(y[0]))
+
+pendulum_energy :: fn(y: [2]f64) -> f64 => 0.5 * y[1] * y[1] + G_OVER_L * (1.0 - math.cos(y[0]))
+
+// Two-body problem with GM = 1, state = (x, y, vx, vy)
+kepler :: fn(s: [4]f64, t: f64) -> [4]f64 {
+    r2 := s[0] * s[0] + s[1] * s[1]
+    r3 := r2 * math.sqrt(r2)
+    return [4]f64(s[2], s[3], -s[0] / r3, -s[1] / r3)
+}
+
+kepler_energy :: fn(s: [4]f64) -> f64 {
+    r := math.sqrt(s[0] * s[0] + s[1] * s[1])
+    return 0.5 * (s[2] * s[2] + s[3] * s[3]) - 1.0 / r
+}
+
+fx :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.fixed(x, d, buf)
+sc :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.sci(x, d, buf)
+
+main :: fn() \ {Out} {
+    b1: [400]u8 = ---
+    b2: [400]u8 = ---
+    b3: [400]u8 = ---
+
+    // Global error of y' = -y at t = 1 as the step shrinks: Euler is first order, RK4 fourth.
+    exact := math.exp(-1.0)
+    print("exact e^-1 = {}\n", fx(exact, 10, b1[..]))
+    print("steps  euler-error   rk4-error\n")
+    prev_e := 0.0
+    prev_r := 0.0
+    n: u32 = 10
+    while n <= 80 {
+        ee := (integrate(1, .Euler, decay, [1]f64(1.0), 1.0, n)[0] - exact).abs()
+        er := (integrate(1, .Rk4, decay, [1]f64(1.0), 1.0, n)[0] - exact).abs()
+        print("{}  {}  {}", (n, sc(ee, 4, b1[..]), sc(er, 4, b2[..])))
+        if prev_e > 0.0 {
+            print("   ratios {} {}", (fx(prev_e / ee, 1, b1[..]), fx(prev_r / er, 1, b2[..])))
+        }
+        print("\n")
+        prev_e = ee
+        prev_r = er
+        n *= 2
+    }
+
+    // Pendulum released from 1 radian at rest: energy drift over 10 seconds.
+    y0 := [2]f64(1.0, 0.0)
+    e0 := pendulum_energy(y0)
+    ye := integrate(2, .Euler, pendulum, y0, 10.0, 2000)
+    yr := integrate(2, .Rk4, pendulum, y0, 10.0, 2000)
+    print("pendulum t=10, euler: theta={} omega={}\n", (fx(ye[0], 3, b1[..]), fx(ye[1], 3, b2[..])))
+    print("pendulum t=10, rk4:   theta={} omega={}\n", (fx(yr[0], 6, b1[..]), fx(yr[1], 6, b2[..])))
+    print("energy drift euler > 1e-3: {}\n", (pendulum_energy(ye) - e0).abs() > 1e-3)
+    print("energy drift rk4  < 1e-8: {}\n", (pendulum_energy(yr) - e0).abs() < 1e-8)
+
+    // Small-angle period check: T = 2*pi*sqrt(L/g) with a tiny amplitude; quarter period
+    // is where theta first crosses zero.
+    small := [2]f64(0.001, 0.0)
+    t := 0.0
+    s := small
+    dt := 0.001
+    while s[0] > 0.0 {
+        s = rk4_step(2, pendulum, s, t, dt)
+        t += dt
+    }
+    period := 4.0 * t
+    expected := math.tau * math.sqrt(1.0 / G_OVER_L)
+    print("period: {} (small-angle theory {})\n", (fx(period, 2, b1[..]), fx(expected, 2, b2[..])))
+
+    // Circular orbit of radius 1: speed 1, period 2*pi. After one period we are back at the start.
+    orbit := [4]f64(1.0, 0.0, 0.0, 1.0)
+    ke0 := kepler_energy(orbit)
+    after := integrate(4, .Rk4, kepler, orbit, math.tau, 600)
+    print("after one orbit: x={} y={}\n", (fx(after[0], 6, b1[..]), fx(after[1], 6, b2[..])))
+    print("orbit energy {} -> {}\n", (fx(ke0, 6, b1[..]), fx(kepler_energy(after), 6, b2[..])))
+    after_e := integrate(4, .Euler, kepler, orbit, math.tau, 600)
+    r_e := math.hypot(after_e[0], after_e[1])
+    print("euler orbit radius after one turn: {} (spirals outward)\n", fx(r_e, 3, b3[..]))
+
+    // Elliptic orbit, eccentricity 0.5: vy at periapsis a(1-e)=1 is sqrt((1+e)/1) -> energy -1/(2a), a = 2
+    ell := [4]f64(1.0, 0.0, 0.0, math.sqrt(1.5))
+    print("ellipse energy: {} (expected -0.25 at a=2)\n", fx(kepler_energy(ell), 6, b1[..]))
+    far := integrate(4, .Rk4, kepler, ell, math.pi * 2.0 * 2.0 * math.sqrt(2.0) / 2.0, 4000)
+    // half period = pi * a^1.5 = pi * 2.828..: apoapsis is at x = -a(1+e) = -3
+    print("half period: x={} y={}\n", (fx(far[0], 4, b1[..]), fx(far[1].abs(), 4, b2[..])))
+}

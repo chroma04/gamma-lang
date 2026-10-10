@@ -1,0 +1,209 @@
+// Merge sort, quicksort, heap sort and insertion sort generic over Ord, compared with the builtin sorts, binary_search, min and max on ints, floats, strings and tuples.
+insertion_sort :: fn(T: type, xs: []T) where Ord(T) {
+    for i in 1..xs.len {
+        key := xs[i]
+        j := i
+        while j > 0 and xs[j - 1] > key {
+            xs[j] = xs[j - 1]
+            j -= 1
+        }
+        xs[j] = key
+    }
+}
+
+merge_sort :: fn(T: type, xs, tmp: []T) where Ord(T) {
+    if xs.len <= 8 {
+        insertion_sort(xs)
+        return
+    }
+    mid := xs.len / 2
+    merge_sort(xs[..mid], tmp[..mid])
+    merge_sort(xs[mid..], tmp[mid..])
+    i: usize = 0
+    j := mid
+    k: usize = 0
+    while i < mid and j < xs.len {
+        if xs[j] < xs[i] {
+            tmp[k] = xs[j]
+            j += 1
+        } else {
+            tmp[k] = xs[i]       // ties come from the left half: stable
+            i += 1
+        }
+        k += 1
+    }
+    while i < mid {
+        tmp[k] = xs[i]
+        i += 1
+        k += 1
+    }
+    while j < xs.len {
+        tmp[k] = xs[j]
+        j += 1
+        k += 1
+    }
+    xs.copy_from(tmp[..xs.len])
+}
+
+quick_sort :: fn(T: type, xs: []T) where Ord(T) {
+    if xs.len <= 8 {
+        insertion_sort(xs)
+        return
+    }
+    // median of three pivot moved to the front
+    last := xs.len - 1
+    mid := xs.len / 2
+    if xs[mid] < xs[0] { xs.swap(mid, 0) }
+    if xs[last] < xs[0] { xs.swap(last, 0) }
+    if xs[last] < xs[mid] { xs.swap(last, mid) }
+    xs.swap(0, mid)
+    pivot := xs[0]
+    lo: usize = 1
+    hi := last
+    while true {
+        while lo <= hi and xs[lo] < pivot { lo += 1 }
+        while lo <= hi and pivot < xs[hi] { hi -= 1 }
+        if lo >= hi { break }
+        xs.swap(lo, hi)
+        lo += 1
+        hi -= 1
+    }
+    xs.swap(0, hi)
+    quick_sort(xs[..hi])
+    quick_sort(xs[hi + 1..])
+}
+
+sift_down :: fn(T: type, xs: []T, start, end: usize) where Ord(T) {
+    root := start
+    while 2 * root + 1 < end {
+        child := 2 * root + 1
+        if child + 1 < end and xs[child] < xs[child + 1] { child += 1 }
+        if xs[root] < xs[child] {
+            xs.swap(root, child)
+            root = child
+        } else {
+            return
+        }
+    }
+}
+
+heap_sort :: fn(T: type, xs: []T) where Ord(T) {
+    n := xs.len
+    i := n / 2
+    while i > 0 {
+        i -= 1
+        sift_down(xs, i, n)
+    }
+    end := n
+    while end > 1 {
+        end -= 1
+        xs.swap(0, end)
+        sift_down(xs, 0, end)
+    }
+}
+
+is_sorted :: fn(T: type, xs: []const T) -> bool where Ord(T) {
+    for i in 1..xs.len {
+        if xs[i] < xs[i - 1] { return false }
+    }
+    return true
+}
+
+next_rand :: fn(state: ^u64) -> u64 {
+    state^ = state^ *% 6364136223846793005 +% 1442695040888963407
+    return state^ >> 33
+}
+
+fill_random :: fn(xs: []i32, seed: u64) {
+    s := seed
+    for i in 0..xs.len {
+        xs[i] = (next_rand(&s) % 100000).trunc(i32) - 50000
+    }
+}
+
+checksum :: fn(xs: []const i32) -> i64 {
+    acc: i64 = 0
+    for i, x in enumerate(xs) {
+        acc = (acc *% 31 +% i64(x)) % 1_000_000_007
+    }
+    return acc
+}
+
+N :: 4000
+
+main :: fn() \ {Out} {
+    base: [N]i32 = ---
+    fill_random(base[..], 2024)
+    print("first values: {}\n", base[0..6])
+
+    reference := base
+    reference[..].sort()
+    print("builtin sort ok: {}  checksum {}\n", (is_sorted(reference[..]), checksum(reference[..])))
+
+    a := base
+    insertion_sort(a[0..500])
+    print("insertion sort of first 500: {}\n", is_sorted(a[0..500]))
+
+    b := base
+    tmp: [N]i32 = ---
+    merge_sort(b[..], tmp[..])
+    print("merge sort matches: {}\n", b is reference)
+
+    c := base
+    quick_sort(c[..])
+    print("quick sort matches: {}\n", c is reference)
+
+    d := base
+    heap_sort(d[..])
+    print("heap sort matches:  {}\n", d is reference)
+
+    // Degenerate inputs: sorted, reversed, all equal.
+    asc: [N]i32 = ---
+    for i in 0..N { asc[i] = i.trunc(i32) }
+    desc: [N]i32 = ---
+    for i in 0..N { desc[i] = (N - i).trunc(i32) }
+    same := [N]i32(fill: 7)
+    quick_sort(asc[..])
+    quick_sort(desc[..])
+    quick_sort(same[..])
+    print("degenerate quick sorts: {} {} {}\n", (is_sorted(asc[..]), is_sorted(desc[..]), is_sorted(same[..])))
+    heap_sort(desc[..])
+    merge_sort(same[..], tmp[..])
+    print("degenerate heap/merge: {} {}\n", (is_sorted(desc[..]), is_sorted(same[..])))
+
+    // Searching the sorted data.
+    sorted := reference[..]
+    probe := sorted[1234]
+    r := sorted.binary_search(probe)
+    print("binary_search(present): found={} value matches={}\n", (r.found, sorted[r.at] is probe))
+    miss := sorted.binary_search(1_000_000)
+    print("binary_search(absent): found={} at end={}\n", (miss.found, miss.at is N))
+    print("min {} max {} first {} last {}\n", (sorted.min()?, sorted.max()?, sorted.first()?, sorted.last()?))
+    print("index_of(probe) <= 1234: {}\n", sorted.index_of(probe)? <= 1234)
+
+    // Floats (no NaN), strings and tuples sort with the same code.
+    fs := [_]f64(3.5, -1.25, 0.0, 2.0, -7.75, 1e10, 2.0)
+    heap_sort(fs[..])
+    print("{}\n", fs)
+    words := [_]string("pear", "apple", "fig", "banana", "cherry", "date", "elderberry", "grape", "kiwi", "lemon")
+    wtmp := [10]string(fill: "")
+    merge_sort(words[..], wtmp[..])
+    print("{}\n", words)
+
+    people := [_](u32, string)((30, "ann"), (25, "bob"), (30, "al"), (25, "cy"), (41, "dee"), (30, "abe"))
+    quick_sort(people[..])
+    print("{}\n", people)
+
+    // Stability: sort by the age only and compare stable and unstable variants.
+    byage := [_](u32, string)((30, "ann"), (25, "bob"), (30, "al"), (25, "cy"), (41, "dee"), (30, "abe"))
+    byage[..].stable_sort_by_key(fn(p) => p.0)
+    print("stable by age: {}\n", byage)
+    byage[..].sort_by(fn(p, q) => p.1 < q.1)
+    print("by name:       {}\n", byage)
+
+    // sort_by with a comparison closure over pointers to the elements.
+    big: [N]i32 = ---
+    fill_random(big[..], 99)
+    big[..].sort_by(fn(x, y) => x^ > y^)
+    print("descending: {} {} {}\n", (big[0], big[1], big[N - 1]))
+}

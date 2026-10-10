@@ -1,0 +1,251 @@
+// Fixed-capacity big unsigned integers on u32 limbs: add, sub, mul, division, decimal printing; factorials, Fibonacci(200), powers of two.
+fmt :: import "std/fmt"
+
+Big :: struct(N: usize) {
+    limbs: [N]u32
+    len: usize = 0       // number of significant limbs; zero is len 0
+}
+
+big_zero :: fn(N :: usize) -> Big(N) => Big(N)(limbs: [N]u32(fill: 0), len: 0)
+
+from_u64 :: fn(N :: usize, v: u64) -> Big(N) {
+    b := big_zero(N)
+    x := v
+    while x > 0 {
+        b.limbs[b.len] = x.trunc(u32)
+        b.len += 1
+        x >>= 32
+    }
+    return b
+}
+
+trim :: fn(N :: usize, b: ^Big(N)) {
+    while b.len > 0 and b.limbs[b.len - 1] is 0 { b.len -= 1 }
+}
+
+is_zero :: fn(N :: usize, b: ^const Big(N)) -> bool => b.len is 0
+
+// -1, 0, 1
+cmp :: fn(N :: usize, a, b: ^const Big(N)) -> i32 {
+    if a.len < b.len { return -1 }
+    if a.len > b.len { return 1 }
+    i := a.len
+    while i > 0 {
+        i -= 1
+        if a.limbs[i] < b.limbs[i] { return -1 }
+        if a.limbs[i] > b.limbs[i] { return 1 }
+    }
+    return 0
+}
+
+Overflow :: union { Overflow }
+
+add :: fn(N :: usize, a, b: ^const Big(N)) -> Overflow!Big(N) {
+    r := big_zero(N)
+    n := if a.len > b.len { a.len } else { b.len }
+    carry: u64 = 0
+    for i in 0..n {
+        t := u64(a.limbs[i]) + u64(b.limbs[i]) + carry
+        r.limbs[i] = t.trunc(u32)
+        carry = t >> 32
+    }
+    r.len = n
+    if carry > 0 {
+        if n is N { return !.Overflow }
+        r.limbs[n] = carry.trunc(u32)
+        r.len = n + 1
+    }
+    return r
+}
+
+// a - b, requires a >= b
+sub :: fn(N :: usize, a, b: ^const Big(N)) -> Big(N) {
+    assert(cmp(N, a, b) >= 0, "sub: a < b")
+    r := big_zero(N)
+    borrow: u64 = 0
+    for i in 0..a.len {
+        bi := if i < b.len { u64(b.limbs[i]) } else { 0 }
+        ai := u64(a.limbs[i])
+        d := ai -% bi -% borrow
+        r.limbs[i] = d.trunc(u32)
+        borrow = (d >> 63) & 1
+    }
+    r.len = a.len
+    trim(N, &r)
+    return r
+}
+
+mul :: fn(N :: usize, a, b: ^const Big(N)) -> Overflow!Big(N) {
+    r := big_zero(N)
+    if a.len is 0 or b.len is 0 { return r }
+    if a.len + b.len > N + 1 { return !.Overflow }
+    for i in 0..a.len {
+        carry: u64 = 0
+        for j in 0..b.len {
+            // (2^32-1)^2 + 2*(2^32-1) = 2^64 - 1: this never overflows a u64
+            t := u64(a.limbs[i]) * u64(b.limbs[j]) + u64(r.limbs[i + j]) + carry
+            r.limbs[i + j] = t.trunc(u32)
+            carry = t >> 32
+        }
+        if carry > 0 {
+            if i + b.len >= N { return !.Overflow }
+            r.limbs[i + b.len] = carry.trunc(u32)
+        }
+    }
+    r.len = a.len + b.len
+    if r.len > N { r.len = N }
+    trim(N, &r)
+    return r
+}
+
+mul_small :: fn(N :: usize, a: ^Big(N), m: u32) {
+    carry: u64 = 0
+    for i in 0..a.len {
+        t := u64(a.limbs[i]) * u64(m) + carry
+        a.limbs[i] = t.trunc(u32)
+        carry = t >> 32
+    }
+    if carry > 0 {
+        a.limbs[a.len] = carry.trunc(u32)
+        a.len += 1
+    }
+    trim(N, a)
+}
+
+// Divides in place and returns the remainder.
+divmod_small :: fn(N :: usize, a: ^Big(N), d: u32) -> u32 {
+    rem: u64 = 0
+    i := a.len
+    while i > 0 {
+        i -= 1
+        cur := (rem << 32) | u64(a.limbs[i])
+        a.limbs[i] = (cur / u64(d)).trunc(u32)
+        rem = cur % u64(d)
+    }
+    trim(N, a)
+    return rem.trunc(u32)
+}
+
+shl1 :: fn(N :: usize, a: ^Big(N), bit: u32) {
+    carry := bit
+    for i in 0..a.len {
+        next := a.limbs[i] >> 31
+        a.limbs[i] = (a.limbs[i] <<% 1) | carry
+        carry = next
+    }
+    if carry > 0 {
+        a.limbs[a.len] = carry
+        a.len += 1
+    }
+}
+
+// Binary long division: (quotient, remainder).
+divmod :: fn(N :: usize, a, b: ^const Big(N)) -> (q: Big(N), r: Big(N)) {
+    assert(b.len > 0, "divide by zero")
+    q := big_zero(N)
+    r := big_zero(N)
+    bit := a.len * 32
+    while bit > 0 {
+        bit -= 1
+        limb := bit / 32
+        shift := (bit % 32).trunc(u32)
+        shl1(N, &r, (a.limbs[limb] >> shift) & 1)
+        if cmp(N, &r, b) >= 0 {
+            r = sub(N, &r, b)
+            q.limbs[limb] |= 1 <<% shift
+            if limb + 1 > q.len { q.len = limb + 1 }
+        }
+    }
+    trim(N, &q)
+    return (q, r)
+}
+
+// Decimal text, most significant digit first, written backwards into `buf`.
+to_dec :: fn(N :: usize, a: ^const Big(N), buf: []u8) -> string {
+    if a.len is 0 {
+        buf[buf.len - 1] = '0'
+        return buf[buf.len - 1..]
+    }
+    t := a^
+    end := buf.len
+    while t.len > 0 {
+        chunk := divmod_small(N, &t, 1_000_000_000)
+        digits := if t.len > 0 { 9 } else { 0 }
+        c := chunk
+        k: usize = 0
+        while (digits > 0 and k < digits) or (digits is 0 and c > 0) {
+            end -= 1
+            buf[end] = '0' + (c % 10).trunc(u8)
+            c /= 10
+            k += 1
+        }
+    }
+    return buf[end..]
+}
+
+N :: 24     // 768 bits
+
+factorial :: fn(n: u32) -> Big(N) {
+    f := from_u64(N, 1)
+    for i in 2..=n { mul_small(N, &f, i) }
+    return f
+}
+
+main :: fn() \ {Out} {
+    buf: [300]u8 = ---
+
+    f50 := factorial(50)
+    f100 := factorial(100)
+    print("50!  = {}\n", to_dec(N, &f50, buf[..]))
+    print("100! = {}\n", to_dec(N, &f100, buf[..]))
+
+    // Fibonacci(200) by repeated big additions.
+    a := from_u64(N, 0)
+    b := from_u64(N, 1)
+    for _ in 0..200 {
+        c := add(N, &a, &b) else { print("overflow\n")
+            return }
+        a = b
+        b = c
+    }
+    print("fib(200) = {}\n", to_dec(N, &a, buf[..]))
+
+    // 2^300 by doubling; fits in 10 limbs.
+    p := from_u64(N, 1)
+    for _ in 0..300 { mul_small(N, &p, 2) }
+    print("2^300 = {} ({} limbs)\n", (to_dec(N, &p, buf[..]), p.len))
+
+    // Big * big and the identity (a*b)/b = a, remainder 0.
+    x := factorial(30)
+    y := factorial(25)
+    xy := mul(N, &x, &y) else { return }
+    print("30! * 25! = {}\n", to_dec(N, &xy, buf[..]))
+    q, r := divmod(N, &xy, &y)
+    print("quotient is 30!: {}  remainder zero: {}\n", (cmp(N, &q, &x) is 0, is_zero(N, &r)))
+
+    // A division with a non-zero remainder: 100! / (2^70 + 12345)
+    d := from_u64(N, 1)
+    for _ in 0..70 { mul_small(N, &d, 2) }
+    extra := from_u64(N, 12345)
+    d = add(N, &d, &extra) else { return }
+    h := f100
+    q2, r2 := divmod(N, &h, &d)
+    print("100! / (2^70+12345) = {}\n", to_dec(N, &q2, buf[..]))
+    print("remainder           = {}\n", to_dec(N, &r2, buf[..]))
+    back := mul(N, &q2, &d) else { return }
+    back = add(N, &back, &r2) else { return }
+    print("q*d + r is 100!: {}\n", cmp(N, &back, &h) is 0)
+
+    // Overflow is reported, not wrapped: 2^64 limbs-wise squared many times in a small type.
+    small := from_u64(2, 0xFFFF_FFFF_FFFF_FFFF)
+    sq := mul(2, &small, &small)
+    print("(2^64-1)^2 overflows 2 limbs: {}\n", sq is !_)
+    one := from_u64(2, 1)
+    s2 := add(2, &small, &one)
+    print("(2^64-1)+1 overflows 2 limbs: {}\n", s2 is !_)
+    w3 := from_u64(3, 0xFFFF_FFFF_FFFF_FFFF)
+    o3 := from_u64(3, 1)
+    s3 := add(3, &w3, &o3)
+    if v := s3 { print("limbs: {} {} {} len {}\n", (v.limbs[0], v.limbs[1], v.limbs[2], v.len)) }
+    print("digits of 100!: {}\n", to_dec(N, &f100, buf[..]).len)
+}
