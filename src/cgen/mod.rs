@@ -276,9 +276,12 @@ impl<'a> Gen<'a> {
                 let ptys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
                 let self_ty = self.ty.cty(ptys[0]);
                 let mut params = vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()];
-                let mut args = vec!["NULL".to_string(), "cx".into(), "inst".into(), format!("GM_LD({}, env)", self_ty)];
+                // `self` is passed by address when large, and `env` is that address.
+                let self_arg =
+                    if self.ty.by_ref(ptys[0]) { "env".to_string() } else { format!("GM_LD({}, env)", self_ty) };
+                let mut args = vec!["NULL".to_string(), "cx".into(), "inst".into(), self_arg];
                 for (i, t) in ptys.iter().enumerate().skip(1) {
-                    params.push(format!("{} a{}", self.ty.cty(*t), i));
+                    params.push(format!("{} a{}", self.ty.param_cty(*t), i));
                     args.push(format!("a{}", i));
                 }
                 let name = format!("gm_dt{}_{}", d, k);
@@ -320,7 +323,7 @@ impl<'a> Gen<'a> {
                     crate::tir::StaticData::Const(k) => format!("gm_c{}", k.0),
                     crate::tir::StaticData::Fn(f) => {
                         self.queue(*f);
-                        format!("(void *){}", self.callee_name(*f))
+                        format!("(void *){}", self.addr_name(*f))
                     }
                 };
                 let _ = writeln!(
@@ -360,7 +363,7 @@ impl<'a> Gen<'a> {
                     crate::tir::StaticData::Const(k) => format!("gm_c{}", k.0),
                     crate::tir::StaticData::Fn(f) => {
                         self.queue(*f);
-                        format!("(void *){}", self.callee_name(*f))
+                        format!("(void *){}", self.addr_name(*f))
                     }
                 };
                 let _ = writeln!(
@@ -402,7 +405,7 @@ impl<'a> Gen<'a> {
                     None => format!("({})a{}", self.ty.cty(t), i),
                 });
             }
-            let call = format!("{}({})", self.fn_name(f), args.join(", "));
+            let call = format!("{}({})", self.addr_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
             let (r, body) = if def.ret.is_unit() {
                 ("void".to_string(), format!("{};", call))
@@ -543,6 +546,25 @@ impl<'a> Gen<'a> {
             FnKind::Foreign { .. } => format!("gm_x{}", f.0),
             _ => self.fn_name(f),
         }
+    }
+
+    /// Whether plain function `f` needs a separate C-ABI entry point: its own signature
+    /// passes large values by address or returns a large value as a blob (see
+    /// `Types::by_ref`), so C code and plain function pointers call a wrapper.
+    pub fn needs_wrapper(&mut self, f: FnId) -> bool {
+        let def = &self.prog.fns[f.index()];
+        if matches!(def.kind, FnKind::Foreign { .. }) || !self.is_plain(f) {
+            return false;
+        }
+        let ret = def.ret;
+        let params: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
+        params.iter().any(|t| self.ty.by_ref(*t)) || (self.ty.by_ref(ret) && self.ty.mirror(ret).is_some())
+    }
+
+    /// The C name of `f` where its address is taken: the C-ABI entry point of a plain
+    /// function (see `needs_wrapper`), else the name it is called by.
+    pub fn addr_name(&mut self, f: FnId) -> String {
+        if self.needs_wrapper(f) { format!("gm_f{}_c", f.0) } else { self.callee_name(f) }
     }
 
     /// Declares foreign function `f` under a private name bound to its symbol, so it

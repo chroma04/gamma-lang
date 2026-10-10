@@ -245,7 +245,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::FnRef(f) => {
                 self.g.queue(*f);
-                let name = self.g.callee_name(*f);
+                let name = self.g.addr_name(*f);
                 let plain = self.g.is_plain(*f);
                 // A plain function where hidden-convention code is expected is marked by
                 // setting the low bit of its address (see `call_indirect`).
@@ -536,8 +536,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(self.zero(t))
             }
             ExprKind::Return { levels, value } => {
-                let v = self.expr(value)?;
                 let target_ret = self.target_ret(*levels);
+                // A large value read from a place is copied into the slot directly.
+                let v = if self.g.ty.by_ref(value.ty)
+                    && !matches!(target_ret.kind(), TyKind::Result { .. })
+                    && matches!(value.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
+                {
+                    let addr = self.place_addr(value)?;
+                    format!("(*({} *){})", self.g.ty.cty(value.ty), addr)
+                } else {
+                    self.expr(value)?
+                };
                 let is_err = if matches!(target_ret.kind(), TyKind::Result { .. }) && !value.ty.is_never() {
                     let a = self.addr_of(value.ty, &v);
                     self.res_is_err(target_ret, &a)
@@ -867,8 +876,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr]) -> CResult<String> {
         let mut vals = vec![];
         let mut tys = vec![];
-        for a in args {
-            vals.push(self.expr(a)?);
+        for (i, a) in args.iter().enumerate() {
+            // A large argument read from a place is passed as the place itself when
+            // nothing evaluated before the call can change it (see `Types::by_ref`).
+            let later_pure =
+                || args[i + 1..].iter().all(no_writes) && !matches!(callee, Callee::Indirect(c) if !no_writes(c));
+            let v = if self.g.ty.by_ref(a.ty)
+                && matches!(a.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
+                && later_pure()
+            {
+                let addr = self.place_addr(a)?;
+                format!("(*({} *){})", self.g.ty.cty(a.ty), addr)
+            } else {
+                self.expr(a)?
+            };
+            vals.push(v);
             tys.push(a.ty);
         }
         let cv = match callee {
@@ -914,7 +936,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let r = self.g.ty.cty(ret);
         let mut ps = vec!["void *".to_string(), "gm_node *".into(), "gm_node *".into()];
         for p in params {
-            ps.push(self.g.ty.cty(*p));
+            ps.push(self.g.ty.param_cty(*p));
         }
         format!("{} (*)({})", r, ps.join(", "))
     }
@@ -938,6 +960,24 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// The arguments `vals` of types `tys` in the plain C convention.
     fn plain_args(&mut self, vals: &[String], tys: &[Ty]) -> Vec<String> {
         vals.iter().zip(tys).map(|(v, t)| self.plain_value(*t, v)).collect()
+    }
+
+    /// Argument `v` of type `t` as Gamma functions take it: the address of a temporary
+    /// holding it if the type is passed by address (`Types::by_ref`).
+    pub fn gamma_arg(&mut self, t: Ty, v: &str) -> String {
+        if !self.g.ty.by_ref(t) {
+            return v.to_string();
+        }
+        // Temporaries and the places `call` passes are lvalues already.
+        let is_temp = v.len() > 1 && v.starts_with('t') && v[1..].bytes().all(|b| b.is_ascii_digit());
+        let n = if is_temp || v.starts_with("(*(") { v.to_string() } else { self.tmp(t, v) };
+        format!("&{}", n)
+    }
+
+    /// The arguments `vals` of types `tys` of a call of a Gamma function, each preceded
+    /// by a comma.
+    pub fn gamma_args(&mut self, vals: &[String], tys: &[Ty]) -> String {
+        vals.iter().zip(tys).map(|(v, t)| format!(", {}", self.gamma_arg(*t, v))).collect()
     }
 
     /// Emits a call whose value has type `ret`.
@@ -971,19 +1011,28 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let r = if self.g.is_plain(f) {
             // C's `_Bool` crosses the boundary as 0 or 1 either way.
             let tys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
-            let mut args = self.plain_args(&vals[..tys.len().min(vals.len())], &tys);
-            args.extend(vals[tys.len().min(vals.len())..].iter().cloned()); // variadic
+            let foreign = matches!(def.kind, FnKind::Foreign { .. });
+            let n = tys.len().min(vals.len());
+            let mut args = vec![];
+            for (v, t) in vals[..n].iter().zip(&tys) {
+                // Gamma's plain functions take large values by address (see `gen_body`).
+                let a = if !foreign && self.g.ty.by_ref(*t) { self.gamma_arg(*t, v) } else { self.plain_value(*t, v) };
+                args.push(a);
+            }
+            args.extend(vals[n..].iter().cloned()); // variadic
             let call = format!("{}({})", name, args.join(", "));
             if def.ret.is_unit() || def.ret.is_never() {
                 self.line(&format!("{};", call));
                 self.zero(e.ty)
             } else {
-                let call = self.gamma_value(def.ret, &call);
+                let call = if !foreign && self.g.ty.by_ref(def.ret) { call } else { self.gamma_value(def.ret, &call) };
                 self.call_result(e.ty, &call)
             }
         } else {
             let cx = self.cx.clone();
-            let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, join_args(vals));
+            let tys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
+            let args = self.gamma_args(vals, &tys);
+            let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, args);
             self.call_result(e.ty, &call)
         };
         if self.g.may_unwind(f) {
@@ -1059,7 +1108,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         };
         if hidden {
             let fp = self.fn_ptr_type(ret, tys);
-            let hidden_call = format!("(({}){})({}, {}, NULL{})", fp, p, env, cx, join_args(vals));
+            let args = self.gamma_args(vals, tys);
+            let hidden_call = format!("(({}){})({}, {}, NULL{})", fp, p, env, cx, args);
             self.line(&format!("if ((uintptr_t){} & 1) {{", p));
             self.indent += 1;
             emit_plain(self);
@@ -1106,8 +1156,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
         let fp = self.fn_ptr_type(ret, tys);
-        let clause_call =
-            format!("(({}){}->clauses[{}])({}->env, {}->hctx, {}{})", fp, n, op, n, n, n, join_args(vals));
+        let args = self.gamma_args(vals, tys);
+        let clause_call = format!("(({}){}->clauses[{}])({}->env, {}->hctx, {}{})", fp, n, op, n, n, n, args);
         let amb = self.g.prog.ambient.clone();
         let native = [amb.out, amb.err, amb.env].contains(&Some(effect.effect));
         if native {
@@ -1158,7 +1208,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return None;
         }
         self.g.queue(clause);
-        let call = format!("{}(cx->env, cx->hctx, cx{})", self.g.fn_name(clause), join_args(vals));
+        let args = self.gamma_args(vals, tys);
+        let call = format!("{}(cx->env, cx->hctx, cx{})", self.g.fn_name(clause), args);
         let r = self.call_result(ret, &call);
         self.check_unwind();
         Some(r)
@@ -1597,6 +1648,51 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 }
 
+/// True if evaluating `e` cannot write memory or perform effects: it combines reads,
+/// literals and pure operators (it may still trap).
+fn no_writes(e: &Expr) -> bool {
+    let pure = matches!(
+        e.kind,
+        ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::SizeOf { .. }
+            | ExprKind::UntypedFloat(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::CStr(_)
+            | ExprKind::Null
+            | ExprKind::ConstBytes(_)
+            | ExprKind::ValueParam(_)
+            | ExprKind::Uninit
+            | ExprKind::Const(_)
+            | ExprKind::Local(_)
+            | ExprKind::Upvar { .. }
+            | ExprKind::Global(_)
+            | ExprKind::Deref(_)
+            | ExprKind::Field { .. }
+            | ExprKind::VariantPayload { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Slice { .. }
+            | ExprKind::SliceLen(_)
+            | ExprKind::SlicePtr(_)
+            | ExprKind::AddrOf(_)
+            | ExprKind::FnRef(_)
+            | ExprKind::Unary { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::Logic { .. }
+            | ExprKind::Coerce { .. }
+            | ExprKind::Aggregate(_)
+            | ExprKind::Array(_)
+            | ExprKind::ArrayFill(_)
+            | ExprKind::Variant { .. }
+    );
+    let mut ok = pure;
+    if ok {
+        e.for_each_child(&mut |c| ok = ok && no_writes(c));
+    }
+    ok
+}
+
 fn find_with(e: &Expr, label: LabelId, found: &mut bool) {
     if let ExprKind::With { label: l, .. } = &e.kind
         && *l == label
@@ -1604,10 +1700,6 @@ fn find_with(e: &Expr, label: LabelId, found: &mut bool) {
         *found = true;
     }
     e.for_each_child(&mut |c| find_with(c, label, found));
-}
-
-pub fn join_args(vals: &[String]) -> String {
-    vals.iter().map(|v| format!(", {}", v)).collect()
 }
 
 /// The low and high 64-bit halves of `v` modulo 2^128 (two's complement).
