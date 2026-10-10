@@ -92,6 +92,7 @@ impl<'a> Machine<'a> {
         result
     }
 
+    #[inline(never)]
     pub fn exec_stmt(&mut self, a: Act, s: &Stmt) -> R<()> {
         let mark = self.temps.len();
         let r = self.exec_stmt_inner(a, s);
@@ -104,7 +105,37 @@ impl<'a> Machine<'a> {
         self.prog.fns[f.index()].locals.get(id.index()).map(|l| l.ty)
     }
 
+    #[inline(always)]
     fn exec_stmt_inner(&mut self, a: Act, s: &Stmt) -> R<()> {
+        match s {
+            Stmt::Expr(e) => {
+                self.eval(a, e)?;
+                Ok(())
+            }
+            Stmt::Assign { place, value } if value.ty == place.ty => {
+                if let Some(si) = self.small_of(place.ty) {
+                    let p = self.eval_place(a, place)?;
+                    let v = self.eval_small(a, value, si)?;
+                    return self.write_place_small(place.span, p, place.ty, si, v);
+                }
+                self.exec_stmt_slow(a, s)
+            }
+            Stmt::Let { local, init: Some(e) } => {
+                if let Some(si) = self.small_of(e.ty)
+                    && self.local_ty(a.fr, *local).is_none_or(|t| t == e.ty)
+                {
+                    let v = self.eval_small(a, e, si)?;
+                    let addr = self.local_addr(e.span, a.fr, *local, si.size, si.align)?;
+                    return self.store_small(e.span, addr, v, si, 1);
+                }
+                self.exec_stmt_slow(a, s)
+            }
+            _ => self.exec_stmt_slow(a, s),
+        }
+    }
+
+    #[inline(never)]
+    fn exec_stmt_slow(&mut self, a: Act, s: &Stmt) -> R<()> {
         match s {
             Stmt::Let { local, init } => {
                 match init {
@@ -172,8 +203,7 @@ impl<'a> Machine<'a> {
         for c in conds {
             match c {
                 CondPart::Bool(e) => {
-                    let b = self.eval_bytes(a, e)?;
-                    if !self.truthy(&b) {
+                    if !self.eval_cond(a, e)? {
                         return Ok(false);
                     }
                 }

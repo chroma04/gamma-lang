@@ -233,7 +233,7 @@ impl<'a> Machine<'a> {
                 _ => {
                     let ti = self.ti(arg_tys[0]);
                     let (signed, bits) = ti.int.unwrap();
-                    let x = self.decode_int_ty(&ti, &v[0]);
+                    let x = self.decode_int_ty(ti, &v[0]);
                     let r = if x.is_neg() { x.neg() } else { x };
                     if !num::fits(&r, signed, bits) {
                         if self.fast() {
@@ -280,8 +280,8 @@ impl<'a> Machine<'a> {
                 let Some((signed, bits)) = ti.int else {
                     return self.trap(span, "rotation of a non-integer");
                 };
-                let x = num::wrap(&self.decode_int_ty(&ti, &v[0]), false, bits).to_big();
-                let amount = self.decode_int_ty(&self.ti(arg_tys[1]), &v[1]).to_big();
+                let x = num::wrap(&self.decode_int_ty(ti, &v[0]), false, bits).to_big();
+                let amount = self.decode_int_ty(self.ti(arg_tys[1]), &v[1]).to_big();
                 let n = bits as u64;
                 let k = num_traits::ToPrimitive::to_u64(&(amount % BigInt::from(n))).unwrap_or(0);
                 let k = if op == Builtin::Rotl { k } else { (n - k) % n };
@@ -296,7 +296,7 @@ impl<'a> Machine<'a> {
                 let Some((signed, bits)) = ti.int else {
                     return self.trap(span, "bit builtin on a non-integer");
                 };
-                let x = num::wrap(&self.decode_int_ty(&ti, &v[0]), false, bits).to_big();
+                let x = num::wrap(&self.decode_int_ty(ti, &v[0]), false, bits).to_big();
                 let n = bits as u64;
                 let count = |c: u64| Ok(self.int_bytes(res_ty, &Int::from_u128(c as u128)));
                 match op {
@@ -390,8 +390,8 @@ impl<'a> Machine<'a> {
                 if ti.int.is_none() {
                     return self.trap(span, format!("min/max/clamp on {}", ty));
                 }
-                let x = self.decode_int_ty(&ti, &v[0]);
-                let y = self.decode_int_ty(&ti, &v[1]);
+                let x = self.decode_int_ty(ti, &v[0]);
+                let y = self.decode_int_ty(ti, &v[1]);
                 let r = match op {
                     Builtin::Min => {
                         if x.cmp(&y).is_le() {
@@ -409,7 +409,7 @@ impl<'a> Machine<'a> {
                     }
                     _ => {
                         // clamp(lo, hi)
-                        let hi = self.decode_int_ty(&ti, &v[2]);
+                        let hi = self.decode_int_ty(ti, &v[2]);
                         if x.cmp(&y).is_lt() {
                             y
                         } else if x.cmp(&hi).is_gt() {
@@ -429,7 +429,7 @@ impl<'a> Machine<'a> {
         let Some((signed, bits)) = ti.int else {
             return self.trap(span, "pow on a non-integer");
         };
-        let base = self.decode_int_ty(&ti, &v[0]);
+        let base = self.decode_int_ty(ti, &v[0]);
         let n = self.int_of(ety, &v[1]).to_u64_sat().min(u32::MAX as u64) as u32;
         let enc = |x: &Int| num::encode_int(x, ti.size, self.little());
         let bl = base.bit_len();
