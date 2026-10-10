@@ -14,7 +14,7 @@ const MAX_FRAME: u64 = 1 << 30;
 
 impl<'a> Machine<'a> {
     pub fn eval_args(&mut self, a: Act, args: &[Expr]) -> R<Vec<Value>> {
-        let mut vals = Vec::with_capacity(args.len());
+        let mut vals = self.arg_pool.pop().unwrap_or_default();
         for x in args {
             vals.push(self.eval(a, x)?);
         }
@@ -74,7 +74,7 @@ impl<'a> Machine<'a> {
         &mut self,
         span: Span,
         fid: FnId,
-        args: Vec<Value>,
+        mut args: Vec<Value>,
         env: Option<Rc<Frame>>,
         ctx: Ctx,
         installing: Option<(u64, LabelId)>,
@@ -117,9 +117,12 @@ impl<'a> Machine<'a> {
         }
         self.fiber_stack = self.fiber_stack.saturating_sub(cost);
         let frame = self.new_frame(f.ret, Some(fid), env, f.locals.len(), installing, is_clause_lit);
-        for (p, v) in f.params.iter().zip(args) {
+        for (p, v) in f.params.iter().zip(args.drain(..)) {
             let ty = f.locals[p.index()].ty;
             self.bind_local(span, &frame, *p, Some(ty), v)?;
+        }
+        if self.arg_pool.len() < 64 {
+            self.arg_pool.push(args);
         }
         self.depth += 1;
         let mark = self.temps.len();
@@ -130,11 +133,13 @@ impl<'a> Machine<'a> {
         }
         self.kill_temps(mark);
         self.kill_frame(&frame);
+        let frame_id = frame.id;
+        self.recycle_frame(frame);
         match r {
             Ok(v) => Ok(v),
             Err(flow) => {
                 if let Flow::Return { frame: id, .. } = &*flow
-                    && *id == frame.id
+                    && *id == frame_id
                 {
                     let Flow::Return { value, .. } = *flow else { unreachable!() };
                     return Ok(value);

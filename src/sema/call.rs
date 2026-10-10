@@ -3,6 +3,7 @@
 
 use super::builtins::{BuiltinFn, builtin_fn, builtin_type};
 use super::func::{FnCx, LocalBinding, Obligation, error_expr};
+use super::infer::VarKind;
 use super::{DeclValue, ModuleId, ParamInfo};
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind, ExprKind};
@@ -369,7 +370,7 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span)
     }
 
-    fn arg_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
+    pub(super) fn arg_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
         if let ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {
                 self.error(e.span, format!("`---` requires a plain-data type, but `{}` is not (§4.4)", ty));
@@ -425,12 +426,27 @@ impl<'a, 's> FnCx<'a, 's> {
             return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
         }
         let v = self.expr(x, Some(t));
-        // An untyped literal simply takes the type (§16.1: `T(300)`).
-        if self.infer.var_kind(v.ty).is_some() && (t.is_integer() || t.is_float()) {
-            if self.infer.unify(v.ty, t).is_err() {
-                self.error(x.span, format!("a float literal cannot have the integer type `{}`", t));
+        // An untyped literal simply takes the type (§16.1: `T(300)`), and so does a
+        // variable of literal type converted to an integer type. A float type is taken
+        // by literals only: `f64(i)` converts `i` from the integer type it ends up with.
+        if self.infer.var_kind(v.ty).is_some() && (t.is_integer() || (t.is_float() && is_literal(&v))) {
+            if self.infer.unify(v.ty, t).is_ok() {
+                return v;
             }
+            // A variable already restricted to other types, such as an index (§6.1):
+            // an ordinary conversion from the type it ends up with.
+            if !is_literal(&v) || !self.infer.var_kind(v.ty).is_some_and(|k| k == VarKind::Float) {
+                self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
+                return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
+            }
+            self.error(x.span, format!("a float literal cannot have the integer type `{}`", t));
             return v;
+        }
+        // A value that coerces to `T` implicitly (§6.4) converts by that coercion:
+        // `string(buf)` with `buf: []u8`.
+        let vt = self.infer.resolve(v.ty);
+        if !vt.has_infer() && vt != t && self.coercion_steps(vt, t).is_some() {
+            return self.coerce(v, t);
         }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
         mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
@@ -761,6 +777,16 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         }
         v
+    }
+}
+
+/// True if `e` is built from literals only (no variables or calls).
+fn is_literal(e: &Expr) -> bool {
+    match &e.kind {
+        tir::ExprKind::Int(_) | tir::ExprKind::Float(_) | tir::ExprKind::UntypedFloat(_) => true,
+        tir::ExprKind::Unary { operand, .. } => is_literal(operand),
+        tir::ExprKind::Binary { lhs, rhs, .. } => is_literal(lhs) && is_literal(rhs),
+        _ => false,
     }
 }
 

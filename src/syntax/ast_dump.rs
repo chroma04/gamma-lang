@@ -270,7 +270,10 @@ impl Dumper {
     }
 
     fn handler_decl(&self, h: &HandlerDecl) -> Sx {
-        let mut v = vec![self.expr(&h.effect), node("for", vec![self.expr(&h.for_ty)])];
+        let mut v = vec![];
+        push_opt(&mut v, h.params.as_ref().map(|p| self.params(p)));
+        v.push(self.expr(&h.effect));
+        v.push(node("for", vec![self.expr(&h.for_ty)]));
         push_opt(&mut v, h.effects.as_ref().map(|e| self.effects(e)));
         v.extend(h.clauses.iter().map(|c| self.clause(c)));
         bnode("handler-decl", v)

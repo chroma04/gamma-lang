@@ -1,0 +1,13 @@
+//! stage: check
+// Memory orders C11 does not allow for an operation are rejected (§19.6).
+main :: fn() {
+    x: u32 = 5
+    _ = @atomic_load(&x, .Release)          //~ ERROR `.Release` is not a valid memory order
+    _ = @atomic_load(&x, .AcqRel)           //~ ERROR `.AcqRel` is not a valid memory order
+    @atomic_store(&x, 6, .Acquire)          //~ ERROR `.Acquire` is not a valid memory order
+    _ = @atomic_cas(&x, 6, 7, .SeqCst, .Release) //~ ERROR the failure order of `@atomic_cas`
+    _ = @atomic_cas(&x, 6, 7, .AcqRel, .Acquire)
+    _ = @atomic_load(&x, .Acquire)
+    @atomic_store(&x, 7, .Release)
+    _ = @atomic_add(&x, 1, .AcqRel)
+}

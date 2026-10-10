@@ -33,3 +33,8 @@
 - §6.2: untyped float constants carry a zero sign (Untyped::NegZero; IEEE sign rules for exact
   zero results); lowered as `-(0.0)`.
 - §21.2/§15.2/§15.5: `free_aligned(T, s, align)`; allocator free/resize get the alloc-time size+align.
+- s3: §14.4 exits past a with…on (from fibers OR clauses: labeled break/continue/return,
+  outer esc, discard of an enclosing fiber) discard all unconsumed continuations; only a
+  break to the with itself requires all consumed. §14.2 static check matches (cont_check.rs).
+- s3: §5.10.5 "plain #bits" is recursive; §9.3 bare binding unwraps one level; §12.1 single
+  available instantiation wins; §4.5/§4.7 bare comma RHS; §6.5 T(int var) to float.

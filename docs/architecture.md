@@ -149,7 +149,9 @@ lowers each function body to TIR.
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
 | `fnlit.rs` | function literals, captures and second-class rules |
-| `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations, `with`, `for` over iterators |
+| `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations (generic ones are templates instantiated by `handlers_for`), `with`, `for` over iterators |
+| `cont_check.rs` | the static check that a `ctl` clause consumes its continuation exactly once (§14.2), a small dataflow pass over the finished TIR |
+| `escape.rs` | rejecting pointers to stack memory that outlive it |
 | `generics.rs` | constraints, inference of type arguments, monomorphization |
 | `consteval.rs` | compile-time evaluation (checking the bodies it reaches first), `@static_assert` |
 | `stack_size.rs` | `@stack_size`: the deepest chain of frames below a function, following statically known handlers and function arguments |
@@ -291,6 +293,10 @@ C translation unit (`src/cgen/`), prefixed by the runtime (`runtime/gm_rt.h`,
 the conformance runner checks this: every `run` test also runs natively and
 must print the same output and exit with the same status.
 
+The generated `main` runs the program's entry function on a thread with a 64 MiB
+stack (`gm_run_main`), so recursion depth does not depend on the host's default
+stack size, and roughly matches the interpreter's.
+
 `gamma test` uses the C back end for modules that need it (foreign functions,
 `@asm`) or with `--backend=c`. `cgen::generate_tests` emits one program whose
 `main` runs the test entry selected by its first argument, exactly as the
@@ -329,7 +335,24 @@ effect instance and calls the clause from its table. Handler declarations go
 through small thunks that load the handler value. The ambient `Out`, `Err` and
 `Env` have native nodes served by the runtime.
 
-**Non-local exits.** `break`, `continue`, `return` and `try` aimed at another
+**Handler specialization.** A `with` that installs a single handler literal
+around a direct call to a function performing its effect — every `for` loop over
+an iterator — calls a clone of that function specialized for the handler
+(Appendix D.3 of the specification; `Spec` in `src/cgen/func.rs`). In the clone,
+the handler's node is known to be `cx`, so each perform of the effect outside
+any `with` of the clone calls the clause by name instead of searching the
+context and calling through the table, and the C compiler can inline the loop
+body into the iterator. `ctl` operations and the bodies of `with … on` keep the
+general path. Clones share the frame struct of their function and are generated
+on demand, at most one per function and handler literal. Specialization covers
+one level: a perform inside a nested `for` body of the clone (an iterator built
+on another iterator) still finds its handler at run time, because the loop
+body's clause is shared with the unspecialized function.
+
+**Non-local exits.** An exit whose target is in the same C function runs the
+deferred statements it crosses and jumps there with `goto`; since nothing then
+takes the frame's address, the C compiler can keep the locals of simple
+functions in registers. `break`, `continue`, `return` and `try` aimed at another
 frame, clause exits to a `with`, and `Env.exit` set a global exit record and
 return. After each call that may exit this way, the caller tests the record and
 runs its *ladder*: the pending deferred statements from the innermost scope

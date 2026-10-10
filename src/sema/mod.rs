@@ -12,6 +12,7 @@ mod builtins;
 mod call;
 mod consteval;
 mod construct;
+mod cont_check;
 mod decls;
 mod effects;
 mod escape;
@@ -179,6 +180,8 @@ pub struct Sema<'s> {
     pub test_items: Vec<(ModuleId, Rc<ast::Item>)>,
     /// Top-level `@static_assert`s, checked after the declarations.
     pub static_asserts: Vec<(ModuleId, Rc<ast::Item>)>,
+    /// Messages of `@static_assert`s deferred to each instance of a generic body.
+    pub deferred_asserts: Vec<Option<String>>,
     pub modules: Vec<Module>,
     pub decls: Vec<Decl>,
     /// Uses of `#deprecated` declarations already warned about.
@@ -195,6 +198,8 @@ pub struct Sema<'s> {
     pending_bodies: Vec<PendingBody>,
     /// Stack of declarations being resolved, for cycle reports.
     resolving: Vec<DeclId>,
+    /// Structural type aliases being resolved a second time (see `resolve_decl`).
+    alias_reentry: std::collections::HashSet<DeclId>,
     pub prelude: Option<ModuleId>,
     /// The core modules other than the prelude (`core/list`, `core/map`).
     pub core_modules: Vec<ModuleId>,
@@ -220,6 +225,10 @@ pub struct Sema<'s> {
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
     /// its clauses may perform.
     pub handler_decl_effects: Vec<EffectSet>,
+    /// Handler declarations for generic types, instantiated by `handlers_for` (§12.6).
+    pub handler_templates: Vec<handler_decl::HandlerTemplate>,
+    /// Their instances, by template and arguments.
+    pub handler_instances: HashMap<(usize, Vec<Ty>), tir::HandlerDeclId>,
     /// Constraints on type parameters (§16.3).
     pub constraints: HashMap<crate::types::ParamId, Vec<generics::Constraint>>,
     /// Instantiations of generic functions, by generic function and type arguments.
@@ -262,6 +271,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
+    sema.check_continuations();
     if sema.sess.diags.has_errors() {
         return None;
     }
@@ -287,6 +297,7 @@ impl<'s> Sema<'s> {
             in_test: false,
             test_items: vec![],
             static_asserts: vec![],
+            deferred_asserts: vec![],
             modules: vec![],
             decls: vec![],
             deprecated_uses: std::collections::HashSet::new(),
@@ -299,6 +310,7 @@ impl<'s> Sema<'s> {
             pending_bodies: vec![],
             checking: vec![],
             resolving: vec![],
+            alias_reentry: Default::default(),
             prelude: None,
             core_modules: vec![],
             packages: vec![],
@@ -311,6 +323,8 @@ impl<'s> Sema<'s> {
             handler_breaks: HashMap::new(),
             handler_items: vec![],
             handler_decl_effects: vec![],
+            handler_templates: vec![],
+            handler_instances: HashMap::new(),
             constraints: HashMap::new(),
             instances: HashMap::new(),
             instance_of: HashMap::new(),

@@ -273,6 +273,29 @@ impl<'s> Sema<'s> {
             None => {
                 // A typed constant expression, evaluated now (§7.15).
                 let ex = self.check_const_expr(module, e, Some(Ty::usize()))?;
+                // A length computed from compile-time parameters is not known until
+                // instantiation (§16.5).
+                let mut params = vec![];
+                super::func::visit(&ex, &mut |n| {
+                    if let crate::tir::ExprKind::ValueParam(p) = n.kind
+                        && !params.contains(&p.name().to_string())
+                    {
+                        params.push(p.name().to_string());
+                    }
+                });
+                if !params.is_empty() {
+                    let list: Vec<String> = params.iter().map(|p| format!("`{}`", p)).collect();
+                    self.error(
+                        e.span,
+                        format!(
+                            "an array length computed from the compile-time parameter{} {} is not supported in a type; \
+                             use a parameter directly, or nested arrays such as `[R][C]T` (§16.5)",
+                            if params.len() > 1 { "s" } else { "" },
+                            list.join(" and ")
+                        ),
+                    );
+                    return None;
+                }
                 let v = self.eval_tir_const(&ex)?;
                 let n = crate::types::ConstKey::Bytes(v.ty, v.bytes.into()).as_u64();
                 if n.is_none() {

@@ -1,0 +1,29 @@
+// `@rotl` and `@rotr` rotate an integer's bits (§20.3), for any width and signedness;
+// `@bswap` reverses the bytes of any whole-byte width.
+main :: fn() \ {Out} {
+    a: u8 = 0b1000_0001
+    print("{} {} {} {}\n", (@rotl(a, 1), @rotr(a, 1), @rotl(a, 8), @rotl(a, 9)))
+    b: u32 = 0x1234_5678
+    print("{} {}\n", (@rotl(b, 8), @rotr(b, 4)))
+    c: i16 = -2
+    print("{} {}\n", (@rotl(c, 1), @rotr(c, 1)))
+    d: u5 = 0b10011
+    print("{} {}\n", (@rotl(d, 2), @rotr(d, 2)))
+    e: u64 = 1
+    print("{}\n", @rotr(e, 1))
+    f: u128 = 3
+    print("{}\n", @rotr(f, 1))
+    g: u200 = 1
+    print("{} {}\n", (@rotr(g, 1), @rotl(@rotr(g, 3), 3)))
+    h: i130 = -1
+    print("{}\n", @rotl(h, 77))
+    neg: i5 = -3
+    wide_neg: i12 = -1000
+    print("{} {} {} {}\n", (@rotl(neg, 1), @rotr(neg, 2), @rotl(wide_neg, 5), @rotr(wide_neg, 7)))
+    w24: u24 = 0x123456
+    s24: i24 = -2
+    w48: u48 = 0x0102_0304_0506
+    print("{} {} {}\n", (@bswap(w24), @bswap(s24), @bswap(w48)))
+    n: u32 = 13
+    print("{}\n", @rotl(b, n) is @rotr(b, 32 - n))
+}

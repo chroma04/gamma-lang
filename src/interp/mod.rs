@@ -28,6 +28,7 @@ mod calls;
 mod consts;
 pub mod display;
 mod eval;
+mod fast;
 mod fiber;
 mod machine;
 pub mod memory;
@@ -42,6 +43,8 @@ mod value;
 mod testkit;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_fast;
 #[cfg(test)]
 mod tests_flow;
 #[cfg(test)]

@@ -144,9 +144,10 @@ impl<'s> Sema<'s> {
             TyKind::Param(p) => self.param_has(*p, Constraint::Plain),
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(tir::AdtKind::Struct { fields, bits: None, .. }) => fields.iter().all(|f| self.is_plain(f.ty)),
-                Some(tir::AdtKind::Struct { fields, bits: Some(_), .. }) => {
-                    fields.iter().all(|f| f.ty.is_integer() || f.ty.is_bool())
-                }
+                // A `#bits` struct whose fields are `bool`, integers or such structs (§5.19).
+                Some(tir::AdtKind::Struct { fields, bits: Some(_), .. }) => fields.iter().all(|f| {
+                    f.ty.is_integer() || f.ty.is_bool() || (self.bits_struct_ty(f.ty).is_some() && self.is_plain(f.ty))
+                }),
                 _ => false,
             },
             _ => false,
@@ -174,7 +175,11 @@ impl<'s> Sema<'s> {
             generics: vec![],
         };
         let name = self.prog.fns[f.index()].name;
-        let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, tir::FnKind::Named);
+        let kind = match self.prog.fns[f.index()].kind {
+            tir::FnKind::Clause => tir::FnKind::Clause,
+            _ => tir::FnKind::Named,
+        };
+        let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, kind);
         self.instances.insert((f, args.clone()), id);
         self.instance_of.insert(id, (f, args.clone()));
         if !args.iter().any(|a| has_param(*a)) {
@@ -308,6 +313,13 @@ impl<'s> Sema<'s> {
         let mut done = children.into_iter().map(|c| self.mono_expr(cx, c));
         e.for_each_child_mut(&mut |c| *c = done.next().unwrap());
         self.mono_pats(cx, &mut e);
+        // A static assertion of the generic body, checked for this instance.
+        if let tir::ExprKind::Builtin { op: tir::Builtin::StaticAssert(id), args } = &e.kind {
+            let msg = self.deferred_asserts[*id as usize].clone();
+            let (cond, span) = (args[0].clone(), e.span);
+            self.check_static_assert(&cond, msg.as_deref(), span, Some(cx.span));
+            return super::func::unit(span);
+        }
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
         }
@@ -692,6 +704,8 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             (_, r) => r,
         };
+        // Type parameters the receiver fixes: arguments are coerced to them (§16.2).
+        let fixed: Vec<ParamId> = binds.keys().copied().collect();
         for (i, e) in &sources {
             let p = &sig.params[*i];
             if let Some(pid) = p.generic
@@ -714,7 +728,20 @@ impl<'a, 's> FnCx<'a, 's> {
                 // A function type with parameters still unbound still helps a function
                 // literal argument: it takes the parts that are known.
                 let partial = matches!(expect.kind(), TyKind::Fn(_) | TyKind::FnPtr(_));
+                // `---` for a parameter whose type is known: `new(T, ---)`.
+                if let ast::ExprKind::Uninit = e.kind
+                    && !has_param(expect)
+                {
+                    values[*i] = Some(self.arg_value(e, expect));
+                    continue;
+                }
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
+                let mut mentions_free = false;
+                p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
+                if !fixed.is_empty() && !mentions_free && !has_param(expect) {
+                    values[*i] = Some(self.coerce(v, expect));
+                    continue;
+                }
                 let t = self.infer.resolve(v.ty);
                 if t.has_infer() {
                     literal_args.push((p.ty, v.ty));
@@ -788,9 +815,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
                 None => {
+                    // An array where a slice is expected says nothing about the slice's
+                    // element type: arrays do not convert to slices (§6.7).
+                    let array_for_slice = sig.params.iter().zip(&values).any(|(p, v)| {
+                        matches!(p.ty.kind(), TyKind::Slice { .. })
+                            && v.as_ref().is_some_and(|v| matches!(v.ty.kind(), TyKind::Array { .. }))
+                    });
+                    let hint = if array_for_slice { "; an array is not a slice: pass `a[..]`" } else { "" };
                     self.error(
                         span,
-                        format!("cannot infer the type parameter `{}`; write it: `f({}, …)`", pid.name(), pid.name()),
+                        format!(
+                            "cannot infer the type parameter `{}`; write it: `f({}, …)`{}",
+                            pid.name(),
+                            pid.name(),
+                            hint
+                        ),
                     );
                     return error_expr(span);
                 }

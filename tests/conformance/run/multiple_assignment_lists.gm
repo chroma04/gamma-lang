@@ -1,0 +1,24 @@
+// A list on the right of a multiple assignment or binding is a tuple (§4.5, §4.7),
+// and a perform uses the one available instantiation of a generic effect (§12.1).
+words :: fn(buf: []u8) \ {Yield(string)} {
+    yield(buf[..2])
+    yield(buf[2..])
+}
+
+widen :: fn(xs: []const u8) \ {Yield(u32)} {
+    for x in xs { yield(x) }
+}
+
+main :: fn() \ {Out} {
+    a, b := 0, 1
+    for i in 0..10 { a, b = b, a + b }
+    x := [3]i32(1, 2, 3)
+    x[0], x[2] = x[2], x[0]
+    q, r: (u32, u32) = 17 / 5, 17 % 5
+    print("{} {} {} {} {} {}\n", (a, b, x[0], x[2], q, r))
+    buf := [4]u8('a', 'b', 'c', 'd')
+    for w in words(buf[..]) { print("{} ", w) }
+    total: u32 = 0
+    for v in widen(buf[..]) { total += v }
+    print("{}\n", total)
+}

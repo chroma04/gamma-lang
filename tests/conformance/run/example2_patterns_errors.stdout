@@ -1,0 +1,11 @@
+zero digit round negative big 
+digit; additive; other op; greeting; long word; short word; A,B+; pair; 
+ok 123
+empty
+not a number: 12x
+io 7
+ok 33
+not a number: 2z
+3 5 -1
+Cfg(w: 165, h: 24, name: "term", bold: false)
+Cfg(w: 81, h: 24, name: "x", bold: true)

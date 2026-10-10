@@ -27,30 +27,235 @@ impl<'a> Machine<'a> {
         b.first().is_some_and(|x| *x != 0)
     }
 
+    /// Evaluates an expression. The arms only dispatch: each kind that needs more than a call has
+    /// a function of its own so that this function's stack frame, which every nesting level of
+    /// an expression pays for, stays small.
     pub fn eval(&mut self, a: Act, e: &Expr) -> R {
-        self.steps += 1;
-        if let Some(b) = self.budget
-            && self.steps > b
-        {
-            return self.trap(e.span, "compile-time evaluation exceeded its step budget");
-        }
+        self.step(e.span)?;
         match &e.kind {
-            ExprKind::Int(v) => {
-                let v = Int::from_big(v.clone());
-                match e.ty.kind() {
-                    TyKind::Float(f) => Ok(Value::Bytes(self.float_bytes(*f, num::round_float(v.to_f64(), *f)))),
-                    _ => {
-                        let ti = self.ti(e.ty);
-                        let (s, bits) = ti.int.unwrap_or((true, 64));
-                        Ok(Value::Bytes(num::encode_int(&num::wrap(&v, s, bits), ti.size, self.little())))
-                    }
+            ExprKind::Int(v) => self.eval_int_literal(e, v),
+            ExprKind::Bool(b) => Ok(Value::Bytes(self.bool_bytes(*b))),
+            ExprKind::Local(id) => self.read_local(e.span, a.fr, *id, e.ty),
+            ExprKind::Upvar { levels, local } => self.eval_upvar(a, e, *levels, *local),
+            ExprKind::Global(_) | ExprKind::Deref(_) => self.eval_place_value(a, e),
+            ExprKind::Field { base, index } => self.eval_field(a, e, base, *index),
+            ExprKind::VariantPayload { base, variant: _ } => self.eval_variant_payload(a, e, base),
+            ExprKind::Index { base, index, checked: _ } => self.eval_index_value(a, e, base, index),
+            ExprKind::Slice { base, lo, hi, inclusive } => self.eval_slice(a, e, base, lo, hi, *inclusive),
+            ExprKind::SliceLen(s) => self.eval_slice_len(a, s),
+            ExprKind::AddrOf(inner) => self.eval_addr_of(a, e, inner),
+            ExprKind::Unary { op, operand } => self.eval_unary(a, e, *op, operand),
+            ExprKind::Binary { op, lhs, rhs } => self.eval_binary(a, e, *op, lhs, rhs),
+            ExprKind::Logic { is_and, lhs, rhs } => self.eval_logic(a, *is_and, lhs, rhs),
+            ExprKind::Coerce { kind, expr } => self.eval_coerce(a, e, *kind, expr),
+            ExprKind::Builtin { op, args } => self.eval_builtin(a, e, *op, args),
+            ExprKind::Call { callee, args } => self.eval_call(a, e, callee, args),
+            ExprKind::Eq { lhs, rhs, negated } => self.eval_eq(a, e, lhs, rhs, *negated),
+            ExprKind::Block(b) => self.eval_block(a, b),
+            ExprKind::If { cond, then, else_ } => {
+                if self.eval_conds(a, cond)? {
+                    self.eval(a, then)
+                } else if let Some(el) = else_ {
+                    self.eval(a, el)
+                } else {
+                    Ok(Value::unit())
                 }
             }
+            ExprKind::Match { scrutinee, arms } => self.eval_match(a, e, scrutinee, arms),
+            ExprKind::Else { lhs, capture, rhs } => self.eval_else(a, e, lhs, *capture, rhs),
+            ExprKind::Try { expr, lift, levels } => self.eval_try(a, e, expr, *lift, *levels),
+            ExprKind::Loop { label, cond, body, step } => self.eval_loop(a, *label, cond, body, step.as_deref()),
+            ExprKind::Break { target, value } => self.eval_break(a, e, *target, value.as_deref()),
+            ExprKind::Continue { target } => self.eval_continue(a, e, *target),
+            ExprKind::Return { levels, value } => self.eval_return(a, e, *levels, value),
+            _ => self.eval_cold(a, e),
+        }
+    }
+
+    #[inline(never)]
+    fn eval_int_literal(&mut self, e: &Expr, v: &num_bigint::BigInt) -> R {
+        if let Some(si) = self.small_of(e.ty) {
+            return Ok(Value::Bytes(self.encode_small(si, Self::int_literal(v, si))));
+        }
+        let v = Int::from_big(v.clone());
+        match e.ty.kind() {
+            TyKind::Float(f) => Ok(Value::Bytes(self.float_bytes(*f, num::round_float(v.to_f64(), *f)))),
+            _ => {
+                let ti = self.ti(e.ty);
+                let (s, bits) = ti.int.unwrap_or((true, 64));
+                Ok(Value::Bytes(num::encode_int(&num::wrap(&v, s, bits), ti.size, self.little())))
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn eval_upvar(&mut self, a: Act, e: &Expr, levels: u32, local: LocalId) -> R {
+        let Some(fr) = self.up_frame(a.fr, levels) else {
+            return self.trap(e.span, "internal error: upvar without an enclosing frame");
+        };
+        self.read_local(e.span, &fr, local, e.ty)
+    }
+
+    #[inline(never)]
+    fn eval_place_value(&mut self, a: Act, e: &Expr) -> R {
+        let p = self.eval_place(a, e)?;
+        Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
+    }
+
+    #[inline(never)]
+    fn eval_field(&mut self, a: Act, e: &Expr, base: &Expr, index: u32) -> R {
+        if is_place_expr(base) {
+            let p = self.eval_place(a, e)?;
+            Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
+        } else {
+            let b = self.eval_bytes(a, base)?;
+            let r = self.field_bytes(base.ty, &b, index as usize);
+            Ok(Value::Bytes(self.tr(e.span, r)?.1))
+        }
+    }
+
+    #[inline(never)]
+    fn eval_variant_payload(&mut self, a: Act, e: &Expr, base: &Expr) -> R {
+        if is_place_expr(base) {
+            let p = self.eval_place(a, e)?;
+            Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
+        } else {
+            let b = self.eval_bytes(a, base)?;
+            let off = self.payload_offset(base.ty);
+            let sz = self.size_of(e.ty);
+            Ok(Value::Bytes(Bytes::from_slice(&b[off..off + sz])))
+        }
+    }
+
+    #[inline(never)]
+    fn eval_index_value(&mut self, a: Act, e: &Expr, base: &Expr, index: &Expr) -> R {
+        if matches!(base.ty.kind(), TyKind::Array { .. }) && !is_place_expr(base) {
+            let b = self.eval_bytes(a, base)?;
+            let i = self.eval_bytes(a, index)?;
+            let TyKind::Array { len, .. } = base.ty.kind() else { unreachable!() };
+            let i = self.int_of(index.ty, &i).to_u64_sat();
+            if i >= *len {
+                return self.trap(e.span, format!("index {} out of bounds for length {}", i, len));
+            }
+            let esz = self.size_of(e.ty);
+            let off = i as usize * esz;
+            Ok(Value::Bytes(Bytes::from_slice(&b[off..off + esz])))
+        } else {
+            let p = self.eval_place(a, e)?;
+            Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
+        }
+    }
+
+    #[inline(never)]
+    fn eval_slice_len(&mut self, a: Act, s: &Expr) -> R {
+        let b = self.eval_bytes(a, s)?;
+        Ok(Value::Bytes(self.usize_bytes(self.slice_parts(&b).1)))
+    }
+
+    #[inline(never)]
+    fn eval_addr_of(&mut self, a: Act, e: &Expr, inner: &Expr) -> R {
+        match self.eval_place(a, inner)? {
+            Place::Mem(addr) | Place::Packed(addr) => Ok(Value::Bytes(self.ptr_bytes(addr))),
+            Place::Bits { .. } => self.trap(e.span, "cannot take the address of a #bits field"),
+        }
+    }
+
+    #[inline(never)]
+    fn eval_unary(&mut self, a: Act, e: &Expr, op: UnOp, operand: &Expr) -> R {
+        match op {
+            UnOp::Neg | UnOp::BitNot if operand.ty == e.ty => {
+                if let Some(si) = self.small_of(e.ty) {
+                    let v = self.eval_unary_small(a, e, op, operand, si)?;
+                    return Ok(Value::Bytes(self.encode_small(si, v)));
+                }
+            }
+            UnOp::Not => {
+                let v = self.eval_cond(a, operand)?;
+                return Ok(Value::Bytes(self.bool_bytes(!v)));
+            }
+            _ => {}
+        }
+        let b = self.eval_bytes(a, operand)?;
+        Ok(Value::Bytes(self.unop(e.span, op, operand.ty, &b)?))
+    }
+
+    #[inline(never)]
+    fn eval_binary(&mut self, a: Act, e: &Expr, op: BinOp, lhs: &Expr, rhs: &Expr) -> R {
+        if let Some((si, ri)) = self.small_binary_info(op, lhs, rhs, e.ty) {
+            let v = self.eval_binary_small(a, e, op, lhs, rhs, si, ri)?;
+            return Ok(Value::Bytes(if is_cmp(op) { self.bool_bytes(v != 0) } else { self.encode_small(si, v) }));
+        }
+        let l = self.eval_bytes(a, lhs)?;
+        let r = self.eval_bytes(a, rhs)?;
+        Ok(Value::Bytes(self.binop(e.span, op, lhs.ty, rhs.ty, e.ty, &l, &r)?))
+    }
+
+    #[inline(never)]
+    fn eval_logic(&mut self, a: Act, is_and: bool, lhs: &Expr, rhs: &Expr) -> R {
+        let lv = self.eval_cond(a, lhs)?;
+        if lv != is_and {
+            return Ok(Value::Bytes(self.bool_bytes(lv)));
+        }
+        let rv = self.eval_cond(a, rhs)?;
+        Ok(Value::Bytes(self.bool_bytes(rv)))
+    }
+
+    #[inline(never)]
+    fn eval_eq(&mut self, a: Act, e: &Expr, lhs: &Expr, rhs: &Expr, negated: bool) -> R {
+        if lhs.ty == rhs.ty
+            && let Some(si) = self.small_of(lhs.ty)
+        {
+            let l = self.eval_small(a, lhs, si)?;
+            let r = self.eval_small(a, rhs, si)?;
+            return Ok(Value::Bytes(self.bool_bytes((l == r) != negated)));
+        }
+        let l = self.eval_bytes(a, lhs)?;
+        let r = self.eval_bytes(a, rhs)?;
+        let v = self.tr(e.span, self.eq(lhs.ty, &l, &r))?;
+        Ok(Value::Bytes(self.bool_bytes(v != negated)))
+    }
+
+    #[inline(never)]
+    fn eval_break(&mut self, a: Act, e: &Expr, target: Target, value: Option<&Expr>) -> R {
+        let v = match value {
+            Some(x) => self.eval(a, x)?,
+            None => Value::unit(),
+        };
+        let (frame, label) = self.resolve_target(e.span, a, target)?;
+        Err(Box::new(Flow::Break { frame, label, value: v }))
+    }
+
+    #[inline(never)]
+    fn eval_continue(&mut self, a: Act, e: &Expr, target: Target) -> R {
+        match target {
+            Target::InstallingWith => {
+                Err(Box::new(Flow::Return { frame: a.fr.id, value: Value::unit(), is_err: false }))
+            }
+            t => {
+                let (frame, label) = self.resolve_target(e.span, a, t)?;
+                Err(Box::new(Flow::Continue { frame, label }))
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn eval_return(&mut self, a: Act, e: &Expr, levels: u32, value: &Expr) -> R {
+        let v = self.eval(a, value)?;
+        let Some(target) = self.up_frame(a.fr, levels) else {
+            return self.trap(e.span, "internal error: return from a missing frame");
+        };
+        let is_err = self.is_err_return(&target, &v);
+        Err(Box::new(Flow::Return { frame: target.id, value: v, is_err }))
+    }
+
+    /// The less frequent expression kinds, kept out of [`Machine::eval`] so that its stack frame stays small.
+    #[inline(never)]
+    fn eval_cold(&mut self, a: Act, e: &Expr) -> R {
+        match &e.kind {
             ExprKind::Float(x) => match e.ty.kind() {
                 TyKind::Float(f) => Ok(Value::Bytes(self.float_bytes(*f, num::round_float(*x, *f)))),
                 _ => self.trap(e.span, "float literal of a non-float type"),
             },
-            ExprKind::Bool(b) => Ok(Value::Bytes(self.bool_bytes(*b))),
             ExprKind::Str(s) => {
                 let addr = self.string_literal(e.span, s, false)?;
                 Ok(Value::Bytes(self.make_slice(addr, s.len() as u64)))
@@ -69,69 +274,10 @@ impl<'a> Machine<'a> {
                 let addr = self.const_addr(e.span, *id)?;
                 Ok(Value::Bytes(self.load_ty(e.span, addr, e.ty)?))
             }
-            ExprKind::Local(id) => self.read_local(e.span, a.fr, *id, e.ty),
-            ExprKind::Upvar { levels, local } => {
-                let Some(fr) = self.up_frame(a.fr, *levels) else {
-                    return self.trap(e.span, "internal error: upvar without an enclosing frame");
-                };
-                self.read_local(e.span, &fr, *local, e.ty)
-            }
-            ExprKind::Global(_) | ExprKind::Deref(_) => {
-                let p = self.eval_place(a, e)?;
-                Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
-            }
-            ExprKind::Field { base, index } => {
-                if is_place_expr(base) {
-                    let p = self.eval_place(a, e)?;
-                    Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
-                } else {
-                    let b = self.eval_bytes(a, base)?;
-                    let r = self.field_bytes(base.ty, &b, *index as usize);
-                    Ok(Value::Bytes(self.tr(e.span, r)?.1))
-                }
-            }
-            ExprKind::VariantPayload { base, variant: _ } => {
-                if is_place_expr(base) {
-                    let p = self.eval_place(a, e)?;
-                    Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
-                } else {
-                    let b = self.eval_bytes(a, base)?;
-                    let off = self.payload_offset(base.ty);
-                    let sz = self.size_of(e.ty);
-                    Ok(Value::Bytes(Bytes::from_slice(&b[off..off + sz])))
-                }
-            }
-            ExprKind::Index { base, index, checked } => {
-                if matches!(base.ty.kind(), TyKind::Array { .. }) && !is_place_expr(base) {
-                    let b = self.eval_bytes(a, base)?;
-                    let i = self.eval_bytes(a, index)?;
-                    let TyKind::Array { len, .. } = base.ty.kind() else { unreachable!() };
-                    let i = self.int_of(index.ty, &i).to_u64_sat();
-                    if i >= *len {
-                        return self.trap(e.span, format!("index {} out of bounds for length {}", i, len));
-                    }
-                    let esz = self.size_of(e.ty);
-                    let off = i as usize * esz;
-                    Ok(Value::Bytes(Bytes::from_slice(&b[off..off + esz])))
-                } else {
-                    let _ = checked;
-                    let p = self.eval_place(a, e)?;
-                    Ok(Value::Bytes(self.read_place(e.span, p, e.ty)?))
-                }
-            }
-            ExprKind::Slice { base, lo, hi, inclusive } => self.eval_slice(a, e, base, lo, hi, *inclusive),
-            ExprKind::SliceLen(s) => {
-                let b = self.eval_bytes(a, s)?;
-                Ok(Value::Bytes(self.usize_bytes(self.slice_parts(&b).1)))
-            }
             ExprKind::SlicePtr(s) => {
                 let b = self.eval_bytes(a, s)?;
                 Ok(Value::Bytes(self.ptr_bytes(self.slice_parts(&b).0)))
             }
-            ExprKind::AddrOf(inner) => match self.eval_place(a, inner)? {
-                Place::Mem(addr) | Place::Packed(addr) => Ok(Value::Bytes(self.ptr_bytes(addr))),
-                Place::Bits { .. } => self.trap(e.span, "cannot take the address of a #bits field"),
-            },
             ExprKind::AddrOfTemp(inner) => {
                 let b = self.eval_bytes(a, inner)?;
                 let align = self.ti(inner.ty).align;
@@ -148,27 +294,6 @@ impl<'a> Machine<'a> {
             ExprKind::HandlerRef(h) => {
                 Ok(Value::Handler(std::rc::Rc::new(HandlerVal { id: *h, env: Some(a.fr.clone()), ctx: a.cx.clone() })))
             }
-            ExprKind::Unary { op, operand } => {
-                let b = self.eval_bytes(a, operand)?;
-                Ok(Value::Bytes(self.unop(e.span, *op, operand.ty, &b)?))
-            }
-            ExprKind::Binary { op, lhs, rhs } => {
-                let l = self.eval_bytes(a, lhs)?;
-                let r = self.eval_bytes(a, rhs)?;
-                Ok(Value::Bytes(self.binop(e.span, *op, lhs.ty, rhs.ty, e.ty, &l, &r)?))
-            }
-            ExprKind::Logic { is_and, lhs, rhs } => {
-                let l = self.eval_bytes(a, lhs)?;
-                let lv = self.truthy(&l);
-                if lv != *is_and {
-                    return Ok(Value::Bytes(self.bool_bytes(lv)));
-                }
-                let r = self.eval_bytes(a, rhs)?;
-                Ok(Value::Bytes(self.bool_bytes(self.truthy(&r))))
-            }
-            ExprKind::Coerce { kind, expr } => self.eval_coerce(a, e, *kind, expr),
-            ExprKind::Builtin { op, args } => self.eval_builtin(a, e, *op, args),
-            ExprKind::Call { callee, args } => self.eval_call(a, e, callee, args),
             ExprKind::Aggregate(items) => self.eval_aggregate(a, e, items),
             ExprKind::Array(items) => {
                 let esz = items.first().map_or(0, |i| self.size_of(i.ty));
@@ -229,56 +354,11 @@ impl<'a> Machine<'a> {
                     Ok(Value::Bytes(self.opt_payload(expr.ty, &b)))
                 }
             }
-            ExprKind::Eq { lhs, rhs, negated } => {
-                let l = self.eval_bytes(a, lhs)?;
-                let r = self.eval_bytes(a, rhs)?;
-                let v = self.tr(e.span, self.eq(lhs.ty, &l, &r))?;
-                Ok(Value::Bytes(self.bool_bytes(v != *negated)))
-            }
             ExprKind::In { elem, container, negated } => {
                 let x = self.eval_bytes(a, elem)?;
                 let c = self.eval_bytes(a, container)?;
                 let v = self.tr(e.span, self.contains(elem.ty, &x, container.ty, &c))?;
                 Ok(Value::Bytes(self.bool_bytes(v != *negated)))
-            }
-            ExprKind::Block(b) => self.eval_block(a, b),
-            ExprKind::If { cond, then, else_ } => {
-                if self.eval_conds(a, cond)? {
-                    self.eval(a, then)
-                } else if let Some(el) = else_ {
-                    self.eval(a, el)
-                } else {
-                    Ok(Value::unit())
-                }
-            }
-            ExprKind::Match { scrutinee, arms } => self.eval_match(a, e, scrutinee, arms),
-            ExprKind::Else { lhs, capture, rhs } => self.eval_else(a, e, lhs, *capture, rhs),
-            ExprKind::Try { expr, lift, levels } => self.eval_try(a, e, expr, *lift, *levels),
-            ExprKind::Loop { label, cond, body, step } => self.eval_loop(a, *label, cond, body, step.as_deref()),
-            ExprKind::Break { target, value } => {
-                let v = match value {
-                    Some(x) => self.eval(a, x)?,
-                    None => Value::unit(),
-                };
-                let (frame, label) = self.resolve_target(e.span, a, *target)?;
-                Err(Box::new(Flow::Break { frame, label, value: v }))
-            }
-            ExprKind::Continue { target } => match target {
-                Target::InstallingWith => {
-                    Err(Box::new(Flow::Return { frame: a.fr.id, value: Value::unit(), is_err: false }))
-                }
-                t => {
-                    let (frame, label) = self.resolve_target(e.span, a, *t)?;
-                    Err(Box::new(Flow::Continue { frame, label }))
-                }
-            },
-            ExprKind::Return { levels, value } => {
-                let v = self.eval(a, value)?;
-                let Some(target) = self.up_frame(a.fr, *levels) else {
-                    return self.trap(e.span, "internal error: return from a missing frame");
-                };
-                let is_err = self.is_err_return(&target, &v);
-                Err(Box::new(Flow::Return { frame: target.id, value: v, is_err }))
             }
             ExprKind::With { label, handlers, on, body } => self.eval_with(a, e, *label, handlers, on.as_deref(), body),
             ExprKind::Resume { cont, value } => self.eval_resume(a, e.span, cont, value),
@@ -317,11 +397,15 @@ impl<'a> Machine<'a> {
     // --- places --------------------------------------------------------------------------------
 
     pub fn read_local(&self, span: Span, fr: &Rc<Frame>, id: LocalId, ty: Ty) -> R {
-        let slot = fr.locals.borrow().get(id.index()).cloned();
-        match slot {
-            Some(Slot::Mem(addr)) => Ok(Value::Bytes(self.load_ty(span, addr, ty)?)),
-            Some(Slot::Val(v)) => Ok(v),
-            _ => self.trap(span, "internal error: read of an uninitialized local"),
+        let locals = fr.locals.borrow();
+        match locals.get(id.index()) {
+            Some(Slot::Mem(addr)) => {
+                let addr = *addr;
+                drop(locals);
+                Ok(Value::Bytes(self.load_ty(span, addr, ty)?))
+            }
+            Some(Slot::Val(v)) => Ok((**v).clone()),
+            _ => self.local_uninit(span),
         }
     }
 
@@ -329,10 +413,11 @@ impl<'a> Machine<'a> {
         match p {
             Place::Mem(addr) => self.load_ty(span, addr, ty),
             Place::Packed(addr) => self.load(span, addr, self.ti(ty).size, 1),
-            Place::Bits { addr, ty: sty, idx } => {
-                let b = self.load_ty(span, addr, sty)?;
-                let r = self.field_bytes(sty, &b, idx as usize);
-                Ok(self.tr(span, r)?.1)
+            Place::Bits { addr, whole, off, fty } => {
+                let u = self.bits_struct_ty(whole).unwrap_or(whole);
+                let b = self.load_ty(span, addr, whole)?;
+                let raw = num::wrap(&self.int_of_unsigned(u, &b).shr(off as u64), false, self.bit_width(fty));
+                Ok(self.bits_from_raw(fty, &raw))
             }
         }
     }
@@ -344,11 +429,10 @@ impl<'a> Machine<'a> {
                 self.store(span, addr, data, align)
             }
             Place::Packed(addr) => self.store(span, addr, data, 1),
-            Place::Bits { addr, ty: sty, idx } => {
+            Place::Bits { addr, whole: sty, off, fty } => {
                 let u = self.bits_struct_ty(sty).unwrap_or(sty);
                 let whole = self.load_ty(span, addr, sty)?;
                 let cur = self.int_of_unsigned(u, &whole);
-                let (off, fty) = self.tr(span, self.bits_field(sty, idx as usize))?;
                 let w = self.bit_width(fty);
                 let raw = self.bits_raw(fty, data);
                 let mask = Int::S(1).shl(w as u64).sub(&Int::S(1)).shl(off as u64);
@@ -364,11 +448,15 @@ impl<'a> Machine<'a> {
     pub fn eval_place(&mut self, a: Act, e: &Expr) -> R<Place> {
         match &e.kind {
             ExprKind::Local(id) => {
-                let slot = a.fr.locals.borrow().get(id.index()).cloned();
+                let slot = match a.fr.locals.borrow().get(id.index()) {
+                    Some(Slot::Mem(addr)) => Some(Ok(*addr)),
+                    Some(Slot::Val(_)) => Some(Err(())),
+                    _ => None,
+                };
                 match slot {
-                    Some(Slot::Mem(addr)) => Ok(Place::Mem(addr)),
-                    Some(Slot::Val(_)) => self.trap(e.span, "internal error: second-class value used as a place"),
-                    _ => {
+                    Some(Ok(addr)) => Ok(Place::Mem(addr)),
+                    Some(Err(())) => self.trap(e.span, "internal error: second-class value used as a place"),
+                    None => {
                         let ti = self.ti(e.ty);
                         let addr = self.local_addr(e.span, a.fr, *id, ti.size, ti.align)?;
                         Ok(Place::Mem(addr))
@@ -380,11 +468,15 @@ impl<'a> Machine<'a> {
                     return self.trap(e.span, "internal error: upvar without an enclosing frame");
                 };
                 let ti = self.ti(e.ty);
-                let slot = fr.locals.borrow().get(local.index()).cloned();
+                let slot = match fr.locals.borrow().get(local.index()) {
+                    Some(Slot::Mem(addr)) => Some(Ok(*addr)),
+                    Some(Slot::Val(_)) => Some(Err(())),
+                    _ => None,
+                };
                 match slot {
-                    Some(Slot::Mem(addr)) => Ok(Place::Mem(addr)),
-                    Some(Slot::Val(_)) => self.trap(e.span, "internal error: second-class value used as a place"),
-                    _ => Ok(Place::Mem(self.local_addr(e.span, &fr, *local, ti.size, ti.align)?)),
+                    Some(Ok(addr)) => Ok(Place::Mem(addr)),
+                    Some(Err(())) => self.trap(e.span, "internal error: second-class value used as a place"),
+                    None => Ok(Place::Mem(self.local_addr(e.span, &fr, *local, ti.size, ti.align)?)),
                 }
             }
             ExprKind::Global(g) => Ok(Place::Mem(self.global_addr(e.span, *g)?)),
@@ -395,10 +487,11 @@ impl<'a> Machine<'a> {
             }
             ExprKind::Field { base, index } => {
                 if self.bits_struct_ty(base.ty).is_some() {
-                    let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
-                        return self.trap(e.span, "internal error: nested #bits place");
-                    };
-                    return Ok(Place::Bits { addr, ty: base.ty, idx: *index });
+                    let (off, fty) = self.tr(e.span, self.bits_field(base.ty, *index as usize))?;
+                    return Ok(match self.eval_place(a, base)? {
+                        Place::Mem(addr) | Place::Packed(addr) => Place::Bits { addr, whole: base.ty, off, fty },
+                        Place::Bits { addr, whole, off: o, .. } => Place::Bits { addr, whole, off: o + off, fty },
+                    });
                 }
                 let (addr, packed) = match self.eval_place(a, base)? {
                     Place::Mem(addr) => (addr, self.is_packed(base.ty)),
@@ -467,6 +560,10 @@ impl<'a> Machine<'a> {
     }
 
     fn eval_index(&mut self, a: Act, index: &Expr) -> R<u64> {
+        if let Some(si) = self.small_of(index.ty) {
+            let v = self.eval_small(a, index, si)?;
+            return Ok(if v < 0 { 0 } else { v as u64 });
+        }
         let b = self.eval_bytes(a, index)?;
         Ok(self.int_of(index.ty, &b).to_u64_sat())
     }
@@ -591,8 +688,13 @@ impl<'a> Machine<'a> {
                 let b = self.value_bytes(e.span, v)?;
                 let out = match kind {
                     Coercion::IntWiden => {
-                        let x = self.int_of(inner.ty, &b);
-                        self.int_bytes(e.ty, &x)
+                        if let (Some(isi), Some(osi)) = (self.small_of(inner.ty), self.small_of(e.ty)) {
+                            let x = self.decode_small(isi, &b);
+                            self.encode_small(osi, x)
+                        } else {
+                            let x = self.int_of(inner.ty, &b);
+                            self.int_bytes(e.ty, &x)
+                        }
                     }
                     Coercion::FloatWiden => {
                         let (TyKind::Float(sf), TyKind::Float(df)) = (inner.ty.kind(), e.ty.kind()) else {
@@ -740,6 +842,11 @@ impl<'a> Machine<'a> {
                     Some((_, _, super::memory::AllocKind::Heap, false)) => {
                         self.trap(e.span, format!("double free of heap block {:#x}", p))
                     }
+                    // A whole block freed with the wrong size, such as a slice of it.
+                    Some((base, sz, super::memory::AllocKind::Heap, true)) if base == p => self.trap(
+                        e.span,
+                        format!("invalid free of {:#x}: the heap block there has {} bytes, not {}", p, sz, size),
+                    ),
                     _ => self.trap(
                         e.span,
                         format!("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size),
@@ -967,6 +1074,10 @@ impl<'a> Machine<'a> {
 }
 
 use std::rc::Rc;
+
+fn is_cmp(op: BinOp) -> bool {
+    matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+}
 
 pub fn is_place_expr(e: &Expr) -> bool {
     match &e.kind {

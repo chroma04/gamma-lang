@@ -609,6 +609,22 @@ static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn
     gm_wscratch_free(t, stack);
 }
 
+static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k) {
+    size_t sz = GM_WBYTES(bits);
+    uint64_t stack[GM_WSTACK];
+    uint64_t *t = gm_wscratch(stack, GM_WSTACK, sz / 8);
+    uint8_t *tb = (uint8_t *)t;
+    memset(tb, 0, sz);
+    k %= bits;
+    for (uint32_t i = 0; i < bits; i++) {
+        uint32_t j = (uint32_t)((i + k) % bits);
+        if (gm_wbit(a, i)) tb[j / 8] |= (uint8_t)(1u << (j % 8));
+    }
+    memcpy(r, tb, sz);
+    gm_wfix(r, bits, sgn);
+    gm_wscratch_free(t, stack);
+}
+
 static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     bool neg = gm_wisneg(a, bits, sgn);
@@ -1636,7 +1652,8 @@ static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, si
     pthread_mutex_unlock(&gm_rt_lock);
 }
 
-static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol) {
     pthread_mutex_lock(&gm_rt_lock);
     gm_atag *t = gm_atag_find(p);
     if (t == NULL) {
@@ -1648,7 +1665,7 @@ static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, 
         char msg[1024];
         snprintf(msg, sizeof msg, "memory allocated at %s is freed at %s through a different allocator", t->site, at);
         pthread_mutex_unlock(&gm_rt_lock);
-        gm_trap(msg, NULL, 0, 0);
+        gm_trap(msg, tfile, tline, tcol);
     }
     free(t->site);
     *t = (gm_atag){(void *)1, NULL, NULL, NULL};
@@ -1668,7 +1685,12 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
         snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
         gm_trap(msg, file, line, col);
     }
-    if (b == NULL || b->size != size) {
+    if (b != NULL && b->size != size) {
+        snprintf(msg, sizeof msg, "invalid free of 0x%llx: the heap block there has %llu bytes, not %llu",
+                 (unsigned long long)(uintptr_t)p, (unsigned long long)b->size, (unsigned long long)size);
+        gm_trap(msg, file, line, col);
+    }
+    if (b == NULL) {
         snprintf(msg, sizeof msg, "invalid free of 0x%llx: not the start of a live heap block of %llu bytes",
                  (unsigned long long)(uintptr_t)p, (unsigned long long)size);
         gm_trap(msg, file, line, col);
@@ -1691,6 +1713,34 @@ static void *gm_thread_main(void *p) {
     gm_thread *t = (gm_thread *)p;
     t->f(t->arg);
     return NULL;
+}
+
+/* The stack of the thread that runs the program's entry function: larger than a
+ * typical process default, so deep recursion behaves alike on every host. */
+#define GM_MAIN_STACK_SIZE ((size_t)64 << 20)
+
+typedef struct { int (*f)(gm_node *); gm_node *cx; int status; } gm_main_call;
+
+static void *gm_main_thread(void *p) {
+    gm_thread_stack();
+    gm_main_call *c = (gm_main_call *)p;
+    c->status = c->f(c->cx);
+    return NULL;
+}
+
+/* Runs entry `f` under context `cx` on a thread of its own and returns its status;
+ * on the calling thread if no such thread can be started. */
+static int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+    gm_main_call c = {f, cx, 0};
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, GM_MAIN_STACK_SIZE);
+    pthread_t t;
+    int r = pthread_create(&t, &attr, gm_main_thread, &c);
+    pthread_attr_destroy(&attr);
+    if (r != 0) return f(cx);
+    pthread_join(t, NULL);
+    return c.status;
 }
 
 static int64_t gm_thread_spawn(void *f, void *arg) {

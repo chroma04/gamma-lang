@@ -489,6 +489,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!("gm_wbitreverse((uint8_t *)&{r}, {p0}, {args});"));
                 Ok(r)
             }
+            Builtin::Rotl | Builtin::Rotr => {
+                let r = self.tmp_uninit(t);
+                let k = format!("(uint64_t){}", vals[1]);
+                let k = if op == Builtin::Rotl { k } else { format!("({b} - {k} % {b})", b = w.bits) };
+                self.line(&format!("gm_wrotl((uint8_t *)&{r}, {p0}, {args}, {k});"));
+                Ok(r)
+            }
             _ => unsupported(e.span, format!("the builtin {op:?} on `{at}`")),
         }
     }

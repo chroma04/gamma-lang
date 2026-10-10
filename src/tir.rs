@@ -270,16 +270,25 @@ pub const STACK_BASE: u64 = 1024;
 /// The stack bytes charged for one call of `def`, the cost model shared by
 /// `@stack_size` (§14.8) and the interpreter's fiber stacks. It bounds a compiled
 /// frame generously: a fixed overhead for the return address, saved registers and
-/// spills; twice the locals (room for a copy of each, as a C compiler may make to
-/// initialize one); every composite temporary (call results, constructed values)
-/// bigger than a register; and the records of the handlers its `with`s install.
+/// spills; the locals; every composite temporary bigger than a register (call
+/// results, constructed values, and the copies made by reading a large value, but
+/// not by using it as a place); and the records of the handlers its `with`s install.
 pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
     let mut c = 256u64;
     for l in &def.locals {
-        c += 2 * size_of(l.ty).next_multiple_of(8);
+        c += size_of(l.ty).next_multiple_of(8);
     }
     if let Some(b) = &def.body {
-        fn temps(e: &Expr, size_of: &mut dyn FnMut(Ty) -> u64, c: &mut u64) {
+        // `place` is set for an expression used as a place (the base of an index,
+        // field or slice, an operand of `&`, the target of an assignment): reading
+        // it makes no copy.
+        fn temps(e: &Expr, place: bool, size_of: &mut dyn FnMut(Ty) -> u64, c: &mut u64) {
+            let mut add = |t: Ty, c: &mut u64| {
+                let n = size_of(t);
+                if n > 8 {
+                    *c += n.next_multiple_of(8);
+                }
+            };
             match &e.kind {
                 ExprKind::With { handlers, .. } => *c += 128 * handlers.len() as u64,
                 ExprKind::Call { .. }
@@ -287,17 +296,62 @@ pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
                 | ExprKind::Array(_)
                 | ExprKind::ArrayFill(_)
                 | ExprKind::Variant { .. }
-                | ExprKind::Builtin { .. } => {
-                    let n = size_of(e.ty);
-                    if n > 8 {
-                        *c += n.next_multiple_of(8);
+                | ExprKind::Builtin { .. } => add(e.ty, c),
+                // Reading a large value copies it.
+                ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Global(_) if !place => add(e.ty, c),
+                ExprKind::Deref(x) | ExprKind::Field { base: x, .. } | ExprKind::Index { base: x, .. } => {
+                    if !place {
+                        add(e.ty, c);
                     }
+                    temps(x, true, size_of, c);
+                    if let ExprKind::Index { index, .. } = &e.kind {
+                        temps(index, false, size_of, c);
+                    }
+                    return;
+                }
+                ExprKind::AddrOf(x) | ExprKind::SliceLen(x) | ExprKind::SlicePtr(x) => {
+                    temps(x, true, size_of, c);
+                    return;
+                }
+                ExprKind::Slice { base, .. } => {
+                    temps(base, true, size_of, c);
+                    e.for_each_child(&mut |x| {
+                        if !std::ptr::eq(x, &**base) {
+                            temps(x, false, size_of, c)
+                        }
+                    });
+                    return;
+                }
+                ExprKind::Block(b) => {
+                    for st in &b.stmts {
+                        match st {
+                            Stmt::Assign { place, value } => {
+                                temps(place, true, size_of, c);
+                                temps(value, false, size_of, c);
+                            }
+                            Stmt::AssignTuple { places, value } => {
+                                for p in places.iter().flatten() {
+                                    temps(p, true, size_of, c);
+                                }
+                                temps(value, false, size_of, c);
+                            }
+                            Stmt::Let { init: Some(x), .. }
+                            | Stmt::LetTuple { init: x, .. }
+                            | Stmt::Expr(x)
+                            | Stmt::Defer { body: x, .. } => temps(x, false, size_of, c),
+                            Stmt::Let { init: None, .. } => {}
+                        }
+                    }
+                    if let Some(t) = &b.tail {
+                        temps(t, false, size_of, c);
+                    }
+                    return;
                 }
                 _ => {}
             }
-            e.for_each_child(&mut |x| temps(x, size_of, c));
+            e.for_each_child(&mut |x| temps(x, false, size_of, c));
         }
-        temps(b, size_of, &mut c);
+        temps(b, false, size_of, &mut c);
     }
     c
 }
@@ -1110,6 +1164,14 @@ pub enum Builtin {
     Popcount,
     Bswap,
     Bitreverse,
+    /// `@rotl(x, n)` / `@rotr(x, n)`: rotate the bits of `x` by `n` (a `u32`, taken
+    /// modulo the width).
+    Rotl,
+    Rotr,
+    /// `@static_assert(cond, …)` in a generic body whose condition depends on its
+    /// parameters: evaluated for each instance during monomorphization, then removed.
+    /// The number indexes `Sema::deferred_asserts`.
+    StaticAssert(u32),
     /// `a.get(i)` → `?T`.
     Get,
     /// `a.get_ptr(i)` → `?^T`.

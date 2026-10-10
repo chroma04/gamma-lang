@@ -2,11 +2,11 @@
 f :: fn(a: u8, b: i32, c: u32) {
     x := u16(a)
     y := i16(a)
-    z := i8(a)                  //~ ERROR not a lossless conversion
+    z := i8(a)                  //~ ERROR not a lossless conversion; use `x.trunc(i8)`, `x.checked(i8)`, `x.sat(i8)`
     w := u32(b)                 //~ ERROR not a lossless conversion
     v := usize(c)
     u := f64(c)
-    t := f32(c)                 //~ ERROR not a lossless conversion
+    t := f32(c)                 //~ ERROR not a lossless conversion; use `x.round(f32)`
     s := u8(300)                //~ ERROR does not fit in `u8`
 }
 

@@ -8,6 +8,8 @@ main :: fn() \ {Out} {
     stack: [32768]u8 = ---
     with (handler Gen {
         emit(x, k) => {
+            // Copying `k` leaves the check to run time (§14.2).
+            kept := k
             print("emit {}\n", x)
             break
         }

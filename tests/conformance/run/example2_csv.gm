@@ -1,0 +1,169 @@
+// CSV reader with quoted fields (rows are slices of fields in an arena), per-column numeric statistics and a formatted table.
+str :: import "std/str"
+fmt :: import "std/fmt"
+math :: import "std/math"
+arena :: import "std/arena"
+
+DATA :: `name,dept,salary,rating,note
+Ada Lovelace,Research,125000.50,4.9,"first programmer, ""analytical"""
+Grace Hopper,Navy,118000,4.7,"COBOL, ""compiler"""
+Alan Turing,Research,121500.25,4.8,
+"Dennis ""dmr"" Ritchie",Systems,99000,4.2,"wrote C"
+Ken Thompson,Systems,97500.75,4.1,B and Go
+Margaret Hamilton,Apollo,130000,5.0,"software, engineering"
+Bad Row,Nowhere,n/a,3.5,"missing salary"
+Short,Row
+`
+
+Row :: []const string
+
+CsvError :: union { Unterminated: usize, Memory: AllocError }
+
+// Splits `text` into records. Fields are copied into memory from the current allocator when they contain
+// quotes; plain fields are slices of `text`.
+parse_csv :: fn(text: string) -> CsvError!List(Row) \ {Alloc} {
+    rows := list(Row)
+    fields := list(string)
+    defer fields.deinit()
+    i: usize = 0
+    line_no: usize = 1
+    while i < text.len {
+        fields.clear()
+        // one record
+        while true {
+            field: string = ""
+            if i < text.len and text[i] is '"' {
+                i += 1
+                buf := try make(u8, text.len - i)
+                n: usize = 0
+                while true {
+                    if i >= text.len { return !.Unterminated(line_no) }
+                    c := text[i]
+                    i += 1
+                    if c is '"' {
+                        if i < text.len and text[i] is '"' {
+                            buf[n] = '"'
+                            n += 1
+                            i += 1
+                            continue
+                        }
+                        break
+                    }
+                    if c is '\n' { line_no += 1 }
+                    buf[n] = c
+                    n += 1
+                }
+                field = buf[0..n]
+            } else {
+                start := i
+                while i < text.len and text[i] is not ',' and text[i] is not '\n' { i += 1 }
+                field = text[start..i]
+            }
+            try fields.push(field)
+            if i >= text.len { break }
+            c := text[i]
+            i += 1
+            if c is '\n' {
+                line_no += 1
+                break
+            }
+        }
+        copy := try make_fill(string, fields.items.len, "")
+        copy.copy_from(fields.items)
+        row: Row = copy
+        try rows.push(row)
+    }
+    return rows
+}
+
+Stats :: struct {
+    count: u32 = 0
+    min: f64 = 0
+    max: f64 = 0
+    sum: f64 = 0
+}
+
+// Parses a non-negative decimal number such as 125000.50.
+parse_num :: fn(s: string) -> ?f64 {
+    if s.len is 0 { return null }
+    whole: f64 = 0
+    frac: f64 = 0
+    scale: f64 = 1
+    seen_dot := false
+    for c in bytes(s) {
+        if c is '.' and not seen_dot {
+            seen_dot = true
+        } else if c in '0'..='9' {
+            d := f64(c - '0')
+            if seen_dot {
+                scale /= 10
+                frac += d * scale
+            } else {
+                whole = whole * 10 + d
+            }
+        } else {
+            return null
+        }
+    }
+    return whole + frac
+}
+
+column_stats :: fn(rows: []const Row, col: usize) -> Stats {
+    st := Stats()
+    for r in rows {
+        v := parse_num(r.get(col) else "") else continue
+        if st.count is 0 or v < st.min { st.min = v }
+        if st.count is 0 or v > st.max { st.max = v }
+        st.sum += v
+        st.count += 1
+    }
+    return st
+}
+
+money :: fn(x: f64, buf: []u8) -> string {
+    cents := (x * 100.0).round(i64)
+    whole := cents / 100
+    rem := cents % 100
+    tmp: [24]u8 = ---
+    w := fmt.grouped(whole, ',', tmp[..])
+    b := str.builder(buf)
+    b.write("${}.{}{}", (w, rem / 10, rem % 10))
+    return b.str()
+}
+
+main :: fn() -> CsvError!() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    rows := try with a.allocator() { parse_csv(DATA) }
+    header := rows.items[0]
+    body := rows.items[1..]
+    print("{} records, {} columns\n", (body.len, header.len))
+
+    cell: [64]u8 = ---
+    sep := [48]u8(fill: 45)
+    rule: string = sep[0..24]
+    print("{}\n", fmt.pad_right(header[0], 24, ' ', cell[..]))
+    print("{}\n", rule)
+    for r in body {
+        if r.len < header.len {
+            print("skip short row ({} fields): {}\n", (r.len, r[0]))
+            continue
+        }
+        sal := parse_num(r[2])
+        mbuf: [32]u8 = ---
+        text := if s := sal { money(s, mbuf[..]) } else { "n/a" }
+        line: [96]u8 = ---
+        b := str.builder(line[..])
+        b.write("{} | {} | {}", (fmt.pad_right(r[0], 22, ' ', cell[0..32]), fmt.pad_right(r[1], 9, ' ', cell[32..64]), text))
+        print("{}\n", b.str())
+        if r[4].len > 0 { print("    note: {}\n", r[4]) }
+    }
+
+    for col in 2..4 {
+        st := column_stats(body, col)
+        mean := st.sum / f64(st.count)
+        fb: [400]u8 = ---
+        print("{}: n={} min={} max={} mean={}\n", (header[col], st.count, fmt.fixed(st.min, 2, fb[0..200]), fmt.fixed(st.max, 2, fb[200..]), mean.round(f32)))
+    }
+    return ()
+}

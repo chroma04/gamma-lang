@@ -104,7 +104,7 @@ use_it :: fn() -> u32 {
 
 The number of names must equal the number of elements. Individual names cannot be annotated; annotate the whole binding instead: `q, r: (u32, u32) = divmod(17, 5)`.
 
-Assignment can also be multiple, which makes a swap trivial: `a, b = (b, a)`. All the right-hand values are computed before any store.
+Assignment can also be multiple, which makes a swap trivial: `a, b = b, a` (the right side is the tuple `(b, a)`). All the right-hand values are computed before any store.
 
 ## Literals
 

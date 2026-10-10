@@ -1,0 +1,8 @@
+//! stage: check
+main :: fn() {
+    x := 0
+    match 3 {
+        3 => x = 1 //~ ERROR put an assignment in a block
+        _ => {}
+    }
+}

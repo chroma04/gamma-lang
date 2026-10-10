@@ -417,7 +417,7 @@ Parameters are immutable bindings (§11.2). A parameter that the function wishes
 
 ### 4.4 Uninitialized storage: `---`
 
-`x: T = ---` declares `x` without initializing it. It is permitted only when `T` is a **plain-data type**: an integer or float type, or an array, tuple or struct (including `#packed` structs) all of whose element and field types are plain-data, or a `#bits` struct whose fields are all `bool` or integers. Reading an uninitialized object (or any part of one) yields an unspecified value; it is never undefined behavior.
+`x: T = ---` declares `x` without initializing it. It is permitted only when `T` is a **plain-data type**: an integer or float type, or an array, tuple or struct (including `#packed` structs) all of whose element and field types are plain-data, or a `#bits` struct whose fields are all `bool`, integers or such `#bits` structs. Reading an uninitialized object (or any part of one) yields an unspecified value; it is never undefined behavior.
 
 Types that are not plain-data — `bool`, unions, optionals, results, pointers of every kind, slices, function pointers, `cont` — have invariants an arbitrary bit pattern could violate, so `---` is a compile error for them.
 
@@ -427,7 +427,7 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 
 ### 4.5 Destructuring
 
-`a, b := e` requires `e` to be a tuple with exactly as many elements. Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
+`a, b := e` requires `e` to be a tuple with exactly as many elements; `a, b := 1, 2` is `a, b := (1, 2)`, as in multiple assignment (§4.7). Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
 
 Destructuring is the only multi-name binding form outside patterns (§9).
 
@@ -453,7 +453,7 @@ Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists
 
 The order of evaluation is: the place's sub-expressions (left to right), then the right side, then the store.
 
-Multiple assignment `a, b = (b, a)` assigns a tuple to a list of places; all right-side values are computed before any store, so it swaps.
+Multiple assignment `a, b = (b, a)` assigns a tuple to a list of places; all right-side values are computed before any store, so it swaps. The parentheses may be left out: with two or more places, a comma-separated list on the right is that tuple, so `a, b = b, a + b` is `a, b = (b, a + b)`.
 
 ---
 
@@ -532,7 +532,7 @@ Layout: `N` elements at consecutive multiples of `stride(T)` (= `@size_of(T)`, w
 
 `[]T` and `[]const T` are a pair `(ptr: [^]T, len: usize)` (`[^]const T` for the `const` form), laid out as a struct with those two fields in that order. The fields can be read but not assigned; build a slice by slicing (§7.9).
 
-An empty slice still holds a non-null, suitably aligned pointer, which must not be dereferenced.
+An empty slice still holds a non-null, suitably aligned pointer, which must not be dereferenced. `empty_slice(T)` (§21.1) is an empty `[]T`, for when there is nothing to slice.
 
 ### 5.8 Strings
 
@@ -600,7 +600,7 @@ Mode :: #bits(u16) struct {
 }
 ```
 
-`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. Conversion to and from `U` is by `U(m)` and `Mode(u)` when every field is a `bool` or integer (§6.5), and by `bits` otherwise (§6.6). A `#bits` struct whose fields are all `bool` or integers is plain-data.
+`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4); padding fields stay zero, so `~` complements only the named fields. A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
 
 ### 5.11 Unions
 
@@ -673,7 +673,7 @@ A function pointer is one code address in size, C-compatible when its signature 
 
 ### 5.19 Plain-data types
 
-A type is **plain-data** if every bit pattern of its size is a valid value: integer and float types; `#bits` structs whose fields are all `bool` or integers; arrays, tuples and structs whose elements and fields are all plain-data. (Padding bytes are ignored.) Plain-data types are the ones that may be initialized with `---` (§4.4), reinterpreted with `bits` (§6.6), and read from a `#c_union` without restriction.
+A type is **plain-data** if every bit pattern of its size is a valid value: integer and float types; plain `#bits` structs (§5.10.5); arrays, tuples and structs whose elements and fields are all plain-data. (Padding bytes are ignored.) Plain-data types are the ones that may be initialized with `---` (§4.4), reinterpreted with `bits` (§6.6), and read from a `#c_union` without restriction.
 
 ---
 
@@ -754,7 +754,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 ### 6.5 Lossless conversion: `T(x)`
 
-`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. It is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
+`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
 
 | `x: S` | `T(x)` permitted when |
 | --- | --- |
@@ -763,10 +763,12 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 | float | `T` is a wider float type |
 | `bool` | `T` is an integer type (`true` → 1, `false` → 0) |
 | enum (§5.11) | `T` is its tag type, or an integer type its tag type widens to |
-| `#bits(U)` struct | `T` is `U` |
-| `U` integer | `T` is a `#bits(U)` struct whose fields are all `bool`/integers (every bit pattern is valid) |
+| plain `#bits(U)` struct (§5.10.5) | `T` is `U` |
+| `U` integer | `T` is a plain `#bits(U)` struct (§5.10.5: every bit pattern is valid) |
 
 For `usize` and `isize` the rule is applied against every supported target (pointer width ≥ 32): `usize(x)` is permitted for `x: uN` with N ≤ 32, and so on. Converting between `usize`/`isize` and wider fixed-width types uses the methods of §6.6.
+
+When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.round(f64)`.
 
 ### 6.6 Lossy and reinterpreting conversions
 
@@ -839,7 +841,7 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 #### 7.4.1 Operand types
 
-Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs whose fields are all `bool` or integers (on the underlying integer, so fieldwise).
+Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to plain `#bits` structs (§5.10.5; on the underlying integer, so fieldwise).
 
 A unary `-` applied directly to an untyped literal is part of the literal for typing purposes: `-128i8` and `x: i8 = -128` are valid.
 
@@ -1165,6 +1167,8 @@ Values of `?T` and `E!T` implicitly wrap, and patterns implicitly unwrap:
 - Against a scrutinee of type `?T`, any pattern other than `null`, `_` and a bare binding is matched against the present value: `5` matches a present 5. A **bare binding** `x` against `?T` matches **only a present value** and binds `x: T`; to bind the whole optional, write `_` and use the scrutinee.
 - Against `E!T`, any pattern other than `!p` and `_` is matched against the success value, and a bare binding matches only success.
 
+Each rule unwraps one level: against `??T` a bare binding binds the present `?T`, and against `E!?T` it binds the success value `?T`, so `null` and a binding are exhaustive for `??T`. A pattern that is neither a bare binding nor excluded above is matched against the present value by the same rules, so `5` against `??i32` matches only a doubly present 5.
+
 This is what makes `if user := find(id)` and `while line := next()` work. The implicit unwrapping applies only in refutable contexts (binding conditions and `match`). In a `for` pattern or a destructuring binding, a bare binding binds the whole value, so `for r in results() { … }` binds `r: E!T`. Within `match`, an exhaustive set for `?T` is `null` plus patterns covering `T`; for `E!T`, `!p` patterns covering `E` plus patterns covering `T`.
 
 *Note:* because of this rule, a bare binding is refutable when the scrutinee is an optional or result. In `x := e` statements (not conditions) no pattern is involved, so `x` simply gets the type of `e`.
@@ -1406,7 +1410,7 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`); an effect is instantiated by applying it to type arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. If `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal), and exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — that instantiation is used, and the arguments are typed accordingly. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 
 ### 12.2 Operation kinds
 
@@ -1469,7 +1473,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 ### 12.6 Handler declarations
 
 ```
-handler_decl = 'handler' effect_ref 'for' type [ '\' effect_set ] '{' { decl_clause terminator } '}'
+handler_decl = 'handler' [ '(' params ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { decl_clause terminator } '}'
 decl_clause  = ident '(' ident { ',' ident } ')' '=>' ( expr | block )
 ```
 
@@ -1486,6 +1490,15 @@ handler Log for ^FileLogger \ {Fs} {
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
 - Clauses of a handler declaration have no enclosing function: `return`, labeled `break`/`continue`, and captures are not available. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
+- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
+
+```
+Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0 }
+
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
+    yield(self, x) => if self.len < N { self.items[self.len] = x; self.len += 1 }
+}
+```
 
 ### 12.7 `with`
 
@@ -1694,7 +1707,7 @@ When code running on a fiber performs a `ctl` operation `op(args)` with result t
 3. **Same `with`.** A continuation may be consumed only by code running in a `ctl` clause of a handler installed by the same `with` that produced it.
 4. **Same thread.** A continuation may be consumed only on the thread that created it (checked).
 
-If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that every path through the clause consumes it exactly once, and rules 1–3 need no run-time check for it.
+If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` discard it, §14.4); rules 1–3 then need no run-time check for it.
 
 ### 14.3 `resume`
 
@@ -1715,9 +1728,9 @@ A `ctl` clause has type `never`: every path through it must end in `resume`, an 
 A `with … on` completes in one of two ways:
 
 - **`B` finishes** on its fiber with value `w`. Control returns to the driver and the `with`'s value is `w`.
-- **A `ctl` clause exits** with `break`/`break v` (or, for a handler literal, a labeled `break`/`continue` or `return`). The `with` completes with that value, or control goes to that target.
+- **A `ctl` clause exits** with `break`/`break v` to the installing `with`. The `with` completes with that value.
 
-A third way is an **exit that crosses the `with … on`**: code on one of its fibers performs an `esc` operation (or an exit from a clause of a handler installed outside the `with`) whose target lies outside the `with`. The unwinding (§12.7.1) proceeds through the fiber's frames to the fiber's base; then every other unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first; then the exit continues on the driver. Exits therefore never leave suspended fibers behind.
+A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the discarding of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
 
 In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, discard the suspended fibers first.)
 
@@ -1919,6 +1932,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 
 - A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
+- In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
 - Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 
@@ -1997,7 +2011,7 @@ Effects may have parameters (`Yield(T)`). An effect set may mention type paramet
 
 **Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Two instantiations of the same generic effect are **provably distinct** if they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). Inside a generic function or type, two instantiations that are neither identical nor provably distinct may not meet in either of these ways:
 
-- both in one effect set: the declared effect set, or that set together with the effect set of a second-class parameter's type. `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`;
+- both in the declared effect set: `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`. (A second-class parameter's effects are performed where it is called, which the next rule covers: `map :: fn(A, B: type, src: fn() \ {Yield(A)}, f: fn(a: A) -> B) \ {Yield(B)}` may loop `for a in src() { yield(f(a)) }`, since the loop's handler takes exactly the calls of `src`.)
 - one performed inside a `with` that handles the other: `with (handler Yield(u32) { … }) { yield(x) }` with `x: T` is a compile error, since whether the handler catches the `yield` would depend on `T`. The implicit `with` of a `for` loop handles only the loop's source call (§13.2); performs in the loop body are handled outside the loop and are not affected by it.
 
 ### 16.7 Restrictions
@@ -2085,7 +2099,7 @@ Values of type `type`, effect types, modules, and untyped constants exist only a
 
 ### 17.7 Static assertions
 
-`@static_assert(cond, "message")` may appear as a top-level declaration or statement. `cond` must be a compile-time `bool`; if it is `false`, compilation fails with the message.
+`@static_assert(cond, "message")` may appear as a top-level declaration or statement. `cond` must be a compile-time `bool`; if it is `false`, compilation fails with the message. In a generic body, a condition that depends on the body's parameters (`@size_of(T) <= 8`) is checked for each instantiation.
 
 ```
 @static_assert(@size_of(Header) is 16, "Header must match the on-disk format")
@@ -2233,7 +2247,7 @@ load :: fn(path: cstring) -> c.c_int \ {Sys} {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2274,7 +2288,7 @@ Gamma adopts the C11 memory model.
 | `@atomic_add(p, v, order)`, `_sub`, `_and`, `_or`, `_xor`, `_max`, `_min` | old value (wrapping arithmetic) |
 | `@fence(order)` | `()` |
 
-`p` is a `^T`. Atomic intrinsics do not require `Sys`: they are memory operations on memory the function can already reach.
+`p` is a `^T`. Atomic intrinsics do not require `Sys`: they are memory operations on memory the function can already reach. As in C11, a load may not use `.Release` or `.AcqRel`, a store may not use `.Acquire` or `.AcqRel`, and the failure order of `@atomic_cas` may not be `.Release` or `.AcqRel`: written as a constant, such an order is a compile error; computed at run time, it acts as `.SeqCst`.
 
 *Rationale:* a C replacement must be able to write a thread pool and a lock-free queue. Adopting C11's model means existing knowledge and tools (ThreadSanitizer) apply unchanged. Effects provide the structure on top: a thread's handlers are its own, so handler literals capturing locals are never shared.
 
@@ -2347,6 +2361,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@prefetch(p)` | `()`; hint | no | — |
 | `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
 | `@bswap(x)` (whole bytes only), `@bitreverse(x)` | `x`'s type | yes | — |
+| `@rotl(x, n)`, `@rotr(x, n)` (`n: u32`, taken modulo the width; rotates the bit pattern, also of signed `x`) | `x`'s type | yes | — |
 | `@sqrt(x)`, `@fma(a, b, c)` and the IEEE operations of `std/math` | float | yes | — |
 
 ---
@@ -2365,7 +2380,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2432,7 +2447,13 @@ runes      :: fn(s: string) \ {Yield(rune)}
 List   :: struct(T: type) { pub items: []T; cap: usize; alloc: Allocator }    // items.len is the length
 list   :: fn(T: type) -> List(T) \ {Alloc}                        // captures current()
 push   :: fn(T: type, l: ^List(T), x: T) -> AllocError!()
+extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!()
+insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!()  // traps if i > len
+reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!()    // room for `extra` more
 pop    :: fn(T: type, l: ^List(T)) -> ?T
+remove :: fn(T: type, l: ^List(T), i: usize) -> T                  // keeps the order
+swap_remove :: fn(T: type, l: ^List(T), i: usize) -> T             // moves the last element into i
+truncate :: fn(T: type, l: ^List(T), n: usize)                      // keeps the first n
 clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
 
@@ -2658,7 +2679,7 @@ param_list    = param % ','
 param         = IDENT { ',' IDENT } [ ( ':' | '::' ) type ] [ '=' expr ]     // '::' = compile-time (§16.5)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
-handler_decl  = 'handler' effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
+handler_decl  = 'handler' [ '(' params ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
 clause        = IDENT '(' [ IDENT % ',' ] ')' '=>' ( expr | block )
 
 foreign_block = 'foreign' STRING '{' { NL } { foreign_member NL { NL } } '}'

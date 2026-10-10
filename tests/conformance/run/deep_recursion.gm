@@ -1,0 +1,8 @@
+// Deep recursion of small frames works alike on both back ends: native programs run
+// their entry function on a large stack.
+depth :: fn(n: u64) -> u64 {
+    if n is 0 { return 0 }
+    return 1 + depth(n - 1)
+}
+
+main :: fn() \ {Out} { print("{}\n", depth(100000)) }

@@ -1,0 +1,235 @@
+// Line editor driven by commands from stdin: an undo log, a byte-budget allocator that makes allocations fail, and defer/errdefer cleanup.
+io :: import "std/io"
+str :: import "std/str"
+
+// An allocator that refuses to hold more than `limit` live bytes.
+Budget :: struct {
+    limit: usize
+    live: usize = 0
+    denied: u32 = 0
+    inner: Allocator
+}
+
+budget_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    b := data.cast(^Budget)
+    if b.live + size > b.limit {
+        b.denied += 1
+        return null
+    }
+    p := b.inner.vt.alloc(b.inner.data, size, align) else return null
+    b.live += size
+    return p
+}
+
+budget_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+budget_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    b := data.cast(^Budget)
+    b.live -= size
+    b.inner.vt.free(b.inner.data, p, size, align)
+}
+
+BUDGET_VT :: AllocVtable(alloc: budget_alloc, resize: budget_resize, free: budget_free)
+
+EditError :: union {
+    Unknown: string
+    Usage: string
+    BadNumber: str.ParseError
+    OutOfRange: (index: usize, len: usize)
+    NothingToUndo
+    Memory: AllocError
+}
+
+// What it takes to reverse one edit.
+Undo :: union {
+    Remove: usize
+    Reinsert: (at: usize, text: string)
+    Restore: (at: usize, text: string)
+    Swap: (a: usize, b: usize)
+}
+
+Editor :: struct {
+    lines: List(string)
+    undo: List(Undo)
+    edits: u32 = 0
+    budget: ^const Budget
+}
+
+release :: fn(s: string) \ {Alloc} {
+    free(u8, s.ptr.cast([^]u8)[0..s.len])
+}
+
+copy_of :: fn(s: string) -> AllocError!string \ {Alloc} {
+    buf := try make(u8, s.len)
+    buf.copy_from(s)
+    return buf
+}
+
+upper_copy :: fn(s: string) -> AllocError!string \ {Alloc} {
+    buf := try make(u8, s.len)
+    for i in 0..s.len {
+        c := s[i]
+        buf[i] = if c in 'a'..='z' { c - 32 } else { c }
+    }
+    return buf
+}
+
+// Inserts `x` before index `at`.
+list_insert :: fn(T: type, l: ^List(T), at: usize, x: T) -> AllocError!() {
+    try l.push(x)
+    i := l.items.len - 1
+    while i > at {
+        l.items[i] = l.items[i - 1]
+        i -= 1
+    }
+    l.items[at] = x
+    return ()
+}
+
+// Removes and returns the element at `at`, keeping the order of the rest.
+list_remove :: fn(T: type, l: ^List(T), at: usize) -> T {
+    x := l.items[at]
+    for i in at + 1..l.items.len { l.items[i - 1] = l.items[i] }
+    _ = l.pop()
+    return x
+}
+
+// Records how to reverse the next edit. Called before the edit, so a full budget aborts it cleanly.
+log_undo :: fn(ed: ^Editor, u: Undo) -> AllocError!() {
+    try ed.undo.push(u)
+    return ()
+}
+
+// Adds `text` as a new line at `at`. Either everything happens or nothing does.
+insert_line :: fn(ed: ^Editor, at: usize, text: string) -> EditError!() \ {Alloc} {
+    mine := try copy_of(text)
+    errdefer release(mine)
+    try list_insert(&ed.lines, at, mine)
+    errdefer { _ = list_remove(&ed.lines, at) }
+    try log_undo(ed, Undo.Remove(at))
+    ed.edits += 1
+    return ()
+}
+
+check_index :: fn(ed: ^Editor, n: usize) -> EditError!usize {
+    if n >= ed.lines.items.len { return !.OutOfRange(index: n, len: ed.lines.items.len) }
+    return n
+}
+
+number :: fn(s: string, usage: string) -> EditError!usize {
+    if s.len is 0 { return !.Usage(usage) }
+    return try str.parse_int(usize, s)
+}
+
+// Runs one command; the result says whether the session is over.
+execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
+    parts := str.split_once(line, " ") else (before: line, after: "")
+    cmd := parts.before
+    rest := parts.after
+    match cmd {
+        "add" => {
+            if rest.len is 0 { return !.Usage("add TEXT") }
+            try insert_line(ed, ed.lines.items.len, rest)
+        }
+        "ins" => {
+            sp := str.split_once(rest, " ") else return !.Usage("ins N TEXT")
+            n := try number(sp.before, "ins N TEXT")
+            if n > ed.lines.items.len { return !.OutOfRange(index: n, len: ed.lines.items.len) }
+            try insert_line(ed, n, sp.after)
+        }
+        "del" => {
+            n := try check_index(ed, try number(rest, "del N"))
+            try log_undo(ed, Undo.Reinsert(at: n, text: ed.lines.items[n]))
+            _ = list_remove(&ed.lines, n)
+            ed.edits += 1
+        }
+        "up" => {
+            n := try check_index(ed, try number(rest, "up N"))
+            old := ed.lines.items[n]
+            fresh := try upper_copy(old)
+            errdefer release(fresh)
+            try log_undo(ed, Undo.Restore(at: n, text: old))
+            ed.lines.items[n] = fresh
+            ed.edits += 1
+        }
+        "swap" => {
+            sp := str.split_once(rest, " ") else return !.Usage("swap A B")
+            a := try check_index(ed, try number(sp.before, "swap A B"))
+            b := try check_index(ed, try number(sp.after, "swap A B"))
+            try log_undo(ed, Undo.Swap(a: a, b: b))
+            ed.lines.items.swap(a, b)
+            ed.edits += 1
+        }
+        "find" => {
+            if rest.len is 0 { return !.Usage("find WORD") }
+            hits: u32 = 0
+            for i, l in enumerate(ed.lines.items) {
+                if str.contains(l, rest) {
+                    print("  match at {}: {}\n", (i, l))
+                    hits += 1
+                }
+            }
+            if hits is 0 { print("  no match for {}\n", rest) }
+        }
+        "list" => {
+            if ed.lines.items.len is 0 { print("  (empty)\n") }
+            for i, l in enumerate(ed.lines.items) { print("  {}: {}\n", (i, l)) }
+        }
+        "undo" => {
+            u := ed.undo.items.last() else return !.NothingToUndo
+            // Reinserting may need to grow the list; do that before the undo record is dropped.
+            match u {
+                .Remove(at) => release(list_remove(&ed.lines, at))
+                .Reinsert(at, text) => try list_insert(&ed.lines, at, text)
+                .Restore(at, text) => {
+                    release(ed.lines.items[at])
+                    ed.lines.items[at] = text
+                }
+                .Swap(a, b) => ed.lines.items.swap(a, b)
+            }
+            _ = ed.undo.pop()
+        }
+        "mem" => print("  {} of {} bytes live, {} denied\n", (ed.budget.live, ed.budget.limit, ed.budget.denied))
+        "quit" => return true
+        _ => return !.Unknown(cmd)
+    }
+    return false
+}
+
+main :: fn() -> IoError!() \ {Out, In, Alloc} {
+    budget := Budget(limit: 260, inner: current())
+    ed := with Allocator(data: &budget, vt: &BUDGET_VT) { Editor(lines: list(string), undo: list(Undo), budget: &budget) }
+    defer {
+        for l in ed.lines.items { release(l) }
+        ed.lines.deinit()
+        for u in ed.undo.items {
+            match u {
+                .Reinsert(_, text) => release(text)
+                .Restore(_, text) => release(text)
+                _ => {}
+            }
+        }
+        ed.undo.deinit()
+        print("bye: {} edits, {} denied, {} bytes still live\n", (ed.edits, budget.denied, budget.live))
+    }
+    r := io.reader()
+    n: u32 = 0
+    while line := try r.next_line() {
+        n += 1
+        text := str.trim(line)
+        if text.len is 0 or text[0] is '#' { continue }
+        print("> {}\n", text)
+        if done := execute(&ed, text) {
+            if done { break }
+        } else e => match e {
+            .Unknown(c) => print("  unknown command: {}\n", c)
+            .Usage(u) => print("  usage: {}\n", u)
+            .BadNumber(pe) => print("  bad number: {}\n", pe)
+            .OutOfRange(index: i, len: l) => print("  index {} out of range (have {} lines)\n", (i, l))
+            .NothingToUndo => print("  nothing to undo\n")
+            .Memory(_) => print("  out of memory ({} of {} bytes live)\n", (budget.live, budget.limit))
+        }
+    }
+    print("processed {} lines\n", n)
+    return ()
+}

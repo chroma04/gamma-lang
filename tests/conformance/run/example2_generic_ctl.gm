@@ -1,0 +1,92 @@
+// Generic ctl effects (Gen(T), Ask(T)), nested fibers where an inner with is driven from inside an outer fiber that suspends mid-clause.
+Gen :: effect(T: type) { next: ctl(x: T) }
+Ask :: effect(T: type) { ask: ctl(q: string) -> T }
+
+producer :: fn(T: type, items: []const T) \ {Gen(T)} {
+    for x in items { next(x) }
+}
+
+collect_sum :: fn(T: type, items: []const T) -> T where Num(T) {
+    stack: [16384]u8 = ---
+    total: T = 0
+    with (handler Gen(T) {
+        next(x, k) => {
+            total += x
+            resume k()
+        }
+    }) on stack[..] {
+        producer(items)
+    }
+    return total
+}
+
+quiz :: fn() -> u32 \ {Ask(u32), Out} {
+    defer print("quiz over\n")
+    a := ask("a?")
+    b := ask("b?")
+    print("a={} b={}\n", (a, b))
+    return a * b
+}
+
+answer :: fn() -> u32 \ {Out} {
+    stack: [16384]u8 = ---
+    n: u32 = 6
+    return with (handler Ask(u32) {
+        ask(q, k) => {
+            print("asked {}\n", q)
+            n += 1
+            resume k(n)
+        }
+    }) on stack[..] {
+        quiz()
+    }
+}
+
+// An inner generator driven from inside an outer fiber; the outer gets cancelled mid-way.
+Tick :: effect { tick: ctl(n: u32) }
+
+inner_gen :: fn() \ {Gen(u32), Out} {
+    defer print("  inner gen cleanup\n")
+    for i in 0..5 { next(i) }
+}
+
+outer_body :: fn() \ {Tick, Out} {
+    defer print("  outer body cleanup\n")
+    stack: [16384]u8 = ---
+    acc: u32 = 0
+    with (handler Gen(u32) {
+        next(x, k) => {
+            acc += x
+            tick(acc)       // performed in the outer fiber's context: suspends the whole outer fiber
+            resume k()
+        }
+    }) on stack[..] {
+        inner_gen()
+    }
+    print("  outer finished acc={}\n", acc)
+}
+
+run_outer :: fn(stop_at: u32) \ {Out} {
+    stack: [65536]u8 = ---
+    with (handler Tick {
+        tick(n, k) => {
+            print("tick {}\n", n)
+            if n >= stop_at {
+                discard k
+                break
+            }
+            resume k()
+        }
+    }) on stack[..] {
+        outer_body()
+    }
+}
+
+main :: fn() \ {Out} {
+    ia := [_]i32(1, 2, 3, 4)
+    print("{}\n", collect_sum(i32, ia[..]))
+    fa := [_]f64(0.5, 0.25)
+    print("{}\n", collect_sum(f64, fa[..]))
+    print("{}\n", answer())
+    run_outer(100)
+}

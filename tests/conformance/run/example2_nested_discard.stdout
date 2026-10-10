@@ -1,0 +1,8 @@
+  inner clause 1
+outer clause 10
+  leaf got 11
+  inner clause 2
+outer clause 20
+leaf cleanup
+mid cleanup
+total 30

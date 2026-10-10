@@ -63,7 +63,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line(&format!(
             "    if (gm_unw.kind == GM_RESUME) {{ gm_unw.kind = GM_NONE; gm_with_go(&{w}, {w}.next); continue; }}"
         ));
-        self.line(&format!("    gm_with_end(&{w}, false, {loc});"));
+        // A clause's exit crosses the `with` unless it is a `break` to the `with` (§14.4).
+        self.line(&format!(
+            "    gm_with_end(&{w}, !(gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}), {loc});",
+            label.0
+        ));
         self.line(&format!("}} else if ({w}.event_fiber == {fb} && !gm_unw.kind) {{"));
         self.line(&format!("    gm_with_end(&{w}, false, {loc});"));
         self.line(&format!("    goto {end};"));
@@ -83,7 +87,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Moves the body of a `with … on` into a function that runs on its fiber.
     fn outline_body(&mut self, label: LabelId, ty: Ty, body: &'a Expr) -> CResult<String> {
-        let name = format!("gm_wb{}_{}", self.fid.0, label.0);
+        let name = format!("gm_wb{}_{}", self.tag, label.0);
         let fid = self.fid.0;
         let saved = std::mem::replace(&mut self.outlined, true);
         let text = self.detached(&format!("static void {}(gm_fiber *fb)", name), "cx", |fg| {
@@ -120,8 +124,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// request on the fiber's stack, and a per-site thunk calls the clause on the driver.
     pub fn ctl_perform(&mut self, n: &str, op: u32, vals: &[String], tys: &[Ty], ret: Ty) -> CResult<String> {
         let id = self.fresh();
-        let req = format!("gm_pr{}_{}", self.fid.0, id);
-        let thunk = format!("gm_pt{}_{}", self.fid.0, id);
+        let req = format!("gm_pr{}_{}", self.tag, id);
+        let thunk = format!("gm_pt{}_{}", self.tag, id);
         let mut fields = String::from("gm_node *n;");
         for (i, t) in tys.iter().enumerate() {
             let _ = write!(fields, " {} a{};", self.g.ty.cty(*t), i);
@@ -198,7 +202,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let ac = self.g.ty.cty(aty);
         let size = self.g.ty.size(aty);
         let k = self.fresh();
-        let start = format!("gm_fs{}_{}", self.fid.0, k);
+        let start = format!("gm_fs{}_{}", self.tag, k);
         let text = self.detached(&format!("static void {}(gm_fiber *fb)", start), "fb->cx", |fg| {
             let arg = if size == 0 { fg.zero(aty) } else { format!("GM_LD({}, fb->arg)", ac) };
             let arg = fg.tmp(aty, &arg);

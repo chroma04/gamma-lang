@@ -1,0 +1,64 @@
+// Compile-time evaluation: prime table built by iterating a Yield-based generator in a constant initializer, array lengths from constant calls, when and static_assert.
+is_prime :: fn(n: u32) -> bool {
+    if n < 2 { return false }
+    d: u32 = 2
+    while d * d <= n {
+        if n % d is 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+primes_below :: fn(limit: u32) \ {Yield(u32)} {
+    for n in 2..limit { if is_prime(n) { yield(n) } }
+}
+
+count_primes :: fn(limit: u32) -> usize {
+    c: usize = 0
+    for _ in primes_below(limit) { c += 1 }
+    return c
+}
+
+NP :: count_primes(100)
+
+primes_table :: fn() -> [NP]u32 {
+    t: [NP]u32 = ---
+    i: usize = 0
+    for p in primes_below(100) {
+        t[i] = p
+        i += 1
+    }
+    return t
+}
+
+PRIMES :: primes_table()
+
+fact :: fn(n: u64) -> u64 => if n <= 1 { 1 } else { n * fact(n - 1) }
+F20 :: fact(20)
+
+Shape :: union { Circle: f32, Rect: (w: f32, h: f32) }
+SHAPES :: [_]Shape(.Circle(1.0), .Rect(w: 2, h: 3))
+NAMES :: [_]string("circle", "rect")
+
+Grid :: struct(W, H: usize) {
+    cells: [H][W]u8
+}
+
+when @size_of(usize) is 8 {
+    WORD :: "64-bit"
+} else {
+    WORD :: "32-bit"
+}
+
+@static_assert(NP is 25, "prime count")
+@static_assert(PRIMES[24] is 97)
+
+main :: fn() \ {Out} {
+    print("{} primes, last {}, word name length {}\n", (NP, PRIMES[NP - 1], WORD.len))
+    print("{}\n", F20)
+    for i in 0..SHAPES.len { print("{}: {}\n", (NAMES[i], SHAPES[i])) }
+    g := Grid(4, 3)(cells: [3][4]u8(fill: [4]u8(fill: 7)))
+    print("{} {}\n", (g.cells.len, @size_of(Grid(4, 3))))
+    local :: count_primes(30)
+    print("{}\n", local)
+}

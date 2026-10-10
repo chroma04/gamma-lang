@@ -1,0 +1,15 @@
+Outer 24 8 offsets 0 2 8 16
+POuter 18 1 offsets 0 1 4 12
+AP 8 4
+Color 1 1
+Tagged 16 8
+Empty 0 Z 8 4 offs 4
+Flags 4 WithBits 8 4
+Tup 12 4 Named 16 8
+Big 32 16 Mixed 64 16 offs 32
+8 8 16 16
+1 4 32
+8 8 8
+20
+1 4
+16 24

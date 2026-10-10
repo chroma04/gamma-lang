@@ -65,7 +65,7 @@ pub enum Slot {
     /// A first-class local: its own allocation at this address.
     Mem(u64),
     /// A second-class local (function or handler value).
-    Val(Value),
+    Val(Box<Value>),
 }
 
 /// One activation of a function body (or the root of a constant evaluation).

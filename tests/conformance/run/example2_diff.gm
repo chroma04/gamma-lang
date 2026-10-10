@@ -1,0 +1,129 @@
+// Line diff via longest common subsequence: a heap-allocated DP table, a Yield iterator of edit operations, and unified-style output with hunks.
+str :: import "std/str"
+
+OLD :: `alpha
+beta
+gamma
+delta
+epsilon
+zeta
+eta
+theta
+iota
+kappa`
+
+NEW :: `alpha
+gamma
+delta
+EPSILON
+zeta
+eta
+theta
+theta2
+iota
+kappa
+lambda`
+
+Op :: union {
+    Keep: string
+    Del: string
+    Add: string
+}
+
+split_lines :: fn(text: string, out: ^List(string)) -> AllocError!() \ {Alloc} {
+    for l in str.lines(text) { try out.push(l) }
+    return ()
+}
+
+// Yields the edit script turning `a` into `b`.
+edits :: fn(a, b: []const string) -> AllocError!() \ {Yield(Op), Alloc} {
+    n := a.len
+    m := b.len
+    w := m + 1
+    table := try make(u32, (n + 1) * w)
+    defer free(table)
+    // table[i * w + j] = LCS length of a[i..] and b[j..]
+    table.fill(0)
+    i := n
+    while i > 0 {
+        i -= 1
+        j := m
+        while j > 0 {
+            j -= 1
+            table[i * w + j] = if a[i] is b[j] {
+                table[(i + 1) * w + j + 1] + 1
+            } else {
+                table[(i + 1) * w + j].max(table[i * w + j + 1])
+            }
+        }
+    }
+    i = 0
+    j: usize = 0
+    while i < n or j < m {
+        if i < n and j < m and a[i] is b[j] {
+            yield(Op.Keep(a[i]))
+            i += 1
+            j += 1
+        } else if j < m and (i is n or table[i * w + j + 1] >= table[(i + 1) * w + j]) {
+            yield(Op.Add(b[j]))
+            j += 1
+        } else {
+            yield(Op.Del(a[i]))
+            i += 1
+        }
+    }
+    return ()
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    a := list(string)
+    defer a.deinit()
+    b := list(string)
+    defer b.deinit()
+    try split_lines(OLD, &a)
+    try split_lines(NEW, &b)
+    print("{} lines -> {} lines\n", (a.items.len, b.items.len))
+
+    ops := list(Op)
+    defer ops.deinit()
+    try for op in edits(a.items, b.items) { try ops.push(op) }
+
+    added: u32 = 0
+    removed: u32 = 0
+    kept: u32 = 0
+    for op in ops.items {
+        match op {
+            .Keep(l) => {
+                kept += 1
+                print("  {}\n", l)
+            }
+            .Del(l) => {
+                removed += 1
+                print("- {}\n", l)
+            }
+            .Add(l) => {
+                added += 1
+                print("+ {}\n", l)
+            }
+        }
+    }
+    print("{} kept, {} removed, {} added\n", (kept, removed, added))
+
+    // Applying the script to the old text must give the new text.
+    rebuilt := list(string)
+    defer rebuilt.deinit()
+    for op in ops.items {
+        match op {
+            .Keep(l), .Add(l) => try rebuilt.push(l)
+            .Del(_) => {}
+        }
+    }
+    same := rebuilt.items.len is b.items.len
+    if same {
+        for i in 0..b.items.len {
+            if rebuilt.items[i] is not b.items[i] { same = false }
+        }
+    }
+    print("rebuilt equals new: {}\n", same)
+    return ()
+}

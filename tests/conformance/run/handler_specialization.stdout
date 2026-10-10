@@ -1,0 +1,20 @@
+count(4) done
+total 6
+x 0
+x 1
+count(10) done
+shadowed 1
+shadowed 2
+node 1
+node 2
+node 3
+node 4
+down 3
+down 2
+down 1
+first 2
+second 20
+work 220 after 2 calls
+sums 3 -300
+emitted 10
+ab bc cd 

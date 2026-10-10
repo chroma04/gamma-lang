@@ -93,6 +93,9 @@ fn generate_entries(
         helpers: helpers::Helpers::default(),
         reachable: vec![],
         queued: vec![false; prog.fns.len()],
+        frames_done: vec![false; prog.fns.len()],
+        specs: std::collections::HashSet::new(),
+        spec_queue: vec![],
         handler_tables: String::new(),
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
@@ -104,9 +107,7 @@ fn generate_entries(
     for (_, f) in &prog.exports {
         g.queue(*f);
     }
-    while let Some(f) = g.reachable.pop() {
-        func::gen_fn(&mut g, f)?;
-    }
+    g.drain()?;
     let consts = g.gen_consts()?;
     let exports = g.gen_exports()?;
     let main = g.gen_main(entries, select)?;
@@ -128,6 +129,21 @@ fn generate_entries(
     out.push_str(&consts);
     out.push_str(&g.helpers.bodies);
     out.push_str(&g.bodies);
+    // An exported symbol must not be a name the generated program uses itself.
+    if !prog.exports.is_empty() {
+        let idents = c_identifiers(&out);
+        for (sym, f) in &prog.exports {
+            if idents.contains(sym.as_str()) {
+                return Err(Unsupported {
+                    message: format!(
+                        "the exported name `{}` is also a name of the compiled program's runtime; choose another",
+                        sym
+                    ),
+                    span: prog.fns[f.index()].span,
+                });
+            }
+        }
+    }
     out.push_str(&exports);
     out.push_str(&main);
     Ok(Generated { code: out, libs: g.libs.into_iter().collect() })
@@ -148,6 +164,11 @@ pub struct Gen<'a> {
     pub helpers: helpers::Helpers,
     reachable: Vec<FnId>,
     queued: Vec<bool>,
+    /// Functions whose frame struct has been emitted.
+    frames_done: Vec<bool>,
+    /// Specialized clones requested so far, and those still to generate.
+    specs: std::collections::HashSet<(FnId, func::Spec)>,
+    spec_queue: Vec<(FnId, func::Spec)>,
     pub handler_tables: String,
     /// Libraries to link, from foreign blocks.
     pub libs: std::collections::BTreeSet<String>,
@@ -166,6 +187,37 @@ impl<'a> Gen<'a> {
 
     pub fn fn_name(&self, f: FnId) -> String {
         format!("gm_f{}", f.0)
+    }
+
+    /// The C name of the clone of `f` specialized by `s`.
+    pub fn spec_name(&self, f: FnId, s: func::Spec) -> String {
+        format!("gm_f{}_h{}", f.0, s.handler)
+    }
+
+    /// Marks the clone of `f` specialized by `s` as needed; returns its C name.
+    pub fn queue_spec(&mut self, f: FnId, s: func::Spec) -> String {
+        if self.specs.insert((f, s)) {
+            self.spec_queue.push((f, s));
+        }
+        self.spec_name(f, s)
+    }
+
+    /// Generates every function and clone queued so far, and those they reach.
+    fn drain(&mut self) -> CResult<()> {
+        loop {
+            if let Some(f) = self.reachable.pop() {
+                func::gen_fn(self, f, None)?;
+            } else if let Some((f, s)) = self.spec_queue.pop() {
+                func::gen_fn(self, f, Some(s))?;
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    /// True if the frame struct of `f` has been emitted; marks it as emitted.
+    pub fn frame_done(&mut self, f: FnId) -> bool {
+        std::mem::replace(&mut self.frames_done[f.index()], true)
     }
 
     /// The number identifying an effect instance in handler contexts.
@@ -326,9 +378,7 @@ impl<'a> Gen<'a> {
             }
         }
         // Constants may refer to functions not otherwise reached.
-        while let Some(f) = self.reachable.pop() {
-            func::gen_fn(self, f)?;
-        }
+        self.drain()?;
         init.push_str("}\n");
         Ok(format!("{}{}", decls, init))
     }
@@ -336,8 +386,11 @@ impl<'a> Gen<'a> {
     /// Exported functions (§19.4): external C-ABI wrappers under their symbols.
     fn gen_exports(&mut self) -> CResult<String> {
         let mut s = String::new();
-        for (sym, f) in self.prog.exports.clone() {
+        for (k, (sym, f)) in self.prog.exports.clone().into_iter().enumerate() {
             let def = &self.prog.fns[f.index()];
+            // A private C name bound to the symbol, so it cannot clash with declarations
+            // of the C headers the runtime includes.
+            let cname = format!("gm_xe{}", k);
             let mut params = vec![];
             let mut args = vec![];
             for (i, p) in def.params.iter().enumerate() {
@@ -351,13 +404,16 @@ impl<'a> Gen<'a> {
             }
             let call = format!("{}({})", self.fn_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-            if def.ret.is_unit() {
-                let _ = writeln!(s, "{}void {}({}) {{ {}; }}", conv_attr(def.callconv), sym, params, call);
+            let (r, body) = if def.ret.is_unit() {
+                ("void".to_string(), format!("{};", call))
             } else {
                 let r = self.c_abi_type(def.ret, def.span)?;
                 let call = if self.ty.mirror(def.ret).is_some() { call } else { format!("({}){}", r, call) };
-                let _ = writeln!(s, "{}{} {}({}) {{ return {}; }}", conv_attr(def.callconv), r, sym, params, call);
-            }
+                (r, format!("return {};", call))
+            };
+            let cc = conv_attr(def.callconv);
+            let _ = writeln!(s, "{cc}{r} {cname}({params}) __asm__(GM_SYM(\"{sym}\"));");
+            let _ = writeln!(s, "{cc}{r} {cname}({params}) {{ {body} }}");
         }
         Ok(s)
     }
@@ -371,7 +427,7 @@ impl<'a> Gen<'a> {
         let mut calls = String::new();
         for (i, &entry) in entries.iter().enumerate() {
             s.push_str(&self.gen_entry(entry, i)?);
-            let _ = writeln!(calls, "        case {i}: return gm_entry{i}(cx);");
+            let _ = writeln!(calls, "        case {i}: return gm_run_main(gm_entry{i}, cx);");
         }
         s.push_str("int main(int argc, char **argv) {\n");
         if select {
@@ -397,7 +453,7 @@ impl<'a> Gen<'a> {
         if select {
             let _ = writeln!(s, "    switch (which) {{\n{calls}        default: return 2;\n    }}");
         } else {
-            s.push_str("    return gm_entry0(cx);\n");
+            s.push_str("    return gm_run_main(gm_entry0, cx);\n");
         }
         s.push_str("}\n");
         Ok(s)
@@ -509,7 +565,13 @@ impl<'a> Gen<'a> {
         if params.is_empty() {
             params.push("void".into());
         }
-        let ret = if def.ret.is_unit() { "void".into() } else { self.c_abi_type(def.ret, def.span)? };
+        let ret = if def.ret.is_never() {
+            "__attribute__((noreturn)) void".into()
+        } else if def.ret.is_unit() {
+            "void".into()
+        } else {
+            self.c_abi_type(def.ret, def.span)?
+        };
         let _ = writeln!(
             self.protos,
             "extern {}{} gm_x{}({}) __asm__(GM_SYM(\"{}\"));",
@@ -569,4 +631,50 @@ pub fn compile(code: &str, libs: &[String], exe: &Path) -> Result<Build, String>
         return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     Ok(Build { c_file, exe: exe.to_path_buf() })
+}
+
+/// The identifiers of C source `code`, outside comments and string and character
+/// literals.
+fn c_identifiers(code: &str) -> std::collections::HashSet<&str> {
+    let b = code.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' => {
+                let q = b[i];
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.insert(&code[start..i]);
+            }
+            c if c.is_ascii_digit() => {
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
 }

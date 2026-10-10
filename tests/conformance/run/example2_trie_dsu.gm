@@ -1,0 +1,135 @@
+// A trie of heap nodes with 26 child slots (wrapped in a struct to allow mutual recursion), an iterator over sorted words reusing one path buffer, and a generic union-find.
+Slot :: struct { p: ?^Node = null }
+
+Node :: struct {
+    kids: [26]Slot
+    terminal: bool = false
+    count: u32 = 0
+}
+
+Trie :: struct {
+    root: ^Node
+    words: u32 = 0
+}
+
+new_node :: fn() -> ^Node \ {Alloc} {
+    return new(Node, Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
+}
+
+trie :: fn() -> Trie \ {Alloc} => Trie(root: new_node())
+
+insert :: fn(t: ^Trie, w: string) \ {Alloc} {
+    cur := t.root
+    for c in bytes(w) {
+        i := usize(c - 'a')
+        next := cur.kids[i].p else {
+            n := new_node()
+            cur.kids[i].p = n
+            n
+        }
+        cur.count += 1
+        cur = next
+    }
+    if not cur.terminal {
+        cur.terminal = true
+        t.words += 1
+    }
+    cur.count += 1
+}
+
+find :: fn(t: ^const Trie, prefix: string) -> ?^const Node {
+    cur: ^const Node = t.root
+    for c in bytes(prefix) {
+        cur = cur.kids[usize(c - 'a')].p else return null
+    }
+    return cur
+}
+
+count_prefix :: fn(t: ^const Trie, prefix: string) -> u32 {
+    n := find(t, prefix) else return 0
+    return n.count
+}
+
+walk :: fn(n: ^const Node, path: []u8, depth: usize) \ {Yield(string)} {
+    if n.terminal { s: string = path[0..depth]; yield(s) }
+    for i in 0..26 {
+        if k := n.kids[i].p {
+            path[depth] = 'a' + i.trunc(u8)
+            walk(k, path, depth + 1)
+        }
+    }
+}
+
+all_words :: fn(t: ^const Trie, path: []u8) \ {Yield(string)} {
+    walk(t.root, path, 0)
+}
+
+free_node :: fn(n: ^Node) \ {Alloc} {
+    for i in 0..26 { if k := n.kids[i].p { free_node(k) } }
+    destroy(n)
+}
+
+// ---- union-find, using word indices ----
+
+Dsu :: struct(N: usize) {
+    parent: [N]u32
+    size: [N]u32
+}
+
+dsu :: fn(N :: usize) -> Dsu(N) {
+    d := Dsu(N)(parent: ---, size: [N]u32(fill: 1))
+    for i in 0..N { d.parent[i] = i.trunc(u32) }
+    return d
+}
+
+root_of :: fn(N :: usize, d: ^Dsu(N), x: u32) -> u32 {
+    r := x
+    while d.parent[usize(r)] is not r { r = d.parent[usize(r)] }
+    cur := x
+    while d.parent[usize(cur)] is not r {
+        nxt := d.parent[usize(cur)]
+        d.parent[usize(cur)] = r
+        cur = nxt
+    }
+    return r
+}
+
+union_of :: fn(N :: usize, d: ^Dsu(N), a, b: u32) -> bool {
+    ra := root_of(d, a)
+    rb := root_of(d, b)
+    if ra is rb { return false }
+    if d.size[usize(ra)] < d.size[usize(rb)] {
+        d.parent[usize(ra)] = rb
+        d.size[usize(rb)] += d.size[usize(ra)]
+    } else {
+        d.parent[usize(rb)] = ra
+        d.size[usize(ra)] += d.size[usize(rb)]
+    }
+    return true
+}
+
+main :: fn() \ {Out, Alloc} {
+    t := trie()
+    defer free_node(t.root)
+    input := [_]string("tea", "ten", "to", "inn", "in", "tea", "team", "i", "tent", "a")
+    for w in input { insert(&t, w) }
+    print("{} distinct words\n", t.words)
+    buf: [16]u8 = ---
+    for w in all_words(&t, buf[..]) { print("{} ", w) }
+    print("\n")
+    for p in [_]string("te", "t", "in", "x", "") { print("{}:{} ", (p, count_prefix(&t, p))) }
+    print("\n")
+    first_long := for w in all_words(&t, buf[..]) { if w.len >= 4 { print("long: {}\n", w); break } }
+    _ = first_long
+
+    d := dsu(6)
+    pairs := [_](u32, u32)((0, 1), (2, 3), (1, 3), (4, 5), (0, 2), (5, 4))
+    for p in pairs {
+        merged := union_of(&d, p.0, p.1)
+        print("{}-{}:{} ", (p.0, p.1, merged))
+    }
+    print("\n")
+    groups: u32 = 0
+    for i in 0..6 { if root_of(&d, i.trunc(u32)) is i.trunc(u32) { groups += 1 } }
+    print("groups {}, size of 0's group {}\n", (groups, d.size[usize(root_of(&d, 0))]))
+}

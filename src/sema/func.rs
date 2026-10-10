@@ -32,6 +32,20 @@ pub struct LabelInfo {
     pub id: LabelId,
     /// True for loops (`continue` allowed).
     pub is_loop: bool,
+    /// What a `break` to this label supplies.
+    pub value: LabelValue,
+}
+
+/// The value a `break` to a label supplies (§8.5).
+#[derive(Clone, Copy, Debug)]
+pub enum LabelValue {
+    /// A `while` loop: none.
+    None,
+    /// A `for` loop: the iterator's result (`()` for ranges and arrays).
+    Loop(Ty),
+    /// A `with`: its value, of the expected type when there is one. The values are
+    /// checked against the `with`'s type once its body has been checked.
+    With(Option<Ty>),
 }
 
 /// A coercion whose source was an unresolved literal type when it was checked;
@@ -96,6 +110,10 @@ pub struct FnCx<'a, 's> {
     /// While checking a test's body: its error type is taken from the first
     /// `try` (§3.8), so `ret` starts as `<error>!()`.
     pub infer_test_error: bool,
+    /// The `break`s to each label, keyed by the frame depth and the label, with the
+    /// type and span of the value given (`()` for loops). Taken out when the labeled
+    /// construct is finished: a `with` checks the values.
+    pub label_breaks: std::collections::HashMap<(usize, LabelId), Vec<(Ty, Span)>>,
 }
 
 /// What kind of handler clause the current frame is.
@@ -242,6 +260,7 @@ impl<'a, 's> FnCx<'a, 's> {
             clause: None,
             handled: vec![],
             infer_test_error: false,
+            label_breaks: Default::default(),
         }
     }
 
@@ -410,10 +429,10 @@ impl<'a, 's> FnCx<'a, 's> {
         self.locals[id.index()].ty
     }
 
-    pub fn new_label(&mut self, name: Option<Symbol>, is_loop: bool) -> LabelId {
+    pub fn new_label(&mut self, name: Option<Symbol>, is_loop: bool, value: LabelValue) -> LabelId {
         let id = LabelId(self.next_label);
         self.next_label += 1;
-        self.labels.push(LabelInfo { name, id, is_loop });
+        self.labels.push(LabelInfo { name, id, is_loop, value });
         id
     }
 
@@ -860,13 +879,13 @@ impl<'a, 's> FnCx<'a, 's> {
             self.declare(l.name, LocalBinding::Label, l.span);
         }
         let cond = self.cond(cond);
-        let id = self.new_label(label.map(|l| l.name), true);
+        let id = self.new_label(label.map(|l| l.name), true, LabelValue::None);
         let body = self.block(body, false);
         self.labels.pop();
         self.pop_scope();
         let infinite =
             cond.iter().all(|c| matches!(c, tir::CondPart::Bool(Expr { kind: tir::ExprKind::Bool(true), .. })));
-        let breaks = contains_break_to(&body, id);
+        let breaks = self.label_breaks.remove(&(self.outer.len(), id)).is_some();
         let ty = if infinite && !breaks { Ty::never() } else { Ty::unit() };
         let body = match body.kind {
             tir::ExprKind::Block(b) => b,
@@ -1168,19 +1187,6 @@ fn is_simple_place(e: &Expr) -> bool {
         tir::ExprKind::Deref(p) => matches!(p.kind, tir::ExprKind::Local(_)),
         _ => false,
     }
-}
-
-/// True if `e` contains a `break` targeting `label` in the current function.
-fn contains_break_to(e: &Expr, label: LabelId) -> bool {
-    let mut found = false;
-    visit(e, &mut |x| {
-        if let tir::ExprKind::Break { target: tir::Target::Label { levels: 0, label: l }, .. } = x.kind
-            && l == label
-        {
-            found = true;
-        }
-    });
-    found
 }
 
 /// Calls `f` on every expression in `e` (pre-order), including inside statements.

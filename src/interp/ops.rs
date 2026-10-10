@@ -110,11 +110,11 @@ impl<'a> Machine<'a> {
     fn int_binop(&self, span: Span, op: BinOp, lty: Ty, rty: Ty, res_ty: Ty, l: &[u8], r: &[u8]) -> R<Bytes> {
         let ti = self.ti(lty);
         let (signed, bits) = ti.int.unwrap();
-        let a = self.decode_int_ty(&ti, l);
+        let a = self.decode_int_ty(ti, l);
         let enc = |v: &Int| num::encode_int(v, ti.size, self.little());
         match op {
             BinOp::Add(fl) | BinOp::Sub(fl) | BinOp::Mul(fl) => {
-                let b = self.decode_int_ty(&ti, r);
+                let b = self.decode_int_ty(ti, r);
                 let exact = match op {
                     BinOp::Add(_) => a.add(&b),
                     BinOp::Sub(_) => a.sub(&b),
@@ -142,7 +142,7 @@ impl<'a> Machine<'a> {
                 }
             }
             BinOp::Div | BinOp::Rem => {
-                let b = self.decode_int_ty(&ti, r);
+                let b = self.decode_int_ty(ti, r);
                 if b.is_zero() {
                     return self.trap(span, "division by zero");
                 }
@@ -156,7 +156,7 @@ impl<'a> Machine<'a> {
                 Ok(enc(&exact))
             }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
-                let b = self.decode_int_ty(&ti, r);
+                let b = self.decode_int_ty(ti, r);
                 let v = match op {
                     BinOp::BitAnd => a.and(&b),
                     BinOp::BitOr => a.or(&b),
@@ -187,7 +187,7 @@ impl<'a> Machine<'a> {
                     let Some((signed, bits)) = ti.int else {
                         return self.trap(span, format!("cannot negate {}", ty));
                     };
-                    let v = self.decode_int_ty(&ti, b).neg();
+                    let v = self.decode_int_ty(ti, b).neg();
                     if !num::fits(&v, signed, bits) {
                         if self.fast() {
                             return Ok(num::encode_int(&num::wrap(&v, signed, bits), ti.size, self.little()));
@@ -203,7 +203,7 @@ impl<'a> Machine<'a> {
                 let Some((signed, bits)) = ti.int else {
                     return self.trap(span, format!("cannot complement {}", ty));
                 };
-                let v = num::wrap(&self.decode_int_ty(&ti, b).not(), signed, bits);
+                let v = num::wrap(&self.decode_int_ty(ti, b).not(), signed, bits);
                 Ok(num::encode_int(&v, ti.size, self.little()))
             }
         }

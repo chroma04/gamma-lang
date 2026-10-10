@@ -177,7 +177,7 @@ Header :: struct {
 
 It can appear as a top-level declaration or as a statement. `@compile_error("message")` is an intrinsic of type `never` that is an error if it is compiled, which makes it the `#error` of Gamma when it sits in a `when` branch (as above).
 
-Other compile-time intrinsics are `@size_of(T)`, `@align_of(T)`, `@offset_of(S, field)`, `@type_of(e)` (without evaluating `e`), `@type_name(T)`, `@location()`, `@hash(x, seed)` for values without pointers, and the bit-twiddling helpers `@clz`, `@ctz`, `@popcount`, `@bswap` and `@bitreverse`. §20.3 of the [specification][s20] has the full table, including the intrinsics that are not compile-time.
+Other compile-time intrinsics are `@size_of(T)`, `@align_of(T)`, `@offset_of(S, field)`, `@type_of(e)` (without evaluating `e`), `@type_name(T)`, `@location()`, `@hash(x, seed)` for values without pointers, and the bit-twiddling helpers `@clz`, `@ctz`, `@popcount`, `@bswap`, `@bitreverse`, `@rotl` and `@rotr`. §20.3 of the [specification][s20] has the full table, including the intrinsics that are not compile-time.
 
 ## Why this design
 

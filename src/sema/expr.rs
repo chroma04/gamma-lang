@@ -2,7 +2,7 @@
 //! control-flow expressions.
 
 use super::DeclValue;
-use super::func::{FnCx, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
+use super::func::{FnCx, LabelValue, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
 use super::infer::{Fallback, VarKind};
 use super::untyped::Untyped;
 use crate::diag::Diagnostic;
@@ -426,7 +426,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 let st = self.infer.resolve(v.ty);
                 if let Some(u) = self.bits_operand(st, "~", span) {
                     let x = self.bits_convert(v, u);
-                    let n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
+                    if let Some(mask) = self.bits_padding_mask(st) {
+                        let m = mk(u, tir::ExprKind::Int(mask), span);
+                        n = mk(
+                            u,
+                            tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) },
+                            span,
+                        );
+                    }
                     return self.bits_convert(n, st);
                 }
                 self.obligations.push(Obligation::Numeric {
@@ -459,6 +468,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
             }
+            // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
+            ast::UnOp::MakeErr
+                if let Some(inner) = expect.map(|t| self.infer.shallow(t)).and_then(|t| t.optional_inner())
+                    && matches!(self.infer.shallow(inner).kind(), TyKind::Result { .. }) =>
+            {
+                let r = self.unary(op, operand, Some(inner), span);
+                self.coerce(r, expect.unwrap())
+            }
             ast::UnOp::MakeErr => match expect.map(|t| self.infer.shallow(t)) {
                 Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
                     let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
@@ -477,7 +494,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
                 }
                 _ => {
-                    self.error(span, "cannot infer the result type of `!e` here");
+                    let hint = if expect.is_none_or(|t| t.is_bool()) {
+                        " (`!e` makes an error; logical negation is `not e`)"
+                    } else {
+                        ""
+                    };
+                    self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
                     error_expr(span)
                 }
             },
@@ -493,6 +515,11 @@ impl<'a, 's> FnCx<'a, 's> {
             let is_array = |t: Ty| matches!(t.kind(), TyKind::Array { .. });
             if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
                 d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
+            }
+            // `a..b else c` is `(a..b) else c`: `else` binds more loosely than `..`.
+            let wrapped = |t: Ty| matches!(t.kind(), TyKind::Optional(_) | TyKind::Result { .. });
+            if what == "range bounds" && wrapped(a) != wrapped(b) {
+                d = d.with_note("`else` binds more loosely than `..`; parenthesize the bound: `lo..(x else d)` (§B.1)");
             }
             self.sema.emit(d);
             return Ty::error();
@@ -610,6 +637,25 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// The bits of the named (non-padding) fields of `#bits` struct `t`, if it has
+    /// padding fields `_`.
+    fn bits_padding_mask(&mut self, t: Ty) -> Option<num_bigint::BigInt> {
+        let fields = self.sema.struct_fields(t)?.to_vec();
+        if !fields.iter().any(|f| f.name.as_str() == "_") {
+            return None;
+        }
+        let mut mask = num_bigint::BigInt::from(0);
+        let mut off = 0u64;
+        for f in &fields {
+            let w = self.sema.bit_width(f.ty)?;
+            if f.name.as_str() != "_" {
+                mask |= ((num_bigint::BigInt::from(1) << w) - 1) << off;
+            }
+            off += w;
+        }
+        Some(mask)
     }
 
     /// The underlying integer of `t` if it is a `#bits` struct, for the bitwise operator
@@ -904,7 +950,12 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `@sqrt(x)`, `@fma(a, b, c)` on floats and the bit operations on integers (§20.3).
     fn numeric_intrinsic(&mut self, n: &str, args: &[ast::Arg], span: Span) -> Expr {
-        let arity = if n == "fma" { 3 } else { 1 };
+        let rotate = matches!(n, "rotl" | "rotr");
+        let arity = match n {
+            "fma" => 3,
+            "rotl" | "rotr" => 2,
+            _ => 1,
+        };
         if args.len() != arity || args.iter().any(|a| !matches!(a.kind, ast::ArgKind::Positional(_))) {
             self.error(span, format!("`@{}` takes {} argument(s)", n, arity));
             return error_expr(span);
@@ -912,9 +963,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut vals = vec![];
         for a in args {
             let ast::ArgKind::Positional(e) = &a.kind else { unreachable!() };
-            let v = self.expr(e, vals.first().map(|v: &Expr| v.ty));
-            let v = match vals.first() {
-                Some(first) => self.coerce(v, first.ty),
+            // The amount of a rotation is a `u32`; the other operands share a type.
+            let expect =
+                if rotate && !vals.is_empty() { Some(Ty::int(false, 32)) } else { vals.first().map(|v: &Expr| v.ty) };
+            let v = self.expr(e, expect);
+            let v = match expect {
+                Some(t) => self.coerce(v, t),
                 None => v,
             };
             vals.push(v);
@@ -942,14 +996,16 @@ impl<'a, 's> FnCx<'a, 's> {
             "ctz" => (tir::Builtin::Ctz, Ty::int(false, 32)),
             "popcount" => (tir::Builtin::Popcount, Ty::int(false, 32)),
             "bswap" => {
-                let bits = self.sema.with_layouts(|l| l.size_of(t)) * 8;
-                if !matches!(t.kind(), TyKind::Int(i) if i.bits as u64 == bits)
+                // A whole number of bytes, such as `u24` (stored in 4 bytes).
+                if !matches!(t.kind(), TyKind::Int(i) if i.bits % 8 == 0)
                     && !matches!(t.kind(), TyKind::Usize | TyKind::Isize)
                 {
                     self.error(span, format!("`@bswap` needs an integer of whole bytes, not `{}`", t));
                 }
                 (tir::Builtin::Bswap, t)
             }
+            "rotl" => (tir::Builtin::Rotl, t),
+            "rotr" => (tir::Builtin::Rotr, t),
             _ => (tir::Builtin::Bitreverse, t),
         };
         mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
@@ -973,6 +1029,10 @@ impl<'a, 's> FnCx<'a, 's> {
         match name.name.as_str() {
             "size_of" | "align_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if t.is_never() {
+                    self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
+                    return error_expr(span);
+                }
                 if super::generics::has_param(t) {
                     let align = name.name.as_str() == "align_of";
                     return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
@@ -1098,8 +1158,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "static_assert" => {
                 let module = self.module;
-                self.sema.static_assert(module, args, span);
-                unit(span)
+                self.sema.static_assert(module, args, span).unwrap_or_else(|| unit(span))
             }
             "compile_error" => {
                 let module = self.module;
@@ -1160,7 +1219,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
-            "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" => {
+            "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" | "rotl" | "rotr" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
             // The smallest fiber stack (§14.1), in bytes.
@@ -1227,7 +1286,14 @@ impl<'a, 's> FnCx<'a, 's> {
             TyKind::Result { err, ok } => (*ok, Some(*err)),
             TyKind::Error => return error_expr(span),
             _ => {
-                self.error(lhs.span, format!("`else` needs an optional or a result on its left, but this is `{}`", lt));
+                let mut broken = false;
+                lt.walk(&mut |t| broken |= t.is_error());
+                if !broken {
+                    self.error(
+                        lhs.span,
+                        format!("`else` needs an optional or a result on its left, but this is `{}`", lt),
+                    );
+                }
                 return error_expr(span);
             }
         };
@@ -1287,6 +1353,7 @@ impl<'a, 's> FnCx<'a, 's> {
             self.ret = Ty::result(*err, *ok);
         }
         let (levels, ret) = self.return_target();
+        self.check_fn_clause_exit(levels, "try", span);
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
             (TyKind::Optional(t), TyKind::Optional(_)) => {
@@ -1488,11 +1555,25 @@ impl<'a, 's> FnCx<'a, 's> {
         (0, self.ret)
     }
 
+    /// An exit `levels` frames out may not leave a clause of a `fn` operation, which
+    /// can only produce a value (§12.7.1).
+    fn check_fn_clause_exit(&mut self, levels: u32, what: &str, span: Span) {
+        let n = self.outer.len();
+        let crossed = std::iter::once(self.clause.as_ref()).chain(
+            (0..levels.saturating_sub(1) as usize)
+                .map(|i| n.checked_sub(i + 1).and_then(|k| self.outer[k].clause.as_ref())),
+        );
+        if levels > 0 && crossed.flatten().any(|c| c.op_kind == ast::OpKind::Fn) {
+            self.error(span, format!("a clause of a `fn` operation can only produce a value; it cannot `{}`", what));
+        }
+    }
+
     fn return_expr(&mut self, v: Option<&ast::Expr>, span: Span) -> Expr {
         if self.in_defer {
             self.error(span, "`return` is not allowed in a deferred statement");
         }
         let (levels, ret) = self.return_target();
+        self.check_fn_clause_exit(levels, "return", span);
         let value = match v {
             Some(v) => {
                 let ex = self.expr(v, Some(ret));
@@ -1522,7 +1603,8 @@ impl<'a, 's> FnCx<'a, 's> {
             if is_continue && !self.labels[idx].is_loop {
                 self.error(span, "`continue` can only target a loop");
             }
-            return Some(Jump::Label { levels: 0, label: self.labels[idx].id });
+            let info = &self.labels[idx];
+            return Some(Jump::Label { levels: 0, label: info.id, value: info.value });
         }
         if self.in_defer {
             self.error(span, "a deferred statement may not `break` or `continue` out of itself");
@@ -1555,15 +1637,17 @@ impl<'a, 's> FnCx<'a, 's> {
                 && let Some((Some(name), _)) = c.for_label
                 && name == l.name
             {
+                self.check_fn_clause_exit(levels + 1, "continue", span);
                 return Some(Jump::ClauseReturn { levels });
             }
             let f = &self.outer[k];
             if let Some(idx) = f.labels.iter().rposition(|x| x.name == Some(l.name)) {
-                let (is_loop, id) = (f.labels[idx].is_loop, f.labels[idx].id);
+                let (is_loop, id, value) = (f.labels[idx].is_loop, f.labels[idx].id, f.labels[idx].value);
                 if is_continue && !is_loop {
                     self.error(span, "`continue` can only target a loop");
                 }
-                return Some(Jump::Label { levels: levels + 1, label: id });
+                self.check_fn_clause_exit(levels + 1, if is_continue { "continue" } else { "break" }, span);
+                return Some(Jump::Label { levels: levels + 1, label: id, value });
             }
             frame_clause = f.clause.clone();
         }
@@ -1573,47 +1657,48 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn break_expr(&mut self, label: Option<ast::Ident>, value: Option<&ast::Expr>, span: Span) -> Expr {
         let Some(jump) = self.find_jump(label, span, false) else { return error_expr(span) };
-        let value = match (&jump, value) {
-            (Jump::Label { levels: 0, .. }, Some(v)) if self.clause.is_none() || label.is_none() => {
+        let clause_break_ty = self.clause.as_ref().and_then(|c| c.break_ty);
+        // Every `break` to a label is recorded: a `while true` loop finishes only if one
+        // targets it, and a `with` checks the values.
+        if let Jump::Label { levels, label, value: LabelValue::None | LabelValue::Loop(_) } = jump {
+            let depth = self.outer.len() - levels as usize;
+            self.label_breaks.entry((depth, label)).or_default().push((Ty::unit(), span));
+        }
+        let value = match (jump, value) {
+            (Jump::Label { value: LabelValue::None, .. }, Some(v)) => {
                 self.error(v.span, "a `while` loop has no value, so `break` takes no operand here");
                 None
             }
-            (_, v) => {
-                // A `break` that exits a `with` or a `for` over an iterator (§12.7, §13.2).
-                let clause = self.clause.clone();
-                match (&jump, clause.as_ref().and_then(|c| c.break_ty)) {
-                    (Jump::InstallingWith, Some(rt)) => {
-                        // The loop's value: the iterator's result type.
-                        match v {
-                            Some(v) => {
-                                let ex = self.expr(v, Some(rt));
-                                Some(Box::new(self.coerce(ex, rt)))
-                            }
-                            None => {
-                                if !rt.is_unit() && !rt.is_error() {
-                                    self.error(
-                                        span,
-                                        format!("this loop's value is `{}`, so `break` needs a value", rt),
-                                    );
-                                }
-                                None
-                            }
-                        }
+            (Jump::Label { value: LabelValue::None, .. }, None) | (Jump::ClauseReturn { .. }, _) => None,
+            // A `break` that exits a `for` over an iterator (§13.2).
+            (Jump::Label { value: LabelValue::Loop(rt), .. }, v) => self.loop_break_value(v, rt, span),
+            (Jump::InstallingWith, v) if let Some(rt) = clause_break_ty => self.loop_break_value(v, rt, span),
+            // A `break` that exits a `with` (§12.7): its value is checked against the
+            // `with`'s once the `with` is finished.
+            (Jump::Label { levels, label, value: LabelValue::With(expect) }, v) => {
+                let ex = v.map(|v| {
+                    let ex = self.expr(v, expect);
+                    match expect {
+                        Some(t) => self.coerce(ex, t),
+                        None => ex,
                     }
-                    (Jump::InstallingWith, None) => {
-                        let ex = v.map(|v| self.expr(v, None));
-                        let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
-                        if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
-                            self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
-                        }
-                        ex.map(Box::new)
-                    }
-                    _ => v.map(|v| Box::new(self.expr(v, None))),
+                });
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| expect.unwrap_or(e.ty));
+                let depth = self.outer.len() - levels as usize;
+                self.label_breaks.entry((depth, label)).or_default().push((ty, span));
+                ex.map(Box::new)
+            }
+            (Jump::InstallingWith, v) => {
+                let ex = v.map(|v| self.expr(v, None));
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
+                if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
+                    self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
                 }
+                ex.map(Box::new)
             }
         };
         match jump {
-            Jump::Label { levels, label } => {
+            Jump::Label { levels, label, .. } => {
                 mk(Ty::never(), tir::ExprKind::Break { target: Target::Label { levels, label }, value }, span)
             }
             Jump::InstallingWith => {
@@ -1623,9 +1708,25 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// The value of a `break` out of a `for` loop whose iterator returns `rt`.
+    fn loop_break_value(&mut self, v: Option<&ast::Expr>, rt: Ty, span: Span) -> Option<Box<Expr>> {
+        match v {
+            Some(v) => {
+                let ex = self.expr(v, Some(rt));
+                Some(Box::new(self.coerce(ex, rt)))
+            }
+            None => {
+                if !rt.is_unit() && !rt.is_error() {
+                    self.error(span, format!("this loop's value is `{}`, so `break` needs a value", rt));
+                }
+                None
+            }
+        }
+    }
+
     fn continue_expr(&mut self, label: Option<ast::Ident>, span: Span) -> Expr {
         match self.find_jump(label, span, true) {
-            Some(Jump::Label { levels, label }) => {
+            Some(Jump::Label { levels, label, .. }) => {
                 mk(Ty::never(), tir::ExprKind::Continue { target: Target::Label { levels, label } }, span)
             }
             // `continue` at clause level finishes the clause with `()` (§12.7.1).
@@ -1861,9 +1962,11 @@ pub fn suffix_type(s: crate::syntax::token::IntSuffix) -> Ty {
 }
 
 /// Where a `break` or `continue` goes.
+#[derive(Clone, Copy)]
 enum Jump {
-    /// A loop or `with` of the function `levels` frames up.
-    Label { levels: u32, label: tir::LabelId },
+    /// A loop or `with` of the function `levels` frames up, and what a `break` to
+    /// it supplies.
+    Label { levels: u32, label: tir::LabelId, value: LabelValue },
     /// Out of the `with` that installed the running clause's handler.
     InstallingWith,
     /// Finish the clause `levels` frames up, producing `()`.
@@ -1982,9 +2085,26 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.expr(e, Some(elem));
             vals.push(self.coerce(v, elem));
         }
-        for e in &exprs[first_value + n_values..] {
+        for (k, e) in exprs[first_value + n_values..].iter().enumerate() {
             let v = self.expr(e, Some(order_ty));
-            vals.push(self.coerce(v, order_ty));
+            let v = self.coerce(v, order_ty);
+            // Orders C11 does not allow for this operation, when written as constants.
+            if let tir::ExprKind::Variant { variant, payload: None } = &v.kind
+                && let Some((variants, _)) = self.sema.union_variants(order_ty)
+            {
+                let order = variants[*variant as usize].name.as_str();
+                let bad = match (op, k) {
+                    (B::AtomicLoad, _) | (B::AtomicCas, 1) => matches!(order, "Release" | "AcqRel"),
+                    (B::AtomicStore, _) => matches!(order, "Acquire" | "AcqRel"),
+                    _ => false,
+                };
+                if bad {
+                    let what =
+                        if op == B::AtomicCas { "as the failure order of `@atomic_cas`" } else { "for this operation" };
+                    self.error(e.span, format!("`.{}` is not a valid memory order {} (§19.6)", order, what));
+                }
+            }
+            vals.push(v);
         }
         let ty = match op {
             B::AtomicLoad | B::AtomicSwap | B::AtomicRmw(_) | B::VolatileLoad => elem,
@@ -2141,12 +2261,16 @@ fn asm_entries(list: &ast::Expr, pairs: bool) -> Vec<&ast::Expr> {
     }
 }
 
-/// The call at the end of a chain of array and optional type prefixes, as in
-/// `[2][3]i32(…)` or `?[2]u8(…)`.
+/// The call at the end of a chain of type prefixes, as in `[2][3]i32(…)`, `?[2]u8(…)`
+/// or `[3]^Node(…)`.
 pub fn construction_call(e: &ast::Expr) -> Option<&ast::Expr> {
     match &e.kind {
         ExprKind::Call { .. } => Some(e),
-        ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => construction_call(inner),
+        ExprKind::ArrayType { elem: inner, .. }
+        | ExprKind::OptionalType(inner)
+        | ExprKind::PtrType { inner, .. }
+        | ExprKind::SliceType { inner, .. }
+        | ExprKind::ManyPtrType { inner, .. } => construction_call(inner),
         _ => None,
     }
 }
@@ -2157,7 +2281,11 @@ fn without_call(e: &ast::Expr) -> ast::Expr {
     fn strip(e: &mut ast::Expr) {
         match &mut e.kind {
             ExprKind::Call { callee, .. } => *e = (**callee).clone(),
-            ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => strip(inner),
+            ExprKind::ArrayType { elem: inner, .. }
+            | ExprKind::OptionalType(inner)
+            | ExprKind::PtrType { inner, .. }
+            | ExprKind::SliceType { inner, .. }
+            | ExprKind::ManyPtrType { inner, .. } => strip(inner),
             _ => {}
         }
     }

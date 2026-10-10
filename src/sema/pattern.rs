@@ -62,20 +62,39 @@ impl<'a, 's> FnCx<'a, 's> {
             self.bind_unchecked(p, ctx, binds);
             return pat(ty, PatKind::Wild, p.span);
         }
-        // Implicit unwrapping of optionals and results in refutable contexts (§9.3).
+        // Implicit unwrapping of optionals and results in refutable contexts (§9.3). A
+        // bare binding unwraps one level: against `??T` it binds the present `?T`.
         if ctx != PatCtx::Irrefutable {
+            let bare = matches!(p.kind, PatternKind::Bind(_));
             match ty.kind() {
                 TyKind::Optional(inner) if !matches!(p.kind, PatternKind::Null | PatternKind::Wildcard) => {
-                    let inner_pat = self.pattern(p, *inner, ctx, binds);
+                    let inner_pat = if bare {
+                        self.pattern_here(p, *inner, ctx, binds)
+                    } else {
+                        self.pattern(p, *inner, ctx, binds)
+                    };
                     return pat(ty, PatKind::Some(Box::new(inner_pat)), p.span);
                 }
                 TyKind::Result { ok, .. } if !matches!(p.kind, PatternKind::Err(_) | PatternKind::Wildcard) => {
-                    let inner_pat = self.pattern(p, *ok, ctx, binds);
+                    let inner_pat =
+                        if bare { self.pattern_here(p, *ok, ctx, binds) } else { self.pattern(p, *ok, ctx, binds) };
                     return pat(ty, PatKind::Ok(Box::new(inner_pat)), p.span);
                 }
                 _ => {}
             }
         }
+        self.pattern_here(p, ty, ctx, binds)
+    }
+
+    /// Pattern `p` against a value of type `ty`, without unwrapping `ty`.
+    fn pattern_here(
+        &mut self,
+        p: &ast::Pattern,
+        ty: Ty,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+    ) -> Pat {
+        let ty = self.infer.resolve(ty);
         match &p.kind {
             PatternKind::Wildcard => pat(ty, PatKind::Wild, p.span),
             PatternKind::Bind(name) => {
@@ -337,6 +356,59 @@ impl<'a, 's> FnCx<'a, 's> {
         out
     }
 
+    /// `S(f: p, …)` against a value of type `ty`, where `t` is the struct type named
+    /// by `path` (if it names one).
+    #[allow(clippy::too_many_arguments)]
+    fn struct_pattern(
+        &mut self,
+        path: &ast::Expr,
+        t: Option<Ty>,
+        args: Option<&[ast::PatArg]>,
+        ty: Ty,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+        span: Span,
+    ) -> Pat {
+        let Some(t) = t else {
+            self.error(path.span, "expected a struct type");
+            return pat(ty, PatKind::Wild, span);
+        };
+        if t != ty {
+            self.error(span, format!("this pattern is for `{}`, but the value is `{}`", t, ty));
+            return pat(ty, PatKind::Wild, span);
+        }
+        let Some(fields) = self.sema.struct_fields(t).map(|f| f.to_vec()) else {
+            self.error(path.span, format!("`{}` is not a struct type", t));
+            return pat(ty, PatKind::Wild, span);
+        };
+        if let Some(f) = self.hidden_field(t) {
+            self.error(
+                span,
+                format!(
+                    "`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)",
+                    t, f
+                ),
+            );
+            return pat(ty, PatKind::Wild, span);
+        }
+        let names: Vec<Symbol> = fields.iter().map(|f| f.name).collect();
+        let tys: Vec<Ty> = fields.iter().map(|f| f.ty).collect();
+        // A bare name `x` in a struct pattern is shorthand for `x: x`.
+        let args: Vec<ast::PatArg> = args
+            .unwrap_or(&[])
+            .iter()
+            .map(|a| match (&a.name, &a.pat.kind) {
+                (None, PatternKind::Bind(n)) => ast::PatArg { name: Some(*n), pat: a.pat.clone(), span: a.span },
+                _ => a.clone(),
+            })
+            .collect();
+        if let Some(a) = args.iter().find(|a| a.name.is_none()) {
+            self.error(a.span, "struct patterns name their fields: `S(field: pattern)`");
+        }
+        let fs = self.sub_patterns(&args, &tys, Some(&names), ctx, binds, span, true);
+        pat(ty, PatKind::Fields(fs), span)
+    }
+
     fn path_pattern(
         &mut self,
         path: &ast::Expr,
@@ -364,6 +436,13 @@ impl<'a, 's> FnCx<'a, 's> {
                         None => pat(ty, PatKind::Wild, span),
                     };
                 }
+                // `m.S(f: p, …)` — a struct type of another module.
+                None if args.is_some()
+                    && let Some(t) = self.type_of_name(path)
+                    && self.sema.struct_fields(t).is_some() =>
+                {
+                    return self.struct_pattern(path, Some(t), args, ty, ctx, binds, span);
+                }
                 None => {
                     self.error(path.span, "expected a union type or a module before `.` in a pattern");
                     return pat(ty, PatKind::Wild, span);
@@ -375,43 +454,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     ExprKind::Ident(_) => self.type_of_name(path),
                     _ => Some(self.resolve_type(path)).filter(|t| !t.is_error()),
                 };
-                let Some(t) = t else {
-                    self.error(path.span, "expected a struct type");
-                    return pat(ty, PatKind::Wild, span);
-                };
-                if t != ty {
-                    self.error(span, format!("this pattern is for `{}`, but the value is `{}`", t, ty));
-                    return pat(ty, PatKind::Wild, span);
-                }
-                let Some(fields) = self.sema.struct_fields(t).map(|f| f.to_vec()) else {
-                    self.error(path.span, format!("`{}` is not a struct type", t));
-                    return pat(ty, PatKind::Wild, span);
-                };
-                if let Some(f) = self.hidden_field(t) {
-                    self.error(
-                        span,
-                        format!("`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)", t, f),
-                    );
-                    return pat(ty, PatKind::Wild, span);
-                }
-                let names: Vec<Symbol> = fields.iter().map(|f| f.name).collect();
-                let tys: Vec<Ty> = fields.iter().map(|f| f.ty).collect();
-                // A bare name `x` in a struct pattern is shorthand for `x: x`.
-                let args: Vec<ast::PatArg> = args
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|a| match (&a.name, &a.pat.kind) {
-                        (None, PatternKind::Bind(n)) => {
-                            ast::PatArg { name: Some(*n), pat: a.pat.clone(), span: a.span }
-                        }
-                        _ => a.clone(),
-                    })
-                    .collect();
-                if let Some(a) = args.iter().find(|a| a.name.is_none()) {
-                    self.error(a.span, "struct patterns name their fields: `S(field: pattern)`");
-                }
-                let fs = self.sub_patterns(&args, &tys, Some(&names), ctx, binds, span, true);
-                return pat(ty, PatKind::Fields(fs), span);
+                return self.struct_pattern(path, t, args, ty, ctx, binds, span);
             }
             _ => {
                 self.error(path.span, "expected a variant, constant or struct pattern");

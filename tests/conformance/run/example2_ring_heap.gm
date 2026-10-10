@@ -1,0 +1,120 @@
+// Generic containers: compile-time-sized ring buffer, binary min-heap with a comparison function, and iterators over each.
+Ring :: struct(T: type, N: usize) {
+    buf: [N]T
+    head: usize = 0
+    len: usize = 0
+}
+
+ring :: fn(T: type, N :: usize) -> Ring(T, N) where Plain(T) {
+    return Ring(T, N)(buf: ---)
+}
+
+ring_push :: fn(T: type, N :: usize, r: ^Ring(T, N), x: T) -> ?T {
+    // returns the evicted element when full
+    if r.len is N {
+        old := r.buf[r.head]
+        r.buf[r.head] = x
+        r.head = (r.head + 1) % N
+        return old
+    }
+    r.buf[(r.head + r.len) % N] = x
+    r.len += 1
+    return null
+}
+
+ring_items :: fn(T: type, N :: usize, r: ^const Ring(T, N)) \ {Yield(T)} {
+    for i in 0..r.len {
+        yield(r.buf[(r.head + i) % N])
+    }
+}
+
+// An iterator whose result type is ?T, so a loop over it can `break x`.
+ring_scan :: fn(T: type, N :: usize, r: ^const Ring(T, N)) -> ?T \ {Yield(T)} {
+    for i in 0..r.len {
+        yield(r.buf[(r.head + i) % N])
+    }
+    return null
+}
+
+Heap :: struct(T: type, N: usize) {
+    items: [N]T
+    len: usize = 0
+    less: ^fn(a, b: T) -> bool
+}
+
+heap :: fn(T: type, N :: usize, less: ^fn(a, b: T) -> bool) -> Heap(T, N) where Plain(T) {
+    return Heap(T, N)(items: ---, less: less)
+}
+
+heap_push :: fn(T: type, N :: usize, h: ^Heap(T, N), x: T) -> bool {
+    if h.len is N { return false }
+    i := h.len
+    h.items[i] = x
+    h.len += 1
+    while i > 0 {
+        p := (i - 1) / 2
+        if not h.less(h.items[i], h.items[p]) { break }
+        t := h.items[i]
+        h.items[i] = h.items[p]
+        h.items[p] = t
+        i = p
+    }
+    return true
+}
+
+heap_pop :: fn(T: type, N :: usize, h: ^Heap(T, N)) -> ?T {
+    if h.len is 0 { return null }
+    top := h.items[0]
+    h.len -= 1
+    h.items[0] = h.items[h.len]
+    i: usize = 0
+    while true {
+        l := 2 * i + 1
+        r := l + 1
+        m := i
+        if l < h.len and h.less(h.items[l], h.items[m]) { m = l }
+        if r < h.len and h.less(h.items[r], h.items[m]) { m = r }
+        if m is i { break }
+        t := h.items[i]
+        h.items[i] = h.items[m]
+        h.items[m] = t
+        i = m
+    }
+    return top
+}
+
+drain :: fn(T: type, N :: usize, h: ^Heap(T, N)) \ {Yield(T)} {
+    while x := heap_pop(h) { yield(x) }
+}
+
+Job :: struct { prio: u32, id: u32 }
+
+job_less :: fn(a, b: Job) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id)
+int_greater :: fn(a, b: i32) -> bool => a > b
+
+main :: fn() \ {Out} {
+    r := ring(i32, 4)
+    for i in 1..=6 {
+        if ev := ring_push(&r, i * 10) { print("evicted {}\n", ev) }
+    }
+    for x in ring_items(&r) { print("ring: {}\n", x) }
+
+    // find first element > 40 with break-with-value
+    found := for x in ring_scan(&r) { if x > 40 { break x } }
+    print("found {}\n", found)
+    none := for x in ring_scan(&r) { if x > 400 { break x } }
+    print("none {}\n", none)
+
+    h := heap(Job, 8, job_less)
+    ps := [_]u32(5, 1, 4, 1, 3)
+    for i in 0..ps.len { _ = heap_push(&h, Job(prio: ps[i], id: i.trunc(u32))) }
+    for j in drain(&h) { print("job {} prio {}\n", (j.id, j.prio)) }
+
+    mx := heap(i32, 4, int_greater)
+    for v in [_]i32(3, 9, 2, 7, 8) {
+        ok := heap_push(&mx, v)
+        if not ok { print("heap full, dropped {}\n", v) }
+    }
+    for v in drain(&mx) { print("{} ", v) }
+    print("\n")
+}

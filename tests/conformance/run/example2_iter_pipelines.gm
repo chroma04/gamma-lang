@@ -1,0 +1,124 @@
+// Iterator pipelines: map/filter/take adapters written as iterators over iterators, recursive tree traversals, cursors in lockstep, and labeled loops.
+Tree :: union {
+    Leaf
+    Node: (left: ^const Tree, val: i32, right: ^const Tree)
+}
+
+in_order :: fn(t: ^const Tree) \ {Yield(i32)} {
+    match t^ {
+        .Leaf => {}
+        .Node(l, v, r) => {
+            in_order(l)
+            yield(v)
+            in_order(r)
+        }
+    }
+}
+
+pre_order :: fn(t: ^const Tree, depth: u32) \ {Yield((u32, i32))} {
+    match t^ {
+        .Leaf => {}
+        .Node(l, v, r) => {
+            yield((depth, v))
+            pre_order(l, depth + 1)
+            pre_order(r, depth + 1)
+        }
+    }
+}
+
+naturals :: fn(start: i32) \ {Yield(i32)} {
+    n := start
+    while true {
+        yield(n)
+        n += 1
+    }
+}
+
+// An adapter: forwards the squares of whatever `src` yields that satisfy `keep`.
+squares_where :: fn(src: fn() \ {Yield(i32)}, keep: fn(i32) -> bool) \ {Yield(i32)} {
+    for x in src() {
+        if keep(x) { yield(x * x) }
+    }
+}
+
+take :: fn(n: u32, src: fn() \ {Yield(i32)}) \ {Yield(i32)} {
+    if n is 0 { return }
+    left := n
+    for x in src() {
+        yield(x)
+        left -= 1
+        if left is 0 { break }
+    }
+}
+
+collatz :: fn(start: u64) -> u32 \ {Yield(u64)} {
+    n := start
+    steps: u32 = 0
+    while n is not 1 {
+        yield(n)
+        n = if n % 2 is 0 { n / 2 } else { 3 * n + 1 }
+        steps += 1
+    }
+    return steps
+}
+
+dot :: fn(a, b: []const i32) -> i32 {
+    total := 0
+    ca := a.cursor()
+    cb := b.cursor()
+    while x := ca.next() {
+        y := cb.next() else break
+        total += x * y
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    leaf := Tree.Leaf
+    n1 := Tree.Node(&leaf, 1, &leaf)
+    n3 := Tree.Node(&leaf, 3, &leaf)
+    n2 := Tree.Node(&n1, 2, &n3)
+    n6 := Tree.Node(&leaf, 6, &leaf)
+    n5 := Tree.Node(&n2, 5, &n6)
+    for v in in_order(&n5) { print("{} ", v) }
+    print("\n")
+    for d, v in pre_order(&n5, 0) {
+        for _ in 0..d { print("  ") }
+        print("{}\n", v)
+    }
+
+    // pipeline: odd naturals from 1, squared, first five
+    odd :: fn(x: i32) -> bool => x % 2 is 1
+    src :: fn() \ {Yield(i32)} { naturals(1) }
+    sq :: fn() \ {Yield(i32)} { squares_where(src, odd) }
+    for x in take(5, sq) { print("{} ", x) }
+    print("\n")
+
+    // loop value: collatz steps, and early exit with the iterator's own result
+    steps := for v in collatz(27) { if v > 9000 { print("peak passed 9000\n"); break 0 } }
+    print("steps for 27 = {}\n", steps)
+    steps7 := for v in collatz(6) { _ = v }
+    print("steps for 6 = {}\n", steps7)
+
+    // labeled loops: first pair (i, j) with i*j == 42 and i < j
+    found := false
+    outer: for i in 2..10 {
+        for j in i + 1..10 {
+            if i * j > 60 { continue outer }
+            if i * j is 42 {
+                print("pair {} {}\n", (i, j))
+                found = true
+                break outer
+            }
+        }
+    }
+    print("found {}\n", found)
+
+    a := [_]i32(1, 2, 3, 4)
+    b := [_]i32(10, 20, 30)
+    print("dot {}\n", dot(a[..], b[..]))
+    for i, x in enumerate(a[..]) { if i is 2 { break }; print("{}:{} ", (i, x)) }
+    print("\n")
+    for x in reversed(a[..]) { print("{} ", x) }
+    print("\n")
+}

@@ -191,6 +191,23 @@ first_zero_row :: fn(grid: [4][4]u8) -> ?usize {
 
 Labels sit in front of `while`, `for` and `with` and nothing else. Labels share the namespace of local variables, so they cannot shadow either. `continue` works only on loops. When `break` or `continue` leaves a scope, that scope's `defer` statements run.
 
+`for` loops and `with` blocks are expressions (chapters [7](07-effects.md) and [8](08-iteration.md)), so `break L v` can give a labeled one its value from deep inside. A `while` has no value, so a `break` aimed at one takes no operand:
+
+```gamma
+E :: effect { fail: esc() -> never }
+
+first_pair :: fn(xs: []const i32, target: i32) -> i32 {
+    return found: with (handler E { fail() => break -1 }) {
+        for a in xs {
+            for b in xs {
+                if a + b is target { break found a * b }
+            }
+        }
+        fail()
+    }
+}
+```
+
 ## `match`
 
 `match` selects the first arm whose pattern matches, and it must be **exhaustive**. Arms are separated by newlines; an arm's body is an expression or a block.

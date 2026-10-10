@@ -1,0 +1,18 @@
+//! exit: 3
+// A foreign function that does not return is declared `-> never` (§19.2), so the code
+// after its call is unreachable and needs no value.
+c :: import "std/c"
+libc :: foreign "c" {
+    exit :: fn(code: c.c_int) -> never
+}
+
+pick :: fn(n: i32) -> i32 \ {Sys} {
+    if n > 0 { return n }
+    libc.exit(3)
+}
+
+main :: fn() \ {Out, Sys} {
+    print("{}\n", pick(5))
+    _ = pick(0)
+    print("not reached\n")
+}

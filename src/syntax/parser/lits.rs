@@ -8,7 +8,7 @@ use crate::syntax::token::{Keyword, Punct, TokenKind};
 impl Parser<'_> {
     /// `(` params `)` after `struct`, `union` or `effect`: every parameter is
     /// compile-time and written with `:`.
-    fn parse_decl_params(&mut self) -> PResult<Vec<Param>> {
+    pub(super) fn parse_decl_params(&mut self) -> PResult<Vec<Param>> {
         self.expect(Punct::LParen, "")?;
         let (params, variadic) = self.parse_params()?;
         let _ = variadic;

@@ -1,0 +1,23 @@
+  warning (line 9): expected key = value
+  warning (line 10): empty key
+  warning (line 16): unterminated section header
+3 warnings, last on line 16
+[] 2 entries
+  name = .Text("demo app") (line 2)
+  verbose = .Bool(true) (line 3)
+[server] 4 entries
+  host = .Text("localhost") (line 6)
+  port = .Int(8080) (line 7)
+  port = .Int(9090) (line 8)
+  workers = .Int(4) (line 11)
+[limits] 3 entries
+  max_size = .Int(-1) (line 14)
+  ratio = .Text("0.75") (line 15)
+  debug = .Bool(false) (line 17)
+name: text demo app
+verbose: bool true
+host: text localhost
+port: int 9090
+missing: (unset)
+true
+4 workers on port 9090

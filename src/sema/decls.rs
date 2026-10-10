@@ -40,6 +40,14 @@ impl<'s> Sema<'s> {
     pub fn resolve_decl(&mut self, id: DeclId) -> DeclValue {
         match &self.decls[id.0 as usize].state {
             DeclState::Done(v) => return v.clone(),
+            // `Link :: ?^Node` used by a field of `Node` while `Link` is being resolved:
+            // `Node` is usable by now, so resolving the alias again succeeds. A real
+            // cycle is found again on the second pass.
+            DeclState::InProgress if self.is_structural_alias(id) && self.alias_reentry.insert(id) => {
+                let v = self.compute_decl(id);
+                self.alias_reentry.remove(&id);
+                return v;
+            }
             DeclState::InProgress => {
                 self.report_cycle(id);
                 return DeclValue::Error;
@@ -58,6 +66,28 @@ impl<'s> Sema<'s> {
             DeclState::Done(v) => v.clone(),
             _ => DeclValue::Error,
         }
+    }
+
+    /// True if declaration `id` is an alias for a structural type built with pointer,
+    /// slice, optional, array or function type syntax; resolving one has no side
+    /// effects, so it may be done twice.
+    fn is_structural_alias(&self, id: DeclId) -> bool {
+        let d = &self.decls[id.0 as usize];
+        if d.op_of.is_some() || !d.item.attrs.is_empty() {
+            return false;
+        }
+        let ItemKind::Binding(b) = &d.item.kind else { return false };
+        b.ty.is_none()
+            && matches!(
+                b.init.kind,
+                ExprKind::OptionalType(_)
+                    | ExprKind::PtrType { .. }
+                    | ExprKind::SliceType { .. }
+                    | ExprKind::ManyPtrType { .. }
+                    | ExprKind::ArrayType { .. }
+                    | ExprKind::ErrorUnionType { .. }
+                    | ExprKind::FnType(_)
+            )
     }
 
     fn report_cycle(&mut self, id: DeclId) {
@@ -409,16 +439,11 @@ impl<'s> Sema<'s> {
         for c in where_ {
             self.declare_constraint(module, c);
         }
-        // Instantiations of one generic effect in scope together must be told apart
-        // without knowing the type arguments (§16.6).
+        // Instantiations of one generic effect in the declared set must be told apart
+        // without knowing the type arguments (§16.6). A second-class parameter's effects
+        // are performed where it is called, and checked there.
         if !generics.is_empty() {
-            let mut in_scope: Vec<EffectRef> = effects.effects.to_vec();
-            for p in &params {
-                if let TyKind::Fn(f) = p.ty.kind() {
-                    in_scope.extend(f.effects.effects.iter().cloned());
-                }
-            }
-            self.check_distinct(sig.span, &in_scope);
+            self.check_distinct(sig.span, &effects.effects);
         }
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);

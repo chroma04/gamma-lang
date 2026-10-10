@@ -10,7 +10,7 @@ use crate::source::Span;
 use crate::tir::*;
 use crate::types::*;
 use num_bigint::BigInt;
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
@@ -26,6 +26,64 @@ pub struct TyInfo {
     pub offsets: Vec<u64>,
     /// `(signed, bits)` for integer types.
     pub int: Option<(bool, u32)>,
+    /// Integer types of at most 64 bits, which the evaluator handles without arbitrary-precision numbers.
+    pub small: Option<SmallInt>,
+}
+
+/// An integer type of at most 64 bits.
+#[derive(Clone, Copy, Debug)]
+pub struct SmallInt {
+    pub signed: bool,
+    pub bits: u32,
+    /// Size in bytes (at most 8).
+    pub size: usize,
+    pub align: u64,
+}
+
+/// The per-type facts, filled in on first use. Entries are never replaced or
+/// removed, so a reference handed out stays valid as long as the table lives.
+#[derive(Default)]
+struct TyTable {
+    slots: UnsafeCell<Vec<*mut TyInfo>>,
+}
+
+impl TyTable {
+    #[inline(always)]
+    fn get(&self, idx: usize) -> Option<&TyInfo> {
+        // SAFETY: the table is only touched by the one thread running the machine; a slot
+        // is written once, with a leaked box that lives until the table is dropped.
+        unsafe {
+            let slots = &*self.slots.get();
+            match slots.get(idx) {
+                Some(&p) if !p.is_null() => Some(&*p),
+                _ => None,
+            }
+        }
+    }
+
+    fn insert(&self, idx: usize, info: TyInfo) -> &TyInfo {
+        let p = Box::into_raw(Box::new(info));
+        // SAFETY: as in `get`; growing the vector moves the pointers, not the infos they point to.
+        unsafe {
+            let slots = &mut *self.slots.get();
+            if slots.len() <= idx {
+                slots.resize(idx + 1, std::ptr::null_mut());
+            }
+            slots[idx] = p;
+            &*p
+        }
+    }
+}
+
+impl Drop for TyTable {
+    fn drop(&mut self) {
+        for &p in self.slots.get_mut().iter() {
+            if !p.is_null() {
+                // SAFETY: allocated by `insert` with `Box::into_raw`, and freed only here.
+                drop(unsafe { Box::from_raw(p) });
+            }
+        }
+    }
 }
 
 pub struct ConstEntry {
@@ -38,11 +96,13 @@ pub enum Place {
     Mem(u64),
     /// Memory inside a field of a `#packed` struct: accessed with alignment 1.
     Packed(u64),
-    /// Field `idx` of a `#bits` struct of type `ty` stored at `addr`.
+    /// A field of type `fty` at bit `off` of the `#bits` struct of type `whole` stored
+    /// at `addr` (a field of a nested `#bits` field adds the offsets).
     Bits {
         addr: u64,
-        ty: Ty,
-        idx: u32,
+        whole: Ty,
+        off: u32,
+        fty: Ty,
     },
 }
 
@@ -61,7 +121,7 @@ pub struct Machine<'a> {
     pub mode: Mode,
     pub budget: Option<u64>,
     layouts: Layouts<'a>,
-    tyinfo: RefCell<Vec<Option<Rc<TyInfo>>>>,
+    tyinfo: TyTable,
     pub mem: Memory,
     pub steps: u64,
     pub depth: u32,
@@ -88,7 +148,12 @@ pub struct Machine<'a> {
     /// The bytes left on the running fiber's stack, as estimated by [`Machine::frame_cost`]
     /// (`u64::MAX` off fibers).
     pub fiber_stack: u64,
-    frame_costs: HashMap<FnId, u64>,
+    /// Frame costs by function (`u64::MAX`: not yet computed).
+    frame_costs: Vec<u64>,
+    /// Finished frames nobody else refers to, kept to reuse their buffers.
+    frame_pool: Vec<Rc<Frame>>,
+    /// Emptied argument vectors, kept to reuse their buffers.
+    pub arg_pool: Vec<Vec<Value>>,
     /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
     pub alloc_tags: HashMap<u64, (u64, u64, String)>,
     /// Open files and directories of the file-system services.
@@ -114,7 +179,7 @@ impl<'a> Machine<'a> {
             mode: cfg.mode,
             budget: cfg.step_budget,
             layouts: Layouts::new(cfg.target.clone(), adts),
-            tyinfo: RefCell::new(Vec::new()),
+            tyinfo: TyTable::default(),
             mem: Memory::new(data_base, cfg.target.ptr_bytes),
             steps: 0,
             depth: 0,
@@ -134,7 +199,9 @@ impl<'a> Machine<'a> {
             const_mode: false,
             fib: Default::default(),
             fiber_stack: u64::MAX,
-            frame_costs: HashMap::new(),
+            frame_costs: vec![u64::MAX; prog.fns.len()],
+            frame_pool: Vec::new(),
+            arg_pool: Vec::new(),
             alloc_tags: HashMap::new(),
             sys: Default::default(),
             threads: Default::default(),
@@ -152,25 +219,24 @@ impl<'a> Machine<'a> {
 
     // --- types -------------------------------------------------------------
 
-    pub fn ti(&self, ty: Ty) -> Rc<TyInfo> {
-        let idx = ty.index();
-        if let Some(Some(i)) = self.tyinfo.borrow().get(idx) {
-            return i.clone();
+    #[inline(always)]
+    pub fn ti(&self, ty: Ty) -> &TyInfo {
+        match self.tyinfo.get(ty.index()) {
+            Some(i) => i,
+            None => self.ti_slow(ty),
         }
+    }
+
+    #[inline(never)]
+    fn ti_slow(&self, ty: Ty) -> &TyInfo {
         let l = self.layouts.layout(ty);
-        let info = Rc::new(TyInfo {
-            kind: ty.kind(),
-            size: l.size as usize,
-            align: l.align,
-            offsets: l.offsets,
-            int: layout::int_bits(ty, &self.target),
-        });
-        let mut v = self.tyinfo.borrow_mut();
-        if v.len() <= idx {
-            v.resize(idx + 1, None);
-        }
-        v[idx] = Some(info.clone());
-        info
+        let int = layout::int_bits(ty, &self.target);
+        let size = l.size as usize;
+        let small = match int {
+            Some((signed, bits)) if bits <= 64 && size <= 8 => Some(SmallInt { signed, bits, size, align: l.align }),
+            _ => None,
+        };
+        self.tyinfo.insert(ty.index(), TyInfo { kind: ty.kind(), size, align: l.align, offsets: l.offsets, int, small })
     }
 
     pub fn size_of(&self, ty: Ty) -> usize {
@@ -220,7 +286,7 @@ impl<'a> Machine<'a> {
 
     pub fn int_of(&self, ty: Ty, b: &[u8]) -> Int {
         let ti = self.ti(ty);
-        self.decode_int_ty(&ti, b)
+        self.decode_int_ty(ti, b)
     }
 
     pub fn int_bytes(&self, ty: Ty, v: &Int) -> Bytes {
@@ -228,12 +294,18 @@ impl<'a> Machine<'a> {
         num::encode_int(v, ti.size, self.little())
     }
 
+    #[inline]
     pub fn ptr_of(&self, b: &[u8]) -> u64 {
-        num::decode_int(&b[..self.ptr_size()], false, self.target.ptr_bits(), self.little()).to_u64_sat()
+        // A pointer is an unsigned integer of 32 or 64 bits.
+        let n = self.ptr_size();
+        super::fast::word_of(&b[..n], n, self.little())
     }
 
+    #[inline]
     pub fn ptr_bytes(&self, addr: u64) -> Bytes {
-        num::encode_int(&Int::from_u128(addr as u128), self.ptr_size(), self.little())
+        let n = self.ptr_size();
+        let w = if self.little() { addr } else { (addr << (64 - 8 * n)).swap_bytes() };
+        Bytes::from_word(w, n)
     }
 
     pub fn usize_bytes(&self, n: u64) -> Bytes {
@@ -518,6 +590,12 @@ impl<'a> Machine<'a> {
         if size == 0 {
             return Ok(Bytes::empty());
         }
+        if size <= 8 {
+            return match self.mem.read_word(addr, size, align) {
+                Ok(w) => Ok(Bytes::from_word(w, size)),
+                Err(e) => Err(trap_flow(span, e.message())),
+            };
+        }
         let r = self.mem.read(addr, size as u64, align);
         match r {
             Ok(s) => Ok(Bytes::from_slice(s)),
@@ -533,6 +611,12 @@ impl<'a> Machine<'a> {
     pub fn store(&mut self, span: Span, addr: u64, data: &[u8], align: u64) -> R<()> {
         if data.is_empty() {
             return Ok(());
+        }
+        if data.len() <= 8 {
+            return match self.mem.write_word(addr, super::fast::word_of(data, data.len(), true), data.len(), align) {
+                Ok(()) => Ok(()),
+                Err(e) => Err(trap_flow(span, e.message())),
+            };
         }
         let r = self.mem.write(addr, data, align);
         self.mem_err(span, r)
@@ -617,6 +701,17 @@ impl<'a> Machine<'a> {
     ) -> Rc<Frame> {
         let id = self.next_frame;
         self.next_frame += 1;
+        if let Some(mut rc) = self.frame_pool.pop() {
+            let f = Rc::get_mut(&mut rc).expect("pooled frames are unshared");
+            f.id = id;
+            f.ret_ty = ret_ty;
+            f.func = func;
+            f.parent_env = parent_env;
+            f.installing = installing;
+            f.is_clause_lit = is_clause_lit;
+            f.locals.get_mut().resize(nlocals, Slot::Empty);
+            return rc;
+        }
         Rc::new(Frame {
             id,
             ret_ty,
@@ -632,6 +727,18 @@ impl<'a> Machine<'a> {
     pub fn kill_frame(&mut self, fr: &Frame) {
         for a in fr.allocs.borrow().iter() {
             self.mem.kill(*a);
+        }
+    }
+
+    /// Takes back a finished frame: if nothing else refers to it, its buffers are kept for the next call.
+    pub fn recycle_frame(&mut self, mut fr: Rc<Frame>) {
+        if self.frame_pool.len() < 256
+            && let Some(f) = Rc::get_mut(&mut fr)
+        {
+            f.locals.get_mut().clear();
+            f.allocs.get_mut().clear();
+            f.parent_env = None;
+            self.frame_pool.push(fr);
         }
     }
 
@@ -684,7 +791,7 @@ impl<'a> Machine<'a> {
                 if locals.len() <= i {
                     locals.resize(i + 1, Slot::Empty);
                 }
-                locals[i] = Slot::Val(other);
+                locals[i] = Slot::Val(Box::new(other));
                 Ok(())
             }
         }
@@ -706,12 +813,13 @@ impl<'a> Machine<'a> {
 
     /// The stack bytes a call of `f` is charged on a fiber stack ([`crate::tir::frame_cost`]).
     pub fn frame_cost(&mut self, f: FnId) -> u64 {
-        if let Some(&c) = self.frame_costs.get(&f) {
-            return c;
+        let known = self.frame_costs[f.index()];
+        if known != u64::MAX {
+            return known;
         }
         let prog = self.prog;
         let c = crate::tir::frame_cost(&prog.fns[f.index()], &mut |t| self.size_of(t) as u64);
-        self.frame_costs.insert(f, c);
+        self.frame_costs[f.index()] = c;
         c
     }
 

@@ -1,0 +1,22 @@
+//! exit: 134
+//! stderr
+// A trap inside a Gamma callback invoked by C qsort reports a backtrace through the C frames and exits with 134.
+c :: import "std/c"
+libc :: foreign "c" {
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) \ {}
+}
+
+table :: [3]i32(1, 2, 3)
+
+cmp :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const i32)^
+    idx := (x * 0 + 5).trunc(usize)
+    return table[idx]
+}
+
+main :: fn() \ {Out} {
+    nums := [_]i32(3, 1, 2)
+    print("before\n")
+    libc.qsort(&nums, 3, 4, cmp)
+    print("after\n")
+}

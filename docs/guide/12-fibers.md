@@ -73,7 +73,9 @@ A few rules are visible in this small example. A `ctl` clause has type `never`: 
 3. **Same `with`.** A continuation may only be consumed by code running in a `ctl` clause of a handler installed by the `with` that produced it.
 4. **Same thread.** It may only be consumed on the thread that created it.
 
-If a clause uses `k` only as the operand of `resume` or `discard`, never storing, copying or passing it, the compiler verifies statically that every path consumes it exactly once, and no run-time check is needed for it. The checks exist for the cases where you do store it, as a scheduler does.
+If a clause uses `k` only as the operand of `resume` or `discard`, never storing, copying or passing it, the compiler verifies statically that no path consumes it twice and that every path ending in `resume` or in a `break` out of the `with` has consumed it, so no run-time check is needed for it. The checks exist for the cases where you do store it, as a scheduler does.
+
+Rule 2 has a convenient consequence for exits that go *past* the `with`: a `return`, a labeled `break` to an outer loop, or an `esc` operation handled outside. Such an exit discards every fiber the `with` still holds, running their `defer`s, before it continues. Only a plain `break` out of the `with` itself expects you to have consumed everything first.
 
 ### Cancelling with `discard`
 

@@ -1,0 +1,67 @@
+// qsort_r with a context pointer (glibc and BSD/macOS order their arguments differently) and a Sys callback touching a #global, cstring buffers, strtol with an out-pointer.
+c :: import "std/c"
+when target.os is .Linux {
+    sorting :: foreign "c" {
+        qsort_r :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b, ctx: rawptr) -> c.c_int \ {Sys}, ctx: rawptr)
+    }
+} else {
+    sorting :: foreign "c" {
+        qsort_r :: fn(base: rawptr, n, size: usize, ctx: rawptr, cmp: ^fn(ctx, a, b: rawptr) -> c.c_int \ {Sys})
+    }
+}
+
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> usize \ {}
+    strncpy :: fn(d: [^]u8, s: cstring, n: usize) -> [^]u8 \ {}
+    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long \ {}
+    toupper :: fn(ch: c.c_int) -> c.c_int \ {}
+    memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr \ {}
+}
+
+#global calls: u32 = 0
+
+SortCtx :: struct { desc: bool, keys: [^]const i32 }
+
+by_key :: fn(a, b, ctx: rawptr) -> c.c_int \ {Sys} {
+    calls += 1
+    sc := ctx.cast(^const SortCtx)
+    x := sc.keys[a.cast(^const u32)^.trunc(usize)]
+    y := sc.keys[b.cast(^const u32)^.trunc(usize)]
+    r: c.c_int = if x < y { -1 } else if x > y { 1 } else { 0 }
+    return if sc.desc { -r } else { r }
+}
+
+// The comparator with the context first, as BSD and macOS pass it.
+by_key_ctx_first :: fn(ctx, a, b: rawptr) -> c.c_int \ {Sys} => by_key(a, b, ctx)
+
+sort_indices :: fn(idx: ^[5]u32, sc: ^SortCtx) \ {Sys} {
+    when target.os is .Linux {
+        sorting.qsort_r(idx, 5, 4, by_key, sc)
+    } else {
+        sorting.qsort_r(idx, 5, 4, sc, by_key_ctx_first)
+    }
+}
+
+main :: fn() \ {Out, Sys} {
+    keys := [_]i32(50, 20, 40, 10, 30)
+    idx := [_]u32(0, 1, 2, 3, 4)
+    sc := SortCtx(desc: false, keys: keys[..].ptr)
+    sort_indices(&idx, &sc)
+    print("{}\n", idx)
+    sc.desc = true
+    sort_indices(&idx, &sc)
+    print("{}\n", idx)
+    print("calls > 0: {}\n", calls > 0)
+
+    buf: [16]u8 = ---
+    _ = libc.memset(&buf, 0, 16)
+    _ = libc.strncpy(buf[..].ptr, c"hello", 15)
+    s: cstring = buf[..].ptr
+    print("{} {}\n", (libc.strlen(s), s[0..5]))
+    for i in 0..5 { buf[i] = libc.toupper(c.c_int(buf[i])).trunc(u8) }
+    print("{}\n", s[0..libc.strlen(s)])
+    end: cstring = c""
+    v := libc.strtol(c"1234xyz", &end, 10)
+    print("{} rest {}\n", (v, libc.strlen(end)))
+    print("{}\n", libc.strtol(c"-0x1F", null, 16))
+}

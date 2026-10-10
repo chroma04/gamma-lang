@@ -219,6 +219,22 @@ stats_demo :: fn() \ {Out} {
 
 The first clause parameter (`self`) has the handler's type; the rest are the operation's parameters. A handler declaration must appear in the module that declares the effect or the one that declares the type. A declaration may add `\ {A}` after the type to say which effects its clauses perform (those are handled *outside* the `with` that installs it). This is how the allocator types in [chapter 9](09-memory.md) work, and it is also how you give a struct a handler without writing a handler literal at every use. Clauses of a declaration have no enclosing function, so `return` and captures are not available there, but an unlabeled `break` still exits the `with`.
 
+A generic type gets one declaration for all its instances by listing the parameters after `handler`, written as for a generic struct:
+
+```gamma
+Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0 }
+
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
+    yield(self, x) => if self.len < N { self.items[self.len] = x; self.len += 1 }
+}
+
+collect_demo :: fn() \ {Out} {
+    c := Collector(u32, 4)(items: [4]u32(fill: 0))
+    with &c { for i in 0..10 { yield(u32(i)) } }      // keeps 0, 1, 2 and 3
+    print("{}\n", c.len)                              // 4
+}
+```
+
 ## Ambient effects
 
 Some effects are predeclared, and the runtime installs a default handler for each before calling `main`:

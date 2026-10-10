@@ -1,0 +1,103 @@
+// Command table with function pointers, case-insensitive map, generic helpers.
+Line :: []const string
+
+lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
+
+fold_hash :: fn(k: ^const string, seed: u64) -> u64 {
+    h: u64 = seed
+    for c in bytes(k^) { h = (h ~ u64(lower(c))) *% 1099511628211 }
+    return h
+}
+
+fold_eq :: fn(a, b: ^const string) -> bool {
+    if a^.len is not b^.len { return false }
+    for i in 0..a^.len { if lower(a^[i]) is not lower(b^[i]) { return false } }
+    return true
+}
+
+Ctx :: struct {
+    total: i64 = 0
+    log: List(string)
+}
+
+Cmd :: struct {
+    name: string
+    arity: usize
+    run: ^fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out}
+}
+
+cmd_add :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+    for a in args {
+        ctx.total += parse(a) else return "not a number"
+    }
+    print("total={}\n", ctx.total)
+    return null
+}
+
+cmd_reset :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+    ctx.total = 0
+    return null
+}
+
+cmd_echo :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+    for i, a in enumerate(args) {
+        if i > 0 { print(" ") }
+        print("{}", a)
+    }
+    print("\n")
+    return null
+}
+
+parse :: fn(s: string) -> ?i64 {
+    if s.len is 0 { return null }
+    neg := s[0] is '-'
+    v: i64 = 0
+    for c in bytes(if neg { s[1..] } else { s }) {
+        if c not in '0'..='9' { return null }
+        v = v * 10 + i64(c - '0')
+    }
+    return if neg { -v } else { v }
+}
+
+largest_by :: fn(T: type, xs: []const T, better: fn(a, b: T) -> bool) -> ?T {
+    best := xs.first() else return null
+    for x in xs[1..] { if better(x, best) { best = x } }
+    return best
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    table := map_with(string, Cmd, fold_hash, fold_eq)
+    defer table.deinit()
+    try table.put("ADD", Cmd(name: "add", arity: 1, run: cmd_add))
+    try table.put("reset", Cmd(name: "reset", arity: 0, run: cmd_reset))
+    try table.put("Echo", Cmd(name: "echo", arity: 0, run: cmd_echo))
+    ctx := Ctx(log: list(string))
+    defer ctx.log.deinit()
+    l1 := [_]string("ADD", "1", "2", "3")
+    l2 := [_]string("echo", "hello", "world")
+    l3 := [_]string("add")
+    l4 := [_]string("Add", "x")
+    l5 := [_]string("Reset")
+    l6 := [_]string("nope")
+    l7 := [_]string("aDd", "-5")
+    script := [_]Line(l1[..], l2[..], l3[..], l4[..], l5[..], l6[..], l7[..])
+    for line in script {
+        if cmd := table.get(line[0]) {
+            if line.len - 1 < cmd.arity {
+                print("{}: needs {} args\n", (cmd.name, cmd.arity))
+                continue
+            }
+            if err := cmd.run(&ctx, line[1..]) {
+                print("{}: error: {}\n", (cmd.name, err))
+            }
+        } else {
+            print("unknown command {}\n", line[0])
+        }
+    }
+    words := [_]string("pear", "fig", "banana", "kiwi")
+    print("{}\n", largest_by(words[..], fn(a, b) => a.len > b.len))
+    print("{}\n", largest_by(words[..], fn(a, b) => a < b))
+    nums := [0]i32()
+    print("{}\n", largest_by(nums[..], fn(a, b) => a > b))
+    return ()
+}

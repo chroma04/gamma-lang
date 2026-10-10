@@ -354,6 +354,14 @@ impl Ty {
     pub fn is_unit(self) -> bool {
         matches!(self.kind(), TyKind::Tuple { elems, .. } if elems.is_empty())
     }
+    /// `T` if this is `?T`.
+    pub fn optional_inner(self) -> Option<Ty> {
+        match self.kind() {
+            TyKind::Optional(t) => Some(*t),
+            _ => None,
+        }
+    }
+
     pub fn is_bool(self) -> bool {
         matches!(self.kind(), TyKind::Bool)
     }

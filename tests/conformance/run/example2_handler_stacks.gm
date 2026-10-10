@@ -1,0 +1,68 @@
+// Handler stacks: recursive re-installation forwarding to the outer handler, function pointers carrying effects, esc with defers, return from a clause inside a loop.
+Log :: effect { log: esc(msg: string) }
+Fail :: effect { fail: esc(code: u32) -> never }
+
+indented :: fn(depth: u32) \ {Log, Out} {
+    if depth is 0 {
+        log("bottom")
+        return
+    }
+    log("down")
+    with (handler Log {
+        log(m) => {
+            print("{}:", depth)
+            log(m)           // forwards to the enclosing handler
+        }
+    }) {
+        indented(depth - 1)
+    }
+    log("up")
+}
+
+apply :: fn(f: ^fn(x: u32) -> u32 \ {Log}, x: u32) -> u32 \ {Log} => f(f(x))
+
+noisy_double :: fn(x: u32) -> u32 \ {Log} {
+    log("double")
+    return x * 2
+}
+
+quiet :: fn(x: u32) -> u32 => x + 1
+
+risky :: fn(n: u32) -> u32 \ {Fail, Log} {
+    defer log("risky defer")
+    if n > 3 { fail(n) }
+    return n
+}
+
+try_all :: fn(limit: u32) -> u32 \ {Out, Log} {
+    total: u32 = 0
+    n: u32 = 0
+    while n < limit {
+        r := with (handler Fail { fail(c) => { log("caught"); break c + 1000 } }) {
+            risky(n)
+        }
+        total += r
+        n += 1
+    }
+    return total
+}
+
+early :: fn() -> u32 \ {Out} {
+    for i in 0..10 {
+        defer print("iter {} done\n", i)
+        with (handler Log { log(m) => { if m is "stop" { return i * 100 } } }) {
+            if i is 2 { log("stop") }
+        }
+    }
+    return 0
+}
+
+main :: fn() \ {Out} {
+    with (handler Log { log(m) => print("[{}]\n", m) }) {
+        indented(2)
+        print("{}\n", apply(noisy_double, 3))
+        print("{}\n", apply(quiet, 3))
+        print("{}\n", try_all(6))
+    }
+    print("{}\n", early())
+}

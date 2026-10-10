@@ -1,0 +1,146 @@
+// Timer scheduler: tasks sleep on a virtual clock; sleeping continuations live in a generic binary heap keyed by wake time, and a deadline cancels laggards with discard.
+STACK :: 24576
+
+Task :: effect {
+    sleep: ctl(ms: u64)
+    now: fn() -> u64
+    spawn: ctl(entry: ^fn(id: u32) -> never \ {Task, Out}, id: u32)
+    done: ctl() -> never
+}
+
+Sleeper :: struct { wake: u64, seq: u32, k: cont(()) }
+
+// Min-heap of optional elements; ordering is a compile-time-free function pointer.
+Heap :: struct(T: type, N: usize) {
+    items: [N]?T
+    len: usize = 0
+    less: ^fn(a, b: T) -> bool
+}
+
+heap :: fn(T: type, N :: usize, less: ^fn(a, b: T) -> bool) -> Heap(T, N) {
+    return Heap(T, N)(items: [N]?T(fill: null), less: less)
+}
+
+swap_at :: fn(T: type, N :: usize, h: ^Heap(T, N), i, j: usize) {
+    t := h.items[i]
+    h.items[i] = h.items[j]
+    h.items[j] = t
+}
+
+heap_push :: fn(T: type, N :: usize, h: ^Heap(T, N), x: T) {
+    if h.len is N { trap("heap full") }
+    h.items[h.len] = x
+    i := h.len
+    h.len += 1
+    while i > 0 {
+        p := (i - 1) / 2
+        if not h.less(h.items[i]?, h.items[p]?) { break }
+        swap_at(h, i, p)
+        i = p
+    }
+}
+
+heap_pop :: fn(T: type, N :: usize, h: ^Heap(T, N)) -> ?T {
+    if h.len is 0 { return null }
+    top := h.items[0]
+    h.len -= 1
+    h.items[0] = h.items[h.len]
+    h.items[h.len] = null
+    i: usize = 0
+    while true {
+        l := 2 * i + 1
+        m := i
+        if l < h.len and h.less(h.items[l]?, h.items[m]?) { m = l }
+        if l + 1 < h.len and h.less(h.items[l + 1]?, h.items[m]?) { m = l + 1 }
+        if m is i { break }
+        swap_at(h, i, m)
+        i = m
+    }
+    return top
+}
+
+earlier :: fn(a, b: Sleeper) -> bool => a.wake < b.wake or (a.wake is b.wake and a.seq < b.seq)
+
+Kernel :: struct {
+    sleepers: Heap(Sleeper, 8)
+    clock: u64 = 0
+    seq: u32 = 0
+    live: u32 = 1
+    deadline: u64
+    stacks: [3][STACK]u8
+    nstacks: usize = 0
+    cancelled: u32 = 0
+}
+
+wait :: fn(self: ^Kernel, ms: u64, k: cont(())) {
+    self.seq += 1
+    heap_push(&self.sleepers, Sleeper(wake: self.clock + ms, seq: self.seq, k: k))
+}
+
+handler Task for ^Kernel \ {Out} {
+    sleep(self, ms, k) => {
+        wait(self, ms, k)
+        s := heap_pop(&self.sleepers)?
+        self.clock = s.wake
+        if self.clock > self.deadline {
+            print("  [t={}] deadline: cancelling a sleeper\n", self.clock)
+            self.cancelled += 1
+            discard s.k
+            self.live -= 1
+            // keep draining: cancel everything still asleep
+            while rest := heap_pop(&self.sleepers) {
+                self.cancelled += 1
+                discard rest.k
+                self.live -= 1
+            }
+            break
+        }
+        resume s.k()
+    }
+    now(self) => self.clock
+    spawn(self, entry, id, k) => {
+        mem := self.stacks[self.nstacks][..]
+        self.nstacks += 1
+        self.live += 1
+        wait(self, 0, @fiber(entry, id, mem))
+        resume k()
+    }
+    done(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { break }
+        s := heap_pop(&self.sleepers) else break
+        self.clock = if s.wake > self.clock { s.wake } else { self.clock }
+        resume s.k()
+    }
+}
+
+worker :: fn(id: u32) -> never \ {Task, Out} {
+    defer print("  [t={}] worker {} cleanup\n", (now(), id))
+    period: u64 = 10 * u64(id)
+    i: u32 = 0
+    while i < 4 {
+        sleep(period)
+        print("  [t={}] worker {} tick {}\n", (now(), id, i))
+        i += 1
+    }
+    done()
+}
+
+run :: fn(deadline: u64) \ {Out} {
+    k := Kernel(sleepers: heap(Sleeper, 8, earlier), deadline: deadline, stacks: ---)
+    main_stack: [STACK]u8 = ---
+    print("deadline {}\n", deadline)
+    with &k on main_stack[..] {
+        spawn(worker, 1)
+        spawn(worker, 2)
+        spawn(worker, 3)
+        done()
+    }
+    print("end: clock {}, cancelled {}, live {}\n", (k.clock, k.cancelled, k.live))
+}
+
+main :: fn() \ {Out} {
+    run(1000)
+    run(25)
+}

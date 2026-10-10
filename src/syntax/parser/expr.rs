@@ -314,7 +314,17 @@ impl Parser<'_> {
                 Some(_) => {}
                 None => chain = Some(op),
             }
-            self.bump();
+            let tok = self.bump();
+            // C's `&&` and `||`: two adjacent tokens here.
+            if matches!(op, BinOp::BitAnd | BinOp::BitOr)
+                && self.at(if op == BinOp::BitAnd { Punct::Amp } else { Punct::Pipe })
+                && self.span().lo == tok.span.hi
+            {
+                let span = tok.span.to(self.span());
+                let (c, word) = if op == BinOp::BitAnd { ("&&", "and") } else { ("||", "or") };
+                self.bump();
+                return self.fail(span, format!("`{}` is not an operator; use `{}`", c, word));
+            }
             let rhs = self.parse_shift()?;
             lhs = self.binary(op, lhs, rhs);
         }
@@ -614,6 +624,21 @@ impl Parser<'_> {
                 self.bump();
                 Ok(self.mk_expr(ExprKind::Uninit, span))
             }
+            // A labeled `with` or `for` used as a value (A.5).
+            TokenKind::Ident(_)
+                if self.nth_is(1, Punct::Colon)
+                    && matches!(self.nth(2), TokenKind::Keyword(Keyword::With | Keyword::For)) =>
+            {
+                let label = self.parse_ident("a label")?;
+                self.bump();
+                if self.nth_is_kw(0, Keyword::With) {
+                    self.deny_in_head("a `with` expression")?;
+                    self.parse_with(Some(label))
+                } else {
+                    self.deny_in_head("a `for` expression")?;
+                    self.parse_for(Some(label))
+                }
+            }
             TokenKind::Ident(name) => {
                 if *name == self.words.cont && self.nth_is(1, Punct::LParen) {
                     return self.parse_cont_type();
@@ -769,6 +794,23 @@ impl Parser<'_> {
         let start = self.lo();
         self.bump();
         let label = self.eat_label();
+        // `break L v` with `L` not in scope: an identifier followed by something that
+        // cannot continue an expression.
+        if label.is_none()
+            && let TokenKind::Ident(sym) = self.kind()
+            && matches!(
+                self.nth(1),
+                TokenKind::Ident(_)
+                    | TokenKind::Int(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::Str(_)
+                    | TokenKind::Keyword(Keyword::Null | Keyword::True | Keyword::False)
+            )
+        {
+            let span = self.span();
+            let msg = format!("`{}` is not a label of an enclosing `while`, `for` or `with`", sym);
+            return self.fail(span, msg);
+        }
         let value = if can_begin_expr(self.kind()) { Some(Box::new(self.parse_expr()?)) } else { None };
         let span = self.span_from(start);
         Ok(self.mk_expr(ExprKind::Break { label, value }, span))

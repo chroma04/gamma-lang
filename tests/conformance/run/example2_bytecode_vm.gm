@@ -1,0 +1,123 @@
+// A bytecode VM whose I/O, tracing and fuel exhaustion are effects: one handler type implements two effects, literal handlers trace to the console, and an esc operation stops runaway code.
+Op :: union {
+    Push: i64
+    Add
+    Sub
+    Mul
+    Dup
+    Swap
+    Pop
+    Load: u8
+    Store: u8
+    Jmp: u32
+    Jz: u32
+    Print
+    Halt
+}
+
+Io :: effect {
+    emit: fn(v: i64)
+    fuel: esc(pc: u32) -> never       // raised when the VM runs out of steps
+}
+
+Trace :: effect { step: fn(pc: u32, depth: usize) }
+
+Vm :: struct {
+    stack: [16]i64
+    sp: usize = 0
+    regs: [4]i64
+    pc: u32 = 0
+    steps: u32 = 0
+}
+
+push :: fn(vm: ^Vm, v: i64) {
+    if vm.sp is 16 { trap("stack overflow") }
+    vm.stack[vm.sp] = v
+    vm.sp += 1
+}
+
+pop :: fn(vm: ^Vm) -> i64 {
+    if vm.sp is 0 { trap("stack underflow") }
+    vm.sp -= 1
+    return vm.stack[vm.sp]
+}
+
+run :: fn(vm: ^Vm, code: []const Op, max_steps: u32) \ {Io, Trace} {
+    while true {
+        if vm.steps >= max_steps { fuel(vm.pc) }
+        vm.steps += 1
+        step(vm.pc, vm.sp)
+        op := code[vm.pc.trunc(usize)]
+        vm.pc += 1
+        match op {
+            .Push(v) => push(vm, v)
+            .Add => { b := pop(vm); a := pop(vm); push(vm, a + b) }
+            .Sub => { b := pop(vm); a := pop(vm); push(vm, a - b) }
+            .Mul => { b := pop(vm); a := pop(vm); push(vm, a * b) }
+            .Dup => { a := pop(vm); push(vm, a); push(vm, a) }
+            .Swap => { b := pop(vm); a := pop(vm); push(vm, b); push(vm, a) }
+            .Pop => { _ = pop(vm) }
+            .Load(r) => push(vm, vm.regs[usize(r)])
+            .Store(r) => { vm.regs[usize(r)] = pop(vm) }
+            .Jmp(t) => { vm.pc = t }
+            .Jz(t) => { if pop(vm) is 0 { vm.pc = t } }
+            .Print => emit(pop(vm))
+            .Halt => return
+        }
+    }
+}
+
+// factorial of 5 with a loop: r0 = n, r1 = acc
+FACT :: [_]Op(
+    .Push(5), .Store(0), .Push(1), .Store(1),
+    .Load(0), .Jz(15),                    // 4,5: while n != 0
+    .Load(1), .Load(0), .Mul, .Store(1),  // 6..9: acc *= n
+    .Load(0), .Push(1), .Sub, .Store(0),  // 10..13: n -= 1
+    .Jmp(4),                              // 14
+    .Load(1), .Print, .Halt               // 15..17
+)
+
+SPIN :: [_]Op(.Push(1), .Pop, .Jmp(0))
+
+Recorder :: struct { out: [8]i64, n: usize = 0, trace_len: u32 = 0, max_depth: usize = 0 }
+
+handler Io for ^Recorder {
+    emit(self, v) => { self.out[self.n] = v; self.n += 1 }
+    fuel(self, pc) => { self.out[self.n] = -1 - i64(pc); self.n += 1; break }
+}
+
+handler Trace for ^Recorder {
+    step(self, pc, depth) => {
+        self.trace_len += 1
+        if depth > self.max_depth { self.max_depth = depth }
+    }
+}
+
+execute :: fn(name: string, code: []const Op, budget: u32) \ {Out} {
+    vm := Vm(stack: ---, regs: [4]i64(fill: 0))
+    rec := Recorder(out: ---)
+    with &rec { run(&vm, code, budget) }
+    print("{}: steps {} trace {} depth {} out {}\n", (name, vm.steps, rec.trace_len, rec.max_depth, rec.out[0..rec.n]))
+}
+
+main :: fn() \ {Out} {
+    fact := FACT
+    execute("fact", fact[..], 1000)
+    spin := SPIN
+    execute("spin", spin[..], 50)
+    execute("fact-short", fact[..], 20)
+    // tracing to the console via a literal handler, io via a counting one
+    count := 0
+    sum: i64 = 0
+    vm := Vm(stack: ---, regs: [4]i64(fill: 0))
+    small := [_]Op(.Push(2), .Push(3), .Add, .Dup, .Mul, .Print, .Halt)
+    with (handler Io {
+        emit(v) => { sum += v; count += 1 }
+        fuel(pc) => { break }
+    }), (handler Trace {
+        step(pc, depth) => print("  pc={} depth={}\n", (pc, depth))
+    }) {
+        run(&vm, small[..], 100)
+    }
+    print("count {} sum {}\n", (count, sum))
+}

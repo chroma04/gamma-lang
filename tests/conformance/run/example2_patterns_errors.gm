@@ -1,0 +1,86 @@
+// Patterns and errors: match with alternatives, guards, ranges and nested variants; error lifting across result types; optional fallbacks; defaults and struct spread.
+IoErr :: union { Eof, Bad: u8 }
+ParseErr :: union { Empty, NotNum: string, Io: IoErr }
+
+Tok :: union { Num: i64, Op: u8, Word: string, Pair: (Tok2, Tok2) }
+Tok2 :: union { A, B: i32 }
+
+classify :: fn(n: i64) -> string => match n {
+    0 => "zero"
+    1..=9 => "digit"
+    10, 20, 30 => "round"
+    x if x < 0 => "negative"
+    _ => "big"
+}
+
+describe :: fn(t: Tok) -> string => match t {
+    .Num(n) => classify(n)
+    .Op('+'), .Op('-') => "additive"
+    .Op(_) => "other op"
+    .Word("hi") => "greeting"
+    .Word(w) => if w.len > 3 { "long word" } else { "short word" }
+    .Pair(.A, .B(x)) => if x > 0 { "A,B+" } else { "A,B-" }
+    .Pair(_, _) => "pair"
+}
+
+parse :: fn(s: string) -> ParseErr!i64 {
+    if s.len is 0 { return !.Empty }
+    n: i64 = 0
+    for c in bytes(s) {
+        if c not in '0'..='9' { return !.NotNum(s) }
+        n = n * 10 + i64(c - '0')
+    }
+    return n
+}
+
+read_num :: fn(s: string, fail: bool) -> ParseErr!i64 {
+    if fail { return !.Io(.Bad(7)) }
+    return try parse(s)
+}
+
+sum_all :: fn(xs: []const string) -> ParseErr!i64 {
+    t: i64 = 0
+    for x in xs { t += try read_num(x, false) }
+    return t
+}
+
+show :: fn(r: ParseErr!i64) \ {Out} {
+    match r {
+        !.Empty => print("empty\n")
+        !.NotNum(s) => print("not a number: {}\n", s)
+        !.Io(.Eof) => print("eof\n")
+        !.Io(.Bad(c)) => print("io {}\n", c)
+        n => print("ok {}\n", n)
+    }
+}
+
+opts :: fn(a: ?i32, b: ?i32) -> i32 {
+    x := a else 0
+    y := b else { return -1 }
+    return x + y
+}
+
+Cfg :: struct { w: u32 = 80, h: u32 = 24, name: string = "term", bold: bool = false }
+
+mk :: fn(base: Cfg, extra: u32 = 5, scale: u32 = 1) -> Cfg => Cfg(..base, w: base.w * scale + extra)
+
+main :: fn() \ {Out} {
+    for n in [_]i64(0, 5, 20, -4, 99) { print("{} ", classify(n)) }
+    print("\n")
+    toks := [_]Tok(.Num(7), .Op('-'), .Op('*'), .Word("hi"), .Word("hello"), .Word("yo"), .Pair(.A, .B(3)), .Pair(.B(1), .A))
+    for t in toks { print("{}; ", describe(t)) }
+    print("\n")
+    show(parse("123"))
+    show(parse(""))
+    show(parse("12x"))
+    show(read_num("1", true))
+    xs := [_]string("10", "20", "3")
+    show(sum_all(xs[..]))
+    ys := [_]string("10", "2z", "3")
+    show(sum_all(ys[..]))
+    print("{} {} {}\n", (opts(1, 2), opts(null, 5), opts(5, null)))
+    c := mk(Cfg(), scale: 2)
+    print("{}\n", c)
+    d := mk(Cfg(name: "x", bold: true), 1)
+    print("{}\n", d)
+}

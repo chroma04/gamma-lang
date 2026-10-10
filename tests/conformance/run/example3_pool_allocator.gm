@@ -1,0 +1,139 @@
+// A pool allocator written against AllocVtable, installed with `with`; errdefer cleans up a partly built list when the pool runs dry.
+fixed_buffer :: import "std/fixed_buffer"
+
+Pool :: struct {
+    base: [^]u8
+    block: usize
+    capacity: usize          // number of blocks
+    next_fresh: usize        // blocks handed out for the first time
+    free_head: ?[^]u8        // intrusive free list: first 8 bytes of a free block
+    live: usize
+    failures: u32
+}
+
+pool_over :: fn(mem: []u8, block: usize) -> Pool {
+    return Pool(base: mem.ptr, block: block, capacity: mem.len / block, next_fresh: 0, free_head: null, live: 0, failures: 0)
+}
+
+pool_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    p := data.cast(^Pool)
+    if size > p.block or align > 16 {
+        p.failures += 1
+        return null
+    }
+    if blk := p.free_head {
+        p.free_head = blk.cast(^?[^]u8)^
+        p.live += 1
+        return blk
+    }
+    if p.next_fresh >= p.capacity {
+        p.failures += 1
+        return null
+    }
+    blk := p.base[p.next_fresh * p.block..p.capacity * p.block].ptr
+    p.next_fresh += 1
+    p.live += 1
+    return blk
+}
+
+pool_resize :: fn(data: rawptr, ptr: [^]u8, old, new, align: usize) -> bool {
+    p := data.cast(^Pool)
+    return new <= p.block
+}
+
+pool_free :: fn(data: rawptr, ptr: [^]u8, size, align: usize) {
+    p := data.cast(^Pool)
+    ptr.cast(^?[^]u8)^ = p.free_head
+    p.free_head = ptr
+    p.live -= 1
+}
+
+POOL_VT :: AllocVtable(alloc: pool_alloc, resize: pool_resize, free: pool_free)
+
+Node :: struct {
+    value: i32
+    next: ?^Node
+}
+
+// Builds 1..n as a linked list, freeing what it built if an allocation fails.
+build :: fn(n: i32) -> AllocError!?^Node \ {Alloc} {
+    head: ?^Node = null
+    errdefer free_list(head)
+    for i in 1..n + 1 {
+        node := try new(Node, Node(value: i, next: head))
+        head = node
+    }
+    return head
+}
+
+free_list :: fn(h: ?^Node) \ {Alloc} {
+    cur := h
+    while n := cur {
+        cur = n.next
+        destroy(Node, n)
+    }
+}
+
+sum_list :: fn(h: ?^Node) -> i32 {
+    t: i32 = 0
+    cur := h
+    while n := cur {
+        t += n.value
+        cur = n.next
+    }
+    return t
+}
+
+Storage :: #align(16) struct { bytes: [128]u8 }
+
+failed :: fn(T: type, r: AllocError!T) -> bool {
+    if v := r { return false } else { return true }
+}
+
+main :: fn() \ {Out, Alloc} {
+    mem: Storage = ---                     // 8 blocks of 16 bytes
+    pool := pool_over(mem.bytes[..], 16)
+    print("Node is {} bytes\n", @size_of(Node))
+    with Allocator(data: &pool, vt: &POOL_VT) {
+        if list := build(5) {
+            print("sum {} live {}\n", (sum_list(list), pool.live))
+            free_list(list)
+            print("after free live {} (fresh {})\n", (pool.live, pool.next_fresh))
+        } else {
+            print("unexpected failure\n")
+        }
+        // Blocks are recycled: building again does not touch fresh blocks.
+        if list := build(5) {
+            print("again sum {} fresh {}\n", (sum_list(list), pool.next_fresh))
+            free_list(list)
+        }
+        // Too many nodes for the pool: errdefer gives every node back.
+        if list := build(20) {
+            print("unexpected success {}\n", sum_list(list))
+        } else {
+            print("build(20) failed, live {} failures {}\n", (pool.live, pool.failures))
+        }
+        big := make(u8, 64)
+        print("oversize request failed: {}\n", failed(big))
+        b := new(u8, 7) else return
+        destroy(u8, b)
+    }
+    print("final live {} failures {}\n", (pool.live, pool.failures))
+
+    // A fixed buffer, reused after reset.
+    store: Storage = ---
+    fb := fixed_buffer.over(store.bytes[0..64])
+    with fb.allocator() {
+        a := make(u32, 8) else return
+        print("a {} used {}\n", (a.len, fb.bytes_used()))
+        b := make(u32, 8)
+        print("second 32-byte block fits: {}\n", not failed(b))
+        c := make(u8, 1)
+        print("third fails: {}\n", failed(c))
+    }
+    fb.reset()
+    with fb.allocator() {
+        d := make(u64, 8) else return
+        print("after reset {} used {}\n", (d.len, fb.bytes_used()))
+    }
+}

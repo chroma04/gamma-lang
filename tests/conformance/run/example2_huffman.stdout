@@ -1,0 +1,11 @@
+23 symbols, 169 bytes
+664 bits, 83 bytes packed, 45 tree nodes
+32: len 2 bits 0
+101: len 3 bits 10
+116: len 3 bits 11
+111: len 4 bits 1010
+97: len 5 bits 11100
+115: len 4 bits 1101
+105: len 4 bits 1100
+c6 7b 9a 38 
+decoded 169 bytes, round trip true

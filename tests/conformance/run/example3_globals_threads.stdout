@@ -1,0 +1,7 @@
+worker 1 tl 101
+worker 2 tl 102
+worker 3 tl 103
+hits 3000 flag true tl 100
+30 2
+9
+try true false

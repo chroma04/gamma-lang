@@ -1,0 +1,99 @@
+// FFI with libc: qsort with Gamma comparators, memcmp, strlen, variadic snprintf, C structs and unions, #export.
+c :: import "std/c"
+fmt :: import "std/fmt"
+
+DivT :: struct {
+    quot: c.c_int
+    rem: c.c_int
+}
+
+libc :: foreign "c" {
+    qsort   :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) \ {}
+    memcmp  :: fn(a, b: rawptr, n: usize) -> c.c_int \ {}
+    strlen  :: fn(s: cstring) -> usize \ {}
+    snprintf :: fn(buf: [^]u8, n: usize, fmt: cstring, ...) -> c.c_int
+    div     :: fn(n, d: c.c_int) -> DivT \ {}
+    #link_name("labs") long_abs :: fn(x: c.c_long) -> c.c_long \ {}
+    strchr  :: fn(s: cstring, ch: c.c_int) -> ?cstring \ {}
+}
+
+Rec :: struct {
+    key: i32
+    weight: f64
+    tag: u8
+}
+
+Number :: #c_union union {
+    i: i64
+    d: f64
+    bytes: [8]u8
+}
+
+cmp_i32 :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const i32)^
+    y := b.cast(^const i32)^
+    if x < y { return -1 }
+    if x > y { return 1 }
+    return 0
+}
+
+cmp_rec_desc :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const Rec)
+    y := b.cast(^const Rec)
+    if x.weight < y.weight { return 1 }
+    if x.weight > y.weight { return -1 }
+    return 0
+}
+
+#export("dog_mix")
+mix :: fn(a: u32, b: u32) -> u32 => @rotl(a, 5) ~ b
+
+#export("dog_sum")
+sum :: fn(p: [^]const i32, n: usize) -> i64 {
+    t: i64 = 0
+    for i in 0..n { t += i64(p[i]) }
+    return t
+}
+
+main :: fn() \ {Out, Sys} {
+    nums := [_]i32(42, -7, 19, 0, 100, 3, -50, 8)
+    libc.qsort(&nums, nums.len, @size_of(i32), cmp_i32)
+    print("sorted: {}\n", nums)
+
+    recs := [_]Rec(Rec(key: 1, weight: 2.5, tag: 'a'), Rec(key: 2, weight: 9.0, tag: 'b'), Rec(key: 3, weight: 0.5, tag: 'c'), Rec(key: 4, weight: 4.25, tag: 'd'))
+    libc.qsort(&recs, recs.len, @size_of(Rec), cmp_rec_desc)
+    for r in recs { print("{} {} {}\n", (r.key, r.weight, r.tag)) }
+    print("Rec size {} align {} weight@{}\n", (@size_of(Rec), @align_of(Rec), @offset_of(Rec, weight)))
+
+    a := [_]u8(1, 2, 3, 4)
+    b := [_]u8(1, 2, 4, 4)
+    r := libc.memcmp(&a, &b, 4)
+    print("memcmp sign {}\n", if r < 0 { -1 } else if r > 0 { 1 } else { 0 })
+    print("memcmp prefix {}\n", libc.memcmp(&a, &b, 2))
+
+    print("strlen {}\n", libc.strlen(c"hello, world"))
+
+    buf: [64]u8 = ---
+    n: c.c_int = 77
+    x: f64 = 3.5
+    w := libc.snprintf(buf[..].ptr, buf.len, c"n=%d x=%.2f s=%s", n, x, c"str")
+    wn := w.checked(usize) else trap("negative")
+    print("snprintf wrote {}: {}\n", (w, buf[0..wn]))
+
+    d := libc.div(17, 5)
+    print("div {} {}\n", (d.quot, d.rem))
+    print("labs {}\n", libc.long_abs(-123456789012))
+
+    if p := libc.strchr(c"find the x here", 'x') {
+        print("found, rest len {}\n", libc.strlen(p))
+    }
+    if libc.strchr(c"nothing", 'z') is null { print("no z\n") }
+
+    u := Number(d: 1.0)
+    hb: [fmt.INT_BUF]u8 = ---
+    print("bits {}\n", fmt.hex(u.i.bits(u64), hb[..]))
+    u2 := Number(i: 0x4008000000000000)
+    print("double {}\n", u2.d)
+    print("union size {}\n", @size_of(Number))
+    print("mix {} sum {}\n", (mix(0x80000001, 0xFF), sum(nums[..].ptr, nums.len)))
+}

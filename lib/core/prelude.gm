@@ -418,7 +418,7 @@ HEAP :: AllocVtable(alloc: heap_alloc, resize: heap_resize, free: heap_free)
 pub heap_allocator :: fn() -> Allocator => Allocator(data: &HEAP, vt: &HEAP)
 
 /// An empty slice: a non-null, suitably aligned pointer that must not be dereferenced (§5.7).
-empty_slice :: fn(T: type) -> []T {
+pub empty_slice :: fn(T: type) -> []T {
     p := @align_of(T).to_ptr([^]T)?
     return p[0..0]
 }

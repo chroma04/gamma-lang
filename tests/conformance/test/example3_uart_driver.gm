@@ -1,0 +1,166 @@
+//! stage: test
+// A UART driver written against a user-defined register-access effect: tests install a recording fake and a memory-backed device, and rely on the fake clock, leak checking and env/rand test handlers.
+Mmio :: effect {
+    read: fn(reg: usize) -> u32
+    write: fn(reg: usize, value: u32)
+}
+
+REG_STATUS :: 0
+REG_DATA :: 1
+REG_CTRL :: 2
+
+STATUS_TX_READY :: 0b001
+STATUS_RX_AVAIL :: 0b010
+STATUS_ERROR    :: 0b100
+
+DriverError :: union { Timeout, Framing, Overrun: u32 }
+
+// Waits for `mask` to be set in the status register, polling with 1 ms sleeps.
+wait_status :: fn(mask: u32, tries: u32) -> DriverError!() \ {Mmio, Clock} {
+    for _ in 0..tries {
+        s := read(REG_STATUS)
+        if s & STATUS_ERROR is not 0 { return !.Framing }
+        if s & mask is mask { return () }
+        sleep(ms(1))
+    }
+    return !.Timeout
+}
+
+send :: fn(msg: string) -> DriverError!u32 \ {Mmio, Clock} {
+    sent: u32 = 0
+    for b in bytes(msg) {
+        try wait_status(STATUS_TX_READY, 5)
+        write(REG_DATA, u32(b))
+        sent += 1
+    }
+    return sent
+}
+
+recv_into :: fn(buf: []u8) -> DriverError!usize \ {Mmio, Clock} {
+    n: usize = 0
+    while n < buf.len {
+        wait_status(STATUS_RX_AVAIL, 3) else { break }
+        buf[n] = (read(REG_DATA) & 0xFF).trunc(u8)
+        n += 1
+    }
+    return n
+}
+
+// A memory-backed device: registers live in an array and every access is volatile.
+Device :: struct {
+    regs: [4]u32
+    writes: u32
+}
+
+handler Mmio for ^Device {
+    read(self, reg) => self.regs[reg]
+    write(self, reg, v) => {
+        self.regs[reg] = v
+        self.writes += 1
+    }
+}
+
+// A recording fake: status is scripted, data writes are logged.
+Fake :: struct {
+    status_script: []const u32
+    polls: usize
+    log: [16]u8
+    logged: usize
+    rx: string
+    rx_pos: usize
+}
+
+handler Mmio for ^Fake {
+    read(f, reg) => {
+        if reg is REG_STATUS {
+            i := f.polls
+            f.polls += 1
+            s := if i < f.status_script.len { f.status_script[i] } else { f.status_script[f.status_script.len - 1] }
+            if f.rx_pos < f.rx.len { s | STATUS_RX_AVAIL } else { s }
+        } else if reg is REG_DATA {
+            c := f.rx[f.rx_pos]
+            f.rx_pos += 1
+            u32(c)
+        } else {
+            0
+        }
+    }
+    write(f, reg, v) => {
+        if reg is REG_DATA {
+            f.log[f.logged] = v.trunc(u8)
+            f.logged += 1
+        }
+    }
+}
+
+test "send waits for the transmitter" {
+    script := [_]u32(0, 0, STATUS_TX_READY)
+    f := Fake(status_script: script[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
+    with &f {
+        n := try send("ok")
+        expect(n is 2)
+    }
+    expect(f.logged is 2)
+    expect(f.log[0..2] is "ok")
+    // Two sleeps of 1 ms before the first byte: the fake clock moved, no real time passed.
+    expect(now().ns is 2_000_000)
+    expect(f.polls is 4)
+}
+
+test "timeouts and framing errors" {
+    never := [_]u32(0)
+    f := Fake(status_script: never[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
+    with &f {
+        expect(send("x") is !.Timeout)
+    }
+    expect(f.polls is 5)
+    expect(now().ns is 5_000_000)
+    bad := [_]u32(STATUS_ERROR | STATUS_TX_READY)
+    g := Fake(status_script: bad[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
+    with &g {
+        expect(send("x") is !.Framing)
+    }
+    expect(g.logged is 0)
+}
+
+test "receive stops when the line goes quiet" {
+    idle := [_]u32(0)
+    f := Fake(status_script: idle[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "ping", rx_pos: 0)
+    buf: [8]u8 = ---
+    with &f {
+        n := try recv_into(buf[..])
+        expect(n is 4)
+        expect(buf[0..n] is "ping")
+    }
+    // Three polls, 1 ms asleep after each failed one: the final wait gives up.
+    expect(now().ns is 3_000_000)
+}
+
+test "a memory-backed device" {
+    dev := Device(regs: [4]u32(fill: 0), writes: 0)
+    dev.regs[REG_STATUS] = STATUS_TX_READY
+    with &dev {
+        n := try send("abc")
+        expect(n is 3)
+    }
+    expect(dev.writes is 3)
+    expect(dev.regs[REG_DATA] is u32('c'))
+    expect(now().ns is 0, "a ready device never sleeps")
+}
+
+test "leak checking applies to driver buffers" {
+    buf := make(u8, 64) else return
+    defer free(u8, buf)
+    buf.fill(0x55)
+    expect(buf[63] is 0x55)
+}
+
+test "env and rand are test doubles" {
+    expect(args().len is 0)
+    expect(var("HOME") is null)
+    a: [4]u8 = ---
+    b: [4]u8 = ---
+    fill(a[..])
+    fill(b[..])
+    expect(a is not b, "the generator advances")
+}

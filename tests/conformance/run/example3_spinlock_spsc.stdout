@@ -1,0 +1,8 @@
+plain counter 2000 (expected 2000)
+max seen 3499
+bits 15 parity 0
+received 300 sum 8955050 (expected 8955050)
+head 300 tail 300
+swap old 10 miss 20 hit null now 30
+sub 30 min 25 and 7
+final 6

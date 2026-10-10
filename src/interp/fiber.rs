@@ -235,7 +235,11 @@ impl<'a> Machine<'a> {
                             let r = self.trap(ps, "internal error: a `ctl` clause finished normally");
                             return self.complete(span, key, r, false);
                         }
-                        r => return self.complete(span, key, r, false),
+                        // An exit whose target lies outside the `with` crosses it (§14.4).
+                        r => {
+                            let crossing = matches!(&r, Err(f) if exits_past(f, key));
+                            return self.complete(span, key, r, crossing);
+                        }
                     }
                 }
                 Some(ToDriver::Done { fiber, result }) => {
@@ -251,16 +255,16 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Finishes a `with … on` with `outcome` (§14.4). `from_fiber`: a fiber finished, rather
-    /// than a clause exiting.
-    fn complete(&mut self, span: Span, key: WithKey, outcome: R, from_fiber: bool) -> R {
+    /// Finishes a `with … on` with `outcome` (§14.4). `crossing`: a fiber finished, or a
+    /// clause exits to a target outside the `with`.
+    fn complete(&mut self, span: Span, key: WithKey, outcome: R, crossing: bool) -> R {
         if let Err(f) = &outcome
             && matches!(**f, Flow::Trap(_) | Flow::Exit(_))
         {
             self.abort_all(span, key);
             return outcome;
         }
-        if from_fiber && outcome.is_err() {
+        if crossing && outcome.is_err() {
             // An exit crossing the `with`: cancel every other suspended fiber, newest first.
             while let Some(id) = self.fib.withs.get_mut(&key).and_then(|w| w.suspended.pop()) {
                 if let Err(f) = self.cancel(span, key, id) {
@@ -492,5 +496,15 @@ impl<'a> Machine<'a> {
         let id = self.new_fiber(key, start, State::Suspended(key), &stack);
         self.fib.withs.get_mut(&key).unwrap().suspended.push(id);
         Ok(self.cont_bytes(id, 1))
+    }
+}
+
+/// True if `f` is an exit whose target lies outside the `with … on` `key`: anything but a
+/// `break` to the `with` itself.
+fn exits_past(f: &Flow, key: WithKey) -> bool {
+    match f {
+        Flow::Break { frame, label, .. } => (*frame, *label) != key,
+        Flow::Continue { .. } | Flow::Return { .. } | Flow::Cancel => true,
+        _ => false,
     }
 }

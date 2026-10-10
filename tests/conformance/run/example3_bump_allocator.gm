@@ -1,0 +1,68 @@
+// A logging bump allocator: List growth requests, aligned allocations that honor 256-byte alignment, and out-of-memory results.
+Bump :: struct {
+    mem: []u8
+    top: usize
+    last: usize
+    log_n: u32
+    sizes: [32]usize
+    aligns: [32]usize
+    resized: u32
+    freed: u32
+}
+
+bump_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    b := data.cast(^Bump)
+    if b.log_n < 32 {
+        b.sizes[b.log_n.trunc(usize)] = size
+        b.aligns[b.log_n.trunc(usize)] = align
+        b.log_n += 1
+    }
+    base := b.mem.ptr.addr()
+    start := (base + b.top + align - 1) / align * align - base
+    if start + size > b.mem.len { return null }
+    b.last = start
+    b.top = start + size
+    return (b.mem.ptr + start)
+}
+
+bump_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
+    b := data.cast(^Bump)
+    start := p.addr() - b.mem.ptr.addr()
+    if start is b.last and start + old is b.top and start + new <= b.mem.len {
+        b.top = start + new
+        b.resized += 1
+        return true
+    }
+    return false
+}
+
+bump_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    b := data.cast(^Bump)
+    b.freed += 1
+}
+
+VT :: AllocVtable(alloc: bump_alloc, resize: bump_resize, free: bump_free)
+Store :: #align(64) struct { bytes: [4096]u8 }
+
+main :: fn() \ {Out, Alloc} {
+    store: Store = ---
+    b := Bump(mem: store.bytes[..], top: 0, last: 0, log_n: 0, sizes: [32]usize(fill: 0), aligns: [32]usize(fill: 0), resized: 0, freed: 0)
+    al := Allocator(data: &b, vt: &VT)
+    l := with al { list(u64) }
+    for i in 0..40 { l.push(u64(i)) else { print("oom at {}\n", i); break } }
+    print("len {} resized {} allocs {}\n", (l.items.len, b.resized, b.log_n))
+    for i in 0..b.log_n.trunc(usize) { print("alloc {} align {}\n", (b.sizes[i], b.aligns[i])) }
+    l.deinit()
+    print("freed {}\n", b.freed)
+    with al {
+        w := make_aligned(u8, 10, 256) else return
+        print("aligned256 {} len {}\n", (w.ptr.addr() % 256, w.len))
+        free_aligned(u8, w, 256)
+        s := make_fill(u32, 3, 9) else return
+        print("{} {} {}\n", (s[0], s[1], s[2]))
+        free(u32, s)
+        m := make(u8, 100000)
+        print("{}\n", m is !.OutOfMemory)
+    }
+    print("freed {}\n", b.freed)
+}

@@ -1,0 +1,47 @@
+//! stage: check
+// What `break L v` may supply depends on what `L` labels (§8.5).
+nums :: fn() \ {Yield(i32)} {
+    yield(1)
+}
+
+flag :: fn() -> bool \ {Yield(i32)} {
+    yield(1)
+    return true
+}
+
+E :: effect { stop: esc() -> never }
+
+f :: fn(p: bool) {
+    w: while true {
+        for x in nums() {
+            if x > 0 { break w 1 } //~ ERROR a `while` loop has no value
+        }
+    }
+    a: i64 = l: with (handler E { stop() => break 0 }) {
+        for x in nums() {
+            if x > 1 { break l 5 }
+            if x > 2 { break l "five" } //~ ERROR expected `i64`
+        }
+        3
+    }
+    b := l2: with (handler E { stop() => break 0 }) {
+        if p { break l2 true } //~ ERROR this `break` gives the `with` a `bool`
+        2
+    }
+    c := it: for x in flag() {
+        if x > 3 { break it false }
+        if x > 4 { break it } //~ ERROR this loop's value is `bool`, so `break` needs a value
+    }
+    // A `for` over a range has no value to give.
+    d: i32 = r: for i in 0..3 { //~ ERROR `else` needs an optional or a result
+        break r 1 //~ ERROR expected `()`
+    } else { 0 }
+    e := l3: with (handler E { stop() => break 0 }) {
+        break l3 9
+    }
+    l4: with (handler E { stop() => break }) {
+        break l4 1 //~ ERROR this `break` gives the `with` a
+    }
+}
+
+main :: fn() {}

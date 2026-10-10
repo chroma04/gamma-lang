@@ -1,0 +1,11 @@
+//! stage: check
+main :: fn() \ {Out} {
+    names := [2]string("a", "b")
+    for (i, n) in enumerate(names) { print("{}\n", n) } //~ ERROR an array is not a slice: pass `a[..]`
+    s := "ab"
+    x := s.len() //~ ERROR `.len` of a slice is a field, not a method
+    y := s.to_upper() //~ ERROR slices have no method `.to_upper`
+    m: [3]i32 = ---
+    for r in 0..3 { m[r] = i32(r * 3) } //~ ERROR `i32(usize)` is not a lossless conversion
+    ok := !(1 is 2) //~ ERROR logical negation is `not e`
+}

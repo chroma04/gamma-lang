@@ -1,0 +1,3 @@
+//! stage: check
+Matrix :: struct(T: type, R, C: usize) { d: [R * C]T } //~ ERROR an array length computed from the compile-time parameters `R` and `C`
+main :: fn() {}

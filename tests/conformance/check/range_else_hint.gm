@@ -1,0 +1,6 @@
+//! stage: check
+main :: fn() {
+    buf: [8]u8 = ---
+    w: i32 = 3
+    s := buf[0..w.checked(usize) else trap("neg")] //~ ERROR range bounds have different types
+}

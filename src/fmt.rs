@@ -258,6 +258,15 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                         }
                         ends = false;
                     }
+                    // A label: `name: with …`, also in an expression.
+                    Punct::Colon
+                        if toks.get(i + 1).is_some_and(|n| {
+                            matches!(n.kind, K::Keyword(Keyword::With | Keyword::For | Keyword::While))
+                        }) =>
+                    {
+                        tb = true;
+                        ends = false;
+                    }
                     Punct::Colon => {
                         // `name: T : value` binds a constant; the second colon is spaced.
                         let seen = match stack.last_mut() {
@@ -414,9 +423,29 @@ fn continues_line(info: &Info) -> bool {
 }
 
 /// Whether a run of spaces between `prev` and `cur` is kept: it aligns the
-/// operator of consecutive declarations, fields or match arms into a column.
-fn keeps_padding(prev: &Info, cur: &Info) -> bool {
-    matches!(cur.text.as_str(), "::" | "=>") || prev.text == ":"
+/// operator of consecutive declarations, fields or match arms into a column,
+/// so it is kept only when the line above or below has the same operator in
+/// the same column (or, after `:`, a token in the same column).
+fn keeps_padding(src: &str, prev: &Info, cur: &Info) -> bool {
+    let op = matches!(cur.text.as_str(), "::" | "=>");
+    if !op && prev.text != ":" {
+        return false;
+    }
+    let col = column(src, cur.lo);
+    let line_start = src[..cur.lo].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = src[cur.lo..].find('\n').map_or(src.len(), |i| cur.lo + i);
+    let above = src[..line_start.saturating_sub(1)].rsplit('\n').next().filter(|_| line_start > 0);
+    let below = src.get(line_end + 1..).filter(|_| line_end < src.len()).and_then(|r| r.split('\n').next());
+    [above, below].into_iter().flatten().any(|line| {
+        let rest: String = line.chars().skip(col).collect();
+        let before: String = line.chars().take(col).collect();
+        let spaced = before.ends_with(' ') && !before.trim().is_empty();
+        if op {
+            spaced && rest.starts_with(cur.text.as_str())
+        } else {
+            spaced && rest.starts_with(|c: char| !c.is_whitespace())
+        }
+    })
 }
 
 /// An open bracket during layout.
@@ -431,6 +460,9 @@ struct Frame {
     /// and in the output (as columns). Continuation lines that were aligned
     /// to it in the source stay aligned to it.
     visual: Option<(usize, usize)>,
+    /// A `{` on a line that starts with `if`, `when` or `else`: an `else` line
+    /// right after its `}` continues the chain at the statement's indentation.
+    chain: bool,
 }
 
 fn column(text: &str, pos: usize) -> usize {
@@ -468,6 +500,10 @@ fn layout(src: &str, toks: &[Token]) -> String {
     // The previous line ends in a token after which the lexer joins the next line.
     let mut cont_next = false;
     let mut after_lbrace = false;
+    // The first token of the current line, and whether the previous token was
+    // a `}` closing a `chain` block.
+    let mut line_head: Option<usize> = None;
+    let mut after_chain = false;
 
     for (idx, item) in items.iter().enumerate() {
         if let Item::Nl = item {
@@ -487,8 +523,11 @@ fn layout(src: &str, toks: &[Token]) -> String {
         nl = 0;
         let first = !line_open;
         if first {
+            line_head = items[idx..].iter().find_map(|it| if let Item::Tok(j) = it { Some(*j) } else { None });
             let indent = if close_tok {
-                let v = stack.pop().map_or(0, |f| f.base);
+                let f = stack.pop();
+                after_chain = f.as_ref().is_some_and(|f| f.chain) && close_brace;
+                let v = f.map_or(0, |f| f.base);
                 cur_base = v;
                 v * 4
             } else {
@@ -498,7 +537,9 @@ fn layout(src: &str, toks: &[Token]) -> String {
                     matches!(infos[j].text.as_str(), "and" | "or" | "else") || continues_with_name(src, &infos[j])
                 };
                 let next_tok = items[idx..].iter().find_map(|it| if let Item::Tok(j) = it { Some(*j) } else { None });
+                let chain_else = after_chain && matches!(item, Item::Tok(k) if infos[*k].text == "else");
                 let cont = plain_ctx
+                    && !chain_else
                     && (cont_next
                         || match item {
                             Item::Tok(k) => starts_cont(*k),
@@ -522,12 +563,12 @@ fn layout(src: &str, toks: &[Token]) -> String {
             out.push_str(&" ".repeat(indent));
             line_open = true;
             prev = Prev::None;
-        } else if close_tok
-            && let Some(f) = stack.pop()
-            && stack.len() < min_len
-        {
-            cur_base = f.base;
-            min_len = stack.len();
+        } else if close_tok && let Some(f) = stack.pop() {
+            after_chain = f.chain && close_brace;
+            if stack.len() < min_len {
+                cur_base = f.base;
+                min_len = stack.len();
+            }
         }
         let mut lbrace = false;
         match item {
@@ -564,7 +605,10 @@ fn layout(src: &str, toks: &[Token]) -> String {
                         let tight = infos[p].ta || info.tb;
                         let gap = &src[infos[p].hi..info.lo];
                         let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || "_\"'`".contains(c));
-                        if !tight && gap.len() >= 2 && gap.bytes().all(|b| b == b' ') && keeps_padding(&infos[p], info)
+                        if !tight
+                            && gap.len() >= 2
+                            && gap.bytes().all(|b| b == b' ')
+                            && keeps_padding(src, &infos[p], info)
                         {
                             // Columns of aligned declarations and match arms.
                             pad = gap.len();
@@ -593,9 +637,20 @@ fn layout(src: &str, toks: &[Token]) -> String {
                 out.push_str(&info.text);
                 if info.open {
                     let brace = info.text == "{";
-                    stack.push(Frame { base: cur_base, plain: brace && !info.match_body, paren: !brace, visual: None });
+                    let chain =
+                        brace && line_head.is_some_and(|h| matches!(infos[h].text.as_str(), "if" | "when" | "else"));
+                    stack.push(Frame {
+                        base: cur_base,
+                        plain: brace && !info.match_body,
+                        paren: !brace,
+                        visual: None,
+                        chain,
+                    });
                 }
                 cont_next = continues_line(info);
+                if !info.close {
+                    after_chain = false;
+                }
                 lbrace = info.text == "{" && !info.ta;
                 prev = Prev::Tok(*k);
             }

@@ -1,0 +1,75 @@
+// Generic stack with compile-time capacity, a HashMap with custom case-insensitive hash and equality, and the constant struct of operations idiom with saturating arithmetic.
+Stack :: struct(T: type, N: usize) {
+    items: [N]T
+    len: usize = 0
+}
+
+stack :: fn(T: type, N :: usize) -> Stack(T, N) where Plain(T) {
+    return Stack(T, N)(items: ---)
+}
+
+push :: fn(T: type, N :: usize, s: ^Stack(T, N), x: T) -> bool {
+    if s.len is N { return false }
+    s.items[s.len] = x
+    s.len += 1
+    return true
+}
+
+pop :: fn(T: type, N :: usize, s: ^Stack(T, N)) -> ?T {
+    if s.len is 0 { return null }
+    s.len -= 1
+    return s.items[s.len]
+}
+
+lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
+
+fold_hash :: fn(key: ^const string, seed: u64) -> u64 {
+    h := seed
+    for b in bytes(key^) { h = (h ~ u64(lower(b))) *% 1099511628211 }
+    return h
+}
+
+fold_eq :: fn(a, b: ^const string) -> bool {
+    if a^.len is not b^.len { return false }
+    for i in 0..a^.len {
+        if lower(a^[i]) is not lower(b^[i]) { return false }
+    }
+    return true
+}
+
+Ring :: struct(T: type) {
+    zero: T
+    add, mul: ^fn(a, b: T) -> T
+}
+
+add_sat :: fn(a, b: i32) -> i32 => a +| b
+mul_sat :: fn(a, b: i32) -> i32 => a *| b
+
+SAT_RING :: Ring(i32)(zero: 0, add: add_sat, mul: mul_sat)
+
+dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
+    acc := ring.zero
+    for i in 0..xs.len {
+        acc = ring.add(acc, ring.mul(xs[i], ys[i]))
+    }
+    return acc
+}
+
+use_dot :: fn(xs, ys: []const i32) -> i32 => dot(SAT_RING, xs, ys)
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    st := stack(i32, 4)
+    _ = st.push(10)
+    _ = st.push(20)
+    while v := st.pop() { print("{}\n", v) }
+    names := map_with(string, u32, hash: fold_hash, eq: fold_eq)
+    defer names.deinit()
+    try names.put("Ada", 1)
+    try names.put("ADA", 2)
+    try names.put("grace", 3)
+    print("{} {}\n", (names.len(), names.get("aDa")))
+    a := [_]i32(2000000000, 5)
+    b := [_]i32(2, 3)
+    print("{}\n", use_dot(a[..], b[..]))
+    return ()
+}

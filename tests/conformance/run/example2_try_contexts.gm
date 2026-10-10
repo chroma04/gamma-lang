@@ -1,0 +1,45 @@
+// try in unusual contexts: inside function literals passed as callbacks, inside an esc handler clause (returning from the enclosing function), optional chains.
+E :: union { Neg: i32, Big }
+Chk :: effect { check: esc(n: i32) -> E!i32 }
+
+validate :: fn(n: i32) -> E!i32 {
+    if n < 0 { return !.Neg(n) }
+    if n > 100 { return !.Big }
+    return n
+}
+
+map_all :: fn(xs: []const i32, f: fn(i32) -> E!i32) -> E!i32 {
+    total: i32 = 0
+    for x in xs { total += try f(x) }
+    return total
+}
+
+opt_chain :: fn(a, b: ?i32) -> ?i32 {
+    x := try a
+    y := try b
+    return x + y
+}
+
+in_clause :: fn(n: i32) -> E!i32 {
+    with (handler Chk {
+        check(v) => {
+            r := try validate(v)
+            r * 2
+        }
+    }) {
+        x := try check(n)
+        return x + 1
+    }
+}
+
+main :: fn() \ {Out} {
+    xs := [_]i32(1, 2, 3)
+    ys := [_]i32(1, -2, 3)
+    print("{}\n", map_all(xs[..], validate))
+    print("{}\n", map_all(ys[..], validate))
+    print("{}\n", map_all(xs[..], fn(x) => validate(x * 50)))
+    k := 7
+    print("{}\n", map_all(xs[..], fn(x) -> E!i32 { v := try validate(x + k); return v * 2 }))
+    print("{} {} {}\n", (opt_chain(1, 2), opt_chain(null, 2), opt_chain(1, null)))
+    print("{} {}\n", (in_clause(5), in_clause(-5)))
+}

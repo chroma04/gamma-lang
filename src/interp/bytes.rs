@@ -26,14 +26,32 @@ impl Bytes {
         r
     }
 
+    #[inline]
     pub fn from_slice(s: &[u8]) -> Bytes {
-        if s.len() <= INLINE {
+        let n = s.len();
+        if n <= INLINE {
             let mut a = [0; INLINE];
-            a[..s.len()].copy_from_slice(s);
-            Bytes::Inline(s.len() as u8, a)
+            match n {
+                8 => a[..8].copy_from_slice(&s[..8]),
+                4 => a[..4].copy_from_slice(&s[..4]),
+                1 => a[0] = s[0],
+                2 => a[..2].copy_from_slice(&s[..2]),
+                16 => a[..16].copy_from_slice(&s[..16]),
+                _ => a[..n].copy_from_slice(s),
+            }
+            Bytes::Inline(n as u8, a)
         } else {
             Bytes::Heap(s.to_vec())
         }
+    }
+
+    /// The first `n` (at most 8) bytes of `w` in little-endian order.
+    #[inline(always)]
+    pub fn from_word(w: u64, n: usize) -> Bytes {
+        debug_assert!(n <= 8);
+        let mut a = [0; INLINE];
+        a[..8].copy_from_slice(&w.to_le_bytes());
+        Bytes::Inline(n as u8, a)
     }
 
     pub fn into_vec(self) -> Vec<u8> {

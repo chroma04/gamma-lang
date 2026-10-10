@@ -1,0 +1,11 @@
+len 40 resized 0 allocs 5
+alloc 32 align 8
+alloc 64 align 8
+alloc 128 align 8
+alloc 256 align 8
+alloc 512 align 8
+freed 5
+aligned256 0 len 10
+9 9 9
+true
+freed 7

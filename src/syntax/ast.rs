@@ -693,6 +693,8 @@ pub struct HandlerLit {
 
 #[derive(Clone, Debug)]
 pub struct HandlerDecl {
+    /// `handler(T: type, …)`: parameters of a handler for a generic type (§12.6).
+    pub params: Option<Vec<Param>>,
     pub effect: Expr,
     pub for_ty: Expr,
     pub effects: Option<Vec<Expr>>,

@@ -400,8 +400,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let fa = self.addr_of(args[3].ty, &f);
                 let (fp, fl) = (self.slice_ptr(&fa), self.slice_len(&fa));
                 let (line, col) = (self.expr(&args[4])?, self.expr(&args[5])?);
-                let name = if op == Builtin::AllocTag { "gm_alloc_tag" } else { "gm_alloc_check" };
-                self.line(&format!("{name}({}, {}, {}, {fp}, {fl}, {line}, {col});", v[0], v[1], v[2]));
+                if op == Builtin::AllocTag {
+                    self.line(&format!("gm_alloc_tag({}, {}, {}, {fp}, {fl}, {line}, {col});", v[0], v[1], v[2]));
+                } else {
+                    // The check traps at its own location, like the interpreter.
+                    let loc = self.loc(e);
+                    self.line(&format!(
+                        "gm_alloc_check({}, {}, {}, {fp}, {fl}, {line}, {col}, {loc});",
+                        v[0], v[1], v[2]
+                    ));
+                }
                 return Ok(self.unit());
             }
             Builtin::HeapFree => {
@@ -432,6 +440,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     | Builtin::Popcount
                     | Builtin::Bswap
                     | Builtin::Bitreverse
+                    | Builtin::Rotl
+                    | Builtin::Rotr
             )
         {
             return self.wide_builtin(e, op, w, at, &vals);
@@ -566,13 +576,22 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     if matches!(at.kind(), TyKind::Float(FloatTy::F32)) { "__builtin_fmaf" } else { "__builtin_fma" };
                 Ok(self.tmp(t, &format!("({c}){f}({}, {}, {})", vals[0], vals[1], vals[2])))
             }
+            Builtin::Rotl | Builtin::Rotr => {
+                let ii = self.int_info(at).unwrap();
+                let x = format!("(unsigned __int128)({})({})", ii.ucty(), vals[0]);
+                let k = format!("(uint64_t){}", vals[1]);
+                // A right rotation by k is a left rotation by bits - k mod bits.
+                let k = if op == Builtin::Rotl { k } else { format!("({b} - {k} % {b})", b = ii.bits) };
+                let c = self.g.ty.cty(t);
+                let r = self.tmp(t, &format!("({c})gm_rotl({x}, {k}, {})", ii.bits));
+                let n = self.normalize(ii, &r);
+                Ok(self.tmp(t, &n))
+            }
             Builtin::Clz | Builtin::Ctz | Builtin::Popcount | Builtin::Bswap | Builtin::Bitreverse => {
                 let ii = self.int_info(at).unwrap();
                 let x = format!("(unsigned __int128)({})({})", ii.ucty(), vals[0]);
-                let x = format!(
-                    "({x} & (((unsigned __int128)1 << {b}) - 1 | ({b} == 128 ? ~(unsigned __int128)0 : 0)))",
-                    b = ii.bits
-                );
+                // Keep the low bits only (a shift by 128 would be undefined in C).
+                let x = if ii.bits >= 128 { x } else { format!("({x} & (((unsigned __int128)1 << {}) - 1))", ii.bits) };
                 let c = self.g.ty.cty(t);
                 let call = match op {
                     Builtin::Clz => format!("gm_clz({x}, {})", ii.bits),

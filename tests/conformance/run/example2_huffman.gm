@@ -1,0 +1,116 @@
+// Huffman coding of a text: frequency table, tree built in a list, code table, bit packing, decoding and a round-trip check.
+fmt :: import "std/fmt"
+
+TEXT :: `it was the best of times, it was the worst of times, it was the age of wisdom,
+it was the age of foolishness, it was the epoch of belief, it was the epoch of incredulity`
+
+Node :: struct {
+    weight: u32
+    left: i32 = -1
+    right: i32 = -1
+    sym: u8 = 0
+}
+
+Code :: struct {
+    bits: u32 = 0
+    len: u8 = 0
+}
+
+BitWriter :: struct {
+    buf: []u8
+    nbits: usize = 0
+}
+
+put_bit :: fn(w: ^BitWriter, bit: u32) {
+    byte := w.nbits / 8
+    if w.nbits % 8 is 0 { w.buf[byte] = 0 }
+    if bit is 1 { w.buf[byte] |= 0x80 >> (w.nbits % 8).trunc(u3) }
+    w.nbits += 1
+}
+
+get_bit :: fn(buf: []const u8, i: usize) -> u32 {
+    return u32((buf[i / 8] >> (7 - (i % 8).trunc(u3))) & 1)
+}
+
+// Assigns codes by walking the tree; `bits`/`len` describe the path so far.
+assign :: fn(nodes: []const Node, at: i32, bits: u32, len: u8, table: []Code) {
+    n := nodes[at.trunc(usize)]
+    if n.left < 0 {
+        table[n.sym] = Code(bits: bits, len: if len is 0 { 1 } else { len })
+        return
+    }
+    assign(nodes, n.left, bits << 1, len + 1, table)
+    assign(nodes, n.right, (bits << 1) | 1, len + 1, table)
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    freq := [256]u32(fill: 0)
+    for c in bytes(TEXT) { freq[c] += 1 }
+
+    nodes := list(Node)
+    defer nodes.deinit()
+    live := list(i32)
+    defer live.deinit()
+    for s in 0..256 {
+        if freq[s] > 0 {
+            try live.push(nodes.items.len.trunc(i32))
+            try nodes.push(Node(weight: freq[s], sym: s.trunc(u8)))
+        }
+    }
+    print("{} symbols, {} bytes\n", (live.items.len, TEXT.len))
+    // Merge the two lightest nodes until one remains. The list is kept sorted heaviest first,
+    // so the two lightest are popped from the end; ties go to the older node.
+    while live.items.len > 1 {
+        live.items.sort_by_key(fn(i) => (0 - i64(nodes.items[i^.trunc(usize)].weight), 0 - i64(i^)))
+        a := live.pop()?
+        b := live.pop()?
+        w := nodes.items[a.trunc(usize)].weight + nodes.items[b.trunc(usize)].weight
+        try live.push(nodes.items.len.trunc(i32))
+        try nodes.push(Node(weight: w, left: a, right: b))
+    }
+    root := live.items[0]
+    table := [256]Code(fill: Code())
+    assign(nodes.items, root, 0, 0, table[..])
+
+    total_bits: usize = 0
+    for c in bytes(TEXT) { total_bits += usize(table[c].len) }
+    print("{} bits, {} bytes packed, {} tree nodes\n", (total_bits, (total_bits + 7) / 8, nodes.items.len))
+
+    for s in bytes(" etoasi") {
+        c := table[s]
+        buf: [32]u8 = ---
+        print("{}: len {} bits {}\n", (s, c.len, fmt.bin(c.bits, buf[..])))
+    }
+
+    packed := try make(u8, (total_bits + 7) / 8)
+    defer free(packed)
+    w := BitWriter(buf: packed)
+    for c in bytes(TEXT) {
+        code := table[c]
+        i: u8 = code.len
+        while i > 0 {
+            i -= 1
+            put_bit(&w, (code.bits >> i) & 1)
+        }
+    }
+    hex: [64]u8 = ---
+    for i in 0..4 { print("{} ", fmt.hex(packed[i], hex[..])) }
+    print("\n")
+
+    decoded := try make(u8, TEXT.len)
+    defer free(decoded)
+    n: usize = 0
+    at := root
+    for i in 0..total_bits {
+        node := nodes.items[at.trunc(usize)]
+        at = if get_bit(packed, i) is 0 { node.left } else { node.right }
+        child := nodes.items[at.trunc(usize)]
+        if child.left < 0 {
+            decoded[n] = child.sym
+            n += 1
+            at = root
+        }
+    }
+    print("decoded {} bytes, round trip {}\n", (n, decoded[0..n] is TEXT))
+    return ()
+}

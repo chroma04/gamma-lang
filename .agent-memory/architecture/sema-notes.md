@@ -30,3 +30,10 @@
 - Consts needing temps: check_const_expr wraps them in a `<constant>` FnDef + Call.
 - `[2]P(…)[1].y`: expr::hoist_prefix rewrites the AST (prefix applies to the construction).
 - Non-capturing literal with own effects: FnDef.effects gets them (so cgen isn't plain).
+
+## Generic handler declarations (s3)
+- `handler(T: type, N: usize) E for X` → HandlerTemplate (handler_decl.rs); clauses are generic
+  Clause fns (FnSig.generics; instantiate keeps FnKind::Clause). handlers_for(&mut, t) matches
+  templates with match_params, instantiates clauses, caches in Sema.handler_instances; a
+  concrete decl for the same effect wins. Generic bodies get placeholder decls with Param
+  args; mono_expr re-runs handlers_for on the substituted type.

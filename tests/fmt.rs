@@ -242,3 +242,17 @@ fn lexical_errors_are_reported() {
     assert!(e.contains("unterminated"), "{}", e);
     assert!(format_source("a == b\n").is_err());
 }
+
+#[test]
+fn padding_is_kept_only_when_it_aligns() {
+    check("f   :: fn() {}\n", "f :: fn() {}\n");
+    check("a    :: 1\nbcd  :: 2\n", "a    :: 1\nbcd  :: 2\n");
+    check("P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n", "P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n");
+}
+
+#[test]
+fn else_chains_after_blocks_align_with_their_statement() {
+    let src = "f :: fn() {\n    when A { g() }\n        else when B { h() }\n        else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n";
+    let want = "f :: fn() {\n    when A { g() }\n    else when B { h() }\n    else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n";
+    check(src, want);
+}

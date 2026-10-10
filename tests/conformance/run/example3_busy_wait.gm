@@ -1,0 +1,30 @@
+// Busy-wait threads without yielding: an atomic_swap spin lock and an acquire flag wait must make progress in both back ends.
+thread :: import "std/thread"
+
+Shared :: struct { lock: u32, counter: u64, ready: u32, data: u64 }
+
+worker :: fn(raw: rawptr) \ {Sys} {
+    s := raw.cast(^Shared)
+    for _ in 0..200 {
+        while @atomic_swap(&s.lock, 1, .Acquire) is 1 {}
+        s.counter += 1
+        @atomic_store(&s.lock, 0, .Release)
+    }
+}
+
+waiter :: fn(raw: rawptr) \ {Sys} {
+    s := raw.cast(^Shared)
+    while @atomic_load(&s.ready, .Acquire) is 0 {}
+    s.counter += s.data
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    s := Shared(lock: 0, counter: 0, ready: 0, data: 1000)
+    w := try thread.spawn(waiter, (&s).cast(rawptr))
+    ts: [8]thread.Thread = ---
+    for i in 0..8 { ts[i] = try thread.spawn(worker, (&s).cast(rawptr)) }
+    for i in 0..8 { ts[i].join() }
+    @atomic_store(&s.ready, 1, .Release)
+    w.join()
+    print("{}\n", s.counter)
+}

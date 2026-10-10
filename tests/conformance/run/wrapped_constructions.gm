@@ -1,0 +1,18 @@
+// Arrays of pointer, optional-pointer and slice elements (§A.7 rule 12), and `!e` where
+// an optional result is expected (§6.4, §10.2).
+E :: union { A, B: u16 }
+f :: fn(k: i32) -> ?(E!u16) {
+    if k is 0 { return null }
+    return !.B(7)
+}
+main :: fn() \ {Out} {
+    x: i32 = 5
+    p := [_]^i32(&x)
+    q := [_]?^const i32(&x, null)
+    a := [2]string("a", "b")
+    b := [1]string("c")
+    s := [2][]const string(a[..], b[..])
+    arr := [3]?(E!u8)(fill: null)
+    arr[2] = !.B(9)
+    print("{} {} {} {} {} {}\n", (p[0]^, q[1] is null, s[1][0], f(1), f(0), arr[2]))
+}
