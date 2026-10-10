@@ -582,10 +582,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Builtin::Clz | Builtin::Ctz | Builtin::Popcount | Builtin::Bswap | Builtin::Bitreverse => {
                 let ii = self.int_info(at).unwrap();
                 let x = format!("(unsigned __int128)({})({})", ii.ucty(), vals[0]);
-                let x = format!(
-                    "({x} & (((unsigned __int128)1 << {b}) - 1 | ({b} == 128 ? ~(unsigned __int128)0 : 0)))",
-                    b = ii.bits
-                );
+                // Keep the low bits only (a shift by 128 would be undefined in C).
+                let x = if ii.bits >= 128 { x } else { format!("({x} & (((unsigned __int128)1 << {}) - 1))", ii.bits) };
                 let c = self.g.ty.cty(t);
                 let call = match op {
                     Builtin::Clz => format!("gm_clz({x}, {})", ii.bits),

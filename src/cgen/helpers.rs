@@ -382,9 +382,10 @@ static unsigned __int128 gm_bitreverse(unsigned __int128 x, int bits) {
 }
 /* Rotates the low `bits` bits of x left by k (taken modulo bits). */
 static unsigned __int128 gm_rotl(unsigned __int128 x, uint64_t k, int bits) {
+    unsigned __int128 mask = bits == 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
+    x &= mask;
     k %= (uint64_t)bits;
     if (k == 0) return x;
-    unsigned __int128 mask = bits == 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
     return ((x << k) | (x >> ((uint64_t)bits - k))) & mask;
 }
 "#;

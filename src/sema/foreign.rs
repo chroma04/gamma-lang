@@ -260,6 +260,23 @@ impl<'s> Sema<'s> {
     /// effects at most `{Sys}`.
     pub(super) fn export_fn(&mut self, f: FnId, sym: Symbol, span: Span) {
         let sig: FnSig = self.sigs[&f].clone();
+        // The symbol is a C identifier, unique among exports, and not the program's
+        // own entry point (§19.4).
+        let s = sym.as_str();
+        let ident = s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ident {
+            self.error(span, format!("`{}` is not a valid C symbol name", s));
+            return;
+        }
+        if s == "main" {
+            self.error(span, "`main` cannot be exported: it is the program's entry point");
+            return;
+        }
+        if self.prog.exports.iter().any(|(e, _)| *e == sym) {
+            self.error(span, format!("another function is already exported as `{}`", s));
+            return;
+        }
         if !sig.generics.is_empty() {
             self.error(span, "a generic function cannot be exported");
             return;

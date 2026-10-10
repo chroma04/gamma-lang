@@ -2247,7 +2247,7 @@ load :: fn(path: cstring) -> c.c_int \ {Sys} {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 

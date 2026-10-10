@@ -16,6 +16,9 @@ main :: fn() \ {Out} {
     print("{} {}\n", (@rotr(g, 1), @rotl(@rotr(g, 3), 3)))
     h: i130 = -1
     print("{}\n", @rotl(h, 77))
+    neg: i5 = -3
+    wide_neg: i12 = -1000
+    print("{} {} {} {}\n", (@rotl(neg, 1), @rotr(neg, 2), @rotl(wide_neg, 5), @rotr(wide_neg, 7)))
     n: u32 = 13
     print("{}\n", @rotl(b, n) is @rotr(b, 32 - n))
 }

@@ -129,6 +129,21 @@ fn generate_entries(
     out.push_str(&consts);
     out.push_str(&g.helpers.bodies);
     out.push_str(&g.bodies);
+    // An exported symbol must not be a name the generated program uses itself.
+    if !prog.exports.is_empty() {
+        let idents = c_identifiers(&out);
+        for (sym, f) in &prog.exports {
+            if idents.contains(sym.as_str()) {
+                return Err(Unsupported {
+                    message: format!(
+                        "the exported name `{}` is also a name of the compiled program's runtime; choose another",
+                        sym
+                    ),
+                    span: prog.fns[f.index()].span,
+                });
+            }
+        }
+    }
     out.push_str(&exports);
     out.push_str(&main);
     Ok(Generated { code: out, libs: g.libs.into_iter().collect() })
@@ -371,8 +386,11 @@ impl<'a> Gen<'a> {
     /// Exported functions (§19.4): external C-ABI wrappers under their symbols.
     fn gen_exports(&mut self) -> CResult<String> {
         let mut s = String::new();
-        for (sym, f) in self.prog.exports.clone() {
+        for (k, (sym, f)) in self.prog.exports.clone().into_iter().enumerate() {
             let def = &self.prog.fns[f.index()];
+            // A private C name bound to the symbol, so it cannot clash with declarations
+            // of the C headers the runtime includes.
+            let cname = format!("gm_xe{}", k);
             let mut params = vec![];
             let mut args = vec![];
             for (i, p) in def.params.iter().enumerate() {
@@ -386,13 +404,16 @@ impl<'a> Gen<'a> {
             }
             let call = format!("{}({})", self.fn_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-            if def.ret.is_unit() {
-                let _ = writeln!(s, "{}void {}({}) {{ {}; }}", conv_attr(def.callconv), sym, params, call);
+            let (r, body) = if def.ret.is_unit() {
+                ("void".to_string(), format!("{};", call))
             } else {
                 let r = self.c_abi_type(def.ret, def.span)?;
                 let call = if self.ty.mirror(def.ret).is_some() { call } else { format!("({}){}", r, call) };
-                let _ = writeln!(s, "{}{} {}({}) {{ return {}; }}", conv_attr(def.callconv), r, sym, params, call);
-            }
+                (r, format!("return {};", call))
+            };
+            let cc = conv_attr(def.callconv);
+            let _ = writeln!(s, "{cc}{r} {cname}({params}) __asm__(GM_SYM(\"{sym}\"));");
+            let _ = writeln!(s, "{cc}{r} {cname}({params}) {{ {body} }}");
         }
         Ok(s)
     }
@@ -604,4 +625,50 @@ pub fn compile(code: &str, libs: &[String], exe: &Path) -> Result<Build, String>
         return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     Ok(Build { c_file, exe: exe.to_path_buf() })
+}
+
+/// The identifiers of C source `code`, outside comments and string and character
+/// literals.
+fn c_identifiers(code: &str) -> std::collections::HashSet<&str> {
+    let b = code.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' => {
+                let q = b[i];
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.insert(&code[start..i]);
+            }
+            c if c.is_ascii_digit() => {
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
 }

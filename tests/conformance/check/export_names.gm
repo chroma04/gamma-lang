@@ -1,0 +1,12 @@
+//! stage: check
+// Exported symbols are C identifiers, unique, and not `main` (§19.4).
+#export("bad name") //~ ERROR is not a valid C symbol name
+a :: fn() {}
+#export("main") //~ ERROR `main` cannot be exported
+b :: fn() {}
+#export("twice")
+c :: fn() {}
+#export("twice") //~ ERROR another function is already exported as `twice`
+d :: fn() {}
+
+main :: fn() {}
