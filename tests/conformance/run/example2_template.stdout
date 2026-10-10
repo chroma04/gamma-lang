@@ -1,0 +1,22 @@
+---
+<h1>Pioneers</h1>
+yes ada;
+no grace;
+no alan;
+admin mode
+---
+---
+[Pioneers]
+---
+render error: .Unbound("missing")
+---
+
+---
+render error: .NotAList("title")
+---
+
+---
+template error: unclosed if
+template error: stray /if
+template error: bad tag #bogus a
+template error: bad tag title

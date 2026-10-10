@@ -1,0 +1,261 @@
+// JSON-subset parser into a tagged-union tree allocated from an arena, plus a pretty-printer; errors carry positions.
+arena :: import "std/arena"
+
+Json :: union {
+    Null
+    Bool: bool
+    Num: f64
+    Str: string
+    Arr: []Json
+    Obj: []Member
+}
+
+Member :: struct {
+    key: string
+    val: Json
+}
+
+ParseError :: union {
+    Eof: usize
+    Unexpected: (pos: usize, ch: u8)
+    BadEscape: usize
+    BadNumber: usize
+    Trailing: usize
+    Memory: AllocError
+}
+
+Parser :: struct {
+    src: string
+    pos: usize = 0
+}
+
+skip_ws :: fn(p: ^Parser) {
+    while p.pos < p.src.len {
+        c := p.src[p.pos]
+        if c is ' ' or c is '\n' or c is '\t' or c is '\r' { p.pos += 1 } else { break }
+    }
+}
+
+peek :: fn(p: ^Parser) -> ParseError!u8 {
+    skip_ws(p)
+    if p.pos >= p.src.len { return !.Eof(p.pos) }
+    return p.src[p.pos]
+}
+
+expect_byte :: fn(p: ^Parser, want: u8) -> ParseError!() {
+    c := try peek(p)
+    if c is not want { return !.Unexpected(pos: p.pos, ch: c) }
+    p.pos += 1
+    return ()
+}
+
+expect_word :: fn(p: ^Parser, word: string) -> ParseError!() {
+    for w in bytes(word) {
+        if p.pos >= p.src.len { return !.Eof(p.pos) }
+        if p.src[p.pos] is not w { return !.Unexpected(pos: p.pos, ch: p.src[p.pos]) }
+        p.pos += 1
+    }
+    return ()
+}
+
+// Parses a string literal; escapes are decoded into a fresh buffer from the current allocator.
+parse_string :: fn(p: ^Parser) -> ParseError!string \ {Alloc} {
+    try expect_byte(p, '"')
+    buf := try make(u8, p.src.len - p.pos)
+    n: usize = 0
+    while true {
+        if p.pos >= p.src.len { return !.Eof(p.pos) }
+        c := p.src[p.pos]
+        p.pos += 1
+        if c is '"' { break }
+        if c is '\\' {
+            if p.pos >= p.src.len { return !.Eof(p.pos) }
+            e := p.src[p.pos]
+            p.pos += 1
+            buf[n] = match e {
+                'n' => '\n'
+                't' => '\t'
+                '"' => '"'
+                '\\' => '\\'
+                '/' => '/'
+                _ => return !.BadEscape(p.pos - 1)
+            }
+        } else {
+            buf[n] = c
+        }
+        n += 1
+    }
+    return buf[0..n]
+}
+
+parse_number :: fn(p: ^Parser) -> ParseError!f64 {
+    start := p.pos
+    neg := p.src[p.pos] is '-'
+    if neg { p.pos += 1 }
+    int_part: f64 = 0
+    digits: u32 = 0
+    while p.pos < p.src.len and p.src[p.pos] in '0'..='9' {
+        int_part = int_part * 10.0 + f64(p.src[p.pos] - '0')
+        p.pos += 1
+        digits += 1
+    }
+    if digits is 0 { return !.BadNumber(start) }
+    if p.pos < p.src.len and p.src[p.pos] is '.' {
+        p.pos += 1
+        scale := 0.1
+        fd: u32 = 0
+        while p.pos < p.src.len and p.src[p.pos] in '0'..='9' {
+            int_part += f64(p.src[p.pos] - '0') * scale
+            scale /= 10.0
+            p.pos += 1
+            fd += 1
+        }
+        if fd is 0 { return !.BadNumber(start) }
+    }
+    return if neg { -int_part } else { int_part }
+}
+
+parse_value :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+    c := try peek(p)
+    return match c {
+        'n' => {
+            try expect_word(p, "null")
+            Json.Null
+        }
+        't' => {
+            try expect_word(p, "true")
+            Json.Bool(true)
+        }
+        'f' => {
+            try expect_word(p, "false")
+            Json.Bool(false)
+        }
+        '"' => Json.Str(try parse_string(p))
+        '[' => try parse_array(p)
+        '{' => try parse_object(p)
+        '-', '0'..='9' => Json.Num(try parse_number(p))
+        _ => return !.Unexpected(pos: p.pos, ch: c)
+    }
+}
+
+parse_array :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+    try expect_byte(p, '[')
+    items := list(Json)
+    if (try peek(p)) is ']' {
+        p.pos += 1
+        return Json.Arr(items.items)
+    }
+    while true {
+        v := try parse_value(p)
+        try items.push(v)
+        c := try peek(p)
+        p.pos += 1
+        if c is ']' { break }
+        if c is not ',' { return !.Unexpected(pos: p.pos - 1, ch: c) }
+    }
+    return Json.Arr(items.items)
+}
+
+parse_object :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+    try expect_byte(p, '{')
+    members := list(Member)
+    if (try peek(p)) is '}' {
+        p.pos += 1
+        return Json.Obj(members.items)
+    }
+    while true {
+        skip_ws(p)
+        k := try parse_string(p)
+        try expect_byte(p, ':')
+        v := try parse_value(p)
+        try members.push(Member(key: k, val: v))
+        c := try peek(p)
+        p.pos += 1
+        if c is '}' { break }
+        if c is not ',' { return !.Unexpected(pos: p.pos - 1, ch: c) }
+    }
+    return Json.Obj(members.items)
+}
+
+parse :: fn(src: string) -> ParseError!Json \ {Alloc} {
+    p := Parser(src: src)
+    v := try parse_value(&p)
+    skip_ws(&p)
+    if p.pos < p.src.len { return !.Trailing(p.pos) }
+    return v
+}
+
+indent :: fn(n: u32) \ {Out} {
+    for _ in 0..n { print("  ") }
+}
+
+show :: fn(j: Json, depth: u32) \ {Out} {
+    match j {
+        .Null => print("null")
+        .Bool(b) => print("{}", b)
+        .Num(x) => print("{}", x)
+        .Str(s) => print("\"{}\"", s)
+        .Arr(items) => {
+            if items.len is 0 {
+                print("[]")
+            } else {
+                print("[\n")
+                for i, x in enumerate(items) {
+                    indent(depth + 1)
+                    show(x, depth + 1)
+                    print("{}\n", if i + 1 < items.len { "," } else { "" })
+                }
+                indent(depth)
+                print("]")
+            }
+        }
+        .Obj(ms) => {
+            if ms.len is 0 {
+                print("{{}}")
+            } else {
+                print("{{\n")
+                for i, m in enumerate(ms) {
+                    indent(depth + 1)
+                    print("\"{}\": ", m.key)
+                    show(m.val, depth + 1)
+                    print("{}\n", if i + 1 < ms.len { "," } else { "" })
+                }
+                indent(depth)
+                print("}}")
+            }
+        }
+    }
+}
+
+main :: fn() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    inputs := [_]string(
+        "{\"name\": \"gamma\", \"tags\": [\"a\\tb\", \"q\\\"uote\"], \"n\": -12.5, \"ok\": true, \"nil\": null, \"e\": {}, \"l\": []}",
+        "[1, 2, [3, [4, 5]], {\"k\": [true, false]}]",
+        "[1, 2,, 3]",
+        "{\"a\" 1}",
+        "[1, 2",
+        "\"bad \\q escape\"",
+        "12 13",
+        "-",
+        "{\"x\": nul}",
+    )
+    with a.allocator() {
+        for src in inputs {
+            print("input: {}\n", src)
+            match parse(src) {
+                !.Eof(at) => print("error: unexpected end at {}\n", at)
+                !.Unexpected(pos: at, ch: c) => print("error: unexpected '{}' at {}\n", (c, at))
+                !.BadEscape(at) => print("error: bad escape at {}\n", at)
+                !.BadNumber(at) => print("error: bad number at {}\n", at)
+                !.Trailing(at) => print("error: trailing input at {}\n", at)
+                !.Memory(_) => print("error: out of memory\n")
+                v => {
+                    show(v, 0)
+                    print("\n")
+                }
+            }
+        }
+    }
+}

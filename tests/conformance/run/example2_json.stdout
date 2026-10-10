@@ -1,0 +1,45 @@
+input: {"name": "gamma", "tags": ["a\tb", "q\"uote"], "n": -12.5, "ok": true, "nil": null, "e": {}, "l": []}
+{
+  "name": "gamma",
+  "tags": [
+    "a	b",
+    "q"uote"
+  ],
+  "n": -12.5,
+  "ok": true,
+  "nil": null,
+  "e": {},
+  "l": []
+}
+input: [1, 2, [3, [4, 5]], {"k": [true, false]}]
+[
+  1,
+  2,
+  [
+    3,
+    [
+      4,
+      5
+    ]
+  ],
+  {
+    "k": [
+      true,
+      false
+    ]
+  }
+]
+input: [1, 2,, 3]
+error: unexpected '44' at 6
+input: {"a" 1}
+error: unexpected '49' at 5
+input: [1, 2
+error: unexpected end at 5
+input: "bad \q escape"
+error: bad escape at 6
+input: 12 13
+error: trailing input at 3
+input: -
+error: bad number at 0
+input: {"x": nul}
+error: unexpected '125' at 9

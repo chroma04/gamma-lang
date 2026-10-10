@@ -1,0 +1,9 @@
+total=6
+hello world
+add: needs 1 args
+add: error: not a number
+unknown command nope
+total=-5
+"banana"
+"banana"
+null
