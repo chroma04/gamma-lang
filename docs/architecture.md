@@ -149,7 +149,9 @@ lowers each function body to TIR.
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
 | `fnlit.rs` | function literals, captures and second-class rules |
-| `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations, `with`, `for` over iterators |
+| `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations (generic ones are templates instantiated by `handlers_for`), `with`, `for` over iterators |
+| `cont_check.rs` | the static check that a `ctl` clause consumes its continuation exactly once (§14.2), a small dataflow pass over the finished TIR |
+| `escape.rs` | rejecting pointers to stack memory that outlive it |
 | `generics.rs` | constraints, inference of type arguments, monomorphization |
 | `consteval.rs` | compile-time evaluation (checking the bodies it reaches first), `@static_assert` |
 | `stack_size.rs` | `@stack_size`: the deepest chain of frames below a function, following statically known handlers and function arguments |
