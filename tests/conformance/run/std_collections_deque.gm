@@ -1,0 +1,164 @@
+// std/collections/deque: every operation, the ring buffer wrapping around and
+// growing while wrapped, cursors, and a randomized comparison with a list.
+dq :: import "std/collections/deque"
+
+// Prints the elements an iterator yields, on one line.
+show :: fn(label: string, it: fn() \ {Yield(u32), Out}) \ {Out} {
+    print("{}:", label)
+    for x in it() { print(" {}", x) }
+    print("\n")
+}
+
+Point :: struct {
+    x: i32
+    y: i32
+}
+
+next_random :: fn(state: ^u64) -> u64 {
+    state^ = state^ *% 6364136223846793005 +% 1442695040888963407
+    return state^ >> 33
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    // An empty deque.
+    d := dq.deque(u32)
+    defer d.deinit()
+    print("empty: len {} is_empty {} capacity {}\n", (d.len(), d.is_empty(), d.capacity()))
+    print("empty: front {} back {} get {} pop_back {} pop_front {}\n",
+          (d.front(), d.back(), d.get(0), d.pop_back(), d.pop_front()))
+    print("get_ptr(0) is null: {}\n", d.get_ptr(0) is null)
+    show("items", fn() \ {Yield(u32)} { d.items() })
+    c0 := d.cursor()
+    print("cursor next {}\n", c0.next())
+
+    // Both ends.
+    try d.push_back(2)
+    try d.push_back(3)
+    try d.push_front(1)
+    try d.push_front(0)
+    show("0..3", fn() \ {Yield(u32)} { d.items() })
+    print("len {} front {} back {} get(2) {} get(4) {}\n", (d.len(), d.front(), d.back(), d.get(2), d.get(4)))
+    print("pop_front {} pop_back {}\n", (d.pop_front(), d.pop_back()))
+    show("1 2", fn() \ {Yield(u32)} { d.items() })
+    d.clear()
+    print("cleared: len {} capacity {}\n", (d.len(), d.capacity()))
+
+    // push_front on an empty deque wraps the head backward.
+    for i in 1..=3 { try d.push_front(i) }
+    show("front pushes", fn() \ {Yield(u32)} { d.items() })
+
+    // Wrap around inside a full buffer, then grow while it is wrapped.
+    d.clear()
+    for i in 1..=4 { try d.push_back(i) }
+    print("full: len {} capacity {}\n", (d.len(), d.capacity()))
+    _ = d.pop_front()
+    _ = d.pop_front()
+    try d.push_back(5)
+    try d.push_back(6)
+    print("wrapped: len {} capacity {}\n", (d.len(), d.capacity()))
+    show("wrapped", fn() \ {Yield(u32)} { d.items() })
+    print("wrapped: front {} back {} get(1) {} get(3) {}\n", (d.front(), d.back(), d.get(1), d.get(3)))
+    try d.push_back(7)
+    print("grown: len {} capacity {}\n", (d.len(), d.capacity()))
+    show("grown", fn() \ {Yield(u32)} { d.items() })
+    try d.push_front(2)
+    show("push_front after growth", fn() \ {Yield(u32)} { d.items() })
+
+    // Growth triggered by push_front while wrapped.
+    e := dq.deque(u32)
+    defer e.deinit()
+    for i in 1..=4 { try e.push_front(i) }
+    _ = e.pop_back()
+    try e.push_front(9)
+    try e.push_front(10)
+    print("e: len {} capacity {}\n", (e.len(), e.capacity()))
+    show("e", fn() \ {Yield(u32)} { e.items() })
+
+    // In-place access.
+    p := d.get_ptr(0) else trap("expected an element")
+    p^ = 100
+    if q := d.get_ptr(d.len() - 1) { q^ += 1000 }
+    show("edited", fn() \ {Yield(u32)} { d.items() })
+    print("get_ptr past the end is null: {}\n", d.get_ptr(d.len()) is null)
+
+    // Reserve.
+    r := dq.deque(u32)
+    defer r.deinit()
+    try r.reserve(100)
+    cap := r.capacity()
+    print("reserve: capacity at least 100: {}\n", cap >= 100)
+    for i in 0..100 { try r.push_back(i) }
+    print("reserve: no growth: {}\n", r.capacity() is cap)
+    try r.reserve(0)
+    print("reserve(0): capacity unchanged: {}\n", r.capacity() is cap)
+    try r.reserve(1)
+    print("reserve beyond: capacity grew: {}\n", r.capacity() > cap)
+
+    // Cursors advance independently.
+    a := dq.deque(u32)
+    defer a.deinit()
+    b := dq.deque(u32)
+    defer b.deinit()
+    for i in 0..5 { try a.push_back(i) }
+    for i in 10..13 { try b.push_front(i) }
+    ca := a.cursor()
+    cb := b.cursor()
+    while x := ca.next() {
+        y := cb.next() else 0
+        print("pair {} {}\n", (x, y))
+    }
+    print("after the end: {} {}\n", (ca.next(), ca.next()))
+
+    // Non-scalar elements.
+    ps := dq.deque(Point)
+    defer ps.deinit()
+    try ps.push_back(Point(x: 1, y: 2))
+    try ps.push_front(Point(x: -1, y: -2))
+    if pp := ps.get_ptr(1) { pp.y = 20 }
+    for pt in ps.items() { print("point {} {}\n", (pt.x, pt.y)) }
+
+    // A long run of random operations agrees with a plain list.
+    model := list(u32)
+    defer model.deinit()
+    big := dq.deque(u32)
+    defer big.deinit()
+    seed: u64 = 12345
+    mismatches: u32 = 0
+    max_len: usize = 0
+    for step in 0..5000 {
+        op := next_random(&seed) % 6
+        v: u32 = step
+        if op is 0 or op is 1 {
+            try big.push_back(v)
+            try model.push(v)
+        } else if op is 2 or op is 3 {
+            try big.push_front(v)
+            try model.insert(0, v)
+        } else if op is 4 {
+            m: ?u32 = if model.items.len is 0 { null } else { model.remove(0) }
+            if big.pop_front() is not m { mismatches += 1 }
+        } else {
+            if big.pop_back() is not model.pop() { mismatches += 1 }
+        }
+        if big.len() > max_len { max_len = big.len() }
+        if big.len() is not model.items.len { mismatches += 1 }
+    }
+    cm := big.cursor()
+    for i in 0..model.items.len {
+        if cm.next() is not model.items[i] { mismatches += 1 }
+        if big.get(i) is not model.items[i] { mismatches += 1 }
+    }
+    print("random: final len {} (model {}), mismatches {}\n", (big.len(), model.items.len, mismatches))
+
+    // A deque used as a queue never grows beyond what is live.
+    q := dq.deque(u32)
+    defer q.deinit()
+    for i in 0..1000 {
+        try q.push_back(i)
+        try q.push_back(i)
+        _ = q.pop_front()
+        _ = q.pop_front()
+    }
+    print("queue: len {} capacity {}\n", (q.len(), q.capacity()))
+    return ()
+}

@@ -1,0 +1,8 @@
+test "a deque without deinit leaks" ... FAILED
+    leaked 16 bytes
+test "a heap without deinit leaks" ... FAILED
+    leaked 16 bytes
+test "a bit set without deinit leaks" ... FAILED
+    leaked 8 bytes
+test "an empty bit set and an unused deque leak nothing" ... ok
+1 passed, 3 failed

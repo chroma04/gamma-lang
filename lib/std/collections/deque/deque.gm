@@ -1,0 +1,160 @@
+// std/collections/deque: a double-ended queue in a growable ring buffer.
+//
+//     dq :: import "std/collections/deque"
+//
+//     d := dq.deque(u32)                   // captures the current allocator
+//     defer d.deinit()
+//     try d.push_back(2)
+//     try d.push_front(1)
+//     for x in d.items() { print("{}\n", x) }     // 1, 2
+//
+// Like `List`, a deque keeps the allocator it was created with, performs no `Alloc`
+// afterwards, and reports a failed growth as `AllocError`. Operations at either end
+// take constant time (amortized when they grow the buffer). The ring is stored in
+// one block of `cap` elements; the element at logical index `i` lives in slot
+// `(head + i) mod cap`.
+
+/// A growable double-ended queue that keeps the allocator it was created with.
+pub Deque :: struct(T: type) {
+    buf: []T
+    head: usize
+    count: usize
+    alloc: Allocator
+}
+
+/// An empty deque using the current allocator. It allocates on the first push.
+pub deque :: fn(T: type) -> Deque(T) \ {Alloc} {
+    return Deque(T)(buf: empty_slice(T), head: 0, count: 0, alloc: current())
+}
+
+// The storage slot of logical index `i` (at most the length).
+slot :: fn(T: type, d: ^const Deque(T), i: usize) -> usize {
+    j := d.head + i
+    if j >= d.buf.len { j -= d.buf.len }
+    return j
+}
+
+/// The number of elements.
+pub len :: fn(T: type, d: ^const Deque(T)) -> usize => d.count
+
+/// Whether the deque has no elements.
+pub is_empty :: fn(T: type, d: ^const Deque(T)) -> bool => d.count is 0
+
+/// The number of elements the deque can hold before it must grow.
+pub capacity :: fn(T: type, d: ^const Deque(T)) -> usize => d.buf.len
+
+/// Makes room for at least `extra` more elements without further allocation.
+pub reserve :: fn(T: type, d: ^Deque(T), extra: usize) -> AllocError!() {
+    n := d.count
+    cap := d.buf.len
+    if cap - n >= extra { return () }
+    new_cap := if cap is 0 { 4 } else { cap * 2 }
+    if new_cap - n < extra { new_cap = n + extra }
+    raw := d.alloc.vt.alloc(d.alloc.data, @size_of(T) * new_cap, @align_of(T)) else return !.OutOfMemory
+    p := raw.cast([^]T)
+    // Unroll the ring: the new block starts with the front element.
+    for i in 0..n { p[i] = d.buf[slot(d, i)] }
+    if cap > 0 {
+        d.alloc.vt.free(d.alloc.data, d.buf.ptr.cast([^]u8), @size_of(T) * cap, @align_of(T))
+    }
+    d.buf = p[0..new_cap]
+    d.head = 0
+    return ()
+}
+
+/// Appends `x` at the back.
+pub push_back :: fn(T: type, d: ^Deque(T), x: T) -> AllocError!() {
+    try reserve(d, 1)
+    d.buf[slot(d, d.count)] = x
+    d.count += 1
+    return ()
+}
+
+/// Prepends `x` at the front.
+pub push_front :: fn(T: type, d: ^Deque(T), x: T) -> AllocError!() {
+    try reserve(d, 1)
+    d.head = if d.head is 0 { d.buf.len - 1 } else { d.head - 1 }
+    d.buf[d.head] = x
+    d.count += 1
+    return ()
+}
+
+/// Removes and returns the last element.
+pub pop_back :: fn(T: type, d: ^Deque(T)) -> ?T {
+    if d.count is 0 { return null }
+    d.count -= 1
+    return d.buf[slot(d, d.count)]
+}
+
+/// Removes and returns the first element.
+pub pop_front :: fn(T: type, d: ^Deque(T)) -> ?T {
+    if d.count is 0 { return null }
+    x := d.buf[d.head]
+    d.head += 1
+    if d.head is d.buf.len { d.head = 0 }
+    d.count -= 1
+    return x
+}
+
+/// The first element, if there is one.
+pub front :: fn(T: type, d: ^const Deque(T)) -> ?T {
+    if d.count is 0 { return null }
+    return d.buf[d.head]
+}
+
+/// The last element, if there is one.
+pub back :: fn(T: type, d: ^const Deque(T)) -> ?T {
+    if d.count is 0 { return null }
+    return d.buf[slot(d, d.count - 1)]
+}
+
+/// The element at index `i`, counting from the front, if there is one.
+pub get :: fn(T: type, d: ^const Deque(T), i: usize) -> ?T {
+    if i >= d.count { return null }
+    return d.buf[slot(d, i)]
+}
+
+/// A pointer to the element at index `i`, so it can be read or updated in place. It is
+/// valid until the next push or `reserve`.
+pub get_ptr :: fn(T: type, d: ^Deque(T), i: usize) -> ?^T {
+    if i >= d.count { return null }
+    return &d.buf[slot(d, i)]
+}
+
+/// Removes every element, keeping the storage.
+pub clear :: fn(T: type, d: ^Deque(T)) {
+    d.head = 0
+    d.count = 0
+}
+
+/// Frees the deque's storage through its own allocator.
+pub deinit :: fn(T: type, d: ^Deque(T)) {
+    if d.buf.len > 0 {
+        d.alloc.vt.free(d.alloc.data, d.buf.ptr.cast([^]u8), @size_of(T) * d.buf.len, @align_of(T))
+    }
+    d.buf = empty_slice(T)
+    d.head = 0
+    d.count = 0
+}
+
+/// The elements from front to back. The deque must not change during the iteration.
+pub items :: fn(T: type, d: ^const Deque(T)) \ {Yield(T)} {
+    for i in 0..d.count { yield(d.buf[slot(d, i)]) }
+}
+
+/// A position in a deque, for advancing through several sequences in lockstep (§13.4).
+/// The deque must not change while the cursor is in use.
+pub Cursor :: struct(T: type) {
+    d: ^const Deque(T)
+    pos: usize
+}
+
+/// A cursor at the front of `d`.
+pub cursor :: fn(T: type, d: ^const Deque(T)) -> Cursor(T) => Cursor(T)(d: d, pos: 0)
+
+/// The next element, or `null` after the last.
+pub next :: fn(T: type, c: ^Cursor(T)) -> ?T {
+    x := get(c.d, c.pos) else return null
+    c.pos += 1
+    return x
+}

@@ -151,6 +151,65 @@ for line in str.lines(text) {
 - `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
   from the current allocator; release it with `free`.
 
+## `std/collections`
+
+Three containers beyond `List` and `HashMap`, each in its own module, because their
+functions are methods and a module has one namespace: `std/collections/deque`,
+`std/collections/heap` and `std/collections/bitset`. They follow the conventions of
+`List`: construction captures the current allocator, nothing allocates afterwards,
+growth returns `AllocError!()`, `deinit` frees through the stored allocator, and the
+fields are private.
+
+```gamma
+dq :: import "std/collections/deque"
+hp :: import "std/collections/heap"
+bs :: import "std/collections/bitset"
+
+d := dq.deque(u32)                    // a queue for a breadth-first search
+defer d.deinit()
+try d.push_back(1)
+while x := d.pop_front() { … }
+
+h := hp.heap_by(Job, fn(a, b: ^const Job) -> bool => a.cost < b.cost)
+defer h.deinit()
+try h.push(job)
+
+seen := try bs.bitset(1000)           // members are 0..1000
+defer seen.deinit()
+seen.insert(42)
+```
+
+**`deque`**: a growable ring buffer; both ends take constant (amortized) time.
+
+- `deque(T)`, `push_back(x)`, `push_front(x)` (`AllocError!()`), `pop_back()`,
+  `pop_front()` (`?T`), `front()`, `back()` (`?T`), `get(i) -> ?T`,
+  `get_ptr(i) -> ?^T` (valid until the next push or `reserve`), `len()`, `is_empty()`,
+  `capacity()`, `reserve(extra)`, `clear()`, `deinit()`.
+- `items()` yields the elements front to back (`for x in d.items()`); `c := d.cursor()`
+  and `c.next() -> ?T` advance through it in step with other sequences.
+
+**`heap`**: a binary heap; the element that comes first is popped first.
+
+- `heap(T)` (needs `Ord(T)`) pops the smallest by `<`. `heap_by(T, less)` takes
+  `less: ^fn(a, b: ^const T) -> bool`, true when `a` must come out before `b`: a named
+  function or a lambda that captures nothing. Both give the same type, `Heap(T)`.
+  `heap_from(T, xs)` and `heap_from_by(T, less, xs)` build a heap from a slice in
+  O(n) (`AllocError!Heap(T)`).
+- `push(x)` (`AllocError!()`), `pop() -> ?T`, `peek() -> ?T`, `len()`, `is_empty()`,
+  `clear()`, `deinit()`.
+
+**`bitset`**: a set of the integers below a capacity fixed at creation, one bit each in
+64-bit words. Operations after construction cannot fail.
+
+- `bitset(n) -> AllocError!BitSet`, `capacity()`, `insert(i)` (traps if `i >= n`),
+  `remove(i)` and `contains(i)` (both accept any `i`; integers beyond `n` are not
+  members), `count()` (popcount), `is_empty()`, `clear()`, `deinit()`.
+- `union_with(other)` and `intersect_with(other)` update the receiver in place; the
+  capacities may differ, but `union_with` traps if `other` has a member the receiver
+  cannot hold.
+- `items()` yields the members in increasing order; `next_member(from) -> ?usize` is the
+  smallest member at least `from`.
+
 ## `std/arena` and `std/fixed_buffer`
 
 Allocators to install with `with` (§15.2):

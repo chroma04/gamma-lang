@@ -1,0 +1,129 @@
+// std/collections/bitset: a set of small unsigned integers, one bit each.
+//
+//     bs :: import "std/collections/bitset"
+//
+//     s := try bs.bitset(100)              // members are 0..100
+//     defer s.deinit()
+//     s.insert(3)
+//     s.insert(64)
+//     for i in s.items() { print("{}\n", i) }     // 3, 64
+//
+// The universe is fixed when the set is created: it holds the integers below the
+// capacity `n` given to `bitset`. The bits live in a block of 64-bit words from the
+// allocator that was current at creation, so no operation after construction allocates
+// and none can fail for lack of memory. Bits at positions `n` and above are never set,
+// which keeps the whole-word operations (`count`, `union_with`, …) exact.
+
+/// A set of the integers below its capacity, stored one bit each.
+pub BitSet :: struct {
+    words: []u64
+    cap: usize
+    alloc: Allocator
+}
+
+// The number of words that hold `n` bits.
+words_for :: fn(n: usize) -> usize => n / 64 + (if n % 64 is 0 { 0 } else { 1 })
+
+/// An empty set that can hold the integers `0..n`, using the current allocator.
+pub bitset :: fn(n: usize) -> AllocError!BitSet \ {Alloc} {
+    a := current()
+    count := words_for(n)
+    if count is 0 { return BitSet(words: empty_slice(u64), cap: n, alloc: a) }
+    raw := a.vt.alloc(a.data, 8 * count, 8) else return !.OutOfMemory
+    words := raw.cast([^]u64)[0..count]
+    for i in 0..count { words[i] = 0 }
+    return BitSet(words: words, cap: n, alloc: a)
+}
+
+/// The number of integers the set can hold: its members are below this.
+pub capacity :: fn(b: ^const BitSet) -> usize => b.cap
+
+/// Adds `i`. Traps if `i` is not below the capacity.
+pub insert :: fn(b: ^BitSet, i: usize) {
+    if i >= b.cap { trap("bitset insert: index out of bounds") }
+    b.words[i / 64] |= u64(1) << (i % 64).trunc(u32)
+}
+
+/// Removes `i`, if it is a member.
+pub remove :: fn(b: ^BitSet, i: usize) {
+    if i >= b.cap { return }
+    b.words[i / 64] &= ~(u64(1) << (i % 64).trunc(u32))
+}
+
+/// Whether `i` is a member. Integers at or above the capacity are not.
+pub contains :: fn(b: ^const BitSet, i: usize) -> bool {
+    if i >= b.cap { return false }
+    return b.words[i / 64] & (u64(1) << (i % 64).trunc(u32)) is not 0
+}
+
+/// The number of members.
+pub count :: fn(b: ^const BitSet) -> usize {
+    n: usize = 0
+    for w in b.words { n += usize(@popcount(w)) }
+    return n
+}
+
+/// Whether the set has no members.
+pub is_empty :: fn(b: ^const BitSet) -> bool {
+    for w in b.words {
+        if w is not 0 { return false }
+    }
+    return true
+}
+
+/// Removes every member.
+pub clear :: fn(b: ^BitSet) {
+    for i in 0..b.words.len { b.words[i] = 0 }
+}
+
+/// Adds every member of `other` to `b`. Traps if `other` has a member that `b`'s
+/// capacity cannot hold.
+pub union_with :: fn(b: ^BitSet, other: ^const BitSet) {
+    for i in 0..other.words.len {
+        if i < b.words.len {
+            b.words[i] |= other.words[i]
+        } else if other.words[i] is not 0 {
+            trap("bitset union_with: the other set has members beyond the capacity")
+        }
+    }
+}
+
+/// Removes the members of `b` that are not in `other`.
+pub intersect_with :: fn(b: ^BitSet, other: ^const BitSet) {
+    for i in 0..b.words.len {
+        b.words[i] = if i < other.words.len { b.words[i] & other.words[i] } else { 0 }
+    }
+}
+
+/// The smallest member that is at least `from`, if there is one. Calling it again with
+/// the member plus one steps through the set in increasing order.
+pub next_member :: fn(b: ^const BitSet, from: usize) -> ?usize {
+    if from >= b.cap { return null }
+    wi := from / 64
+    // Drop the bits below `from` in its word, then scan the words from there.
+    w := b.words[wi] & (~u64(0) <<% (from % 64).trunc(u32))
+    while true {
+        if w is not 0 { return wi * 64 + usize(@ctz(w)) }
+        wi += 1
+        if wi >= b.words.len { return null }
+        w = b.words[wi]
+    }
+}
+
+/// The members in increasing order. The set must not change during the iteration.
+pub items :: fn(b: ^const BitSet) \ {Yield(usize)} {
+    from: usize = 0
+    while i := next_member(b, from) {
+        yield(i)
+        from = i + 1
+    }
+}
+
+/// Frees the set's storage through its own allocator.
+pub deinit :: fn(b: ^BitSet) {
+    if b.words.len > 0 {
+        b.alloc.vt.free(b.alloc.data, b.words.ptr.cast([^]u8), 8 * b.words.len, 8)
+    }
+    b.words = empty_slice(u64)
+    b.cap = 0
+}

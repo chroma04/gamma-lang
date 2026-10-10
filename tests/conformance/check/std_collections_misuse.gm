@@ -1,0 +1,39 @@
+//! stage: check
+// Common mistakes with the std/collections containers.
+dq :: import "std/collections/deque"
+hp :: import "std/collections/heap"
+bs :: import "std/collections/bitset"
+
+Job :: struct {
+    priority: u32
+}
+
+by_priority :: fn(a, b: ^const Job) -> bool => a.priority < b.priority
+wrong_order :: fn(a, b: Job) -> bool => a.priority < b.priority
+
+misuse :: fn() -> AllocError!() \ {Alloc} {
+    // A heap ordered by `<` needs an element type that has an ordering.
+    h := hp.heap(Job)                            //~ ERROR does not satisfy
+    jobs := [_]Job(Job(priority: 1))
+    both := try hp.heap_from(Job, jobs[..])      //~ ERROR does not satisfy
+
+    // A comparison function must take pointers to the element type.
+    w := hp.heap_by(Job, wrong_order)            //~ ERROR expected
+
+    // A call that can fail must be handled.
+    d := dq.deque(u32)
+    d.push_front(1)                              //~ ERROR unused
+
+    // Fields are private; use the functions.
+    n := d.count                                 //~ ERROR private
+
+    // `bitset` can fail, so its result must be unwrapped first.
+    s := bs.bitset(10)
+    s.insert(1)                                  //~ ERROR no method
+    t := try bs.bitset(10)
+    t.insert(-1)                                 //~ ERROR does not fit
+    t.push(1)                                    //~ ERROR no method
+    return ()
+}
+
+main :: fn() {}

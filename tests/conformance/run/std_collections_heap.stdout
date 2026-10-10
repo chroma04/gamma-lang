@@ -1,0 +1,20 @@
+empty: len 0 is_empty true peek null pop null
+len 10 peek -4 is_empty false
+min-first: -4 1 1 1 3 3 3 5 7 9
+after drain: len 0 peek null
+single: peek 42 pop 42 pop null
+cleared: len 0 pop null
+reused: 6 8
+max-first: 9 7 5 3 3 1
+max-first literal: 8 4 2
+top priority 9
+priority 9 jobs: 2, in order: true
+pairs: (1, 2) (1, 9) (2, 0) (2, 1)
+floats: -1 0.5 2.5
+heap_from: len 12 peek 0
+heap_from: 0 1 2 3 4 5 5 5 6 7 8 9
+heap_from_by: 9 8 7 6 5 5 5 4 3 2 1 0
+bulk of 0: null, of 1: 9
+source untouched: true
+random: 0 out of order, 0 left
+interleaved: len 200 sum 1623

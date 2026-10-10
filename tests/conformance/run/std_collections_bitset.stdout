@@ -1,0 +1,37 @@
+zero: capacity 0 count 0 is_empty true contains(0) false next null
+zero items:
+new: capacity 130 count 0 is_empty true
+members: 0 1 62 63 64 65 127 128 129
+count 9 is_empty false
+contains(0) true
+contains(2) false
+contains(62) true
+contains(63) true
+contains(64) true
+contains(65) true
+contains(66) false
+contains(128) true
+contains(129) true
+contains(130) false
+contains(1000) false
+after duplicate insert: count 9
+after remove: count 8 contains(62) true contains(63) false contains(64) true
+after more removes: 1 62 65 127 128 129
+next_member: 1 62 65 127 128 129
+next_member(2) 62 next_member(66) 127 next_member(129) 129 next_member(130) null next_member(999) null
+cleared: count 0 capacity 130 next null
+after clear: contains(129) true
+n 1: count 1 contains(n-1) true contains(n) false
+n 63: count 2 contains(n-1) true contains(n) false
+n 64: count 2 contains(n-1) true contains(n) false
+n 65: count 2 contains(n-1) true contains(n) false
+a | b: 1 5 6 63 64 65 100 129
+a & b: 5 64
+a unchanged: count 5, b unchanged: count 5
+a with itself: count 5
+big | small: 3 64 69 150 199
+big & small: 3 64 69
+small & wide:
+narrow | wide: 7 8
+full: count 128
+full minus one: count 127 contains(63) true contains(65) true
