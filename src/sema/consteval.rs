@@ -183,24 +183,46 @@ impl<'s> Sema<'s> {
 }
 
 impl<'s> Sema<'s> {
-    /// `@static_assert(cond, msg)` (§17.7).
-    pub fn static_assert(&mut self, module: super::ModuleId, args: &[crate::syntax::ast::Arg], span: Span) {
+    /// `@static_assert(cond, msg)` (§17.7). A condition that depends on the parameters
+    /// of the generic body it is in is returned, to be checked for each instance.
+    pub fn static_assert(
+        &mut self,
+        module: super::ModuleId,
+        args: &[crate::syntax::ast::Arg],
+        span: Span,
+    ) -> Option<Expr> {
         use crate::syntax::ast::ArgKind;
         let (Some(ArgKind::Positional(cond)), msg) = (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind))
         else {
             self.error(span, "`@static_assert(cond, \"message\")` takes a condition and a message");
-            return;
+            return None;
         };
-        let Some(ex) = self.check_const_expr(module, cond, Some(Ty::bool())) else { return };
-        let Some(v) = self.eval_tir_const(&ex) else { return };
-        if v.bytes.first() == Some(&1) {
-            return;
-        }
+        let ex = self.check_const_expr(module, cond, Some(Ty::bool()))?;
         let msg = match msg {
             Some(ArgKind::Positional(m)) => self.const_string(module, m),
             _ => None,
         };
-        self.error(span, format!("static assertion failed: {}", msg.as_deref().unwrap_or("(no message)")));
+        if depends_on_params(&ex) {
+            let id = self.deferred_asserts.len() as u32;
+            self.deferred_asserts.push(msg);
+            let op = crate::tir::Builtin::StaticAssert(id);
+            return Some(Expr { ty: Ty::unit(), kind: ExprKind::Builtin { op, args: vec![ex] }, span });
+        }
+        self.check_static_assert(&ex, msg.as_deref(), span, None);
+        None
+    }
+
+    /// Reports a failed static assertion with condition `ex`; `instance` is the use
+    /// that instantiated the generic body it is in.
+    pub fn check_static_assert(&mut self, ex: &Expr, msg: Option<&str>, span: Span, instance: Option<Span>) {
+        let Some(v) = self.eval_tir_const(ex) else { return };
+        if v.bytes.first() != Some(&1) {
+            let mut d = Diagnostic::error(span, format!("static assertion failed: {}", msg.unwrap_or("(no message)")));
+            if let Some(at) = instance {
+                d = d.with_label(at, "in the instance used here");
+            }
+            self.emit(d);
+        }
     }
 
     /// The value of a constant string expression.
@@ -272,4 +294,13 @@ fn is_pointer(t: Ty) -> bool {
 fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
     f(e);
     e.for_each_child(&mut |c| walk(c, f));
+}
+
+/// True if `e` depends on type or compile-time value parameters of a generic body.
+fn depends_on_params(e: &Expr) -> bool {
+    let mut found = crate::sema::generics::has_param(e.ty)
+        || matches!(&e.kind, ExprKind::ValueParam(_))
+        || matches!(&e.kind, ExprKind::SizeOf { of, .. } if crate::sema::generics::has_param(*of));
+    e.for_each_child(&mut |c| found |= depends_on_params(c));
+    found
 }

@@ -180,6 +180,8 @@ pub struct Sema<'s> {
     pub test_items: Vec<(ModuleId, Rc<ast::Item>)>,
     /// Top-level `@static_assert`s, checked after the declarations.
     pub static_asserts: Vec<(ModuleId, Rc<ast::Item>)>,
+    /// Messages of `@static_assert`s deferred to each instance of a generic body.
+    pub deferred_asserts: Vec<Option<String>>,
     pub modules: Vec<Module>,
     pub decls: Vec<Decl>,
     /// Uses of `#deprecated` declarations already warned about.
@@ -295,6 +297,7 @@ impl<'s> Sema<'s> {
             in_test: false,
             test_items: vec![],
             static_asserts: vec![],
+            deferred_asserts: vec![],
             modules: vec![],
             decls: vec![],
             deprecated_uses: std::collections::HashSet::new(),

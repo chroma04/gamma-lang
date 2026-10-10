@@ -2099,7 +2099,7 @@ Values of type `type`, effect types, modules, and untyped constants exist only a
 
 ### 17.7 Static assertions
 
-`@static_assert(cond, "message")` may appear as a top-level declaration or statement. `cond` must be a compile-time `bool`; if it is `false`, compilation fails with the message.
+`@static_assert(cond, "message")` may appear as a top-level declaration or statement. `cond` must be a compile-time `bool`; if it is `false`, compilation fails with the message. In a generic body, a condition that depends on the body's parameters (`@size_of(T) <= 8`) is checked for each instantiation.
 
 ```
 @static_assert(@size_of(Header) is 16, "Header must match the on-disk format")

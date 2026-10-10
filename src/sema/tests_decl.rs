@@ -40,6 +40,7 @@ impl<'s> Sema<'s> {
             a.out,
             a.err,
             a.env,
+            a.sys,
             if with_alloc { a.alloc } else { None },
             if with_alloc { a.input } else { None },
             if with_alloc { a.clock } else { None },

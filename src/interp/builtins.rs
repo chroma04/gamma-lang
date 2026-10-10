@@ -176,6 +176,8 @@ impl<'a> Machine<'a> {
     pub fn builtin(&self, span: Span, op: Builtin, res_ty: Ty, arg_tys: &[Ty], v: &[Bytes]) -> R<Bytes> {
         let little = self.little();
         match op {
+            // Removed by monomorphization; generic bodies never run.
+            Builtin::StaticAssert(_) => Ok(Bytes::from_slice(&[])),
             Builtin::Convert
             | Builtin::Trunc
             | Builtin::Round

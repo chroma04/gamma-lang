@@ -10,7 +10,7 @@ table :: [3]i32(1, 2, 3)
 
 cmp :: fn(a, b: rawptr) -> c.c_int {
     x := a.cast(^const i32)^
-    idx := x.trunc(usize) + 5
+    idx := (x * 0 + 5).trunc(usize)
     return table[idx]
 }
 

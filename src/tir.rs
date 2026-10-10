@@ -1168,6 +1168,10 @@ pub enum Builtin {
     /// modulo the width).
     Rotl,
     Rotr,
+    /// `@static_assert(cond, …)` in a generic body whose condition depends on its
+    /// parameters: evaluated for each instance during monomorphization, then removed.
+    /// The number indexes `Sema::deferred_asserts`.
+    StaticAssert(u32),
     /// `a.get(i)` → `?T`.
     Get,
     /// `a.get_ptr(i)` → `?^T`.

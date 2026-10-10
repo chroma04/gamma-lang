@@ -1,0 +1,13 @@
+//! stage: check
+// A `@static_assert` that depends on the parameters of a generic body is checked for
+// each instance (§17.7).
+small :: fn(T: type) -> usize {
+    @static_assert(@size_of(T) <= 8, "too big") //~ ERROR static assertion failed: too big
+    return @size_of(T)
+}
+
+main :: fn() {
+    _ = small(u32)
+    _ = small(u64)
+    _ = small([3]u64)
+}

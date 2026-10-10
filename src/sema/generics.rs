@@ -313,6 +313,13 @@ impl<'s> Sema<'s> {
         let mut done = children.into_iter().map(|c| self.mono_expr(cx, c));
         e.for_each_child_mut(&mut |c| *c = done.next().unwrap());
         self.mono_pats(cx, &mut e);
+        // A static assertion of the generic body, checked for this instance.
+        if let tir::ExprKind::Builtin { op: tir::Builtin::StaticAssert(id), args } = &e.kind {
+            let msg = self.deferred_asserts[*id as usize].clone();
+            let (cond, span) = (args[0].clone(), e.span);
+            self.check_static_assert(&cond, msg.as_deref(), span, Some(cx.span));
+            return super::func::unit(span);
+        }
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
         }

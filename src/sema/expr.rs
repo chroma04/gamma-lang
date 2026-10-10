@@ -1121,8 +1121,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "static_assert" => {
                 let module = self.module;
-                self.sema.static_assert(module, args, span);
-                unit(span)
+                self.sema.static_assert(module, args, span).unwrap_or_else(|| unit(span))
             }
             "compile_error" => {
                 let module = self.module;
