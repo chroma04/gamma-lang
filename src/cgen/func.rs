@@ -465,8 +465,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn block_inner(&mut self, b: &'a Block, result: &mut Option<String>) -> CResult<()> {
+        // Each statement's temporaries are in a C block of their own, so the C compiler
+        // can reuse their stack space for the next statement's.
         for s in &b.stmts {
-            self.stmt(s)?;
+            self.line("{");
+            self.indent += 1;
+            let r = self.stmt(s);
+            self.indent -= 1;
+            self.line("}");
+            r?;
         }
         if let Some(t) = &b.tail {
             let v = self.expr(t)?;
