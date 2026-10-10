@@ -1,0 +1,92 @@
+// A small INI reader module: sections, key = value pairs, comments, and warnings reported through an effect.
+str :: import "std/str"
+
+pub Warn :: effect {
+    warn: fn(line: usize, msg: string)
+}
+
+pub Value :: union {
+    Int: i64
+    Bool: bool
+    Text: string
+}
+
+pub Entry :: struct {
+    pub key: string
+    pub value: Value
+    line: usize
+}
+
+pub Section :: struct {
+    pub name: string
+    pub entries: List(Entry)
+}
+
+pub Doc :: struct {
+    pub sections: List(Section)
+}
+
+classify :: fn(raw: string) -> Value {
+    if raw is "true" or raw is "yes" { return Value.Bool(true) }
+    if raw is "false" or raw is "no" { return Value.Bool(false) }
+    if n := str.parse_int(i64, raw) { return Value.Int(n) }
+    if raw.len >= 2 and raw[0] is '"' and raw[raw.len - 1] is '"' { return Value.Text(raw[1..raw.len - 1]) }
+    return Value.Text(raw)
+}
+
+/// Parses `text`. Problems that do not stop parsing are reported with `warn`.
+pub parse :: fn(text: string) -> AllocError!Doc \ {Alloc, Warn} {
+    doc := Doc(sections: list(Section))
+    errdefer free_doc(&doc)
+    try doc.sections.push(Section(name: "", entries: list(Entry)))
+    line_no: usize = 0
+    for raw in str.lines(text) {
+        line_no += 1
+        line := str.trim(raw)
+        if line.len is 0 or line[0] is ';' or line[0] is '#' { continue }
+        if line[0] is '[' {
+            if line[line.len - 1] is not ']' {
+                warn(line_no, "unterminated section header")
+                continue
+            }
+            try doc.sections.push(Section(name: str.trim(line[1..line.len - 1]), entries: list(Entry)))
+            continue
+        }
+        kv := str.split_once(line, "=") else {
+            warn(line_no, "expected key = value")
+            continue
+        }
+        key := str.trim(kv.before)
+        if key.len is 0 {
+            warn(line_no, "empty key")
+            continue
+        }
+        cur := &doc.sections.items[doc.sections.items.len - 1]
+        try cur.entries.push(Entry(key: key, value: classify(str.trim(kv.after)), line: line_no))
+    }
+    return doc
+}
+
+pub free_doc :: fn(d: ^Doc) \ {Alloc} {
+    for s in each_ptr(d.sections.items) { s.entries.deinit() }
+    d.sections.deinit()
+}
+
+/// The section called `name`, if any.
+pub section :: fn(d: ^const Doc, name: string) -> ?^const Section {
+    for s in each_ptr(d.sections.items) {
+        if s.name is name { return s }
+    }
+    return null
+}
+
+/// The last value given for `key` in `s`.
+pub lookup :: fn(s: ^const Section, key: string) -> ?Value {
+    found: ?Value = null
+    for e in s.entries.items {
+        if e.key is key { found = e.value }
+    }
+    return found
+}
+
+pub line_of :: fn(e: Entry) -> usize => e.line

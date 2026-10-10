@@ -1,0 +1,131 @@
+// Word statistics over a multi-line raw string: Yield iterators, HashMap counting, sorting by key tuples, a length histogram and for-loops that break with values.
+str :: import "std/str"
+fmt :: import "std/fmt"
+arena :: import "std/arena"
+
+TEXT :: `
+The quick brown fox jumps over the lazy dog. The dog, being lazy,
+did not react; the fox -- quick as ever -- jumped again!
+"Why bother?" asked the dog. "Foxes always jump, and dogs always nap."
+
+A fox is a fox, and a dog is a dog; but a lazy dog is the best dog.
+`
+
+Entry :: struct {
+    word: string
+    count: u32
+}
+
+is_letter :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '\''
+
+// Yields each maximal run of letters in `line`, lower-cased into memory from the current allocator.
+words_of :: fn(line: string) -> AllocError!() \ {Yield(string), Alloc} {
+    i: usize = 0
+    while i < line.len {
+        if not is_letter(line[i]) {
+            i += 1
+            continue
+        }
+        start := i
+        while i < line.len and is_letter(line[i]) { i += 1 }
+        w := try make(u8, i - start)
+        for k in 0..w.len {
+            c := line[start + k]
+            w[k] = if c in 'A'..='Z' { c + 32 } else { c }
+        }
+        word: string = w
+        yield(word)
+    }
+    return ()
+}
+
+// Yields the entries that are at least `min_len` letters long; returns the last one it saw.
+long_entries :: fn(es: []const Entry, min_len: usize) -> ?Entry \ {Yield(Entry)} {
+    last: ?Entry = null
+    for e in es {
+        if e.word.len >= min_len {
+            yield(e)
+            last = e
+        }
+    }
+    return last
+}
+
+bar :: fn(n: u32, out: []u8) -> string {
+    k := usize(n)
+    for i in 0..k { out[i] = '#' }
+    return out[0..k]
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    counts := map(string, u32)
+    defer counts.deinit()
+    total: u32 = 0
+    nlines: u32 = 0
+
+    with a.allocator() {
+        for line in str.lines(TEXT) {
+            if str.trim(line).len is 0 { continue }
+            nlines += 1
+            try for w in words_of(line) {
+                c := try counts.get_or_put(w, 0)
+                c^ += 1
+                total += 1
+            }
+        }
+    }
+    print("{} lines, {} words, {} distinct\n", (nlines, total, counts.len()))
+
+    entries := list(Entry)
+    defer entries.deinit()
+    for e in counts.entries() {
+        try entries.push(Entry(word: e.key, count: e.value))
+    }
+    // Highest count first, then alphabetical.
+    entries.items.sort_by_key(fn(e) => (0 - i64(e.count), e.word))
+
+    print("top 6:\n")
+    for i, e in enumerate(entries.items[0..6]) {
+        num: [fmt.INT_BUF]u8 = ---
+        pad1: [8]u8 = ---
+        pad2: [16]u8 = ---
+        rank := fmt.pad_left(fmt.dec(i + 1, num[..]), 2, ' ', pad1[..])
+        print("{}. {} {}\n", (rank, fmt.pad_right(e.word, 8, '.', pad2[..]), e.count))
+    }
+
+    // Histogram of word lengths, weighted by occurrences.
+    hist := [12]u32(fill: 0)
+    for e in entries.items {
+        slot := e.word.len.min(hist.len - 1)
+        hist[slot] += e.count
+    }
+    line: [32]u8 = ---
+    for n in 1..hist.len {
+        if hist[n] is 0 { continue }
+        print("{}{} {}\n", (n, if n is hist.len - 1 { "+" } else { " " }, bar(hist[n], line[..])))
+    }
+
+    // Loops with values: the first long word seen once, if any.
+    singles := for e in long_entries(entries.items, 5) {
+        if e.count is 1 { break e }
+    }
+    if s := singles {
+        print("first long word seen once: {} (len {})\n", (s.word, s.word.len))
+    } else {
+        print("no long word is unique\n")
+    }
+    last_long := for e in long_entries(entries.items, 6) {
+        if e.count > 100 { break e }
+    }
+    print("last long: {}\n", last_long)
+
+    // Longest word, ties broken alphabetically.
+    best := entries.items[0]
+    for e in entries.items {
+        if e.word.len > best.word.len or (e.word.len is best.word.len and e.word < best.word) { best = e }
+    }
+    print("longest: {}\n", best.word)
+    return ()
+}

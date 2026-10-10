@@ -1,0 +1,16 @@
+10 lines -> 11 lines
+  alpha
+- beta
+  gamma
+  delta
++ EPSILON
+- epsilon
+  zeta
+  eta
+  theta
++ theta2
+  iota
+  kappa
++ lambda
+8 kept, 2 removed, 3 added
+rebuilt equals new: true

@@ -1,0 +1,33 @@
+1: let y = 4
+  = 4
+2: let x = 3 * (y + 1)
+  = 15
+3: x - y * 2
+  = 7
+4: 2 ^ 3 ^ 2
+  = 512
+5: -x % 7
+  = -1
+6: z + 1
+  error at 0: undefined variable
+7: 10 / (y - 4)
+  error at 3: division by zero
+8: let = 5
+  error at 4: expected a name after let
+9: 3 + * 4
+  error at 4: expected a value
+10: (1 + 2
+  error at 6: expected )
+11: 7 # 2
+  error at 2: unexpected character
+12: 99999999999999999999
+  error at 0: number too large
+13: 2 ^ 70
+  error at 2: overflow in power
+14: x y
+  error at 2: unexpected trailing input
+15: let big = 2 ^ 20
+  = 1048576
+16: big * big
+  = 1099511627776
+7 of 16 lines ok, 3 definitions, 3 variables

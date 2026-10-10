@@ -1,0 +1,19 @@
+8 records, 5 columns
+name                    
+------------------------
+Ada Lovelace           | Research  | $125,000.50
+    note: first programmer, "analytical"
+Grace Hopper           | Navy      | $118,000.00
+    note: COBOL, "compiler"
+Alan Turing            | Research  | $121,500.25
+Dennis "dmr" Ritchie   | Systems   | $99,000.00
+    note: wrote C
+Ken Thompson           | Systems   | $97,500.75
+    note: B and Go
+Margaret Hamilton      | Apollo    | $130,000.00
+    note: software, engineering
+Bad Row                | Nowhere   | n/a
+    note: missing salary
+skip short row (2 fields): Short
+salary: n=6 min=97500.75 max=130000.00 mean=115166.914
+rating: n=7 min=3.50 max=5.00 mean=4.457143

@@ -1,0 +1,187 @@
+// Template engine: {{var}}, {{#if v}}..{{/if}}, {{#each list as x}}..{{/each}}. Scopes are layered handlers.
+arena :: import "std/arena"
+str :: import "std/str"
+
+Value :: union {
+    Text: string
+    Items: []const string
+    Flag: bool
+}
+
+Node :: union {
+    Text: string
+    Var: string
+    If: IfNode
+    Each: EachNode
+}
+
+IfNode :: struct { cond: string, body: []Node }
+EachNode :: struct { list: string, name: string, body: []Node }
+
+TplError :: union {
+    Unclosed: string
+    Stray: string
+    BadTag: string
+    Memory: AllocError
+}
+
+RenderError :: union { Unbound: string, NotAList: string }
+
+Emit :: effect { put: fn(s: string) }
+Scope :: effect { lookup: fn(name: string) -> ?Value }
+Fail :: effect { fail: esc(e: RenderError) -> never }
+
+Parser :: struct {
+    src: string
+    pos: usize = 0
+}
+
+// Parses nodes until the closing tag `{{/close}}` (or the end of input when `close` is empty).
+parse_nodes :: fn(p: ^Parser, close: string) -> TplError![]Node \ {Alloc} {
+    nodes := list(Node)
+    while p.pos < p.src.len {
+        rest := p.src[p.pos..]
+        open := str.find(rest, "{{") else {
+            try nodes.push(Node.Text(rest))
+            p.pos = p.src.len
+            break
+        }
+        if open > 0 { try nodes.push(Node.Text(rest[0..open])) }
+        after := rest[open + 2..]
+        end := str.find(after, "}}") else return !.BadTag(after)
+        tag := str.trim(after[0..end])
+        p.pos += open + 2 + end + 2
+        if tag.len > 0 and tag[0] is '/' {
+            if tag[1..] is close { return nodes.items }
+            return !.Stray(tag)
+        }
+        if tag.len > 0 and tag[0] is '#' {
+            words := [4]string(fill: "")
+            n: usize = 0
+            for w in str.fields(tag[1..]) {
+                if n < words.len { words[n] = w }
+                n += 1
+            }
+            if words[0] is "if" and n is 2 {
+                body := try parse_nodes(p, "if")
+                try nodes.push(Node.If(IfNode(cond: words[1], body: body)))
+            } else if words[0] is "each" and n is 4 and words[2] is "as" {
+                body := try parse_nodes(p, "each")
+                try nodes.push(Node.Each(EachNode(list: words[1], name: words[3], body: body)))
+            } else {
+                return !.BadTag(tag)
+            }
+        } else {
+            try nodes.push(Node.Var(tag))
+        }
+    }
+    if close.len > 0 { return !.Unclosed(close) }
+    return nodes.items
+}
+
+truthy :: fn(v: Value) -> bool => match v {
+    .Text(s) => s.len > 0
+    .Items(xs) => xs.len > 0
+    .Flag(b) => b
+}
+
+render :: fn(nodes: []const Node) \ {Emit, Scope, Fail} {
+    for n in nodes {
+        match n {
+            .Text(t) => put(t)
+            .Var(name) => {
+                v := lookup(name) else fail(.Unbound(name))
+                match v {
+                    .Text(s) => put(s)
+                    .Flag(b) => put(if b { "yes" } else { "no" })
+                    .Items(_) => fail(.NotAList(name))
+                }
+            }
+            .If(node) => {
+                v := lookup(node.cond) else fail(.Unbound(node.cond))
+                if truthy(v) { render(node.body) }
+            }
+            .Each(node) => {
+                v := lookup(node.list) else fail(.Unbound(node.list))
+                items := match v {
+                    .Items(xs) => xs
+                    _ => fail(.NotAList(node.list))
+                }
+                for i, item in enumerate(items) {
+                    layer :: handler Scope {
+                        lookup(name) => if name is node.name {
+                            Value.Text(item)
+                        } else if name is "@first" {
+                            Value.Flag(i is 0)
+                        } else {
+                            lookup(name)
+                        }
+                    }
+                    with layer { render(node.body) }
+                }
+            }
+        }
+    }
+}
+
+Sink :: struct { out: List(u8) }
+handler Emit for ^Sink \ {Alloc} {
+    put(self, s) => {
+        for c in bytes(s) { self.out.push(c) else break }
+    }
+}
+
+Globals :: struct {
+    title: string
+    names: []const string
+    admin: bool
+}
+
+handler Scope for ^const Globals {
+    lookup(self, name) => match name {
+        "title" => Value.Text(self.title)
+        "names" => Value.Items(self.names)
+        "admin" => Value.Flag(self.admin)
+        "empty" => Value.Text("")
+        _ => null
+    }
+}
+
+try_render :: fn(src: string, g: ^const Globals) \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    p := Parser(src: src)
+    nodes := with a.allocator() { parse_nodes(&p, "") } else e => {
+        match e {
+            .Unclosed(t) => print("template error: unclosed {}\n", t)
+            .Stray(t) => print("template error: stray {}\n", t)
+            .BadTag(t) => print("template error: bad tag {}\n", t)
+            .Memory(_) => print("template error: out of memory\n")
+        }
+        return
+    }
+    sink := Sink(out: list(u8))
+    defer sink.out.deinit()
+    failure: ?RenderError = null
+    with &sink, g, (handler Fail { fail(e) => { failure = e
+        break } }) {
+        render(nodes)
+    }
+    if f := failure {
+        print("render error: {}\n", f)
+    }
+    print("---\n{}\n---\n", sink.out.items)
+}
+
+main :: fn() \ {Out, Alloc} {
+    names := [_]string("ada", "grace", "alan")
+    g := Globals(title: "Pioneers", names: names[..], admin: true)
+    try_render("<h1>{{title}}</h1>\n{{#each names as n}}{{@first}} {{n}};\n{{/each}}{{#if admin}}admin mode{{/if}}", &g)
+    try_render("{{#if empty}}hidden{{/if}}[{{ title }}]", &g)
+    try_render("{{missing}}", &g)
+    try_render("{{#each title as x}}{{/each}}", &g)
+    try_render("{{#if admin}}never closed", &g)
+    try_render("stray {{/if}}", &g)
+    try_render("{{#bogus a}}", &g)
+    try_render("oops {{title", &g)
+}

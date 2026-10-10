@@ -1,0 +1,91 @@
+> add the first line
+> add second
+> ins 1 squeezed in
+> list
+  0: the first line
+  1: squeezed in
+  2: second
+> up 2
+> swap 0 3
+  index 3 out of range (have 3 lines)
+> list
+  0: the first line
+  1: squeezed in
+  2: SECOND
+> find s
+  match at 0: the first line
+  match at 1: squeezed in
+> find zzz
+  no match for zzz
+> del 1
+  out of memory (192 of 260 bytes live)
+> list
+  0: the first line
+  1: squeezed in
+  2: SECOND
+> mem
+  192 of 260 bytes live, 1 denied
+> undo
+> undo
+> undo
+> undo
+> list
+  (empty)
+> undo
+  nothing to undo
+> undo
+  nothing to undo
+> undo
+  nothing to undo
+> mem
+  192 of 260 bytes live, 1 denied
+> frobnicate now
+  unknown command: frobnicate
+> ins x foo
+  bad number: .InvalidDigit(at: 0)
+> del 99
+  index 99 out of range (have 0 lines)
+> ins
+  usage: ins N TEXT
+> add this line is long enough to use up a good part of the budget
+> mem
+  192 of 260 bytes live, 1 denied
+> add another long line of text that will not fit anymore
+> mem
+  192 of 260 bytes live, 1 denied
+> add short
+> mem
+  192 of 260 bytes live, 1 denied
+> add tiny
+> add t2
+  out of memory (192 of 260 bytes live)
+> add t3
+  out of memory (192 of 260 bytes live)
+> add t4
+  out of memory (192 of 260 bytes live)
+> add t5
+  out of memory (192 of 260 bytes live)
+> list
+  0: this line is long enough to use up a good part of the budget
+  1: another long line of text that will not fit anymore
+  2: short
+  3: tiny
+> mem
+  192 of 260 bytes live, 5 denied
+> undo
+> undo
+> undo
+> undo
+> undo
+  nothing to undo
+> undo
+  nothing to undo
+> mem
+  192 of 260 bytes live, 5 denied
+> list
+  (empty)
+> bogus
+  unknown command: bogus
+> quit
+processed 49 lines
+bye: 8 edits, 5 denied, 0 bytes still live

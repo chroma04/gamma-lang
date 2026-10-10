@@ -1,0 +1,86 @@
+// Trie with recursive Yield iterators, nested for loops over map entries, defer in recursion.
+Node :: struct {
+    kids: HashMap(u8, ^Node)
+    end: bool = false
+    hits: u32 = 0
+}
+
+new_node :: fn() -> AllocError!^Node \ {Alloc} {
+    return try new(Node, Node(kids: map(u8, ^Node)))
+}
+
+insert :: fn(root: ^Node, word: string) -> AllocError!() \ {Alloc} {
+    cur := root
+    for c in bytes(word) {
+        next := cur.kids.get(c) else {
+            n := try new_node()
+            errdefer destroy(n)
+            try cur.kids.put(c, n)
+            n
+        }
+        cur = next
+    }
+    cur.end = true
+    cur.hits += 1
+    return ()
+}
+
+free_trie :: fn(n: ^Node) \ {Alloc} {
+    for e in n.kids.entries() { free_trie(e.value) }
+    n.kids.deinit()
+    destroy(n)
+}
+
+// Yields all words below `n`, in unspecified child order; `buf[0..depth]` is the path so far.
+walk :: fn(n: ^const Node, buf: []u8, depth: usize) \ {Yield(string)} {
+    if n.end {
+        s: string = buf[0..depth]
+        yield(s)
+    }
+    for e in n.kids.entries() {
+        buf[depth] = e.key
+        walk(e.value, buf, depth + 1)
+    }
+}
+
+find_prefix :: fn(root: ^const Node, prefix: string) -> ?^const Node {
+    cur := root
+    for c in bytes(prefix) {
+        cur = cur.kids.get(c) else return null
+    }
+    return cur
+}
+
+complete :: fn(root: ^const Node, prefix: string, buf: []u8) \ {Yield(string)} {
+    start := find_prefix(root, prefix) else return
+    buf[0..prefix.len].copy_from(prefix)
+    walk(start, buf, prefix.len)
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    root := try new_node()
+    defer free_trie(root)
+    words := [_]string("tea", "ten", "inn", "in", "i", "team", "tea", "teapot", "to", "tent")
+    for w in words { try insert(root, w) }
+    buf: [32]u8 = ---
+    all := list(string)
+    defer all.deinit()
+    for w in walk(root, buf[..], 0) {
+        // copy out of the shared buffer
+        m := try make(u8, w.len)
+        m.copy_from(w)
+        s: string = m
+        try all.push(s)
+    }
+    all.items.sort()
+    for w in all.items { print("{} ", w) }
+    print("\n")
+    n := 0
+    for w in all.items { free(u8, w.ptr.cast([^]u8)[0..w.len]); n += 1 }
+    print("{} words\n", n)
+    cnt: u32 = 0
+    for w in complete(root, "te", buf[..]) { cnt += 1; _ = w }
+    print("te*: {}\n", cnt)
+    print("{}\n", (find_prefix(root, "tea")?).hits)
+    return ()
+}

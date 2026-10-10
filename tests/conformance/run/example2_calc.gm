@@ -1,0 +1,232 @@
+// Tiny expression language (let bindings, + - * / % ^ and parentheses) with variable lookup and error reporting as effects.
+Kind :: union { Num, Ident, Let, Eq, Plus, Minus, Star, Slash, Percent, Caret, LParen, RParen, End }
+
+Token :: struct {
+    kind: Kind
+    pos: usize
+    num: i64 = 0
+    text: string = ""
+}
+
+Vars :: effect {
+    lookup: fn(name: string) -> ?i64
+    define: fn(name: string, value: i64)
+}
+
+Report :: effect {
+    fail: esc(msg: string, pos: usize) -> never
+}
+
+is_digit :: fn(c: u8) -> bool => c in '0'..='9'
+is_alpha :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '_'
+
+// Iterator over the tokens of a line; the last token yielded is always End.
+tokens :: fn(src: string) \ {Yield(Token), Report} {
+    i: usize = 0
+    while i < src.len {
+        c := src[i]
+        start := i
+        if c is ' ' {
+            i += 1
+        } else if is_digit(c) {
+            n: i64 = 0
+            while i < src.len and is_digit(src[i]) {
+                n = n *? 10 else fail("number too large", start)
+                n = n +? i64(src[i] - '0') else fail("number too large", start)
+                i += 1
+            }
+            yield(Token(kind: .Num, pos: start, num: n))
+        } else if is_alpha(c) {
+            while i < src.len and (is_alpha(src[i]) or is_digit(src[i])) { i += 1 }
+            word := src[start..i]
+            kind: Kind = if word is "let" { .Let } else { .Ident }
+            yield(Token(kind: kind, pos: start, text: word))
+        } else {
+            kind: Kind = match c {
+                '=' => .Eq
+                '+' => .Plus
+                '-' => .Minus
+                '*' => .Star
+                '/' => .Slash
+                '%' => .Percent
+                '^' => .Caret
+                '(' => .LParen
+                ')' => .RParen
+                _ => fail("unexpected character", start)
+            }
+            i += 1
+            yield(Token(kind: kind, pos: start))
+        }
+    }
+    yield(Token(kind: .End, pos: src.len))
+}
+
+Parser :: struct {
+    toks: []const Token
+    at: usize = 0
+}
+
+cur :: fn(p: ^Parser) -> Token => p.toks[p.at]
+
+advance :: fn(p: ^Parser) {
+    if p.at + 1 < p.toks.len { p.at += 1 }
+}
+
+power :: fn(base, exp: i64, pos: usize) -> i64 \ {Report} {
+    if exp < 0 { fail("negative exponent", pos) }
+    r: i64 = 1
+    for _ in 0..exp {
+        r = r *? base else fail("overflow in power", pos)
+    }
+    return r
+}
+
+primary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+    t := cur(p)
+    match t.kind {
+        .Num => {
+            advance(p)
+            return t.num
+        }
+        .Ident => {
+            advance(p)
+            return lookup(t.text) else fail("undefined variable", t.pos)
+        }
+        .Minus => {
+            advance(p)
+            v := unary(p)
+            return 0 -? v else fail("overflow", t.pos)
+        }
+        .LParen => {
+            advance(p)
+            v := sum(p)
+            if cur(p).kind is not .RParen { fail("expected )", cur(p).pos) }
+            advance(p)
+            return v
+        }
+        _ => fail("expected a value", t.pos)
+    }
+}
+
+unary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+    base := primary(p)
+    if cur(p).kind is .Caret {
+        pos := cur(p).pos
+        advance(p)
+        return power(base, unary(p), pos)
+    }
+    return base
+}
+
+product :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+    acc := unary(p)
+    while true {
+        op := cur(p)
+        if op.kind not in (.Star, .Slash, .Percent) { break }
+        advance(p)
+        rhs := unary(p)
+        acc = match op.kind {
+            .Star => acc *? rhs else fail("overflow", op.pos)
+            .Slash => if rhs is 0 { fail("division by zero", op.pos) } else { acc / rhs }
+            _ => if rhs is 0 { fail("division by zero", op.pos) } else { acc % rhs }
+        }
+    }
+    return acc
+}
+
+sum :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+    acc := product(p)
+    while true {
+        op := cur(p)
+        if op.kind is not .Plus and op.kind is not .Minus { break }
+        advance(p)
+        rhs := product(p)
+        acc = if op.kind is .Plus { acc +? rhs else fail("overflow", op.pos) } else { acc -? rhs else fail("overflow", op.pos) }
+    }
+    return acc
+}
+
+statement :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+    if cur(p).kind is .Let {
+        advance(p)
+        name := cur(p)
+        if name.kind is not .Ident { fail("expected a name after let", name.pos) }
+        advance(p)
+        if cur(p).kind is not .Eq { fail("expected =", cur(p).pos) }
+        advance(p)
+        v := sum(p)
+        define(name.text, v)
+        return v
+    }
+    return sum(p)
+}
+
+// Variables live in a map owned by the caller.
+Store :: struct {
+    vars: HashMap(string, i64)
+    defs: u32 = 0
+}
+
+handler Vars for ^Store \ {Alloc} {
+    lookup(self, name) => self.vars.get(name)
+    define(self, name, value) => {
+        self.defs += 1
+        self.vars.put(name, value) else { self.defs -= 1 }
+    }
+}
+
+run_line :: fn(store: ^Store, src: string) -> ?i64 \ {Alloc, Out} {
+    outcome: ?i64 = run: with store {
+        with (handler Report {
+            fail(msg, pos) => {
+                print("  error at {}: {}\n", (pos, msg))
+                break run null
+            }
+        }) {
+            buf := [64]Token(fill: Token(kind: .End, pos: 0))
+            n: usize = 0
+            for t in tokens(src) {
+                if n >= buf.len { fail("too many tokens", t.pos) }
+                buf[n] = t
+                n += 1
+            }
+            p := Parser(toks: buf[0..n])
+            v := statement(&p)
+            if cur(&p).kind is not .End { fail("unexpected trailing input", cur(&p).pos) }
+            v
+        }
+    }
+    return outcome
+}
+
+main :: fn() \ {Out, Alloc} {
+    store := Store(vars: map(string, i64))
+    defer store.vars.deinit()
+    lines := [_]string(
+        "let y = 4",
+        "let x = 3 * (y + 1)",
+        "x - y * 2",
+        "2 ^ 3 ^ 2",
+        "-x % 7",
+        "z + 1",
+        "10 / (y - 4)",
+        "let = 5",
+        "3 + * 4",
+        "(1 + 2",
+        "7 # 2",
+        "99999999999999999999",
+        "2 ^ 70",
+        "x y",
+        "let big = 2 ^ 20",
+        "big * big",
+    )
+    ok: u32 = 0
+    for i, src in enumerate(lines[..]) {
+        print("{}: {}\n", (i + 1, src))
+        if v := run_line(&store, src) {
+            print("  = {}\n", v)
+            ok += 1
+        }
+    }
+    print("{} of {} lines ok, {} definitions, {} variables\n", (ok, lines.len, store.defs, store.vars.len()))
+}

@@ -1,0 +1,50 @@
+# a session with the line editor
+add the first line
+add second
+ins 1 squeezed in
+list
+up 2
+swap 0 3
+list
+find s
+find zzz
+del 1
+list
+mem
+undo
+undo
+undo
+undo
+list
+undo
+undo
+undo
+mem
+frobnicate now
+ins x foo
+del 99
+ins
+add this line is long enough to use up a good part of the budget
+mem
+add another long line of text that will not fit anymore
+mem
+add short
+mem
+add tiny
+add t2
+add t3
+add t4
+add t5
+list
+mem
+undo
+undo
+undo
+undo
+undo
+undo
+mem
+list
+bogus
+quit
+add never reached

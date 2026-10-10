@@ -1,0 +1,62 @@
+// Nested Out handlers that indent and number the lines written by code that knows nothing about them.
+Indenter :: struct {
+    pad: string
+    at_start: bool = true
+}
+
+handler Out for ^Indenter \ {Out} {
+    write_out(self, bytes) => {
+        start: usize = 0
+        for i in 0..bytes.len {
+            if self.at_start and bytes[i] is not '\n' {
+                write_out(self.pad)
+                self.at_start = false
+            }
+            if bytes[i] is '\n' {
+                write_out(bytes[start..=i])
+                start = i + 1
+                self.at_start = true
+            }
+        }
+        if start < bytes.len { write_out(bytes[start..]) }
+    }
+}
+
+Numberer :: struct { n: u32 = 0, at_start: bool = true }
+
+handler Out for ^Numberer \ {Out} {
+    write_out(self, bytes) => {
+        for i in 0..bytes.len {
+            if self.at_start {
+                self.n += 1
+                print("{}| ", self.n)
+                self.at_start = false
+            }
+            write_out(bytes[i..i + 1])
+            if bytes[i] is '\n' { self.at_start = true }
+        }
+    }
+}
+
+tree :: fn(depth: u32) \ {Out} {
+    print("node {}\n", depth)
+    if depth > 0 {
+        ind := Indenter(pad: "  ")
+        with &ind {
+            tree(depth - 1)
+            print("sibling {} (partial ", depth)
+            print("line)\n")
+        }
+    }
+}
+
+main :: fn() \ {Out} {
+    tree(3)
+    print("--- numbered ---\n")
+    num := Numberer()
+    with &num {
+        tree(2)
+        print("multi\nline\n\nblank above")
+    }
+    print("\n{}\n", num.n)
+}
