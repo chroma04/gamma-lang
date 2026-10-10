@@ -338,7 +338,10 @@ any `with` of the clone calls the clause by name instead of searching the
 context and calling through the table, and the C compiler can inline the loop
 body into the iterator. `ctl` operations and the bodies of `with … on` keep the
 general path. Clones share the frame struct of their function and are generated
-on demand, at most one per function and handler literal.
+on demand, at most one per function and handler literal. Specialization covers
+one level: a perform inside a nested `for` body of the clone (an iterator built
+on another iterator) still finds its handler at run time, because the loop
+body's clause is shared with the unspecialized function.
 
 **Non-local exits.** An exit whose target is in the same C function runs the
 deferred statements it crosses and jumps there with `goto`; since nothing then

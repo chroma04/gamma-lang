@@ -17,3 +17,10 @@
   skip the gm_unw check after clauses that cannot exit; transitive specialization.
 - Enabled in all modes (so debug-mode conformance tests exercise it).
 - Bench (scratch, fast mode): iterator 200M yields 0.52s → 0.075s; matmul 300³×5 = C speed.
+## Deferred: 2-level (adapters `for v in inner() { yield(g(v)) }`, recursive walks)
+- Idea: in a clone with spec S, a `with` of a HandlerRef evaluated at clone top level whose
+  clauses perform S.effect gets a table variant whose clauses are clause clones with spec S
+  (their `cx` = hctx = the clone's cx = S's node).
+- Catch: direct_perform must call exactly the clause version in the node's table; callee
+  clones would need the table variant in their Spec key, and recursive iterators then mint
+  unbounded variants unless depth is capped (e.g. 2). Gain ≈ 2–3 ns/element. Not done.
