@@ -1,0 +1,10 @@
+none: present null
+five: present 5
+missing: absent
+absent
+present null
+present 3
+error
+ok null
+ok 7
+four

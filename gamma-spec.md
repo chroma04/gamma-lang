@@ -1167,6 +1167,8 @@ Values of `?T` and `E!T` implicitly wrap, and patterns implicitly unwrap:
 - Against a scrutinee of type `?T`, any pattern other than `null`, `_` and a bare binding is matched against the present value: `5` matches a present 5. A **bare binding** `x` against `?T` matches **only a present value** and binds `x: T`; to bind the whole optional, write `_` and use the scrutinee.
 - Against `E!T`, any pattern other than `!p` and `_` is matched against the success value, and a bare binding matches only success.
 
+Each rule unwraps one level: against `??T` a bare binding binds the present `?T`, and against `E!?T` it binds the success value `?T`, so `null` and a binding are exhaustive for `??T`. A pattern that is neither a bare binding nor excluded above is matched against the present value by the same rules, so `5` against `??i32` matches only a doubly present 5.
+
 This is what makes `if user := find(id)` and `while line := next()` work. The implicit unwrapping applies only in refutable contexts (binding conditions and `match`). In a `for` pattern or a destructuring binding, a bare binding binds the whole value, so `for r in results() { … }` binds `r: E!T`. Within `match`, an exhaustive set for `?T` is `null` plus patterns covering `T`; for `E!T`, `!p` patterns covering `E` plus patterns covering `T`.
 
 *Note:* because of this rule, a bare binding is refutable when the scrutinee is an optional or result. In `x := e` statements (not conditions) no pattern is involved, so `x` simply gets the type of `e`.

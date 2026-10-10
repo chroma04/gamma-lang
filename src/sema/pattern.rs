@@ -62,20 +62,39 @@ impl<'a, 's> FnCx<'a, 's> {
             self.bind_unchecked(p, ctx, binds);
             return pat(ty, PatKind::Wild, p.span);
         }
-        // Implicit unwrapping of optionals and results in refutable contexts (§9.3).
+        // Implicit unwrapping of optionals and results in refutable contexts (§9.3). A
+        // bare binding unwraps one level: against `??T` it binds the present `?T`.
         if ctx != PatCtx::Irrefutable {
+            let bare = matches!(p.kind, PatternKind::Bind(_));
             match ty.kind() {
                 TyKind::Optional(inner) if !matches!(p.kind, PatternKind::Null | PatternKind::Wildcard) => {
-                    let inner_pat = self.pattern(p, *inner, ctx, binds);
+                    let inner_pat = if bare {
+                        self.pattern_here(p, *inner, ctx, binds)
+                    } else {
+                        self.pattern(p, *inner, ctx, binds)
+                    };
                     return pat(ty, PatKind::Some(Box::new(inner_pat)), p.span);
                 }
                 TyKind::Result { ok, .. } if !matches!(p.kind, PatternKind::Err(_) | PatternKind::Wildcard) => {
-                    let inner_pat = self.pattern(p, *ok, ctx, binds);
+                    let inner_pat =
+                        if bare { self.pattern_here(p, *ok, ctx, binds) } else { self.pattern(p, *ok, ctx, binds) };
                     return pat(ty, PatKind::Ok(Box::new(inner_pat)), p.span);
                 }
                 _ => {}
             }
         }
+        self.pattern_here(p, ty, ctx, binds)
+    }
+
+    /// Pattern `p` against a value of type `ty`, without unwrapping `ty`.
+    fn pattern_here(
+        &mut self,
+        p: &ast::Pattern,
+        ty: Ty,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+    ) -> Pat {
+        let ty = self.infer.resolve(ty);
         match &p.kind {
             PatternKind::Wildcard => pat(ty, PatKind::Wild, p.span),
             PatternKind::Bind(name) => {

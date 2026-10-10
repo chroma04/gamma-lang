@@ -1,0 +1,38 @@
+// A bare binding unwraps one level of an optional or result (§9.3, §10.1).
+E :: union { Bad }
+res :: fn(k: i32) -> E!?u16 {
+    if k is 0 { return !.Bad }
+    if k is 1 { return null }
+    return 7
+}
+show :: fn(v: ??u8) \ {Out} {
+    match v {
+        null => print("absent\n")
+        n => match n {
+            null => print("present null\n")
+            x => print("present {}\n", x)
+        }
+    }
+}
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    m := map(string, ?u32)
+    defer m.deinit()
+    try m.put("none", null)
+    try m.put("five", 5)
+    for k in [3]string("none", "five", "missing") {
+        if v := m.get(k) { print("{}: present {}\n", (k, v)) } else { print("{}: absent\n", k) }
+    }
+    show(null)
+    show(?u8(null))
+    show(3)
+    for k in 0..3 {
+        if v := res(k) {
+            if w := v { print("ok {}\n", w) } else { print("ok null\n") }
+        } else {
+            print("error\n")
+        }
+    }
+    a: ??u8 = 4
+    if 4 := a { print("four\n") }
+    return ()
+}
