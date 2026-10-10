@@ -1164,6 +1164,10 @@ pub enum Builtin {
     Popcount,
     Bswap,
     Bitreverse,
+    /// `@rotl(x, n)` / `@rotr(x, n)`: rotate the bits of `x` by `n` (a `u32`, taken
+    /// modulo the width).
+    Rotl,
+    Rotr,
     /// `a.get(i)` → `?T`.
     Get,
     /// `a.get_ptr(i)` → `?^T`.

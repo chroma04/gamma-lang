@@ -917,7 +917,12 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// `@sqrt(x)`, `@fma(a, b, c)` on floats and the bit operations on integers (§20.3).
     fn numeric_intrinsic(&mut self, n: &str, args: &[ast::Arg], span: Span) -> Expr {
-        let arity = if n == "fma" { 3 } else { 1 };
+        let rotate = matches!(n, "rotl" | "rotr");
+        let arity = match n {
+            "fma" => 3,
+            "rotl" | "rotr" => 2,
+            _ => 1,
+        };
         if args.len() != arity || args.iter().any(|a| !matches!(a.kind, ast::ArgKind::Positional(_))) {
             self.error(span, format!("`@{}` takes {} argument(s)", n, arity));
             return error_expr(span);
@@ -925,9 +930,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut vals = vec![];
         for a in args {
             let ast::ArgKind::Positional(e) = &a.kind else { unreachable!() };
-            let v = self.expr(e, vals.first().map(|v: &Expr| v.ty));
-            let v = match vals.first() {
-                Some(first) => self.coerce(v, first.ty),
+            // The amount of a rotation is a `u32`; the other operands share a type.
+            let expect =
+                if rotate && !vals.is_empty() { Some(Ty::int(false, 32)) } else { vals.first().map(|v: &Expr| v.ty) };
+            let v = self.expr(e, expect);
+            let v = match expect {
+                Some(t) => self.coerce(v, t),
                 None => v,
             };
             vals.push(v);
@@ -963,6 +971,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 (tir::Builtin::Bswap, t)
             }
+            "rotl" => (tir::Builtin::Rotl, t),
+            "rotr" => (tir::Builtin::Rotr, t),
             _ => (tir::Builtin::Bitreverse, t),
         };
         mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
@@ -1173,7 +1183,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     error_expr(span)
                 }
             },
-            "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" => {
+            "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" | "rotl" | "rotr" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
             // The smallest fiber stack (§14.1), in bytes.

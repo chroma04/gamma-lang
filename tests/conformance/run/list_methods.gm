@@ -1,0 +1,32 @@
+// The list operations of core/list (§21.5).
+show :: fn(l: ^const List(i32)) \ {Out} {
+    for x in l.items { print("{} ", x) }
+    print("(len {})\n", l.items.len)
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    l := list(i32)
+    defer l.deinit()
+    try l.reserve(10)
+    for i in 0..5 { try l.push(i * 10) }
+    show(&l)
+    try l.insert(0, -1)
+    try l.insert(3, 15)
+    try l.insert(l.items.len, 99)
+    show(&l)
+    print("removed {}\n", l.remove(1))
+    print("swap-removed {}\n", l.swap_remove(0))
+    show(&l)
+    more := [3]i32(7, 8, 9)
+    try l.extend(more[..])
+    show(&l)
+    l.truncate(3)
+    show(&l)
+    l.truncate(10)
+    show(&l)
+    big := list(u8)
+    defer big.deinit()
+    for i in 0..100 { try big.insert(0, i.trunc(u8)) }
+    print("{} {} {}\n", (big.items.len, big.items[0], big.items[99]))
+    return ()
+}

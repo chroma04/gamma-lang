@@ -273,6 +273,22 @@ impl<'a> Machine<'a> {
                 };
                 Ok(self.float_bytes(*f, r))
             }
+            Builtin::Rotl | Builtin::Rotr => {
+                let ti = self.ti(arg_tys[0]);
+                let Some((signed, bits)) = ti.int else {
+                    return self.trap(span, "rotation of a non-integer");
+                };
+                let x = num::wrap(&self.decode_int_ty(&ti, &v[0]), false, bits).to_big();
+                let amount = self.decode_int_ty(&self.ti(arg_tys[1]), &v[1]).to_big();
+                let n = bits as u64;
+                let k = num_traits::ToPrimitive::to_u64(&(amount % BigInt::from(n))).unwrap_or(0);
+                let k = if op == Builtin::Rotl { k } else { (n - k) % n };
+                // Bit i of x moves to bit (i + k) mod n.
+                let mask = (BigInt::from(1) << n) - 1;
+                let r = ((&x << k) | (&x >> (n - k))) & mask;
+                let r = num::wrap(&Int::from_big(r), signed, bits);
+                Ok(num::encode_int(&r, ti.size, little))
+            }
             Builtin::Clz | Builtin::Ctz | Builtin::Popcount | Builtin::Bswap | Builtin::Bitreverse => {
                 let ti = self.ti(arg_tys[0]);
                 let Some((signed, bits)) = ti.int else {

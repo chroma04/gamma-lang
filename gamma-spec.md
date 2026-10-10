@@ -2352,6 +2352,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@prefetch(p)` | `()`; hint | no | — |
 | `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
 | `@bswap(x)` (whole bytes only), `@bitreverse(x)` | `x`'s type | yes | — |
+| `@rotl(x, n)`, `@rotr(x, n)` (`n: u32`, taken modulo the width; rotates the bit pattern, also of signed `x`) | `x`'s type | yes | — |
 | `@sqrt(x)`, `@fma(a, b, c)` and the IEEE operations of `std/math` | float | yes | — |
 
 ---
@@ -2437,7 +2438,13 @@ runes      :: fn(s: string) \ {Yield(rune)}
 List   :: struct(T: type) { pub items: []T; cap: usize; alloc: Allocator }    // items.len is the length
 list   :: fn(T: type) -> List(T) \ {Alloc}                        // captures current()
 push   :: fn(T: type, l: ^List(T), x: T) -> AllocError!()
+extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!()
+insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!()  // traps if i > len
+reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!()    // room for `extra` more
 pop    :: fn(T: type, l: ^List(T)) -> ?T
+remove :: fn(T: type, l: ^List(T), i: usize) -> T                  // keeps the order
+swap_remove :: fn(T: type, l: ^List(T), i: usize) -> T             // moves the last element into i
+truncate :: fn(T: type, l: ^List(T), n: usize)                      // keeps the first n
 clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
 

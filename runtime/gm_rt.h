@@ -138,6 +138,8 @@ static uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
 static uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
 static void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits);
 static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+/* Rotates the bits of a left by k (taken modulo bits). */
+static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k);
 /* Mixes the value into the FNV-1a state h as its minimal two's-complement little-endian bytes. */
 static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn);
 /* Appends the decimal form. */

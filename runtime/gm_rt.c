@@ -609,6 +609,22 @@ static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn
     gm_wscratch_free(t, stack);
 }
 
+static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k) {
+    size_t sz = GM_WBYTES(bits);
+    uint64_t stack[GM_WSTACK];
+    uint64_t *t = gm_wscratch(stack, GM_WSTACK, sz / 8);
+    uint8_t *tb = (uint8_t *)t;
+    memset(tb, 0, sz);
+    k %= bits;
+    for (uint32_t i = 0; i < bits; i++) {
+        uint32_t j = (uint32_t)((i + k) % bits);
+        if (gm_wbit(a, i)) tb[j / 8] |= (uint8_t)(1u << (j % 8));
+    }
+    memcpy(r, tb, sz);
+    gm_wfix(r, bits, sgn);
+    gm_wscratch_free(t, stack);
+}
+
 static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     bool neg = gm_wisneg(a, bits, sgn);

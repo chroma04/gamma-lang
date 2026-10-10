@@ -432,6 +432,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     | Builtin::Popcount
                     | Builtin::Bswap
                     | Builtin::Bitreverse
+                    | Builtin::Rotl
+                    | Builtin::Rotr
             )
         {
             return self.wide_builtin(e, op, w, at, &vals);
@@ -565,6 +567,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let f =
                     if matches!(at.kind(), TyKind::Float(FloatTy::F32)) { "__builtin_fmaf" } else { "__builtin_fma" };
                 Ok(self.tmp(t, &format!("({c}){f}({}, {}, {})", vals[0], vals[1], vals[2])))
+            }
+            Builtin::Rotl | Builtin::Rotr => {
+                let ii = self.int_info(at).unwrap();
+                let x = format!("(unsigned __int128)({})({})", ii.ucty(), vals[0]);
+                let k = format!("(uint64_t){}", vals[1]);
+                // A right rotation by k is a left rotation by bits - k mod bits.
+                let k = if op == Builtin::Rotl { k } else { format!("({b} - {k} % {b})", b = ii.bits) };
+                let c = self.g.ty.cty(t);
+                let r = self.tmp(t, &format!("({c})gm_rotl({x}, {k}, {})", ii.bits));
+                let n = self.normalize(ii, &r);
+                Ok(self.tmp(t, &n))
             }
             Builtin::Clz | Builtin::Ctz | Builtin::Popcount | Builtin::Bswap | Builtin::Bitreverse => {
                 let ii = self.int_info(at).unwrap();
