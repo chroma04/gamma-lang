@@ -291,6 +291,10 @@ C translation unit (`src/cgen/`), prefixed by the runtime (`runtime/gm_rt.h`,
 the conformance runner checks this: every `run` test also runs natively and
 must print the same output and exit with the same status.
 
+The generated `main` runs the program's entry function on a thread with a 64 MiB
+stack (`gm_run_main`), so recursion depth does not depend on the host's default
+stack size, and roughly matches the interpreter's.
+
 `gamma test` uses the C back end for modules that need it (foreign functions,
 `@asm`) or with `--backend=c`. `cgen::generate_tests` emits one program whose
 `main` runs the test entry selected by its first argument, exactly as the

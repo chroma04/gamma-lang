@@ -1693,6 +1693,34 @@ static void *gm_thread_main(void *p) {
     return NULL;
 }
 
+/* The stack of the thread that runs the program's entry function: larger than a
+ * typical process default, so deep recursion behaves alike on every host. */
+#define GM_MAIN_STACK_SIZE ((size_t)64 << 20)
+
+typedef struct { int (*f)(gm_node *); gm_node *cx; int status; } gm_main_call;
+
+static void *gm_main_thread(void *p) {
+    gm_thread_stack();
+    gm_main_call *c = (gm_main_call *)p;
+    c->status = c->f(c->cx);
+    return NULL;
+}
+
+/* Runs entry `f` under context `cx` on a thread of its own and returns its status;
+ * on the calling thread if no such thread can be started. */
+static int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+    gm_main_call c = {f, cx, 0};
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, GM_MAIN_STACK_SIZE);
+    pthread_t t;
+    int r = pthread_create(&t, &attr, gm_main_thread, &c);
+    pthread_attr_destroy(&attr);
+    if (r != 0) return f(cx);
+    pthread_join(t, NULL);
+    return c.status;
+}
+
 static int64_t gm_thread_spawn(void *f, void *arg) {
     gm_thread *t = (gm_thread *)malloc(sizeof *t);
     if (t == NULL) return gm_io_error(ENOMEM);

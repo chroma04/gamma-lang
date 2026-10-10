@@ -406,7 +406,7 @@ impl<'a> Gen<'a> {
         let mut calls = String::new();
         for (i, &entry) in entries.iter().enumerate() {
             s.push_str(&self.gen_entry(entry, i)?);
-            let _ = writeln!(calls, "        case {i}: return gm_entry{i}(cx);");
+            let _ = writeln!(calls, "        case {i}: return gm_run_main(gm_entry{i}, cx);");
         }
         s.push_str("int main(int argc, char **argv) {\n");
         if select {
@@ -432,7 +432,7 @@ impl<'a> Gen<'a> {
         if select {
             let _ = writeln!(s, "    switch (which) {{\n{calls}        default: return 2;\n    }}");
         } else {
-            s.push_str("    return gm_entry0(cx);\n");
+            s.push_str("    return gm_run_main(gm_entry0, cx);\n");
         }
         s.push_str("}\n");
         Ok(s)

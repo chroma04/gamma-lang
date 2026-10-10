@@ -485,6 +485,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     fn stmt(&mut self, s: &'a Stmt) -> CResult<()> {
         match s {
+            // `---` leaves the local as it is (filled with 0xAA in Debug builds, §18.3).
+            Stmt::Let { local, init: Some(Expr { kind: ExprKind::Uninit, .. }) } => {
+                if self.g.opts.debug {
+                    self.line(&format!("memset(&F.l{}, 0xAA, sizeof F.l{});", local.0, local.0));
+                }
+            }
             // A large value read from a place is copied directly, without a temporary.
             Stmt::Let { local, init: Some(init) } if self.big_place(init) => {
                 let a = self.place_addr(init)?;
