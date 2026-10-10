@@ -372,7 +372,12 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     fn tuple(&mut self, elems: &[ast::TupleElem], expect: Option<Ty>, span: Span) -> Expr {
-        let expected_elems: Option<Vec<Ty>> = expect.and_then(|t| match self.infer.shallow(t).kind() {
+        // The expected tuple type, also through optionals and results that would wrap it.
+        let mut want = expect.map(|t| self.infer.shallow(t));
+        while let Some(TyKind::Optional(inner) | TyKind::Result { ok: inner, .. }) = want.map(|t| t.kind().clone()) {
+            want = Some(self.infer.shallow(inner));
+        }
+        let expected_elems: Option<Vec<Ty>> = want.and_then(|t| match t.kind() {
             TyKind::Tuple { elems: es, .. } if es.len() == elems.len() => Some(es.to_vec()),
             _ => None,
         });
@@ -383,7 +388,18 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut vals = vec![];
         for (i, el) in elems.iter().enumerate() {
             let exp = expected_elems.as_ref().map(|v| v[i]);
-            let v = self.expr(&el.value, exp);
+            let mut v = self.expr(&el.value, exp);
+            // Each element converts to the expected element type where it can (§6.4):
+            // `(a: 1, b: null)` for `(a: u8, b: ?u8)`. A mismatch is left for the
+            // coercion of the whole tuple to report.
+            if let Some(exp) = exp.map(|t| self.infer.resolve(t))
+                && !exp.has_infer()
+            {
+                let vt = self.infer.resolve(v.ty);
+                if vt != exp && (vt.is_infer() || (!vt.has_infer() && self.coercion_steps(vt, exp).is_some())) {
+                    v = self.coerce(v, exp);
+                }
+            }
             vals.push(v);
         }
         let names = if named {

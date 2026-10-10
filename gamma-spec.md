@@ -548,6 +548,8 @@ Elements are accessed by position `t.0`, `t.1` or, if named, by name `t.a`.
 
 **Name-erasing coercion.** A tuple value converts implicitly to a tuple type with the same element types in the same order if either type is unnamed (`(q: u32, r: u32)` ↔ `(u32, u32)`). Between two differently named tuple types there is no implicit conversion.
 
+**Tuple expressions.** When a tuple expression `(e1, e2, …)` appears where a tuple type with as many elements is expected — directly, or wrapped in optionals or results (`?(T1, T2)`, `E!(T1, T2)`) — each element is a coercion site (§6.4) for the corresponding element type: `(a: 1, b: null)` where `(a: u8, b: ?u8)` is expected is `(a: u8(1), b: ?u8(null))`, and `(1, v)` with `v: u8` where `(u8, ?u8)` is expected wraps `v`. A tuple value that is not written as a tuple expression converts only by name erasure.
+
 Layout: like a struct with the same fields in the same order (§5.10.4).
 
 ### 5.10 Structs
