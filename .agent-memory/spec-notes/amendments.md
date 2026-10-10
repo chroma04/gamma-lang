@@ -38,3 +38,7 @@
   break to the with itself requires all consumed. §14.2 static check matches (cont_check.rs).
 - s3: §5.10.5 "plain #bits" is recursive; §9.3 bare binding unwraps one level; §12.1 single
   available instantiation wins; §4.5/§4.7 bare comma RHS; §6.5 T(int var) to float.
+- s4: §3.2 pub module bindings are members (`top.s.f`); §3.5 a binding naming a declaration
+  (type/generic type/fn/effect/op/module, `x` or `m.x`) is an alias of it (decls.rs
+  aliased_decl). `m.G(args)` works in type and value positions (ty_expr generic_decl,
+  expr type_of_name).

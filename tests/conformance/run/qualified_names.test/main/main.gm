@@ -1,0 +1,21 @@
+// Generic types, functions and modules reached through qualified names (§3.2), aliases
+// of declarations (§3.5) and modules re-exported by a facade module.
+s :: import "../s"
+
+AI :: s.A(i32)
+Holder :: struct { a: s.A(u8), b: s.A(i32, 4) }
+
+show :: fn(a: s.A(i32)) -> i32 => a.x
+
+main :: fn() \ {Out, Alloc} {
+    x: s.A(i32) = s.mk(i32, 5)
+    y := AI(x: 7)
+    h := Holder(a: s.A(u8)(x: 1), b: s.A(i32, 4)(x: 2))
+    print("{} {} {} {}\n", (show(x), y.x, h.a.x, h.b.x))
+    l := list(s.A(i32))
+    defer l.deinit()
+    l.push(x) else return
+    print("{} {}\n", (l.items.len, @size_of(s.P(u16))))
+    aliases()
+    nested()
+}

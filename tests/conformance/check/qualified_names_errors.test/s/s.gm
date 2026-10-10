@@ -1,0 +1,2 @@
+pub A :: struct(T: type) { pub x: T }
+hidden :: fn() {}

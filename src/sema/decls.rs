@@ -593,6 +593,23 @@ impl<'s> Sema<'s> {
         annot: Option<&ast::Expr>,
         init: &ast::Expr,
     ) -> DeclValue {
+        // A name for another declaration (§3.5): `mk :: shapes.make`, `Map :: HashMap`.
+        if annot.is_none()
+            && let Some(d) = self.aliased_decl(module, init)
+        {
+            let Some(d) = d else { return DeclValue::Error };
+            let v = self.resolve_decl(d);
+            if let DeclValue::Type(_)
+            | DeclValue::GenericType(_)
+            | DeclValue::Effect(_)
+            | DeclValue::Fn(_)
+            | DeclValue::Op(..)
+            | DeclValue::Module(_)
+            | DeclValue::Error = v
+            {
+                return v;
+            }
+        }
         if annot.is_none() && self.looks_like_type(module, init) {
             let ty = self.resolve_type(module, init);
             return if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) };
@@ -612,6 +629,23 @@ impl<'s> Sema<'s> {
         let id = tir::ConstId(self.prog.consts.len() as u32);
         self.prog.consts.push(tir::ConstDef { name: name.name, ty, span: name.span, init: expr, value: Some(value) });
         DeclValue::Const { ty, id }
+    }
+}
+
+impl<'s> Sema<'s> {
+    /// The declaration that `e` names if it is a plain name or `m.name`: a candidate for
+    /// an alias declaration. `Some(None)` if `name` is missing from or private to module
+    /// `m` (reported).
+    fn aliased_decl(&mut self, module: ModuleId, e: &ast::Expr) -> Option<Option<DeclId>> {
+        match &e.kind {
+            ast::ExprKind::Ident(id) => self.lookup_module_name(module, id.name).map(Some),
+            ast::ExprKind::Paren(inner) => self.aliased_decl(module, inner),
+            ast::ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                Some(self.module_member(m, *name))
+            }
+            _ => None,
+        }
     }
 }
 

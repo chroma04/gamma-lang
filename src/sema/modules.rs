@@ -247,8 +247,25 @@ impl<'s> Sema<'s> {
     }
 
     pub fn module_named(&mut self, module: ModuleId, e: &ast::Expr) -> Option<ModuleId> {
+        if let ast::ExprKind::Field { base, name } = &e.kind {
+            let m = self.module_named(module, base)?;
+            return self.public_module_member(m, name.name);
+        }
         let ast::ExprKind::Ident(id) = &e.kind else { return None };
         let d = self.lookup_module_name(module, id.name)?;
+        match self.resolve_decl(d) {
+            super::DeclValue::Module(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The module that the public declaration `name` of module `m` binds, if it is a
+    /// module binding (reports nothing otherwise).
+    pub fn public_module_member(&mut self, m: ModuleId, name: Symbol) -> Option<ModuleId> {
+        let d = *self.modules[m.0 as usize].scope.get(&name)?;
+        if !self.decls[d.0 as usize].item.is_pub {
+            return None;
+        }
         match self.resolve_decl(d) {
             super::DeclValue::Module(m) => Some(m),
             _ => None,

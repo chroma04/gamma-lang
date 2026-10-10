@@ -1,0 +1,16 @@
+//! stage: check
+// Errors in qualified names, aliases and method-call arguments.
+s :: import "../s"
+
+X :: s.nope                 //~ ERROR the module `s` has no declaration `nope`
+Y :: s.A(1)                 //~ ERROR expected a type
+Z :: s.hidden               //~ ERROR `hidden` is private to the module
+
+f :: fn(a: s.A(i32)) \ {Alloc} {
+    l := list(u32)
+    defer l.deinit()
+    _ = l.push("x")         //~ ERROR expected `u32`, found `string`
+    _ = l.push(1, 2)        //~ ERROR too many arguments: the function takes 1 besides the receiver
+}
+
+main :: fn() {}

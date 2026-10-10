@@ -1,0 +1,3 @@
+pub s :: import "../s"
+pub A :: s.A
+pub make :: s.mk

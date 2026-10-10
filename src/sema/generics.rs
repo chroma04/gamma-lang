@@ -680,6 +680,18 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));
             return error_expr(span);
         }
+        // Too many arguments to leave the type parameters out, and the first of them is
+        // not a type: more arguments than the function takes, rather than explicit types.
+        if !omit
+            && positional.len() > n
+            && let Some(&first) = positional.first()
+            && sig.params[targets[0]].generic.is_some_and(|p| !self.sema.value_params.contains_key(&p))
+            && self.clearly_value(first)
+        {
+            let what = if receiver.is_some() { " besides the receiver" } else { "" };
+            self.error(span, format!("too many arguments: the function takes {}{}", n, what));
+            return error_expr(span);
+        }
         let mut binds: HashMap<ParamId, Ty> = HashMap::new();
         // Arguments whose types still contain untyped literals.
         let mut literal_args: Vec<(Ty, Ty)> = vec![];
@@ -739,7 +751,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
                 if !fixed.is_empty() && !mentions_free && !has_param(expect) {
-                    values[*i] = Some(self.coerce(v, expect));
+                    // Coerced to `expect` with the others below.
+                    values[*i] = Some(v);
                     continue;
                 }
                 let t = self.infer.resolve(v.ty);
@@ -892,6 +905,15 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
+    /// True if `e` cannot denote a type: a literal or a local variable.
+    fn clearly_value(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Ident(id) => self.lookup_local(id.name).is_some(),
+            ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Str(_) | ast::ExprKind::Bool(_) => true,
+            _ => false,
+        }
+    }
+
     /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
     fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
         if let ast::ExprKind::Ident(id) = &e.kind

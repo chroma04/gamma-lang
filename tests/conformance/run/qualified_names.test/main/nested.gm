@@ -1,0 +1,9 @@
+top :: import "../top"
+
+nested :: fn() \ {Out} {
+    a: top.s.A(i32) = top.s.mk(i32, 11)
+    b: top.A(u8) = top.make(u8, 12)
+    c := top.s.B(y: 13)
+    d := top.A(i32)(x: 14)
+    print("{} {} {} {} {}\n", (a.x, b.x, c.y, d.x, top.s.pmk(1)))
+}

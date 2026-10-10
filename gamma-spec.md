@@ -308,7 +308,7 @@ A module is identified by its resolved directory. Importing the same module twic
 
 The import graph must be acyclic; a cycle is a compile error naming the modules in it.
 
-An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared.
+An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared. A `pub` module binding is itself a member: if module `top` declares `pub s :: import "./shapes"`, then `top.s.area(c)` and `top.s.Circle` reach `shapes`'s declarations, so a module can gather others under one import.
 
 ### 3.3 Visibility
 
@@ -336,7 +336,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Map :: HashMap`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Map(K, V)` then instantiates `HashMap`, and a `pub` alias re-exports the declaration. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 

@@ -309,6 +309,11 @@ impl<'a, 's> FnCx<'a, 's> {
     /// The module a module-binding expression (`m` in `m.x`) names, unless a
     /// local shadows it.
     pub fn module_of(&mut self, e: &ast::Expr) -> Option<super::ModuleId> {
+        // `m.n` where `n` is a public module binding of module `m`.
+        if let ExprKind::Field { base, name } = &e.kind {
+            let m = self.module_of(base)?;
+            return self.sema.public_module_member(m, name.name);
+        }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
             return None;
@@ -840,6 +845,21 @@ impl<'a, 's> FnCx<'a, 's> {
         {
             let module = self.module;
             if let Some(d) = self.sema.lookup_module_name(module, id.name)
+                && let DeclValue::GenericType(_) = self.sema.resolve_decl(d)
+            {
+                let t = self.resolve_type(e);
+                return (!t.is_error()).then_some(t);
+            }
+            return None;
+        }
+        // `m.G(args)` where `G` is a generic type of module `m`.
+        if let ExprKind::Call { callee, .. } = &e.kind
+            && let ExprKind::Field { base, name } = &callee.kind
+            && let Some(m) = self.module_of(base)
+        {
+            let d = self.sema.modules[m.0 as usize].scope.get(&name.name).copied();
+            if let Some(d) = d
+                && self.sema.decls[d.0 as usize].item.is_pub
                 && let DeclValue::GenericType(_) = self.sema.resolve_decl(d)
             {
                 let t = self.resolve_type(e);
