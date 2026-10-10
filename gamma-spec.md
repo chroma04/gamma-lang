@@ -2002,7 +2002,7 @@ Effects may have parameters (`Yield(T)`). An effect set may mention type paramet
 
 **Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Two instantiations of the same generic effect are **provably distinct** if they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). Inside a generic function or type, two instantiations that are neither identical nor provably distinct may not meet in either of these ways:
 
-- both in one effect set: the declared effect set, or that set together with the effect set of a second-class parameter's type. `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`;
+- both in the declared effect set: `\ {Yield(T), Yield(U)}` and `\ {Yield(T), Yield(i32)}` are compile errors, since `T` might be `U` or `i32`. (A second-class parameter's effects are performed where it is called, which the next rule covers: `map :: fn(A, B: type, src: fn() \ {Yield(A)}, f: fn(a: A) -> B) \ {Yield(B)}` may loop `for a in src() { yield(f(a)) }`, since the loop's handler takes exactly the calls of `src`.)
 - one performed inside a `with` that handles the other: `with (handler Yield(u32) { … }) { yield(x) }` with `x: T` is a compile error, since whether the handler catches the `yield` would depend on `T`. The implicit `with` of a `for` loop handles only the loop's source call (§13.2); performs in the loop body are handled outside the loop and are not affected by it.
 
 ### 16.7 Restrictions

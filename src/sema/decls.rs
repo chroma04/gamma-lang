@@ -439,16 +439,11 @@ impl<'s> Sema<'s> {
         for c in where_ {
             self.declare_constraint(module, c);
         }
-        // Instantiations of one generic effect in scope together must be told apart
-        // without knowing the type arguments (§16.6).
+        // Instantiations of one generic effect in the declared set must be told apart
+        // without knowing the type arguments (§16.6). A second-class parameter's effects
+        // are performed where it is called, and checked there.
         if !generics.is_empty() {
-            let mut in_scope: Vec<EffectRef> = effects.effects.to_vec();
-            for p in &params {
-                if let TyKind::Fn(f) = p.ty.kind() {
-                    in_scope.extend(f.effects.effects.iter().cloned());
-                }
-            }
-            self.check_distinct(sig.span, &in_scope);
+            self.check_distinct(sig.span, &effects.effects);
         }
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
