@@ -13,7 +13,7 @@
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
     §21.6.1 (shortest round-trip) but differs from Ryu/Python.
 ## Dogfood round 4 (s4) leftovers (13–22 fixed in s4)
-23. Wishes: let-else for refutable patterns (`.Pair(c) := x else return …`); bind a whole
+23. Wishes (let-else done s4: StmtKind::LetElse lowered in block_expected; lexer line_binds); bind a whole
     tuple payload (`.Cat(c)` for a 2-tuple payload); interp `new` ~10 µs each (Alloc perform
     + vtable + AllocError!^T); block-bodied closure return inference; `&rvalue` for ^const
     params; i.to_f64-style helper; std channels/queue/generator; print from passing tests.

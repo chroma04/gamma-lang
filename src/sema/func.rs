@@ -486,9 +486,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 e.kind,
                 ExprKind::If(_) | ExprKind::Match(_) | ExprKind::For(_) | ExprKind::With(_) | ExprKind::Block(_)
             )
-            && let Some(k) = self.obligations.iter().rposition(
-                |o| matches!(o, Obligation::UnitStatement { ty, span } if *span == e.span && !self.infer.resolve(*ty).is_unit()),
-            )
+            && let Some(k) = self.obligations.iter().rposition(|o| {
+                matches!(o, Obligation::UnitStatement { ty, span } if *span == e.span && {
+                    let t = self.infer.resolve(*ty);
+                    !t.is_unit() && !t.is_never()
+                })
+            })
         {
             self.obligations.remove(k);
             self.error(
@@ -524,6 +527,46 @@ impl<'a, 's> FnCx<'a, 's> {
                 break;
             }
             let last = i + 1 == n;
+            // `P := v else d`: `if P := v { rest of the block } else { d }` (§4.5).
+            if let StmtKind::LetElse { pat, value: v, fallback } = &s.kind {
+                let rest_span = match b.stmts.get(i + 1) {
+                    Some(next) => next.span.to(b.span.shrink_to_hi()),
+                    None => s.span.shrink_to_hi(),
+                };
+                let rest = ast::Block { id: b.id, stmts: b.stmts[i + 1..].to_vec(), span: rest_span };
+                let fb = ast::Block {
+                    id: b.id,
+                    stmts: vec![ast::Stmt { id: s.id, kind: StmtKind::Expr(fallback.clone()), span: fallback.span }],
+                    span: fallback.span,
+                };
+                let cond = ast::Cond {
+                    parts: vec![ast::CondPart::Bind { pat: pat.clone(), value: v.clone() }],
+                    span: pat.span.to(v.span),
+                };
+                let lowered =
+                    ast::IfExpr { branches: vec![(cond, rest)], else_: Some(ast::IfElse::Block(fb)), span: s.span };
+                let ex = self.if_expr(&lowered, value, expected);
+                diverges = ex.ty.is_never();
+                if let tir::ExprKind::If { else_: Some(e), .. } = &ex.kind
+                    && !e.ty.is_never()
+                    && !e.ty.is_error()
+                {
+                    // One error, not also an unused value or a missing return after it.
+                    self.obligations
+                        .retain(|o| !matches!(o, Obligation::UnitStatement { span, .. } if *span == fallback.span));
+                    self.error(
+                        fallback.span,
+                        "the `else` of a pattern binding must leave the block: `return`, `break`, `continue` or `trap(…)` (§4.5)",
+                    );
+                    diverges = true;
+                }
+                if value {
+                    tail = Some(ex);
+                } else {
+                    stmts.push(Stmt::Expr(ex));
+                }
+                break;
+            }
             if last
                 && value
                 && let StmtKind::Expr(e) = &s.kind
@@ -575,6 +618,10 @@ impl<'a, 's> FnCx<'a, 's> {
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
             StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
             StmtKind::Discard(e) => Stmt::Expr(self.discard_stmt(e, s.span)),
+            StmtKind::LetElse { value, .. } => {
+                self.error(s.span, "a binding with a pattern that can fail must be a statement of a block");
+                Stmt::Expr(self.expr(value, None))
+            }
         }
     }
 

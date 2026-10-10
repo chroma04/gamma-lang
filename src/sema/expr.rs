@@ -1408,9 +1408,9 @@ impl<'a, 's> FnCx<'a, 's> {
             (present, r)
         } else if rt == lt && err.is_none() {
             (lt, r)
-        } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present) {
-            (rt, r)
-        } else if err.is_some() && rt == Ty::optional(present) {
+        } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present)
+            || (err.is_some() && rt == Ty::optional(present))
+        {
             (rt, r)
         } else {
             let r = self.coerce(r, present);

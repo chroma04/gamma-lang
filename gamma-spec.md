@@ -267,7 +267,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `\`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm.
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains `:=` outside brackets, which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.
@@ -430,6 +430,17 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 `a, b := e` requires `e` to be a tuple with exactly as many elements; `a, b := 1, 2` is `a, b := (1, 2)`, as in multiple assignment (§4.7). Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
 
 Destructuring is the only multi-name binding form outside patterns (§9).
+
+**Pattern bindings with `else`.** A statement `P := e else d`, where `P` is a pattern other than a plain name or `_` (§9), matches `e` against `P` as a binding condition does (§8.2), including the unwrapping of optionals and results (§9.3). If it matches, `P`'s names are bound for the rest of the enclosing block; otherwise `d` is evaluated, and `d` must have type `never`: `return`, `break`, `continue`, `trap(…)`, or a block ending in one of them.
+
+```
+eval_pair :: fn(v: Value) -> EvalError!i64 {
+    .Pair(a, b) := v else return !.NotAPair
+    return a + b
+}
+```
+
+The statement means `if P := e { rest of the block } else { d }`. A pattern binding without `else` is a compile error, and so is one whose `else` captures an error (`else e => …`); a plain name keeps the meaning of §10.4 (`x := opt else d` binds `x` to the fallback's result).
 
 ### 4.6 Scopes and shadowing
 
@@ -2705,6 +2716,7 @@ stmt          = binding
               | 'break' [ IDENT ] [ expr ]
               | 'continue' [ IDENT ]
               | 'discard' expr
+              | pattern ':=' expr 'else' expr                     // §4.5; not a plain name
               | intrinsic_call
               | block                                             // a nested scope
               | expr

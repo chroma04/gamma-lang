@@ -1,0 +1,8 @@
+//! stage: check
+// The `else` of a pattern binding must leave the block (§4.5).
+V :: union { A: i32, B }
+f :: fn(v: V) -> i32 {
+    .A(n) := v else 5       //~ ERROR must leave the block
+    return n
+}
+main :: fn() {}

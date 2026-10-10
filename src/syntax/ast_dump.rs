@@ -338,6 +338,9 @@ impl Dumper {
                 node("while", v)
             }
             StmtKind::Discard(e) => node("discard", vec![self.expr(e)]),
+            StmtKind::LetElse { pat, value, fallback } => {
+                node("let-else", vec![self.pattern(pat), self.expr(value), self.expr(fallback)])
+            }
             StmtKind::Block(b) => self.block(b),
         }
     }

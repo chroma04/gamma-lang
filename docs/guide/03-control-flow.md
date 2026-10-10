@@ -105,6 +105,17 @@ show :: fn(c: u8) \ {Out} {
 
 This capture form is permitted only when the `if` has a single condition part. [Chapter 5](05-optionals-and-errors.md) covers results in depth.
 
+When a mismatch should leave the function (or loop) early, a pattern binding with `else` avoids nesting the rest of the code inside an `if`. The names stay bound for the rest of the block, and the `else` part must leave it with `return`, `break`, `continue` or `trap(...)`:
+
+```gamma
+area :: fn(s: Shape) -> ?f64 {
+    .Circle(r) := s else return null
+    return 3.14159 * r * r
+}
+```
+
+It means `if .Circle(r) := s { rest of the block } else { return null }`. A line that starts with `.Name(...)` and contains `:=` is such a binding, not a continuation of the previous line.
+
 > **Common mistake.** There is no way to write the C typo `if (x = 0)`. Assignment is a statement and equality is `is`, so `if x = 0 { ... }` is simply a syntax error. Likewise, `if (n)` on an integer is an error; write `if n is not 0`.
 
 ## `while`
