@@ -1,0 +1,371 @@
+// Markdown subset to HTML: block state machine, recursive inline parser, output through an Emit effect with a std/str Builder handler.
+str :: import "std/str"
+
+Emit :: effect {
+    emit: fn(s: string)
+}
+
+handler Emit for ^str.Builder {
+    emit(self, s) => self.push(s)
+}
+
+// ------------------------------------------------------------------ helpers
+
+DIGITS :: [_]string("1", "2", "3", "4", "5", "6")
+
+starts_with :: fn(s, prefix: string) -> bool => s.len >= prefix.len and s[0..prefix.len] is prefix
+
+is_alnum :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9'
+
+find_from :: fn(s, needle: string, from: usize) -> ?usize {
+    if from > s.len { return null }
+    i := str.find(s[from..], needle) else return null
+    return from + i
+}
+
+// Writes `s` with the characters that are special in HTML replaced.
+emit_escaped :: fn(s: string) \ {Emit} {
+    run: usize = 0
+    for i in 0..s.len {
+        repl := match s[i] {
+            '&' => "&amp;"
+            '<' => "&lt;"
+            '>' => "&gt;"
+            '"' => "&quot;"
+            _ => ""
+        }
+        if repl.len > 0 {
+            emit(s[run..i])
+            emit(repl)
+            run = i + 1
+        }
+    }
+    emit(s[run..])
+}
+
+// A heading's anchor: lower-case letters and digits, with runs of anything else as one '-'.
+emit_slug :: fn(title: string) \ {Emit} {
+    pending_dash := false
+    started := false
+    for c in bytes(title) {
+        if is_alnum(c) {
+            if pending_dash and started { emit("-") }
+            pending_dash = false
+            started = true
+            one: [1]u8 = [_]u8(if c in 'A'..='Z' { c + 32 } else { c })
+            emit(one[..])
+        } else {
+            pending_dash = true
+        }
+    }
+}
+
+// ------------------------------------------------------------------ inline
+
+// If `s[at..]` opens an emphasis run with `delim`, the index of the matching close.
+find_close :: fn(s: string, at: usize, delim: u8, width: usize) -> ?usize {
+    j := at + width
+    while j < s.len {
+        if s[j] is delim and (width is 1 or (j + 1 < s.len and s[j + 1] is delim)) {
+            after_ok := width is 2 or delim is '*' or j + 1 >= s.len or not is_alnum(s[j + 1])
+            if j > at + width and after_ok { return j }
+        }
+        j += 1
+    }
+    return null
+}
+
+inline :: fn(s: string) \ {Emit} {
+    i: usize = 0
+    run: usize = 0
+    while i < s.len {
+        c := s[i]
+        consumed: usize = 0
+        if c is '\\' and i + 1 < s.len and not is_alnum(s[i + 1]) {
+            emit_escaped(s[run..i])
+            emit_escaped(s[i + 1..i + 2])
+            consumed = 2
+        } else if c is '`' {
+            if close := find_from(s, "`", i + 1) {
+                emit_escaped(s[run..i])
+                emit("<code>")
+                emit_escaped(s[i + 1..close])
+                emit("</code>")
+                consumed = close + 1 - i
+            }
+        } else if c in ('*', '_') {
+            opens := c is '*' or i is 0 or not is_alnum(s[i - 1])
+            width: usize = if i + 1 < s.len and s[i + 1] is c { 2 } else { 1 }
+            if opens {
+                if close := find_close(s, i, c, width) {
+                    emit_escaped(s[run..i])
+                    tag := if width is 2 { "strong" } else { "em" }
+                    emit("<")
+                    emit(tag)
+                    emit(">")
+                    inline(s[i + width..close])
+                    emit("</")
+                    emit(tag)
+                    emit(">")
+                    consumed = close + width - i
+                }
+            }
+        } else if c is '[' {
+            if mid := find_from(s, "](", i + 1) {
+                if end := find_from(s, ")", mid + 2) {
+                    emit_escaped(s[run..i])
+                    emit("<a href=\"")
+                    emit_escaped(s[mid + 2..end])
+                    emit("\">")
+                    inline(s[i + 1..mid])
+                    emit("</a>")
+                    consumed = end + 1 - i
+                }
+            }
+        }
+        if consumed > 0 {
+            i += consumed
+            run = i
+        } else {
+            i += 1
+        }
+    }
+    emit_escaped(s[run..])
+}
+
+// ------------------------------------------------------------------ blocks
+
+Block :: union { None, Para, Bullets, Numbers, Code, Quote }
+
+Conv :: struct {
+    block: Block = .None
+    blocks: u32 = 0
+}
+
+close_block :: fn(c: ^Conv) \ {Emit} {
+    match c.block {
+        .None => {}
+        .Para => emit("</p>\n")
+        .Bullets => emit("</ul>\n")
+        .Numbers => emit("</ol>\n")
+        .Code => emit("</code></pre>\n")
+        .Quote => emit("</blockquote>\n")
+    }
+    c.block = .None
+}
+
+open_block :: fn(c: ^Conv, b: Block, tag: string) \ {Emit} {
+    if c.block is not b {
+        close_block(c)
+        emit(tag)
+        c.block = b
+        c.blocks += 1
+    }
+}
+
+heading_level :: fn(line: string) -> usize {
+    n: usize = 0
+    while n < line.len and line[n] is '#' { n += 1 }
+    if n >= 1 and n <= 6 and n < line.len and line[n] is ' ' { return n }
+    return 0
+}
+
+// The length of a list marker like "12. " at the start of `line`, or 0.
+number_marker :: fn(line: string) -> usize {
+    n: usize = 0
+    while n < line.len and line[n] in '0'..='9' { n += 1 }
+    if n > 0 and n + 1 < line.len and line[n] is '.' and line[n + 1] is ' ' { return n + 2 }
+    return 0
+}
+
+is_rule :: fn(line: string) -> bool {
+    if line.len < 3 { return false }
+    for c in bytes(line) {
+        if c is not line[0] { return false }
+    }
+    return line[0] in ('-', '*', '_')
+}
+
+convert_line :: fn(c: ^Conv, line: string) \ {Emit} {
+    if c.block is .Code {
+        if starts_with(line, "```") {
+            close_block(c)
+        } else {
+            emit_escaped(line)
+            emit("\n")
+        }
+        return
+    }
+    t := str.trim(line)
+    level := heading_level(t)
+    marker := number_marker(t)
+    if t.len is 0 {
+        close_block(c)
+    } else if starts_with(t, "```") {
+        open_block(c, .Code, "<pre><code>")
+    } else if level > 0 {
+        close_block(c)
+        title := str.trim(t[level + 1..])
+        emit("<h")
+        emit(DIGITS[level - 1])
+        emit(" id=\"")
+        emit_slug(title)
+        emit("\">")
+        inline(title)
+        emit("</h")
+        emit(DIGITS[level - 1])
+        emit(">\n")
+        c.blocks += 1
+    } else if is_rule(t) {
+        close_block(c)
+        emit("<hr>\n")
+        c.blocks += 1
+    } else if starts_with(t, "> ") or t is ">" {
+        open_block(c, .Quote, "<blockquote>\n")
+        emit("<p>")
+        inline(str.trim(t[1..]))
+        emit("</p>\n")
+    } else if starts_with(t, "- ") or starts_with(t, "* ") {
+        open_block(c, .Bullets, "<ul>\n")
+        emit("<li>")
+        inline(str.trim(t[2..]))
+        emit("</li>\n")
+    } else if marker > 0 {
+        open_block(c, .Numbers, "<ol>\n")
+        emit("<li>")
+        inline(t[marker..])
+        emit("</li>\n")
+    } else {
+        if c.block is .Para {
+            emit("\n")
+        } else {
+            open_block(c, .Para, "<p>")
+        }
+        inline(t)
+    }
+}
+
+convert :: fn(text: string) -> u32 \ {Emit} {
+    c := Conv()
+    for line in str.lines(text) {
+        convert_line(&c, line)
+    }
+    close_block(&c)
+    return c.blocks
+}
+
+// ------------------------------------------------------------------ table of contents
+
+Heading :: struct { level: usize, title: string }
+
+collect_headings :: fn(text: string, out: []Heading) -> usize {
+    n: usize = 0
+    in_code := false
+    for line in str.lines(text) {
+        if starts_with(line, "```") {
+            in_code = not in_code
+            continue
+        }
+        if in_code { continue }
+        t := str.trim(line)
+        level := heading_level(t)
+        if level > 0 and n < out.len {
+            out[n] = Heading(level: level, title: str.trim(t[level + 1..]))
+            n += 1
+        }
+    }
+    return n
+}
+
+emit_toc :: fn(heads: []const Heading) \ {Emit} {
+    emit("<nav>\n")
+    for h in heads {
+        emit("<li class=\"l")
+        emit(DIGITS[h.level - 1])
+        emit("\"><a href=\"#")
+        emit_slug(h.title)
+        emit("\">")
+        emit_escaped(h.title)
+        emit("</a></li>\n")
+    }
+    emit("</nav>\n")
+}
+
+DOC :: `# Gamma & Friends: A "Guide"
+
+Gamma is a *small* language with **big** ideas, and
+text may wrap over several lines. Use \*stars\* literally,
+or write snake_case_names without surprise; __bold__ and _emphasis_ work too.
+
+## Features
+
+- Algebraic **effects** with ^handlers^
+- Tagged unions & ^match^
+- No hidden <allocation>
+
+1. Install it
+2. Write ^main :: fn()^
+3. Read the [guide](https://example.com/a?b=1&c=2)
+
+> Quote: "keep it *simple*"
+> and short
+
+---
+
+### Unicode: café ☕ naïve — ok?
+
+^^^
+if a < b && c > d {
+    print("<b>")
+}
+^^^
+
+Final paragraph with an unclosed *star and a lone [bracket.
+`
+
+main :: fn() \ {Out} {
+    // A raw string cannot contain a backtick, so the document uses ^ in its place.
+    doc: [1024]u8 = ---
+    n: usize = 0
+    i: usize = 0
+    src := DOC
+    while i < src.len {
+        doc[n] = if src[i] is '^' { '`' } else { src[i] }
+        n += 1
+        i += 1
+    }
+    text: string = doc[0..n]
+
+    heads := [16]Heading(fill: Heading(level: 0, title: ""))
+    nheads := collect_headings(text, heads[..])
+
+    buf: [4096]u8 = ---
+    b := str.builder(buf[..])
+    blocks: u32 = 0
+    with &b {
+        emit_toc(heads[0..nheads])
+        blocks = convert(text)
+    }
+    print("{}", b.str())
+    print("-- {} headings, {} blocks, {} bytes of HTML\n", (nheads, blocks, b.len()))
+
+    // The same conversion under a handler that only measures the output.
+    tags: u32 = 0
+    bytes_out: usize = 0
+    measure :: handler Emit {
+        emit(s) => {
+            bytes_out += s.len
+            for c in bytes(s) {
+                if c is '<' { tags += 1 }
+            }
+        }
+    }
+    _ = with measure { convert(text) }
+    print("-- measured {} tags in {} bytes (without the table of contents)\n", (tags, bytes_out))
+
+    chars := 0
+    for r in runes(text) {
+        if r > 127 { chars += 1 }
+    }
+    print("-- {} non-ASCII characters in {} source bytes\n", (chars, text.len))
+}

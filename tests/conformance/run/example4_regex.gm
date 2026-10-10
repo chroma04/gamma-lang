@@ -1,0 +1,517 @@
+// Regular expressions: recursive-descent parser, a closure-continuation backtracker and a Thompson/Pike NFA built on generic fixed-size thread lists.
+str :: import "std/str"
+
+MAXP :: 64
+
+RegexError :: union {
+    Alloc: AllocError
+    Syntax: (msg: string, at: usize)
+    TooBig
+}
+
+Class :: struct { bits: [4]u64 }
+
+class_add :: fn(c: ^Class, ch: u8) {
+    c.bits[ch >> 6] |= u64(1) << (ch & 63)
+}
+
+class_range :: fn(c: ^Class, lo, hi: u8) {
+    for ch in lo..=hi { class_add(c, ch) }
+}
+
+class_has :: fn(c: ^const Class, ch: u8) -> bool => c.bits[ch >> 6] & (u64(1) << (ch & 63)) is not 0
+
+class_negate :: fn(c: ^Class) {
+    for i in 0..4 { c.bits[i] = ~c.bits[i] }
+}
+
+Node :: union {
+    Empty
+    Lit: u8
+    Any
+    Set: Class
+    Cat: (a: u32, b: u32)
+    Alt: (a: u32, b: u32)
+    Star: u32
+    Plus: u32
+    Opt: u32
+    Bol
+    Eol
+}
+
+Inst :: union {
+    Char: u8
+    Any
+    Set: Class
+    Split: (x: u32, y: u32)
+    Jmp: u32
+    Bol
+    Eol
+    Match
+}
+
+Regex :: struct {
+    nodes: List(Node)
+    prog: List(Inst)
+    root: u32 = 0
+}
+
+// ------------------------------------------------------------------ parser
+
+Parser :: struct {
+    src: string
+    pos: usize = 0
+    nodes: ^List(Node)
+}
+
+add_node :: fn(p: ^Parser, n: Node) -> RegexError!u32 \ {Alloc} {
+    id := p.nodes.items.len.trunc(u32)
+    try p.nodes.push(n)
+    return id
+}
+
+fail :: fn(p: ^Parser, msg: string) -> RegexError => RegexError.Syntax(msg: msg, at: p.pos)
+
+peek :: fn(p: ^Parser) -> ?u8 => p.src.get(p.pos)
+
+// Adds the class for an escape letter (d, w, s and their upper-case negations) to `c`.
+escape_class :: fn(ch: u8, c: ^Class) -> bool {
+    lower := if ch in 'A'..='Z' { ch + 32 } else { ch }
+    tmp := Class(bits: [4]u64(fill: 0))
+    match lower {
+        'd' => class_range(&tmp, '0', '9')
+        'w' => {
+            class_range(&tmp, 'a', 'z')
+            class_range(&tmp, 'A', 'Z')
+            class_range(&tmp, '0', '9')
+            class_add(&tmp, '_')
+        }
+        's' => {
+            class_add(&tmp, ' ')
+            class_add(&tmp, '\t')
+            class_add(&tmp, '\n')
+        }
+        _ => return false
+    }
+    if ch in 'A'..='Z' { class_negate(&tmp) }
+    for i in 0..4 { c.bits[i] |= tmp.bits[i] }
+    return true
+}
+
+parse_class :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+    cls := Class(bits: [4]u64(fill: 0))
+    negate := false
+    if c := peek(p) {
+        if c is '^' {
+            negate = true
+            p.pos += 1
+        }
+    }
+    count := 0
+    while true {
+        ch := peek(p) else return !fail(p, "missing ]")
+        p.pos += 1
+        if ch is ']' { break }
+        lo := ch
+        if ch is '\\' {
+            e := peek(p) else return !fail(p, "dangling escape")
+            p.pos += 1
+            if escape_class(e, &cls) {
+                count += 1
+                continue
+            }
+            lo = e
+        }
+        if p.pos + 1 < p.src.len and p.src[p.pos] is '-' and p.src[p.pos + 1] is not ']' {
+            hi := p.src[p.pos + 1]
+            if hi < lo { return !fail(p, "reversed range") }
+            class_range(&cls, lo, hi)
+            p.pos += 2
+        } else {
+            class_add(&cls, lo)
+        }
+        count += 1
+    }
+    if count is 0 { return !fail(p, "empty class") }
+    if negate { class_negate(&cls) }
+    return try add_node(p, .Set(cls))
+}
+
+parse_atom :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+    ch := peek(p) else return !fail(p, "unexpected end")
+    p.pos += 1
+    return match ch {
+        '(' => {
+            inner := try parse_alt(p)
+            close := peek(p) else return !fail(p, "missing )")
+            if close is not ')' { return !fail(p, "missing )") }
+            p.pos += 1
+            inner
+        }
+        '[' => try parse_class(p)
+        '.' => try add_node(p, .Any)
+        '^' => try add_node(p, .Bol)
+        '$' => try add_node(p, .Eol)
+        '*', '+', '?' => {
+            p.pos -= 1
+            return !fail(p, "nothing to repeat")
+        }
+        '\\' => {
+            e := peek(p) else return !fail(p, "dangling escape")
+            p.pos += 1
+            cls := Class(bits: [4]u64(fill: 0))
+            if escape_class(e, &cls) {
+                try add_node(p, .Set(cls))
+            } else {
+                try add_node(p, .Lit(e))
+            }
+        }
+        _ => try add_node(p, .Lit(ch))
+    }
+}
+
+parse_rep :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+    atom := try parse_atom(p)
+    q := peek(p) else return atom
+    if q not in ('*', '+', '?') { return atom }
+    p.pos += 1
+    node := match q {
+        '*' => Node.Star(atom)
+        '+' => Node.Plus(atom)
+        _ => Node.Opt(atom)
+    }
+    id := try add_node(p, node)
+    if again := peek(p) {
+        if again in ('*', '+', '?') { return !fail(p, "nothing to repeat") }
+    }
+    return id
+}
+
+parse_cat :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+    acc: ?u32 = null
+    while c := peek(p) {
+        if c in ('|', ')') { break }
+        item := try parse_rep(p)
+        acc = if prev := acc { try add_node(p, .Cat(a: prev, b: item)) } else { item }
+    }
+    return acc else try add_node(p, .Empty)
+}
+
+parse_alt :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+    left := try parse_cat(p)
+    if c := peek(p) {
+        if c is '|' {
+            p.pos += 1
+            right := try parse_alt(p)
+            return try add_node(p, .Alt(a: left, b: right))
+        }
+    }
+    return left
+}
+
+// ------------------------------------------------------------------ compiler
+
+emit :: fn(re: ^Regex, n: u32) -> RegexError!() \ {Alloc} {
+    match re.nodes.items[n] {
+        .Empty => {}
+        .Lit(c) => try re.prog.push(.Char(c))
+        .Any => try re.prog.push(.Any)
+        .Set(s) => try re.prog.push(.Set(s))
+        .Bol => try re.prog.push(.Bol)
+        .Eol => try re.prog.push(.Eol)
+        .Cat(ca, cb) => {
+            try emit(re, ca)
+            try emit(re, cb)
+        }
+        .Alt(ca, cb) => {
+            split := re.prog.items.len.trunc(u32)
+            try re.prog.push(.Jmp(0))
+            try emit(re, ca)
+            jmp := re.prog.items.len.trunc(u32)
+            try re.prog.push(.Jmp(0))
+            second := re.prog.items.len.trunc(u32)
+            try emit(re, cb)
+            re.prog.items[split] = .Split(x: split + 1, y: second)
+            re.prog.items[jmp] = .Jmp(re.prog.items.len.trunc(u32))
+        }
+        .Star(e) => {
+            split := re.prog.items.len.trunc(u32)
+            try re.prog.push(.Jmp(0))
+            try emit(re, e)
+            try re.prog.push(.Jmp(split))
+            re.prog.items[split] = .Split(x: split + 1, y: re.prog.items.len.trunc(u32))
+        }
+        .Plus(e) => {
+            start := re.prog.items.len.trunc(u32)
+            try emit(re, e)
+            at := re.prog.items.len.trunc(u32)
+            try re.prog.push(.Split(x: start, y: at + 1))
+        }
+        .Opt(e) => {
+            split := re.prog.items.len.trunc(u32)
+            try re.prog.push(.Jmp(0))
+            try emit(re, e)
+            re.prog.items[split] = .Split(x: split + 1, y: re.prog.items.len.trunc(u32))
+        }
+    }
+    return ()
+}
+
+compile :: fn(pattern: string) -> RegexError!Regex \ {Alloc} {
+    re := Regex(nodes: list(Node), prog: list(Inst))
+    errdefer deinit(&re)
+    p := Parser(src: pattern, nodes: &re.nodes)
+    re.root = try parse_alt(&p)
+    if p.pos < pattern.len { return !fail(&p, "unmatched )") }
+    try emit(&re, re.root)
+    try re.prog.push(.Match)
+    if re.prog.items.len > MAXP { return !RegexError.TooBig }
+    return re
+}
+
+deinit :: fn(re: ^Regex) {
+    re.nodes.deinit()
+    re.prog.deinit()
+}
+
+// ------------------------------------------------------------------ backtracking matcher
+
+Bt :: struct {
+    nodes: []const Node
+    text: string
+    steps: u64 = 0
+}
+
+// Perl-style: alternatives in order, quantifiers greedy. `k` is the continuation.
+bt :: fn(b: ^Bt, n: u32, pos: usize, k: fn(usize) -> bool) -> bool {
+    b.steps += 1
+    match b.nodes[n] {
+        .Empty => return k(pos)
+        .Lit(c) => return pos < b.text.len and b.text[pos] is c and k(pos + 1)
+        .Any => return pos < b.text.len and k(pos + 1)
+        .Set(s) => return pos < b.text.len and class_has(&s, b.text[pos]) and k(pos + 1)
+        .Bol => return pos is 0 and k(pos)
+        .Eol => return pos is b.text.len and k(pos)
+        .Cat(ca, cb) => return bt(b, ca, pos, fn(q) => bt(b, cb, q, k))
+        .Alt(ca, cb) => return bt(b, ca, pos, k) or bt(b, cb, pos, k)
+        .Opt(e) => return bt(b, e, pos, k) or k(pos)
+        .Star(e) => return star(b, e, pos, k)
+        .Plus(e) => return bt(b, e, pos, fn(q) => star(b, e, q, k))
+    }
+}
+
+star :: fn(b: ^Bt, e: u32, pos: usize, k: fn(usize) -> bool) -> bool {
+    // An iteration that consumes nothing cannot make progress, so it is not repeated.
+    return bt(b, e, pos, fn(q) => q > pos and star(b, e, q, k)) or k(pos)
+}
+
+Found :: struct { start: usize, end: usize }
+
+bt_find :: fn(re: ^const Regex, text: string, steps: ^u64) -> ?Found {
+    b := Bt(nodes: re.nodes.items, text: text)
+    for s in 0..=text.len {
+        end := s
+        if bt(&b, re.root, s, fn(q) -> bool {
+            end = q
+            return true
+        }) {
+            steps^ += b.steps
+            return Found(start: s, end: end)
+        }
+    }
+    steps^ += b.steps
+    return null
+}
+
+// ------------------------------------------------------------------ Thompson / Pike simulation
+
+Threads :: struct(N: usize) {
+    pcs: [N]u32
+    n: usize = 0
+}
+
+push_thread :: fn(N :: usize, t: ^Threads(N), pc: u32) {
+    t.pcs[t.n] = pc
+    t.n += 1
+}
+
+Vm :: struct {
+    prog: []const Inst
+    text: string
+    mark: [MAXP]u32 = [MAXP]u32(fill: 0)
+    gen: u32 = 0
+    steps: u64 = 0
+}
+
+add_thread :: fn(vm: ^Vm, list: ^Threads(MAXP), pc: u32, pos: usize) {
+    if vm.mark[pc] is vm.gen { return }
+    vm.mark[pc] = vm.gen
+    vm.steps += 1
+    match vm.prog[pc] {
+        .Jmp(t) => add_thread(vm, list, t, pos)
+        .Split(sx, sy) => {
+            add_thread(vm, list, sx, pos)
+            add_thread(vm, list, sy, pos)
+        }
+        .Bol => if pos is 0 { add_thread(vm, list, pc + 1, pos) }
+        .Eol => if pos is vm.text.len { add_thread(vm, list, pc + 1, pos) }
+        _ => push_thread(list, pc)
+    }
+}
+
+// The end of the longest match that starts exactly at `start`.
+longest_at :: fn(vm: ^Vm, start: usize) -> ?usize {
+    clist := Threads(MAXP)(pcs: [MAXP]u32(fill: 0))
+    nlist := Threads(MAXP)(pcs: [MAXP]u32(fill: 0))
+    best: ?usize = null
+    vm.gen += 1
+    add_thread(vm, &clist, 0, start)
+    pos := start
+    while clist.n > 0 {
+        vm.gen += 1
+        nlist.n = 0
+        for i in 0..clist.n {
+            pc := clist.pcs[i]
+            ch: ?u8 = vm.text.get(pos)
+            match vm.prog[pc] {
+                .Match => { best = pos }
+                .Char(c) => if x := ch { if x is c { add_thread(vm, &nlist, pc + 1, pos + 1) } }
+                .Any => if ch is not null { add_thread(vm, &nlist, pc + 1, pos + 1) }
+                .Set(s) => if x := ch { if class_has(&s, x) { add_thread(vm, &nlist, pc + 1, pos + 1) } }
+                _ => {}
+            }
+        }
+        tmp := clist
+        clist = nlist
+        nlist = tmp
+        pos += 1
+    }
+    return best
+}
+
+nfa_find_from :: fn(re: ^const Regex, text: string, from: usize, steps: ^u64) -> ?Found {
+    vm := Vm(prog: re.prog.items, text: text)
+    defer steps^ += vm.steps
+    for s in from..=text.len {
+        if e := longest_at(&vm, s) { return Found(start: s, end: e) }
+    }
+    return null
+}
+
+// Non-overlapping matches, left to right; an empty match advances by one byte.
+find_all :: fn(re: ^const Regex, text: string) \ {Yield(Found)} {
+    at: usize = 0
+    scratch: u64 = 0
+    while at <= text.len {
+        m := nfa_find_from(re, text, at, &scratch) else break
+        yield(m)
+        at = if m.end > m.start { m.end } else { m.end + 1 }
+    }
+}
+
+replace_all :: fn(re: ^const Regex, text, repl: string, out: ^str.Builder) {
+    last: usize = 0
+    for m in find_all(re, text) {
+        out.push(text[last..m.start])
+        out.push(repl)
+        last = m.end
+    }
+    out.push(text[last..])
+}
+
+// ------------------------------------------------------------------ driver
+
+report :: fn(pattern, text: string) \ {Out, Alloc} {
+    re := compile(pattern) else e => {
+        match e {
+            .Syntax(msg, at) => print("/{}/: syntax error at {}: {}\n", (pattern, at, msg))
+            .TooBig => print("/{}/: program too big\n", pattern)
+            .Alloc(_) => print("/{}/: out of memory\n", pattern)
+        }
+        return
+    }
+    defer deinit(&re)
+    bsteps: u64 = 0
+    nsteps: u64 = 0
+    a := bt_find(&re, text, &bsteps)
+    b := nfa_find_from(&re, text, 0, &nsteps)
+    print("/{}/ on \"{}\": ", (pattern, text))
+    if m := b {
+        print("nfa [{}, {})", (m.start, m.end))
+    } else {
+        print("nfa no match")
+    }
+    if m := a {
+        print(", backtrack [{}, {})", (m.start, m.end))
+    } else {
+        print(", backtrack no match")
+    }
+    print("{}\n", if a is b { "" } else { "  <- engines differ" })
+}
+
+main :: fn() \ {Out, Alloc} {
+    report("abc", "xxabcxx")
+    report("a*b", "caaab")
+    report("^a+$", "aaa")
+    report("^a+$", "aab")
+    report("colou?r", "my colour and color")
+    report("(ab|cd)+e", "xxabcdabe")
+    report("[a-c]+[^a-c]", "abcd")
+    report("\\d+\\.\\d+", "pi=3.14159!")
+    report("\\w+@\\w+", "mail bob@example now")
+    report("x*", "")
+    report("x*", "abc")
+    report("a|ab", "ab")
+    report("(a|ab)(c|bcd)", "abcd")
+    report("[^ ]+$", "last word")
+    report("^$", "")
+    report("a.c", "a\nc a-c")
+    report("(a", "")
+    report("a)", "")
+    report("*a", "")
+    report("a**", "")
+    report("[abc", "")
+    report("[]", "")
+    report("[z-a]", "")
+    report("abc\\", "")
+    report("(((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)(n)(o)(p)(q)(r)(s)(t)(u)(v)(w)(x)(y)(z)", "")
+    report("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", "")
+
+    // Backtracking is exponential on nested quantifiers; the NFA stays linear.
+    pathological :: "(a*)*b"
+    re := compile(pathological) else return
+    defer deinit(&re)
+    n: usize = 4
+    while n <= 16 {
+        text: [32]u8 = ---
+        text[0..n].fill('a')
+        text[n] = 'c'
+        bsteps: u64 = 0
+        nsteps: u64 = 0
+        a := bt_find(&re, text[0..n + 1], &bsteps)
+        b := nfa_find_from(&re, text[0..n + 1], 0, &nsteps)
+        print("n={}: match={} backtrack steps={} nfa steps={}\n", (n, a is not null or b is not null, bsteps, nsteps))
+        n += 4
+    }
+
+    // All matches and replacement.
+    nums := compile("\\d+") else return
+    defer deinit(&nums)
+    text := "a1b22c333d"
+    for m in find_all(&nums, text) {
+        print("number at [{}, {}): {}\n", (m.start, m.end, text[m.start..m.end]))
+    }
+    buf: [64]u8 = ---
+    out := str.builder(buf[..])
+    replace_all(&nums, text, "#", &out)
+    print("replaced: {}\n", out.str())
+
+    empties := compile("b*") else return
+    defer deinit(&empties)
+    count := 0
+    for m in find_all(&empties, "abba") {
+        count += 1
+        print("b* match [{}, {})\n", (m.start, m.end))
+    }
+    print("{} matches\n", count)
+}

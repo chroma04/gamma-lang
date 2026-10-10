@@ -1,0 +1,40 @@
+/abc/ on "xxabcxx": nfa [2, 5), backtrack [2, 5)
+/a*b/ on "caaab": nfa [1, 5), backtrack [1, 5)
+/^a+$/ on "aaa": nfa [0, 3), backtrack [0, 3)
+/^a+$/ on "aab": nfa no match, backtrack no match
+/colou?r/ on "my colour and color": nfa [3, 9), backtrack [3, 9)
+/(ab|cd)+e/ on "xxabcdabe": nfa [2, 9), backtrack [2, 9)
+/[a-c]+[^a-c]/ on "abcd": nfa [0, 4), backtrack [0, 4)
+/\d+\.\d+/ on "pi=3.14159!": nfa [3, 10), backtrack [3, 10)
+/\w+@\w+/ on "mail bob@example now": nfa [5, 16), backtrack [5, 16)
+/x*/ on "": nfa [0, 0), backtrack [0, 0)
+/x*/ on "abc": nfa [0, 0), backtrack [0, 0)
+/a|ab/ on "ab": nfa [0, 2), backtrack [0, 1)  <- engines differ
+/(a|ab)(c|bcd)/ on "abcd": nfa [0, 4), backtrack [0, 4)
+/[^ ]+$/ on "last word": nfa [5, 9), backtrack [5, 9)
+/^$/ on "": nfa [0, 0), backtrack [0, 0)
+/a.c/ on "a
+c a-c": nfa [0, 3), backtrack [0, 3)
+/(a/: syntax error at 2: missing )
+/a)/: syntax error at 1: unmatched )
+/*a/: syntax error at 0: nothing to repeat
+/a**/: syntax error at 2: nothing to repeat
+/[abc/: syntax error at 4: missing ]
+/[]/: syntax error at 2: empty class
+/[z-a]/: syntax error at 2: reversed range
+/abc\/: syntax error at 4: dangling escape
+/(((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)(n)(o)(p)(q)(r)(s)(t)(u)(v)(w)(x)(y)(z)/ on "": nfa no match, backtrack no match
+/abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz/: program too big
+n=4: match=false backtrack steps=134 nfa steps=90
+n=8: match=false backtrack steps=2058 nfa steps=266
+n=12: match=false backtrack steps=32782 nfa steps=538
+n=16: match=false backtrack steps=524306 nfa steps=906
+number at [1, 2): 1
+number at [3, 5): 22
+number at [6, 9): 333
+replaced: a#b#c#d
+b* match [0, 0)
+b* match [1, 3)
+b* match [3, 3)
+b* match [4, 4)
+4 matches
