@@ -1,0 +1,130 @@
+// std/collections/heap: a binary heap, used as a priority queue.
+//
+//     hp :: import "std/collections/heap"
+//
+//     h := hp.heap(u32)                    // smallest first
+//     defer h.deinit()
+//     try h.push(5)
+//     try h.push(2)
+//     print("{}\n", h.pop())               // 2
+//
+// The element that comes first is the one for which no other element is `less`.
+// `heap(T)` orders by `<`; `heap_by` takes the comparison as a function pointer, so a
+// max-heap or a heap of structs needs no wrapper type. The comparison is stored in the
+// heap (it is a plain function pointer: it cannot capture variables, so keep any
+// context in the elements themselves). Like `List`, a heap keeps the allocator it was
+// created with, performs no `Alloc` afterwards, and reports a failed growth as
+// `AllocError`.
+
+/// A priority queue: a binary heap in a growable array.
+pub Heap :: struct(T: type) {
+    data: List(T)
+    less: ^fn(a, b: ^const T) -> bool
+}
+
+/// An empty heap that yields the smallest element first (by `<`), using the current allocator.
+pub heap :: fn(T: type) -> Heap(T) \ {Alloc} where Ord(T) {
+    return Heap(T)(data: list(T), less: fn(a, b: ^const T) -> bool => a^ < b^)
+}
+
+/// An empty heap that yields first the element that `less` puts before all others, using
+/// the current allocator. `less(a, b)` says that `a` must come out before `b`; it should
+/// be a strict weak ordering (`fn(a, b) => a^ > b^` makes a max-heap).
+pub heap_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool) -> Heap(T) \ {Alloc} {
+    return Heap(T)(data: list(T), less: less)
+}
+
+/// A heap holding a copy of `xs`, built in O(n) time, that yields the smallest element first.
+pub heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) \ {Alloc} where Ord(T) {
+    h := heap(T)
+    try fill(&h, xs)
+    return h
+}
+
+/// Like `heap_from`, ordered by `less` as for `heap_by`.
+pub heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) \ {Alloc} {
+    h := heap_by(T, less)
+    try fill(&h, xs)
+    return h
+}
+
+// Copies `xs` into the empty heap `h` and restores the heap order (Floyd's method).
+fill :: fn(T: type, h: ^Heap(T), xs: []const T) -> AllocError!() {
+    try h.data.extend(xs)
+    i := xs.len / 2
+    while i > 0 {
+        i -= 1
+        sift_down(h, i)
+    }
+    return ()
+}
+
+// Moves the element at `i` up until its parent comes out no later than it.
+sift_up :: fn(T: type, h: ^Heap(T), start: usize) {
+    items := h.data.items
+    x := items[start]
+    i := start
+    while i > 0 {
+        parent := (i - 1) / 2
+        if not h.less(&x, &items[parent]) { break }
+        items[i] = items[parent]
+        i = parent
+    }
+    items[i] = x
+}
+
+// Moves the element at `start` down until neither child comes out before it.
+sift_down :: fn(T: type, h: ^Heap(T), start: usize) {
+    items := h.data.items
+    n := items.len
+    x := items[start]
+    i := start
+    while true {
+        child := 2 * i + 1
+        if child >= n { break }
+        if child + 1 < n and h.less(&items[child + 1], &items[child]) { child += 1 }
+        if not h.less(&items[child], &x) { break }
+        items[i] = items[child]
+        i = child
+    }
+    items[i] = x
+}
+
+/// Adds `x`.
+pub push :: fn(T: type, h: ^Heap(T), x: T) -> AllocError!() {
+    try h.data.push(x)
+    sift_up(h, h.data.items.len - 1)
+    return ()
+}
+
+/// Removes and returns the element that comes first, or `null` if the heap is empty.
+pub pop :: fn(T: type, h: ^Heap(T)) -> ?T {
+    last := h.data.pop() else return null
+    if h.data.items.len is 0 { return last }
+    top := h.data.items[0]
+    h.data.items[0] = last
+    sift_down(h, 0)
+    return top
+}
+
+/// The element that comes first, without removing it.
+pub peek :: fn(T: type, h: ^const Heap(T)) -> ?T {
+    if h.data.items.len is 0 { return null }
+    return h.data.items[0]
+}
+
+/// The number of elements.
+pub len :: fn(T: type, h: ^const Heap(T)) -> usize => h.data.items.len
+
+/// Whether the heap has no elements.
+pub is_empty :: fn(T: type, h: ^const Heap(T)) -> bool => h.data.items.len is 0
+
+/// Removes every element, keeping the storage.
+pub clear :: fn(T: type, h: ^Heap(T)) {
+    h.data.clear()
+}
+
+/// Frees the heap's storage through its own allocator.
+pub deinit :: fn(T: type, h: ^Heap(T)) {
+    h.data.deinit()
+}

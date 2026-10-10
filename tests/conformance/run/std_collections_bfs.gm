@@ -1,0 +1,129 @@
+// Breadth-first search on a grid maze with a deque, plus a 0-1 BFS (a deque used as
+// a two-priority queue) on the same grid.
+dq :: import "std/collections/deque"
+
+W :: 12
+H :: 7
+
+MAZE :: [H]string(
+    "S..#........",
+    ".#.#.######.",
+    ".#...#....#.",
+    ".#####.##.#.",
+    ".....#.#..#.",
+    "####.###.##.",
+    ".......#...E",
+)
+
+Cell :: struct {
+    x: usize
+    y: usize
+}
+
+neighbors :: fn(c: Cell, out: ^[4]Cell) -> usize {
+    n: usize = 0
+    if c.x > 0 {
+        out[n] = Cell(x: c.x - 1, y: c.y)
+        n += 1
+    }
+    if c.x + 1 < W {
+        out[n] = Cell(x: c.x + 1, y: c.y)
+        n += 1
+    }
+    if c.y > 0 {
+        out[n] = Cell(x: c.x, y: c.y - 1)
+        n += 1
+    }
+    if c.y + 1 < H {
+        out[n] = Cell(x: c.x, y: c.y + 1)
+        n += 1
+    }
+    return n
+}
+
+find :: fn(ch: u8) -> Cell {
+    for y in 0..H {
+        for x in 0..W {
+            if MAZE[y][x] is ch { return Cell(x: x, y: y) }
+        }
+    }
+    trap("not found")
+}
+
+NONE: u32 : 0xffff_ffff
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    start := find('S')
+    goal := find('E')
+
+    // Plain BFS: distance from the start to every reachable open cell.
+    dist: [H * W]u32 = [H * W]u32(fill: NONE)
+    queue := dq.deque(Cell)
+    defer queue.deinit()
+    dist[start.y * W + start.x] = 0
+    try queue.push_back(start)
+    visited: u32 = 0
+    while cur := queue.pop_front() {
+        visited += 1
+        d := dist[cur.y * W + cur.x]
+        nb: [4]Cell = ---
+        n := neighbors(cur, &nb)
+        for i in 0..n {
+            nx := nb[i]
+            if MAZE[nx.y][nx.x] is '#' { continue }
+            if dist[nx.y * W + nx.x] is not NONE { continue }
+            dist[nx.y * W + nx.x] = d + 1
+            try queue.push_back(nx)
+        }
+    }
+    print("visited {} cells, shortest path to E: {}\n", (visited, dist[goal.y * W + goal.x]))
+
+    // Walk back from the goal along decreasing distances.
+    path := dq.deque(Cell)
+    defer path.deinit()
+    cur := goal
+    try path.push_front(cur)
+    while dist[cur.y * W + cur.x] > 0 {
+        nb: [4]Cell = ---
+        n := neighbors(cur, &nb)
+        want := dist[cur.y * W + cur.x] - 1
+        for i in 0..n {
+            if dist[nb[i].y * W + nb[i].x] is want {
+                cur = nb[i]
+                break
+            }
+        }
+        try path.push_front(cur)
+    }
+    first := path.front() else start
+    end := path.back() else start
+    print("path length {}: starts at ({}, {}), ends at ({}, {})\n", (path.len(), first.x, first.y, end.x, end.y))
+    print("route:")
+    for c in path.items() { print(" ({},{})", (c.x, c.y)) }
+    print("\n")
+
+    // 0-1 BFS: entering an open cell is free and entering a wall costs 2 (it has to be
+    // broken), so free steps go to the front of the deque and costly ones to the back.
+    cost: [H * W]u32 = [H * W]u32(fill: NONE)
+    work := dq.deque(Cell)
+    defer work.deinit()
+    cost[start.y * W + start.x] = 0
+    try work.push_back(start)
+    while cur2 := work.pop_front() {
+        d := cost[cur2.y * W + cur2.x]
+        nb: [4]Cell = ---
+        n := neighbors(cur2, &nb)
+        for i in 0..n {
+            nx := nb[i]
+            // The cell at (11, 1) has also collapsed.
+            collapsed := nx.x is 11 and nx.y is 1
+            step: u32 = if MAZE[nx.y][nx.x] is '#' or collapsed { 2 } else { 0 }
+            if d + step < cost[nx.y * W + nx.x] {
+                cost[nx.y * W + nx.x] = d + step
+                if step is 0 { try work.push_front(nx) } else { try work.push_back(nx) }
+            }
+        }
+    }
+    print("fewest walls to break: {}\n", cost[goal.y * W + goal.x] / 2)
+    return ()
+}

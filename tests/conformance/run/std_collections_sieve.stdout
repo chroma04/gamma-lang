@@ -1,0 +1,7 @@
+primes below 10000: 1229
+first: 2 3 5 7 11 13 17 19 23 29 31 37
+last: 9973
+twin prime pairs: 205
+1 mod 4: 609, 3 mod 4: 619
+in both: 0
+union is the odd primes: true

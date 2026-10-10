@@ -1,0 +1,66 @@
+// A sieve of Eratosthenes on a bit set, and set algebra on its results.
+bs :: import "std/collections/bitset"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    limit: usize = 10_000
+    composite := try bs.bitset(limit)
+    defer composite.deinit()
+    p: usize = 2
+    while p * p < limit {
+        if not composite.contains(p) {
+            m := p * p
+            while m < limit {
+                composite.insert(m)
+                m += p
+            }
+        }
+        p += 1
+    }
+
+    primes := try bs.bitset(limit)
+    defer primes.deinit()
+    for n in 2..limit {
+        if not composite.contains(n) { primes.insert(n) }
+    }
+    print("primes below {}: {}\n", (limit, primes.count()))
+
+    print("first:")
+    taken: u32 = 0
+    for q in primes.items() {
+        if taken is 12 { break }
+        print(" {}", q)
+        taken += 1
+    }
+    print("\n")
+
+    last: usize = 0
+    for q in primes.items() { last = q }
+    print("last: {}\n", last)
+
+    // Twin primes: p such that p + 2 is prime too.
+    twins := try bs.bitset(limit)
+    defer twins.deinit()
+    for q in primes.items() {
+        if primes.contains(q + 2) { twins.insert(q) }
+    }
+    print("twin prime pairs: {}\n", twins.count())
+
+    // Primes that are 1 mod 4 and primes that are 3 mod 4 partition the odd primes.
+    one := try bs.bitset(limit)
+    defer one.deinit()
+    three := try bs.bitset(limit)
+    defer three.deinit()
+    for q in primes.items() {
+        if q % 4 is 1 { one.insert(q) }
+        if q % 4 is 3 { three.insert(q) }
+    }
+    print("1 mod 4: {}, 3 mod 4: {}\n", (one.count(), three.count()))
+    both := try bs.bitset(limit)
+    defer both.deinit()
+    both.union_with(&one)
+    both.intersect_with(&three)
+    print("in both: {}\n", both.count())
+    one.union_with(&three)
+    print("union is the odd primes: {}\n", one.count() + 1 is primes.count())
+    return ()
+}

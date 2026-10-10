@@ -1,0 +1,9 @@
+test "an unused container takes nothing" ... ok
+test "a deque frees its ring after growing while wrapped" ... ok
+test "a deque frees its old buffer on every growth" ... ok
+test "a deque can be reused after deinit" ... ok
+test "a heap frees its storage" ... ok
+test "a heap built from a slice frees its storage" ... ok
+test "a bit set frees its words" ... ok
+test "containers free through the allocator they were created with" ... ok
+8 passed, 0 failed
