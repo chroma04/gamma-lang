@@ -1,0 +1,18 @@
+// Immutable locals with constant initializers are evaluated at compile time (§17.2), so a
+// nested function may use them and still be a plain function (§11.8).
+square :: fn(x: i32) -> i32 => x * x
+table :: fn(n: u32) -> [8]u32 {
+    t := [8]u32(fill: 0)
+    for i in 0..8 { t[i] = u32(i) * n }
+    return t
+}
+apply :: fn(f: ^fn(x: i32) -> i32, v: i32) -> i32 => f(v)
+main :: fn() \ {Out} {
+    K :: square(4)
+    T :: table(3)
+    g :: fn(x: i32) -> i32 => x + K + T[2].trunc(i32)
+    print("{} {}\n", (g(1), apply(g, 2)))
+    n := 5
+    r :: square(n)          // reads a local: evaluated at run time
+    print("{} {}\n", (r, T))
+}

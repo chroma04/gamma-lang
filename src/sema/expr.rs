@@ -250,6 +250,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
                 LocalBinding::NestedFn(f) => self.fn_ref(f, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
+                LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 LocalBinding::Label => {
                     self.error(span, format!("`{}` is a label, not a value", name));
                     error_expr(span)

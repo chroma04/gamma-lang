@@ -24,6 +24,11 @@ pub enum LocalBinding {
     NestedFn(FnId),
     /// A local type alias (`T :: []u8`, §3.5).
     Type(Ty),
+    /// An immutable local evaluated at compile time (§17.2): a constant in static memory.
+    Const {
+        ty: Ty,
+        id: tir::ConstId,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -639,6 +644,52 @@ impl<'a, 's> FnCx<'a, 's> {
         ex
     }
 
+    /// Evaluates the initializer of immutable local `b` at compile time if it is a
+    /// constant expression (§17.2) whose value may live in static memory (§17.4): it reads
+    /// no locals and no compile-time parameters, and checks again as a constant. Returns
+    /// the constant's binding, or `None` to evaluate the local at run time. Running out of
+    /// steps falls back to run time; any other failure is a compile error.
+    fn opportunistic_const(&mut self, b: &ast::Binding, annot: Option<Ty>, init: &Expr) -> Option<LocalBinding> {
+        if matches!(b.init.kind, ExprKind::Uninit)
+            || !self.sema.type_params.is_empty()
+            || !self.sema.value_scope.is_empty()
+            || !closed_const(init)
+        {
+            return None;
+        }
+        let module = self.module;
+        let n = self.sema.sess.diags.len();
+        let checked = self.sema.check_const_expr(module, &b.init, annot);
+        // Checked as a constant, the initializer may fail where it is fine at run time
+        // (it uses a local type alias, for instance): then it simply runs.
+        let ok = self.sema.sess.diags.len() == n;
+        self.sema.sess.diags.truncate(n);
+        let cex = checked.filter(|_| ok)?;
+        if cex.ty.is_error() || super::decls::non_constant_part(cex.ty).is_some() {
+            return None;
+        }
+        let value = match self.sema.try_eval_const(&cex) {
+            Ok(v) => v,
+            Err(None) => return None,
+            Err(Some(t)) if t.message.contains("step budget") => return None,
+            Err(Some(t)) => {
+                self.sema.report_eval_failure(&cex, &t);
+                return None;
+            }
+        };
+        let id = tir::ConstId(self.sema.prog.consts.len() as u32);
+        let ty = cex.ty;
+        let name = b.names[0];
+        self.sema.prog.consts.push(tir::ConstDef {
+            name: name.name,
+            ty,
+            span: name.span,
+            init: cex,
+            value: Some(value),
+        });
+        Some(LocalBinding::Const { ty, id })
+    }
+
     /// `a, b := e`: binds the elements of a tuple (§4.5).
     fn destructure(&mut self, b: &ast::Binding) -> Stmt {
         let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
@@ -723,6 +774,7 @@ impl<'a, 's> FnCx<'a, 's> {
             return Stmt::Expr(unit(b.span));
         }
         let mutable = b.kind == ast::BindingKind::Var;
+        let errors_before = self.sema.sess.diags.error_count();
         let init = if let ExprKind::Uninit = b.init.kind {
             match annot {
                 Some(t) => {
@@ -743,6 +795,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 None => ex,
             }
         };
+        // An immutable local whose initializer is a constant expression is evaluated at
+        // compile time when that succeeds within the step budget (§17.2).
+        if b.kind == ast::BindingKind::Const
+            && errors_before == self.sema.sess.diags.error_count()
+            && let Some(c) = self.opportunistic_const(b, annot, &init)
+        {
+            self.declare(name.name, c, name.span);
+            return Stmt::Expr(unit(b.span));
+        }
         let ty = annot.unwrap_or(init.ty);
         if ty.is_never() && annot.is_none() {
             // `x := return 5` — the binding is unreachable; give it the error type quietly.
@@ -1241,6 +1302,26 @@ fn stmt_to_expr(s: Stmt, span: Span) -> Expr {
         Stmt::Expr(e) => e,
         other => block_of(vec![other], span),
     }
+}
+
+/// True if `e` mentions no locals, compile-time parameters or types of parameters: a
+/// candidate for evaluation without its function's frame.
+fn closed_const(e: &Expr) -> bool {
+    let mut ok = !super::generics::has_param(e.ty)
+        && !matches!(
+            e.kind,
+            tir::ExprKind::Local(_)
+                | tir::ExprKind::Upvar { .. }
+                | tir::ExprKind::ValueParam(_)
+                | tir::ExprKind::SizeOf { .. }
+                | tir::ExprKind::TypeIs { .. }
+                | tir::ExprKind::Closure(_)
+                | tir::ExprKind::HandlerRef(_)
+        );
+    if ok {
+        e.for_each_child(&mut |c| ok = ok && closed_const(c));
+    }
+    ok
 }
 
 fn stmt_diverges(s: &Stmt) -> bool {

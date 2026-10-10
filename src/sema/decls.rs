@@ -651,7 +651,7 @@ impl<'s> Sema<'s> {
 
 /// The part of a type that a constant may not contain (§17.4): mutable pointers,
 /// `rawptr`, continuations, and allocator handles.
-fn non_constant_part(t: Ty) -> Option<Ty> {
+pub fn non_constant_part(t: Ty) -> Option<Ty> {
     let mut bad = None;
     t.walk(&mut |x| {
         let is_bad = match x.kind() {
