@@ -443,6 +443,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         self.load(payload_ty, &format!("({} + {})", a, payload_off))
                     } else if t == lhs.ty {
                         l.clone()
+                    } else if matches!(t.kind(), TyKind::Optional(_)) {
+                        let p = self.load(payload_ty, &format!("({} + {})", a, payload_off));
+                        self.make_some(t, &p)
                     } else {
                         let p = self.load(payload_ty, &format!("({} + {})", a, payload_off));
                         self.make_res(t, false, payload_ty, &p)

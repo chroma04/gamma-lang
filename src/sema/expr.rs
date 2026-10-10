@@ -1397,6 +1397,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 TyKind::Result { err, .. } => Some(Ty::result(*err, present)),
                 _ => None,
             },
+            // A result with an optional fallback drops the error: `parse(s) else null`.
+            (ExprKind::Null, _) if err.is_some() => Some(Ty::optional(present)),
             _ => Some(present),
         };
         let r = self.expr(rhs, rhs_expect);
@@ -1407,6 +1409,8 @@ impl<'a, 's> FnCx<'a, 's> {
         } else if rt == lt && err.is_none() {
             (lt, r)
         } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present) {
+            (rt, r)
+        } else if err.is_some() && rt == Ty::optional(present) {
             (rt, r)
         } else {
             let r = self.coerce(r, present);
@@ -1444,7 +1448,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     match self.lift_variant(*err, *f) {
                         Ok(i) => Some(tir::Lift::Variant(i)),
                         Err(msg) => {
-                            self.error(span, msg);
+                            let mut d = crate::diag::Diagnostic::error(span, msg);
+                            if self.infer_test_error && self.outer.is_empty() {
+                                d = d.with_note(format!(
+                                    "a test's error type is that of its first `try`, here `{}` (§3.8); call a helper that declares a common error type",
+                                    f
+                                ));
+                            }
+                            self.sema.emit(d);
                             None
                         }
                     }

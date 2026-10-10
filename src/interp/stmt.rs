@@ -345,6 +345,9 @@ impl<'a> Machine<'a> {
             Ok(Value::Bytes(payload))
         } else if e.ty == lhs.ty {
             Ok(Value::Bytes(b))
+        } else if matches!(e.ty.kind(), TyKind::Optional(_)) {
+            // A success value as a present optional: `r else null`.
+            Ok(Value::Bytes(self.make_some(e.ty, &payload)))
         } else {
             // A success value lifted into a result with a different error type.
             Ok(Value::Bytes(self.make_res(e.ty, false, &payload)))

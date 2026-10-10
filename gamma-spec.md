@@ -378,7 +378,7 @@ test "parse rejects letters" {
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it; returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); every later `try` must have that error type or one that lifts into it (§10.6), as in any function returning `E!()`. A test that propagates unrelated errors calls a helper function that declares a common error type; returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
 
 ---
 
@@ -1217,7 +1217,7 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
 - If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
-- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), or `never`.
+- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), or `never`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
 

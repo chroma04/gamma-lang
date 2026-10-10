@@ -1,0 +1,16 @@
+// A result with an optional fallback discards the error (§10.4): `r else null`.
+p :: fn(s: string) -> u8!i64 {
+    v: i64 = 0
+    for c in s {
+        if c < '0' or c > '9' { return !1 }
+        v = v * 10 + i64(c - '0')
+    }
+    return v
+}
+maybe :: fn(s: string) -> ?i64 => p(s) else null
+cached :: fn(s: string, last: ?i64) -> ?i64 => p(s) else last
+main :: fn() \ {Out} {
+    print("{} {}\n", (maybe("42"), maybe("4x")))
+    print("{} {}\n", (cached("x", 7), cached("x", null)))
+    if v := p("17") else null { print("got {}\n", v) }
+}
