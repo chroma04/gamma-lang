@@ -1,0 +1,36 @@
+//! exit: 134
+//! stderr
+// Factorials in u32: the overflow-aware forms agree on where u32 ends, then the plain `*` traps in debug mode.
+fact_checked :: fn(n: u32) -> ?u32 {
+    acc: u32 = 1
+    for i in 2..=n { acc = acc *? i else return null }
+    return acc
+}
+
+fact_wrapping :: fn(n: u32) -> u32 {
+    acc: u32 = 1
+    for i in 2..=n { acc *%= i }
+    return acc
+}
+
+fact_saturating :: fn(n: u32) -> u32 {
+    acc: u32 = 1
+    for i in 2..=n { acc *|= i }
+    return acc
+}
+
+fact_plain :: fn(n: u32) -> u32 {
+    acc: u32 = 1
+    for i in 2..=n { acc *= i }
+    return acc
+}
+
+main :: fn() \ {Out} {
+    for n in 10..15 {
+        n32 := n.trunc(u32)
+        print("{}! checked={} wrapping={} saturating={}\n", (n32, fact_checked(n32), fact_wrapping(n32), fact_saturating(n32)))
+    }
+    print("12! = {}\n", fact_plain(12))
+    print("13! = {}\n", fact_plain(13))
+    print("unreachable\n")
+}

@@ -1,0 +1,3 @@
+trap: integer overflow in `*`
+  at tests/conformance/run/example4_num_overflow_trap.gm:24:22 in fact_plain
+  called from tests/conformance/run/example4_num_overflow_trap.gm:34:25 in main

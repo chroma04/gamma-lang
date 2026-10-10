@@ -1,0 +1,168 @@
+// Particle simulation in f32 with structure-of-arrays storage, Yield iterators over particles and pairs, and Collide/Log effects handled by handler literals.
+math :: import "std/math"
+fmt :: import "std/fmt"
+
+COUNT :: 24
+Bodies :: struct {
+    x, y: [COUNT]f32
+    vx, vy: [COUNT]f32
+    mass: [COUNT]f32
+    alive: [COUNT]bool
+}
+
+Level :: union { Info, Warn }
+
+Log :: effect {
+    log: fn(level: Level, msg: string)
+}
+
+Collide :: effect {
+    collide: fn(i: usize, j: usize, dist: f32)
+}
+
+// Deterministic initial layout: a 6x4 lattice with velocities from a small LCG.
+init :: fn() -> Bodies {
+    b := Bodies(
+        x: [COUNT]f32(fill: 0.0), y: [COUNT]f32(fill: 0.0),
+        vx: [COUNT]f32(fill: 0.0), vy: [COUNT]f32(fill: 0.0),
+        mass: [COUNT]f32(fill: 1.0), alive: [COUNT]bool(fill: true),
+    )
+    seed: u32 = 7
+    for i in 0..COUNT {
+        col := (i % 6).round(f32)
+        row := (i / 6).round(f32)
+        b.x[i] = col * 2.0
+        b.y[i] = row * 2.0
+        seed = seed *% 1664525 +% 1013904223
+        b.vx[i] = ((seed >> 16) & 0xFF).round(f32) / 128.0 - 1.0
+        seed = seed *% 1664525 +% 1013904223
+        b.vy[i] = ((seed >> 16) & 0xFF).round(f32) / 128.0 - 1.0
+        if i % 5 is 0 { b.mass[i] = 2.0 }
+    }
+    return b
+}
+
+// Iterates over the indices of live particles.
+live :: fn(b: ^const Bodies) \ {Yield(usize)} {
+    for i in 0..COUNT {
+        if b.alive[i] { yield(i) }
+    }
+}
+
+// Iterates over every pair of live particles closer than `radius`.
+near_pairs :: fn(b: ^const Bodies, radius: f32) \ {Yield((usize, usize)), Collide} {
+    for i in live(b) {
+        for j in live(b) {
+            if j <= i { continue }
+            dx := b.x[i] - b.x[j]
+            dy := b.y[i] - b.y[j]
+            d2 := dx * dx + dy * dy
+            if d2 < radius * radius {
+                collide(i, j, d2.sqrt())
+                yield((i, j))
+            }
+        }
+    }
+}
+
+step :: fn(b: ^Bodies, dt: f32) {
+    for i in live(b) {
+        b.x[i] += b.vx[i] * dt
+        b.y[i] += b.vy[i] * dt
+        // reflect at the walls of a 12x8 box
+        if b.x[i] < 0.0 or b.x[i] > 12.0 { b.vx[i] = -b.vx[i] }
+        if b.y[i] < 0.0 or b.y[i] > 8.0 { b.vy[i] = -b.vy[i] }
+    }
+}
+
+kinetic :: fn(b: ^const Bodies) -> f32 {
+    e: f32 = 0.0
+    for i in live(b) { e += 0.5 * b.mass[i] * (b.vx[i] * b.vx[i] + b.vy[i] * b.vy[i]) }
+    return e
+}
+
+momentum :: fn(b: ^const Bodies) -> (px: f32, py: f32) {
+    px: f32 = 0.0
+    py: f32 = 0.0
+    for i in live(b) {
+        px += b.mass[i] * b.vx[i]
+        py += b.mass[i] * b.vy[i]
+    }
+    return (px, py)
+}
+
+// Perfectly inelastic merge of j into i.
+merge :: fn(b: ^Bodies, i, j: usize) \ {Log} {
+    m := b.mass[i] + b.mass[j]
+    b.vx[i] = (b.mass[i] * b.vx[i] + b.mass[j] * b.vx[j]) / m
+    b.vy[i] = (b.mass[i] * b.vy[i] + b.mass[j] * b.vy[j]) / m
+    b.x[i] = (b.mass[i] * b.x[i] + b.mass[j] * b.x[j]) / m
+    b.y[i] = (b.mass[i] * b.y[i] + b.mass[j] * b.y[j]) / m
+    b.mass[i] = m
+    b.alive[j] = false
+    log(.Info, "merged")
+}
+
+main :: fn() \ {Out} {
+    fb: [64]u8 = ---
+    fb2: [64]u8 = ---
+    b := init()
+    n_live: usize = 0
+    for _ in live(&b) { n_live += 1 }
+    p0 := momentum(&b)
+    print("{} particles, kinetic energy {}\n", (n_live, kinetic(&b)))
+    print("momentum ({}, {})\n", (fmt.fixed(f64(p0.px), 4, fb[..]), fmt.fixed(f64(p0.py), 4, fb2[..])))
+
+    // Count close pairs with a Collide handler that does nothing but count.
+    pair_checks: u32 = 0
+    counter :: handler Collide {
+        collide(i, j, dist) => { pair_checks += 1 }
+    }
+    close := 0
+    with counter {
+        for _ in near_pairs(&b, 2.5) { close += 1 }
+    }
+    print("initial pairs within 2.5: {} ({} collide events)\n", (close, pair_checks))
+
+    // Run, merging colliding pairs; log each merge through a Log handler.
+    merges: u32 = 0
+    printer :: handler Log {
+        log(level, msg) => {
+            merges += 1
+        }
+    }
+    min_d: f32 = 99.0
+    gather :: handler Collide {
+        collide(i, j, dist) => {
+            if dist < min_d { min_d = dist }
+        }
+    }
+    for t in 0..200 {
+        step(&b, 0.05)
+        if t % 10 is 9 {
+            with gather {
+                for i, j in near_pairs(&b, 0.9) {
+                    if b.alive[j] {
+                        with printer { merge(&b, i, j) }
+                    }
+                }
+            }
+        }
+    }
+    print("closest approach during merges: {}\n", min_d)
+    survivors: usize = 0
+    total_mass: f32 = 0.0
+    for i in live(&b) {
+        survivors += 1
+        total_mass += b.mass[i]
+    }
+    print("after 200 steps: {} survivors, {} merges, total mass {}\n", (survivors, merges, total_mass))
+
+    // Float edge cases in f32.
+    nan: f32 = (0.0 * 1.0) / (0.0 * 1.0 + 0.0)
+    print("nan is nan: {}, nan is_nan: {}, nan < 1: {}, nan >= 1: {}\n", (nan is nan, nan.is_nan(), nan < 1.0, nan >= 1.0))
+    inf: f32 = 1.0 / 0.0
+    print("inf: {} {} {}\n", (inf, -inf, inf - inf))
+    print("sat of nan: {}, sat of inf: {}\n", (nan.sat(i32), inf.sat(i32)))
+    print("max(nan, 2) = {}, min(1, nan) = {}\n", (nan.max(2.0), f32(1.0).min(nan)))
+}

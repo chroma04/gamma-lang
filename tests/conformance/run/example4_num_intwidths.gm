@@ -1,0 +1,122 @@
+// Integers of many widths: u1 to u256, wrapping and saturating at odd widths, bit intrinsics, byte swaps, a compile-time CRC table and checksums.
+fmt :: import "std/fmt"
+
+crc_table :: fn(poly: u32) -> [256]u32 {
+    table: [256]u32 = ---
+    for n in 0..256 {
+        c := n.trunc(u32)
+        for _ in 0..8 {
+            c = if c & 1 is 1 { (c >> 1) ~ poly } else { c >> 1 }
+        }
+        table[n] = c
+    }
+    return table
+}
+CRC_TABLE :: crc_table(0xEDB88320)
+
+crc32 :: fn(data: string) -> u32 {
+    crc: u32 = 0xFFFFFFFF
+    for b in bytes(data) {
+        crc = (crc >> 8) ~ CRC_TABLE[usize((crc ~ u32(b)) & 0xFF)]
+    }
+    return crc ~ 0xFFFFFFFF
+}
+
+adler32 :: fn(data: string) -> u32 {
+    a: u32 = 1
+    b: u32 = 0
+    for c in bytes(data) {
+        a = (a + u32(c)) % 65521
+        b = (b + a) % 65521
+    }
+    return (b << 16) | a
+}
+
+fnv1a64 :: fn(data: string) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    for c in bytes(data) {
+        h = (h ~ u64(c)) *% 0x100000001b3
+    }
+    return h
+}
+
+// Murmur3-style 32-bit finaliser using rotations.
+mix32 :: fn(x: u32) -> u32 {
+    h := x
+    h = h ~ (h >> 16)
+    h = h *% 0x85ebca6b
+    h = h ~ (h >> 13)
+    h = h *% 0xc2b2ae35
+    h = h ~ (h >> 16)
+    return @rotl(h, 5)
+}
+
+factorial256 :: fn(n: u32) -> u256 {
+    f: u256 = 1
+    for i in 2..=n { f *= u256(i) }
+    return f
+}
+
+main :: fn() \ {Out} {
+    buf: [fmt.INT_BUF]u8 = ---
+    wb: [200]u8 = ---
+
+    // Narrow widths wrap, saturate and trap at their own boundary.
+    a: u3 = 5
+    b: u3 = 6
+    print("u3: {} +% {} = {}, +| = {}, +? = {}\n", (a, b, a +% b, a +| b, a +? b))
+    c: i5 = -16
+    print("i5: {} -% 1 = {}, -| 1 = {}, *% 2 = {}\n", (c, c -% 1, c -| 1, c *% 2))
+    d: u24 = 0xFFFFFF
+    print("u24: {} +% 1 = {}, size {} bytes\n", (d, d +% 1, @size_of(u24)))
+    e: i24 = -8388608
+    print("i24: {} - 1 wraps to {}\n", (e, e -% 1))
+    one: u1 = 1
+    print("u1: {} +% 1 = {}, +? 1 = {}\n", (one, one +% 1, one +? 1))
+    print("sizes: {} {} {} {} {}\n", (@size_of(u7), @size_of(u17), @size_of(u33), @size_of(u100), @size_of(u200)))
+
+    // Conversions between widths.
+    wide: u32 = 0x1234_5678
+    print("trunc: {} {} {}\n", (wide.trunc(u8), wide.trunc(u12), wide.trunc(u20)))
+    print("checked: {} {}\n", (wide.checked(u16), (wide >> 16).checked(u16)))
+    print("sat: {} {}\n", (wide.sat(u8), wide.sat(i16)))
+    print("sign: {} {} {}\n", (i8(-1).trunc(u8), u8(200).trunc(i8), i16(-2).trunc(u32)))
+    print("widening: {} {}\n", (i64(i8(-100)), u64(u32(4000000000))))
+
+    // Bit intrinsics.
+    x: u32 = 0b0000_0000_1111_0000_0000_0000_0001_0000
+    print("popcount {} clz {} ctz {}\n", (@popcount(x), @clz(x), @ctz(x)))
+    print("bswap {} rotl {} rotr {}\n", (fmt.prefixed(@bswap(u32(0x11223344)), 16, buf[..]), @rotl(u8(0b1000_0001), 1), @rotr(u8(0b1000_0001), 1)))
+    print("bitreverse(u8 1) = {}\n", @bitreverse(u8(1)))
+    print("popcount of u200: {}\n", @popcount((u200(1) << 199) | u200(0xFF)))
+    print("clz of u200: {}, ctz: {}\n", (@clz(u200(1) << 150), @ctz(u200(1) << 150)))
+
+    // Wide arithmetic.
+    f57 := factorial256(57)
+    print("57! = {}\n", fmt.dec(f57, buf[..]))
+    print("57! hex = {}\n", fmt.prefixed(f57, 16, wb[..]))
+    big: u256 = (u256(1) << 255) + 12345
+    print("2^255 + 12345 = {}\n", fmt.dec(big, wb[..]))
+    print("  mod 1000003 = {}, / 10^30 = {}\n", (big % 1000003, fmt.dec(big / 1_000_000_000_000_000_000_000_000_000_000, buf[..])))
+    s: i128 = -170141183460469231731687303715884105728
+    print("i128 min = {}, abs_diff with max = {}\n", (s, s.abs_diff(170141183460469231731687303715884105727)))
+
+    // Shifts: logical for unsigned, arithmetic for signed.
+    print("shifts: {} {} {}\n", (u8(0x80) >> 7, i8(-128) >> 7, i32(-1) >> 31))
+    print("signed shl: {} {}\n", (i8(1) <<% 7, i8(1) <<| 7))
+    print("shift overflow: {} {}\n", (u8(0x81) <<? 1, u8(0x41) <<? 1))
+
+    // Checksums.
+    print("crc32(\"123456789\") = {}\n", fmt.prefixed(crc32("123456789"), 16, buf[..]))
+    print("crc32(\"\") = {}\n", crc32(""))
+    print("crc32(fox) = {}\n", fmt.hex(crc32("The quick brown fox jumps over the lazy dog"), buf[..]))
+    print("adler32(Wikipedia) = {}\n", fmt.hex(adler32("Wikipedia"), buf[..]))
+    print("fnv1a64(hello) = {}\n", fmt.hex(fnv1a64("hello"), buf[..]))
+    print("mix32: {} {} {}\n", (mix32(0), mix32(1), mix32(0xdeadbeef)))
+
+    // Integer helpers.
+    print("pow: {} {} {} {}\n", (u64(3).pow(30), i32(-2).pow(31), u8(3).pow_wrap(6), u8(3).pow_sat(6)))
+    print("pow_checked: {} {}\n", (u8(3).pow_checked(5), u8(3).pow_checked(6)))
+    print("clamp/abs/min/max: {} {} {} {}\n", (i32(150).clamp(0, 100), i32(-7).abs(), u16(3).min(9), i16(-3).max(-9)))
+    print("division: {} {} {} {}\n", (i32(-7) / 2, i32(-7) % 2, i32(7) / -2, i32(7) % -2))
+}

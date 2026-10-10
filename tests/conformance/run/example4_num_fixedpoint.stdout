@@ -1,0 +1,21 @@
+a=3.2500 b=-1.5000 raw(a)=212992
+a*b = -4.875000   a/b = -2.166656
+c+d saturates to 32768.0000 (raw 2147483647)
+c+d wraps to -30535.2500
+c+d checked is null: true
+c-20.5 checked = 19980.0000
+c*d checked is null: true
+c*d saturates to raw 2147483647
+-c-d saturates to raw -2147483648
+3/0.5 = 6.000
+1000/0.001 saturates: 2147483647
+Q24.8: 100000.125 * 0.1016 = 10156.2617 (raw 2600003, 0.1 is not representable)
+clamped: 2147483647 -2147483648
+exact: 0.00010681
+sqrt: 1.41420 3.00000 0.50000 31.62277
+sine table error below 5e-4: true
+sin(pi/2) = 1.0000  sin(0) = 0.0000
+sin(0.5236) = 0.500 (expect 0.5)
+table[32] = 46341
+0.1 * 10 in Q16.16: raw 65540 (65536 would be exact), 1.000061
+sizes: 4 4

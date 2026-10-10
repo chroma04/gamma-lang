@@ -1,0 +1,9 @@
+24 particles, kinetic energy 11.184082
+momentum (-1.8125, -8.8438)
+initial pairs within 2.5: 38 (38 collide events)
+closest approach during merges: 0.19478557
+after 200 steps: 7 survivors, 17 merges, total mass 29
+nan is nan: false, nan is_nan: true, nan < 1: false, nan >= 1: false
+inf: inf -inf nan
+sat of nan: 0, sat of inf: 2147483647
+max(nan, 2) = 2, min(1, nan) = 1

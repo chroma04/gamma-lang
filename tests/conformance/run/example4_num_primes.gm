@@ -1,0 +1,256 @@
+// Number theory: a bit-array sieve over u64 words, u128 modular exponentiation, deterministic Miller-Rabin, Pollard rho, integer square roots and Euler's totient.
+LIMIT :: 1_000_000
+WORDS :: LIMIT / 64 + 1
+
+// Bit i of the sieve is set when i is composite.
+Sieve :: struct {
+    bits: [WORDS]u64
+}
+
+is_set :: fn(s: ^const Sieve, i: usize) -> bool => (s.bits[i / 64] >> (i % 64).trunc(u32)) & 1 is 1
+set_bit :: fn(s: ^Sieve, i: usize) { s.bits[i / 64] |= u64(1) << (i % 64).trunc(u32) }
+
+build_sieve :: fn(s: ^Sieve) {
+    s.bits = [WORDS]u64(fill: 0)
+    set_bit(s, 0)
+    set_bit(s, 1)
+    i: usize = 2
+    while i * i <= LIMIT {
+        if not is_set(s, i) {
+            j := i * i
+            while j <= LIMIT {
+                set_bit(s, j)
+                j += i
+            }
+        }
+        i += 1
+    }
+}
+
+// Counts primes in 0..=LIMIT: every number in range whose bit is clear. Bits above LIMIT are never set.
+count_primes :: fn(s: ^const Sieve) -> u32 {
+    composites: u32 = 0
+    for w in s.bits { composites += @popcount(w) }
+    return (LIMIT + 1).trunc(u32) - composites
+}
+
+mulmod :: fn(a, b, m: u64) -> u64 {
+    wide := u128(a) * u128(b)
+    return (wide % u128(m)).trunc(u64)
+}
+
+powmod :: fn(base, exp, m: u64) -> u64 {
+    result: u64 = 1 % m
+    b := base % m
+    e := exp
+    while e > 0 {
+        if e & 1 is 1 { result = mulmod(result, b, m) }
+        b = mulmod(b, b, m)
+        e >>= 1
+    }
+    return result
+}
+
+// Deterministic for all u64 with these twelve bases.
+is_prime :: fn(n: u64) -> bool {
+    if n < 2 { return false }
+    bases := [_]u64(2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
+    for p in bases {
+        if n % p is 0 { return n is p }
+    }
+    d := n - 1
+    r: u32 = 0
+    while d & 1 is 0 {
+        d >>= 1
+        r += 1
+    }
+    for a in bases {
+        x := powmod(a, d, n)
+        if x is 1 or x is n - 1 { continue }
+        composite := true
+        for _ in 1..r {
+            x = mulmod(x, x, n)
+            if x is n - 1 {
+                composite = false
+                break
+            }
+        }
+        if composite { return false }
+    }
+    return true
+}
+
+gcd :: fn(a, b: u64) -> u64 {
+    x := a
+    y := b
+    while y is not 0 {
+        t := x % y
+        x = y
+        y = t
+    }
+    return x
+}
+
+// Pollard's rho with f(x) = x^2 + c; returns a non-trivial factor of a composite n.
+rho :: fn(n: u64) -> u64 {
+    if n % 2 is 0 { return 2 }
+    c: u64 = 1
+    while true {
+        x: u64 = 2
+        y: u64 = 2
+        d: u64 = 1
+        while d is 1 {
+            x = (mulmod(x, x, n) + c) % n
+            y = (mulmod(y, y, n) + c) % n
+            y = (mulmod(y, y, n) + c) % n
+            diff := if x > y { x - y } else { y - x }
+            d = gcd(diff, n)
+        }
+        if d is not n { return d }
+        c += 1
+    }
+}
+
+// Writes the prime factorisation in increasing order and returns its length.
+factor :: fn(n: u64, out: []u64) -> usize {
+    stack: [64]u64 = ---
+    sp: usize = 1
+    stack[0] = n
+    k: usize = 0
+    while sp > 0 {
+        sp -= 1
+        m := stack[sp]
+        if m is 1 { continue }
+        if is_prime(m) {
+            out[k] = m
+            k += 1
+            continue
+        }
+        f := rho(m)
+        stack[sp] = f
+        stack[sp + 1] = m / f
+        sp += 2
+    }
+    out[..k].sort()
+    return k
+}
+
+isqrt64 :: fn(n: u64) -> u64 {
+    if n < 2 { return n }
+    // start from a power of two at or above the root so that Newton's iteration decreases
+    bits: u32 = 64 - @clz(n)
+    x: u64 = u64(1) << ((bits + 1) / 2)
+    while true {
+        y := (x + n / x) / 2
+        if y >= x { return x }
+        x = y
+    }
+}
+
+isqrt128 :: fn(n: u128) -> u128 {
+    if n < 2 { return n }
+    // start from a power of two at or above the root so that Newton's iteration decreases
+    bits: u32 = 128 - @clz(n)
+    x: u128 = u128(1) << ((bits + 1) / 2)
+    while true {
+        y := (x + n / x) / 2
+        if y >= x { return x }
+        x = y
+    }
+}
+
+totient :: fn(n: u32) -> u32 {
+    result := n
+    m := n
+    p: u32 = 2
+    while p * p <= m {
+        if m % p is 0 {
+            while m % p is 0 { m /= p }
+            result -= result / p
+        }
+        p += 1
+    }
+    if m > 1 { result -= result / m }
+    return result
+}
+
+main :: fn() \ {Out} {
+    sv := Sieve(bits: [WORDS]u64(fill: 0))
+    build_sieve(&sv)
+    print("primes up to {}: {}\n", (LIMIT, count_primes(&sv)))
+
+    // sum of primes and the largest gap, scanning with ctz over the complement words
+    sum: u64 = 0
+    last: usize = 2
+    gap: usize = 0
+    gap_at: usize = 0
+    twins: u32 = 0
+    for w in 0..WORDS {
+        free := ~sv.bits[w]
+        while free is not 0 {
+            b := @ctz(free)
+            free &= free - 1
+            n := w * 64 + usize(b)
+            if n > LIMIT { break }
+            sum += u64(n)
+            if n > 2 {
+                if n - last > gap {
+                    gap = n - last
+                    gap_at = last
+                }
+                if n - last is 2 { twins += 1 }
+            }
+            last = n
+        }
+    }
+    print("sum of primes {}\n", sum)
+    print("largest gap {} after {}; twin prime pairs {}\n", (gap, gap_at, twins))
+
+    // Sanity: the first few primes by bit tests.
+    print("primes below 60:")
+    for i in 0..60 { if not is_set(&sv, i) { print(" {}", i) } }
+    print("\n")
+
+    // Miller-Rabin agrees with the sieve on everything below 20000.
+    mismatches: u32 = 0
+    for i in 0usize..20000 {
+        if is_prime(u64(i)) is is_set(&sv, i) { mismatches += 1 }
+    }
+    print("miller-rabin vs sieve mismatches: {}\n", mismatches)
+
+    cases := [_]u64(561, 1105, 2147483647, 2305843009213693951, 2305843009213693953, 18446744073709551557, 18446744073709551556, 4294967297)
+    for n in cases { print("{} -> {}\n", (n, is_prime(n))) }
+
+    // modular exponentiation
+    print("2^1000000 mod 1000000007 = {}\n", powmod(2, 1000000, 1000000007))
+    print("3^(p-1) mod p, p = 2^61-1: {}\n", powmod(3, 2305843009213693950, 2305843009213693951))
+
+    // factorisation
+    fs: [64]u64 = ---
+    targets := [_]u64(600851475143, 1000000007 * 998244353, 4611686014132420609, 1_000_000_000_000_000_000, 18446744073709551615)
+    for t in targets {
+        k := factor(t, fs[..])
+        print("{} = {}\n", (t, fs[0..k]))
+    }
+
+    // integer square roots
+    print("isqrt: {} {} {}\n", (isqrt64(99), isqrt64(18446744073709551615), isqrt64(1_000_000_000_000)))
+    huge: u128 = u128(1) << 100
+    print("isqrt(2^100) = {}\n", isqrt128(huge))
+    big: u128 = huge * 3 + 12345
+    r := isqrt128(big)
+    print("isqrt(3*2^100+12345) = {}, r*r <= n < (r+1)^2: {}\n", (r, r * r <= big and big < (r + 1) * (r + 1)))
+
+    // totients and Euler's theorem
+    print("totient 1..20:")
+    for n in 1..=20 { print(" {}", totient(n)) }
+    print("\n")
+    ok := true
+    for n in 2u32..200 {
+        t := totient(n)
+        for a in 2..20 {
+            if gcd(u64(a), u64(n)) is 1 and powmod(u64(a), u64(t), u64(n)) is not 1 { ok = false }
+        }
+    }
+    print("euler's theorem holds: {}\n", ok)
+}
