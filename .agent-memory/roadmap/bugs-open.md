@@ -9,7 +9,7 @@
     (spec says library functions; Builder.write + fmt cover it).
 11. Interpreter speed: s3 fast paths (interp/fast.rs: ≤64-bit ints as i128, word loads/stores,
     inline small allocs, address cache, &TyInfo, frame pool) took a simple loop from 700 to
-    ~180 ns/iteration. Fiber switches still ~34 µs (thread handoff per switch).
+    ~180 ns/iteration. Fiber switches: s4 recv_soon (poll before blocking) 12 µs → ~2 µs.
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
     §21.6.1 (shortest round-trip) but differs from Ryu/Python.
 ## Dogfood round 4 (s4) leftovers (13–22 fixed in s4)
