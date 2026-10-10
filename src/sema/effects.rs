@@ -394,6 +394,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut breaks: Vec<(Ty, Span)> =
             literal_ids.iter().flat_map(|id| self.sema.handler_breaks.get(id).cloned().unwrap_or_default()).collect();
         breaks.extend(self.label_breaks.remove(&(self.outer.len(), label)).unwrap_or_default());
+        let any_break = !breaks.is_empty();
         let mut ty = if value { expect.unwrap_or(body.ty) } else { Ty::unit() };
         // A body that never finishes leaves the value to the `break`s.
         if ty.is_never()
@@ -409,10 +410,17 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(bspan, format!("this `break` gives the `with` a `{}`, but its value is `{}`", bt, ty));
             }
         }
-        // A clause of an `esc` or `ctl` operation can complete the `with` even when its
-        // body never does.
-        let clause_exits =
-            handled.iter().any(|e| self.sema.effects[&e.effect].ops.iter().any(|o| o.kind != ast::OpKind::Fn));
+        // A `break` to the `with` can complete it even when its body never does: one in
+        // a clause of a handler literal or aimed at its label, or possibly one in a clause
+        // of a handler declaration for an `esc` or `ctl` operation.
+        let decl_exits = handlers.iter().any(|h| match h {
+            tir::HandlerValue::Decl { decls, .. } => decls.iter().any(|d| {
+                let e = &self.sema.prog.handler_decls[d.index()].effect;
+                self.sema.effects[&e.effect].ops.iter().any(|o| o.kind != ast::OpKind::Fn)
+            }),
+            tir::HandlerValue::Literal(_) => false,
+        });
+        let clause_exits = any_break || decl_exits;
         let ty = if !value && body.ty.is_never() && !clause_exits { Ty::never() } else { ty };
         mk(ty, tir::ExprKind::With { label, handlers, on, body: Box::new(body) }, span)
     }

@@ -1,7 +1,7 @@
 Err1 :: union { Bad: u32, Worse }
 
 Visit :: effect {
-    visit: fn(n: u32) -> u32
+    visit: esc(n: u32) -> u32
 }
 
 check :: fn(n: u32) -> Err1!u32 {

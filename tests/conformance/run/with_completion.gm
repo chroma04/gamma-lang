@@ -1,0 +1,14 @@
+// A `with` completes only through its body or a `break` to it, so a body that always
+// returns makes the `with` `never` when no clause breaks (§12.7).
+Chk :: effect { check: esc(n: i32) -> i32 }
+
+f :: fn(n: i32) -> i32 {
+    with (handler Chk { check(v) => v * 2 }) {
+        x := check(n)
+        return x + 1
+    }
+}
+
+main :: fn() \ {Out} {
+    print("{}\n", f(20))
+}

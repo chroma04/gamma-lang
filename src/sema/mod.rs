@@ -12,6 +12,7 @@ mod builtins;
 mod call;
 mod consteval;
 mod construct;
+mod cont_check;
 mod decls;
 mod effects;
 mod escape;
@@ -264,6 +265,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
+    sema.check_continuations();
     if sema.sess.diags.has_errors() {
         return None;
     }

@@ -1,5 +1,5 @@
 // Handler stacks: recursive re-installation forwarding to the outer handler, function pointers carrying effects, esc with defers, return from a clause inside a loop.
-Log :: effect { log: fn(msg: string) }
+Log :: effect { log: esc(msg: string) }
 Fail :: effect { fail: esc(code: u32) -> never }
 
 indented :: fn(depth: u32) \ {Log, Out} {

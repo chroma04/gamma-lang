@@ -1,0 +1,60 @@
+//! stage: check
+// A clause that uses its continuation only with `resume` and `discard` must consume
+// it exactly once on every path (§14.2).
+Gen :: effect { emit: ctl(x: i32) }
+
+gen :: fn() \ {Gen} {
+    emit(1)
+    emit(2)
+}
+
+run :: fn(stack: []u8) {
+    // Every path resumes or discards once, then exits: accepted.
+    with (handler Gen {
+        emit(x, k) => {
+            if x > 1 {
+                discard k
+                break
+            }
+            resume k()
+        }
+    }) on stack {
+        gen()
+    }
+    // A path breaks out with `k` unconsumed.
+    with (handler Gen {
+        emit(x, k) => {
+            if x > 1 { resume k() } else { break } //~ ERROR may be left unconsumed
+        }
+    }) on stack {
+        gen()
+    }
+    // Consumed twice on one path.
+    with (handler Gen {
+        emit(x, k) => {
+            if x > 1 { discard k }
+            resume k() //~ ERROR may already have been consumed
+        }
+    }) on stack {
+        gen()
+    }
+    // Consumed in a loop that may run again.
+    with (handler Gen {
+        emit(x, k) => {
+            i := 0
+            while i < x {
+                discard k //~ ERROR may already have been consumed
+                i += 1
+            }
+            break //~ ERROR may be left unconsumed
+        }
+    }) on stack {
+        gen()
+    }
+    // Never mentioned at all.
+    with (handler Gen { emit(x, k) => break }) on stack { //~ ERROR may be left unconsumed
+        gen()
+    }
+}
+
+main :: fn() {}

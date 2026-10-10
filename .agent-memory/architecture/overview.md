@@ -16,7 +16,8 @@ src/types.rs       hash-consed Ty/TyKind (global RwLock interner), AdtId/EffectI
 src/layout.rs      Target, Layouts (size/align/offsets; optional = payload+flag, result = tag+payload)
 src/float.rs       exact rational → f16/f32/f64 bits (round half even)
 src/tir.rs         typed IR + for_each_child(_mut) traversals
-src/sema/          semantic analysis (see architecture/sema-notes.md)
+src/sema/          semantic analysis (see architecture/sema-notes.md); cont_check.rs = static
+                   one-shot check of ctl continuations (§14.2), run after check_escapes
 src/interp/        tree-walking interpreter; run_main / eval_const; fiber.rs = fibers (threads)
 src/cgen/          C back end (decisions/008); fiber.rs = with-on outlining, ctl thunks
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handler

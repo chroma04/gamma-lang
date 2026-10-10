@@ -30,7 +30,6 @@ in_clause :: fn(n: i32) -> E!i32 {
         x := try check(n)
         return x + 1
     }
-    return !.Big
 }
 
 main :: fn() \ {Out} {

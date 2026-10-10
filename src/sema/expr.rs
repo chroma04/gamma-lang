@@ -1300,6 +1300,7 @@ impl<'a, 's> FnCx<'a, 's> {
             self.ret = Ty::result(*err, *ok);
         }
         let (levels, ret) = self.return_target();
+        self.check_fn_clause_exit(levels, "try", span);
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
             (TyKind::Optional(t), TyKind::Optional(_)) => {
@@ -1501,11 +1502,25 @@ impl<'a, 's> FnCx<'a, 's> {
         (0, self.ret)
     }
 
+    /// An exit `levels` frames out may not leave a clause of a `fn` operation, which
+    /// can only produce a value (§12.7.1).
+    fn check_fn_clause_exit(&mut self, levels: u32, what: &str, span: Span) {
+        let n = self.outer.len();
+        let crossed = std::iter::once(self.clause.as_ref()).chain(
+            (0..levels.saturating_sub(1) as usize)
+                .map(|i| n.checked_sub(i + 1).and_then(|k| self.outer[k].clause.as_ref())),
+        );
+        if levels > 0 && crossed.flatten().any(|c| c.op_kind == ast::OpKind::Fn) {
+            self.error(span, format!("a clause of a `fn` operation can only produce a value; it cannot `{}`", what));
+        }
+    }
+
     fn return_expr(&mut self, v: Option<&ast::Expr>, span: Span) -> Expr {
         if self.in_defer {
             self.error(span, "`return` is not allowed in a deferred statement");
         }
         let (levels, ret) = self.return_target();
+        self.check_fn_clause_exit(levels, "return", span);
         let value = match v {
             Some(v) => {
                 let ex = self.expr(v, Some(ret));
@@ -1569,6 +1584,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 && let Some((Some(name), _)) = c.for_label
                 && name == l.name
             {
+                self.check_fn_clause_exit(levels + 1, "continue", span);
                 return Some(Jump::ClauseReturn { levels });
             }
             let f = &self.outer[k];
@@ -1577,6 +1593,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 if is_continue && !is_loop {
                     self.error(span, "`continue` can only target a loop");
                 }
+                self.check_fn_clause_exit(levels + 1, if is_continue { "continue" } else { "break" }, span);
                 return Some(Jump::Label { levels: levels + 1, label: id, value });
             }
             frame_clause = f.clause.clone();
