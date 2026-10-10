@@ -417,7 +417,7 @@ Parameters are immutable bindings (§11.2). A parameter that the function wishes
 
 ### 4.4 Uninitialized storage: `---`
 
-`x: T = ---` declares `x` without initializing it. It is permitted only when `T` is a **plain-data type**: an integer or float type, or an array, tuple or struct (including `#packed` structs) all of whose element and field types are plain-data, or a `#bits` struct whose fields are all `bool` or integers. Reading an uninitialized object (or any part of one) yields an unspecified value; it is never undefined behavior.
+`x: T = ---` declares `x` without initializing it. It is permitted only when `T` is a **plain-data type**: an integer or float type, or an array, tuple or struct (including `#packed` structs) all of whose element and field types are plain-data, or a `#bits` struct whose fields are all `bool`, integers or such `#bits` structs. Reading an uninitialized object (or any part of one) yields an unspecified value; it is never undefined behavior.
 
 Types that are not plain-data — `bool`, unions, optionals, results, pointers of every kind, slices, function pointers, `cont` — have invariants an arbitrary bit pattern could violate, so `---` is a compile error for them.
 
@@ -600,7 +600,7 @@ Mode :: #bits(u16) struct {
 }
 ```
 
-`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. Conversion to and from `U` is by `U(m)` and `Mode(u)` when every field is a `bool` or integer (§6.5), and by `bits` otherwise (§6.6). A `#bits` struct whose fields are all `bool` or integers is plain-data.
+`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4). A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
 
 ### 5.11 Unions
 
@@ -673,7 +673,7 @@ A function pointer is one code address in size, C-compatible when its signature 
 
 ### 5.19 Plain-data types
 
-A type is **plain-data** if every bit pattern of its size is a valid value: integer and float types; `#bits` structs whose fields are all `bool` or integers; arrays, tuples and structs whose elements and fields are all plain-data. (Padding bytes are ignored.) Plain-data types are the ones that may be initialized with `---` (§4.4), reinterpreted with `bits` (§6.6), and read from a `#c_union` without restriction.
+A type is **plain-data** if every bit pattern of its size is a valid value: integer and float types; plain `#bits` structs (§5.10.5); arrays, tuples and structs whose elements and fields are all plain-data. (Padding bytes are ignored.) Plain-data types are the ones that may be initialized with `---` (§4.4), reinterpreted with `bits` (§6.6), and read from a `#c_union` without restriction.
 
 ---
 
@@ -763,8 +763,8 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 | float | `T` is a wider float type |
 | `bool` | `T` is an integer type (`true` → 1, `false` → 0) |
 | enum (§5.11) | `T` is its tag type, or an integer type its tag type widens to |
-| `#bits(U)` struct | `T` is `U` |
-| `U` integer | `T` is a `#bits(U)` struct whose fields are all `bool`/integers (every bit pattern is valid) |
+| plain `#bits(U)` struct (§5.10.5) | `T` is `U` |
+| `U` integer | `T` is a plain `#bits(U)` struct (§5.10.5: every bit pattern is valid) |
 
 For `usize` and `isize` the rule is applied against every supported target (pointer width ≥ 32): `usize(x)` is permitted for `x: uN` with N ≤ 32, and so on. Converting between `usize`/`isize` and wider fixed-width types uses the methods of §6.6.
 
@@ -841,7 +841,7 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 #### 7.4.1 Operand types
 
-Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to `#bits` structs whose fields are all `bool` or integers (on the underlying integer, so fieldwise).
+Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to plain `#bits` structs (§5.10.5; on the underlying integer, so fieldwise).
 
 A unary `-` applied directly to an untyped literal is part of the literal for typing purposes: `-128i8` and `x: i8 = -128` are valid.
 

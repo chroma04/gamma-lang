@@ -379,11 +379,7 @@ impl<'s> Sema<'s> {
         if super::finalize::lossless(from, to) {
             return true;
         }
-        let plain_bits = |t: Ty| {
-            self.bits_struct_ty(t).filter(|_| {
-                self.struct_fields(t).is_some_and(|fs| fs.iter().all(|f| f.ty.is_bool() || f.ty.is_integer()))
-            })
-        };
+        let plain_bits = |t: Ty| self.bits_struct_ty(t).filter(|_| self.is_plain(t));
         if plain_bits(from) == Some(to) || plain_bits(to) == Some(from) {
             return true;
         }

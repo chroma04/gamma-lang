@@ -520,9 +520,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Stmt::Assign { place: Expr { kind: ExprKind::Field { base, index }, .. }, value }
                 if self.g.ty.bits_layout(base.ty).is_some() =>
             {
-                let (u, fields) = self.g.ty.bits_layout(base.ty).unwrap();
-                let (off, w, _) = fields[*index as usize];
-                let a = self.place_addr(base)?;
+                let (_, fields) = self.g.ty.bits_layout(base.ty).unwrap();
+                let (foff, w, _) = fields[*index as usize];
+                // A field of a nested `#bits` field: bits of the outermost integer.
+                let mut outer = &**base;
+                let mut off = foff;
+                while let ExprKind::Field { base: b, index: i } = &outer.kind
+                    && let Some((_, fs)) = self.g.ty.bits_layout(b.ty)
+                {
+                    off += fs[*i as usize].0;
+                    outer = b;
+                }
+                let (u, _) = self.g.ty.bits_layout(outer.ty).unwrap();
+                let a = self.place_addr(outer)?;
                 let v = self.expr(value)?;
                 let raw = self.bits_raw(value.ty, &v);
                 let uc = self.g.ty.cty(u);

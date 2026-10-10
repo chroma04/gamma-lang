@@ -38,11 +38,13 @@ pub enum Place {
     Mem(u64),
     /// Memory inside a field of a `#packed` struct: accessed with alignment 1.
     Packed(u64),
-    /// Field `idx` of a `#bits` struct of type `ty` stored at `addr`.
+    /// A field of type `fty` at bit `off` of the `#bits` struct of type `whole` stored
+    /// at `addr` (a field of a nested `#bits` field adds the offsets).
     Bits {
         addr: u64,
-        ty: Ty,
-        idx: u32,
+        whole: Ty,
+        off: u32,
+        fty: Ty,
     },
 }
 

@@ -329,10 +329,11 @@ impl<'a> Machine<'a> {
         match p {
             Place::Mem(addr) => self.load_ty(span, addr, ty),
             Place::Packed(addr) => self.load(span, addr, self.ti(ty).size, 1),
-            Place::Bits { addr, ty: sty, idx } => {
-                let b = self.load_ty(span, addr, sty)?;
-                let r = self.field_bytes(sty, &b, idx as usize);
-                Ok(self.tr(span, r)?.1)
+            Place::Bits { addr, whole, off, fty } => {
+                let u = self.bits_struct_ty(whole).unwrap_or(whole);
+                let b = self.load_ty(span, addr, whole)?;
+                let raw = num::wrap(&self.int_of_unsigned(u, &b).shr(off as u64), false, self.bit_width(fty));
+                Ok(self.bits_from_raw(fty, &raw))
             }
         }
     }
@@ -344,11 +345,10 @@ impl<'a> Machine<'a> {
                 self.store(span, addr, data, align)
             }
             Place::Packed(addr) => self.store(span, addr, data, 1),
-            Place::Bits { addr, ty: sty, idx } => {
+            Place::Bits { addr, whole: sty, off, fty } => {
                 let u = self.bits_struct_ty(sty).unwrap_or(sty);
                 let whole = self.load_ty(span, addr, sty)?;
                 let cur = self.int_of_unsigned(u, &whole);
-                let (off, fty) = self.tr(span, self.bits_field(sty, idx as usize))?;
                 let w = self.bit_width(fty);
                 let raw = self.bits_raw(fty, data);
                 let mask = Int::S(1).shl(w as u64).sub(&Int::S(1)).shl(off as u64);
@@ -395,10 +395,11 @@ impl<'a> Machine<'a> {
             }
             ExprKind::Field { base, index } => {
                 if self.bits_struct_ty(base.ty).is_some() {
-                    let (Place::Mem(addr) | Place::Packed(addr)) = self.eval_place(a, base)? else {
-                        return self.trap(e.span, "internal error: nested #bits place");
-                    };
-                    return Ok(Place::Bits { addr, ty: base.ty, idx: *index });
+                    let (off, fty) = self.tr(e.span, self.bits_field(base.ty, *index as usize))?;
+                    return Ok(match self.eval_place(a, base)? {
+                        Place::Mem(addr) | Place::Packed(addr) => Place::Bits { addr, whole: base.ty, off, fty },
+                        Place::Bits { addr, whole, off: o, .. } => Place::Bits { addr, whole, off: o + off, fty },
+                    });
                 }
                 let (addr, packed) = match self.eval_place(a, base)? {
                     Place::Mem(addr) => (addr, self.is_packed(base.ty)),

@@ -144,9 +144,10 @@ impl<'s> Sema<'s> {
             TyKind::Param(p) => self.param_has(*p, Constraint::Plain),
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(tir::AdtKind::Struct { fields, bits: None, .. }) => fields.iter().all(|f| self.is_plain(f.ty)),
-                Some(tir::AdtKind::Struct { fields, bits: Some(_), .. }) => {
-                    fields.iter().all(|f| f.ty.is_integer() || f.ty.is_bool())
-                }
+                // A `#bits` struct whose fields are `bool`, integers or such structs (§5.19).
+                Some(tir::AdtKind::Struct { fields, bits: Some(_), .. }) => fields.iter().all(|f| {
+                    f.ty.is_integer() || f.ty.is_bool() || (self.bits_struct_ty(f.ty).is_some() && self.is_plain(f.ty))
+                }),
                 _ => false,
             },
             _ => false,
