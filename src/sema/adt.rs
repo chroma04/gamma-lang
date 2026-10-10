@@ -197,7 +197,7 @@ impl<'s> Sema<'s> {
         }
     }
 
-    fn bit_width(&self, t: Ty) -> Option<u64> {
+    pub(super) fn bit_width(&self, t: Ty) -> Option<u64> {
         match t.kind() {
             TyKind::Bool => Some(1),
             TyKind::Int(i) => Some(i.bits as u64),

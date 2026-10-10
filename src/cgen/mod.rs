@@ -565,7 +565,13 @@ impl<'a> Gen<'a> {
         if params.is_empty() {
             params.push("void".into());
         }
-        let ret = if def.ret.is_unit() { "void".into() } else { self.c_abi_type(def.ret, def.span)? };
+        let ret = if def.ret.is_never() {
+            "__attribute__((noreturn)) void".into()
+        } else if def.ret.is_unit() {
+            "void".into()
+        } else {
+            self.c_abi_type(def.ret, def.span)?
+        };
         let _ = writeln!(
             self.protos,
             "extern {}{} gm_x{}({}) __asm__(GM_SYM(\"{}\"));",

@@ -842,6 +842,11 @@ impl<'a> Machine<'a> {
                     Some((_, _, super::memory::AllocKind::Heap, false)) => {
                         self.trap(e.span, format!("double free of heap block {:#x}", p))
                     }
+                    // A whole block freed with the wrong size, such as a slice of it.
+                    Some((base, sz, super::memory::AllocKind::Heap, true)) if base == p => self.trap(
+                        e.span,
+                        format!("invalid free of {:#x}: the heap block there has {} bytes, not {}", p, sz, size),
+                    ),
                     _ => self.trap(
                         e.span,
                         format!("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size),

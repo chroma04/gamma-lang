@@ -277,7 +277,8 @@ static void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
 /* Debug builds: records the allocator (owner, vt) and site of the block at p (§18.3). */
 static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col);
 /* Debug builds: traps if the block at p was allocated by another allocator, and forgets it. */
-static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col);
+static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol);
 static int gm_debug = 1;
 /* Nonzero in Debug and Checked builds (set by the generated code). */
 static int gm_checks;

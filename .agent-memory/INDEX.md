@@ -17,6 +17,8 @@
   binding unwrap, nested #bits fields, fn-clause exits, static k check (sema/cont_check.rs),
   exits past with…on discard fibers, frame cost model (1× locals + read copies), 64 MiB C main
   thread, receiver-fixed generic inference, List insert/remove/…, @rotl/@rotr, diagnostics.
+- Later in session 3: generic handler decls, #export validation, Sys in tests, deferred
+  @static_assert, interpreter fast paths, dogfood round 3 (example3_*) fixes.
 - Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params.

@@ -159,7 +159,8 @@ impl<'s> Sema<'s> {
                 self.error(p.span, format!("`{}` is not a C-compatible parameter type (§19.1)", p.ty));
             }
         }
-        if !s.ret.is_error() && !s.ret.is_unit() && !self.is_c_compatible(s.ret, false) {
+        // `never`: a C function that does not return, such as `exit` (§19.2).
+        if !s.ret.is_error() && !s.ret.is_unit() && !s.ret.is_never() && !self.is_c_compatible(s.ret, false) {
             self.error(name.span, format!("`{}` is not a C-compatible result type (§19.1)", s.ret));
         }
         let params = s.params.clone();

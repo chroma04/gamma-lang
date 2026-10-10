@@ -190,8 +190,10 @@ impl<'a, 's> FnCx<'a, 's> {
             TyKind::Slice { elem, .. } => (src, *elem),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
                 let elem = *elem;
-                // A temporary array is iterated from a hidden local that lives as long as the loop.
-                let (src, m, pre) = match self.place_mutability(&src) {
+                // A temporary array is iterated from a hidden local that lives as long as the loop,
+                // and so is an array in a `#packed` struct, whose elements may be misaligned.
+                let place = self.place_mutability(&src).filter(|_| !super::escape::in_packed(&self.sema.prog, &src));
+                let (src, m, pre) = match place {
                     Some(m) => (src, m, None),
                     None => {
                         let t = self.temp(st, span);

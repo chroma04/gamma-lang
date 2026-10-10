@@ -1,0 +1,10 @@
+// A `for` over an array field of a `#packed` struct iterates a copy of it, since its
+// elements may be misaligned (§5.10.4, §13.2).
+R :: #packed struct { t: u8, arr: [3]u16 }
+
+main :: fn() \ {Out} {
+    a := R(t: 1, arr: [3]u16(1, 2, 300))
+    total: u32 = 0
+    for x in a.arr { total += u32(x) }
+    print("{} {}\n", (total, @size_of(R)))
+}

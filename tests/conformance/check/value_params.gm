@@ -1,6 +1,6 @@
 //! stage: check
 // Compile-time value parameters (§16.5).
-sized :: fn(N :: usize, a: [N + 1]u8) {}       //~ ERROR whose value is not known here
+sized :: fn(N :: usize, a: [N + 1]u8) {}       //~ ERROR computed from the compile-time parameter `N` is not supported
 
 listed :: fn(N :: usize) -> [N]u8 => [N]u8(1, 2)   //~ ERROR construct it with `fill:`
 

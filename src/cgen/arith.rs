@@ -400,8 +400,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let fa = self.addr_of(args[3].ty, &f);
                 let (fp, fl) = (self.slice_ptr(&fa), self.slice_len(&fa));
                 let (line, col) = (self.expr(&args[4])?, self.expr(&args[5])?);
-                let name = if op == Builtin::AllocTag { "gm_alloc_tag" } else { "gm_alloc_check" };
-                self.line(&format!("{name}({}, {}, {}, {fp}, {fl}, {line}, {col});", v[0], v[1], v[2]));
+                if op == Builtin::AllocTag {
+                    self.line(&format!("gm_alloc_tag({}, {}, {}, {fp}, {fl}, {line}, {col});", v[0], v[1], v[2]));
+                } else {
+                    // The check traps at its own location, like the interpreter.
+                    let loc = self.loc(e);
+                    self.line(&format!(
+                        "gm_alloc_check({}, {}, {}, {fp}, {fl}, {line}, {col}, {loc});",
+                        v[0], v[1], v[2]
+                    ));
+                }
                 return Ok(self.unit());
             }
             Builtin::HeapFree => {

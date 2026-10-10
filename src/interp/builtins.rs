@@ -308,9 +308,13 @@ impl<'a> Machine<'a> {
                             return self
                                 .trap(span, format!("bswap requires a whole number of bytes, not {} bits", bits));
                         }
-                        let mut r = Bytes::from_slice(&v[0]);
-                        r.reverse();
-                        Ok(r)
+                        // Reverse the value's bytes (not the padding bytes of its storage).
+                        let n = (bits / 8) as usize;
+                        let mut b = num::encode_int(&Int::from_big(x.clone()), ti.size, true).to_vec();
+                        b[..n].reverse();
+                        let r = num::decode_int(&b, false, bits, true);
+                        let r = num::wrap(&r, signed, bits);
+                        Ok(num::encode_int(&r, ti.size, little))
                     }
                     _ => {
                         let mut r = BigInt::zero();

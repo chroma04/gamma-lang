@@ -600,7 +600,7 @@ Mode :: #bits(u16) struct {
 }
 ```
 
-`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4). A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
+`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4); padding fields stay zero, so `~` complements only the named fields. A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
 
 ### 5.11 Unions
 
@@ -2288,7 +2288,7 @@ Gamma adopts the C11 memory model.
 | `@atomic_add(p, v, order)`, `_sub`, `_and`, `_or`, `_xor`, `_max`, `_min` | old value (wrapping arithmetic) |
 | `@fence(order)` | `()` |
 
-`p` is a `^T`. Atomic intrinsics do not require `Sys`: they are memory operations on memory the function can already reach.
+`p` is a `^T`. Atomic intrinsics do not require `Sys`: they are memory operations on memory the function can already reach. As in C11, a load may not use `.Release` or `.AcqRel`, a store may not use `.Acquire` or `.AcqRel`, and the failure order of `@atomic_cas` may not be `.Release` or `.AcqRel`: written as a constant, such an order is a compile error; computed at run time, it acts as `.SeqCst`.
 
 *Rationale:* a C replacement must be able to write a thread pool and a lock-free queue. Adopting C11's model means existing knowledge and tools (ThreadSanitizer) apply unchanged. Effects provide the structure on top: a thread's handlers are its own, so handler literals capturing locals are never shared.
 

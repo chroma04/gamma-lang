@@ -426,7 +426,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 let st = self.infer.resolve(v.ty);
                 if let Some(u) = self.bits_operand(st, "~", span) {
                     let x = self.bits_convert(v, u);
-                    let n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+                    // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
+                    if let Some(mask) = self.bits_padding_mask(st) {
+                        let m = mk(u, tir::ExprKind::Int(mask), span);
+                        n = mk(
+                            u,
+                            tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) },
+                            span,
+                        );
+                    }
                     return self.bits_convert(n, st);
                 }
                 self.obligations.push(Obligation::Numeric {
@@ -506,6 +515,11 @@ impl<'a, 's> FnCx<'a, 's> {
             let is_array = |t: Ty| matches!(t.kind(), TyKind::Array { .. });
             if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
                 d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
+            }
+            // `a..b else c` is `(a..b) else c`: `else` binds more loosely than `..`.
+            let wrapped = |t: Ty| matches!(t.kind(), TyKind::Optional(_) | TyKind::Result { .. });
+            if what == "range bounds" && wrapped(a) != wrapped(b) {
+                d = d.with_note("`else` binds more loosely than `..`; parenthesize the bound: `lo..(x else d)` (§B.1)");
             }
             self.sema.emit(d);
             return Ty::error();
@@ -623,6 +637,25 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// The bits of the named (non-padding) fields of `#bits` struct `t`, if it has
+    /// padding fields `_`.
+    fn bits_padding_mask(&mut self, t: Ty) -> Option<num_bigint::BigInt> {
+        let fields = self.sema.struct_fields(t)?.to_vec();
+        if !fields.iter().any(|f| f.name.as_str() == "_") {
+            return None;
+        }
+        let mut mask = num_bigint::BigInt::from(0);
+        let mut off = 0u64;
+        for f in &fields {
+            let w = self.sema.bit_width(f.ty)?;
+            if f.name.as_str() != "_" {
+                mask |= ((num_bigint::BigInt::from(1) << w) - 1) << off;
+            }
+            off += w;
+        }
+        Some(mask)
     }
 
     /// The underlying integer of `t` if it is a `#bits` struct, for the bitwise operator
@@ -963,8 +996,8 @@ impl<'a, 's> FnCx<'a, 's> {
             "ctz" => (tir::Builtin::Ctz, Ty::int(false, 32)),
             "popcount" => (tir::Builtin::Popcount, Ty::int(false, 32)),
             "bswap" => {
-                let bits = self.sema.with_layouts(|l| l.size_of(t)) * 8;
-                if !matches!(t.kind(), TyKind::Int(i) if i.bits as u64 == bits)
+                // A whole number of bytes, such as `u24` (stored in 4 bytes).
+                if !matches!(t.kind(), TyKind::Int(i) if i.bits % 8 == 0)
                     && !matches!(t.kind(), TyKind::Usize | TyKind::Isize)
                 {
                     self.error(span, format!("`@bswap` needs an integer of whole bytes, not `{}`", t));
@@ -996,6 +1029,10 @@ impl<'a, 's> FnCx<'a, 's> {
         match name.name.as_str() {
             "size_of" | "align_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if t.is_never() {
+                    self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
+                    return error_expr(span);
+                }
                 if super::generics::has_param(t) {
                     let align = name.name.as_str() == "align_of";
                     return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
@@ -1249,7 +1286,14 @@ impl<'a, 's> FnCx<'a, 's> {
             TyKind::Result { err, ok } => (*ok, Some(*err)),
             TyKind::Error => return error_expr(span),
             _ => {
-                self.error(lhs.span, format!("`else` needs an optional or a result on its left, but this is `{}`", lt));
+                let mut broken = false;
+                lt.walk(&mut |t| broken |= t.is_error());
+                if !broken {
+                    self.error(
+                        lhs.span,
+                        format!("`else` needs an optional or a result on its left, but this is `{}`", lt),
+                    );
+                }
                 return error_expr(span);
             }
         };
@@ -2041,9 +2085,26 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.expr(e, Some(elem));
             vals.push(self.coerce(v, elem));
         }
-        for e in &exprs[first_value + n_values..] {
+        for (k, e) in exprs[first_value + n_values..].iter().enumerate() {
             let v = self.expr(e, Some(order_ty));
-            vals.push(self.coerce(v, order_ty));
+            let v = self.coerce(v, order_ty);
+            // Orders C11 does not allow for this operation, when written as constants.
+            if let tir::ExprKind::Variant { variant, payload: None } = &v.kind
+                && let Some((variants, _)) = self.sema.union_variants(order_ty)
+            {
+                let order = variants[*variant as usize].name.as_str();
+                let bad = match (op, k) {
+                    (B::AtomicLoad, _) | (B::AtomicCas, 1) => matches!(order, "Release" | "AcqRel"),
+                    (B::AtomicStore, _) => matches!(order, "Acquire" | "AcqRel"),
+                    _ => false,
+                };
+                if bad {
+                    let what =
+                        if op == B::AtomicCas { "as the failure order of `@atomic_cas`" } else { "for this operation" };
+                    self.error(e.span, format!("`.{}` is not a valid memory order {} (§19.6)", order, what));
+                }
+            }
+            vals.push(v);
         }
         let ty = match op {
             B::AtomicLoad | B::AtomicSwap | B::AtomicRmw(_) | B::VolatileLoad => elem,

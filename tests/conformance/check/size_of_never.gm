@@ -1,0 +1,3 @@
+//! stage: check
+N :: @size_of(never) //~ ERROR `never` has no values
+main :: fn() {}

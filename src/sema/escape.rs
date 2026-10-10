@@ -128,7 +128,7 @@ fn unaligned<'a>(prog: &Program, e: &'a Expr, f: &mut dyn FnMut(&'a Expr, crate:
 }
 
 /// True if the place `e` lies inside a field of a `#packed` struct value.
-fn in_packed(prog: &Program, e: &Expr) -> bool {
+pub(super) fn in_packed(prog: &Program, e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Field { base, .. } => {
             let packed = match base.ty.kind() {
