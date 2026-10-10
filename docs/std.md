@@ -242,7 +242,7 @@ follow C99 Annex F.
 - `sqrt`, `cbrt`, `hypot`; `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`.
 - `sin`, `cos`, `tan` (with full argument reduction), `asin`, `acos`, `atan`, `atan2`;
   `sinh`, `cosh`, `tanh`.
-- `floor`, `ceil`, `trunc`, `round` (half away from zero), `fmod`/`rem`, `copysign`, `abs`.
+- `floor`, `ceil`, `trunc`, `round` (half away from zero, as in C; the builtin `x.round(T)` rounds ties to even), `fmod`/`rem`, `copysign`, `abs`.
 
 ## `std/thread`
 

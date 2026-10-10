@@ -789,9 +789,9 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 
 | Method | On | Meaning |
 | --- | --- | --- |
-| `x.trunc(T)` | integer → integer | keep the low bits (two's-complement truncation); always defined |
+| `x.trunc(T)` | integer → integer | the value modulo 2^bits(T), as `T`: keep the low bits of the two's-complement representation, which sign-extends a negative signed `x` when `T` is wider (`i8(-1).trunc(u32)` is `0xFFFF_FFFF`); always defined |
 | `x.trunc(T)` | float → integer | round toward zero; **checked**: the result must fit `T` and `x` must not be NaN |
-| `x.round(T)` | float → integer | round to nearest, ties to even; checked as above |
+| `x.round(T)` | float → integer | round to nearest, ties to even (`2.5.round(i32)` is 2); checked as above |
 | `x.floor(T)`, `x.ceil(T)` | float → integer | checked as above |
 | `x.round(T)` | integer → float, float → narrower float | round to nearest-even; overflow gives ±∞ |
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |

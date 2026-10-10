@@ -17,6 +17,6 @@
     tuple payload (`.Cat(c)` for a 2-tuple payload); interp `new` ~10 µs each (Alloc perform
     + vtable + AllocError!^T); block-bodied closure return inference; `&rvalue` for ^const
     params; i.to_f64-style helper; std channels/queue/generator; print from passing tests.
-24. `x.round(T)` is ties-to-even, std/math round is half-away: cross-reference in docs.
-25. `trunc` widening sign-extends from signed sources: say so in §6.6.
-26. Cascade: a failing `&g(x)` arg also reports "missing argument for compile-time param".
+24. Interp speed: perform ≈ 0.7 µs vs call 0.1 µs, new+destroy ≈ 4 µs (s4 callgrind:
+    spread over eval_small/call_function/frames; no single hotspot). Real fix = bytecode VM
+    (future project); cheap bits: perform clones CtxNode, args Vec, ctl_ops SipHash lookup.

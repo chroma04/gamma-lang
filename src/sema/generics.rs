@@ -811,8 +811,14 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
+        // An argument with an error (already reported) leaves its parameters unbound;
+        // say nothing more about them.
+        let failed_arg = values.iter().flatten().any(|v| self.infer.resolve(v.ty).is_error());
         let mut targs = vec![];
         for pid in &sig.generics {
+            if failed_arg && !binds.contains_key(pid) {
+                return error_expr(span);
+            }
             match binds.get(pid) {
                 Some(t) if self.sema.value_params.contains_key(pid) => {
                     let pty = self.sema.value_params[pid];
@@ -842,7 +848,20 @@ impl<'a, 's> FnCx<'a, 's> {
                         matches!(p.ty.kind(), TyKind::Slice { .. })
                             && v.as_ref().is_some_and(|v| matches!(v.ty.kind(), TyKind::Array { .. }))
                     });
-                    let hint = if array_for_slice { "; an array is not a slice: pass `a[..]`" } else { "" };
+                    let pointer_for_slice = sig.params.iter().zip(&values).any(|(p, v)| {
+                        matches!(p.ty.kind(), TyKind::Slice { .. })
+                            && v.as_ref().is_some_and(|v| matches!(self.infer.resolve(v.ty).kind(), TyKind::Ptr { .. }))
+                    });
+                    let name = self.sema.prog.fns[f.index()].name;
+                    let hint = if array_for_slice {
+                        "; an array is not a slice: pass `a[..]`"
+                    } else if pointer_for_slice && name.as_str() == "free" {
+                        "; `free` releases a slice from `make`: release a value from `new` with `destroy(p)`"
+                    } else if pointer_for_slice {
+                        "; a pointer is not a slice"
+                    } else {
+                        ""
+                    };
                     self.error(
                         span,
                         format!(

@@ -1,0 +1,15 @@
+//! stage: check
+// An argument with an error does not also leave its compile-time parameters "missing".
+Mat :: struct(R: usize, C: usize) { v: [R][C]f64 }
+transpose :: fn(R :: usize, C :: usize, m: ^const Mat(R, C)) -> Mat(C, R) {
+    out := Mat(C, R)(v: ---)
+    return out
+}
+mul :: fn(R :: usize, K :: usize, C :: usize, a: ^const Mat(R, K), b: ^const Mat(K, C)) -> Mat(R, C) {
+    out := Mat(R, C)(v: ---)
+    return out
+}
+main :: fn() {
+    mi := Mat(2, 3)(v: ---)
+    p := mul(&mi, &transpose(&mi))     //~ ERROR `&` needs a place
+}
