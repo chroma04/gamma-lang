@@ -1,0 +1,154 @@
+// Simulation: Conway's life on a fixed grid with #bits row flags, a compile-time neighbor table, enum/union rules, `when`, and a generation iterator.
+W :: 8
+H :: 6
+
+Cell :: union { Dead, Alive }
+
+Flags :: #bits(u8) struct {
+    alive: bool
+    changed: bool
+    age: u6
+}
+
+Rule :: union {
+    Classic
+    HighLife
+    Custom: (birth: u8, survive_lo: u8, survive_hi: u8)
+}
+
+Board :: struct {
+    cells: [H][W]Flags
+    gen: u32 = 0
+}
+
+DEAD :: Flags(alive: false, changed: false, age: 0)
+BLANK :: [H][W]Flags(fill: [W]Flags(fill: DEAD))
+
+// Compile-time table: how many in-bounds neighbors each cell has.
+neighbor_counts :: fn() -> [H][W]u8 {
+    t: [H][W]u8 = ---
+    for y in 0..H {
+        for x in 0..W {
+            n: u8 = 0
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    if dy is 1 and dx is 1 { continue }
+                    ny := y + dy
+                    nx := x + dx
+                    if ny >= 1 and ny <= H and nx >= 1 and nx <= W { n += 1 }
+                }
+            }
+            t[y][x] = n
+        }
+    }
+    return t
+}
+
+NEIGHBORS :: neighbor_counts()
+@static_assert(NEIGHBORS[0][0] is 3 and NEIGHBORS[1][1] is 8 and NEIGHBORS[0][1] is 5, "table wrong")
+
+when target.mode is .Fast {
+    MODE_NAME :: "fast"
+} else when target.mode is .Checked {
+    MODE_NAME :: "checked"
+} else {
+    MODE_NAME :: "debug"
+}
+
+live_neighbors :: fn(b: ^const Board, y, x: usize) -> u8 {
+    n: u8 = 0
+    for dy in 0..3 {
+        for dx in 0..3 {
+            if dy is 1 and dx is 1 { continue }
+            ny := y + dy
+            nx := x + dx
+            if ny >= 1 and ny <= H and nx >= 1 and nx <= W {
+                if b.cells[ny - 1][nx - 1].alive { n += 1 }
+            }
+        }
+    }
+    return n
+}
+
+next_state :: fn(rule: Rule, alive: bool, n: u8) -> bool => match rule {
+    .Classic => if alive { n is 2 or n is 3 } else { n is 3 }
+    .HighLife => if alive { n is 2 or n is 3 } else { n is 3 or n is 6 }
+    .Custom(birth, lo, hi) => if alive { n >= lo and n <= hi } else { n is birth }
+}
+
+step :: fn(b: ^Board, rule: Rule) -> u32 {
+    old := b^
+    changes: u32 = 0
+    for y in 0..H {
+        for x in 0..W {
+            was := old.cells[y][x]
+            now := next_state(rule, was.alive, live_neighbors(&old, y, x))
+            f := Flags(alive: now, changed: now is not was.alive, age: if now and was.alive { was.age +| 1 } else { 0 })
+            if f.changed { changes += 1 }
+            b.cells[y][x] = f
+        }
+    }
+    b.gen += 1
+    return changes
+}
+
+alive_cells :: fn(b: ^const Board) \ {Yield((usize, usize))} {
+    for y in 0..H {
+        for x in 0..W {
+            if b.cells[y][x].alive { yield((y, x)) }
+        }
+    }
+}
+
+show :: fn(b: ^const Board) \ {Out} {
+    for y in 0..H {
+        for x in 0..W {
+            c := if b.cells[y][x].alive { Cell.Alive } else { Cell.Dead }
+            ch := match c {
+                .Alive => "#"
+                .Dead => "."
+            }
+            print("{}", ch)
+        }
+        print("\n")
+    }
+}
+
+main :: fn() \ {Out} {
+    print("mode {}, bits size {}, corner neighbors {}\n", (MODE_NAME.len > 0, @size_of(Flags), NEIGHBORS[0][0]))
+    b := Board(cells: BLANK)
+    // a glider
+    glider := [_](usize, usize)((0, 1), (1, 2), (2, 0), (2, 1), (2, 2))
+    for p in glider { b.cells[p.0][p.1].alive = true }
+    show(&b)
+    for g in 0..4 {
+        ch := step(&b, .Classic)
+        print("-- gen {} ({} changes)\n", (b.gen, ch))
+        show(&b)
+    }
+    count := 0
+    for p in alive_cells(&b) { count += 1; _ = p }
+    print("alive {}\n", count)
+    first := for p in alive_cells(&b) { _ = p; break }
+    _ = first
+
+    // oldest cell
+    oldest: u6 = 0
+    for y in 0..H { for x in 0..W { oldest = oldest.max(b.cells[y][x].age) } }
+    print("oldest age {}\n", oldest)
+
+    // different rules on a blinker
+    for rule in [_]Rule(.Classic, .HighLife, .Custom(birth: 3, survive_lo: 1, survive_hi: 8)) {
+        bb := Board(cells: BLANK)
+        bb.cells[2][3].alive = true
+        bb.cells[2][4].alive = true
+        bb.cells[2][5].alive = true
+        total: u32 = 0
+        for _ in 0..5 { total += step(&bb, rule) }
+        n := 0
+        for p in alive_cells(&bb) { n += 1; _ = p }
+        print("{} -> {} changes, {} alive\n", (rule, total, n))
+    }
+    raw := u8(b.cells[0][0])
+    print("raw {}\n", raw)
+}

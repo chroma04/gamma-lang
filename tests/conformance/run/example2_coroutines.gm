@@ -1,0 +1,93 @@
+// Coroutines: pull-style generators on fibers, early cancellation with discard running defers, an esc exit crossing a fiber, and @stack_size-sized stacks.
+Gen :: effect { next: ctl(x: i64) }
+Abort :: effect { abort: esc(code: i32) -> never }
+
+fib :: fn(limit: i64) \ {Gen, Out} {
+    defer print("  fib cleanup\n")
+    a: i64 = 0
+    b: i64 = 1
+    while a < limit {
+        next(a)
+        t := a + b
+        a = b
+        b = t
+    }
+}
+
+risky :: fn(n: i64) \ {Gen, Abort, Out} {
+    defer print("  risky cleanup\n")
+    for i in 1..=n {
+        next(i * i)
+        if i is 3 { abort(40 + i.trunc(i32)) }
+    }
+}
+
+// Pull values from a generator until `want` have been seen, then cancel it.
+take :: fn(want: usize, limit: i64) -> i64 \ {Out} {
+    stack: [32768]u8 = ---
+    sum: i64 = 0
+    seen: usize = 0
+    with (handler Gen {
+        next(x, k) => {
+            sum += x
+            seen += 1
+            if seen is want {
+                discard k
+                break
+            }
+            resume k()
+        }
+    }) on stack[..] {
+        fib(limit)
+    }
+    return sum
+}
+
+Parked :: struct { k: ?cont(()), value: i64 }
+
+// The clause stores the continuation and the driver resumes it later, from a different place.
+two_step :: fn() \ {Out} {
+    stack: [16384]u8 = ---
+    parked := Parked(k: null, value: 0)
+    steps := 0
+    with (handler Gen {
+        next(x, k) => {
+            steps += 1
+            parked.value = x
+            parked.k = k
+            break
+        }
+    }) on stack[..] {
+        fib(1000)
+    }
+    // the body of the `with` was abandoned at its first `next`; it must be finished before leaving
+    if k := parked.k {
+        print("  parked at {} after {} step(s)\n", (parked.value, steps))
+        parked.k = null
+        _ = k
+    }
+}
+
+guarded :: fn() -> i32 \ {Out} {
+    stack: [16384]u8 = ---
+    total: i64 = 0
+    code := 0i32
+    with (handler Abort { abort(c) => { code = c; break } }) {
+        with (handler Gen {
+            next(x, k) => {
+                total += x
+                resume k()
+            }
+        }) on stack[..] {
+            risky(10)
+        }
+    }
+    print("  total {} code {}\n", (total, code))
+    return code
+}
+
+main :: fn() \ {Out} {
+    print("take 5 -> {}\n", take(5, 1000))
+    print("take 50 -> {}\n", take(50, 100))
+    print("guarded -> {}\n", guarded())
+}

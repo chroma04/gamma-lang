@@ -1,0 +1,22 @@
+[down]
+2:[down]
+1:2:[bottom]
+2:[up]
+[up]
+[double]
+[double]
+12
+5
+[risky defer]
+[risky defer]
+[risky defer]
+[risky defer]
+[caught]
+[risky defer]
+[caught]
+[risky defer]
+2015
+iter 0 done
+iter 1 done
+iter 2 done
+200

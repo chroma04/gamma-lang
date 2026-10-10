@@ -1,0 +1,74 @@
+// Generic unions and recursion: a generic expression tree evaluated at i32 and f64, Maybe(T), and nested generic structs with compile-time sizes.
+Maybe :: union(T: type) { Nothing, Just: T }
+
+Expr :: union(T: type) {
+    Lit: T
+    Add: (l: ^const Expr(T), r: ^const Expr(T))
+    Mul: (l: ^const Expr(T), r: ^const Expr(T))
+    Neg: ^const Expr(T)
+}
+
+eval :: fn(T: type, e: ^const Expr(T)) -> T where Signed(T) => match e^ {
+    .Lit(v) => v
+    .Add(l, r) => eval(l) + eval(r)
+    .Mul(l, r) => eval(l) * eval(r)
+    .Neg(x) => -eval(x)
+}
+
+depth :: fn(T: type, e: ^const Expr(T)) -> u32 => match e^ {
+    .Lit(_) => 1
+    .Add(l, r) => 1 + depth(l).max(depth(r))
+    .Mul(l, r) => 1 + depth(l).max(depth(r))
+    .Neg(x) => 1 + depth(x)
+}
+
+first_just :: fn(T: type, xs: []const Maybe(T)) -> Maybe(T) {
+    for m in xs {
+        if m is .Just(_) { return m }
+    }
+    return .Nothing
+}
+
+Pair :: struct(A, B: type) { a: A, b: B }
+Pairs :: struct(A, B: type, N: usize) { items: [N]Pair(A, B), len: usize = 0 }
+
+add_pair :: fn(A, B: type, N :: usize, ps: ^Pairs(A, B, N), a: A, b: B) -> bool {
+    if ps.len is N { return false }
+    ps.items[ps.len] = Pair(A, B)(a: a, b: b)
+    ps.len += 1
+    return true
+}
+
+swap_all :: fn(A, B: type, N :: usize, ps: ^const Pairs(A, B, N)) -> Pairs(B, A, N) where Plain(A), Plain(B) {
+    out := Pairs(B, A, N)(items: ---)
+    for i in 0..ps.len {
+        out.items[i] = Pair(B, A)(a: ps.items[i].b, b: ps.items[i].a)
+    }
+    out.len = ps.len
+    return out
+}
+
+main :: fn() \ {Out} {
+    one := Expr(i32).Lit(1)
+    two := Expr(i32).Lit(2)
+    three := Expr(i32).Lit(3)
+    s := Expr(i32).Add(&one, &two)
+    m := Expr(i32).Mul(&s, &three)
+    n := Expr(i32).Neg(&m)
+    print("{} depth {}\n", (eval(&n), depth(&n)))
+    fe := Expr(f64).Lit(1.5)
+    fm := Expr(f64).Mul(&fe, &fe)
+    print("{}\n", eval(&fm))
+
+    ms := [_]Maybe(u8)(.Nothing, .Nothing, .Just(9), .Just(4))
+    print("{}\n", first_just(ms[..]))
+    none := [_]Maybe(u8)(.Nothing)
+    print("{}\n", first_just(none[..]))
+
+    ps := Pairs(u8, f32, 3)(items: ---)
+    _ = add_pair(&ps, 1, 0.5)
+    _ = add_pair(&ps, 2, 1.5)
+    sw := swap_all(&ps)
+    print("{} {}\n", (sw.len, sw.items[1]))
+    print("{}\n", add_pair(&sw, 2.5, 3))
+}

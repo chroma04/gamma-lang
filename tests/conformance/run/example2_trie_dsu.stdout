@@ -1,0 +1,6 @@
+9 distinct words
+a i in inn tea team ten tent to 
+te:5 t:6 in:2 x:0 :10 
+long: team
+0-1:true 2-3:true 1-3:true 4-5:true 0-2:false 5-4:false 
+groups 2, size of 0's group 4

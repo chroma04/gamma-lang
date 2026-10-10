@@ -1,0 +1,31 @@
+// A register-style #bits struct with padding and wide fields, field updates in place, round trips through u32, and an enum with an explicit tag type and sparse tags.
+Mode :: union(u8) { Idle = 0, Run = 1, Halt = 7 }
+
+Reg :: #bits(u32) struct {
+    enable: bool
+    mode: u3
+    prio: u4
+    _: u2
+    count: u12
+    flags: u8
+    top: u2 = 0
+}
+
+main :: fn() \ {Out} {
+    r := Reg(enable: true, mode: 5, prio: 9, count: 4000, flags: 21, top: 3)
+    print("{}\n", r)
+    raw := u32(r)
+    print("{} {}\n", (raw, @size_of(Reg)))
+    r.count += 95
+    r.flags = 7
+    r.mode = 7
+    print("{} {} {}\n", (r.count, r.flags, u32(r)))
+    r2 := Reg(raw)
+    print("{} {} {}\n", (r2.prio, r2.mode, r2.top))
+    r.prio = 15
+    r.count -= 4000
+    print("{} {}\n", (r.prio, r.count))
+    m := Mode.Run
+    print("{} {} {}\n", (m, m.tag(), u8(Mode.Halt)))
+    print("{} {}\n", (Mode.from_tag(7), Mode.from_tag(3)))
+}

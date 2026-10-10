@@ -1,0 +1,124 @@
+// Effects as dependency injection: a bank whose logic uses Storage and Tick (clock) effects, tested with mock handlers, with esc aborts and errdefer rollback.
+Account :: struct { id: u32, balance: i64 }
+
+Storage :: effect {
+    load: fn(id: u32) -> ?i64
+    store: fn(id: u32, balance: i64)
+    abort: esc(reason: string) -> never
+}
+
+Tick :: effect {
+    now: fn() -> u64
+}
+
+// ---- business logic: pure in terms of effects ----
+
+withdraw :: fn(id: u32, amount: i64) \ {Storage} {
+    bal := load(id) else abort("no such account")
+    if bal < amount { abort("insufficient funds") }
+    store(id, bal - amount)
+}
+
+deposit :: fn(id: u32, amount: i64) \ {Storage} {
+    bal := load(id) else abort("no such account")
+    store(id, bal + amount)
+}
+
+// Transfer must be atomic: if the deposit aborts, the withdrawal is rolled back.
+transfer :: fn(from, to: u32, amount: i64) \ {Storage, Tick, Out} {
+    t0 := now()
+    original := load(from) else abort("no such account")
+    errdefer {
+        store(from, original)
+        print("  rollback of {} at t={}\n", (from, now() - t0))
+    }
+    withdraw(from, amount)
+    deposit(to, amount)
+    print("  moved {} from {} to {}\n", (amount, from, to))
+}
+
+// ---- mock Storage: a fixed table, tracking writes ----
+
+Mem :: struct {
+    accts: [4]Account
+    writes: u32 = 0
+    reason: string = ""
+}
+
+handler Storage for ^Mem {
+    load(self, id) => {
+        for a in self.accts { if a.id is id { return a.balance } }
+        null
+    }
+    store(self, id, balance) => {
+        for p in each_ptr(self.accts[..]) {
+            if p.id is id {
+                p.balance = balance
+                self.writes += 1
+            }
+        }
+    }
+    abort(self, reason) => {
+        self.reason = reason
+        break
+    }
+}
+
+// ---- mock Tick: every call advances the clock by 5 ----
+
+Fake :: struct { t: u64 = 100 }
+
+handler Tick for ^Fake {
+    now(self) => {
+        self.t += 5
+        self.t
+    }
+}
+
+dump :: fn(m: ^const Mem) \ {Out} {
+    for a in m.accts { print("  acct {}: {}\n", (a.id, a.balance)) }
+}
+
+try_transfer :: fn(m: ^Mem, clock: ^Fake, from, to: u32, amount: i64) -> bool \ {Out} {
+    m.reason = ""
+    print("transfer {}->{} of {}\n", (from, to, amount))
+    with m, clock {
+        transfer(from, to, amount)
+    }
+    if m.reason.len > 0 {
+        print("  failed: {}\n", m.reason)
+        return false
+    }
+    return true
+}
+
+main :: fn() \ {Out} {
+    mem := Mem(accts: [4]Account(fill: Account(id: 0, balance: 0)))
+    mem.accts[0] = Account(id: 1, balance: 500)
+    mem.accts[1] = Account(id: 2, balance: 50)
+    mem.accts[2] = Account(id: 3, balance: 0)
+    clock := Fake()
+    ok1 := try_transfer(&mem, &clock, 1, 2, 200)
+    ok2 := try_transfer(&mem, &clock, 2, 3, 1000)
+    ok3 := try_transfer(&mem, &clock, 1, 9, 100)
+    ok4 := try_transfer(&mem, &clock, 7, 1, 1)
+    print("{} {} {} {}\n", (ok1, ok2, ok3, ok4))
+    dump(&mem)
+    print("writes: {}, clock: {}\n", (mem.writes, clock.t))
+
+    // A handler literal: count calls and veto any transfer over a limit.
+    calls := 0
+    audit :: handler Storage {
+        load(id) => {
+            calls += 1
+            if id is 3 { 77 } else { null }
+        }
+        store(id, bal) => { calls += 100 }
+        abort(reason) => { break }
+    }
+    with audit {
+        deposit(3, 1)
+        deposit(4, 1)
+    }
+    print("calls {}\n", calls)
+}

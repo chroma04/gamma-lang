@@ -1,0 +1,17 @@
+transfer 1->2 of 200
+  moved 200 from 1 to 2
+transfer 2->3 of 1000
+  rollback of 2 at t=5
+  failed: insufficient funds
+transfer 1->9 of 100
+  rollback of 1 at t=5
+  failed: no such account
+transfer 7->1 of 1
+  failed: no such account
+true false false false
+  acct 1: 300
+  acct 2: 250
+  acct 3: 0
+  acct 0: 0
+writes: 5, clock: 130
+calls 102

@@ -1,0 +1,26 @@
+deadline 1000
+  [t=10] worker 1 tick 0
+  [t=20] worker 2 tick 0
+  [t=20] worker 1 tick 1
+  [t=30] worker 3 tick 0
+  [t=30] worker 1 tick 2
+  [t=40] worker 2 tick 1
+  [t=40] worker 1 tick 3
+  [t=40] worker 1 cleanup
+  [t=60] worker 3 tick 1
+  [t=60] worker 2 tick 2
+  [t=80] worker 2 tick 3
+  [t=80] worker 2 cleanup
+  [t=90] worker 3 tick 2
+  [t=120] worker 3 tick 3
+  [t=120] worker 3 cleanup
+end: clock 120, cancelled 0, live 0
+deadline 25
+  [t=10] worker 1 tick 0
+  [t=20] worker 2 tick 0
+  [t=20] worker 1 tick 1
+  [t=30] deadline: cancelling a sleeper
+  [t=30] worker 3 cleanup
+  [t=30] worker 1 cleanup
+  [t=30] worker 2 cleanup
+end: clock 30, cancelled 3, live 0

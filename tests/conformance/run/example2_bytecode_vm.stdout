@@ -1,0 +1,11 @@
+fact: steps 64 trace 64 depth 2 out [120]
+spin: steps 50 trace 50 depth 1 out [-3]
+fact-short: steps 20 trace 20 depth 2 out [-10]
+  pc=0 depth=0
+  pc=1 depth=1
+  pc=2 depth=2
+  pc=3 depth=1
+  pc=4 depth=2
+  pc=5 depth=1
+  pc=6 depth=0
+count 1 sum 25

@@ -1,0 +1,126 @@
+// LRU cache built from a HashMap plus an intrusive doubly linked list of heap nodes, with iterators and errdefer cleanup.
+Node :: struct(K, V: type) {
+    key: K
+    val: V
+    prev: ?^Node(K, V) = null
+    next: ?^Node(K, V) = null
+}
+
+Lru :: struct(K, V: type) {
+    index: HashMap(K, ^Node(K, V))
+    head: ?^Node(K, V) = null     // most recently used
+    tail: ?^Node(K, V) = null     // least recently used
+    cap: usize
+    hits: u32 = 0
+    misses: u32 = 0
+}
+
+lru :: fn(K, V: type, cap: usize) -> Lru(K, V) \ {Alloc} where Eq(K) {
+    return Lru(K, V)(index: map(K, ^Node(K, V)), cap: cap)
+}
+
+unlink :: fn(K, V: type, c: ^Lru(K, V), n: ^Node(K, V)) {
+    if p := n.prev { p.next = n.next } else { c.head = n.next }
+    if nx := n.next { nx.prev = n.prev } else { c.tail = n.prev }
+    n.prev = null
+    n.next = null
+}
+
+push_front :: fn(K, V: type, c: ^Lru(K, V), n: ^Node(K, V)) {
+    n.next = c.head
+    n.prev = null
+    if h := c.head { h.prev = n }
+    c.head = n
+    if c.tail is null { c.tail = n }
+}
+
+get :: fn(K, V: type, c: ^Lru(K, V), key: K) -> ?V {
+    n := c.index.get(key) else {
+        c.misses += 1
+        return null
+    }
+    c.hits += 1
+    unlink(c, n)
+    push_front(c, n)
+    return n.val
+}
+
+// Returns the evicted key, if any.
+put :: fn(K, V: type, c: ^Lru(K, V), key: K, val: V) -> AllocError!?K \ {Alloc} {
+    if n := c.index.get(key) {
+        n.val = val
+        unlink(c, n)
+        push_front(c, n)
+        return null
+    }
+    n := try new(Node(K, V), Node(K, V)(key: key, val: val))
+    errdefer destroy(n)
+    try c.index.put(key, n)
+    push_front(c, n)
+    if c.index.len() > c.cap {
+        victim := c.tail?
+        unlink(c, victim)
+        evicted := victim.key
+        _ = c.index.remove(evicted)
+        destroy(victim)
+        return evicted
+    }
+    return null
+}
+
+// Most- to least-recently used.
+entries :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield((K, V))} {
+    cur := c.head
+    while n := cur {
+        yield((n.key, n.val))
+        cur = n.next
+    }
+}
+
+// Least- to most-recently used, walking the list backwards.
+oldest_first :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield(K)} {
+    cur := c.tail
+    while n := cur {
+        yield(n.key)
+        cur = n.prev
+    }
+}
+
+free_all :: fn(K, V: type, c: ^Lru(K, V)) \ {Alloc} {
+    cur := c.head
+    while n := cur {
+        cur = n.next
+        destroy(n)
+    }
+    c.head = null
+    c.tail = null
+    c.index.deinit()
+}
+
+show :: fn(c: ^const Lru(u32, string)) \ {Out} {
+    for k, v in entries(c) { print("{}={} ", (k, v)) }
+    print("\n")
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    c := lru(u32, string, 3)
+    defer free_all(&c)
+    names := [_]string("zero", "one", "two", "three", "four", "five")
+    for i in 0..4 {
+        ev := try put(&c, i, names[i])
+        if k := ev { print("put {} evicted {}\n", (i, k)) }
+    }
+    show(&c)
+    print("get 2 -> {}\n", get(&c, 2))
+    print("get 0 -> {}\n", get(&c, 0))
+    show(&c)
+    _ = try put(&c, 4, "four")
+    _ = try put(&c, 2, "TWO")
+    show(&c)
+    for k in oldest_first(&c) { print("old {}\n", k) }
+
+    // stop early; the iterator's frames unwind
+    for k, v in entries(&c) { if k < 3 { print("stop at {}\n", k); break } }
+    print("hits {} misses {} len {}\n", (c.hits, c.misses, c.index.len()))
+    return ()
+}

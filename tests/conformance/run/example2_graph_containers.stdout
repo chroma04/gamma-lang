@@ -1,0 +1,6 @@
+nodes 16
+dist 9
+dist 6
+dist null
+2 "c" null
+[0, 1, 2] 3

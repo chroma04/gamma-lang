@@ -1,0 +1,7 @@
+  fib cleanup
+take 5 -> 7
+  fib cleanup
+take 50 -> 232
+  risky cleanup
+  total 14 code 43
+guarded -> 43

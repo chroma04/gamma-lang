@@ -1,0 +1,28 @@
+// Generic iterator adapters (map, filter, fold) written over second-class iterator parameters, composed with captured locals.
+map_it :: fn(T: type, src: fn() \ {Yield(T)}, f: fn(T) -> T) \ {Yield(T)} {
+    for a in src() { yield(f(a)) }
+}
+
+filter_it :: fn(T: type, src: fn() \ {Yield(T)}, pred: fn(T) -> bool) \ {Yield(T)} {
+    for x in src() { if pred(x) { yield(x) } }
+}
+
+fold :: fn(T, Acc: type, src: fn() \ {Yield(T)}, init: Acc, f: fn(Acc, T) -> Acc) -> Acc {
+    acc := init
+    for x in src() { acc = f(acc, x) }
+    return acc
+}
+
+range_it :: fn(lo, hi: i32) \ {Yield(i32)} {
+    for i in lo..hi { yield(i) }
+}
+
+main :: fn() \ {Out} {
+    k := 3
+    evens :: fn() \ {Yield(i32)} { filter_it(i32, fn() \ {Yield(i32)} { range_it(0, 20) }, fn(x) => x % 2 is 0) }
+    scaled :: fn() \ {Yield(i32)} { map_it(i32, evens, fn(x) => x * k) }
+    total := fold(i32, i32, scaled, 0, fn(a, x) => a + x)
+    print("{}\n", total)
+    for x in scaled() { print("{} ", x) }
+    print("\n")
+}

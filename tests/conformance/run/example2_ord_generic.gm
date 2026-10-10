@@ -1,0 +1,52 @@
+// Ord-constrained generic algorithms over tuples, strings, enums and arrays, plus sort_by_key and binary_search.
+insertion_sort :: fn(T: type, xs: []T) where Ord(T) {
+    for i in 1..xs.len {
+        key := xs[i]
+        j := i
+        while j > 0 and xs[j - 1] > key {
+            xs[j] = xs[j - 1]
+            j -= 1
+        }
+        xs[j] = key
+    }
+}
+
+max_of :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := xs.first() else return null
+    for x in xs { if x >= best { best = x } }
+    return best
+}
+
+contains :: fn(T: type, xs: []const T, v: T) -> bool where Eq(T) {
+    for x in xs { if x is v { return true } }
+    return false
+}
+
+Color :: union { Red, Green, Blue }
+
+main :: fn() \ {Out} {
+    ts := [_](u8, string)((3, "c"), (1, "z"), (3, "a"), (2, "m"))
+    insertion_sort(ts[..])
+    print("{}\n", ts)
+    ss := [_]string("pear", "apple", "fig", "apricot", "")
+    insertion_sort(ss[..])
+    print("{}\n", ss)
+    cs := [_]Color(.Blue, .Red, .Green, .Red)
+    insertion_sort(cs[..])
+    print("{}\n", cs)
+    arrs := [_][2]i32([_]i32(2, 1), [_]i32(1, 9), [_]i32(1, 2))
+    insertion_sort(arrs[..])
+    print("{}\n", arrs)
+    fs := [_]f64(2.5, -1.0, 9.75, 0.0)
+    print("{} {}\n", (max_of(fs[..]), max_of(ss[..])))
+    es := [_]f64()
+    print("{}\n", max_of(es[..]))
+    print("{} {}\n", (contains(ss[..], "fig"), contains(cs[..], .Green)))
+    print("{}\n", contains(ts[..], (2, "m")))
+    ts2 := [_](u8, string)((3, "c"), (1, "z"), (3, "a"))
+    ts2[..].sort_by_key(fn(t) => (t.1, t.0))
+    print("{}\n", ts2)
+    nums := [_]i32(5, 3, 9, 1)
+    nums[..].sort()
+    print("{} {}\n", (nums, nums[..].binary_search(9)))
+}
