@@ -1,0 +1,10 @@
+//! stage: check
+// A block body's last expression is not its value (§11.1): one error says how to return it.
+sq :: fn(x: i64) -> i64 { x * x }                   //~ ERROR a block body's last expression is not its value
+main :: fn() {
+    f :: fn(x: i64) -> i64 {
+        y := x + 1
+        y * 2                                       //~ ERROR write `return …`
+    }
+    _ = f(1)
+}

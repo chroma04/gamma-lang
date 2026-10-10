@@ -470,14 +470,40 @@ impl<'a, 's> FnCx<'a, 's> {
                     };
                 }
                 if !ret.is_unit() && !block.ty.is_never() {
-                    self.error(
-                        b.span.shrink_to_hi(),
-                        format!("function returning `{}` can reach the end of its body without returning a value", ret),
-                    );
+                    self.missing_return(b, ret);
                 }
                 block
             }
         }
+    }
+
+    /// Reports that a block body returning `ret` can end without a value. A final
+    /// expression statement gets one error saying how to return it, instead of an unused
+    /// value plus a missing return.
+    pub fn missing_return(&mut self, b: &ast::Block, ret: Ty) {
+        if let Some(ast::Stmt { kind: ast::StmtKind::Expr(e), .. }) = b.stmts.last()
+            && !matches!(
+                e.kind,
+                ExprKind::If(_) | ExprKind::Match(_) | ExprKind::For(_) | ExprKind::With(_) | ExprKind::Block(_)
+            )
+            && let Some(k) = self.obligations.iter().rposition(
+                |o| matches!(o, Obligation::UnitStatement { ty, span } if *span == e.span && !self.infer.resolve(*ty).is_unit()),
+            )
+        {
+            self.obligations.remove(k);
+            self.error(
+                e.span,
+                format!(
+                    "a block body's last expression is not its value: write `return …`, or `=> …` for a body that is one expression (this function returns `{}`)",
+                    ret
+                ),
+            );
+            return;
+        }
+        self.error(
+            b.span.shrink_to_hi(),
+            format!("function returning `{}` can reach the end of its body without returning a value", ret),
+        );
     }
 
     /// Checks a block. If `value` is true, the block's value is used: its final
