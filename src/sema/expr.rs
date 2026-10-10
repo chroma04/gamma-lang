@@ -459,6 +459,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
             }
+            // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
+            ast::UnOp::MakeErr
+                if let Some(inner) = expect.map(|t| self.infer.shallow(t)).and_then(|t| t.optional_inner())
+                    && matches!(self.infer.shallow(inner).kind(), TyKind::Result { .. }) =>
+            {
+                let r = self.unary(op, operand, Some(inner), span);
+                self.coerce(r, expect.unwrap())
+            }
             ast::UnOp::MakeErr => match expect.map(|t| self.infer.shallow(t)) {
                 Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
                     let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
@@ -477,10 +485,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
                 }
                 _ => {
-                    self.error(
-                        span,
-                        "cannot infer the result type of `!e` here (`!e` makes an error; logical negation is `not e`)",
-                    );
+                    let hint = if expect.is_none_or(|t| t.is_bool()) {
+                        " (`!e` makes an error; logical negation is `not e`)"
+                    } else {
+                        ""
+                    };
+                    self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
                     error_expr(span)
                 }
             },

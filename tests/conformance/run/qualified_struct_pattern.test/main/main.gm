@@ -1,0 +1,16 @@
+// Struct patterns may name a struct type of another module (§9).
+geo :: import "../geo"
+
+describe :: fn(p: geo.P) -> string => match p {
+    geo.P(x: 0, y: 0) => "origin"
+    geo.P(x: 0) => "on the y axis"
+    geo.P(y: 0) => "on the x axis"
+    _ => "elsewhere"
+}
+
+main :: fn() \ {Out} {
+    for p in [4]geo.P(geo.P(x: 0, y: 0), geo.P(x: 0, y: 3), geo.P(x: 2, y: 0), geo.P(x: 1, y: 1)) {
+        print("{}\n", describe(p))
+    }
+    if geo.P(x: 7, y: v) := geo.P(x: 7, y: 8) { print("y = {}\n", v) }
+}
