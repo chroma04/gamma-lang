@@ -1,0 +1,7 @@
+test "the same workload runs against both handlers" ... ok
+test "recovery replays the log after a crash" ... ok
+test "a torn last record is dropped and the log repaired" ... ok
+test "a corrupt record stops the replay" ... ok
+test "compaction shrinks the log and survives crashes at every step" ... ok
+test "keys longer than the limit are rejected before they are logged" ... ok
+6 passed, 0 failed

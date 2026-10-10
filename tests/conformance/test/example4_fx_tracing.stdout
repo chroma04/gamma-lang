@@ -1,0 +1,5 @@
+test "a text sink prints every event with timestamps and span depth" ... ok
+test "a filter in front of the sink drops low levels but keeps spans" ... ok
+test "context and filter and counter stack in order" ... ok
+test "the same application feeds a ring buffer" ... ok
+4 passed, 0 failed

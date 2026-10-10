@@ -1,0 +1,23 @@
+-- adapters
+first 10 primes: 2 3 5 7 11 13 17 19 23 29  (naturals closed)
+
+squares of 1..5: 1 4 9 16 25  (naturals closed)
+
+fibs from the 10th, 6 of them: 55 89 144 233 377 610
+fibs below 100: 0 1 1 2 3 5 8 13 21 34 55 89
+  (naturals closed)
+sum of the first 100 primes: 24133
+-- zip: naturals with squares, stopped by the shorter side
+  (1, 100)
+  (2, 200)
+  (3, 300)
+  (naturals closed)
+  3 pairs
+-- zip of two infinite streams, cut after 4
+  1 + 0 = 1
+  4 + 1 = 5
+  9 + 1 = 10
+  16 + 2 = 18
+  (naturals closed)
+-- merge of the multiples of 3 and of 5 below 40, without duplicates
+  3 5 6 9 10 12 15 18 20 21 24 25 27 30 33 35 36 39

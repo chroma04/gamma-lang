@@ -1,0 +1,19 @@
+  [producer] sent 10
+  [producer] sent 20
+  [producer] sent 30
+  [producer] sent 40
+  [producer] sent 50
+  [producer] done
+  [summer] got 20
+  [summer] got 40
+  [summer] got 60
+  [doubler] done
+  [summer] got 80
+  [summer] got 100
+  [summer] done, total 300
+pipeline: deadlock=false live=0
+  deadlock: slot 0 waits on channel 1
+  deadlock: slot 1 waits on channel 2
+  [waiter-a] cancelled
+  [waiter-b] cancelled
+deadlocked: deadlock=true live=2

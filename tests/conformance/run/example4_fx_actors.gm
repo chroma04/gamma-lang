@@ -1,0 +1,271 @@
+// Actors on OS threads: generic bounded mailboxes guarded by a Mutex, a three-stage pipeline, fan-in from several producers, request/reply through atomics, and a per-thread Log handler writing into the actor's own buffer.
+thread :: import "std/thread"
+io :: import "std/io"
+
+// ---- Mailboxes ------------------------------------------------------------------
+
+Mailbox :: struct(T: type, N: usize) {
+    m: thread.Mutex
+    buf: [N]T
+    head: usize = 0
+    len: usize = 0
+    closed: bool = false
+}
+
+post :: fn(T: type, N :: usize, mb: ^Mailbox(T, N), x: T) \ {Sys} {
+    while true {
+        mb.m.lock()
+        if mb.len < N {
+            mb.buf[(mb.head + mb.len) % N] = x
+            mb.len += 1
+            mb.m.unlock()
+            return
+        }
+        mb.m.unlock()
+        thread.yield_now()
+    }
+}
+
+// The next message, or null once the mailbox is closed and drained.
+take :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) -> ?T \ {Sys} {
+    while true {
+        mb.m.lock()
+        if mb.len > 0 {
+            x := mb.buf[mb.head]
+            mb.head = (mb.head + 1) % N
+            mb.len -= 1
+            mb.m.unlock()
+            return x
+        }
+        done := mb.closed
+        mb.m.unlock()
+        if done { return null }
+        thread.yield_now()
+    }
+}
+
+shut :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) \ {Sys} {
+    mb.m.lock()
+    mb.closed = true
+    mb.m.unlock()
+}
+
+mailbox :: fn(T: type, N :: usize, zero: T) -> Mailbox(T, N) => Mailbox(T, N)(m: thread.mutex(), buf: [N]T(fill: zero))
+
+// ---- A Log effect handled separately by every actor --------------------------------
+
+Log :: effect {
+    log: fn(msg: string)
+}
+
+// Each actor owns one of these: log lines are appended to its private buffer.
+ActorLog :: struct {
+    storage: [256]u8
+    len: usize = 0
+}
+
+handler Log for ^ActorLog {
+    log(self, msg) => {
+        for c in bytes(msg) {
+            if self.len < 255 {
+                self.storage[self.len] = c
+                self.len += 1
+            }
+        }
+        if self.len < 255 {
+            self.storage[self.len] = ';'
+            self.len += 1
+        }
+    }
+}
+
+text :: fn(l: ^const ActorLog) -> string => l.storage[0..l.len]
+
+// ---- Stage 1: pipeline ----------------------------------------------------------
+
+Pipe :: struct {
+    a: Mailbox(i64, 4)
+    b: Mailbox(i64, 3)
+    count: i64
+    sum: i64
+    source_log: ActorLog
+    square_log: ActorLog
+    sum_log: ActorLog
+}
+
+source_body :: fn(p: ^Pipe) \ {Sys, Log} {
+    for i in 1..=200 {
+        post(&p.a, i)
+    }
+    shut(&p.a)
+    log("source done")
+}
+
+square_body :: fn(p: ^Pipe) \ {Sys, Log} {
+    n: i64 = 0
+    while x := take(&p.a) {
+        post(&p.b, x * x)
+        n += 1
+    }
+    shut(&p.b)
+    log("squarer done")
+    if n is 200 { log("saw all 200") }
+}
+
+sum_body :: fn(p: ^Pipe) \ {Sys, Log} {
+    while x := take(&p.b) {
+        p.sum += x
+        p.count += 1
+    }
+    log("summer done")
+}
+
+source_main :: fn(raw: rawptr) \ {Sys} {
+    p := raw.cast(^Pipe)
+    thread.defaults(fn() { with &p.source_log { source_body(p) } })
+}
+
+square_main :: fn(raw: rawptr) \ {Sys} {
+    p := raw.cast(^Pipe)
+    thread.defaults(fn() { with &p.square_log { square_body(p) } })
+}
+
+sum_main :: fn(raw: rawptr) \ {Sys} {
+    p := raw.cast(^Pipe)
+    thread.defaults(fn() { with &p.sum_log { sum_body(p) } })
+}
+
+pipeline :: fn() -> IoError!() \ {Out, Sys} {
+    p := Pipe(a: mailbox(i64, 4, 0), b: mailbox(i64, 3, 0), count: 0, sum: 0,
+              source_log: ActorLog(storage: [256]u8(fill: 0)),
+              square_log: ActorLog(storage: [256]u8(fill: 0)),
+              sum_log: ActorLog(storage: [256]u8(fill: 0)))
+    t1 := try thread.spawn(sum_main, (&p).cast(rawptr))
+    t2 := try thread.spawn(square_main, (&p).cast(rawptr))
+    t3 := try thread.spawn(source_main, (&p).cast(rawptr))
+    t1.join()
+    t2.join()
+    t3.join()
+    print("pipeline: {} values, sum of squares {}\n", (p.count, p.sum))
+    print("  source: {}\n  squarer: {}\n  summer: {}\n", (text(&p.source_log), text(&p.square_log), text(&p.sum_log)))
+}
+
+// ---- Stage 2: fan-in ------------------------------------------------------------
+
+FanIn :: struct {
+    box: Mailbox(u64, 2)
+    producers_left: u32
+    total: u64
+    received: u32
+}
+
+ProducerArg :: struct {
+    f: ^FanIn
+    id: u64
+}
+
+producer_main :: fn(raw: rawptr) \ {Sys} {
+    a := raw.cast(^ProducerArg)
+    for i in 0..50 {
+        post(&a.f.box, a.id * 1000 + u64(i))
+    }
+    // The last producer to finish closes the mailbox.
+    if @atomic_sub(&a.f.producers_left, 1, .AcqRel) is 1 {
+        shut(&a.f.box)
+    }
+}
+
+consumer_main :: fn(raw: rawptr) \ {Sys} {
+    f := raw.cast(^FanIn)
+    while x := take(&f.box) {
+        f.total += x
+        f.received += 1
+    }
+}
+
+fan_in :: fn() -> IoError!() \ {Out, Sys} {
+    f := FanIn(box: mailbox(u64, 2, 0), producers_left: 3, total: 0, received: 0)
+    args := [3]ProducerArg(fill: ProducerArg(f: &f, id: 0))
+    for i in 0..3 { args[i] = ProducerArg(f: &f, id: u64(i) + 1) }
+    c := try thread.spawn(consumer_main, (&f).cast(rawptr))
+    ts: [3]thread.Thread = ---
+    for i in 0..3 { ts[i] = try thread.spawn(producer_main, (&args[i]).cast(rawptr)) }
+    for i in 0..3 { ts[i].join() }
+    c.join()
+    // 50 messages each from ids 1, 2 and 3: sum of (id*1000 + i) over i in 0..50.
+    print("fan-in: {} messages, total {}\n", (f.received, f.total))
+}
+
+// ---- Stage 3: request and reply -------------------------------------------------
+
+Reply :: struct {
+    ready: u32
+    value: u64
+}
+
+Request :: struct {
+    n: u32
+    reply: ^Reply
+}
+
+Server :: struct {
+    inbox: Mailbox(?Request, 4)
+    served: u32
+    log: ActorLog
+}
+
+fib :: fn(n: u32) -> u64 {
+    a: u64 = 0
+    b: u64 = 1
+    for _ in 0..n {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+
+server_body :: fn(s: ^Server) \ {Sys, Log} {
+    while req := take(&s.inbox) {
+        if r := req {
+            r.reply.value = fib(r.n)
+            // Publish the value before announcing it.
+            @atomic_store(&r.reply.ready, 1, .Release)
+            s.served += 1
+        }
+    }
+    log("server stopped")
+}
+
+server_main :: fn(raw: rawptr) \ {Sys} {
+    s := raw.cast(^Server)
+    thread.defaults(fn() { with &s.log { server_body(s) } })
+}
+
+ask :: fn(s: ^Server, n: u32, reply: ^Reply) \ {Sys} {
+    reply.ready = 0
+    s.inbox.post(Request(n: n, reply: reply))
+}
+
+await :: fn(reply: ^Reply) -> u64 \ {Sys} {
+    while @atomic_load(&reply.ready, .Acquire) is 0 { thread.yield_now() }
+    return reply.value
+}
+
+request_reply :: fn() -> IoError!() \ {Out, Sys} {
+    s := Server(inbox: mailbox(?Request, 4, null), served: 0, log: ActorLog(storage: [256]u8(fill: 0)))
+    t := try thread.spawn(server_main, (&s).cast(rawptr))
+    replies := [6]Reply(fill: Reply(ready: 0, value: 0))
+    ns := [6]u32(10, 20, 30, 50, 70, 90)
+    for i in 0..6 { ask(&s, ns[i], &replies[i]) }
+    for i in 0..6 { print("fib({}) = {}\n", (ns[i], await(&replies[i]))) }
+    shut(&s.inbox)
+    t.join()
+    print("server handled {} requests; log: {}\n", (s.served, text(&s.log)))
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    try pipeline()
+    try fan_in()
+    try request_reply()
+}
