@@ -12,17 +12,11 @@
     ~180 ns/iteration. Fiber switches still ~34 µs (thread handoff per switch).
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
     §21.6.1 (shortest round-trip) but differs from Ryu/Python.
-## Dogfood round 4 (s4) findings, open unless struck
-13. C: `for` over a user iterator inside a handler-DECLARATION clause → missing frame slot
-    `gm_frN has no member lK` (or wrong output). Repro in example4_fx report: Say/Wrapper.
-14. `with a, b`: a's handler must supply effects b's clauses need (§12.7) — currently error.
-15. `return` in a handler-declaration clause accepted (§12.6 says no enclosing fn).
-16. `x is null` rejected for ?T with non-Eq T (e.g. ?cont) — null test needs no Eq.
-17. Elementwise array ops on `[N]T` with generic value param N rejected.
-18. `is` on types (`i32 is i32`, `A is B` with type params) unsupported.
-19. native_dir temp dir uses only pid → collisions; use unique dir. `gamma test | head` panics.
-20. Tuple expressions don't push expected element types: `(a: 1, b: 2)` for (u8, ?u8), null.
-21. `r else null` on a result: misleading "cannot infer null" diagnostic.
-22. test body error type = first try's error (§3.8 unclear) → specify union?
-23. Wishes: let-else for refutable patterns; bind whole tuple payload; interp `new` ~10µs;
-    block-bodied closure return inference; `&rvalue` for ^const params; i.to_f64 helper.
+## Dogfood round 4 (s4) leftovers (13–22 fixed in s4)
+23. Wishes: let-else for refutable patterns (`.Pair(c) := x else return …`); bind a whole
+    tuple payload (`.Cat(c)` for a 2-tuple payload); interp `new` ~10 µs each (Alloc perform
+    + vtable + AllocError!^T); block-bodied closure return inference; `&rvalue` for ^const
+    params; i.to_f64-style helper; std channels/queue/generator; print from passing tests.
+24. `x.round(T)` is ties-to-even, std/math round is half-away: cross-reference in docs.
+25. `trunc` widening sign-extends from signed sources: say so in §6.6.
+26. Cascade: a failing `&g(x)` arg also reports "missing argument for compile-time param".

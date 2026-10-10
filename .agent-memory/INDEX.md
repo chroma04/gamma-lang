@@ -1,31 +1,20 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 3, 2026-10-10) — PRs #1, #2 merged; session-3 branch claude/c-backend-perf
+## State (session 4, 2026-10-10) — PRs #1–#3 merged; #4 (test fix) open; s4 branch claude/session-4
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
-- Session 2: docs audit + dogfooding subagents (≈35 example_* conformance tests). Fixed their bugs:
-  ptr arithmetic, escape checks (sema/escape.rs, also packed-field pointers), Signed⇒Num, #bits
-  bitwise, T(c) in generics, effect ambiguity under `with`, handler types in generic instances,
-  qualified effects `m.E`, local type aliases, Range values (prelude Range/RangeIncl), `else {}`
-  fallback, ==/!= hints, test Env empty, free_aligned, signed zero consts.
-- Debug backtraces on traps (interp: Trap.trace; C: gm_bt chain; //! stderr directive),
-  stack overflow → trap even for huge frames (SIGSEGV altstack handler), //! mode: directive.
-- Session 3: C perf — local exits jump directly, static handler specialization (D.3, single
-  level; decisions/012). Sema: labeled with/for as values, `break L v` typed per label kind
-  (LabelValue; FnCx.label_breaks), new(T, ---) in generic args, T(x) int-var→float no unify.
-- Session 3 dogfooding round (2 sonnet agents → 40 example2_* tests) fixed: nested-optional
-  binding unwrap, nested #bits fields, fn-clause exits, static k check (sema/cont_check.rs),
-  exits past with…on discard fibers, frame cost model (1× locals + read copies), 64 MiB C main
-  thread, receiver-fixed generic inference, List insert/remove/…, @rotl/@rotr, diagnostics.
-- Later in session 3: generic handler decls, #export validation, Sys in tests, deferred
-  @static_assert, interpreter fast paths, dogfood round 3 (example3_*) fixes.
+- Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified
+  generic names + declaration aliases + re-exported modules, dogfood round 4 (example4_*) and
+  its fixes (sessions/s04).
+- GitHub Actions currently gets no runners (account-level); verify locally (fmt, clippy -D
+  warnings, cargo test, CC=clang conformance) before pushing.
 - Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Open/keep the session-3 PR green; update its description per chunk.
-2. bugs-open.md leftovers (big-value copies in C); perf follow-ups in decisions/012.
+1. Keep the session-4 PR (and #4) green once Actions runs again; update the description.
+2. bugs-open.md leftovers (#23 wishes: let-else, interp alloc speed); perf: decisions/012.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 
 ## Map
@@ -36,7 +25,7 @@
                   · 007 value params + sema-time const eval · 008 C back end · 009 interop
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
-- sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md
+- sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
 - gotchas/        environment.md
 
 ## Conventions
