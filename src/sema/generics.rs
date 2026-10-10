@@ -175,7 +175,11 @@ impl<'s> Sema<'s> {
             generics: vec![],
         };
         let name = self.prog.fns[f.index()].name;
-        let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, tir::FnKind::Named);
+        let kind = match self.prog.fns[f.index()].kind {
+            tir::FnKind::Clause => tir::FnKind::Clause,
+            _ => tir::FnKind::Named,
+        };
+        let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, kind);
         self.instances.insert((f, args.clone()), id);
         self.instance_of.insert(id, (f, args.clone()));
         if !args.iter().any(|a| has_param(*a)) {

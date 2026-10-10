@@ -223,6 +223,10 @@ pub struct Sema<'s> {
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
     /// its clauses may perform.
     pub handler_decl_effects: Vec<EffectSet>,
+    /// Handler declarations for generic types, instantiated by `handlers_for` (§12.6).
+    pub handler_templates: Vec<handler_decl::HandlerTemplate>,
+    /// Their instances, by template and arguments.
+    pub handler_instances: HashMap<(usize, Vec<Ty>), tir::HandlerDeclId>,
     /// Constraints on type parameters (§16.3).
     pub constraints: HashMap<crate::types::ParamId, Vec<generics::Constraint>>,
     /// Instantiations of generic functions, by generic function and type arguments.
@@ -316,6 +320,8 @@ impl<'s> Sema<'s> {
             handler_breaks: HashMap::new(),
             handler_items: vec![],
             handler_decl_effects: vec![],
+            handler_templates: vec![],
+            handler_instances: HashMap::new(),
             constraints: HashMap::new(),
             instances: HashMap::new(),
             instance_of: HashMap::new(),

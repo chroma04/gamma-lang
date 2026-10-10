@@ -1,0 +1,39 @@
+// Handler declarations for generic types (§12.6): instantiated for each type they are
+// installed for, also inside generic functions.
+Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0, dropped: u32 = 0 }
+
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
+    yield(self, x) => {
+        if self.len < N {
+            self.items[self.len] = x
+            self.len += 1
+        } else {
+            self.dropped += 1
+        }
+    }
+}
+
+Log :: effect(T: type) { log: fn(x: T) }
+Tally :: struct(T: type) { n: u32 = 0, last: ?T = null }
+handler(T: type) Log(T) for ^Tally(T) {
+    log(self, x) => { self.n += 1; self.last = x }
+}
+
+squares :: fn(n: u32) \ {Yield(u32)} { for i in 0..n { yield(i * i) } }
+words :: fn() \ {Yield(string)} { yield("a"); yield("bb"); yield("ccc") }
+
+collect_into :: fn(T: type, c: ^Collector(T, 3), src: fn() \ {Yield(T)}) {
+    with c { src() }
+}
+
+main :: fn() \ {Out} {
+    c := Collector(u32, 4)(items: [4]u32(fill: 0))
+    with &c { squares(6) }
+    print("{} {} {} {}\n", (c.len, c.items[3], c.dropped, c.items[0]))
+    w := Collector(string, 3)(items: [3]string(fill: ""))
+    collect_into(string, &w, words)
+    print("{} {}\n", (w.items[2], w.len))
+    t := Tally(i64)()
+    with &t { log(i64(5)); log(i64(7)) }
+    print("{} {}\n", (t.n, t.last))
+}

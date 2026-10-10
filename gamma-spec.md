@@ -1473,7 +1473,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 ### 12.6 Handler declarations
 
 ```
-handler_decl = 'handler' effect_ref 'for' type [ '\' effect_set ] '{' { decl_clause terminator } '}'
+handler_decl = 'handler' [ '(' params ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { decl_clause terminator } '}'
 decl_clause  = ident '(' ident { ',' ident } ')' '=>' ( expr | block )
 ```
 
@@ -1490,6 +1490,15 @@ handler Log for ^FileLogger \ {Fs} {
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
 - Clauses of a handler declaration have no enclosing function: `return`, labeled `break`/`continue`, and captures are not available. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
+- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
+
+```
+Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0 }
+
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
+    yield(self, x) => if self.len < N { self.items[self.len] = x; self.len += 1 }
+}
+```
 
 ### 12.7 `with`
 
@@ -2670,7 +2679,7 @@ param_list    = param % ','
 param         = IDENT { ',' IDENT } [ ( ':' | '::' ) type ] [ '=' expr ]     // '::' = compile-time (§16.5)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
-handler_decl  = 'handler' effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
+handler_decl  = 'handler' [ '(' params ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
 clause        = IDENT '(' [ IDENT % ',' ] ')' '=>' ( expr | block )
 
 foreign_block = 'foreign' STRING '{' { NL } { foreign_member NL { NL } } '}'

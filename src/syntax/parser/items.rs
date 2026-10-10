@@ -61,6 +61,7 @@ impl Parser<'_> {
     fn parse_handler_decl(&mut self) -> PResult<HandlerDecl> {
         let start = self.lo();
         self.bump();
+        let params = if self.at(Punct::LParen) { Some(self.parse_decl_params()?) } else { None };
         let effect = self.parse_effect_ref()?;
         self.expect_kw(Keyword::For, "after the effect of a handler declaration")?;
         let for_ty = self.with_restr(Restr { no_brace: true, ..Restr::default() }, |p| p.parse_type())?;
@@ -69,7 +70,7 @@ impl Parser<'_> {
         let saved = std::mem::take(&mut self.labels);
         let clauses = self.unrestricted(|p| p.parse_clauses());
         self.labels = saved;
-        Ok(HandlerDecl { effect, for_ty, effects, clauses, span: self.span_from(start) })
+        Ok(HandlerDecl { params, effect, for_ty, effects, clauses, span: self.span_from(start) })
     }
 
     /// `when cond { items } [else when … | else { items }]`.

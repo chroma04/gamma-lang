@@ -1,0 +1,23 @@
+//! stage: check
+// Rules for handler declarations of generic types (§12.6).
+Box :: struct(T: type) { v: T }
+Ping :: effect { ping: fn() }
+
+handler(T: type, U: type) Ping for ^Box(T) { //~ ERROR the parameter `U` must appear in the type
+    ping(self) => {}
+}
+
+handler(T: type) Ping for ^Box(T) {
+    ping(self) => {}
+}
+
+handler(X: type) Ping for ^Box(X) { //~ ERROR is already declared
+    ping(self) => {}
+}
+
+// A declaration for one instance takes precedence over the generic one.
+handler Ping for ^Box(u8) {
+    ping(self) => { self.v += 1 }
+}
+
+main :: fn() {}

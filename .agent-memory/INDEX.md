@@ -13,7 +13,11 @@
 - Session 3: C perf — local exits jump directly, static handler specialization (D.3, single
   level; decisions/012). Sema: labeled with/for as values, `break L v` typed per label kind
   (LabelValue; FnCx.label_breaks), new(T, ---) in generic args, T(x) int-var→float no unify.
-- Open bugs/usability list: roadmap/bugs-open.md.
+- Session 3 dogfooding round (2 sonnet agents → 40 example2_* tests) fixed: nested-optional
+  binding unwrap, nested #bits fields, fn-clause exits, static k check (sema/cont_check.rs),
+  exits past with…on discard fibers, frame cost model (1× locals + read copies), 64 MiB C main
+  thread, receiver-fixed generic inference, List insert/remove/…, @rotl/@rotr, diagnostics.
+- Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
 - Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params.
 
