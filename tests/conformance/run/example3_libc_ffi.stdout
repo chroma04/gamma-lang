@@ -1,0 +1,18 @@
+sorted: [-50, -7, 0, 3, 8, 19, 42, 100]
+2 9 98
+4 4.25 100
+1 2.5 97
+3 0.5 99
+Rec size 24 align 8 weight@8
+memcmp sign -1
+memcmp prefix 0
+strlen 12
+snprintf wrote 17: n=77 x=3.50 s=str
+div 3 2
+labs 123456789012
+found, rest len 6
+no z
+bits 3ff0000000000000
+double 3
+union size 8
+mix 207 sum 115

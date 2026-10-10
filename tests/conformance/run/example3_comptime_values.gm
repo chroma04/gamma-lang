@@ -1,0 +1,60 @@
+// Constants computed at compile time: bswap/rotr tables, f32 bit patterns, u128 arithmetic, string and union tables, constant slices of tables.
+Mat :: struct(R, C: usize) { d: [R][C]f32 }
+
+SIZE_OF_FLOAT :: @size_of(f32)
+
+swap_all :: fn() -> [4]u32 {
+    r: [4]u32 = ---
+    xs := [_]u32(0x01020304, 0xAABBCCDD, 1, 0xFFFFFFFF)
+    for i in 0..4 { r[i] = @rotr(@bswap(xs[i]), 8) }
+    return r
+}
+SW :: swap_all()
+
+f_bits :: fn() -> u32 {
+    x: f32 = 1.0
+    y := x / 3.0
+    return y.bits(u32)
+}
+FB :: f_bits()
+
+wide :: fn() -> u128 {
+    a: u128 = 0xFFFF_FFFF_FFFF_FFFF
+    return (a << 40) | 0xAB
+}
+W :: wide()
+
+sz :: fn(T: type) -> usize => @size_of(T) * 2
+
+check :: fn(T: type, x: T) -> usize {
+    return @size_of(T)
+}
+
+names :: fn() -> [3]string => [3]string("a", "bb", "ccc")
+NAMES :: names()
+TOTAL :: total_len()
+total_len :: fn() -> usize {
+    t: usize = 0
+    for n in NAMES { t += n.len }
+    return t
+}
+
+Op :: union { Add, Sub, Neg: i32 }
+prog :: fn() -> [3]Op => [3]Op(.Add, .Neg(5), .Sub)
+PROG :: prog()
+
+slice_const :: NAMES[1..3]
+
+main :: fn() \ {Out} {
+    print("{} {} {} {}\n", (SW[0], SW[1], SW[2], SW[3]))
+    print("{}\n", FB)
+    print("{}\n", W)
+    print("{} {}\n", (sz(u16), sz(Mat(2, 3))))
+    print("{} {}\n", (check(u32, 5), check(f64, 1.0)))
+    print("{} {}\n", (NAMES[2], TOTAL))
+    print("{}\n", PROG[1])
+    print("{}\n", slice_const.len)
+    print("{}\n", SIZE_OF_FLOAT)
+    m := Mat(2, 3)(d: [2][3]f32(fill: [3]f32(fill: 1.5)))
+    print("{}\n", m.d[1][2])
+}

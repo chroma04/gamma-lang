@@ -1,0 +1,39 @@
+// #fuel, when on target.mode in a struct and a function body: the Debug-mode build.
+collatz_max :: fn(limit: u32) -> u32 {
+    best: u32 = 0
+    for n in 1..limit {
+        x: u64 = u64(n)
+        steps: u32 = 0
+        while x is not 1 {
+            x = if x % 2 is 0 { x / 2 } else { 3 * x + 1 }
+            steps += 1
+        }
+        if steps > best { best = steps }
+    }
+    return best
+}
+
+#fuel(200_000_000)
+BEST :: collatz_max(3000)
+
+Stats :: struct {
+    hits: u32 = 0
+    when target.mode is .Debug {
+        trace: u32 = 7
+    }
+}
+
+mode_name :: fn() -> string {
+    when target.mode is .Debug { return "debug" }
+        else when target.mode is .Checked { return "checked" }
+        else { return "fast" }
+}
+
+main :: fn() \ {Out} {
+    @static_assert(BEST > 100)
+    print("{}\n", BEST)
+    s := Stats()
+    print("{}\n", s.hits)
+    print("{}\n", mode_name())
+    print("{}\n", @size_of(Stats))
+}

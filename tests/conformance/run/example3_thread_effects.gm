@@ -1,0 +1,57 @@
+// Per-thread effect stacks: each thread installs its own arena allocator and a Log handler around a Yield-based computation.
+thread :: import "std/thread"
+arena :: import "std/arena"
+
+Job :: struct {
+    id: u32
+    result: u64
+    cancelled: bool
+}
+
+Log :: effect { log: fn(code: u32) }
+
+gen :: fn(n: u32) \ {Yield(u32)} {
+    for i in 0..n { yield(i * i) }
+}
+
+compute :: fn(job: ^Job) \ {Log, Alloc} {
+    l := list(u32)
+    defer l.deinit()
+    for v in gen(job.id + 10) {
+        l.push(v) else return
+        if v % 7 is 0 { log(v) }
+    }
+    t: u64 = 0
+    for v in l.items { t += u64(v) }
+    job.result = t
+}
+
+Counter :: struct { n: u32, sum: u64 }
+handler Log for ^Counter {
+    log(self, code) => { self.n += 1; self.sum += u64(code) }
+}
+
+run :: fn(raw: rawptr) \ {Sys} {
+    job := raw.cast(^Job)
+    c := Counter(n: 0, sum: 0)
+    thread.defaults(fn() {
+        a := arena.new()
+        defer a.deinit()
+        with a.allocator(), &c {
+            compute(job)
+        }
+    })
+    job.cancelled = c.n > 100
+    job.result += u64(c.n) * 1000000
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    jobs := [4]Job(fill: Job(id: 0, result: 0, cancelled: false))
+    ts: [4]thread.Thread = ---
+    for i in 0..4 {
+        jobs[i] = Job(id: i.trunc(u32) * 10, result: 0, cancelled: false)
+        ts[i] = try thread.spawn(run, (&jobs[i]).cast(rawptr))
+    }
+    for i in 0..4 { ts[i].join() }
+    for j in jobs { print("{} {}\n", (j.id, j.result)) }
+}

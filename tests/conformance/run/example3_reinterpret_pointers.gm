@@ -1,0 +1,51 @@
+// Reinterpretation and raw pointers: volatile access to floats, pointers and #bits, bits() between structs, arrays and integers, many-pointer arithmetic and to_ptr.
+Perm :: #bits(u8) struct {
+    r, w, x: bool
+    owner: u2
+    _: u3
+}
+
+V3 :: struct { x, y, z: f32 }
+Raw :: struct { a: u32, b: u32, c: u32 }
+
+main :: fn() \ {Out, Sys} {
+    f: f64 = 2.5
+    @volatile_store(&f, @volatile_load(&f) * 2.0)
+    print("{}\n", f)
+    pp: ?^u32 = null
+    x: u32 = 77
+    @volatile_store(&pp, &x)
+    if q := @volatile_load(&pp) { print("{}\n", q^) }
+    pm := Perm(r: true, w: false, x: true, owner: 2)
+    @volatile_store(&pm, Perm(r: false, w: true, x: false, owner: 1))
+    pm2 := @volatile_load(&pm)
+    print("{} {} {}\n", (pm2.w, pm2.owner, u8(pm2)))
+    both := pm | Perm(r: true, w: false, x: false, owner: 2)
+    print("{}\n", u8(both))
+
+    v := V3(x: 1.0, y: -2.0, z: 0.5)
+    r := v.bits(Raw)
+    print("{} {} {}\n", (r.a, r.b, r.c))
+    back := r.bits(V3)
+    print("{} {} {}\n", (back.x, back.y, back.z))
+    arr := [_]u16(0x0102, 0x0304)
+    w := arr.bits(u32)
+    print("{}\n", w)
+    bs := w.bits([4]u8)
+    print("{} {} {} {}\n", (bs[0], bs[1], bs[2], bs[3]))
+    print("{}\n", (-1.0).bits(u64))
+
+    data := [_]u32(10, 20, 30, 40, 50)
+    p := data[..].ptr
+    q := p + 4
+    print("{} {} {}\n", (q - p, p < q, (q - 2)[0]))
+    s := (p + 1)[0..3]
+    print("{} {}\n", (s.len, s[2]))
+    addr := p.addr()
+    back2 := addr.to_ptr([^]u32) else return
+    print("{}\n", back2[3])
+    zero: usize = 0
+    print("{}\n", zero.to_ptr(^u8) is null)
+    n: isize = -1
+    print("{}\n", (q + n)[0])
+}

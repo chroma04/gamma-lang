@@ -1,0 +1,44 @@
+// C unions as struct fields, in arrays, packed, and sized by @offset_of; reading one member through another reinterprets the bytes.
+Vec2 :: struct { x, y: f32 }
+
+Value :: #c_union union {
+    i: i64
+    f: f64
+    v: Vec2
+    b: [8]u8
+    h: [2]u32
+}
+
+Msg :: struct {
+    kind: u8
+    payload: Value
+    tail: u8
+}
+
+PMsg :: #packed struct {
+    kind: u8
+    payload: Value
+    tail: u8
+}
+
+OFF :: @offset_of(Msg, tail)
+Buf :: struct { raw: [OFF]u8 }
+
+main :: fn() \ {Out} {
+    m := Msg(kind: 1, payload: Value(f: 1.0), tail: 9)
+    print("{}\n", m.payload.i is 0x3FF0000000000000)
+    m.payload.v = Vec2(x: 1.0, y: 2.0)
+    print("{} {}\n", (m.payload.h[0], m.payload.h[1]))
+    m.payload.b[7] = 0x40
+    print("{}\n", m.payload.h[1])
+    p := PMsg(kind: 1, payload: Value(i: -1), tail: 2)
+    print("{} {} {}\n", (@size_of(Msg), @size_of(PMsg), @size_of(Buf)))
+    v := p.payload
+    print("{} {}\n", (v.i, p.tail))
+    arr := [_]Value(Value(i: 1), Value(f: 2.0))
+    print("{}\n", arr[1].i is 0x4000000000000000)
+    w := arr[0]
+    w.i += 1
+    print("{} {}\n", (w.i, arr[0].i))
+    print("{}\n", @size_of(Value))
+}

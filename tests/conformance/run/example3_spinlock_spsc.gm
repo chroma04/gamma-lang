@@ -1,0 +1,123 @@
+// Threads and atomics: a CAS spin lock guarding a plain counter, an SPSC ring buffer with release/acquire, atomic max/or/xor.
+thread :: import "std/thread"
+
+SpinLock :: struct { flag: u32 }
+
+lock :: fn(l: ^SpinLock) \ {Sys} {
+    while true {
+        if @atomic_cas(&l.flag, 0, 1, .Acquire, .Relaxed) is null { return }
+        thread.yield_now()
+    }
+}
+
+unlock :: fn(l: ^SpinLock) {
+    @atomic_store(&l.flag, 0, .Release)
+}
+
+Shared :: struct {
+    lk: SpinLock
+    plain: u64                 // protected by lk
+    maxseen: u32
+    bits: u32
+    parity: u32
+}
+
+ITER :: 500
+NT :: 4
+
+Worker :: struct {
+    sh: ^Shared
+    id: u32
+}
+
+work :: fn(raw: rawptr) \ {Sys} {
+    w := raw.cast(^Worker)
+    sh := w.sh
+    for i in 0..ITER {
+        lock(&sh.lk)
+        sh.plain += 1
+        unlock(&sh.lk)
+        _ = @atomic_max(&sh.maxseen, w.id * 1000 + i.trunc(u32), .Relaxed)
+    }
+    _ = @atomic_or(&sh.bits, u32(1) << w.id, .SeqCst)
+    _ = @atomic_xor(&sh.parity, 1, .SeqCst)
+}
+
+// Single producer, single consumer ring buffer with release/acquire on head and tail.
+RING :: 8
+
+Ring :: struct {
+    slots: [RING]u32
+    head: u32                  // written by the producer
+    tail: u32                  // written by the consumer
+    sum: u64
+    received: u32
+}
+
+COUNT :: 300
+
+producer :: fn(raw: rawptr) \ {Sys} {
+    r := raw.cast(^Ring)
+    n: u32 = 0
+    while n < COUNT {
+        head := @atomic_load(&r.head, .Relaxed)
+        tail := @atomic_load(&r.tail, .Acquire)
+        if head - tail is RING {
+            thread.yield_now()
+            continue
+        }
+        r.slots[(head % RING).trunc(usize)] = n * n
+        @atomic_store(&r.head, head + 1, .Release)
+        n += 1
+    }
+}
+
+consumer :: fn(raw: rawptr) \ {Sys} {
+    r := raw.cast(^Ring)
+    got: u32 = 0
+    while got < COUNT {
+        tail := @atomic_load(&r.tail, .Relaxed)
+        head := @atomic_load(&r.head, .Acquire)
+        if head is tail {
+            thread.yield_now()
+            continue
+        }
+        r.sum += u64(r.slots[(tail % RING).trunc(usize)])
+        @atomic_store(&r.tail, tail + 1, .Release)
+        got += 1
+    }
+    r.received = got
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    sh := Shared(lk: SpinLock(flag: 0), plain: 0, maxseen: 0, bits: 0, parity: 0)
+    ws := [NT]Worker(fill: Worker(sh: &sh, id: 0))
+    ts: [NT]thread.Thread = ---
+    for i in 0..NT {
+        ws[i] = Worker(sh: &sh, id: i.trunc(u32))
+        ts[i] = try thread.spawn(work, (&ws[i]).cast(rawptr))
+    }
+    for i in 0..NT { ts[i].join() }
+    print("plain counter {} (expected {})\n", (sh.plain, NT * ITER))
+    print("max seen {}\n", sh.maxseen)
+    print("bits {} parity {}\n", (sh.bits, sh.parity))
+
+    ring := Ring(slots: [RING]u32(fill: 0), head: 0, tail: 0, sum: 0, received: 0)
+    p := try thread.spawn(producer, (&ring).cast(rawptr))
+    c := try thread.spawn(consumer, (&ring).cast(rawptr))
+    p.join()
+    c.join()
+    expected: u64 = 0
+    for n in 0..COUNT { expected += u64(n) * u64(n) }
+    print("received {} sum {} (expected {})\n", (ring.received, ring.sum, expected))
+    print("head {} tail {}\n", (ring.head, ring.tail))
+
+    x: u32 = 10
+    old := @atomic_swap(&x, 20, .AcqRel)
+    miss := @atomic_cas(&x, 99, 1, .SeqCst, .SeqCst)
+    hit := @atomic_cas(&x, 20, 30, .SeqCst, .SeqCst)
+    @fence(.SeqCst)
+    print("swap old {} miss {} hit {} now {}\n", (old, miss, hit, @atomic_load(&x, .SeqCst)))
+    print("sub {} min {} and {}\n", (@atomic_sub(&x, 5, .Relaxed), @atomic_min(&x, 7, .Relaxed), @atomic_and(&x, 0b110, .Relaxed)))
+    print("final {}\n", x)
+}

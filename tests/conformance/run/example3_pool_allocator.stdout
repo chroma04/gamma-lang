@@ -1,0 +1,11 @@
+Node is 16 bytes
+sum 15 live 5
+after free live 0 (fresh 5)
+again sum 15 fresh 5
+build(20) failed, live 0 failures 1
+oversize request failed: true
+final live 0 failures 2
+a 8 used 32
+second 32-byte block fits: true
+third fails: true
+after reset 8 used 64
