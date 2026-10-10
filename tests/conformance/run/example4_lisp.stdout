@@ -1,0 +1,40 @@
+fact
+3628800
+2432902008176640000
+error: integer overflow
+loop
+2001000
+compose
+inc
+42
+make-counter
+c1
+c2
+1
+2
+3
+1
+map
+(1 4 9 16 25)
+fold
+55
+(1 . 2)
+(a (b c) d)
+error: car of a non-pair
+error: unbound variable
+  unbound name: undefined-fn
+error: expected a number
+error: wrong number of arguments
+error: division by zero
+-5
+error: integer overflow
+deep
+50
+error: recursion too deep
+#t
+3
+read error: missing )
+read error: unexpected )
+error: car of a non-pair
+ok
+steps: 34607

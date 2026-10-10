@@ -1,0 +1,520 @@
+// Tokenizer (a failing Yield iterator), Pratt parser and tree-walking evaluator with variables, functions and line/column diagnostics.
+arena :: import "std/arena"
+
+Kind :: union {
+    Num, Ident, Let, Def, If, Then, Else
+    Plus, Minus, Star, Slash, Percent, Caret
+    Lt, Le, Gt, Ge, EqEq, Ne, AndAnd, OrOr, Bang, Assign
+    LParen, RParen, Comma, Sep, End
+}
+
+Token :: struct {
+    kind: Kind
+    pos: usize
+    num: i64 = 0
+    text: string = ""
+}
+
+Failure :: union {
+    Alloc: AllocError
+    At: (pos: usize, msg: string)
+}
+
+at :: fn(pos: usize, msg: string) -> Failure => Failure.At(pos: pos, msg: msg)
+
+is_digit :: fn(c: u8) -> bool => c in '0'..='9'
+is_ident_start :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '_'
+
+keyword :: fn(word: string) -> Kind => match word {
+    "let" => .Let
+    "def" => .Def
+    "if" => .If
+    "then" => .Then
+    "else" => .Else
+    _ => .Ident
+}
+
+// ------------------------------------------------------------------ lexer
+
+tokens :: fn(src: string) -> Failure!() \ {Yield(Token)} {
+    i: usize = 0
+    while i < src.len {
+        c := src[i]
+        start := i
+        i += 1
+        kind: Kind = .End
+        if c in (' ', '\t', '\r') {
+            continue
+        } else if c is '#' {
+            while i < src.len and src[i] is not '\n' { i += 1 }
+            continue
+        } else if c in ('\n', ';') {
+            kind = .Sep
+        } else if is_digit(c) {
+            n: i64 = i64(c - '0')
+            while i < src.len and is_digit(src[i]) {
+                n = n *? 10 else return !at(start, "number too large")
+                n = n +? i64(src[i] - '0') else return !at(start, "number too large")
+                i += 1
+            }
+            yield(Token(kind: .Num, pos: start, num: n))
+            continue
+        } else if is_ident_start(c) {
+            while i < src.len and (is_ident_start(src[i]) or is_digit(src[i])) { i += 1 }
+            word := src[start..i]
+            yield(Token(kind: keyword(word), pos: start, text: word))
+            continue
+        } else {
+            next: u8 = if i < src.len { src[i] } else { 0 }
+            two := true
+            kind = match (c, next) {
+                ('=', '=') => .EqEq
+                ('!', '=') => .Ne
+                ('<', '=') => .Le
+                ('>', '=') => .Ge
+                ('&', '&') => .AndAnd
+                ('|', '|') => .OrOr
+                _ => {
+                    two = false
+                    match c {
+                        '+' => .Plus
+                        '-' => .Minus
+                        '*' => .Star
+                        '/' => .Slash
+                        '%' => .Percent
+                        '^' => .Caret
+                        '<' => .Lt
+                        '>' => .Gt
+                        '!' => .Bang
+                        '=' => .Assign
+                        '(' => .LParen
+                        ')' => .RParen
+                        ',' => .Comma
+                        _ => return !at(start, "unexpected character")
+                    }
+                }
+            }
+            if two { i += 1 }
+        }
+        yield(Token(kind: kind, pos: start))
+    }
+    yield(Token(kind: .End, pos: src.len))
+    return ()
+}
+
+// ------------------------------------------------------------------ syntax tree
+
+Op :: union { Add, Sub, Mul, Div, Rem, Pow, Lt, Le, Gt, Ge, Eq, Ne, And, Or }
+
+Node :: struct {
+    pos: usize
+    kind: NodeKind
+}
+
+NodeKind :: union {
+    Num: i64
+    Var: string
+    Neg: ^Node
+    Not: ^Node
+    Bin: (op: Op, lhs: ^Node, rhs: ^Node)
+    Set: (name: string, value: ^Node)
+    Cond: (test: ^Node, yes: ^Node, no: ^Node)
+    Call: (name: string, args: List(^Node))
+}
+
+Stmt :: union {
+    Let: (name: string, value: ^Node)
+    Def: (name: string, params: List(string), body: ^Node)
+    Expr: ^Node
+}
+
+// ------------------------------------------------------------------ parser
+
+Parser :: struct {
+    toks: []const Token
+    at: usize = 0
+}
+
+cur :: fn(p: ^Parser) -> Token => p.toks[p.at]
+
+bump :: fn(p: ^Parser) -> Token {
+    t := p.toks[p.at]
+    if p.at + 1 < p.toks.len { p.at += 1 }
+    return t
+}
+
+expect :: fn(p: ^Parser, kind: Kind, what: string) -> Failure!Token {
+    t := cur(p)
+    if t.kind is not kind { return !at(t.pos, what) }
+    return bump(p)
+}
+
+mk :: fn(pos: usize, kind: NodeKind) -> Failure!^Node \ {Alloc} {
+    return try new(Node, Node(pos: pos, kind: kind))
+}
+
+// Binding powers: (left, right). Right-associative operators have right < left.
+Infix :: struct { l, r: u8, op: ?Op }
+
+infix :: fn(k: Kind) -> ?Infix => match k {
+    .Assign => Infix(l: 2, r: 1, op: null)
+    .OrOr => Infix(l: 3, r: 4, op: Op.Or)
+    .AndAnd => Infix(l: 5, r: 6, op: Op.And)
+    .EqEq => Infix(l: 7, r: 8, op: Op.Eq)
+    .Ne => Infix(l: 7, r: 8, op: Op.Ne)
+    .Lt => Infix(l: 9, r: 10, op: Op.Lt)
+    .Le => Infix(l: 9, r: 10, op: Op.Le)
+    .Gt => Infix(l: 9, r: 10, op: Op.Gt)
+    .Ge => Infix(l: 9, r: 10, op: Op.Ge)
+    .Plus => Infix(l: 11, r: 12, op: Op.Add)
+    .Minus => Infix(l: 11, r: 12, op: Op.Sub)
+    .Star => Infix(l: 13, r: 14, op: Op.Mul)
+    .Slash => Infix(l: 13, r: 14, op: Op.Div)
+    .Percent => Infix(l: 13, r: 14, op: Op.Rem)
+    .Caret => Infix(l: 18, r: 17, op: Op.Pow)
+    _ => null
+}
+
+PREFIX_BP: u8 : 15
+
+parse_expr :: fn(p: ^Parser, min_bp: u8) -> Failure!^Node \ {Alloc} {
+    t := bump(p)
+    lhs := match t.kind {
+        .Num => try mk(t.pos, .Num(t.num))
+        .Ident => {
+            if cur(p).kind is .LParen {
+                _ = bump(p)
+                args := list(^Node)
+                if cur(p).kind is not .RParen {
+                    while true {
+                        try args.push(try parse_expr(p, 0))
+                        if cur(p).kind is not .Comma { break }
+                        _ = bump(p)
+                    }
+                }
+                _ = try expect(p, .RParen, "expected `)` after the arguments")
+                try mk(t.pos, .Call(name: t.text, args: args))
+            } else {
+                try mk(t.pos, .Var(t.text))
+            }
+        }
+        .LParen => {
+            inner := try parse_expr(p, 0)
+            _ = try expect(p, .RParen, "expected `)`")
+            inner
+        }
+        .Minus => try mk(t.pos, .Neg(try parse_expr(p, PREFIX_BP)))
+        .Bang => try mk(t.pos, .Not(try parse_expr(p, PREFIX_BP)))
+        .If => {
+            test := try parse_expr(p, 0)
+            _ = try expect(p, .Then, "expected `then`")
+            yes := try parse_expr(p, 0)
+            _ = try expect(p, .Else, "expected `else`")
+            no := try parse_expr(p, 0)
+            try mk(t.pos, .Cond(test: test, yes: yes, no: no))
+        }
+        _ => return !at(t.pos, "expected an expression")
+    }
+    result := lhs
+    while true {
+        op_tok := cur(p)
+        bp := infix(op_tok.kind) else break
+        if bp.l < min_bp { break }
+        _ = bump(p)
+        rhs := try parse_expr(p, bp.r)
+        if op := bp.op {
+            result = try mk(op_tok.pos, .Bin(op: op, lhs: result, rhs: rhs))
+        } else {
+            name := match result.kind {
+                .Var(n) => n
+                _ => return !at(result.pos, "cannot assign to this expression")
+            }
+            result = try mk(op_tok.pos, .Set(name: name, value: rhs))
+        }
+    }
+    return result
+}
+
+end_of_stmt :: fn(p: ^Parser) -> Failure!() {
+    end := cur(p)
+    if end.kind is not .Sep and end.kind is not .End { return !at(end.pos, "unexpected input after the statement") }
+    return ()
+}
+
+parse_stmt :: fn(p: ^Parser) -> Failure!Stmt \ {Alloc} {
+    t := cur(p)
+    if t.kind is .Let {
+        _ = bump(p)
+        name := try expect(p, .Ident, "expected a name after `let`")
+        _ = try expect(p, .Assign, "expected `=`")
+        value := try parse_expr(p, 0)
+        try end_of_stmt(p)
+        return Stmt.Let(name: name.text, value: value)
+    }
+    if t.kind is .Def {
+        _ = bump(p)
+        name := try expect(p, .Ident, "expected a function name after `def`")
+        _ = try expect(p, .LParen, "expected `(`")
+        params := list(string)
+        if cur(p).kind is not .RParen {
+            while true {
+                param := try expect(p, .Ident, "expected a parameter name")
+                try params.push(param.text)
+                if cur(p).kind is not .Comma { break }
+                _ = bump(p)
+            }
+        }
+        _ = try expect(p, .RParen, "expected `)`")
+        _ = try expect(p, .Assign, "expected `=` before the body")
+        body := try parse_expr(p, 0)
+        try end_of_stmt(p)
+        return Stmt.Def(name: name.text, params: params, body: body)
+    }
+    e := try parse_expr(p, 0)
+    try end_of_stmt(p)
+    return Stmt.Expr(e)
+}
+
+// ------------------------------------------------------------------ evaluator
+
+Def :: struct {
+    params: List(string)
+    body: ^Node
+}
+
+MAX_LOCALS :: 8
+MAX_DEPTH :: 60
+
+Scope :: struct {
+    names: [MAX_LOCALS]string = [MAX_LOCALS]string(fill: "")
+    vals: [MAX_LOCALS]i64 = [MAX_LOCALS]i64(fill: 0)
+    n: usize = 0
+    in_call: bool = false
+}
+
+Interp :: struct {
+    globals: HashMap(string, i64)
+    funcs: HashMap(string, Def)
+    depth: u32 = 0
+    calls: u64 = 0
+}
+
+lookup :: fn(it: ^Interp, sc: ^Scope, name: string) -> ?i64 {
+    for i in 0..sc.n {
+        if sc.names[i] is name { return sc.vals[i] }
+    }
+    return it.globals.get(name)
+}
+
+ipow :: fn(base, exp: i64, pos: usize) -> Failure!i64 {
+    if exp < 0 { return !at(pos, "negative exponent") }
+    r: i64 = 1
+    for _ in 0..exp {
+        r = r *? base else return !at(pos, "integer overflow")
+    }
+    return r
+}
+
+eval :: fn(it: ^Interp, sc: ^Scope, n: ^Node) -> Failure!i64 \ {Alloc} {
+    return match n.kind {
+        .Num(v) => v
+        .Var(name) => lookup(it, sc, name) else return !at(n.pos, "undefined variable")
+        .Neg(e) => 0 -? try eval(it, sc, e) else return !at(n.pos, "integer overflow")
+        .Not(e) => if try eval(it, sc, e) is 0 { 1 } else { 0 }
+        .Cond(test, yes, no) => if try eval(it, sc, test) is not 0 { try eval(it, sc, yes) } else { try eval(it, sc, no) }
+        .Set(name, value) => {
+            v := try eval(it, sc, value)
+            slot: ?usize = null
+            for i in 0..sc.n {
+                if sc.names[i] is name { slot = i }
+            }
+            if s := slot {
+                sc.vals[s] = v
+            } else if not sc.in_call or it.globals.contains(name) {
+                try it.globals.put(name, v)
+            } else {
+                return !at(n.pos, "assignment to an undefined variable")
+            }
+            v
+        }
+        .Bin(op, lhs, rhs) => {
+            if op is .And {
+                l := try eval(it, sc, lhs)
+                return if l is 0 { 0 } else { if try eval(it, sc, rhs) is 0 { 0 } else { 1 } }
+            }
+            if op is .Or {
+                l := try eval(it, sc, lhs)
+                return if l is not 0 { 1 } else { if try eval(it, sc, rhs) is 0 { 0 } else { 1 } }
+            }
+            a := try eval(it, sc, lhs)
+            b := try eval(it, sc, rhs)
+            match op {
+                .Add => a +? b else return !at(n.pos, "integer overflow")
+                .Sub => a -? b else return !at(n.pos, "integer overflow")
+                .Mul => a *? b else return !at(n.pos, "integer overflow")
+                .Div => if b is 0 { return !at(n.pos, "division by zero") } else { a / b }
+                .Rem => if b is 0 { return !at(n.pos, "division by zero") } else { a % b }
+                .Pow => try ipow(a, b, n.pos)
+                .Lt => i64(a < b)
+                .Le => i64(a <= b)
+                .Gt => i64(a > b)
+                .Ge => i64(a >= b)
+                .Eq => i64(a is b)
+                .Ne => i64(a is not b)
+                .And, .Or => 0
+            }
+        }
+        .Call(name, args) => {
+            def := it.funcs.get(name) else return !at(n.pos, "undefined function")
+            if args.items.len is not def.params.items.len { return !at(n.pos, "wrong number of arguments") }
+            if it.depth >= MAX_DEPTH { return !at(n.pos, "recursion too deep") }
+            callee := Scope(in_call: true)
+            for i in 0..args.items.len {
+                if callee.n >= MAX_LOCALS { return !at(n.pos, "too many parameters") }
+                callee.vals[callee.n] = try eval(it, sc, args.items[i])
+                callee.names[callee.n] = def.params.items[i]
+                callee.n += 1
+            }
+            it.depth += 1
+            defer it.depth -= 1
+            it.calls += 1
+            try eval(it, &callee, def.body)
+        }
+    }
+}
+
+run_stmt :: fn(it: ^Interp, stmt: Stmt) -> Failure!?i64 \ {Alloc} {
+    root := Scope()
+    match stmt {
+        .Let(name, value) => {
+            v := try eval(it, &root, value)
+            try it.globals.put(name, v)
+            return null
+        }
+        .Def(name, params, body) => {
+            try it.funcs.put(name, Def(params: params, body: body))
+            return null
+        }
+        .Expr(e) => return try eval(it, &root, e)
+    }
+}
+
+// ------------------------------------------------------------------ diagnostics
+
+show_failure :: fn(src: string, pos: usize, msg: string) \ {Out} {
+    line: usize = 1
+    line_start: usize = 0
+    for i in 0..pos {
+        if src[i] is '\n' {
+            line += 1
+            line_start = i + 1
+        }
+    }
+    line_end := line_start
+    while line_end < src.len and src[line_end] is not '\n' { line_end += 1 }
+    print("error: {}\n --> line {}, column {}\n", (msg, line, pos - line_start + 1))
+    print("  {} | {}\n", (line, src[line_start..line_end]))
+    print("  {} | ", line)
+    for _ in 0..pos - line_start { print(" ") }
+    print("^\n")
+}
+
+run_source :: fn(it: ^Interp, src: string) \ {Out, Alloc} {
+    toks := list(Token)
+    lexed := try_collect(src, &toks)
+    if lexed is !_ {
+        match lexed {
+            !.At(pos, msg) => show_failure(src, pos, msg)
+            !.Alloc(_) => print("out of memory\n")
+            _ => {}
+        }
+        return
+    }
+    p := Parser(toks: toks.items)
+    while true {
+        while cur(&p).kind is .Sep { _ = bump(&p) }
+        if cur(&p).kind is .End { break }
+        stmt := match parse_stmt(&p) {
+            !.At(pos, msg) => {
+                show_failure(src, pos, msg)
+                return
+            }
+            !.Alloc(_) => {
+                print("out of memory\n")
+                return
+            }
+            s => s
+        }
+        outcome := run_stmt(it, stmt)
+        match outcome {
+            !.At(pos, msg) => {
+                show_failure(src, pos, msg)
+                return
+            }
+            !.Alloc(_) => return
+            v => if x := v { print("= {}\n", x) }
+        }
+    }
+}
+
+try_collect :: fn(src: string, out: ^List(Token)) -> Failure!() \ {Alloc} {
+    try for t in tokens(src) {
+        try out.push(t)
+    }
+    return ()
+}
+
+PROGRAM_OK :: `
+let x = 6 * 7        # a global
+x + 1
+def sq(n) = n * n
+def fact(n) = if n <= 1 then 1 else n * fact(n - 1)
+fact(10) + sq(3)
+2 ^ 3 ^ 2
+-2 ^ 2
+y = x = 5            # right associative assignment
+y + x
+1 < 2 && 2 < 3 || 0
+10 - 4 - 3
+100 / 7 % 4
+!(3 > 4) + !0
+def fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)
+fib(14)
+def gcd(a, b) = if b == 0 then a else gcd(b, a % b)
+gcd(1071, 462)
+def add3(a, b, c) = a + b + c; add3(1, 2, 3)
+`
+
+main :: fn() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        it := Interp(globals: map(string, i64), funcs: map(string, Def))
+        run_source(&it, PROGRAM_OK)
+        print("({} calls)\n", it.calls)
+
+        bad := [_]string(
+            "let z = 3 +\n",
+            "1 + (2 * 3\n",
+            "1 +\n  * 2",
+            "let 5 = 1",
+            "x = 1 = 2\n1 = 2",
+            "foo(1)",
+            "sq(1, 2)",
+            "def r(n) = r(n + 1)\nr(0)",
+            "1 / (x - x)",
+            "9223372036854775807 + 1",
+            "2 ^ 64",
+            "99999999999999999999",
+            "let a = 1 $ 2",
+            "-undefined",
+            "if 1 then 2",
+            "1 2",
+        )
+        for src in bad[..] {
+            print("--- {}\n", src)
+            run_source(&it, src)
+        }
+        print("globals: {}, functions: {}\n", (it.globals.len(), it.funcs.len()))
+    }
+}
