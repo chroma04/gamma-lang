@@ -477,7 +477,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
                 }
                 _ => {
-                    self.error(span, "cannot infer the result type of `!e` here");
+                    self.error(
+                        span,
+                        "cannot infer the result type of `!e` here (`!e` makes an error; logical negation is `not e`)",
+                    );
                     error_expr(span)
                 }
             },
@@ -2161,12 +2164,16 @@ fn asm_entries(list: &ast::Expr, pairs: bool) -> Vec<&ast::Expr> {
     }
 }
 
-/// The call at the end of a chain of array and optional type prefixes, as in
-/// `[2][3]i32(…)` or `?[2]u8(…)`.
+/// The call at the end of a chain of type prefixes, as in `[2][3]i32(…)`, `?[2]u8(…)`
+/// or `[3]^Node(…)`.
 pub fn construction_call(e: &ast::Expr) -> Option<&ast::Expr> {
     match &e.kind {
         ExprKind::Call { .. } => Some(e),
-        ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => construction_call(inner),
+        ExprKind::ArrayType { elem: inner, .. }
+        | ExprKind::OptionalType(inner)
+        | ExprKind::PtrType { inner, .. }
+        | ExprKind::SliceType { inner, .. }
+        | ExprKind::ManyPtrType { inner, .. } => construction_call(inner),
         _ => None,
     }
 }
@@ -2177,7 +2184,11 @@ fn without_call(e: &ast::Expr) -> ast::Expr {
     fn strip(e: &mut ast::Expr) {
         match &mut e.kind {
             ExprKind::Call { callee, .. } => *e = (**callee).clone(),
-            ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => strip(inner),
+            ExprKind::ArrayType { elem: inner, .. }
+            | ExprKind::OptionalType(inner)
+            | ExprKind::PtrType { inner, .. }
+            | ExprKind::SliceType { inner, .. }
+            | ExprKind::ManyPtrType { inner, .. } => strip(inner),
             _ => {}
         }
     }

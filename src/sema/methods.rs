@@ -312,7 +312,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ if SLICE_FNS.contains(&n) => Some(self.slice_fn(base, n, args, span)),
             _ => {
-                self.error(span, format!("the slice method `.{}` is not supported yet", n));
+                let msg = if n == "len" || n == "ptr" {
+                    format!("`.{}` of a slice is a field, not a method: write `s.{}` without `()`", n, n)
+                } else {
+                    format!("slices have no method `.{}` (§21.3)", n)
+                };
+                self.error(span, msg);
                 Some(error_expr(span))
             }
         }

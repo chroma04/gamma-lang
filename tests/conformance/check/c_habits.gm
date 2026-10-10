@@ -1,0 +1,5 @@
+//! stage: check
+// Hints for habits from C and other languages.
+main :: fn() {
+    a := 1 < 2 && 2 < 3 //~ ERROR `&&` is not an operator; use `and`
+}

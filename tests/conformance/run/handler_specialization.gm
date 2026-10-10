@@ -17,7 +17,7 @@ count :: fn(n: i32) \ {Yield(i32), Out} {
 // A perform inside a `with` of the same effect goes to the inner handler.
 shadowed :: fn() \ {Yield(i32)} {
     yield(1)
-    with (handler Yield(i32) { yield(x) => { } }) {
+    with (handler Yield(i32) { yield(x) => {} }) {
         yield(100)
     }
     yield(2)

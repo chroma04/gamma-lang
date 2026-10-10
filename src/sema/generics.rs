@@ -795,9 +795,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
                 None => {
+                    // An array where a slice is expected says nothing about the slice's
+                    // element type: arrays do not convert to slices (§6.7).
+                    let array_for_slice = sig.params.iter().zip(&values).any(|(p, v)| {
+                        matches!(p.ty.kind(), TyKind::Slice { .. })
+                            && v.as_ref().is_some_and(|v| matches!(v.ty.kind(), TyKind::Array { .. }))
+                    });
+                    let hint = if array_for_slice { "; an array is not a slice: pass `a[..]`" } else { "" };
                     self.error(
                         span,
-                        format!("cannot infer the type parameter `{}`; write it: `f({}, …)`", pid.name(), pid.name()),
+                        format!(
+                            "cannot infer the type parameter `{}`; write it: `f({}, …)`{}",
+                            pid.name(),
+                            pid.name(),
+                            hint
+                        ),
                     );
                     return error_expr(span);
                 }

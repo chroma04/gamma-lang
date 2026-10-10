@@ -197,9 +197,25 @@ impl Parser<'_> {
             }
             _ => return self.expected("`::`, `:=` or `:` in a binding"),
         };
-        let init = Box::new(self.parse_expr()?);
+        let init = Box::new(self.parse_rhs(names.len())?);
         let id = self.ids.next();
         Ok(Binding { id, names, ty, kind, init, span: self.span_from(start) })
+    }
+
+    /// The right side of a binding or assignment with `targets` names or places. With
+    /// several, `a, b = b, a` means `a, b = (b, a)` (§4.2).
+    fn parse_rhs(&mut self, targets: usize) -> PResult<Expr> {
+        let first = self.parse_expr()?;
+        if targets < 2 || !self.at(Punct::Comma) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut elems = vec![TupleElem { name: None, value: first }];
+        while self.eat(Punct::Comma) {
+            elems.push(TupleElem { name: None, value: self.parse_expr()? });
+        }
+        let span = start.to(elems.last().unwrap().value.span);
+        Ok(self.mk_expr(ExprKind::Tuple(elems), span))
     }
 
     /// An expression statement, or an assignment `place[, place…] op= e`.
@@ -212,7 +228,7 @@ impl Parser<'_> {
         }
         if let Some(op) = assign_op(self.kind()) {
             self.bump();
-            let value = Box::new(self.parse_expr()?);
+            let value = Box::new(self.parse_rhs(places.len())?);
             return Ok(StmtKind::Assign { places, op, value });
         }
         if places.len() > 1 {
@@ -445,6 +461,11 @@ impl Parser<'_> {
         let guard = if self.eat_kw(Keyword::If) { Some(self.parse_expr()?) } else { None };
         self.expect(Punct::FatArrow, "after the pattern of the match arm")?;
         let body = if self.at(Punct::LBrace) { self.parse_block_expr()? } else { self.parse_expr()? };
+        // An assignment is a statement, so it needs a block: `p => { x = 1 }`.
+        if assign_op(self.kind()).is_some() {
+            let span = self.span();
+            return self.fail(span, "an arm's body is an expression; put an assignment in a block: `=> { x = v }`");
+        }
         Ok(Arm { pats, guard, body, span: self.span_from(start) })
     }
 }

@@ -3,6 +3,7 @@
 
 use super::builtins::{BuiltinFn, builtin_fn, builtin_type};
 use super::func::{FnCx, LocalBinding, Obligation, error_expr};
+use super::infer::VarKind;
 use super::{DeclValue, ModuleId, ParamInfo};
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind, ExprKind};
@@ -429,9 +430,16 @@ impl<'a, 's> FnCx<'a, 's> {
         // variable of literal type converted to an integer type. A float type is taken
         // by literals only: `f64(i)` converts `i` from the integer type it ends up with.
         if self.infer.var_kind(v.ty).is_some() && (t.is_integer() || (t.is_float() && is_literal(&v))) {
-            if self.infer.unify(v.ty, t).is_err() {
-                self.error(x.span, format!("a float literal cannot have the integer type `{}`", t));
+            if self.infer.unify(v.ty, t).is_ok() {
+                return v;
             }
+            // A variable already restricted to other types, such as an index (§6.1):
+            // an ordinary conversion from the type it ends up with.
+            if !is_literal(&v) || !self.infer.var_kind(v.ty).is_some_and(|k| k == VarKind::Float) {
+                self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
+                return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
+            }
+            self.error(x.span, format!("a float literal cannot have the integer type `{}`", t));
             return v;
         }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });

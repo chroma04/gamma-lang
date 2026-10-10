@@ -1,0 +1,4 @@
+//! stage: check
+main :: fn() {
+    b := true || false //~ ERROR `||` is not an operator; use `or`
+}

@@ -258,6 +258,15 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                         }
                         ends = false;
                     }
+                    // A label: `name: with …`, also in an expression.
+                    Punct::Colon
+                        if toks.get(i + 1).is_some_and(|n| {
+                            matches!(n.kind, K::Keyword(Keyword::With | Keyword::For | Keyword::While))
+                        }) =>
+                    {
+                        tb = true;
+                        ends = false;
+                    }
                     Punct::Colon => {
                         // `name: T : value` binds a constant; the second colon is spaced.
                         let seen = match stack.last_mut() {

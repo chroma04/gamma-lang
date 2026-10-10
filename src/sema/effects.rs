@@ -137,7 +137,17 @@ impl<'a, 's> FnCx<'a, 's> {
             let eargs: Option<Vec<GenericArg>> =
                 params.iter().map(|p| binds.get(p).map(|t| GenericArg::Type(*t))).collect();
             let eref = match eargs {
-                Some(a) => EffectRef { effect: eff, args: a.into_boxed_slice() },
+                // An instantiation that is not available, where exactly one is: the
+                // arguments are coerced to that one (`yield(buf)` with `buf: []u8` in a
+                // function performing `Yield(string)`).
+                Some(a) => {
+                    let inferred = EffectRef { effect: eff, args: a.into_boxed_slice() };
+                    let avail = self.available(eff);
+                    match avail.as_slice() {
+                        [one] if *one != inferred => one.clone(),
+                        _ => inferred,
+                    }
+                }
                 None => {
                     let avail = self.available(eff);
                     match avail.as_slice() {

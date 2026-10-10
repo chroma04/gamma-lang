@@ -1,0 +1,5 @@
+//! stage: check
+// The handlers of a labeled `with` are outside its label's scope.
+main :: fn() \ {Out} {
+    v := L: with (handler Out { write_out(c) => { break L 7 } }) { 5 } //~ ERROR `L` is not a label of an enclosing
+}

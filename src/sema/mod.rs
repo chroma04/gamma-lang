@@ -195,6 +195,8 @@ pub struct Sema<'s> {
     pending_bodies: Vec<PendingBody>,
     /// Stack of declarations being resolved, for cycle reports.
     resolving: Vec<DeclId>,
+    /// Structural type aliases being resolved a second time (see `resolve_decl`).
+    alias_reentry: std::collections::HashSet<DeclId>,
     pub prelude: Option<ModuleId>,
     /// The core modules other than the prelude (`core/list`, `core/map`).
     pub core_modules: Vec<ModuleId>,
@@ -299,6 +301,7 @@ impl<'s> Sema<'s> {
             pending_bodies: vec![],
             checking: vec![],
             resolving: vec![],
+            alias_reentry: Default::default(),
             prelude: None,
             core_modules: vec![],
             packages: vec![],

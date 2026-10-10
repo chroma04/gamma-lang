@@ -427,7 +427,7 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 
 ### 4.5 Destructuring
 
-`a, b := e` requires `e` to be a tuple with exactly as many elements. Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
+`a, b := e` requires `e` to be a tuple with exactly as many elements; `a, b := 1, 2` is `a, b := (1, 2)`, as in multiple assignment (§4.7). Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
 
 Destructuring is the only multi-name binding form outside patterns (§9).
 
@@ -453,7 +453,7 @@ Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists
 
 The order of evaluation is: the place's sub-expressions (left to right), then the right side, then the store.
 
-Multiple assignment `a, b = (b, a)` assigns a tuple to a list of places; all right-side values are computed before any store, so it swaps.
+Multiple assignment `a, b = (b, a)` assigns a tuple to a list of places; all right-side values are computed before any store, so it swaps. The parentheses may be left out: with two or more places, a comma-separated list on the right is that tuple, so `a, b = b, a + b` is `a, b = (b, a + b)`.
 
 ---
 
@@ -1408,7 +1408,7 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`); an effect is instantiated by applying it to type arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. If `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal), and exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — that instantiation is used, and the arguments are typed accordingly. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 
 ### 12.2 Operation kinds
 

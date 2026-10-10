@@ -1,0 +1,22 @@
+// Constructions under any chain of type prefixes (§A.7 rule 12), and a structural
+// alias used by the struct it points to.
+Node :: struct { v: i32 }
+Link :: ?^Item
+Item :: struct { next: Link, v: i32 }
+
+main :: fn() \ {Out} {
+    n := Node(v: 1)
+    ptrs := [3]^Node(fill: &n)
+    opts := [2]?^Node(fill: null)
+    ptrs[1].v = 5
+    print("{} {} {}\n", (ptrs[0].v, opts[1] is null, n.v))
+    last := Item(next: null, v: 3)
+    first := Item(next: &last, v: 2)
+    cur: Link = &first
+    total := 0
+    while cur is not null {
+        total += cur?.v
+        cur = cur?.next
+    }
+    print("{}\n", total)
+}

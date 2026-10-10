@@ -314,7 +314,17 @@ impl Parser<'_> {
                 Some(_) => {}
                 None => chain = Some(op),
             }
-            self.bump();
+            let tok = self.bump();
+            // C's `&&` and `||`: two adjacent tokens here.
+            if matches!(op, BinOp::BitAnd | BinOp::BitOr)
+                && self.at(if op == BinOp::BitAnd { Punct::Amp } else { Punct::Pipe })
+                && self.span().lo == tok.span.hi
+            {
+                let span = tok.span.to(self.span());
+                let (c, word) = if op == BinOp::BitAnd { ("&&", "and") } else { ("||", "or") };
+                self.bump();
+                return self.fail(span, format!("`{}` is not an operator; use `{}`", c, word));
+            }
             let rhs = self.parse_shift()?;
             lhs = self.binary(op, lhs, rhs);
         }
@@ -784,6 +794,23 @@ impl Parser<'_> {
         let start = self.lo();
         self.bump();
         let label = self.eat_label();
+        // `break L v` with `L` not in scope: an identifier followed by something that
+        // cannot continue an expression.
+        if label.is_none()
+            && let TokenKind::Ident(sym) = self.kind()
+            && matches!(
+                self.nth(1),
+                TokenKind::Ident(_)
+                    | TokenKind::Int(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::Str(_)
+                    | TokenKind::Keyword(Keyword::Null | Keyword::True | Keyword::False)
+            )
+        {
+            let span = self.span();
+            let msg = format!("`{}` is not a label of an enclosing `while`, `for` or `with`", sym);
+            return self.fail(span, msg);
+        }
         let value = if can_begin_expr(self.kind()) { Some(Box::new(self.parse_expr()?)) } else { None };
         let span = self.span_from(start);
         Ok(self.mk_expr(ExprKind::Break { label, value }, span))
