@@ -2,7 +2,7 @@
 //! control-flow expressions.
 
 use super::DeclValue;
-use super::func::{FnCx, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
+use super::func::{FnCx, LabelValue, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
 use super::infer::{Fallback, VarKind};
 use super::untyped::Untyped;
 use crate::diag::Diagnostic;
@@ -1522,7 +1522,8 @@ impl<'a, 's> FnCx<'a, 's> {
             if is_continue && !self.labels[idx].is_loop {
                 self.error(span, "`continue` can only target a loop");
             }
-            return Some(Jump::Label { levels: 0, label: self.labels[idx].id });
+            let info = &self.labels[idx];
+            return Some(Jump::Label { levels: 0, label: info.id, value: info.value });
         }
         if self.in_defer {
             self.error(span, "a deferred statement may not `break` or `continue` out of itself");
@@ -1559,11 +1560,11 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             let f = &self.outer[k];
             if let Some(idx) = f.labels.iter().rposition(|x| x.name == Some(l.name)) {
-                let (is_loop, id) = (f.labels[idx].is_loop, f.labels[idx].id);
+                let (is_loop, id, value) = (f.labels[idx].is_loop, f.labels[idx].id, f.labels[idx].value);
                 if is_continue && !is_loop {
                     self.error(span, "`continue` can only target a loop");
                 }
-                return Some(Jump::Label { levels: levels + 1, label: id });
+                return Some(Jump::Label { levels: levels + 1, label: id, value });
             }
             frame_clause = f.clause.clone();
         }
@@ -1573,47 +1574,48 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn break_expr(&mut self, label: Option<ast::Ident>, value: Option<&ast::Expr>, span: Span) -> Expr {
         let Some(jump) = self.find_jump(label, span, false) else { return error_expr(span) };
-        let value = match (&jump, value) {
-            (Jump::Label { levels: 0, .. }, Some(v)) if self.clause.is_none() || label.is_none() => {
+        let clause_break_ty = self.clause.as_ref().and_then(|c| c.break_ty);
+        // Every `break` to a label is recorded: a `while true` loop finishes only if one
+        // targets it, and a `with` checks the values.
+        if let Jump::Label { levels, label, value: LabelValue::None | LabelValue::Loop(_) } = jump {
+            let depth = self.outer.len() - levels as usize;
+            self.label_breaks.entry((depth, label)).or_default().push((Ty::unit(), span));
+        }
+        let value = match (jump, value) {
+            (Jump::Label { value: LabelValue::None, .. }, Some(v)) => {
                 self.error(v.span, "a `while` loop has no value, so `break` takes no operand here");
                 None
             }
-            (_, v) => {
-                // A `break` that exits a `with` or a `for` over an iterator (§12.7, §13.2).
-                let clause = self.clause.clone();
-                match (&jump, clause.as_ref().and_then(|c| c.break_ty)) {
-                    (Jump::InstallingWith, Some(rt)) => {
-                        // The loop's value: the iterator's result type.
-                        match v {
-                            Some(v) => {
-                                let ex = self.expr(v, Some(rt));
-                                Some(Box::new(self.coerce(ex, rt)))
-                            }
-                            None => {
-                                if !rt.is_unit() && !rt.is_error() {
-                                    self.error(
-                                        span,
-                                        format!("this loop's value is `{}`, so `break` needs a value", rt),
-                                    );
-                                }
-                                None
-                            }
-                        }
+            (Jump::Label { value: LabelValue::None, .. }, None) | (Jump::ClauseReturn { .. }, _) => None,
+            // A `break` that exits a `for` over an iterator (§13.2).
+            (Jump::Label { value: LabelValue::Loop(rt), .. }, v) => self.loop_break_value(v, rt, span),
+            (Jump::InstallingWith, v) if let Some(rt) = clause_break_ty => self.loop_break_value(v, rt, span),
+            // A `break` that exits a `with` (§12.7): its value is checked against the
+            // `with`'s once the `with` is finished.
+            (Jump::Label { levels, label, value: LabelValue::With(expect) }, v) => {
+                let ex = v.map(|v| {
+                    let ex = self.expr(v, expect);
+                    match expect {
+                        Some(t) => self.coerce(ex, t),
+                        None => ex,
                     }
-                    (Jump::InstallingWith, None) => {
-                        let ex = v.map(|v| self.expr(v, None));
-                        let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
-                        if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
-                            self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
-                        }
-                        ex.map(Box::new)
-                    }
-                    _ => v.map(|v| Box::new(self.expr(v, None))),
+                });
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| expect.unwrap_or(e.ty));
+                let depth = self.outer.len() - levels as usize;
+                self.label_breaks.entry((depth, label)).or_default().push((ty, span));
+                ex.map(Box::new)
+            }
+            (Jump::InstallingWith, v) => {
+                let ex = v.map(|v| self.expr(v, None));
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
+                if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
+                    self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
                 }
+                ex.map(Box::new)
             }
         };
         match jump {
-            Jump::Label { levels, label } => {
+            Jump::Label { levels, label, .. } => {
                 mk(Ty::never(), tir::ExprKind::Break { target: Target::Label { levels, label }, value }, span)
             }
             Jump::InstallingWith => {
@@ -1623,9 +1625,25 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// The value of a `break` out of a `for` loop whose iterator returns `rt`.
+    fn loop_break_value(&mut self, v: Option<&ast::Expr>, rt: Ty, span: Span) -> Option<Box<Expr>> {
+        match v {
+            Some(v) => {
+                let ex = self.expr(v, Some(rt));
+                Some(Box::new(self.coerce(ex, rt)))
+            }
+            None => {
+                if !rt.is_unit() && !rt.is_error() {
+                    self.error(span, format!("this loop's value is `{}`, so `break` needs a value", rt));
+                }
+                None
+            }
+        }
+    }
+
     fn continue_expr(&mut self, label: Option<ast::Ident>, span: Span) -> Expr {
         match self.find_jump(label, span, true) {
-            Some(Jump::Label { levels, label }) => {
+            Some(Jump::Label { levels, label, .. }) => {
                 mk(Ty::never(), tir::ExprKind::Continue { target: Target::Label { levels, label } }, span)
             }
             // `continue` at clause level finishes the clause with `()` (§12.7.1).
@@ -1861,9 +1879,11 @@ pub fn suffix_type(s: crate::syntax::token::IntSuffix) -> Ty {
 }
 
 /// Where a `break` or `continue` goes.
+#[derive(Clone, Copy)]
 enum Jump {
-    /// A loop or `with` of the function `levels` frames up.
-    Label { levels: u32, label: tir::LabelId },
+    /// A loop or `with` of the function `levels` frames up, and what a `break` to
+    /// it supplies.
+    Label { levels: u32, label: tir::LabelId, value: LabelValue },
     /// Out of the `with` that installed the running clause's handler.
     InstallingWith,
     /// Finish the clause `levels` frames up, producing `()`.

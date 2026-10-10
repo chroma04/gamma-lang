@@ -291,7 +291,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             match s {
                 Scope::Block(defers) => {
                     for (is_err, body) in defers.iter().rev() {
-                        self.defer_body(*is_err, body, true);
+                        let guard = is_err.then_some("gm_errdefer_runs(&F.h)");
+                        self.defer_body(guard, body, true);
                     }
                 }
                 Scope::Loop { label, brk, cont } => {
@@ -318,16 +319,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line("goto gm_fprop;");
     }
 
-    /// The code of a deferred statement, run by a ladder or at the end of its block.
-    /// `unwinding` is true when it runs during a non-local exit: the exit in progress
-    /// is set aside while it runs, so the calls it makes return normally.
-    fn defer_body(&mut self, is_err: bool, body: &'a Expr, unwinding: bool) {
+    /// The code of a deferred statement, run by a ladder or at the end of its block,
+    /// only if `guard` (a C condition) holds when there is one. `unwinding` is true
+    /// when it runs during a non-local exit: the exit in progress is set aside while
+    /// it runs, so the calls it makes return normally.
+    fn defer_body(&mut self, guard: Option<&str>, body: &'a Expr, unwinding: bool) {
         let saved_scopes = std::mem::take(&mut self.scopes);
         let saved_check = std::mem::replace(&mut self.no_check, true);
-        if is_err {
-            self.line("if (gm_errdefer_runs(&F.h)) {");
-        } else {
-            self.line("{");
+        match guard {
+            Some(g) => self.line(&format!("if ({}) {{", g)),
+            None => self.line("{"),
         }
         self.indent += 1;
         if unwinding {
@@ -347,6 +348,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Starts a non-local exit of `kind` to `frame` (a `gm_frame *`) and `label`.
     pub fn start_exit(&mut self, kind: &str, frame: &str, label: &str, is_err: &str) {
+        if frame == "(&F.h)" && !self.outlined && self.local_exit(kind, label, is_err) {
+            return;
+        }
         self.line(&format!(
             "gm_unw.kind = {}; gm_unw.frame = {}; gm_unw.label = {}; gm_unw.is_err = {};",
             kind, frame, label, is_err
@@ -354,6 +358,53 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let saved = std::mem::replace(&mut self.no_check, false);
         self.ladder();
         self.no_check = saved;
+    }
+
+    /// An exit whose target is in this C function jumps there directly, running the
+    /// defers it crosses, without going through `gm_unw`: the frame's address need
+    /// not be taken, so the C compiler can keep its locals in registers. Returns false
+    /// (emitting nothing) when the target is not statically known.
+    fn local_exit(&mut self, kind: &str, label: &str, is_err: &str) -> bool {
+        let target = match kind {
+            "GM_RETURN" => None,
+            "GM_BREAK" | "GM_CONTINUE" => {
+                let found = self.scopes.iter().rposition(|s| match s {
+                    Scope::Loop { label: l, .. } => l.0.to_string() == label,
+                    Scope::With { label: l, .. } => kind == "GM_BREAK" && l.0.to_string() == label,
+                    Scope::Block(_) => false,
+                });
+                match found {
+                    Some(i) => Some(i),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let scopes = std::mem::take(&mut self.scopes);
+        let start = target.map_or(0, |i| i + 1);
+        // Errdefers run on a `return` of an error only: a `break` or `continue` within
+        // the function never runs them.
+        let err_guard = (kind == "GM_RETURN" && is_err != "0").then_some(is_err);
+        for s in scopes[start..].iter().rev() {
+            if let Scope::Block(defers) = s {
+                for (is_errdefer, body) in defers.iter().rev() {
+                    match (is_errdefer, err_guard) {
+                        (false, _) => self.defer_body(None, body, false),
+                        (true, Some(g)) => self.defer_body(Some(g), body, false),
+                        (true, None) => {}
+                    }
+                }
+            }
+        }
+        let dest = match target.map(|i| &scopes[i]) {
+            None => "gm_fret".to_string(),
+            Some(Scope::Loop { brk, cont, .. }) => if kind == "GM_BREAK" { brk } else { cont }.clone(),
+            Some(Scope::With { end, .. }) => end.clone(),
+            Some(Scope::Block(_)) => unreachable!(),
+        };
+        self.scopes = scopes;
+        self.line(&format!("goto {};", dest));
+        true
     }
 
     // --- blocks and statements ------------------------------------------------------------------
@@ -369,7 +420,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         // Leaving normally runs the plain defers (not the errdefers), last first.
         for (is_err, body) in defers.iter().rev() {
             if !is_err {
-                self.defer_body(false, body, false);
+                self.defer_body(None, body, false);
             }
         }
         Ok(match result {

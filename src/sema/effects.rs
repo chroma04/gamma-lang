@@ -1,7 +1,7 @@
 //! Effects and handlers (§12): performing operations, handler literals,
 //! `with`, and `for` over iterator calls (§13.2).
 
-use super::func::{ClauseInfo, FnCx, LocalBinding, NestedFn, error_expr};
+use super::func::{ClauseInfo, FnCx, LabelValue, LocalBinding, NestedFn, error_expr};
 use super::pattern::PatCtx;
 use super::{FnSig, ParamInfo};
 use crate::source::Span;
@@ -349,7 +349,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 None
             }
         };
-        let label = self.new_label(w.label.map(|l| l.name), false);
+        let label = self.new_label(w.label.map(|l| l.name), false, LabelValue::With(expect.filter(|_| value)));
         let start = self.performed.len();
         let n = self.handled.len();
         self.handled.extend(handled.iter().cloned());
@@ -380,15 +380,23 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         // Values of clause-level `break`s must agree with the body's value (§12.7).
-        let ty = if value { expect.unwrap_or(body.ty) } else { Ty::unit() };
+        // So must those of `break`s to the `with`'s label (§8.5).
+        let mut breaks: Vec<(Ty, Span)> =
+            literal_ids.iter().flat_map(|id| self.sema.handler_breaks.get(id).cloned().unwrap_or_default()).collect();
+        breaks.extend(self.label_breaks.remove(&(self.outer.len(), label)).unwrap_or_default());
+        let mut ty = if value { expect.unwrap_or(body.ty) } else { Ty::unit() };
+        // A body that never finishes leaves the value to the `break`s.
+        if ty.is_never()
+            && let Some((bt, _)) = breaks.iter().find(|(bt, _)| !bt.is_never())
+        {
+            ty = *bt;
+        }
         let body = if value && !body.ty.is_never() { self.coerce(body, ty) } else { body };
-        for id in literal_ids {
-            for (bt, bspan) in self.sema.handler_breaks.get(&id).cloned().unwrap_or_default() {
-                let bt = self.infer.resolve(bt);
-                let agrees = bt == ty || ((bt.has_infer() || ty.has_infer()) && self.infer.unify(bt, ty).is_ok());
-                if !bt.is_never() && !ty.is_error() && !agrees {
-                    self.error(bspan, format!("this `break` gives the `with` a `{}`, but its value is `{}`", bt, ty));
-                }
+        for (bt, bspan) in breaks {
+            let bt = self.infer.resolve(bt);
+            let agrees = bt == ty || ((bt.has_infer() || ty.has_infer()) && self.infer.unify(bt, ty).is_ok());
+            if !bt.is_never() && !ty.is_error() && !agrees {
+                self.error(bspan, format!("this `break` gives the `with` a `{}`, but its value is `{}`", bt, ty));
             }
         }
         // A clause of an `esc` or `ctl` operation can complete the `with` even when its
@@ -583,7 +591,7 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(l) = f.label {
             self.declare(l.name, LocalBinding::Label, l.span);
         }
-        let label = self.new_label(f.label.map(|l| l.name), true);
+        let label = self.new_label(f.label.map(|l| l.name), true, LabelValue::Loop(result_ty));
         let hid = HandlerId(self.sema.prog.handlers.len() as u32);
         self.sema.prog.handlers.push(tir::HandlerLit { effect: eref.clone(), clauses: vec![] });
         // The clause `yield(x) => { p :: x; B }`.
@@ -627,6 +635,7 @@ impl<'a, 's> FnCx<'a, 's> {
         );
         self.finish_clause(fn_id, vec![xid], m);
         self.labels.pop();
+        self.label_breaks.remove(&(self.outer.len(), label));
         self.pop_scope();
         self.sema.prog.handlers[hid.index()].clauses = vec![fn_id];
         let handler = mk(Ty::intern(TyKind::Handler(hid.0)), tir::ExprKind::HandlerRef(hid), span);

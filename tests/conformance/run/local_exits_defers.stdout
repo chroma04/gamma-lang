@@ -1,0 +1,33 @@
+  body 0 0
+  end inner 0 0
+  end inner 0 1
+  body 0 2
+  end inner 0 2
+end outer 0
+  end inner 1 0
+end outer 1
+  body 2 0
+  end inner 2 0
+  end inner 2 1
+  end inner 2 2
+end outer 2
+n = 3
+check 4 done
+inner block
+twice 4 done
+9
+check -3 failed
+check -3 done
+inner block
+twice -3 failed
+twice -3 done
+!.Bad(-3)
+saw 1
+saw 3
+saw 6
+search over
+6
+iteration 0 left
+iteration 1 left
+with body left
+7

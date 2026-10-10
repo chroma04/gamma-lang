@@ -614,6 +614,21 @@ impl Parser<'_> {
                 self.bump();
                 Ok(self.mk_expr(ExprKind::Uninit, span))
             }
+            // A labeled `with` or `for` used as a value (A.5).
+            TokenKind::Ident(_)
+                if self.nth_is(1, Punct::Colon)
+                    && matches!(self.nth(2), TokenKind::Keyword(Keyword::With | Keyword::For)) =>
+            {
+                let label = self.parse_ident("a label")?;
+                self.bump();
+                if self.nth_is_kw(0, Keyword::With) {
+                    self.deny_in_head("a `with` expression")?;
+                    self.parse_with(Some(label))
+                } else {
+                    self.deny_in_head("a `for` expression")?;
+                    self.parse_for(Some(label))
+                }
+            }
             TokenKind::Ident(name) => {
                 if *name == self.words.cont && self.nth_is(1, Punct::LParen) {
                     return self.parse_cont_type();

@@ -1,7 +1,7 @@
 //! Sequences: slicing (§7.9), membership `in` (§7.7) and `for` over arrays and
 //! slices (§13.2).
 
-use super::func::{FnCx, LocalBinding, Obligation, block_of, error_expr};
+use super::func::{FnCx, LabelValue, LocalBinding, Obligation, block_of, error_expr};
 use super::infer::Fallback;
 use super::pattern::PatCtx;
 use crate::source::Span;
@@ -310,9 +310,10 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(pat_ast.span, "a `for` pattern must match every value (it must be irrefutable)");
         }
         self.declare_binds(binds);
-        let id = self.new_label(f.label.map(|l| l.name), true);
+        let id = self.new_label(f.label.map(|l| l.name), true, LabelValue::Loop(Ty::unit()));
         let body = self.block(&f.body, false);
         self.labels.pop();
+        self.label_breaks.remove(&(self.outer.len(), id));
         self.pop_scope();
         let arm = tir::Arm { pat, guard: None, body };
         let m = mk(Ty::unit(), tir::ExprKind::Match { scrutinee: Box::new(item), arms: vec![arm] }, span);
