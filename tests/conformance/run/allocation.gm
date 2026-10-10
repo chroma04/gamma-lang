@@ -1,9 +1,17 @@
 // Allocation through the core library (§15.2, §21.2, §21.5).
+Grid :: struct { cells: [16]u8 }
+
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     p := try new(i32, 5)
     p^ += 1
     print("new: {}\n", p^)
     destroy(i32, p)
+
+    // An uninitialized plain-data object.
+    g := try new(Grid, ---)
+    for i in 0..16 { g.cells[i] = i.trunc(u8) }
+    print("grid: {} {}\n", (g.cells[3], g.cells[15]))
+    destroy(Grid, g)
 
     s := try make_fill(u8, 4, 7)
     s[1] = 9

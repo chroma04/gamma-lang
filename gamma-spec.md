@@ -532,7 +532,7 @@ Layout: `N` elements at consecutive multiples of `stride(T)` (= `@size_of(T)`, w
 
 `[]T` and `[]const T` are a pair `(ptr: [^]T, len: usize)` (`[^]const T` for the `const` form), laid out as a struct with those two fields in that order. The fields can be read but not assigned; build a slice by slicing (§7.9).
 
-An empty slice still holds a non-null, suitably aligned pointer, which must not be dereferenced.
+An empty slice still holds a non-null, suitably aligned pointer, which must not be dereferenced. `empty_slice(T)` (§21.1) is an empty `[]T`, for when there is nothing to slice.
 
 ### 5.8 Strings
 
@@ -767,6 +767,8 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 | `U` integer | `T` is a `#bits(U)` struct whose fields are all `bool`/integers (every bit pattern is valid) |
 
 For `usize` and `isize` the rule is applied against every supported target (pointer width ≥ 32): `usize(x)` is permitted for `x: uN` with N ≤ 32, and so on. Converting between `usize`/`isize` and wider fixed-width types uses the methods of §6.6.
+
+When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.round(f64)`.
 
 ### 6.6 Lossy and reinterpreting conversions
 
@@ -2365,7 +2367,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation

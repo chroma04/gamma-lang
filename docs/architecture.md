@@ -329,7 +329,21 @@ effect instance and calls the clause from its table. Handler declarations go
 through small thunks that load the handler value. The ambient `Out`, `Err` and
 `Env` have native nodes served by the runtime.
 
-**Non-local exits.** `break`, `continue`, `return` and `try` aimed at another
+**Handler specialization.** A `with` that installs a single handler literal
+around a direct call to a function performing its effect — every `for` loop over
+an iterator — calls a clone of that function specialized for the handler
+(Appendix D.3 of the specification; `Spec` in `src/cgen/func.rs`). In the clone,
+the handler's node is known to be `cx`, so each perform of the effect outside
+any `with` of the clone calls the clause by name instead of searching the
+context and calling through the table, and the C compiler can inline the loop
+body into the iterator. `ctl` operations and the bodies of `with … on` keep the
+general path. Clones share the frame struct of their function and are generated
+on demand, at most one per function and handler literal.
+
+**Non-local exits.** An exit whose target is in the same C function runs the
+deferred statements it crosses and jumps there with `goto`; since nothing then
+takes the frame's address, the C compiler can keep the locals of simple
+functions in registers. `break`, `continue`, `return` and `try` aimed at another
 frame, clause exits to a `with`, and `Env.exit` set a global exit record and
 return. After each call that may exit this way, the caller tests the record and
 runs its *ladder*: the pending deferred statements from the innermost scope

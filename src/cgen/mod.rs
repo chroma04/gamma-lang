@@ -93,6 +93,9 @@ fn generate_entries(
         helpers: helpers::Helpers::default(),
         reachable: vec![],
         queued: vec![false; prog.fns.len()],
+        frames_done: vec![false; prog.fns.len()],
+        specs: std::collections::HashSet::new(),
+        spec_queue: vec![],
         handler_tables: String::new(),
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
@@ -104,9 +107,7 @@ fn generate_entries(
     for (_, f) in &prog.exports {
         g.queue(*f);
     }
-    while let Some(f) = g.reachable.pop() {
-        func::gen_fn(&mut g, f)?;
-    }
+    g.drain()?;
     let consts = g.gen_consts()?;
     let exports = g.gen_exports()?;
     let main = g.gen_main(entries, select)?;
@@ -148,6 +149,11 @@ pub struct Gen<'a> {
     pub helpers: helpers::Helpers,
     reachable: Vec<FnId>,
     queued: Vec<bool>,
+    /// Functions whose frame struct has been emitted.
+    frames_done: Vec<bool>,
+    /// Specialized clones requested so far, and those still to generate.
+    specs: std::collections::HashSet<(FnId, func::Spec)>,
+    spec_queue: Vec<(FnId, func::Spec)>,
     pub handler_tables: String,
     /// Libraries to link, from foreign blocks.
     pub libs: std::collections::BTreeSet<String>,
@@ -166,6 +172,37 @@ impl<'a> Gen<'a> {
 
     pub fn fn_name(&self, f: FnId) -> String {
         format!("gm_f{}", f.0)
+    }
+
+    /// The C name of the clone of `f` specialized by `s`.
+    pub fn spec_name(&self, f: FnId, s: func::Spec) -> String {
+        format!("gm_f{}_h{}", f.0, s.handler)
+    }
+
+    /// Marks the clone of `f` specialized by `s` as needed; returns its C name.
+    pub fn queue_spec(&mut self, f: FnId, s: func::Spec) -> String {
+        if self.specs.insert((f, s)) {
+            self.spec_queue.push((f, s));
+        }
+        self.spec_name(f, s)
+    }
+
+    /// Generates every function and clone queued so far, and those they reach.
+    fn drain(&mut self) -> CResult<()> {
+        loop {
+            if let Some(f) = self.reachable.pop() {
+                func::gen_fn(self, f, None)?;
+            } else if let Some((f, s)) = self.spec_queue.pop() {
+                func::gen_fn(self, f, Some(s))?;
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    /// True if the frame struct of `f` has been emitted; marks it as emitted.
+    pub fn frame_done(&mut self, f: FnId) -> bool {
+        std::mem::replace(&mut self.frames_done[f.index()], true)
     }
 
     /// The number identifying an effect instance in handler contexts.
@@ -326,9 +363,7 @@ impl<'a> Gen<'a> {
             }
         }
         // Constants may refer to functions not otherwise reached.
-        while let Some(f) = self.reachable.pop() {
-            func::gen_fn(self, f)?;
-        }
+        self.drain()?;
         init.push_str("}\n");
         Ok(format!("{}{}", decls, init))
     }

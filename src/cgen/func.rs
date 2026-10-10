@@ -25,9 +25,27 @@ pub enum Scope<'a> {
     With { label: LabelId, end: String },
 }
 
+/// A clone of a function specialized for the handler literal installed around its
+/// call (Appendix D.3): performs of that effect at the function's own level call the
+/// clause directly, and the C compiler can inline it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Spec {
+    /// The handler literal.
+    pub handler: u32,
+    /// The effect instance it handles (see `Gen::effect_id`).
+    pub effect: u32,
+}
+
 pub struct FnGen<'g, 'a> {
     pub g: &'g mut Gen<'a>,
     pub fid: FnId,
+    /// Distinguishes the C names of this function's helpers from those of its
+    /// specialized clones.
+    pub tag: String,
+    /// Set when generating a specialized clone: the node of the handler is `cx`.
+    pub spec: Option<Spec>,
+    /// The call that a `with` being generated specializes for its handler.
+    pub spec_call: Option<(*const Expr, Spec)>,
     pub def: &'a FnDef,
     pub out: String,
     pub indent: usize,
@@ -44,8 +62,8 @@ pub struct FnGen<'g, 'a> {
     pub temp_bytes: u64,
 }
 
-/// Generates function `f` into `g`.
-pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
+/// Generates function `f` into `g`, or its clone specialized by `spec`.
+pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
     let prog = g.prog;
     let def = &prog.fns[f.index()];
     if let FnKind::Foreign { .. } = def.kind {
@@ -54,7 +72,10 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     let Some(body) = &def.body else {
         return unsupported(def.span, format!("the function `{}` has no body", def.name));
     };
-    // The frame struct.
+    if g.frame_done(f) {
+        return gen_body(g, f, def, body, spec);
+    }
+    // The frame struct, shared by the function and its clones.
     let mut frame = format!("struct gm_fr{} {{\n    gm_frame h;\n", f.0);
     for (i, l) in def.locals.iter().enumerate() {
         let _ = writeln!(frame, "    {} l{}; /* {} */", g.ty.cty(l.ty), i, l.name);
@@ -67,6 +88,10 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
     }
     frame.push_str("};\n");
     g.frames.push_str(&frame);
+    gen_body(g, f, def, body, spec)
+}
+
+fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: Option<Spec>) -> CResult<()> {
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
     let plain = g.is_plain(f);
@@ -93,13 +118,23 @@ pub fn gen_fn(g: &mut Gen, f: FnId) -> CResult<()> {
         hint_attrs(def.hints),
         conv_attr(def.callconv),
         ret,
-        g.fn_name(f),
+        match spec {
+            Some(s) => g.spec_name(f, s),
+            None => g.fn_name(f),
+        },
         params.join(", ")
     );
     let _ = writeln!(g.protos, "{};", sig);
+    let tag = match spec {
+        Some(s) => format!("{}_h{}", f.0, s.handler),
+        None => f.0.to_string(),
+    };
     let mut fg = FnGen {
         g,
         fid: f,
+        tag,
+        spec,
+        spec_call: None,
         def,
         out: String::new(),
         indent: 1,

@@ -714,6 +714,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 // A function type with parameters still unbound still helps a function
                 // literal argument: it takes the parts that are known.
                 let partial = matches!(expect.kind(), TyKind::Fn(_) | TyKind::FnPtr(_));
+                // `---` for a parameter whose type is known: `new(T, ---)`.
+                if let ast::ExprKind::Uninit = e.kind
+                    && !has_param(expect)
+                {
+                    values[*i] = Some(self.arg_value(e, expect));
+                    continue;
+                }
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
                 let t = self.infer.resolve(v.ty);
                 if t.has_infer() {

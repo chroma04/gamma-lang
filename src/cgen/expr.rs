@@ -4,12 +4,12 @@
 //! expression for its value (usually a temporary). Operands are evaluated into
 //! temporaries in order, so evaluation order is the program's.
 
-use super::func::{FnGen, Scope};
+use super::func::{FnGen, Scope, Spec};
 use super::types::Repr;
 use super::{CResult, conv_attr, unsupported};
 use crate::tir::{
-    AdtKind, Arm, Callee, Coercion, CondPart, Expr, ExprKind, FnId, HandlerValue, LabelId, Lift, Pat, PatKind, Target,
-    WriteSink,
+    AdtKind, Arm, Callee, Coercion, CondPart, Expr, ExprKind, FnId, FnKind, HandlerValue, LabelId, Lift, Pat, PatKind,
+    Target, WriteSink,
 };
 use crate::types::{CallConv, EffectRef, FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
@@ -961,7 +961,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
             },
             None => "NULL".into(),
         };
-        let name = self.g.callee_name(f);
+        let name = match self.spec_call {
+            Some((call, s)) if std::ptr::eq(call, e) => {
+                self.spec_call = None;
+                self.g.queue_spec(f, s)
+            }
+            _ => self.g.callee_name(f),
+        };
         let r = if self.g.is_plain(f) {
             // C's `_Bool` crosses the boundary as 0 or 1 either way.
             let tys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
@@ -1086,6 +1092,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         ret: Ty,
     ) -> CResult<String> {
         let id = self.g.effect_id(effect);
+        if let Some(r) = self.direct_perform(id, effect, op, vals, tys, ret) {
+            return Ok(r);
+        }
         let n = format!("pn{}", self.fresh());
         let cx = self.cx.clone();
         let loc = self.loc(e);
@@ -1122,6 +1131,60 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Some(r) => r,
             None => self.zero(ret),
         })
+    }
+
+    /// In a specialized clone, a perform of the effect it is specialized for, outside
+    /// any `with` of the clone, calls the clause of the handler literal directly: the
+    /// handler's node is `cx`. Returns `None` (emitting nothing) otherwise.
+    fn direct_perform(
+        &mut self,
+        id: u32,
+        effect: &EffectRef,
+        op: u32,
+        vals: &[String],
+        tys: &[Ty],
+        ret: Ty,
+    ) -> Option<String> {
+        let s = self.spec?;
+        // In the body of a `with … on`, moved to a function of its own, `cx` is the
+        // fiber's context instead.
+        if s.effect != id || self.cx != "cx" || self.outlined || self.g.prog.ctl_ops.contains(&(effect.effect, op)) {
+            return None;
+        }
+        let clause = *self.g.prog.handlers[s.handler as usize].clauses.get(op as usize)?;
+        let def = &self.g.prog.fns[clause.index()];
+        let ptys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
+        if def.ret != ret || ptys != tys {
+            return None;
+        }
+        self.g.queue(clause);
+        let call = format!("{}(cx->env, cx->hctx, cx{})", self.g.fn_name(clause), join_args(vals));
+        let r = self.call_result(ret, &call);
+        self.check_unwind();
+        Some(r)
+    }
+
+    /// The call in `body` that a `with` installing `handlers` around it can make to a
+    /// clone specialized for the handler (Appendix D.3): a single handler literal
+    /// around a direct call to a function that performs its effect.
+    fn specializable(&mut self, handlers: &[HandlerValue], body: &'a Expr) -> Option<(*const Expr, Spec)> {
+        let [HandlerValue::Literal(h)] = handlers else { return None };
+        let TyKind::Handler(hid) = h.ty.kind() else { return None };
+        let mut call = body;
+        while let ExprKind::Block(b) = &call.kind
+            && b.stmts.is_empty()
+        {
+            call = b.tail.as_ref()?;
+        }
+        let ExprKind::Call { callee: Callee::Fn(f), .. } = &call.kind else { return None };
+        let def = &self.g.prog.fns[f.index()];
+        let effect = &self.g.prog.handlers[*hid as usize].effect;
+        if def.kind != FnKind::Named || def.body.is_none() || !def.effects.effects.contains(effect) {
+            return None;
+        }
+        let effect = effect.clone();
+        let spec = Spec { handler: *hid, effect: self.g.effect_id(&effect) };
+        Some((call as *const Expr, spec))
     }
 
     /// The runtime's handlers for the ambient `Out`, `Err` and `Env` (§12.9).
@@ -1232,7 +1295,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let saved = std::mem::replace(&mut self.cx, cur);
         let end = format!("we{}", self.fresh());
         self.scopes.push(Scope::With { label, end: end.clone() });
+        let saved_spec = self.spec_call.take();
+        self.spec_call = self.specializable(handlers, body);
         let v = self.expr(body);
+        self.spec_call = saved_spec;
         self.scopes.pop();
         self.cx = saved;
         let v = v?;

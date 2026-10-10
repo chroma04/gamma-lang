@@ -77,13 +77,21 @@ impl<'a, 's> FnCx<'a, 's> {
             Obligation::Conversion { from, to, span } => {
                 let from = self.infer.resolve(from);
                 if !from.is_error() && !self.sema.conversion_ok(from, to) {
-                    self.error(
-                        span,
-                        format!(
-                            "`{}({})` is not a lossless conversion; use `.trunc`, `.checked`, `.sat` or `.round` (§6.6)",
-                            to, from
-                        ),
-                    );
+                    // Name the methods that apply to this pair of types (§6.6).
+                    let numeric = |t: Ty| t.is_integer() || t.is_float();
+                    let methods: &[&str] = match (from.is_float(), to.is_float()) {
+                        _ if !numeric(from) || !numeric(to) => &[],
+                        (false, false) => &["trunc", "checked", "sat"],
+                        (true, false) => &["trunc", "round", "checked", "sat"],
+                        _ => &["round"],
+                    };
+                    let hint = if methods.is_empty() {
+                        String::new()
+                    } else {
+                        let list: Vec<String> = methods.iter().map(|m| format!("`x.{}({})`", m, to)).collect();
+                        format!("; use {}", list.join(", "))
+                    };
+                    self.error(span, format!("`{}({})` is not a lossless conversion{} (§6.6)", to, from, hint));
                 }
             }
             Obligation::Ord { ty, span } => {

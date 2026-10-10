@@ -1,0 +1,99 @@
+// A `with` that installs one handler literal around a call may run a copy of the
+// callee specialized for that handler (Appendix D.3). Whatever the back end does,
+// the behavior must be the same: these cases exercise the boundaries.
+Log :: effect { log: fn(msg: string, n: i32) -> i32 }
+Stop :: effect { stop: esc(code: i32) -> never }
+Gen :: effect { emit: ctl(x: i32) }
+
+count :: fn(n: i32) \ {Yield(i32), Out} {
+    defer print("count({}) done\n", n)
+    i := 0
+    while i < n {
+        yield(i)
+        i += 1
+    }
+}
+
+// A perform inside a `with` of the same effect goes to the inner handler.
+shadowed :: fn() \ {Yield(i32)} {
+    yield(1)
+    with (handler Yield(i32) { yield(x) => { } }) {
+        yield(100)
+    }
+    yield(2)
+}
+
+// Recursion: the inner calls are made through `for` loops of their own.
+Tree :: struct { val: i32, kids: []const Tree }
+walk :: fn(t: ^const Tree) \ {Yield(i32)} {
+    yield(t.val)
+    for k in t.kids { for v in walk(&k) { yield(v) } }
+}
+
+// A direct recursive call passes the same handler on.
+down :: fn(n: i32) \ {Yield(i32)} {
+    if n is 0 { return }
+    yield(n)
+    down(n - 1)
+}
+
+work :: fn(base: i32) -> i32 \ {Log} {
+    a := log("first", base)
+    b := log("second", a)
+    return a + b
+}
+
+checked_sum :: fn(xs: []const i32) -> i32 \ {Stop} {
+    total := 0
+    for x in xs {
+        if x < 0 { stop(x) }
+        total += x
+    }
+    return total
+}
+
+numbers :: fn(n: i32) \ {Gen} {
+    for i in 0..n { emit(i) }
+}
+
+pairs :: fn(T: type, xs: []const T) \ {Yield((T, T))} {
+    for i in 1..xs.len { yield((xs[i - 1], xs[i])) }
+}
+
+main :: fn() \ {Out} {
+    total := 0
+    for x in count(4) { total += x }
+    print("total {}\n", total)
+    for x in count(10) {
+        if x is 2 { break }
+        print("x {}\n", x)
+    }
+    for x in shadowed() { print("shadowed {}\n", x) }
+    leaves := [2]Tree(Tree(val: 3, kids: empty_slice(Tree)), Tree(val: 4, kids: empty_slice(Tree)))
+    mid := [1]Tree(Tree(val: 2, kids: leaves[..]))
+    root := Tree(val: 1, kids: mid[..])
+    for v in walk(&root) { print("node {}\n", v) }
+    for v in down(3) { print("down {}\n", v) }
+    calls := 0
+    r := with (handler Log { log(msg, n) => { calls += 1; print("{} {}\n", (msg, n)); n * 10 } }) {
+        work(2)
+    }
+    print("work {} after {} calls\n", (r, calls))
+    xs := [4]i32(1, 2, -3, 4)
+    s := with (handler Stop { stop(c) => break c * 100 }) {
+        checked_sum(xs[..2])
+    }
+    t := with (handler Stop { stop(c) => break c * 100 }) {
+        checked_sum(xs[..])
+    }
+    print("sums {} {}\n", (s, t))
+    stack: [32768]u8 = ---
+    got := 0
+    with (handler Gen { emit(x, k) => { got += x; resume k() } }) on stack[..] {
+        numbers(5)
+    }
+    print("emitted {}\n", got)
+    ws := [4]string("a", "b", "c", "d")
+    for (p, q) in pairs(string, ws[..]) { print("{}{} ", (p, q)) }
+    print("\n")
+}
