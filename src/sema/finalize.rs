@@ -86,12 +86,12 @@ impl<'a, 's> FnCx<'a, 's> {
                         _ => &["round"],
                     };
                     let hint = if methods.is_empty() {
-                        String::new()
+                        " (§6.5)".to_string()
                     } else {
                         let list: Vec<String> = methods.iter().map(|m| format!("`x.{}({})`", m, to)).collect();
-                        format!("; use {}", list.join(", "))
+                        format!("; use {} (§6.6)", list.join(", "))
                     };
-                    self.error(span, format!("`{}({})` is not a lossless conversion{} (§6.6)", to, from, hint));
+                    self.error(span, format!("`{}({})` is not a lossless conversion{}", to, from, hint));
                 }
             }
             Obligation::Ord { ty, span } => {

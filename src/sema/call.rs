@@ -442,6 +442,12 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(x.span, format!("a float literal cannot have the integer type `{}`", t));
             return v;
         }
+        // A value that coerces to `T` implicitly (§6.4) converts by that coercion:
+        // `string(buf)` with `buf: []u8`.
+        let vt = self.infer.resolve(v.ty);
+        if !vt.has_infer() && vt != t && self.coercion_steps(vt, t).is_some() {
+            return self.coerce(v, t);
+        }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
         mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
     }

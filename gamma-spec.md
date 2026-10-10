@@ -754,7 +754,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 ### 6.5 Lossless conversion: `T(x)`
 
-`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. It is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
+`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
 
 | `x: S` | `T(x)` permitted when |
 | --- | --- |
@@ -1923,6 +1923,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 
 - A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
+- In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
 - Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
 - A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
 

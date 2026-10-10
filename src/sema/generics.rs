@@ -693,6 +693,8 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             (_, r) => r,
         };
+        // Type parameters the receiver fixes: arguments are coerced to them (§16.2).
+        let fixed: Vec<ParamId> = binds.keys().copied().collect();
         for (i, e) in &sources {
             let p = &sig.params[*i];
             if let Some(pid) = p.generic
@@ -723,6 +725,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     continue;
                 }
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
+                let mut mentions_free = false;
+                p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
+                if !fixed.is_empty() && !mentions_free && !has_param(expect) {
+                    values[*i] = Some(self.coerce(v, expect));
+                    continue;
+                }
                 let t = self.infer.resolve(v.ty);
                 if t.has_infer() {
                     literal_args.push((p.ty, v.ty));
