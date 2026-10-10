@@ -1,0 +1,7 @@
+//! stage: check
+// `is` on types compares two types; a value is not a type.
+f :: fn(x: i32) -> bool {
+    a := x is i32               //~ ERROR `is` compares a type only with another type
+    return a
+}
+main :: fn() {}

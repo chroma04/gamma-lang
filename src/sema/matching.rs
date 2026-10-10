@@ -164,6 +164,11 @@ impl<'a, 's> FnCx<'a, 's> {
         {
             return None;
         }
+        // `x is null` tests for absence, which needs no equality on the payload (§7.6).
+        let optional = matches!(self.infer.resolve(lhs_ty).kind(), crate::types::TyKind::Optional(_));
+        if optional && matches!(pat.kind, PatternKind::Null) {
+            return Some(pat);
+        }
         if contains_wildcard(&pat) || self.omits_payload(&pat, lhs_ty) || self.binds_unknown_name(&pat) {
             return Some(pat);
         }

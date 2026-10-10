@@ -78,6 +78,11 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
                 self.range_value(*op == ast::BinOp::RangeIncl, lhs, rhs, expect, span)
             }
+            ExprKind::Binary { op: op @ (ast::BinOp::Is | ast::BinOp::IsNot), lhs, rhs }
+                if self.denotes_type(lhs) || self.denotes_type(rhs) =>
+            {
+                self.type_is(*op == ast::BinOp::IsNot, lhs, rhs, span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
@@ -517,7 +522,7 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.unify(a, b).is_err() {
             let (a, b) = (self.infer.resolve(a), self.infer.resolve(b));
             let mut d = Diagnostic::error(span, format!("{} have different types: `{}` and `{}`", what, a, b));
-            let is_array = |t: Ty| matches!(t.kind(), TyKind::Array { .. });
+            let is_array = |t: Ty| t.is_array();
             if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
                 d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
             }
@@ -530,6 +535,43 @@ impl<'a, 's> FnCx<'a, 's> {
             return Ty::error();
         }
         self.infer.shallow(a)
+    }
+
+    /// True if `e` denotes a type rather than a value: a type parameter in scope, a type
+    /// name or instantiation, or a type expression.
+    fn denotes_type(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Paren(inner) => self.denotes_type(inner),
+            ExprKind::Ident(id) => {
+                if self.lookup_local(id.name).is_some() {
+                    return false;
+                }
+                self.sema.type_params.iter().any(|(n, _)| *n == id.name) || self.type_of_name(e).is_some()
+            }
+            ExprKind::Call { .. } | ExprKind::Field { .. } => self.type_of_name(e).is_some(),
+            ExprKind::Intrinsic { name, .. } => name.name.as_str() == "type_of",
+            _ => {
+                let module = self.module;
+                self.sema.looks_like_type(module, e)
+            }
+        }
+    }
+
+    /// `A is B` on types (§17): a compile-time `bool`, decided when a generic body is
+    /// instantiated if either side mentions its parameters.
+    fn type_is(&mut self, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        if !self.denotes_type(lhs) || !self.denotes_type(rhs) {
+            self.error(span, "`is` compares a type only with another type");
+            return error_expr(span);
+        }
+        let (a, b) = (self.resolve_type(lhs), self.resolve_type(rhs));
+        if a.is_error() || b.is_error() {
+            return error_expr(span);
+        }
+        if super::generics::has_param(a) || super::generics::has_param(b) {
+            return mk(Ty::bool(), tir::ExprKind::TypeIs { a, b, negated }, span);
+        }
+        mk(Ty::bool(), tir::ExprKind::Bool((a == b) != negated), span)
     }
 
     /// Checks `lhs op rhs` given the already-checked left operand.

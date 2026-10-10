@@ -267,6 +267,14 @@ impl<'s> Sema<'s> {
                 e.kind = tir::ExprKind::SizeOf { of: t, align: *align };
             }
         }
+        if let tir::ExprKind::TypeIs { a, b, negated } = &e.kind {
+            let (a, b, negated) = (self.subst(*a, cx.map), self.subst(*b, cx.map), *negated);
+            e.kind = if has_param(a) || has_param(b) {
+                tir::ExprKind::TypeIs { a, b, negated }
+            } else {
+                tir::ExprKind::Bool((a == b) != negated)
+            };
+        }
         if let tir::ExprKind::UntypedFloat(r) = &e.kind {
             let r = (**r).clone();
             match e.ty.kind() {

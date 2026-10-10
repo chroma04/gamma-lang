@@ -605,7 +605,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 Ok(self.unit())
             }
-            ExprKind::SizeOf { .. } | ExprKind::UntypedFloat(_) | ExprKind::ValueParam(_) => {
+            ExprKind::SizeOf { .. } | ExprKind::TypeIs { .. } | ExprKind::UntypedFloat(_) | ExprKind::ValueParam(_) => {
                 unsupported(e.span, "an expression left over from generic checking")
             }
         }
@@ -1656,6 +1656,7 @@ fn no_writes(e: &Expr) -> bool {
         ExprKind::Int(_)
             | ExprKind::Float(_)
             | ExprKind::SizeOf { .. }
+            | ExprKind::TypeIs { .. }
             | ExprKind::UntypedFloat(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)

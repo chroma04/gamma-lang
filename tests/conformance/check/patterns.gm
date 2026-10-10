@@ -69,3 +69,6 @@ alternatives :: fn(d: Dir) -> bool => match d {
 }
 
 main :: fn() {}
+
+// Testing for absence needs no equality on the payload (§7.6).
+held :: fn(k: ?cont(())) -> bool => k is not null
