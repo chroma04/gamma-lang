@@ -1,0 +1,349 @@
+//! stage: test
+// An HTTP-like server and two clients in one test over the loopback Net handler: request parsing, routing, WouldBlock handled by a fiber scheduler.
+str :: import "std/str"
+io :: import "std/io"
+
+STACK :: 65536
+
+Sched :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(a: ^Ctx) -> never \ {Sched, Net, Out}, a: ^Ctx)
+    exit: ctl() -> never
+    join: ctl()
+}
+
+// Shared state of the whole scenario; tasks reach it through a pointer.
+Ctx :: struct {
+    listener: Listener
+    port: u16
+    name: string
+    served: u32 = 0
+    limit: u32
+    hits: u32 = 0
+    switches: u32 = 0
+}
+
+Runtime :: struct {
+    ready: [8]?cont(())
+    qh: usize = 0
+    qn: usize = 0
+    stacks: [3][STACK]u8
+    nspawned: usize = 0
+    live: usize = 0
+    joiner: ?cont(())
+}
+
+enqueue :: fn(rt: ^Runtime, k: cont(())) {
+    rt.ready[(rt.qh + rt.qn) % 8] = k
+    rt.qn += 1
+}
+
+dequeue :: fn(rt: ^Runtime) -> cont(()) {
+    k := rt.ready[rt.qh]?
+    rt.ready[rt.qh] = null
+    rt.qh = (rt.qh + 1) % 8
+    rt.qn -= 1
+    return k
+}
+
+handler Sched for ^Runtime \ {Net, Out} {
+    yield_now(self, k) => {
+        enqueue(self, k)
+        r := dequeue(self)
+        resume r()
+    }
+    spawn(self, entry, a, k) => {
+        mem := self.stacks[self.nspawned][..]
+        self.nspawned += 1
+        self.live += 1
+        enqueue(self, @fiber(entry, a, mem))
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 {
+            if j := self.joiner {
+                self.joiner = null
+                resume j()
+            }
+        }
+        r := dequeue(self)
+        resume r()
+    }
+    join(self, k) => {
+        if self.live is 0 { resume k() }
+        self.joiner = k
+        r := dequeue(self)
+        resume r()
+    }
+}
+
+// ---- Wire helpers ---------------------------------------------------------------
+
+send_all :: fn(s: Socket, bytes: string) -> IoError!() \ {Net, Sched} {
+    done: usize = 0
+    while done < bytes.len {
+        match s.send(bytes[done..bytes.len]) {
+            !.WouldBlock => yield_now()
+            !e => return !e
+            n => { done += n }
+        }
+    }
+}
+
+// Reads until `buf` holds a complete message (headers plus Content-Length bytes) or the peer closes.
+read_message :: fn(s: Socket, buf: []u8) -> IoError!string \ {Net, Sched} {
+    have: usize = 0
+    while have < buf.len {
+        match s.recv(buf[have..]) {
+            !.WouldBlock => yield_now()
+            !e => return !e
+            0 => break
+            n => {
+                have += n
+                if complete(buf[0..have]) { break }
+            }
+        }
+    }
+    return buf[0..have]
+}
+
+content_length :: fn(head: string) -> usize {
+    for line in str.lines(head) {
+        if kv := str.split_once(line, ":") {
+            if str.eq_ignore_case(kv.before, "content-length") {
+                return str.parse_int(usize, str.trim(kv.after)) else 0
+            }
+        }
+    }
+    return 0
+}
+
+complete :: fn(msg: string) -> bool {
+    parts := str.split_once(msg, "\r\n\r\n") else return false
+    return parts.after.len >= content_length(parts.before)
+}
+
+// ---- Requests and responses -----------------------------------------------------
+
+Request :: struct {
+    method: string
+    path: string
+    query: string
+    body: string
+}
+
+parse_request :: fn(raw: string) -> ?Request {
+    parts := str.split_once(raw, "\r\n\r\n")?
+    first := ""
+    for line in str.lines(parts.before) {
+        first = line
+        break
+    }
+    method := ""
+    target := ""
+    n := 0
+    for f in str.fields(first) {
+        if n is 0 { method = f }
+        if n is 1 { target = f }
+        n += 1
+    }
+    if n is not 3 { return null }
+    req := Request(method: method, path: target, query: "", body: parts.after)
+    if q := str.split_once(target, "?") {
+        req.path = q.before
+        req.query = q.after
+    }
+    return req
+}
+
+query_int :: fn(query: string, key: string) -> ?i64 {
+    for pair in str.split(query, "&") {
+        kv := str.split_once(pair, "=") else continue
+        if kv.before is key {
+            if v := str.parse_int(i64, kv.after) { return v }
+            return null
+        }
+    }
+    return null
+}
+
+reason :: fn(code: u32) -> string => match code {
+    200 => "OK"
+    400 => "Bad Request"
+    404 => "Not Found"
+    405 => "Method Not Allowed"
+    _ => "Unknown"
+}
+
+respond :: fn(s: Socket, code: u32, body: string) -> IoError!() \ {Net, Sched} {
+    buf: [512]u8 = ---
+    b := str.builder(buf[..])
+    b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", (code, reason(code), body.len))
+    b.push(body)
+    try send_all(s, b.str())
+}
+
+route :: fn(ctx: ^Ctx, req: Request, s: Socket) -> IoError!() \ {Net, Sched} {
+    body: [128]u8 = ---
+    b := str.builder(body[..])
+    if req.path is "/hello" {
+        if req.method is not "GET" { return respond(s, 405, "GET only") }
+        return respond(s, 200, "hello, world")
+    }
+    if req.path is "/count" {
+        ctx.hits += 1
+        b.write("hits={}", ctx.hits)
+        return respond(s, 200, b.str())
+    }
+    if req.path is "/sum" {
+        a := query_int(req.query, "a")
+        c := query_int(req.query, "b")
+        if x := a {
+            if y := c {
+                b.write("{}", x + y)
+                return respond(s, 200, b.str())
+            }
+        }
+        return respond(s, 400, "need a and b")
+    }
+    if req.path is "/echo" {
+        if req.method is not "POST" { return respond(s, 405, "POST only") }
+        loud: [128]u8 = ---
+        return respond(s, 200, str.to_upper(req.body, loud[0..req.body.len]))
+    }
+    return respond(s, 404, "no such route")
+}
+
+// ---- Tasks ----------------------------------------------------------------------
+
+server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+    defer print("server: stopped after {} connections\n", ctx.served)
+    while ctx.served < ctx.limit {
+        conn := match ctx.listener.accept() {
+            !.WouldBlock => {
+                yield_now()
+                continue
+            }
+            !e => {
+                print("server: accept failed {}\n", e)
+                break
+            }
+            s => s
+        }
+        buf: [512]u8 = ---
+        raw := read_message(conn, buf[..]) else ""
+        ctx.served += 1
+        if req := parse_request(raw) {
+            print("server: {} {}\n", (req.method, req.path))
+            _ = route(ctx, req, conn)
+        } else {
+            print("server: malformed request\n")
+            _ = respond(conn, 400, "malformed")
+        }
+        conn.close_socket()
+    }
+    exit()
+}
+
+// One request on a fresh connection; prints the status line and body.
+fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
+    conn := try connect("localhost", ctx.port)
+    defer conn.close_socket()
+    try send_all(conn, request)
+    buf: [512]u8 = ---
+    raw := try read_message(conn, buf[..])
+    parts := str.split_once(raw, "\r\n\r\n") else return !.InvalidInput
+    status := ""
+    for line in str.lines(parts.before) {
+        status = line
+        break
+    }
+    print("{}: [{}] {}\n", (ctx.name, status, parts.after))
+}
+
+get :: fn(ctx: ^Ctx, target: string) -> IoError!() \ {Net, Sched, Out} {
+    buf: [128]u8 = ---
+    b := str.builder(buf[..])
+    b.write("GET {} HTTP/1.1\r\nHost: localhost\r\n\r\n", target)
+    try fetch(ctx, b.str())
+}
+
+alice :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+    _ = get(ctx, "/hello")
+    _ = get(ctx, "/count")
+    _ = get(ctx, "/sum?a=40&b=2")
+    _ = fetch(ctx, "POST /echo HTTP/1.1\r\nContent-Length: 10\r\n\r\nshout this")
+    exit()
+}
+
+bob :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+    _ = get(ctx, "/count")
+    _ = get(ctx, "/nope")
+    _ = fetch(ctx, "DELETE /hello HTTP/1.1\r\n\r\n")
+    _ = get(ctx, "/sum?a=1")
+    _ = fetch(ctx, "garbage\r\n\r\n")
+    exit()
+}
+
+TRANSCRIPT :: `
+server: GET /hello
+server: GET /count
+alice: [HTTP/1.1 200 OK] hello, world
+bob: [HTTP/1.1 200 OK] hits=1
+server: GET /count
+server: GET /nope
+alice: [HTTP/1.1 200 OK] hits=2
+bob: [HTTP/1.1 404 Not Found] no such route
+server: GET /sum
+server: DELETE /hello
+alice: [HTTP/1.1 200 OK] 42
+bob: [HTTP/1.1 405 Method Not Allowed] GET only
+server: POST /echo
+server: GET /sum
+alice: [HTTP/1.1 200 OK] SHOUT THIS
+bob: [HTTP/1.1 400 Bad Request] need a and b
+server: malformed request
+server: stopped after 9 connections
+bob: [HTTP/1.1 400 Bad Request] malformed
+`
+
+test "two clients talk to one server" {
+    l := try listen("127.0.0.1", 0)
+    port := try l.local_port()
+    expect(port is 49152)
+    alice_ctx := Ctx(listener: l, port: port, name: "alice", limit: 9)
+    bob_ctx := Ctx(listener: l, port: port, name: "bob", limit: 9)
+    srv_ctx := Ctx(listener: l, port: port, name: "server", limit: 9)
+    rt := Runtime(ready: [8]?cont(())(fill: null), stacks: ---, joiner: null)
+    main_stack: [STACK]u8 = ---
+    // Everything the tasks print is captured, so the whole conversation can be checked at once.
+    store: [2048]u8 = ---
+    cap := io.Capture(buf: store[..])
+    with &cap {
+        with &rt on main_stack[..] {
+            spawn(server, &srv_ctx)
+            spawn(alice, &alice_ctx)
+            spawn(bob, &bob_ctx)
+            join()
+        }
+    }
+    expect(cap.text() is TRANSCRIPT, cap.text())
+    expect(srv_ctx.served is 9)
+    expect(srv_ctx.hits is 2)
+    expect(rt.live is 0)
+}
+
+test "a lone client sees a refused connection when nobody listens" {
+    expect(connect("localhost", 9) is !.ConnectionRefused)
+    l := try listen("localhost", 9000)
+    c := try connect("localhost", 9000)
+    // Nobody accepted yet: the listener has a pending connection, and the client reads nothing.
+    buf: [8]u8 = ---
+    expect(c.recv(buf[..]) is !.WouldBlock)
+    s := try l.accept()
+    expect(s.recv(buf[..]) is !.WouldBlock)
+    c.close_socket()
+    expect(try s.recv(buf[..]) is 0)
+}

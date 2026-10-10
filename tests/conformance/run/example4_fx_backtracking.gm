@@ -1,0 +1,232 @@
+// Backtracking search with a Choose effect: esc operations and re-execution along a path (no multi-shot continuations needed), used for N-queens, a 4x4 sudoku, subset sums and map colouring.
+MAX_DEPTH :: 64
+
+Choose :: effect {
+    choose: esc(n: usize) -> usize        // pick one of 0..n; fails the current branch when n is 0
+    fail: esc() -> never
+}
+
+// The search state: the decisions made along the current path and how many alternatives each had.
+Search :: struct {
+    path: [MAX_DEPTH]usize = [MAX_DEPTH]usize(fill: 0)
+    arity: [MAX_DEPTH]usize = [MAX_DEPTH]usize(fill: 0)
+    len: usize = 0               // decisions on the path
+    cursor: usize = 0            // next decision of the current run
+    runs: u32 = 0
+    nodes: u32 = 0
+}
+
+handler Choose for ^Search {
+    choose(self, n) => {
+        if n is 0 { break false }
+        self.nodes += 1
+        if self.cursor < self.len {
+            c := self.path[self.cursor]
+            self.cursor += 1
+            return c
+        }
+        self.path[self.cursor] = 0
+        self.arity[self.cursor] = n
+        self.cursor += 1
+        self.len = self.cursor
+        return 0
+    }
+    fail(self) => { break false }
+}
+
+// Moves to the next unexplored path: bump the deepest decision that still has alternatives.
+advance :: fn(s: ^Search) -> bool {
+    d := s.len
+    while d > 0 {
+        d -= 1
+        if s.path[d] + 1 < s.arity[d] {
+            s.path[d] += 1
+            s.len = d + 1
+            return true
+        }
+    }
+    return false
+}
+
+// Runs `body` once per path; `found` is called for every path on which `body` completes.
+// `found` returns false to stop the search.
+search_all :: fn(body: fn() \ {Choose}, found: fn() -> bool) -> u32 {
+    s := Search()
+    solutions: u32 = 0
+    while true {
+        s.cursor = 0
+        s.runs += 1
+        ok := with &s {
+            body()
+            true
+        }
+        if ok {
+            solutions += 1
+            if not found() { break }
+        }
+        if not advance(&s) { break }
+    }
+    return solutions
+}
+
+// ---- N queens -------------------------------------------------------------------
+
+queens :: fn(n: usize, cols: []usize) \ {Choose} {
+    for row in 0..n {
+        c := choose(n)
+        for r in 0..row {
+            if cols[r] is c or cols[r].abs_diff(c) is row - r { fail() }
+        }
+        cols[row] = c
+    }
+}
+
+draw :: fn(cols: []const usize) \ {Out} {
+    for row in 0..cols.len {
+        print("   ", ())
+        for c in 0..cols.len {
+            if cols[row] is c { print("Q ", ()) } else { print(". ", ()) }
+        }
+        print("\n", ())
+    }
+}
+
+queens_demo :: fn() \ {Out} {
+    print("-- 6 queens\n")
+    cols: [8]usize = [8]usize(fill: 0)
+    n6 := search_all(fn() { queens(6, cols[..]) }, fn() -> bool {
+        print("  solution:", ())
+        for i in 0..6 { print(" {}", cols[i]) }
+        print("\n", ())
+        return true
+    })
+    print("  {} solutions\n", n6)
+
+    print("-- the first 8-queens solution\n")
+    first := search_all(fn() { queens(8, cols[..]) }, fn() -> bool {
+        draw(cols[0..8])
+        return false
+    })
+    print("  stopped after {}\n", first)
+
+    count8 := search_all(fn() { queens(8, cols[..]) }, fn() -> bool => true)
+    print("-- 8 queens in total: {}\n", count8)
+}
+
+// ---- Sudoku 4x4 -----------------------------------------------------------------
+
+PUZZLE :: [16]u8(
+    1, 0, 0, 0,
+    0, 0, 3, 0,
+    0, 4, 0, 0,
+    0, 0, 0, 2,
+)
+
+conflicts :: fn(grid: []const u8, i: usize, v: u8) -> bool {
+    r := i / 4
+    c := i % 4
+    for k in 0..4 {
+        if grid[r * 4 + k] is v and r * 4 + k is not i { return true }
+        if grid[k * 4 + c] is v and k * 4 + c is not i { return true }
+    }
+    br := (r / 2) * 2
+    bc := (c / 2) * 2
+    for dr in 0..2 {
+        for dc in 0..2 {
+            j := (br + dr) * 4 + bc + dc
+            if grid[j] is v and j is not i { return true }
+        }
+    }
+    return false
+}
+
+sudoku :: fn(grid: []u8) \ {Choose} {
+    for i in 0..16 {
+        if PUZZLE[i] is not 0 { continue }
+        v := (choose(4) + 1).trunc(u8)
+        if conflicts(grid, i, v) { fail() }
+        grid[i] = v
+    }
+}
+
+sudoku_demo :: fn() \ {Out} {
+    print("-- 4x4 sudoku\n")
+    grid := PUZZLE
+    count := search_all(fn() {
+        grid = PUZZLE
+        sudoku(grid[..])
+    }, fn() -> bool {
+        print("  solution:", ())
+        for r in 0..4 {
+            print(" ", ())
+            for c in 0..4 { print("{}", grid[r * 4 + c]) }
+        }
+        print("\n", ())
+        return true
+    })
+    print("  {} solution(s)\n", count)
+}
+
+// ---- Subset sum and map colouring -----------------------------------------------
+
+subset_sum :: fn(items: []const i32, target: i32, taken: []bool) \ {Choose} {
+    sum: i32 = 0
+    for i in 0..items.len {
+        taken[i] = choose(2) is 1
+        if taken[i] { sum += items[i] }
+    }
+    if sum is not target { fail() }
+}
+
+Region :: union { WA, NT, SA, Q, NSW, V, T }
+BORDERS :: [_](Region, Region)(
+    (.WA, .NT), (.WA, .SA), (.NT, .SA), (.NT, .Q), (.SA, .Q), (.SA, .NSW), (.SA, .V), (.Q, .NSW), (.NSW, .V),
+)
+
+colour_map :: fn(colours: usize, assigned: []usize) \ {Choose} {
+    for i in 0..7 { assigned[i] = choose(colours) }
+    for b in BORDERS {
+        if assigned[b.0.tag()] is assigned[b.1.tag()] { fail() }
+    }
+}
+
+misc_demo :: fn() \ {Out} {
+    print("-- subset sums of 3 5 7 9 11 equal to 20\n")
+    items := [5]i32(3, 5, 7, 9, 11)
+    taken := [5]bool(fill: false)
+    n := search_all(fn() { subset_sum(items[..], 20, taken[..]) }, fn() -> bool {
+        print("  ", ())
+        for i in 0..5 {
+            if taken[i] { print(" {}", items[i]) }
+        }
+        print("\n", ())
+        return true
+    })
+    print("  {} subsets\n", n)
+
+    print("-- colouring Australia\n")
+    assigned := [7]usize(fill: 0)
+    names := [_]string("red", "green", "blue")
+    two := search_all(fn() { colour_map(2, assigned[..]) }, fn() -> bool => true)
+    print("  with 2 colours: {} colourings\n", two)
+    three := search_all(fn() { colour_map(3, assigned[..]) }, fn() -> bool {
+        return true
+    })
+    print("  with 3 colours: {} colourings\n", three)
+    seen: u32 = 0
+    _ = search_all(fn() { colour_map(3, assigned[..]) }, fn() -> bool {
+        seen += 1
+        if seen is 1 {
+            for r in 0..7 {
+                print("  {} is {}\n", (Region.from_tag(r)?, names[assigned[r]]))
+            }
+        }
+        return seen < 1
+    })
+}
+
+main :: fn() \ {Out} {
+    queens_demo()
+    sudoku_demo()
+    misc_demo()
+}

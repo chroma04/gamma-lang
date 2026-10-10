@@ -1,0 +1,319 @@
+//! stage: test
+// A tracing framework as an effect: structured fields, spans timed with the fake Clock, middleware handlers (filter, context, counter) stacked in front of a text sink or a ring buffer, output checked through std/io Capture.
+io :: import "std/io"
+
+Level :: union { Debug, Info, Warn, Error }
+
+level_name :: fn(l: Level) -> string => match l {
+    .Debug => "DEBUG"
+    .Info => "INFO"
+    .Warn => "WARN"
+    .Error => "ERROR"
+}
+
+Value :: union { Int: i64, Str: string, Flag: bool }
+
+Field :: struct {
+    key: string
+    val: Value
+}
+
+fi :: fn(key: string, v: i64) -> Field => Field(key: key, val: .Int(v))
+fs :: fn(key: string, v: string) -> Field => Field(key: key, val: .Str(v))
+fb :: fn(key: string, v: bool) -> Field => Field(key: key, val: .Flag(v))
+
+NONE :: [0]Field()
+
+Trace :: effect {
+    event: fn(level: Level, msg: string, fields: []const Field)
+    enter: fn(name: string)
+    leave: fn(name: string, elapsed: Duration)
+}
+
+debug :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Debug, msg, fields) }
+info :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Info, msg, fields) }
+warn :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Warn, msg, fields) }
+error :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Error, msg, fields) }
+
+// Runs `body` inside a named span and reports how long it took on the Clock.
+span :: fn(name: string, body: fn() \ {Trace}) \ {Trace, Clock} {
+    enter(name)
+    t0 := now()
+    defer leave(name, now().since(t0))
+    body()
+}
+
+// ---- Sinks ----------------------------------------------------------------------
+
+put_value :: fn(v: Value) \ {Out} {
+    match v {
+        .Int(i) => print("{}", i)
+        .Str(s) => print("\"{}\"", s)
+        .Flag(b) => print("{}", b)
+    }
+}
+
+TextSink :: struct {
+    depth: u32 = 0
+    lines: u32 = 0
+}
+
+indent :: fn(n: u32) \ {Out} {
+    for _ in 0..n { print("  ", ()) }
+}
+
+handler Trace for ^TextSink \ {Out, Clock} {
+    event(self, level, msg, fields) => {
+        print("[{}ms] ", now().ns / 1_000_000)
+        indent(self.depth)
+        print("{} {}", (level_name(level), msg))
+        for f in fields {
+            print(" {}=", f.key)
+            put_value(f.val)
+        }
+        print("\n", ())
+        self.lines += 1
+    }
+    enter(self, name) => {
+        print("[{}ms] ", now().ns / 1_000_000)
+        indent(self.depth)
+        print("-> {}\n", name)
+        self.depth += 1
+    }
+    leave(self, name, elapsed) => {
+        self.depth -= 1
+        print("[{}ms] ", now().ns / 1_000_000)
+        indent(self.depth)
+        print("<- {} took {}ms\n", (name, elapsed.to_ms()))
+    }
+}
+
+// Keeps the last few events in memory instead of printing them.
+Entry :: struct {
+    level: Level
+    msg: string
+    nfields: usize
+}
+
+RingSink :: struct {
+    items: [4]Entry
+    next: usize = 0
+    total: u32 = 0
+}
+
+handler Trace for ^RingSink {
+    event(self, level, msg, fields) => {
+        self.items[self.next % 4] = Entry(level: level, msg: msg, nfields: fields.len)
+        self.next += 1
+        self.total += 1
+    }
+    enter(self, name) => {}
+    leave(self, name, elapsed) => {}
+}
+
+// ---- Middleware: handlers that forward to the handler outside them -----------------
+
+Filter :: struct {
+    min: Level
+    dropped: u32 = 0
+}
+
+handler Trace for ^Filter \ {Trace} {
+    event(self, level, msg, fields) => {
+        if level >= self.min {
+            event(level, msg, fields)
+        } else {
+            self.dropped += 1
+        }
+    }
+    enter(self, name) => enter(name)
+    leave(self, name, elapsed) => leave(name, elapsed)
+}
+
+// Adds fixed fields to every event.
+Context :: struct {
+    extra: []const Field
+}
+
+handler Trace for ^Context \ {Trace} {
+    event(self, level, msg, fields) => {
+        all := [10]Field(fill: Field(key: "", val: .Flag(false)))
+        n: usize = 0
+        for f in self.extra {
+            all[n] = f
+            n += 1
+        }
+        for f in fields {
+            all[n] = f
+            n += 1
+        }
+        event(level, msg, all[0..n])
+    }
+    enter(self, name) => enter(name)
+    leave(self, name, elapsed) => leave(name, elapsed)
+}
+
+Counter :: struct {
+    by_level: [4]u32 = [4]u32(fill: 0)
+    spans: u32 = 0
+}
+
+handler Trace for ^Counter \ {Trace} {
+    event(self, level, msg, fields) => {
+        self.by_level[level.tag()] += 1
+        event(level, msg, fields)
+    }
+    enter(self, name) => {
+        self.spans += 1
+        enter(name)
+    }
+    leave(self, name, elapsed) => leave(name, elapsed)
+}
+
+// ---- The instrumented application ------------------------------------------------
+
+fetch_user :: fn(id: i64) \ {Trace, Clock} {
+    f := [_]Field(fi("id", id))
+    debug("cache miss", f[..])
+    sleep(ms(12))
+    info("loaded user", f[..])
+}
+
+handle_request :: fn(path: string, user: i64) \ {Trace, Clock} {
+    f := [_]Field(fs("path", path), fb("auth", user > 0))
+    info("request", f[..])
+    span("auth", fn() {
+        sleep(ms(2))
+        if user <= 0 {
+            warn("anonymous caller", NONE[..])
+        }
+    })
+    if user > 0 {
+        span("db", fn() {
+            fetch_user(user)
+            sleep(ms(3))
+        })
+    } else {
+        error("denied", f[..])
+    }
+}
+
+app :: fn() \ {Trace, Clock} {
+    span("serve", fn() {
+        handle_request("/profile", 7)
+        handle_request("/admin", 0)
+    })
+    info("done", NONE[..])
+}
+
+TRACE_ALL :: `
+[0ms] -> serve
+[0ms]   INFO request path="/profile" auth=true
+[0ms]   -> auth
+[2ms]   <- auth took 2ms
+[2ms]   -> db
+[2ms]     DEBUG cache miss id=7
+[14ms]     INFO loaded user id=7
+[17ms]   <- db took 15ms
+[17ms]   INFO request path="/admin" auth=false
+[17ms]   -> auth
+[19ms]     WARN anonymous caller
+[19ms]   <- auth took 2ms
+[19ms]   ERROR denied path="/admin" auth=false
+[19ms] <- serve took 19ms
+[19ms] INFO done
+`
+
+test "a text sink prints every event with timestamps and span depth" {
+    store: [2048]u8 = ---
+    cap := io.Capture(buf: store[..])
+    sink := TextSink()
+    with &cap {
+        with &sink { app() }
+    }
+    expect(cap.text() is TRACE_ALL, cap.text())
+    expect(sink.lines is 7)
+    expect(sink.depth is 0)
+}
+
+TRACE_WARN :: `
+[0ms] -> serve
+[0ms]   -> auth
+[2ms]   <- auth took 2ms
+[2ms]   -> db
+[17ms]   <- db took 15ms
+[17ms]   -> auth
+[19ms]     WARN anonymous caller
+[19ms]   <- auth took 2ms
+[19ms]   ERROR denied path="/admin" auth=false
+[19ms] <- serve took 19ms
+`
+
+test "a filter in front of the sink drops low levels but keeps spans" {
+    store: [2048]u8 = ---
+    cap := io.Capture(buf: store[..])
+    sink := TextSink()
+    filter := Filter(min: .Warn)
+    with &cap {
+        with &sink {
+            with &filter { app() }
+        }
+    }
+    expect(cap.text() is TRACE_WARN, cap.text())
+    expect(filter.dropped is 5)
+}
+
+TRACE_CTX :: `
+[0ms] INFO request req=99 path="/profile" auth=true
+[2ms] INFO loaded user req=99 id=7
+`
+
+test "context and filter and counter stack in order" {
+    store: [1024]u8 = ---
+    cap := io.Capture(buf: store[..])
+    sink := TextSink()
+    ctx_fields := [_]Field(fi("req", 99))
+    ctx := Context(extra: ctx_fields[..])
+    filter := Filter(min: .Info)
+    counter := Counter()
+    // Outermost first: events pass the counter, then the context, then the filter, then the sink.
+    with &cap {
+        with &sink {
+            with &filter {
+                with &ctx {
+                    with &counter {
+                        f := [_]Field(fs("path", "/profile"), fb("auth", true))
+                        info("request", f[..])
+                        debug("never shown", NONE[..])
+                        sleep(ms(2))
+                        g := [_]Field(fi("id", 7))
+                        info("loaded user", g[..])
+                    }
+                }
+            }
+        }
+    }
+    expect(cap.text() is TRACE_CTX, cap.text())
+    // The counter saw all three events, including the one the filter dropped.
+    expect(counter.by_level[0] is 1)
+    expect(counter.by_level[1] is 2)
+    expect(filter.dropped is 1)
+}
+
+test "the same application feeds a ring buffer" {
+    ring := RingSink(items: [4]Entry(fill: Entry(level: .Debug, msg: "", nfields: 0)))
+    counter := Counter()
+    with &ring {
+        with &counter { app() }
+    }
+    expect(ring.total is 7)
+    expect(counter.spans is 4)
+    // The four most recent events, in ring-slot order (the 5th event overwrote slot 0).
+    expect(ring.items[0].msg is "anonymous caller")
+    expect(ring.items[1].msg is "denied")
+    expect(ring.items[2].msg is "done")
+    expect(ring.items[3].msg is "request")
+    expect(ring.items[1].level is .Error)
+    expect(ring.items[1].nfields is 2)
+    expect(counter.by_level[3] is 1)
+}

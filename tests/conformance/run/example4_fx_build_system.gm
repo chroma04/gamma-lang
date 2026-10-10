@@ -1,0 +1,331 @@
+// A build system: tasks with dependencies, topological order as a Yield iterator, cycle detection through an esc operation, a result cache in a HashMap, and a fake command runner and file fingerprints supplied as effect handlers.
+Task :: struct {
+    name: string
+    cmd: string                 // empty for source files
+    deps: []const string
+}
+
+NO_DEPS :: [0]string()
+D_UTIL_O :: [_]string("util.c")
+D_LIB_O :: [_]string("lib.c", "util.o")
+D_APP_O :: [_]string("app.c", "lib.o")
+D_APP :: [_]string("app.o", "lib.o", "util.o")
+D_DOCS :: [_]string("readme.txt")
+D_ALL :: [_]string("app", "docs")
+
+GRAPH :: [_]Task(
+    Task(name: "all", cmd: "", deps: D_ALL[..]),
+    Task(name: "app", cmd: "ld -o app app.o lib.o util.o", deps: D_APP[..]),
+    Task(name: "app.o", cmd: "cc -c app.c", deps: D_APP_O[..]),
+    Task(name: "lib.o", cmd: "cc -c lib.c", deps: D_LIB_O[..]),
+    Task(name: "util.o", cmd: "cc -c util.c", deps: D_UTIL_O[..]),
+    Task(name: "docs", cmd: "mkdoc readme.txt", deps: D_DOCS[..]),
+    Task(name: "util.c", cmd: "", deps: NO_DEPS[..]),
+    Task(name: "lib.c", cmd: "", deps: NO_DEPS[..]),
+    Task(name: "app.c", cmd: "", deps: NO_DEPS[..]),
+    Task(name: "readme.txt", cmd: "", deps: NO_DEPS[..]),
+)
+
+// ---- Effects --------------------------------------------------------------------
+
+Exec :: effect {
+    run: fn(cmd: string, input: u64) -> ?u64          // the output fingerprint, or null if the command failed
+}
+
+Files :: effect {
+    fingerprint: fn(name: string) -> u64
+}
+
+Cycle :: effect {
+    found: esc(task: string, via: string) -> never
+}
+
+Log :: effect {
+    note: fn(depth: u32, msg: string)
+}
+
+// ---- Handlers -------------------------------------------------------------------
+
+fnv :: fn(seed: u64, s: string) -> u64 {
+    h := seed
+    for c in bytes(s) { h = (h ~ u64(c)) *% 1099511628211 }
+    return h
+}
+
+// The fake runner: records what it was asked to do and fails on commands containing "bad".
+FakeExec :: struct {
+    ran: u32 = 0
+    log: [8]string = [8]string(fill: "")
+}
+
+handler Exec for ^FakeExec {
+    run(self, cmd, input) => {
+        if self.ran < 8 { self.log[self.ran] = cmd }
+        self.ran += 1
+        for i in 0..cmd.len {
+            if cmd[i] is 'b' and i + 2 < cmd.len and cmd[i + 1] is 'a' and cmd[i + 2] is 'd' {
+                return null
+            }
+        }
+        return fnv(input, cmd)
+    }
+}
+
+// File versions: touching a file bumps its version.
+Disk :: struct {
+    names: [6]string
+    versions: [6]u64
+    n: usize = 0
+}
+
+touch :: fn(d: ^Disk, name: string) {
+    for i in 0..d.n {
+        if d.names[i] is name { d.versions[i] += 1 }
+    }
+}
+
+handler Files for ^Disk {
+    fingerprint(self, name) => {
+        for i in 0..self.n {
+            if self.names[i] is name { return fnv(self.versions[i], name) }
+        }
+        return fnv(0, name)
+    }
+}
+
+Indent :: struct { prefix: string = "  " }
+
+handler Log for ^Indent \ {Out} {
+    note(self, depth, msg) => {
+        for _ in 0..depth { print("{}", self.prefix) }
+        print("{}\n", msg)
+    }
+}
+
+// ---- Graph algorithms -----------------------------------------------------------
+
+find_task :: fn(graph: []const Task, name: string) -> ?usize {
+    for i in 0..graph.len {
+        if graph[i].name is name { return i }
+    }
+    return null
+}
+
+// Depth-first post-order from `root`, yielding task indices so that dependencies come first.
+// `state` marks tasks: 0 new, 1 on the current path, 2 done.
+visit :: fn(graph: []const Task, state: []u8, i: usize) \ {Yield(usize), Cycle} {
+    state[i] = 1
+    for dep in graph[i].deps {
+        j := find_task(graph, dep) else trap("unknown dependency")
+        if state[j] is 1 { found(graph[i].name, dep) }
+        if state[j] is 0 { visit(graph, state, j) }
+    }
+    state[i] = 2
+    yield(i)
+}
+
+topo :: fn(graph: []const Task, root: string) \ {Yield(usize), Cycle} {
+    state: [16]u8 = [16]u8(fill: 0)
+    r := find_task(graph, root) else trap("unknown root")
+    visit(graph, state[..], r)
+}
+
+// ---- The build ------------------------------------------------------------------
+
+CacheEntry :: struct {
+    input: u64
+    output: u64
+}
+
+BuildError :: union { CommandFailed: string, Cyclic: string, Oom: AllocError }
+
+Stats :: struct {
+    built: u32 = 0
+    cached: u32 = 0
+}
+
+Build :: struct {
+    cache: HashMap(string, CacheEntry)
+    outputs: HashMap(string, u64)
+    stats: Stats = Stats()
+}
+
+say :: fn(depth: u32, verb: string, name: string) \ {Log} {
+    buf: [64]u8 = ---
+    n := 0
+    for c in bytes(verb) {
+        buf[n] = c
+        n += 1
+    }
+    buf[n] = ' '
+    n += 1
+    for c in bytes(name) {
+        buf[n] = c
+        n += 1
+    }
+    note(depth, buf[0..n])
+}
+
+build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() \ {Exec, Files, Log, Alloc} {
+    cycle_from := ""
+    cycle_to := ""
+    reported :: handler Cycle {
+        found(task, via) => {
+            cycle_from = task
+            cycle_to = via
+            break
+        }
+    }
+    failure: ?BuildError = null
+    // The iterator runs under the Cycle handler; `break` out of the loop leaves a failure behind.
+    with reported {
+        for i in topo(graph, root) {
+            t := graph[i]
+            // The input fingerprint covers the command and the outputs of all dependencies.
+            input := fnv(14695981039346656037, t.cmd)
+            for dep in t.deps {
+                out := b.outputs.get(dep) else 0
+                input = fnv(input, dep) ~ out
+            }
+            if t.cmd.len is 0 {
+                try b.outputs.put(t.name, fingerprint(t.name))
+                continue
+            }
+            if hit := b.cache.get(t.name) {
+                if hit.input is input {
+                    say(1, "cached", t.name)
+                    try b.outputs.put(t.name, hit.output)
+                    b.stats.cached += 1
+                    continue
+                }
+            }
+            if out := run(t.cmd, input) {
+                try b.cache.put(t.name, CacheEntry(input: input, output: out))
+                try b.outputs.put(t.name, out)
+                b.stats.built += 1
+                say(1, "built", t.name)
+            } else {
+                failure = BuildError.CommandFailed(t.name)
+                break
+            }
+        }
+    }
+    if f := failure { return !f }
+    if cycle_from.len > 0 {
+        say(1, "cycle through", cycle_to)
+        return !.Cyclic(cycle_from)
+    }
+    return ()
+}
+
+new_build :: fn() -> Build \ {Alloc} {
+    return Build(cache: map(string, CacheEntry), outputs: map(string, u64))
+}
+
+drop :: fn(b: ^Build) {
+    b.cache.deinit()
+    b.outputs.deinit()
+}
+
+show_commands :: fn(e: ^FakeExec) \ {Out} {
+    for i in 0..e.ran.min(8) {
+        print("    $ {}\n", e.log[i])
+    }
+    e.ran = 0
+}
+
+// A runner that only counts: it needs the Log effect, which the `with` that installs it must provide.
+DryRun :: struct { would_run: u32 = 0 }
+
+handler Exec for ^DryRun \ {Log} {
+    run(self, cmd, input) => {
+        self.would_run += 1
+        say(2, "would run", cmd)
+        return input
+    }
+}
+
+BAD_DEPS :: [_]string("ok.c")
+BAD_ROOT_DEPS :: [_]string("ok.o", "bad.o")
+BROKEN :: [_]Task(
+    Task(name: "ok.c", cmd: "", deps: NO_DEPS[..]),
+    Task(name: "ok.o", cmd: "cc -c ok.c", deps: BAD_DEPS[..]),
+    Task(name: "bad.o", cmd: "cc -c bad.c", deps: BAD_DEPS[..]),
+    Task(name: "root", cmd: "ld ok.o bad.o", deps: BAD_ROOT_DEPS[..]),
+)
+
+CX_DEPS :: [_]string("y")
+CY_DEPS :: [_]string("z")
+CZ_DEPS :: [_]string("x", "w")
+CYCLIC :: [_]Task(
+    Task(name: "x", cmd: "gen x", deps: CX_DEPS[..]),
+    Task(name: "y", cmd: "gen y", deps: CY_DEPS[..]),
+    Task(name: "z", cmd: "gen z", deps: CZ_DEPS[..]),
+    Task(name: "w", cmd: "gen w", deps: NO_DEPS[..]),
+)
+
+main :: fn() \ {Out, Alloc} {
+    exec := FakeExec()
+    disk := Disk(names: [6]string("util.c", "lib.c", "app.c", "readme.txt", "", ""), versions: [6]u64(fill: 0), n: 4)
+    ind := Indent()
+    b := new_build()
+    defer drop(&b)
+
+    with &exec, &disk, &ind {
+        print("== clean build\n")
+        r := build(&b, GRAPH[..], "all")
+        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        show_commands(&exec)
+
+        print("== nothing changed\n")
+        b.stats = Stats()
+        r = build(&b, GRAPH[..], "all")
+        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        show_commands(&exec)
+
+        print("== lib.c touched\n")
+        touch(&disk, "lib.c")
+        b.stats = Stats()
+        r = build(&b, GRAPH[..], "all")
+        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        show_commands(&exec)
+
+        print("== only the docs target\n")
+        touch(&disk, "readme.txt")
+        b.stats = Stats()
+        r = build(&b, GRAPH[..], "docs")
+        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        show_commands(&exec)
+    }
+
+    // Same graph, different runner: a dry run against an empty cache.
+    print("== dry run\n")
+    dry := DryRun()
+    fresh := new_build()
+    defer drop(&fresh)
+    with &disk, &ind {
+        // (`with &ind, &dry` is rejected: the Log that dry's clauses need is not found.)
+        with &dry {
+            r := build(&fresh, GRAPH[..], "all")
+            print("result {}; would run {}\n", (r, dry.would_run))
+        }
+    }
+
+    print("== failing command\n")
+    with &exec, &disk, &ind {
+        bb := new_build()
+        defer drop(&bb)
+        r := build(&bb, BROKEN[..], "root")
+        print("result {}; built {}\n", (r, bb.stats.built))
+        show_commands(&exec)
+    }
+
+    print("== cycle\n")
+    with &exec, &disk, &ind {
+        cb := new_build()
+        defer drop(&cb)
+        r := build(&cb, CYCLIC[..], "x")
+        print("result {}; built {}\n", (r, cb.stats.built))
+        show_commands(&exec)
+    }
+}

@@ -1,0 +1,38 @@
+  state: alice=100 bob=50 carol=0 dave=0  total=150
+-- commit and abort
+    transfer alice->bob: leave
+  [pay bob] committed
+  state: alice=70 bob=80 carol=0 dave=0  total=150
+    transfer alice->carol: unwound
+    transfer alice->carol: leave
+  [overdraw] aborted (insufficient funds): undid 1 writes
+  state: alice=70 bob=80 carol=0 dave=0  total=150
+  outcomes: .Committed .Aborted("insufficient funds")
+-- nested savepoints
+    transfer bob->carol: leave
+    transfer carol->alice: unwound
+    transfer carol->alice: leave
+  [inner] aborted (insufficient funds): undid 1 writes
+    inner gave .Aborted("insufficient funds")
+    transfer bob->dave: leave
+  [outer] committed
+  state: alice=70 bob=65 carol=10 dave=5  total=150
+  outcome: .Committed
+-- the outer transaction aborts after the inner one committed
+    transfer dave->alice: leave
+  [inner] committed
+    inner gave .Committed
+  [outer] aborted (changed my mind): undid 2 writes
+  state: alice=70 bob=65 carol=10 dave=5  total=150
+  outcome: .Aborted("changed my mind")
+-- audited writes
+    audit: alice := 50
+    audit: dave := 25
+    transfer alice->dave: leave
+    audit: dave := -75
+    transfer dave->bob: unwound
+    transfer dave->bob: leave
+  [audited] aborted (insufficient funds): undid 3 writes
+  state: alice=70 bob=65 carol=10 dave=5  total=150
+  outcome: .Aborted("insufficient funds")
+13 writes in total, undo log holds 6
