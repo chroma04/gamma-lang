@@ -299,6 +299,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut handled: Vec<EffectRef> = vec![];
         let mut literal_ids = vec![];
         for h in &w.handlers {
+            // `with a, b` is `with a { with b { … } }`: earlier handlers handle what later
+            // ones' clauses perform (§12.7).
+            let earlier = handled.clone();
             let v = match &h.kind {
                 ExprKind::Handler(lit) => self.handler_literal(lit, h.span),
                 _ => self.expr(h, None),
@@ -328,7 +331,8 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         handled.push(eref);
                         // The clauses' effects are performed at the `with`, outside it (§12.6).
-                        let effs = self.sema.handler_decl_effects[d.index()].clone();
+                        let mut effs = self.sema.handler_decl_effects[d.index()].clone();
+                        effs.effects = effs.effects.iter().filter(|e| !earlier.contains(e)).cloned().collect();
                         self.record_effects(&effs, h.span);
                     }
                     handlers.push(tir::HandlerValue::Decl { decls, value: v });

@@ -137,7 +137,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut binds = vec![];
         let p = self.pattern(pat, vty, PatCtx::Refutable, &mut binds);
         if !vty.is_error() && self.checker().irrefutable(&p) {
-            let optional = matches!(vty.kind(), crate::types::TyKind::Optional(_) | crate::types::TyKind::Result { .. });
+            let optional =
+                matches!(vty.kind(), crate::types::TyKind::Optional(_) | crate::types::TyKind::Result { .. });
             if optional && matches!(pat.kind, ast::PatternKind::Wildcard) {
                 // `_` matches the whole optional or result, absent or not (§9.3).
                 self.error(

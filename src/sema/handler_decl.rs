@@ -170,6 +170,8 @@ impl<'s> Sema<'s> {
             let c = &h.clauses[p.clause];
             let saved = self.push_scope_params(&p.scope);
             let mut cx = FnCx::new(self, p.module, p.ret, p.effects.clone());
+            // Literals and loop bodies in the clause capture its frame.
+            cx.fn_id = Some(p.fn_id);
             cx.clause = Some(ClauseInfo {
                 op_kind: p.kind,
                 for_label: None,
