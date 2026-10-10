@@ -63,7 +63,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line(&format!(
             "    if (gm_unw.kind == GM_RESUME) {{ gm_unw.kind = GM_NONE; gm_with_go(&{w}, {w}.next); continue; }}"
         ));
-        self.line(&format!("    gm_with_end(&{w}, false, {loc});"));
+        // A clause's exit crosses the `with` unless it is a `break` to the `with` (§14.4).
+        self.line(&format!(
+            "    gm_with_end(&{w}, !(gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}), {loc});",
+            label.0
+        ));
         self.line(&format!("}} else if ({w}.event_fiber == {fb} && !gm_unw.kind) {{"));
         self.line(&format!("    gm_with_end(&{w}, false, {loc});"));
         self.line(&format!("    goto {end};"));

@@ -4,9 +4,9 @@
 //!
 //! The analysis walks the clause body in evaluation order with a small state:
 //! whether `k` may still be unconsumed and whether it may already be consumed on
-//! the paths reaching a point. Loops are iterated to a fixed point. An exit from
-//! the clause (`resume`, a `break` or labeled jump out of it, `return`, `try`)
-//! needs `k` consumed on every path; consuming needs it unconsumed on every path.
+//! the paths reaching a point. Loops are iterated to a fixed point. `resume` and a
+//! `break` to the installing `with` need `k` consumed on every path; consuming needs
+//! it unconsumed on every path. Other exits leave the `with`, which discards `k`.
 
 use super::Sema;
 use crate::source::Span;
@@ -150,19 +150,10 @@ impl Check {
                 self.jump(target, s, false, e.span);
                 0
             }
+            // Leaving the function crosses the `with`, which discards `k` (§14.4).
             ExprKind::Return { value, .. } => {
-                let s = self.expr(value, s);
-                if s != 0 {
-                    self.exit(s, e.span);
-                }
+                self.expr(value, s);
                 0
-            }
-            ExprKind::Try { expr, .. } => {
-                let s = self.expr(expr, s);
-                if s != 0 {
-                    self.exit(s, e.span);
-                }
-                s
             }
             ExprKind::Block(b) => self.block(b, s),
             ExprKind::If { cond, then, else_ } => {
@@ -232,8 +223,11 @@ impl Check {
             }
             return;
         }
-        // Out of the clause: the installing `with`, an outer label, or the next item.
-        self.exit(s, span);
+        // A `break` completing the installing `with` needs `k` consumed; a jump to an
+        // outer label crosses the `with`, which discards it (§14.4).
+        if let Target::InstallingWith = target {
+            self.exit(s, span);
+        }
     }
 
     /// The states after `cond` succeeds and after it fails.

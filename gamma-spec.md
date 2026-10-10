@@ -1698,7 +1698,7 @@ When code running on a fiber performs a `ctl` operation `op(args)` with result t
 3. **Same `with`.** A continuation may be consumed only by code running in a `ctl` clause of a handler installed by the same `with` that produced it.
 4. **Same thread.** A continuation may be consumed only on the thread that created it (checked).
 
-If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that every path through the clause consumes it exactly once, and rules 1–3 need no run-time check for it.
+If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` discard it, §14.4); rules 1–3 then need no run-time check for it.
 
 ### 14.3 `resume`
 
@@ -1719,9 +1719,9 @@ A `ctl` clause has type `never`: every path through it must end in `resume`, an 
 A `with … on` completes in one of two ways:
 
 - **`B` finishes** on its fiber with value `w`. Control returns to the driver and the `with`'s value is `w`.
-- **A `ctl` clause exits** with `break`/`break v` (or, for a handler literal, a labeled `break`/`continue` or `return`). The `with` completes with that value, or control goes to that target.
+- **A `ctl` clause exits** with `break`/`break v` to the installing `with`. The `with` completes with that value.
 
-A third way is an **exit that crosses the `with … on`**: code on one of its fibers performs an `esc` operation (or an exit from a clause of a handler installed outside the `with`) whose target lies outside the `with`. The unwinding (§12.7.1) proceeds through the fiber's frames to the fiber's base; then every other unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first; then the exit continues on the driver. Exits therefore never leave suspended fibers behind.
+A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the discarding of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
 
 In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, discard the suspended fibers first.)
 
