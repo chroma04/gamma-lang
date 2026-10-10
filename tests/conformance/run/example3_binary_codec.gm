@@ -1,0 +1,141 @@
+// Byte-level serializer: many-pointer arithmetic, endianness via @bswap, float bits, rotate checksum, #bits flags, volatile registers.
+Flags :: #bits(u8) struct {
+    compressed, encrypted: bool
+    level: u3
+    _: u3
+}
+
+Packet :: struct {
+    id: u32
+    temp: f32
+    stamp: u64
+    flags: Flags
+    seq: i16
+}
+
+// A cursor over raw memory; the caller vouches that the buffer is large enough.
+Cursor :: struct {
+    base: [^]u8
+    pos: usize
+}
+
+put_u8 :: fn(c: ^Cursor, v: u8) {
+    c.base[c.pos] = v
+    c.pos += 1
+}
+
+// Big-endian: swap into network order if needed, then emit the value's bytes as they lie in memory.
+put_be32 :: fn(c: ^Cursor, v: u32) {
+    x := if target.endian is .Little { @bswap(v) } else { v }
+    raw := x.bits([4]u8)
+    for b in raw { put_u8(c, b) }
+}
+
+put_le64 :: fn(c: ^Cursor, v: u64) {
+    for i in 0..8 { put_u8(c, (v >> (u64(i) * 8)).trunc(u8)) }
+}
+
+HEX :: "0123456789abcdef"
+
+hexdump :: fn(data: []const u8, out: []u8) -> string {
+    n: usize = 0
+    for b in data {
+        out[n] = HEX[(b >> 4).trunc(usize)]
+        out[n + 1] = HEX[(b & 15).trunc(usize)]
+        out[n + 2] = ' '
+        n += 3
+    }
+    return out[0..n]
+}
+
+get_u8 :: fn(c: ^Cursor) -> u8 {
+    b := (c.base + c.pos)[0]
+    c.pos += 1
+    return b
+}
+
+get_be32 :: fn(c: ^Cursor) -> u32 {
+    v: u32 = 0
+    for _ in 0..4 { v = (v << 8) | u32(get_u8(c)) }
+    return v
+}
+
+get_le64 :: fn(c: ^Cursor) -> u64 {
+    v: u64 = 0
+    for i in 0..8 { v |= u64(get_u8(c)) << (u64(i) * 8) }
+    return v
+}
+
+encode :: fn(c: ^Cursor, p: Packet) {
+    put_be32(c, p.id)
+    put_be32(c, p.temp.bits(u32))
+    put_le64(c, p.stamp)
+    put_u8(c, u8(p.flags))
+    put_u8(c, p.seq.bits(u16).trunc(u8))
+    put_u8(c, (p.seq.bits(u16) >> 8).trunc(u8))
+}
+
+decode :: fn(c: ^Cursor) -> Packet {
+    id := get_be32(c)
+    temp := get_be32(c).bits(f32)
+    stamp := get_le64(c)
+    flags := Flags(get_u8(c))
+    lo := u16(get_u8(c))
+    hi := u16(get_u8(c))
+    return Packet(id: id, temp: temp, stamp: stamp, flags: flags, seq: (lo | hi << 8).bits(i16))
+}
+
+checksum :: fn(p: [^]const u8, n: usize) -> u32 {
+    h: u32 = 0x811C9DC5
+    end := p + n
+    cur := p
+    while cur.addr() < end.addr() {
+        h = @rotl(h ~ u32(cur[0]), 5) *% 0x01000193
+        cur = cur + 1
+    }
+    return h
+}
+
+Aligned :: #align(8) struct { bytes: [32]u8 }
+
+Regs :: struct {
+    status: u32
+    data: u32
+}
+
+main :: fn() \ {Out, Sys} {
+    storage: Aligned = ---
+    buf := storage.bytes[..]
+    buf.fill(0xEE)
+    cur := Cursor(base: buf.ptr, pos: 0)
+    pkt := Packet(id: 0xDEADBEEF, temp: -12.5, stamp: 0x0123456789ABCDEF, flags: Flags(compressed: true, encrypted: false, level: 5), seq: -2)
+    encode(&cur, pkt)
+    dump: [128]u8 = ---
+    print("wrote {} bytes: {}\n", (cur.pos, hexdump(buf[0..cur.pos], dump[..])))
+    print("tail untouched: {}\n", buf[cur.pos] is 0xEE)
+    print("flags byte {} level {}\n", (u8(pkt.flags), pkt.flags.level))
+
+    rd := Cursor(base: buf.ptr, pos: 0)
+    back := decode(&rd)
+    print("id {} temp {} stamp {}\n", (back.id, back.temp, back.stamp))
+    print("flags {} {} {} seq {}\n", (back.flags.compressed, back.flags.encrypted, back.flags.level, back.seq))
+    print("consumed {}\n", rd.pos)
+
+    print("checksum {}\n", checksum(buf.ptr, cur.pos))
+    print("bswap {} {} rot {} {}\n", (@bswap(u32(0x11223344)), @bswap(u16(0xAABB)), @rotl(u8(0b1001_0110), 3), @rotr(u32(1), 1)))
+    print("popcount {} clz {} ctz {}\n", (@popcount(u32(0xF0F0)), @clz(u32(1)), @ctz(u32(0x100))))
+
+    // Aligned views over the same storage: cast checks alignment.
+    words := buf.ptr.cast([^]u32)
+    first := if target.endian is .Little { @bswap(words[0]) } else { words[0] }
+    print("first word as written {}\n", first is 0xDEADBEEF)
+    q2 := (buf.ptr + 4).cast([^]u32)
+    print("distance {} second word {}\n", (q2.addr() - buf.ptr.addr(), words[1] is q2[0]))
+    print("word stride {}\n", (words + 1).addr() - words.addr())
+
+    // Volatile register block.
+    regs := Regs(status: 0, data: 0)
+    @volatile_store(&regs.data, 0xCAFE)
+    @volatile_store(&regs.status, @volatile_load(&regs.data) + 1)
+    print("regs {} {}\n", (@volatile_load(&regs.status), @volatile_load(&regs.data)))
+}

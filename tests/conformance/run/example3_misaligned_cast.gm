@@ -1,0 +1,13 @@
+//! exit: 134
+// A cast to a pointer type with stricter alignment traps when the address is misaligned (§6.6).
+Block :: #align(8) struct { bytes: [16]u8 }
+
+main :: fn() \ {Out} {
+    b: Block = ---
+    p := b.bytes[..].ptr
+    ok := (p + 8).cast([^]u32)
+    ok[0] = 7
+    print("aligned cast fine: {}\n", ok[0])
+    bad := (p + 2).cast([^]u32)
+    print("unreachable {}\n", bad[0])
+}

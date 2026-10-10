@@ -1,0 +1,48 @@
+// Generic types with compile-time value parameters: Ring(T, N) with defaults, zero capacity, swapped generic pairs, @type_name.
+Ring :: struct(T: type, N: usize) {
+    items: [N]T
+    head: usize = 0
+    count: usize = 0
+}
+
+ring :: fn(T: type, N :: usize) -> Ring(T, N) where Plain(T) => Ring(T, N)(items: ---)
+
+push :: fn(T: type, N :: usize, r: ^Ring(T, N), x: T) -> bool {
+    if r.count is N { return false }
+    r.items[(r.head + r.count) % N] = x
+    r.count += 1
+    return true
+}
+
+pop :: fn(T: type, N :: usize, r: ^Ring(T, N)) -> ?T {
+    if r.count is 0 { return null }
+    v := r.items[r.head]
+    r.head = (r.head + 1) % N
+    r.count -= 1
+    return v
+}
+
+Pair :: struct(A, B: type) { a: A, b: B }
+
+swap :: fn(A, B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(a: p.b, b: p.a)
+
+Matrix :: struct(T: type, R, C: usize) {
+    d: [R][C]T
+}
+
+main :: fn() \ {Out} {
+    r := ring(u16, 3)
+    print("{} {} {}\n", (r.push(1), r.push(2), r.push(3)))
+    print("{}\n", r.push(4))
+    print("{} {}\n", (r.pop(), r.pop()))
+    _ = r.push(5)
+    _ = r.push(6)
+    while v := r.pop() { print("{} ", v) }
+    print("\n")
+    z := ring(u8, 0)
+    print("{} {}\n", (@size_of(Ring(u8, 0)), z.push(1)))
+    p := swap(Pair(u8, string)(a: 1, b: "x"))
+    print("{} {}\n", (p.a, p.b))
+    print("{}\n", @size_of(Matrix(f32, 3, 4)))
+    print("{}\n", @type_name(Ring(u16, 3)))
+}

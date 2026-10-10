@@ -1,0 +1,13 @@
+wrote 19 bytes: de ad be ef c1 48 00 00 ef cd ab 89 67 45 23 01 15 fe ff 
+tail untouched: true
+flags byte 21 level 5
+id 3735928559 temp -12.5 stamp 81985529216486895
+flags true false 5 seq -2
+consumed 19
+checksum 1711917430
+bswap 1144201745 48042 rot 180 2147483648
+popcount 8 clz 31 ctz 8
+first word as written true
+distance 4 second word true
+word stride 4
+regs 51967 51966

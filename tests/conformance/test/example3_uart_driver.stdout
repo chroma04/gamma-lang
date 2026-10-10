@@ -1,0 +1,7 @@
+test "send waits for the transmitter" ... ok
+test "timeouts and framing errors" ... ok
+test "receive stops when the line goes quiet" ... ok
+test "a memory-backed device" ... ok
+test "leak checking applies to driver buffers" ... ok
+test "env and rand are test doubles" ... ok
+6 passed, 0 failed

@@ -1,0 +1,15 @@
+//! exit: 134
+// Debug builds tag allocations with their allocator: freeing arena memory through the heap traps with a report.
+arena :: import "std/arena"
+
+main :: fn() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    s := with a.allocator() {
+        make(u8, 32) else return
+    }
+    print("allocated {} bytes from the arena\n", s.len)
+    // Wrong: `s` came from the arena, but the current allocator is the heap.
+    free(u8, s)
+    print("unreachable\n")
+}
