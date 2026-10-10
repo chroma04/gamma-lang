@@ -24,14 +24,48 @@ pub enum AllocKind {
     Global(u32),
 }
 
+/// Allocations up to this many bytes keep their contents inline.
+const INLINE: usize = 24;
+
+enum Buf {
+    Inline([u8; INLINE]),
+    Heap(Vec<u8>),
+}
+
 struct Alloc {
     base: u64,
     size: u64,
-    bytes: Vec<u8>,
+    bytes: Buf,
     live: bool,
     mutable: bool,
     kind: AllocKind,
 }
+
+impl Alloc {
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        match &self.bytes {
+            Buf::Inline(a) => a,
+            Buf::Heap(v) => v,
+        }
+    }
+
+    #[inline(always)]
+    fn data_mut(&mut self) -> &mut [u8] {
+        match &mut self.bytes {
+            Buf::Inline(a) => a,
+            Buf::Heap(v) => v,
+        }
+    }
+
+    #[inline(always)]
+    fn contains(&self, addr: u64) -> bool {
+        addr >= self.base && addr - self.base < self.size.max(1)
+    }
+}
+
+/// Entries of the direct-mapped cache from address to allocation index.
+const CACHE: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MemError {
@@ -106,6 +140,8 @@ pub struct Memory {
     limit: u64,
     live_count: usize,
     last: Cell<usize>,
+    /// A guess of the index of the allocation containing an address, by address bits.
+    cache: Box<[Cell<u32>; CACHE]>,
     /// Contents of static allocations referenced by [`AllocKind::Static`].
     pub statics: Vec<std::rc::Rc<[u8]>>,
 }
@@ -113,7 +149,15 @@ pub struct Memory {
 impl Memory {
     pub fn new(data_base: u64, ptr_bytes: u64) -> Memory {
         let limit = if ptr_bytes >= 8 { u64::MAX } else { 1u64 << (ptr_bytes * 8) };
-        Memory { allocs: Vec::new(), next: data_base, limit, live_count: 0, last: Cell::new(0), statics: Vec::new() }
+        Memory {
+            allocs: Vec::new(),
+            next: data_base,
+            limit,
+            live_count: 0,
+            last: Cell::new(0),
+            cache: Box::new(std::array::from_fn(|_| Cell::new(0))),
+            statics: Vec::new(),
+        }
     }
 
     pub fn alloc(&mut self, size: u64, align: u64, kind: AllocKind, mutable: bool) -> Result<u64, MemError> {
@@ -124,28 +168,107 @@ impl Memory {
         if next >= self.limit {
             return Err(MemError::Exhausted);
         }
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(size as usize).is_err() {
-            return Err(MemError::TooLarge { size, kind });
-        }
-        bytes.resize(size as usize, 0);
+        let bytes = if size as usize <= INLINE {
+            Buf::Inline([0; INLINE])
+        } else {
+            let mut v = Vec::new();
+            if v.try_reserve_exact(size as usize).is_err() {
+                return Err(MemError::TooLarge { size, kind });
+            }
+            v.resize(size as usize, 0);
+            Buf::Heap(v)
+        };
         self.next = next;
+        self.cache[(base >> 4) as usize % CACHE].set(self.allocs.len() as u32);
         self.allocs.push(Alloc { base, size, bytes, live: true, mutable, kind });
         self.live_count += 1;
         Ok(base)
     }
 
+    /// The allocation containing `addr`, if it is the one last used or the one the address cache
+    /// guesses; `None` means only that the guesses missed.
+    #[inline(always)]
+    fn hit(&self, addr: u64) -> Option<(usize, &Alloc)> {
+        let hint = self.last.get();
+        if let Some(a) = self.allocs.get(hint)
+            && a.contains(addr)
+        {
+            return Some((hint, a));
+        }
+        let c = self.cache[(addr >> 4) as usize % CACHE].get() as usize;
+        if let Some(a) = self.allocs.get(c)
+            && a.contains(addr)
+        {
+            self.last.set(c);
+            return Some((c, a));
+        }
+        None
+    }
+
+    #[inline(always)]
     fn find(&self, addr: u64, len: u64) -> Result<usize, MemError> {
         if addr == 0 {
             return Err(MemError::Null);
         }
-        let hint = self.last.get();
-        if let Some(a) = self.allocs.get(hint)
-            && addr >= a.base
-            && addr - a.base < a.size.max(1)
-        {
-            return Ok(hint);
+        if let Some((i, _)) = self.hit(addr) {
+            return Ok(i);
         }
+        self.find_slow(addr, len, &self.cache[(addr >> 4) as usize % CACHE])
+    }
+
+    /// Reads `size` (1 to 8) bytes as a little-endian word if that is possible without any
+    /// lookup beyond the guesses, and `None` otherwise (including every failure); then
+    /// [`Memory::read_word`] gives the answer and the reason.
+    #[inline(always)]
+    pub fn try_read_word(&self, addr: u64, size: usize, align: u64) -> Option<u64> {
+        if align > 1 && (align & (align - 1) != 0 || addr & (align - 1) != 0) {
+            return None;
+        }
+        let (_, a) = self.hit(addr)?;
+        let off = (addr - a.base) as usize;
+        if !a.live || off + size > a.size as usize {
+            return None;
+        }
+        let s = a.data().get(off..off + size)?;
+        Some(match size {
+            8 => u64::from_le_bytes(s.try_into().unwrap()),
+            4 => u32::from_le_bytes(s.try_into().unwrap()) as u64,
+            1 => s[0] as u64,
+            2 => u16::from_le_bytes(s.try_into().unwrap()) as u64,
+            _ => {
+                let mut b = [0u8; 8];
+                b[..size].copy_from_slice(s);
+                u64::from_le_bytes(b)
+            }
+        })
+    }
+
+    /// Writes the low `size` (1 to 8) bytes of `w` if that is possible without any lookup beyond
+    /// the guesses; returns false otherwise (including every failure), and then
+    /// [`Memory::write_word`] gives the answer and the reason.
+    #[inline(always)]
+    pub fn try_write_word(&mut self, addr: u64, w: u64, size: usize, align: u64) -> bool {
+        if align > 1 && (align & (align - 1) != 0 || addr & (align - 1) != 0) {
+            return false;
+        }
+        let Some((i, a)) = self.hit(addr) else { return false };
+        let off = (addr - a.base) as usize;
+        if !a.live || !a.mutable || off + size > a.size as usize {
+            return false;
+        }
+        let Some(d) = self.allocs[i].data_mut().get_mut(off..off + size) else { return false };
+        match size {
+            8 => d.copy_from_slice(&w.to_le_bytes()),
+            4 => d.copy_from_slice(&(w as u32).to_le_bytes()),
+            1 => d[0] = w as u8,
+            2 => d.copy_from_slice(&(w as u16).to_le_bytes()),
+            _ => d.copy_from_slice(&w.to_le_bytes()[..size]),
+        }
+        true
+    }
+
+    #[inline(never)]
+    fn find_slow(&self, addr: u64, len: u64, slot: &Cell<u32>) -> Result<usize, MemError> {
         let idx = self.allocs.partition_point(|a| a.base <= addr);
         if idx == 0 {
             return Err(MemError::Unmapped { addr, len });
@@ -157,9 +280,11 @@ impl Memory {
             return Err(MemError::Unmapped { addr, len });
         }
         self.last.set(i);
+        slot.set(i as u32);
         Ok(i)
     }
 
+    #[inline(always)]
     fn check(&self, addr: u64, len: u64) -> Result<usize, MemError> {
         let i = self.find(addr, len)?;
         let a = &self.allocs[i];
@@ -177,20 +302,81 @@ impl Memory {
         if len == 0 && align <= 1 {
             return Ok(&[]);
         }
-        if align > 1 && !addr.is_multiple_of(align) {
+        if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
         let i = self.check(addr, len)?;
         let a = &self.allocs[i];
         let off = (addr - a.base) as usize;
-        Ok(&a.bytes[off..off + len as usize])
+        Ok(&a.data()[off..off + len as usize])
+    }
+
+    #[inline(always)]
+    fn aligned(addr: u64, align: u64) -> bool {
+        if align <= 1 {
+            true
+        } else if align & (align - 1) == 0 {
+            addr & (align - 1) == 0
+        } else {
+            addr.is_multiple_of(align)
+        }
+    }
+
+    /// Reads `size` (1 to 8) bytes as a little-endian word (the first byte is the least significant).
+    /// Fails exactly as [`Memory::read`] would.
+    #[inline]
+    pub fn read_word(&self, addr: u64, size: usize, align: u64) -> Result<u64, MemError> {
+        debug_assert!((1..=8).contains(&size));
+        if !Self::aligned(addr, align) {
+            return Err(MemError::Misaligned { addr, align });
+        }
+        let i = self.check(addr, size as u64)?;
+        let a = &self.allocs[i];
+        let off = (addr - a.base) as usize;
+        let s = &a.data()[off..off + size];
+        Ok(match size {
+            8 => u64::from_le_bytes(s.try_into().unwrap()),
+            4 => u32::from_le_bytes(s.try_into().unwrap()) as u64,
+            1 => s[0] as u64,
+            2 => u16::from_le_bytes(s.try_into().unwrap()) as u64,
+            _ => {
+                let mut b = [0u8; 8];
+                b[..size].copy_from_slice(s);
+                u64::from_le_bytes(b)
+            }
+        })
+    }
+
+    /// Writes the low `size` (1 to 8) bytes of `w`, least significant first. Fails exactly as
+    /// [`Memory::write`] would.
+    #[inline]
+    pub fn write_word(&mut self, addr: u64, w: u64, size: usize, align: u64) -> Result<(), MemError> {
+        debug_assert!((1..=8).contains(&size));
+        if !Self::aligned(addr, align) {
+            return Err(MemError::Misaligned { addr, align });
+        }
+        let i = self.check(addr, size as u64)?;
+        let a = &mut self.allocs[i];
+        if !a.mutable {
+            return Err(MemError::ReadOnly { addr, kind: a.kind });
+        }
+        let off = (addr - a.base) as usize;
+        let d = &mut a.data_mut()[off..off + size];
+        match size {
+            8 => d.copy_from_slice(&w.to_le_bytes()),
+            4 => d.copy_from_slice(&(w as u32).to_le_bytes()),
+            1 => d[0] = w as u8,
+            2 => d.copy_from_slice(&(w as u16).to_le_bytes()),
+            _ => d.copy_from_slice(&w.to_le_bytes()[..size]),
+        }
+        Ok(())
     }
 
     pub fn write(&mut self, addr: u64, data: &[u8], align: u64) -> Result<(), MemError> {
         if data.is_empty() && align <= 1 {
             return Ok(());
         }
-        if align > 1 && !addr.is_multiple_of(align) {
+        if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
         let i = self.check(addr, data.len() as u64)?;
@@ -199,7 +385,7 @@ impl Memory {
             return Err(MemError::ReadOnly { addr, kind: a.kind });
         }
         let off = (addr - a.base) as usize;
-        a.bytes[off..off + data.len()].copy_from_slice(data);
+        a.data_mut()[off..off + data.len()].copy_from_slice(data);
         Ok(())
     }
 
@@ -208,17 +394,21 @@ impl Memory {
         let i = self.check(addr, data.len() as u64)?;
         let a = &mut self.allocs[i];
         let off = (addr - a.base) as usize;
-        a.bytes[off..off + data.len()].copy_from_slice(data);
+        a.data_mut()[off..off + data.len()].copy_from_slice(data);
         Ok(())
     }
 
     /// Marks the allocation at `base` dead. Returns false if there is none (or it is already dead).
     pub fn kill(&mut self, base: u64) -> bool {
-        let idx = self.allocs.partition_point(|a| a.base < base);
+        let guess = self.cache[(base >> 4) as usize % CACHE].get() as usize;
+        let idx = match self.allocs.get(guess) {
+            Some(a) if a.base == base => guess,
+            _ => self.allocs.partition_point(|a| a.base < base),
+        };
         match self.allocs.get_mut(idx) {
             Some(a) if a.base == base && a.live => {
                 a.live = false;
-                a.bytes = Vec::new();
+                a.bytes = Buf::Inline([0; INLINE]);
                 self.live_count -= 1;
                 if self.allocs.len() > (1 << 20) && self.allocs.len() > 4 * self.live_count {
                     self.compact();
