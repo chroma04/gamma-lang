@@ -1,0 +1,10 @@
+queue full, rejected job 5
+queue full, rejected job 6
+len 4
+job 1 cost 3
+job 2 cost 6
+job 3 cost 9
+job 4 cost 12
+total 30 flags 1 entries 4
+7 8
+null

@@ -1,0 +1,46 @@
+// Every way of driving a for loop: method-call iterators, array calls, pointers to arrays, stored ranges, runes/bytes, cursors, map entries, inclusive ranges.
+Bag :: struct { vals: [5]u32, n: usize }
+
+items :: fn(b: ^const Bag) \ {Yield(u32)} {
+    for i in 0..b.n { yield(b.vals[i]) }
+}
+
+mk :: fn() -> [3]u32 => [_]u32(7, 8, 9)
+
+main :: fn() \ {Out, Alloc} {
+    b := Bag(vals: [_]u32(1, 2, 3, 4, 5), n: 4)
+    for v in b.items() { print("{} ", v) }
+    print("\n")
+    for v in mk() { print("{} ", v) }
+    print("\n")
+    arr := [_]u32(5, 6, 7)
+    pa := &arr
+    for v in pa { print("{} ", v) }
+    print("\n")
+    r: Range(i64) = -2..3
+    for i in r { print("{} ", i) }
+    print("{}\n", 2 in r)
+    for c in runes("héy") { print("{} ", c) }
+    print("\n")
+    for c in bytes("héy") { print("{} ", c) }
+    print("\n")
+    l := list(u32)
+    defer l.deinit()
+    for i in 0..5 { l.push(i.trunc(u32) * 3) else trap("oom") }
+    cur := l.items.cursor()
+    while x := cur.next() { print("{} ", x) }
+    print("\n")
+    m := map(u32, string)
+    defer m.deinit()
+    m.put(1, "one") else trap("oom")
+    for e in m.entries() { print("{}={}\n", (e.key, e.value)) }
+    for k, v in m.entries() { print("{}={}\n", (k, v)) }
+    for i in 0..=3 { print("{} ", i) }
+    print("\n")
+    for i in reversed(arr[..]) { print("{} ", i) }
+    print("\n")
+    for i, v in enumerate(reversed_slice(arr[..])) { print("{}:{} ", (i, v)) }
+    print("\n")
+}
+
+reversed_slice :: fn(xs: []const u32) -> []const u32 => xs

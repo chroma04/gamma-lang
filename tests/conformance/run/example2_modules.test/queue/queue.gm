@@ -1,0 +1,28 @@
+pub Queue :: struct(T: type, N: usize) {
+    buf: [N]T
+    head: usize = 0
+    count: usize = 0
+}
+
+pub queue :: fn(T: type, N :: usize) -> Queue(T, N) where Plain(T) => Queue(T, N)(buf: ---)
+
+pub push :: fn(T: type, N :: usize, q: ^Queue(T, N), x: T) -> bool {
+    if q.count is N { return false }
+    q.buf[(q.head + q.count) % N] = x
+    q.count += 1
+    return true
+}
+
+pub pop :: fn(T: type, N :: usize, q: ^Queue(T, N)) -> ?T {
+    if q.count is 0 { return null }
+    x := q.buf[q.head]
+    q.head = (q.head + 1) % N
+    q.count -= 1
+    return x
+}
+
+pub len :: fn(T: type, N :: usize, q: ^const Queue(T, N)) -> usize => q.count
+
+pub items :: fn(T: type, N :: usize, q: ^const Queue(T, N)) \ {Yield(T)} {
+    for i in 0..q.count { yield(q.buf[(q.head + i) % N]) }
+}

@@ -1,0 +1,11 @@
+put 3 evicted 0
+3=three 2=two 1=one 
+get 2 -> "two"
+get 0 -> null
+2=two 3=three 1=one 
+2=TWO 4=four 3=three 
+old 3
+old 4
+old 2
+stop at 2
+hits 1 misses 1 len 3

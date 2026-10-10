@@ -1,0 +1,43 @@
+// Nested fibers: code on an inner fiber performs a ctl operation handled by the outer with, which suspends the whole stack of fibers, and is later resumed with a value.
+Outer :: effect { outer: ctl(n: u32) -> u32 }
+Inner :: effect { inner: ctl(n: u32) }
+
+leaf :: fn() \ {Outer, Inner, Out} {
+    defer print("leaf cleanup\n")
+    for i in 1..=3 {
+        inner(i)                 // handled by the inner with (this fiber suspends, clause runs on mid's stack)
+        r := outer(i * 10)       // handled by the outer with: suspends mid's whole fiber, including this one
+        print("  leaf got {}\n", r)
+    }
+}
+
+mid :: fn() \ {Outer, Out} {
+    defer print("mid cleanup\n")
+    stack: [65536]u8 = ---
+    seen: u32 = 0
+    with (handler Inner {
+        inner(n, k) => {
+            seen += n
+            print("  inner clause {}\n", n)
+            resume k()
+        }
+    }) on stack[..] {
+        leaf()
+    }
+    print("  mid saw {}\n", seen)
+}
+
+main :: fn() \ {Out} {
+    stack: [262144]u8 = ---
+    total: u32 = 0
+    with (handler Outer {
+        outer(n, k) => {
+            print("outer clause {}\n", n)
+            total += n
+            resume k(n + 1)
+        }
+    }) on stack[..] {
+        mid()
+    }
+    print("total {}\n", total)
+}

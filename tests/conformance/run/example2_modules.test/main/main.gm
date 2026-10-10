@@ -1,0 +1,29 @@
+// Multi-module program: a generic queue and a stack module with pub methods, an effect defined in one module and handled with a handler declaration from another.
+q :: import "../queue"
+audit :: import "../audit"
+
+Job :: struct { id: u32, cost: u32 }
+
+main :: fn() \ {Out} {
+    jobs := q.queue(Job, 4)
+    for i in 1..=6 {
+        r := jobs.push(Job(id: i, cost: i * 3))
+        if not r { print("queue full, rejected job {}\n", i) }
+    }
+    print("len {}\n", jobs.len())
+    for j in jobs.items() { print("job {} cost {}\n", (j.id, j.cost)) }
+
+    ledger := audit.Ledger()
+    with &ledger {
+        while j := jobs.pop() {
+            audit.charge(j.id, j.cost)
+            if j.cost > 9 { audit.flag("expensive") }
+        }
+    }
+    print("total {} flags {} entries {}\n", (ledger.total, ledger.flags, ledger.entries))
+    nums := q.queue(i32, 2)
+    _ = nums.push(7)
+    _ = nums.push(8)
+    print("{} {}\n", (nums.pop(), nums.pop()))
+    print("{}\n", nums.pop())
+}

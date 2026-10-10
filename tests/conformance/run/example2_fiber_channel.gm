@@ -1,0 +1,138 @@
+// Fibers: a round-robin scheduler of producer/consumer tasks over a bounded channel, using ctl operations, stored continuations and discard for cancellation.
+STACK :: 32768
+NTASKS :: 4
+
+Sched :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(a: ^Args) -> never \ {Sched, Out}, a: ^Args)
+    exit: ctl() -> never
+    block: ctl()             // park until woken
+}
+
+Chan :: struct {
+    buf: [3]u32
+    head: usize = 0
+    len: usize = 0
+    closed: bool = false
+}
+
+Runtime :: struct {
+    ready: [8]?cont(())
+    qh: usize = 0
+    qn: usize = 0
+    stacks: [NTASKS][STACK]u8
+    nspawned: usize = 0
+    live: u32 = 1
+    switches: u32 = 0
+}
+
+enqueue :: fn(rt: ^Runtime, k: cont(())) {
+    rt.ready[(rt.qh + rt.qn) % 8] = k
+    rt.qn += 1
+}
+
+dequeue :: fn(rt: ^Runtime) -> cont(()) {
+    if rt.qn is 0 { trap("deadlock") }
+    k := rt.ready[rt.qh]?
+    rt.ready[rt.qh] = null
+    rt.qh = (rt.qh + 1) % 8
+    rt.qn -= 1
+    rt.switches += 1
+    return k
+}
+
+handler Sched for ^Runtime \ {Out} {
+    yield_now(self, k) => {
+        enqueue(self, k)
+        r := dequeue(self)
+        resume r()
+    }
+    block(self, k) => {
+        enqueue(self, k)        // simple model: a blocked task is requeued and retries
+        r := dequeue(self)
+        resume r()
+    }
+    spawn(self, entry, a, k) => {
+        mem := self.stacks[self.nspawned][..]
+        self.nspawned += 1
+        self.live += 1
+        enqueue(self, @fiber(entry, a, mem))
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { break }
+        r := dequeue(self)
+        resume r()
+    }
+}
+
+// The channel lives in the (shared) heap of main's frame; tasks reach it through a global-ish pointer.
+send :: fn(c: ^Chan, x: u32) \ {Sched} {
+    while c.len is 3 { block() }
+    c.buf[(c.head + c.len) % 3] = x
+    c.len += 1
+}
+
+recv :: fn(c: ^Chan) -> ?u32 \ {Sched} {
+    while c.len is 0 {
+        if c.closed { return null }
+        block()
+    }
+    x := c.buf[c.head]
+    c.head = (c.head + 1) % 3
+    c.len -= 1
+    return x
+}
+
+Args :: struct { c: ^Chan, id: u32 }
+
+producer :: fn(a: ^Args) -> never \ {Sched, Out} {
+    defer print("  producer {} done\n", a.id)
+    for i in 0..4 {
+        send(a.c, a.id * 100 + i)
+    }
+    exit()
+}
+
+consumer :: fn(a: ^Args) -> never \ {Sched, Out} {
+    defer print("  consumer {} done\n", a.id)
+    sum: u32 = 0
+    n: u32 = 0
+    while v := recv(a.c) {
+        n += 1
+        sum += v
+        print("  consumer {} got {}\n", (a.id, v))
+        if n is 5 { break }
+    }
+    print("  consumer {} total {} over {}\n", (a.id, sum, n))
+    exit()
+}
+
+closer :: fn(a: ^Args) -> never \ {Sched, Out} {
+    // Give the producers time to run, then close the channel.
+    for _ in 0..30 { yield_now() }
+    a.c.closed = true
+    print("  channel closed\n")
+    exit()
+}
+
+main :: fn() \ {Out} {
+    chan := Chan(buf: [3]u32(fill: 0))
+    rt := Runtime(ready: [8]?cont(())(fill: null), stacks: ---)
+    a1 := Args(c: &chan, id: 1)
+    a2 := Args(c: &chan, id: 2)
+    a3 := Args(c: &chan, id: 7)
+    a4 := Args(c: &chan, id: 0)
+    main_stack: [STACK]u8 = ---
+    with &rt on main_stack[..] {
+        spawn(producer, &a1)
+        spawn(producer, &a2)
+        spawn(consumer, &a3)
+        spawn(closer, &a4)
+        print("main: spawned {}\n", rt.nspawned)
+        exit()
+    }
+    print("switches {}, left in channel {}\n", (rt.switches, chan.len))
+}

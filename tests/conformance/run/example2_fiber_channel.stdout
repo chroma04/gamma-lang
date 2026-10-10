@@ -1,0 +1,12 @@
+main: spawned 4
+  consumer 7 got 100
+  consumer 7 got 101
+  consumer 7 got 102
+  producer 1 done
+  consumer 7 got 103
+  consumer 7 got 200
+  consumer 7 total 606 over 5
+  consumer 7 done
+  producer 2 done
+  channel closed
+switches 38, left in channel 3

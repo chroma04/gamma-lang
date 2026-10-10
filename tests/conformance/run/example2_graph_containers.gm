@@ -1,0 +1,85 @@
+// Containers of containers: a graph as HashMap of adjacency Lists keyed by struct and tuple keys, with BFS using a ring queue and cleanup through defer.
+Pt :: struct { x: i32, y: i32 }
+
+Graph :: struct {
+    adj: HashMap(Pt, List(Pt))
+}
+
+graph :: fn() -> Graph \ {Alloc} => Graph(adj: map(Pt, List(Pt)))
+
+add_edge :: fn(g: ^Graph, a, b: Pt) -> AllocError!() \ {Alloc} {
+    la := try g.adj.get_or_put(a, list(Pt))
+    try la.push(b)
+    lb := try g.adj.get_or_put(b, list(Pt))
+    try lb.push(a)
+}
+
+deinit :: fn(g: ^Graph) {
+    for e in g.adj.entries() {
+        l := e.value
+        l.deinit()
+    }
+    g.adj.deinit()
+}
+
+// BFS distances from `start`; the queue is a fixed ring.
+bfs :: fn(g: ^Graph, start: Pt, goal: Pt) -> ?u32 \ {Alloc} {
+    dist := map(Pt, u32)
+    defer dist.deinit()
+    ring: [64]Pt = ---
+    head: usize = 0
+    count: usize = 0
+    dist.put(start, 0) else trap("oom")
+    ring[0] = start
+    count = 1
+    while count > 0 {
+        cur := ring[head]
+        head = (head + 1) % 64
+        count -= 1
+        d := dist.get(cur)?
+        if cur is goal { return d }
+        nbrs := g.adj.get_ptr(cur) else continue
+        for n in nbrs.items {
+            if dist.contains(n) { continue }
+            dist.put(n, d + 1) else trap("oom")
+            ring[(head + count) % 64] = n
+            count += 1
+        }
+    }
+    return null
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    g := graph()
+    defer deinit(&g)
+    // a 4x4 grid with a wall
+    for y in 0..4 {
+        for x in 0..4 {
+            p := Pt(x: x.trunc(i32), y: y.trunc(i32))
+            if x < 3 and not (x is 1 and y < 3) { try add_edge(&g, p, Pt(x: p.x + 1, y: p.y)) }
+            if y < 3 { try add_edge(&g, p, Pt(x: p.x, y: p.y + 1)) }
+        }
+    }
+    print("nodes {}\n", g.adj.len())
+    print("dist {}\n", bfs(&g, Pt(x: 0, y: 0), Pt(x: 3, y: 0)))
+    print("dist {}\n", bfs(&g, Pt(x: 0, y: 0), Pt(x: 3, y: 3)))
+    print("dist {}\n", bfs(&g, Pt(x: 0, y: 0), Pt(x: 9, y: 9)))
+
+    tuples := map((u8, bool), string)
+    defer tuples.deinit()
+    try tuples.put((1, true), "a")
+    try tuples.put((1, false), "b")
+    try tuples.put((1, true), "c")
+    print("{} {} {}\n", (tuples.len(), tuples.get((1, true)), tuples.get((2, true))))
+    names := map(string, List(u32))
+    defer {
+        for e in names.entries() { l := e.value; l.deinit() }
+        names.deinit()
+    }
+    for w in [_]string("a", "b", "a", "c", "a") {
+        l := try names.get_or_put(w, list(u32))
+        try l.push(l.items.len.trunc(u32))
+    }
+    a := names.get("a")?
+    print("{} {}\n", (a.items, names.len()))
+}

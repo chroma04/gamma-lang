@@ -1,0 +1,15 @@
+evicted 10
+evicted 20
+ring: 30
+ring: 40
+ring: 50
+ring: 60
+found 50
+none null
+job 1 prio 1
+job 3 prio 1
+job 4 prio 3
+job 2 prio 4
+job 0 prio 5
+heap full, dropped 8
+9 7 3 2 

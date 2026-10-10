@@ -1,0 +1,13 @@
+  inner clause 1
+outer clause 10
+  leaf got 11
+  inner clause 2
+outer clause 20
+  leaf got 21
+  inner clause 3
+outer clause 30
+  leaf got 31
+leaf cleanup
+  mid saw 6
+mid cleanup
+total 60
