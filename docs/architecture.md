@@ -413,3 +413,18 @@ signatures (foreign functions, exports, functions with at most `{Sys}`, and
 calls through their pointers) take and return mirrors, and values are copied
 between blob and mirror with `GM_CONV` at those calls; the C compiler removes
 the copies.
+
+**Large values.** Between Gamma functions, a value larger than two words
+(`Types::by_ref`: a blob over 16 bytes) is passed by address and the callee
+copies it into its frame before anything else runs. The C ABI would pass such a
+value through memory anyway, but by value the C compiler made several copies
+per call (a temporary, the conversion union, the argument area, the frame), and
+fiber stacks sized by `@stack_size` must hold them. Because the copy happens on
+entry, the address may be that of any place holding the value: an argument read
+from a local or through a pointer is passed as that place when no later argument
+can write memory (`no_writes`), and `return x` copies `x` straight into the result
+slot. A plain function whose own signature differs from the C ABI as a result
+(it has a large parameter, or returns a large mirror type) gets a separate entry
+point `gm_fN_c` with the C signature (`Gen::needs_wrapper`, `c_abi_wrapper`); it
+is what function pointers, constants and `#export` refer to (`Gen::addr_name`),
+while direct calls use the internal one.

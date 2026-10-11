@@ -14,7 +14,7 @@
 
 ## Next steps
 1. Keep the session-4 PR (and #4) green once Actions runs again; update the description.
-2. bugs-open.md leftovers (#23 wishes: let-else, interp alloc speed); perf: decisions/012.
+2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 
 ## Map
