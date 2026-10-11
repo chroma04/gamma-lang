@@ -1,4 +1,4 @@
-# 003 Interpreter design (planned for M2; refine when implementing)
+# 003 Interpreter design (implemented; docs/architecture.md has the current description)
 - Tree-walking over TIR with Rust recursion; run on a thread with a big stack (e.g. 256 MiB).
 - Memory model (needed for §17/§18.4 UB detection and faithful layout): Miri-like. Allocations
   (stack slots, statics, heap) = byte vectors + provenance map (offset → alloc id for stored
