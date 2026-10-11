@@ -1,0 +1,6 @@
+//! stage: check
+// @min_value and @max_value take an integer type; a type parameter needs Int(T) (§20.3).
+f :: fn(T: type) -> T => @max_value(T)     //~ ERROR needs `where Int(T)`
+main :: fn() {
+    x := @max_value(f64)                   //~ ERROR takes an integer type
+}

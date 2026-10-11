@@ -297,7 +297,7 @@ impl<'s> Sema<'s> {
         walk(&ex, &mut |n| {
             generic |= super::generics::has_param(n.ty)
                 || matches!(n.kind, ExprKind::ValueParam(_))
-                || matches!(&n.kind, ExprKind::SizeOf { .. } | ExprKind::TypeIs { .. });
+                || matches!(&n.kind, ExprKind::SizeOf { .. } | ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. });
         });
         if generic {
             self.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)");
@@ -330,7 +330,7 @@ fn depends_on_params(e: &Expr) -> bool {
     let mut found = crate::sema::generics::has_param(e.ty)
         || matches!(&e.kind, ExprKind::ValueParam(_))
         || matches!(&e.kind, ExprKind::SizeOf { of, .. } if crate::sema::generics::has_param(*of))
-        || matches!(&e.kind, ExprKind::TypeIs { .. });
+        || matches!(&e.kind, ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. });
     e.for_each_child(&mut |c| found |= depends_on_params(c));
     found
 }

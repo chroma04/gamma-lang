@@ -206,6 +206,8 @@ mask_demo :: fn(addr: u64) -> u64 => addr & MASK    // MASK is u64 here
 
 Arbitrary widths such as `u3` or `i24` make protocol fields exact. They are stored in whole bytes in memory (1, 2, 4, 8 or 16 bytes for widths up to 128 bits), with unspecified padding bits; bit-level packing is opt-in through `#bits` structs ([chapter 14](14-interop.md)). `usize` is deliberately not an alias of `u64`, so that code which is correct on a 64-bit target does not silently break on a 32-bit one.
 
+The range of an integer type is available as `@min_value(T)` and `@max_value(T)`, constants of type `T`: `@max_value(u8)` is 255 and `@min_value(i16)` is -32768. They also work for a type parameter constrained with `Int(T)` (chapter 10).
+
 **There are no implicit conversions between numeric types in expressions.** Binary operators need operands of the identical type. Lossless *widening* happens only at coercion sites: initialization, assignment, argument passing, return, and the like.
 
 ```gamma

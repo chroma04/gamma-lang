@@ -267,6 +267,13 @@ impl<'s> Sema<'s> {
                 e.kind = tir::ExprKind::SizeOf { of: t, align: *align };
             }
         }
+        if let tir::ExprKind::IntLimit { of, max } = &e.kind {
+            let (t, max) = (self.subst(*of, cx.map), *max);
+            e.kind = match super::expr::int_limit(t, max, &self.target) {
+                Some(v) => tir::ExprKind::Int(v),
+                None => tir::ExprKind::IntLimit { of: t, max },
+            };
+        }
         if let tir::ExprKind::TypeIs { a, b, negated } = &e.kind {
             let (a, b, negated) = (self.subst(*a, cx.map), self.subst(*b, cx.map), *negated);
             e.kind = if has_param(a) || has_param(b) {

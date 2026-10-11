@@ -1125,6 +1125,24 @@ impl<'a, 's> FnCx<'a, 's> {
                 let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
                 usize_const(if name.name.as_str() == "size_of" { size } else { align })
             }
+            "min_value" | "max_value" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let max = name.name.as_str() == "max_value";
+                if let TyKind::Param(p) = t.kind() {
+                    if !self.sema.param_has(*p, super::generics::Constraint::Int) {
+                        self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
+                        return error_expr(span);
+                    }
+                    return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
+                }
+                match int_limit(t, max, &self.sema.target) {
+                    Some(v) => mk(t, tir::ExprKind::Int(v), span),
+                    None => {
+                        self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
+                        error_expr(span)
+                    }
+                }
+            }
             "offset_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
                 let field = match args.get(1).map(|a| &a.kind) {
@@ -2433,4 +2451,22 @@ pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
 /// True for `()`, which is both the unit type and the unit value.
 fn is_unit_tuple(e: &ast::Expr) -> bool {
     matches!(&e.kind, ExprKind::Tuple(elems) if elems.is_empty())
+}
+
+/// The smallest (or, with `max`, the largest) value of integer type `t`, or `None` if
+/// `t` is not an integer type.
+pub fn int_limit(t: Ty, max: bool, target: &crate::layout::Target) -> Option<num_bigint::BigInt> {
+    let (signed, bits) = match t.kind() {
+        TyKind::Int(i) => (i.signed, i.bits as u32),
+        TyKind::Usize => (false, target.ptr_bits()),
+        TyKind::Isize => (true, target.ptr_bits()),
+        _ => return None,
+    };
+    let one = num_bigint::BigInt::from(1u8);
+    Some(match (signed, max) {
+        (false, false) => num_bigint::BigInt::from(0u8),
+        (false, true) => (one << bits as usize) - 1u8,
+        (true, false) => -(one << (bits - 1) as usize),
+        (true, true) => (one << (bits - 1) as usize) - 1u8,
+    })
 }

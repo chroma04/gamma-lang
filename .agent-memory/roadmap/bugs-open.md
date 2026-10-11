@@ -25,5 +25,5 @@
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
-30. Wishes: T.MIN/T.MAX, generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
+30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
     runnable from a root (`gamma test --all`?), x.to(f64) widening shorthand, @fn_cast.

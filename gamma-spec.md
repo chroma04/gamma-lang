@@ -2355,6 +2355,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | Intrinsic | Result | Compile-time | § |
 | --- | --- | --- | --- |
 | `@size_of(T)`, `@align_of(T)` | `usize` | yes | 5 |
+| `@min_value(T)`, `@max_value(T)` | `T`, the smallest or largest value of integer type `T` (a type parameter needs `Int(T)`) | yes | 5.1 |
 | `@offset_of(S, field)` | `usize` | yes | 5.10.4 |
 | `@type_of(e)` | `type` (`e` is not evaluated) | yes | — |
 | `@type_name(T)` | `string` | yes | — |
