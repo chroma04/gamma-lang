@@ -77,7 +77,7 @@ A program is a single `.gm` file or a directory of `.gm` files (one module). Arg
 
 ### Build modes
 
-The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked; the C back end optimizes, except in a Debug build with debug information (below).
+The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked. The C back end optimizes Checked and Fast builds fully; Debug builds are optimized lightly so that they compile quickly (and not at all with debug information, below). Debug builds also reuse a precompiled copy of the runtime, kept in `~/.cache/gamma` (set `GAMMA_CACHE_DIR` to use another directory, or to an empty value to turn the cache off).
 
 ### Debugging native code
 
