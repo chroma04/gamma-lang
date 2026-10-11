@@ -1,0 +1,160 @@
+// A query engine over generic tables: qualified generic types, aliases, iterators with failure, handler types.
+db :: import "../db"
+fixed_buffer :: import "std/fixed_buffer"
+
+Table :: db.Table
+Query :: db.Query
+Map :: HashMap
+
+Employee :: struct {
+    id: u32
+    name: string
+    dept: u32
+    salary: u32
+    age: u8
+}
+
+Dept :: struct {
+    id: u32
+    name: string
+}
+
+Staff :: Table(Employee)
+Depts :: db.Table(Dept)
+
+is_eng :: fn(e: ^const Employee) -> bool => e.dept is 1
+over_90 :: fn(e: ^const Employee) -> bool => e.salary > 90
+under_40 :: fn(e: ^const Employee) -> bool => e.age < 40
+by_salary_desc :: fn(a, b: ^const Employee) -> bool => a.salary > b.salary
+by_name :: fn(a, b: ^const Employee) -> bool => a.name < b.name
+emp_id :: fn(e: ^const Employee) -> u32 => e.id
+emp_dept :: fn(e: ^const Employee) -> u32 => e.dept
+emp_salary :: fn(e: ^const Employee) -> i64 => i64(e.salary)
+dept_id :: fn(d: ^const Dept) -> u32 => d.id
+
+load :: fn(staff: ^Staff, depts: ^Depts) -> AllocError!() {
+    people := [_]Employee(
+        Employee(id: 1, name: "Ada", dept: 1, salary: 120, age: 36),
+        Employee(id: 2, name: "Bob", dept: 1, salary: 100, age: 29),
+        Employee(id: 3, name: "Cy", dept: 2, salary: 80, age: 41),
+        Employee(id: 4, name: "Di", dept: 2, salary: 85, age: 33),
+        Employee(id: 5, name: "Eve", dept: 3, salary: 70, age: 28),
+        Employee(id: 6, name: "Flo", dept: 3, salary: 95, age: 45),
+        Employee(id: 7, name: "Gus", dept: 1, salary: 130, age: 52),
+        Employee(id: 8, name: "Hal", dept: 4, salary: 60, age: 38),
+        Employee(id: 9, name: "Ivy", dept: 9, salary: 50, age: 23),
+    )
+    for p in people { _ = try staff.insert(p) }
+    for d in [_]Dept(Dept(id: 1, name: "eng"), Dept(id: 2, name: "ops"), Dept(id: 3, name: "sales"), Dept(id: 4, name: "hr"), Dept(id: 5, name: "legal")) {
+        _ = try depts.insert(d)
+    }
+    return ()
+}
+
+names :: fn(label: string, q: ^const Query(Employee), staff: ^const Staff) -> AllocError!() \ {Out, Alloc, db.Trace} {
+    print("{}:", label)
+    try for e in db.rows(staff, q) { print(" {}", e.name) }
+    print("\n")
+    return ()
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    staff := db.new_table(Employee, "staff")
+    defer staff.deinit()
+    depts: Depts = db.new_table(Dept, "depts")
+    defer depts.deinit()
+    try load(&staff, &depts)
+    print("{} employees, {} departments\n", (staff.len(), depts.len()))
+
+    tally := db.Tally()
+    tracer := db.Tracer(prefix: "    . ")
+    with &tally {
+        q := db.new_query(Employee)
+        defer q.deinit()
+        try names("everyone", &q, &staff)
+        try q.filter(is_eng)
+        try names("engineers", &q, &staff)
+        q.order_by(by_salary_desc)
+        q.take(2)
+        with &tracer { try names("top two engineers", &q, &staff) }
+        try q.filter(under_40)
+        print("{} predicates\n", q.predicate_count())
+        try names("young engineers", &q, &staff)
+        n := try db.count(&staff, &q)
+        print("count = {}\n", n)
+    }
+    print("{} steps touched {} rows\n", (tally.steps, tally.rows))
+
+    with &tally {
+        everyone := db.new_query(Employee)
+        defer everyone.deinit()
+        bonus: i64 = 5
+        total := try db.sum(&staff, &everyone, fn(e) => i64(e.salary) + bonus)
+        print("payroll with bonus {}: {}\n", (bonus, total))
+
+        old := db.new_query(Employee)
+        defer old.deinit()
+        try old.filter(over_90)
+        groups := try db.group_by(&staff, &old, emp_dept, emp_salary)
+        defer groups.deinit()
+        out := list((dept: u32, n: u32, total: i64))
+        defer out.deinit()
+        for g in groups.entries() { try out.push((dept: g.key, n: g.value.n, total: g.value.total)) }
+        out.items.sort_by_key(fn(x) => x.dept)
+        for x in out.items { print("dept {}: {} earners over 90, total {}\n", (x.dept, x.n, x.total)) }
+
+        print("-- join --\n")
+        joined: u32 = 0
+        try for pair in db.join(&staff, &depts, emp_dept, dept_id) {
+            print("{} works in {}\n", (pair.left.name, pair.right.name))
+            joined += 1
+        }
+        print("{} joined rows\n", joined)
+    }
+
+    print("-- sets --\n")
+    eng := try db.mask(&staff, fn(e) => e.dept is 1)
+    defer eng.deinit()
+    rich := try db.mask(&staff, over_90)
+    defer rich.deinit()
+    young := try db.mask(&staff, under_40)
+    defer young.deinit()
+    print("{} eng, {} rich, {} young\n", (eng.count(), rich.count(), young.count()))
+    both := try db.mask(&staff, over_90)
+    defer both.deinit()
+    both.intersect_with(&young)
+    either := try db.mask(&staff, over_90)
+    defer either.deinit()
+    either.union_with(&young)
+    print("rich and young:")
+    for i in both.items() { print(" {}", staff.row(i)?.name) }
+    print("\nrich or young: {}\n", either.count())
+
+    print("-- index --\n")
+    ix := try db.table.index(Employee, u32, &staff, emp_id)
+    defer ix.release()
+    for id in [_]u32(7, 3, 42) {
+        if i := ix.find(id) {
+            print("id {} is row {}: {}\n", (id, i, staff.row(i)?.name))
+        } else {
+            print("id {} not found\n", id)
+        }
+    }
+
+    print("-- out of memory --\n")
+    store: [200]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    q := db.new_query(Employee)
+    defer q.deinit()
+    q.order_by(by_name)
+    with fb.allocator(), &tally {
+        n := db.count(&staff, &q) else e => {
+            print("sorted scan failed: {}\n", e)
+            0
+        }
+        print("n = {}\n", n)
+    }
+    print("{} steps in total\n", tally.steps)
+    return ()
+}
+

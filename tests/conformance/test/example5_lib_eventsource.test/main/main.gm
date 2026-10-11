@@ -1,0 +1,82 @@
+//! stage: test
+// Event sourcing: a generic store with a live projection, commands that emit or fail, rollback and replay.
+es :: import "../es"
+bank :: import "../bank"
+
+Ledger :: es.Store(bank.Bank, bank.Event)
+
+attempt :: fn(l: ^Ledger, body: fn() \ {es.Events(bank.Event), bank.Fail}) -> bank.Why!() {
+    result: bank.Why!() = ()
+    h :: handler bank.Fail {
+        fail(why) => {
+            result = !why
+            break
+        }
+    }
+    with l, h { body() }
+    return result
+}
+
+test "commands emit events and project state" {
+    l := es.store(bank.Bank(), bank.apply)
+    defer l.deinit()
+    try_all := attempt(&l, fn() {
+        bank.open_account(&l.state, 1, "ada")
+        bank.open_account(&l.state, 2, "bob")
+        bank.deposit(&l.state, 1, 500)
+        bank.transfer(&l.state, 1, 2, 120)
+    })
+    expect(try_all is not !_)
+    expect(l.len() is 5)
+    expect(bank.balance(&l.state, 1) is 380)
+    expect(bank.balance(&l.state, 2) is 120)
+    expect(bank.total(&l.state) is 500)
+}
+
+test "failures carry a reason and leave the log alone" {
+    l := es.store(bank.Bank(), bank.apply)
+    defer l.deinit()
+    _ = attempt(&l, fn() { bank.open_account(&l.state, 1, "ada") })
+    r := attempt(&l, fn() { bank.withdraw(&l.state, 1, 10) })
+    expect(r is !.Insufficient(id: 1, have: 0, want: 10))
+    r = attempt(&l, fn() { bank.deposit(&l.state, 9, 10) })
+    expect(r is !.NoSuchAccount(9))
+    r = attempt(&l, fn() { bank.open_account(&l.state, 1, "again") })
+    expect(r is !.AlreadyOpen(1))
+    expect(l.len() is 1)
+}
+
+test "rollback and snapshot replay agree with the live state" {
+    l := es.store(bank.Bank(), bank.apply)
+    defer l.deinit()
+    _ = attempt(&l, fn() {
+        bank.open_account(&l.state, 1, "ada")
+        bank.deposit(&l.state, 1, 100)
+    })
+    snap := es.snapshot(&l)
+    _ = attempt(&l, fn() {
+        bank.deposit(&l.state, 1, 50)
+        bank.withdraw(&l.state, 1, 30)
+    })
+    expect(bank.balance(&l.state, 1) is 120)
+    replayed := es.resume_from(snap, l.events(), bank.apply)
+    expect(bank.balance(&replayed, 1) is 120)
+    l.rollback(2)
+    expect(bank.balance(&l.state, 1) is 100)
+    expect(l.len() is 2)
+}
+
+test "closing needs an empty account" {
+    l := es.store(bank.Bank(), bank.apply)
+    defer l.deinit()
+    _ = attempt(&l, fn() {
+        bank.open_account(&l.state, 1, "ada")
+        bank.deposit(&l.state, 1, 5)
+    })
+    expect(attempt(&l, fn() { bank.close(&l.state, 1) }) is !.NotEmpty(1))
+    _ = attempt(&l, fn() {
+        bank.withdraw(&l.state, 1, 5)
+        bank.close(&l.state, 1)
+    })
+    expect(bank.balance(&l.state, 1) is null)
+}

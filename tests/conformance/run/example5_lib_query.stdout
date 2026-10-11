@@ -1,0 +1,36 @@
+9 employees, 5 departments
+everyone: Ada Bob Cy Di Eve Flo Gus Hal Ivy
+engineers: Ada Bob Gus
+top two engineers:    . scan: 9
+    . sort: 3
+ Gus Ada    . emit: 2
+
+2 predicates
+young engineers: Ada Bob
+count = 2
+10 steps touched 56 rows
+payroll with bonus 5: 835
+dept 1: 3 earners over 90, total 350
+dept 3: 1 earners over 90, total 95
+-- join --
+Ada works in eng
+Bob works in eng
+Cy works in ops
+Di works in ops
+Eve works in sales
+Flo works in sales
+Gus works in eng
+Hal works in hr
+8 joined rows
+-- sets --
+3 eng, 4 rich, 6 young
+rich and young: Ada Bob
+rich or young: 8
+-- index --
+id 7 is row 6: Gus
+id 3 is row 2: Cy
+id 42 not found
+-- out of memory --
+sorted scan failed: .OutOfMemory
+n = 0
+18 steps in total

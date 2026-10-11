@@ -1,0 +1,292 @@
+// The command engine: parsing, execution against a world, route finding, narration through effects.
+w :: import "../world"
+str :: import "std/str"
+dq :: import "std/collections/deque"
+bs :: import "std/collections/bitset"
+
+/// Where the story text goes.
+pub Narrate :: effect {
+    say: fn(text: string)
+}
+
+/// A source of small random numbers.
+pub Dice :: effect {
+    roll: fn(sides: u32) -> u32
+}
+
+/// Ends the game.
+pub Halt :: effect {
+    halt: esc() -> never
+}
+
+/// Prints each line, indented, and counts them.
+pub Console :: struct {
+    pub lines: u32 = 0
+}
+
+handler Narrate for ^Console \ {Out} {
+    say(self, text) => {
+        self.lines += 1
+        print("  {}\n", text)
+    }
+}
+
+/// A deterministic linear congruential generator.
+pub Lcg :: struct {
+    pub state: u32
+}
+
+handler Dice for ^Lcg {
+    roll(self, sides) => {
+        self.state = self.state *% 1664525 +% 1013904223
+        (self.state >> 16) % sides
+    }
+}
+
+pub Command :: union {
+    Look
+    Inventory
+    Go: w.Dir
+    Take: string
+    Drop: string
+    Examine: string
+    Use: (item: string, target: string)
+    Route: string
+    Quit
+}
+
+pub ParseError :: union {
+    Empty
+    UnknownVerb: string
+    MissingObject: string
+    BadDirection: string
+}
+
+sayf :: fn(A: type, template :: string, args: A) \ {Narrate} {
+    buf: [256]u8 = ---
+    b := str.builder(buf[..])
+    b.write(template, args)
+    say(b.str())
+}
+
+/// Turns a line of text into a command.
+pub parse :: fn(line: string) -> ParseError!Command {
+    words := [4]string(fill: "")
+    n: usize = 0
+    for tok in str.fields(line) {
+        if n < 4 {
+            words[n] = tok
+            n += 1
+        }
+    }
+    if n is 0 { return !.Empty }
+    verb := words[0]
+    if verb in ("look", "l") { return Command.Look }
+    if verb in ("inventory", "i") { return Command.Inventory }
+    if verb is "quit" { return Command.Quit }
+    if verb in ("go", "walk") {
+        if n < 2 { return !.MissingObject(verb) }
+        d := w.parse_dir(words[1]) else return !.BadDirection(words[1])
+        return Command.Go(d)
+    }
+    if d := w.parse_dir(verb) { return Command.Go(d) }
+    if verb in ("take", "get", "drop", "examine", "x", "route") {
+        if n < 2 { return !.MissingObject(verb) }
+        what := words[1]
+        if verb in ("take", "get") { return Command.Take(what) }
+        if verb is "drop" { return Command.Drop(what) }
+        if verb is "route" { return Command.Route(what) }
+        return Command.Examine(what)
+    }
+    if verb is "use" {
+        if n < 4 or words[2] is not "on" { return !.MissingObject(verb) }
+        return Command.Use(item: words[1], target: words[3])
+    }
+    return !.UnknownVerb(verb)
+}
+
+describe :: fn(g: ^w.World) \ {Narrate} {
+    r := g.current()
+    sayf("== {} ==", r.name)
+    say(r.desc)
+    buf: [160]u8 = ---
+    b := str.builder(buf[..])
+    for x in r.items.items {
+        if b.len() > 0 { b.push(", ") }
+        b.push(g.item(x).name)
+    }
+    if b.len() > 0 { sayf("You see: {}", b.str()) }
+    b.reset()
+    for d in w.ALL_DIRS {
+        if r.exits[w.slot(d)] is not null {
+            if b.len() > 0 { b.push(", ") }
+            b.push(w.dir_name(d))
+            if r.locked[w.slot(d)] { b.push(" (locked)") }
+        }
+    }
+    sayf("Exits: {}", b.str())
+}
+
+has_item :: fn(items: []const u16, id: u16) -> bool {
+    for x in items {
+        if x is id { return true }
+    }
+    return false
+}
+
+/// The shortest unlocked path from the player's room to room `to`, if any.
+pub route :: fn(g: ^w.World, to: u16) -> AllocError!?List(w.Dir) \ {Alloc} {
+    n := g.rooms.len()
+    seen := try bs.bitset(n)
+    defer seen.deinit()
+    from_room := try make_fill(u16, n, 0)
+    defer free(from_room)
+    from_dir := try make_fill(u8, n, 0)
+    defer free(from_dir)
+    queue := dq.deque(u16)
+    defer queue.deinit()
+    seen.insert(usize(g.here))
+    try queue.push_back(g.here)
+    while cur := queue.pop_front() {
+        if cur is to {
+            path := list(w.Dir)
+            errdefer path.deinit()
+            at := to
+            while at is not g.here {
+                d := w.Dir.from_tag(from_dir[at]) else trap("corrupt route")
+                try path.push(d)
+                at = from_room[at]
+            }
+            m := path.items.len
+            for i in 0..m / 2 { path.items.swap(i, m - 1 - i) }
+            return path
+        }
+        room := g.rooms.view(cur)?
+        for d in w.ALL_DIRS {
+            next := room.exits[w.slot(d)] else continue
+            if room.locked[w.slot(d)] or seen.contains(usize(next)) { continue }
+            seen.insert(usize(next))
+            from_room[next] = cur
+            from_dir[next] = u8(d)
+            try queue.push_back(next)
+        }
+    }
+    return null
+}
+
+/// Carries out one command.
+pub step :: fn(g: ^w.World, c: Command) -> AllocError!() \ {Narrate, Dice, Halt, Alloc} {
+    match c {
+        .Look => describe(g)
+        .Inventory => {
+            if g.carried.items.len is 0 {
+                say("You carry nothing.")
+            } else {
+                for x in g.carried.items { sayf("- {}: {}", (g.item(x).name, g.item(x).desc)) }
+                sayf("Load: {} of {}", (w.load(g), w.MAX_WEIGHT))
+            }
+        }
+        .Go(d) => {
+            r := g.current()
+            dest := r.exits[w.slot(d)] else {
+                sayf("You can't go {}.", w.dir_name(d))
+                return ()
+            }
+            if r.locked[w.slot(d)] {
+                sayf("The way {} is locked.", w.dir_name(d))
+                return ()
+            }
+            g.here = dest
+            g.moves += 1
+            describe(g)
+            if roll(4) is 0 { say("A rat scurries past your feet.") }
+        }
+        .Take(name) => {
+            id := g.things.find(name) else {
+                sayf("There is no {}.", name)
+                return ()
+            }
+            if not has_item(g.current().items.items, id) {
+                sayf("There is no {} here.", name)
+                return ()
+            }
+            it := g.item(id)
+            if not it.takeable {
+                sayf("The {} cannot be taken.", name)
+                return ()
+            }
+            if w.load(g) + u32(it.weight) > w.MAX_WEIGHT {
+                sayf("The {} is too heavy to add to your load.", name)
+                return ()
+            }
+            try w.pick_up(g, id)
+            if name is "gold" { g.score += 50 } else { g.score += 5 }
+            sayf("Taken: {}.", name)
+        }
+        .Drop(name) => {
+            id := g.things.find(name) else {
+                sayf("There is no {}.", name)
+                return ()
+            }
+            if not w.holds(g, id) {
+                sayf("You don't have the {}.", name)
+                return ()
+            }
+            try w.drop(g, id)
+            sayf("Dropped: {}.", name)
+        }
+        .Examine(name) => {
+            id := g.things.find(name) else {
+                sayf("You see no {}.", name)
+                return ()
+            }
+            if w.holds(g, id) or has_item(g.current().items.items, id) {
+                say(g.item(id).desc)
+            } else {
+                sayf("You see no {} here.", name)
+            }
+        }
+        .Use(u) => {
+            key := g.things.find(u.item) else {
+                sayf("What is a {}?", u.item)
+                return ()
+            }
+            if not w.holds(g, key) {
+                sayf("You are not carrying the {}.", u.item)
+                return ()
+            }
+            if u.item is "key" and u.target is "door" and g.here is g.rooms.find("Hall")? {
+                g.current().locked[w.slot(.E)] = false
+                g.score += 10
+                say("The lock clicks open.")
+            } else {
+                sayf("Using the {} on the {} does nothing.", (u.item, u.target))
+            }
+        }
+        .Route(name) => {
+            target := g.rooms.find(name) else {
+                sayf("Where is {}?", name)
+                return ()
+            }
+            found := try route(g, target)
+            path := found else {
+                sayf("There is no open route to {}.", name)
+                return ()
+            }
+            defer path.deinit()
+            buf: [160]u8 = ---
+            b := str.builder(buf[..])
+            for d in path.items {
+                if b.len() > 0 { b.push(", ") }
+                b.push(w.dir_name(d))
+            }
+            if path.items.len is 0 { b.push("you are already there") }
+            sayf("Route to {}: {}", (name, b.str()))
+        }
+        .Quit => {
+            sayf("Goodbye after {} moves with {} points.", (g.moves, g.score))
+            halt()
+        }
+    }
+    return ()
+}

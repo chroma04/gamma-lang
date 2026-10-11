@@ -1,0 +1,77 @@
+// A scripted text adventure: content + engine libraries, effects for narration, dice and quitting.
+content :: import "../content"
+engine :: import "../engine"
+world :: import "../world"
+
+SCRIPT :: [_]string(
+    "look",
+    "take lamp",
+    "take sword",
+    "up",
+    "route Library",
+    "e",
+    "use key on door",
+    "west",
+    "take bread",
+    "inventory",
+    "south",
+    "take anvil",
+    "go up",
+    "get key",
+    "examine key",
+    "dance",
+    "go",
+    "go sideways",
+    "use lamp on door",
+    "route Vault",
+    "go down",
+    "go north",
+    "go north",
+    "drop lamp",
+    "e",
+    "use key on door",
+    "n",
+    "take book",
+    "inventory",
+    "route Vault",
+    "route Cellar",
+    "s",
+    "e",
+    "take gold",
+    "drop book",
+    "take gold",
+    "drop bread",
+    "take gold",
+    "inventory",
+    "quit",
+    "look",
+)
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    g := try content.manor()
+    defer world.deinit(&g)
+    console := engine.Console()
+    dice := engine.Lcg(state: 7)
+    ender :: handler engine.Halt {
+        halt() => break
+    }
+    played: u32 = 0
+    with &console, &dice, ender {
+        for line in SCRIPT {
+            print("> {}\n", line)
+            cmd := engine.parse(line) else e => {
+                match e {
+                    .Empty => print("  (nothing)\n")
+                    .UnknownVerb(v) => print("  I don't know how to `{}`.\n", v)
+                    .MissingObject(v) => print("  `{}` what?\n", v)
+                    .BadDirection(d) => print("  `{}` is not a direction.\n", d)
+                }
+                continue
+            }
+            played += 1
+            try engine.step(&g, cmd)
+        }
+    }
+    print("played {} commands, {} lines of narration, {} moves, score {}\n", (played, console.lines, g.moves, g.score))
+    return ()
+}

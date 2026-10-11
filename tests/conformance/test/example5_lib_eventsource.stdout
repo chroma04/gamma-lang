@@ -1,0 +1,5 @@
+test "commands emit events and project state" ... ok
+test "failures carry a reason and leave the log alone" ... ok
+test "rollback and snapshot replay agree with the live state" ... ok
+test "closing needs an empty account" ... ok
+4 passed, 0 failed

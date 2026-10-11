@@ -1,0 +1,40 @@
+// The adventure's data: rooms, exits and items, built with the world library.
+w :: import "../world"
+
+/// Builds the haunted manor.
+pub manor :: fn() -> AllocError!w.World \ {Alloc} {
+    g := w.world()
+    errdefer w.deinit(&g)
+
+    cellar := try w.add_room(&g, "Cellar", "Damp stone walls. A stair leads up.")
+    hall := try w.add_room(&g, "Hall", "A draughty hall with a heavy oak door to the east.")
+    kitchen := try w.add_room(&g, "Kitchen", "Copper pots hang over a cold hearth.")
+    garden := try w.add_room(&g, "Garden", "Overgrown roses. A rope ladder climbs a tower to the north.")
+    tower := try w.add_room(&g, "Tower", "Wind whistles through arrow slits.")
+    library := try w.add_room(&g, "Library", "Shelves of mouldering books.")
+    vault := try w.add_room(&g, "Vault", "Gold glitters in the dark.")
+
+    w.link(&g, cellar, .Up, hall)
+    w.link(&g, hall, .W, kitchen)
+    w.link(&g, hall, .N, library)
+    w.link(&g, kitchen, .S, garden)
+    w.link(&g, garden, .Up, tower)
+    w.link(&g, hall, .E, vault)
+    w.lock(&g, hall, .E)
+
+    lamp := try w.add_item(&g, w.Item(name: "lamp", desc: "A brass oil lamp.", weight: 3))
+    key := try w.add_item(&g, w.Item(name: "key", desc: "An iron key.", weight: 1))
+    bread := try w.add_item(&g, w.Item(name: "bread", desc: "A stale loaf.", weight: 2))
+    book := try w.add_item(&g, w.Item(name: "book", desc: "A leather-bound diary.", weight: 4))
+    anvil := try w.add_item(&g, w.Item(name: "anvil", desc: "Far too heavy.", weight: 90, takeable: false))
+    gold := try w.add_item(&g, w.Item(name: "gold", desc: "A pile of coins.", weight: 8))
+
+    try w.place(&g, lamp, cellar)
+    try w.place(&g, bread, kitchen)
+    try w.place(&g, key, tower)
+    try w.place(&g, book, library)
+    try w.place(&g, anvil, garden)
+    try w.place(&g, gold, vault)
+    g.here = cellar
+    return g
+}

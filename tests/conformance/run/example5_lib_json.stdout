@@ -1,0 +1,54 @@
+{"name":"gamma","tags":["lang","fx","c"],"ver":{"major":0,"minor":5},"pi":3.25,"neg":-12,"big":1500,"ok":true,"none":null,"esc":"a\"b\\c\ndéA"} (89 chunks)
+--- pretty ---
+{
+  "name": "gamma",
+  "tags": [
+    "lang",
+    "fx",
+    "c"
+  ],
+  "ver": {
+    "major": 0,
+    "minor": 5
+  },
+  "pi": 3.25,
+  "neg": -12,
+  "big": 1500,
+  "ok": true,
+  "none": null,
+  "esc": "a\"b\\c\ndéA"
+}
+--- lookups ---
+name -> string "gamma"
+tags[1] -> string "fx"
+ver.minor -> int 5
+tags[9] -> missing
+pi -> number 3.25
+esc -> string "a\"b\\c\ndéA"
+nothing.here -> missing
+ver.major -> int 0
+--- errors ---
+empty: syntax error at 0: .Eof
+trailing: syntax error at 7: .Trailing
+missing colon: syntax error at 5: .ExpectedColon
+bad literal: syntax error at 1: .BadLiteral
+bad number: syntax error at 3: .BadNumber
+bad escape: syntax error at 4: .BadEscape
+unterminated: syntax error at 5: .Eof
+too deep: syntax error at 6: .TooDeep
+unexpected: syntax error at 4: .Unexpected(63)
+nested ok: ok
+empty containers: ok
+{
+    "a": [],
+    "b": {},
+    "c": [
+        1,
+        [
+            2,
+            {
+                "d": "x"
+            }
+        ]
+    ]
+}

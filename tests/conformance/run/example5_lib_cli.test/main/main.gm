@@ -1,0 +1,145 @@
+// A word-tally tool on a command-line parsing library: typed options through generics, a scripted Env handler.
+argp :: import "../argp"
+str :: import "std/str"
+
+Format :: union { Text, Csv, Json }
+
+FORMAT_NAMES :: [_]string("text", "csv", "json")
+FORMAT_TABLE :: [_](string, Format)(("text", .Text), ("csv", .Csv), ("json", .Json))
+
+@static_assert(FORMAT_NAMES.len is FORMAT_TABLE.len, "every format has a name")
+
+Entry :: struct {
+    word: string
+    n: u32
+}
+
+build_spec :: fn() -> AllocError!argp.Spec \ {Alloc} {
+    s := argp.spec("tally", "Counts how often each word occurs in the arguments.")
+    errdefer s.deinit()
+    try s.add(argp.Opt(name: "top", short: 'n', kind: argp.int_kind(u8), help: "Show at most N words", default: "10", metavar: "N"))
+    try s.add(argp.Opt(name: "min-len", short: 'm', kind: argp.int_kind(u16), help: "Ignore shorter words", default: "1", metavar: "LEN"))
+    try s.add(argp.Opt(name: "format", short: 'f', kind: .Choice(FORMAT_NAMES[..]), help: "Output format", default: "text"))
+    try s.add(argp.Opt(name: "sep", kind: .Str, help: "CSV separator", default: ",", metavar: "TEXT"))
+    try s.add(argp.Opt(name: "ignore-case", short: 'i', kind: .Flag, help: "Fold upper case"))
+    try s.add(argp.Opt(name: "verbose", short: 'v', kind: .Count, help: "Report more (repeatable)"))
+    try s.add_positional(argp.Positional(name: "text", help: "Text to scan", many: true))
+    return s
+}
+
+fold :: fn(w: string, owned: ^List([]u8)) -> AllocError!string \ {Alloc} {
+    buf := try make(u8, w.len)
+    errdefer free(buf)
+    try owned.push(buf)
+    return str.to_lower(w, buf)
+}
+
+emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
+    match fmt {
+        .Text => {
+            for r in rows { print("{} x{}\n", (r.word, r.n)) }
+        }
+        .Csv => {
+            for r in rows { print("{}{}{}\n", (r.word, sep, r.n)) }
+        }
+        .Json => {
+            print("[")
+            for i, r in enumerate(rows) {
+                if i > 0 { print(", ") }
+                print("{{\"{}\": {}}}", (r.word, r.n))
+            }
+            print("]\n")
+        }
+    }
+}
+
+tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
+    top := m.get(u8, "top") else 10
+    min_len := m.get(u16, "min-len") else 1
+    fmt := m.pick(Format, "format", FORMAT_TABLE[..]) else .Text
+    sep := m.text("sep") else ","
+    fold_case := m.flag("ignore-case")
+    verbose := m.count("verbose")
+
+    owned := list([]u8)
+    defer {
+        for b in owned.items { free(b) }
+        owned.deinit()
+    }
+    counts := map(string, u32)
+    defer counts.deinit()
+    dropped: u32 = 0
+    for arg in m.positionals() {
+        for w in str.fields(arg) {
+            if w.len < usize(min_len) {
+                dropped += 1
+                continue
+            }
+            key := if fold_case { try fold(w, &owned) } else { w }
+            slot := try counts.get_or_put(key, 0)
+            slot^ += 1
+        }
+    }
+    rows := list(Entry)
+    defer rows.deinit()
+    for e in counts.entries() { try rows.push(Entry(word: e.key, n: e.value)) }
+    rows.items.sort_by_key(fn(r) => (~r.n, r.word))
+    shown := rows.items[0..rows.items.len.min(usize(top))]
+    emit(fmt, shown, sep)
+    if verbose >= 1 { print("{} distinct, {} shown\n", (rows.items.len, shown.len)) }
+    if verbose >= 2 { print("{} dropped by --min-len\n", dropped) }
+}
+
+run :: fn() \ {Env, Out, Alloc} {
+    sp := build_spec() else {
+        print("out of memory\n")
+        return
+    }
+    defer sp.deinit()
+    m := argp.parse_or_exit(&sp)
+    defer m.deinit()
+    tally(&m) else print("out of memory\n")
+}
+
+scenario :: fn(argv: []const string) \ {Out, Alloc} {
+    print("$ tally")
+    for a in argv { print(" {}", a) }
+    print("\n")
+    env := argp.FakeEnv(argv: argv)
+    with &env { run() }
+    if code := env.exit_code { print("[exit {}]\n", code) }
+}
+
+CMD1 :: [_]string("--help")
+CMD2 :: [_]string("the quick brown fox", "jumps over the lazy dog", "the end")
+CMD3 :: [_]string("-n", "3", "--format=csv", "-i", "The the THE a A b")
+CMD4 :: [_]string("-vv", "-m", "4", "-n2", "--format", "json", "alpha beta alpha gamma delta alpha beta")
+CMD5 :: [_]string("-iv", "--sep", ";", "-fcsv", "x X y")
+CMD6 :: [_]string("--", "-n", "--format", "-n")
+CMD7 :: [_]string("--top")
+CMD8 :: [_]string("-n", "300", "a")
+CMD9 :: [_]string("-n", "abc", "a")
+CMD10 :: [_]string("--format", "xml", "a")
+CMD11 :: [_]string("--bogus")
+CMD12 :: [_]string("-vq", "a")
+CMD13 :: [_]string("--verbose=1", "a")
+CMD14 :: [_]string("--min-len", "-5", "a")
+CMD15 :: [_]string()
+
+main :: fn() \ {Out, Alloc} {
+    scenario(CMD1[..])
+    scenario(CMD2[..])
+    scenario(CMD3[..])
+    scenario(CMD4[..])
+    scenario(CMD5[..])
+    scenario(CMD6[..])
+    scenario(CMD7[..])
+    scenario(CMD8[..])
+    scenario(CMD9[..])
+    scenario(CMD10[..])
+    scenario(CMD11[..])
+    scenario(CMD12[..])
+    scenario(CMD13[..])
+    scenario(CMD14[..])
+    scenario(CMD15[..])
+}

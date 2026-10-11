@@ -1,0 +1,138 @@
+// The game world: directions, rooms, items and the mutable state of one playthrough.
+reg :: import "../registry"
+
+pub Dir :: union { N, E, S, W, Up, Down }
+
+pub dir_name :: fn(d: Dir) -> string => match d {
+    .N => "north"
+    .E => "east"
+    .S => "south"
+    .W => "west"
+    .Up => "up"
+    .Down => "down"
+}
+
+pub opposite :: fn(d: Dir) -> Dir => match d {
+    .N => .S
+    .S => .N
+    .E => .W
+    .W => .E
+    .Up => .Down
+    .Down => .Up
+}
+
+pub parse_dir :: fn(s: string) -> ?Dir => match s {
+    "n", "north" => Dir.N
+    "e", "east" => Dir.E
+    "s", "south" => Dir.S
+    "w", "west" => Dir.W
+    "u", "up" => Dir.Up
+    "d", "down" => Dir.Down
+    _ => null
+}
+
+/// Every direction, for loops.
+pub ALL_DIRS :: [_]Dir(.N, .E, .S, .W, .Up, .Down)
+
+pub slot :: fn(d: Dir) -> usize => usize(d.tag())
+
+pub Room :: struct {
+    pub name: string
+    pub desc: string
+    pub exits: [6]?u16 = [6]?u16(fill: null)
+    pub locked: [6]bool = [6]bool(fill: false)
+    pub items: List(u16)
+}
+
+pub Item :: struct {
+    pub name: string
+    pub desc: string
+    pub weight: u8
+    pub takeable: bool = true
+}
+
+pub World :: struct {
+    pub rooms: reg.Registry(Room)
+    pub things: reg.Registry(Item)
+    pub carried: List(u16)
+    pub here: u16 = 0
+    pub moves: u32 = 0
+    pub score: i32 = 0
+}
+
+pub MAX_WEIGHT :: 10
+
+pub world :: fn() -> World \ {Alloc} {
+    return World(rooms: reg.registry(Room), things: reg.registry(Item), carried: list(u16))
+}
+
+pub deinit :: fn(w: ^World) {
+    for i in 0..w.rooms.len() {
+        r := w.rooms.get(i.trunc(u16))?
+        r.items.deinit()
+    }
+    w.rooms.deinit()
+    w.things.deinit()
+    w.carried.deinit()
+}
+
+pub add_room :: fn(w: ^World, name, desc: string) -> AllocError!u16 \ {Alloc} {
+    return w.rooms.add(name, Room(name: name, desc: desc, items: list(u16)))
+}
+
+pub add_item :: fn(w: ^World, item: Item) -> AllocError!u16 => w.things.add(item.name, item)
+
+/// Connects `a` to `b` going `d`, and `b` to `a` the other way.
+pub link :: fn(w: ^World, a: u16, d: Dir, b: u16) {
+    w.rooms.get(a)?.exits[slot(d)] = b
+    w.rooms.get(b)?.exits[slot(opposite(d))] = a
+}
+
+/// Locks the exit `d` of room `a` (the way back stays open).
+pub lock :: fn(w: ^World, a: u16, d: Dir) {
+    w.rooms.get(a)?.locked[slot(d)] = true
+}
+
+pub place :: fn(w: ^World, item, room: u16) -> AllocError!() {
+    return w.rooms.get(room)?.items.push(item)
+}
+
+pub current :: fn(w: ^World) -> ^Room => w.rooms.get(w.here)?
+
+pub item :: fn(w: ^const World, id: u16) -> ^const Item => w.things.view(id)?
+
+pub holds :: fn(w: ^const World, id: u16) -> bool {
+    for c in w.carried.items {
+        if c is id { return true }
+    }
+    return false
+}
+
+pub load :: fn(w: ^const World) -> u32 {
+    total: u32 = 0
+    for c in w.carried.items { total += u32(w.item(c).weight) }
+    return total
+}
+
+/// Moves an item from the current room into the inventory.
+pub pick_up :: fn(w: ^World, id: u16) -> AllocError!() {
+    r := w.current()
+    for i, x in enumerate(r.items.items) {
+        if x is id {
+            _ = r.items.remove(i)
+            return w.carried.push(id)
+        }
+    }
+    return ()
+}
+
+/// Moves an item from the inventory into the current room.
+pub drop :: fn(w: ^World, id: u16) -> AllocError!() {
+    for i, x in enumerate(w.carried.items) {
+        if x is id {
+            _ = w.carried.remove(i)
+            return w.current().items.push(id)
+        }
+    }
+    return ()
+}
