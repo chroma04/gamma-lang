@@ -104,7 +104,7 @@ fn free_with_the_wrong_size_traps() {
     assert_exit_134(&out);
     let err = text(&out.stderr);
     assert!(err.starts_with("trap: invalid free of 0x"), "{}", err);
-    assert!(err.contains("heap block of 8 bytes"), "{}", err);
+    assert!(err.contains(": the heap block there has 16 bytes, not 8\n  at w.gm:1:2\n"), "{}", err);
 }
 
 /// The status of a process killed by `abort` as a shell reports it.
