@@ -3,6 +3,8 @@
 ## State (session 5, 2026-10-11) — PRs #1–#7 merged (#7: gamma test runs imported modules' tests, --filter); s5 = PR #8 (claude/project-thread-rxakzv)
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md.
+- Parallel s6 threads (2026-10-11): std/text graphemes (branch claude/project-thread-rk2qb5,
+  see roadmap/M11), plus others on native build speed, cross-compiling, C perf, debugger.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
 - Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified

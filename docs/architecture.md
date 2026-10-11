@@ -74,6 +74,8 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/cgen/` | the C back end (see below) |
 | `runtime/` | the C runtime of compiled programs, embedded in the compiler |
 | `lib/core/` | the parts of the core library written in Gamma, embedded in the compiler |
+| `lib/std/` | the rest of the standard library (see `docs/std.md`) |
+| `tools/` | generators for checked-in files (the Unicode tables of `std/text`) |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
 

@@ -151,6 +151,28 @@ for line in str.lines(text) {
 - `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
   from the current allocator; release it with `free`.
 
+## `std/text`
+
+Unicode text segmentation. Strings are read as UTF-8, with each maximal ill-formed
+subsequence taken as one U+FFFD as `runes` does; results are slices of the argument, so
+ill-formed bytes come back unchanged, and nothing allocates.
+
+```gamma
+text :: import "std/text"
+
+n: usize = 0
+for g in text.graphemes("e\u{301}🇫🇷👨\u{200d}👩\u{200d}👧") { n += 1 }   // 3
+```
+
+- `graphemes(s)` yields the extended grapheme clusters of `s` (Unicode Standard Annex
+  #29): what a reader sees as one character, such as a letter with combining marks, a
+  flag, a Hangul syllable written in jamo, an Indic conjunct or an emoji ZWJ sequence.
+  `\r\n` is one cluster. Every byte of `s` is in exactly one cluster.
+- `grapheme_len(s)` is the byte length of the first cluster of `s` (0 if `s` is empty),
+  for stepping through text without an iterator.
+- `UNICODE_VERSION` is the version of the Unicode Standard the rules and tables follow
+  (currently `"16.0.0"`).
+
 ## `std/collections`
 
 Three containers beyond `List` and `HashMap`, each in its own module, because their
