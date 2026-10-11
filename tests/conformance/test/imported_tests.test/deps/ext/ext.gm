@@ -1,0 +1,6 @@
+pub triple :: fn(x: i32) -> i32 => x * 3
+
+// A dependency's tests run only when it is the root module.
+test "never runs from another package" {
+    expect(false)
+}

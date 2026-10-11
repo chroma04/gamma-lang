@@ -1,0 +1,15 @@
+deep :: import "./deep"
+
+pub double :: fn(x: i32) -> i32 => deep.add(x, x)
+
+test "same name" {
+    expect(double(3) is 6)
+}
+
+// Private names are visible to the module's own tests.
+half :: fn(x: i32) -> i32 => x / 2
+
+test "a failing test reports its module" {
+    print("half of 7 is {}\n", half(7))
+    expect(half(7) is 4)
+}

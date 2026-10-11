@@ -300,8 +300,8 @@ stack size, and roughly matches the interpreter's.
 `gamma test` uses the C back end for modules that need it (foreign functions,
 `@asm`) or with `--backend=c`. `cgen::generate_tests` emits one program whose
 `main` runs the test entry selected by its first argument, exactly as the
-ordinary `main` runs a program's entry; the driver builds it once and runs it
-per test, passing a test iff the exit status is 0. A trap's message and
+ordinary `main` runs a program's entry; the driver builds it once, from the
+tests `--filter` selects, and runs it per test, passing a test iff the exit status is 0. A trap's message and
 location reach the report from standard error.
 
 **Values.** Scalars (integers up to 128 bits, floats, `bool`, pointers) are

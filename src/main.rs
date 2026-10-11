@@ -14,7 +14,8 @@ commands:
   check   type-check a program (a .gm file or a module directory)
   run     run a program; arguments after the file go to the program
   build   compile a program to a native executable (via the system C compiler)
-  test    run the `test` declarations of a module (natively if it needs C)
+  test    run the `test` declarations of a module and of the modules of its package
+          that it imports (natively if it needs C)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
   help    print this message
   version print the compiler version
@@ -23,6 +24,8 @@ options:
   --diag-format=human|short   how to print diagnostics (default: human)
   --dump                      (parse) print the syntax tree
   --backend=interp|c          (run, test) use the interpreter (default) or compile via C
+  --filter=<text>             (test) run only the tests whose name or module path
+                              contains <text>
   -o <file>                   (build) the executable to write (default: the input's name)
   --mode=debug|checked|fast   (run, build, test) the build mode (default: debug): Debug and
                               Checked trap on failed checks, Fast omits them; Debug also
@@ -42,6 +45,8 @@ struct Options {
     output: Option<PathBuf>,
     /// `--mode=…`: the build mode.
     mode: gamma::interp::Mode,
+    /// `--filter=…`: run only the tests that match.
+    filter: Option<String>,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -56,6 +61,7 @@ fn parse_args() -> Result<Options, String> {
         c_backend: false,
         output: None,
         mode: gamma::interp::Mode::Debug,
+        filter: None,
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -73,6 +79,7 @@ fn parse_args() -> Result<Options, String> {
             "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
+            a if a.starts_with("--filter=") => opts.filter = Some(a["--filter=".len()..].to_string()),
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
             a => {
                 if opts.file.is_some() {
@@ -247,20 +254,26 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
 struct TestReport {
     passed: usize,
     failed: usize,
+    /// The number of tests `--filter` left out, if it was given.
+    filtered_out: Option<usize>,
 }
 
 impl TestReport {
-    /// Prints the line for test `name`; `failure` is the detail of a failing test
+    /// Prints the line for test `t`; `failure` is the detail of a failing test
     /// (its output and the reason), printed indented below the line.
-    fn record(&mut self, name: &str, failure: Option<String>) {
+    fn record(&mut self, t: &gamma::tir::TestCase, failure: Option<String>) {
+        let name = match &t.module {
+            Some(m) => format!("\"{}\" in {}", t.name, m),
+            None => format!("\"{}\"", t.name),
+        };
         match failure {
             None => {
                 self.passed += 1;
-                println!("test \"{}\" ... ok", name);
+                println!("test {} ... ok", name);
             }
             Some(detail) => {
                 self.failed += 1;
-                println!("test \"{}\" ... FAILED", name);
+                println!("test {} ... FAILED", name);
                 for line in detail.lines() {
                     println!("    {}", line);
                 }
@@ -269,13 +282,23 @@ impl TestReport {
     }
 
     fn finish(&self) -> ExitCode {
-        println!("{} passed, {} failed", self.passed, self.failed);
+        match self.filtered_out {
+            Some(n) => println!("{} passed, {} failed, {} filtered out", self.passed, self.failed, n),
+            None => println!("{} passed, {} failed", self.passed, self.failed),
+        }
         if self.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
     }
 }
 
-/// Runs each test of the root module with captured output (§3.8). A failing
-/// test's output and failure reason are printed after the summary line for it.
+/// Whether test `t` is selected by `--filter`: its name or module path contains
+/// the filter text.
+fn test_selected(t: &gamma::tir::TestCase, filter: Option<&str>) -> bool {
+    filter.is_none_or(|f| t.name.contains(f) || t.module.as_deref().is_some_and(|m| m.contains(f)))
+}
+
+/// Runs each test of the root module, and of the modules of its package that it
+/// imports, with captured output (§3.8). A failing test's output and failure
+/// reason are printed after the summary line for it.
 fn test(opts: &Options) -> ExitCode {
     let Some(path) = &opts.file else {
         eprintln!("gamma: no input file\n\n{}", USAGE);
@@ -287,12 +310,18 @@ fn test(opts: &Options) -> ExitCode {
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
     // The interpreter cannot call C or run assembly, so such programs test natively.
+    let selected: Vec<usize> =
+        (0..prog.tests.len()).filter(|&i| test_selected(&prog.tests[i], opts.filter.as_deref())).collect();
+    let mut report = TestReport {
+        filtered_out: opts.filter.as_ref().map(|_| prog.tests.len() - selected.len()),
+        ..TestReport::default()
+    };
     if opts.c_backend || prog.needs_native() {
-        return test_native(&sess, &prog);
+        return test_native(&sess, &prog, &selected, report);
     }
     let cfg = gamma::interp::RunConfig { target: gamma::layout::Target::host(), mode: opts.mode, step_budget: None };
-    let mut report = TestReport::default();
-    for t in &prog.tests {
+    for &i in &selected {
+        let t = &prog.tests[i];
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let outcome = gamma::interp::run_entry(&prog, &cfg, t.entry, &[], &mut out, &mut err);
         let reason = match outcome {
@@ -306,15 +335,15 @@ fn test(opts: &Options) -> ExitCode {
             detail.push_str(&reason);
             detail
         });
-        report.record(&t.name, failure);
+        report.record(t, failure);
     }
     report.finish()
 }
 
-/// `gamma test --backend=c`: compiles all tests into one executable, which runs
-/// the test whose index it is given, and runs it once per test.
-fn test_native(sess: &Session, prog: &gamma::tir::Program) -> ExitCode {
-    let entries: Vec<_> = prog.tests.iter().map(|t| t.entry).collect();
+/// `gamma test --backend=c`: compiles the selected tests into one executable, which runs
+/// the test whose index it is given, and runs it once per selected test.
+fn test_native(sess: &Session, prog: &gamma::tir::Program, selected: &[usize], mut report: TestReport) -> ExitCode {
+    let entries: Vec<_> = selected.iter().map(|&i| prog.tests[i].entry).collect();
     let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
     let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
     let exe = dir.join("tests");
@@ -323,10 +352,10 @@ fn test_native(sess: &Session, prog: &gamma::tir::Program) -> ExitCode {
         .and_then(|out| gamma::cgen::compile(&out.code, &out.libs, &exe).map(|_| ()));
     let code = match built {
         Ok(()) => {
-            let mut report = TestReport::default();
-            for (i, t) in prog.tests.iter().enumerate() {
+            for (j, &i) in selected.iter().enumerate() {
+                let t = &prog.tests[i];
                 let mut cmd = std::process::Command::new(&exe);
-                cmd.arg(i.to_string()).stdin(std::process::Stdio::null());
+                cmd.arg(j.to_string()).stdin(std::process::Stdio::null());
                 let failure = match cmd.output() {
                     Ok(o) if o.status.code() == Some(0) => None,
                     Ok(o) => {
@@ -336,7 +365,7 @@ fn test_native(sess: &Session, prog: &gamma::tir::Program) -> ExitCode {
                     }
                     Err(e) => Some(format!("cannot run {}: {}\n", exe.display(), e)),
                 };
-                report.record(&t.name, failure);
+                report.record(t, failure);
             }
             report.finish()
         }

@@ -164,7 +164,7 @@ test "squares" {
 
 A test passes if it finishes, and fails if `expect` fails, a trap occurs, or the test allocator detects a leak. Returning an error also fails the test, so `try` works inside tests. More on tests in [chapter 13](13-safety.md).
 
-`gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`. Each test runs on its own; its output is captured and shown only if it fails:
+`gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`, and of every module of the same package that it imports, directly or indirectly. The tests of the standard library and of dependency packages are not run. Each test runs on its own; its output is captured and shown only if it fails:
 
 ```text
 $ gamma test squares.gm
@@ -175,7 +175,9 @@ test "cubes" ... FAILED
 1 passed, 1 failed
 ```
 
-The command exits with status 1 if any test failed.
+A test outside the root module is reported with its module's directory, relative to the package root: `test "parses" in util/json ... ok`. The command exits with status 1 if any test failed.
+
+`--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
 
 Tests run in the interpreter by default. A module that calls C functions or contains `@asm` cannot run there, so its tests are compiled with the C back end instead, and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
 

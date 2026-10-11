@@ -14,6 +14,7 @@
 //!   that build mode (default: debug).
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
 //!   architecture, for tests of features that exist on some targets only.
+//! - `//! filter: text` runs a `test` test with `gamma test --filter=text`.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
 //!   (empty if the file does not exist). If a sibling `<name>.stdin` exists, it
@@ -60,6 +61,8 @@ struct Expectations {
     stderr: bool,
     /// The build mode for `run` and `test`, if not the default.
     mode: Option<String>,
+    /// The `--filter` of a `test` test.
+    filter: Option<String>,
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
@@ -68,8 +71,16 @@ struct Expectations {
 }
 
 fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
-    let mut e =
-        Expectations { stage: Stage::Run, dump: false, stderr: false, mode: None, exit: 0, arch: None, diags: vec![] };
+    let mut e = Expectations {
+        stage: Stage::Run,
+        dump: false,
+        stderr: false,
+        mode: None,
+        filter: None,
+        exit: 0,
+        arch: None,
+        diags: vec![],
+    };
     for path in files {
         let src = fs::read_to_string(path).map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
         parse_file_expectations(path, &src, &mut e)?;
@@ -97,6 +108,8 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.stderr = true;
             } else if let Some(mode) = directive.strip_prefix("mode:") {
                 e.mode = Some(mode.trim().to_string());
+            } else if let Some(filter) = directive.strip_prefix("filter:") {
+                e.filter = Some(filter.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -218,6 +231,9 @@ fn run_c(
     if let Some(m) = &exp.mode {
         cmd.arg(format!("--mode={}", m));
     }
+    if let (Some(f), "test") = (&exp.filter, command) {
+        cmd.arg(format!("--filter={}", f));
+    }
     cmd.arg(target);
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
@@ -276,6 +292,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     }
     if let (Some(m), Stage::Run | Stage::Test) = (&exp.mode, exp.stage) {
         cmd.arg(format!("--mode={}", m));
+    }
+    if let (Some(f), Stage::Test) = (&exp.filter, exp.stage) {
+        cmd.arg(format!("--filter={}", f));
     }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
