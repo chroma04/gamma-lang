@@ -152,6 +152,8 @@ mutability_demo :: fn() {
 }
 ```
 
+The same holds for an ordinary argument written `&e` when the parameter is `^const T`: `len2(&make_point(3))` passes the address of a temporary that lives until the call returns. Anywhere else, `&` needs a place.
+
 Because a struct may not have both a field and a method candidate with the same name, `total` is fine here but a function named `count` taking a `Counter` would be a compile error. Methods can only be added in the module that declares the type. For a type from another module, write a free function and call it normally. Generic types work the same way; see [chapter 10](10-generics.md).
 
 ## Second-class functions: `fn`
