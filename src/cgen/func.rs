@@ -77,8 +77,25 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
     }
     // The frame struct, shared by the function and its clones.
     let mut frame = format!("struct gm_fr{} {{\n    gm_frame h;\n", f.0);
+    // With `-g`, a field also has its local's name, with the type's mirror if it has one,
+    // for debuggers.
+    let names = if g.opts.debug_info {
+        super::debug::unique_members(def.locals.iter().map(|l| l.name.as_str()), &mut Default::default())
+    } else {
+        vec![None; def.locals.len()]
+    };
     for (i, l) in def.locals.iter().enumerate() {
-        let _ = writeln!(frame, "    {} l{}; /* {} */", g.ty.cty(l.ty), i, l.name);
+        let c = g.ty.cty(l.ty);
+        match &names[i] {
+            Some(n) => {
+                let alias = g.ty.mirror(l.ty).unwrap_or_else(|| c.clone());
+                g.ty.add_member_name(n);
+                let _ = writeln!(frame, "    union {{ {} l{}; {} {}; }};", c, i, alias, n);
+            }
+            None => {
+                let _ = writeln!(frame, "    {} l{}; /* {} */", c, i, l.name);
+            }
+        }
     }
     let _ = writeln!(frame, "    {} ret;", g.ty.cty(def.ret));
     let mut withs = vec![];
@@ -152,6 +169,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         temp_bytes: 0,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
+    fg.src_line(def.span);
     if def.hints.fast_math {
         fg.line("GM_FAST_MATH_BODY");
     }
@@ -206,6 +224,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     }
     // The epilogue copies the result (and a plain function converts it).
     fg.temp_bytes += 2 * fg.g.ty.size(def.ret);
+    fg.end_lines();
     let out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
     g.bodies.push_str(&out);
     Ok(())
@@ -263,6 +282,16 @@ fn hint_attrs(h: crate::tir::FnHints) -> String {
     s
 }
 
+/// Where statement `s` starts, for debug information.
+fn stmt_span(s: &Stmt) -> Option<crate::source::Span> {
+    match s {
+        Stmt::Let { init: Some(e), .. } | Stmt::LetTuple { init: e, .. } | Stmt::Expr(e) => Some(e.span),
+        Stmt::Assign { place, .. } => Some(place.span),
+        Stmt::AssignTuple { places, value } => Some(places.iter().flatten().next().map_or(value.span, |p| p.span)),
+        Stmt::Let { init: None, .. } | Stmt::Defer { .. } => None,
+    }
+}
+
 /// The labels and types of the `with`s in `e` (excluding nested functions).
 fn collect_withs(e: &Expr, out: &mut Vec<(LabelId, Ty)>) {
     if let ExprKind::With { label, .. } = &e.kind {
@@ -272,6 +301,22 @@ fn collect_withs(e: &Expr, out: &mut Vec<(LabelId, Ty)>) {
 }
 
 impl<'g, 'a> FnGen<'g, 'a> {
+    /// With `-g`, maps the code that follows to the source line where `span` starts.
+    pub fn src_line(&mut self, span: crate::source::Span) {
+        if let Some(d) = self.g.line_directive(span) {
+            self.out.push_str(&d);
+            self.out.push('\n');
+        }
+    }
+
+    /// With `-g`, ends the text of a C function: what follows is mapped to the C file.
+    pub fn end_lines(&mut self) {
+        if self.g.opts.debug_info {
+            self.out.push_str(super::debug::LINE_RESET);
+            self.out.push('\n');
+        }
+    }
+
     pub fn line(&mut self, s: &str) {
         for _ in 0..self.indent {
             self.out.push_str("    ");
@@ -513,6 +558,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         // Each statement's temporaries are in a C block of their own, so the C compiler
         // can reuse their stack space for the next statement's.
         for s in &b.stmts {
+            if let Some(span) = stmt_span(s) {
+                self.src_line(span);
+            }
             self.line("{");
             self.indent += 1;
             let r = self.stmt(s);
@@ -521,6 +569,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             r?;
         }
         if let Some(t) = &b.tail {
+            self.src_line(t.span);
             let v = self.expr(t)?;
             // Defers run after the value is computed, so it is kept in a temporary.
             *result = Some(if t.ty.is_never() { self.zero(t.ty) } else { self.tmp(t.ty, &v) });

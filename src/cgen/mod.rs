@@ -7,6 +7,7 @@
 //! descriptors. The design is described in `docs/architecture.md`.
 
 mod arith;
+pub mod debug;
 mod elementwise;
 mod expr;
 mod fiber;
@@ -47,6 +48,9 @@ pub struct Options {
     pub checks: bool,
     /// Debug: heap blocks are tracked so double and invalid frees trap.
     pub debug: bool,
+    /// `-g`: the executable carries debug information that maps it to the Gamma
+    /// source (see [`debug`]).
+    pub debug_info: bool,
 }
 
 /// The output of [`generate`].
@@ -55,6 +59,8 @@ pub struct Generated {
     pub code: String,
     /// Libraries to link (from `foreign` blocks), beyond the C library.
     pub libs: Vec<String>,
+    /// The options it was generated with.
+    pub opts: Options,
 }
 
 /// Translates `prog` (whose entry is `entry`) to C source.
@@ -79,9 +85,11 @@ fn generate_entries(
     let target = Target::host();
     let lookup = |id: AdtId| prog.adts.get(&id);
     let layouts = Layouts::new(target, &lookup);
+    let mut ty = Types::new(prog, &layouts);
+    ty.debug_names = opts.debug_info;
     let mut g = Gen {
         prog,
-        ty: Types::new(prog, &layouts),
+        ty,
         sources,
         opts: opts.clone(),
         effect_ids: HashMap::new(),
@@ -100,6 +108,7 @@ fn generate_entries(
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
         decl_done: vec![false; prog.handler_decls.len()],
+        line_paths: HashMap::new(),
     };
     for &entry in entries {
         g.queue(entry);
@@ -119,10 +128,13 @@ fn generate_entries(
     let _ = writeln!(out, "static int gm_checks = {};", opts.checks as u8);
     out.push_str(helpers::SUPPORT);
     out.push_str(&g.ty.blob_typedefs());
-    out.push_str(g.ty.mirror_defs());
+    // The Gamma names of frame fields and mirror fields (with `-g`) are declared with any
+    // macro of the same name suspended.
+    let names = g.ty.member_names();
+    out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
     out.push_str(&g.ty.descriptors());
     out.push_str(&g.static_defs);
-    out.push_str(&g.frames);
+    out.push_str(&debug::guard(&names, &g.frames));
     out.push_str(&g.protos);
     out.push_str(&g.helpers.protos);
     out.push_str(&g.handler_tables);
@@ -146,7 +158,7 @@ fn generate_entries(
     }
     out.push_str(&exports);
     out.push_str(&main);
-    Ok(Generated { code: out, libs: g.libs.into_iter().collect() })
+    Ok(Generated { code: out, libs: g.libs.into_iter().collect(), opts: opts.clone() })
 }
 
 pub struct Gen<'a> {
@@ -174,6 +186,9 @@ pub struct Gen<'a> {
     pub libs: std::collections::BTreeSet<String>,
     handler_done: Vec<bool>,
     decl_done: Vec<bool>,
+    /// The path a `#line` directive names for each source file (`None`: the file is not
+    /// on disk, so lines in it are not mapped).
+    line_paths: HashMap<crate::source::FileId, Option<String>>,
 }
 
 impl<'a> Gen<'a> {
@@ -246,6 +261,24 @@ impl<'a> Gen<'a> {
         let f = self.sources.file(span.file);
         let (line, col) = f.line_col(span.lo);
         format!("{}, {}, {}", c_string(f.path.display().to_string().as_bytes()), line, col)
+    }
+
+    /// A `#line` directive for the start of `span`, with debug information on and the
+    /// span in a file on disk.
+    pub fn line_directive(&mut self, span: Span) -> Option<String> {
+        if !self.opts.debug_info || span == Span::DUMMY {
+            return None;
+        }
+        let f = self.sources.file(span.file);
+        let path = self
+            .line_paths
+            .entry(span.file)
+            .or_insert_with(|| {
+                std::fs::canonicalize(&f.path).ok().map(|p| c_string(p.display().to_string().as_bytes()))
+            })
+            .clone()?;
+        let (line, _) = f.line_col(span.lo);
+        Some(format!("#line {} {}", line, path))
     }
 
     /// The table of clause functions of handler literal `h`, generating it on first use.
@@ -635,17 +668,31 @@ pub struct Build {
     pub exe: PathBuf,
 }
 
-/// Compiles C source `code` to an executable at `exe` (the source is written next to
-/// it with the extension `.c`). Returns the compiler's error output on failure.
-pub fn compile(code: &str, libs: &[String], exe: &Path) -> Result<Build, String> {
+/// Compiles generated C to an executable at `exe` (the source is written next to it
+/// with the extension `.c`). Returns the compiler's error output on failure.
+pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
-    std::fs::write(&c_file, code).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
+    let opts = &generated.opts;
+    let code = if opts.debug_info {
+        // The debugger finds the C file by this name, so it is absolute when possible.
+        let dir = c_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let abs = std::fs::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
+        std::borrow::Cow::Owned(debug::resolve_lines(&generated.code, &abs.display().to_string()))
+    } else {
+        std::borrow::Cow::Borrowed(&generated.code)
+    };
+    std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    // A Debug build with debug information is not optimized, so every variable and line
+    // is there in the debugger; Checked and Fast builds keep their optimization.
+    let opt = if opts.debug_info && opts.debug { "-O0" } else { "-O2" };
     let out = std::process::Command::new(&cc)
-        .args(["-std=gnu11", "-O2", "-w", "-fwrapv", "-ffp-contract=off", "-pthread", "-o"])
+        .args(["-std=gnu11", opt, "-w", "-fwrapv", "-ffp-contract=off", "-pthread"])
+        .args(opts.debug_info.then_some("-g"))
+        .arg("-o")
         .arg(exe)
         .arg(&c_file)
-        .args(libs.iter().map(|l| format!("-l{}", l)))
+        .args(generated.libs.iter().map(|l| format!("-l{}", l)))
         .arg("-lm")
         .output()
         .map_err(|e| format!("cannot run the C compiler `{}`: {}", cc, e))?;

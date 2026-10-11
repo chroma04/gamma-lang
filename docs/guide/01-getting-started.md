@@ -77,7 +77,19 @@ A program is a single `.gm` file or a directory of `.gm` files (one module). Arg
 
 ### Build modes
 
-The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked; the C back end always optimizes.
+The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked; the C back end optimizes, except in a Debug build with debug information (below).
+
+### Debugging native code
+
+`gamma build -g` adds debug information that maps the executable to the Gamma source, so a debugger such as `gdb` or `lldb` stops at `.gm` lines and shows them, and backtraces, profilers and sanitizers name them too. The generated C is kept next to the executable (`hello.c`). In a debugger, the locals of the current function are fields of the frame `F`, under their Gamma names: `print F.count`, `print F.p.x`. A Debug build with `-g` is compiled without optimization, so every local is there; Checked and Fast builds stay optimized. `-g` also works with `gamma run --backend=c` and `gamma test --backend=c`.
+
+```text
+gamma build -g hello.gm
+gdb ./hello
+(gdb) break hello.gm:12
+(gdb) run
+(gdb) print F.total
+```
 
 ## Source files
 

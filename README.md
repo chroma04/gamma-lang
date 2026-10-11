@@ -47,6 +47,7 @@ Available commands today:
 gamma run file.gm            # type-check and run a program (a file or a module directory)
 gamma run --backend=c file.gm  # compile through C and run (default backend: interp)
 gamma build file.gm -o prog  # compile to a native executable via the system C compiler
+gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
 gamma test file.gm           # run the `test` declarations of a module
 gamma lex file.gm            # print the token stream

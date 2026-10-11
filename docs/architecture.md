@@ -364,6 +364,23 @@ per-thread chain on entry, unlinks it on exit, and stores the location of each
 call it makes in it; a trap prints the chain as a backtrace. Each fiber keeps its
 own chain, which continues into the chain of the `with` running it.
 
+**Debug information.** With `-g`, the generated C maps back to the Gamma source
+(`src/cgen/debug.rs`). Every C line of a function body is preceded by a `#line`
+directive naming the absolute path and line of the Gamma statement it comes from,
+so the C compiler's DWARF line table, and with it debuggers, profilers and
+sanitizer reports, refer to `.gm` lines; each generated function ends with a
+directive that returns to the C file's own numbering. A directive per C line is
+needed because one numbers the lines after it consecutively, while a statement
+usually takes several C lines. Each frame field is an anonymous union of its `lN`
+name and the Gamma name of the local (typed with the struct mirror where the
+type has one), and mirrors name their fields after the Gamma fields, so a
+debugger prints `F.p.x`. The generated code never refers to these names, but
+they may be macros of system headers (`linux`, `st_mtime`), so the declarations
+that contain them suspend such macros with `#pragma push_macro`. Locals that
+share a name, and names that are C keywords or reserved, keep only their `lN`
+name. A Debug build with `-g` is compiled with `-O0` so that every local is
+visible; Checked and Fast builds keep `-O2`.
+
 **Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
 and AArch64 that save the callee-saved registers. The body of a `with … on` is
 moved into a C function of its own, which reaches the enclosing function's frame
