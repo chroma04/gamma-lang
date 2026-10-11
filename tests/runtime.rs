@@ -20,16 +20,19 @@ fn test_binary() -> Option<&'static Path> {
 }
 
 fn build() -> Option<PathBuf> {
-    let cc = std::env::var("CC").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "cc".to_string());
+    let toolchain = gamma::toolchain::Toolchain::from_env().expect("CC, CFLAGS and LDFLAGS");
+    let cc = toolchain.display();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-test");
     std::fs::create_dir_all(&dir).ok()?;
     let exe = dir.join(if cfg!(windows) { "rt_test.exe" } else { "rt_test" });
-    let out = Command::new(&cc)
-        .args(["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-I"])
+    let out = toolchain
+        .command(&["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function"])
+        .arg("-I")
         .arg(root().join("runtime"))
         .arg(root().join("runtime/rt_test.c"))
         .arg("-o")
         .arg(&exe)
+        .args(&toolchain.ldflags)
         .output();
     match out {
         Err(e) => {

@@ -2,6 +2,7 @@
 
 use gamma::diag::DiagFormat;
 use gamma::driver::{self, Session};
+use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -33,6 +34,12 @@ options:
   --mode=debug|checked|fast   (run, build, test) the build mode (default: debug): Debug and
                               Checked trap on failed checks, Fast omits them; Debug also
                               checks every free
+
+environment:
+  CC        the C compiler for native builds, with any arguments (default: cc);
+            a cross compiler (`zig cc -target aarch64-linux-musl`) makes it the target
+  CFLAGS    extra C compiler options
+  LDFLAGS   extra linker options
 ";
 
 struct Options {
@@ -174,14 +181,28 @@ fn run_front_end(opts: &Options) -> ExitCode {
     if sess.diags.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
+/// A session for `opts`, with the C toolchain from the environment (`CC`, `CFLAGS`,
+/// `LDFLAGS`). The session's target is the one the toolchain compiles for; if the
+/// toolchain cannot be used it stays the host, and the error is reported when a
+/// native build needs the toolchain.
+fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
+    let mut sess = Session::new();
+    sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
+    let toolchain = Toolchain::from_env().and_then(|t| {
+        sess.target = t.target()?;
+        Ok(t)
+    });
+    (sess, toolchain)
+}
+
 fn check(opts: &Options) -> ExitCode {
     let Some(path) = &opts.file else {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    let mut sess = Session::new();
-    sess.mode = opts.mode;
-    sess.debug_info = opts.debug_info;
+    // Only the target matters to checking.
+    let (mut sess, _) = new_session(opts);
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
     eprint!("{}", sess.render_diagnostics(opts.format));
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -192,18 +213,16 @@ fn run(opts: &Options) -> ExitCode {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    let mut sess = Session::new();
-    sess.mode = opts.mode;
-    sess.debug_info = opts.debug_info;
+    let (mut sess, toolchain) = new_session(opts);
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
     // The interpreter cannot call C or run assembly, so such programs run natively.
     let uses_c = prog.needs_native();
     if opts.c_backend || uses_c {
-        return run_native(&sess, &prog, path, opts);
+        return run_native(&sess, &prog, &toolchain, path, opts);
     }
-    let cfg = gamma::interp::RunConfig { target: gamma::layout::Target::host(), mode: opts.mode, step_budget: None };
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
     let mut args = vec![path.display().to_string()];
     args.extend(opts.program_args.iter().cloned());
     let mut stdout = std::io::stdout();
@@ -314,9 +333,7 @@ fn test(opts: &Options) -> ExitCode {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    let mut sess = Session::new();
-    sess.mode = opts.mode;
-    sess.debug_info = opts.debug_info;
+    let (mut sess, toolchain) = new_session(opts);
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -328,9 +345,9 @@ fn test(opts: &Options) -> ExitCode {
         ..TestReport::default()
     };
     if opts.c_backend || prog.needs_native() {
-        return test_native(&sess, &prog, &selected, report);
+        return test_native(&sess, &prog, &toolchain, &selected, report);
     }
-    let cfg = gamma::interp::RunConfig { target: gamma::layout::Target::host(), mode: opts.mode, step_budget: None };
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
     for &i in &selected {
         let t = &prog.tests[i];
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -353,12 +370,21 @@ fn test(opts: &Options) -> ExitCode {
 
 /// `gamma test --backend=c`: compiles the selected tests into one executable, which runs
 /// the test whose index it is given, and runs it once per selected test.
-fn test_native(sess: &Session, prog: &gamma::tir::Program, selected: &[usize], mut report: TestReport) -> ExitCode {
+fn test_native(
+    sess: &Session,
+    prog: &gamma::tir::Program,
+    toolchain: &Result<Toolchain, String>,
+    selected: &[usize],
+    mut report: TestReport,
+) -> ExitCode {
     let entries: Vec<_> = selected.iter().map(|&i| prog.tests[i].entry).collect();
     let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
     let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
     let exe = dir.join("tests");
-    let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| gamma::cgen::compile(&out, &exe).map(|_| ()));
+    let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| {
+        let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
+        gamma::cgen::compile(&out, toolchain, &exe).map(|_| ())
+    });
     let code = match built {
         Ok(()) => {
             for (j, &i) in selected.iter().enumerate() {
@@ -417,10 +443,16 @@ fn cgen_error(sess: &Session, u: gamma::cgen::Unsupported) -> String {
 }
 
 /// Translates the program to C and compiles it to `exe`.
-fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::Path) -> Result<(), String> {
+fn compile_native(
+    sess: &Session,
+    prog: &gamma::tir::Program,
+    toolchain: &Result<Toolchain, String>,
+    exe: &std::path::Path,
+) -> Result<(), String> {
+    let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
-    gamma::cgen::compile(&out, exe).map(|_| ())
+    gamma::cgen::compile(&out, toolchain, exe).map(|_| ())
 }
 
 /// Creates a temporary directory for a native build, reporting a failure.
@@ -448,9 +480,11 @@ fn build(opts: &Options) -> ExitCode {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    let mut sess = Session::new();
-    sess.mode = opts.mode;
-    sess.debug_info = opts.debug_info;
+    let (mut sess, toolchain) = new_session(opts);
+    if let Err(e) = &toolchain {
+        eprintln!("gamma: {}", e);
+        return ExitCode::FAILURE;
+    }
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -458,7 +492,7 @@ fn build(opts: &Options) -> ExitCode {
         let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
         PathBuf::from(stem)
     });
-    match compile_native(&sess, &prog, &exe) {
+    match compile_native(&sess, &prog, &toolchain, &exe) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -468,10 +502,16 @@ fn build(opts: &Options) -> ExitCode {
 }
 
 /// `gamma run --backend=c`: compiles to a temporary executable and runs it.
-fn run_native(sess: &Session, prog: &gamma::tir::Program, path: &std::path::Path, opts: &Options) -> ExitCode {
+fn run_native(
+    sess: &Session,
+    prog: &gamma::tir::Program,
+    toolchain: &Result<Toolchain, String>,
+    path: &std::path::Path,
+    opts: &Options,
+) -> ExitCode {
     let Some(dir) = native_dir("run") else { return ExitCode::FAILURE };
     let exe = dir.join("prog");
-    let result = compile_native(sess, prog, &exe);
+    let result = compile_native(sess, prog, toolchain, &exe);
     let code = match result {
         Ok(()) => {
             let mut cmd = std::process::Command::new(&exe);

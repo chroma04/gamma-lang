@@ -16,9 +16,10 @@ mod helpers;
 mod types;
 mod wide;
 
-use crate::layout::{Layouts, Target};
+use crate::layout::Layouts;
 use crate::source::{SourceMap, Span};
 use crate::tir::{FnId, FnKind, Program};
+use crate::toolchain::Toolchain;
 use crate::types::{AdtId, CallConv, EffectRef, Ty, TyKind};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -82,7 +83,11 @@ fn generate_entries(
     select: bool,
     opts: &Options,
 ) -> CResult<Generated> {
-    let target = Target::host();
+    let target = prog.target.clone();
+    // The runtime and the generated code read integers as little-endian bytes.
+    if !target.little_endian {
+        return unsupported(Span::DUMMY, "big-endian targets");
+    }
     let lookup = |id: AdtId| prog.adts.get(&id);
     let layouts = Layouts::new(target, &lookup);
     let mut ty = Types::new(prog, &layouts);
@@ -668,9 +673,10 @@ pub struct Build {
     pub exe: PathBuf,
 }
 
-/// Compiles generated C to an executable at `exe` (the source is written next to it
-/// with the extension `.c`). Returns the compiler's error output on failure.
-pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
+/// Compiles generated C to an executable at `exe` with `toolchain` (the source is
+/// written next to it with the extension `.c`). Returns the compiler's error output
+/// on failure.
+pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
     let code = if opts.debug_info {
@@ -682,20 +688,25 @@ pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
         std::borrow::Cow::Borrowed(&generated.code)
     };
     std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
     // A Debug build with debug information is not optimized, so every variable and line
     // is there in the debugger; Checked and Fast builds keep their optimization.
     let opt = if opts.debug_info && opts.debug { "-O0" } else { "-O2" };
-    let out = std::process::Command::new(&cc)
-        .args(["-std=gnu11", opt, "-w", "-fwrapv", "-ffp-contract=off", "-pthread"])
-        .args(opts.debug_info.then_some("-g"))
+    // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come
+    // after the source, before the libraries, as for `make`.
+    // Gamma memory is untyped bytes (allocators hand out raw memory that is then used as
+    // any type), so C's type-based alias analysis does not hold: `-fno-strict-aliasing`.
+    let mut flags = vec!["-std=gnu11", opt, "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"];
+    flags.extend(opts.debug_info.then_some("-g"));
+    let out = toolchain
+        .command(&flags)
         .arg("-o")
         .arg(exe)
         .arg(&c_file)
+        .args(&toolchain.ldflags)
         .args(generated.libs.iter().map(|l| format!("-l{}", l)))
         .arg("-lm")
         .output()
-        .map_err(|e| format!("cannot run the C compiler `{}`: {}", cc, e))?;
+        .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
     if !out.status.success() {
         return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }

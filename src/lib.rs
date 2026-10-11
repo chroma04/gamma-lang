@@ -14,4 +14,5 @@ pub mod source;
 pub mod symbol;
 pub mod syntax;
 pub mod tir;
+pub mod toolchain;
 pub mod types;

@@ -91,6 +91,20 @@ gdb ./hello
 (gdb) print F.total
 ```
 
+### The C compiler and cross-compiling
+
+Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted.
+
+When `CC` or `CFLAGS` selects another target, the program is compiled for that target: the tool asks the compiler which machine it targets, and the `target` constants (`target.arch`, `target.os`, `target.endian`, `target.ptr_bits`) and the layouts of types follow it. Any C compiler that can cross-compile works:
+
+```text
+CC="zig cc -target aarch64-linux-musl" gamma build hello.gm
+CC="clang --target=aarch64-linux-gnu --sysroot=/path/to/sysroot" gamma build hello.gm
+CC=aarch64-linux-gnu-gcc LDFLAGS=-static gamma build hello.gm
+```
+
+`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a little-endian target with `__int128` (in practice, a 64-bit one) and POSIX threads.
+
 ## Source files
 
 Gamma source files are UTF-8 text with the extension `.gm`. Some basics of the lexical rules, all of which will be unsurprising to a C programmer except where noted:
