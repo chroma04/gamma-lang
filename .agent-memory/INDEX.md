@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 5, 2026-10-11) — PRs #1–#5 merged; s5 branch claude/project-thread-zq16z7
+## State (session 5, 2026-10-11) — PRs #1–#6 merged; PR #7 (test command) open, branch claude/project-thread-zq16z7
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
 - Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified
@@ -14,7 +14,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Session-5 test-command work: PR only after the user says so.
+1. Drive PR #7 (test command) to merge; check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 
