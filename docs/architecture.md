@@ -2,7 +2,7 @@
 
 This document describes how the reference implementation of Gamma is organized:
 the stages a program passes through, where each stage lives, and the invariants
-that connect them. Parts marked *(planned)* are designed but not yet implemented.
+that connect them.
 
 ## Pipeline
 
@@ -19,7 +19,7 @@ AST  (syntax::ast)
   ▼
 TIR                         typed intermediate representation
   ├─▶ interp                interpreter: compile-time evaluation and `gamma run`
-  └─▶ cgen        (planned) C code generation → system C compiler → executable
+  └─▶ cgen                  C code generation → system C compiler → executable
 ```
 
 ### Why an interpreter *and* a code generator
