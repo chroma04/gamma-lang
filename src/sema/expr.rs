@@ -480,12 +480,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
             ast::UnOp::AddrOf => {
+                let temp_ok = std::mem::take(&mut self.temp_ref_arg);
                 let v = self.expr(operand, None);
                 match self.place_mutability(&v) {
                     Some(m) => {
                         let ty = Ty::ptr(!m, v.ty);
                         mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
                     }
+                    // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
+                    // the call returns, as for a method's receiver (§7.10).
+                    None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
                     None => {
                         self.error(
                             span,

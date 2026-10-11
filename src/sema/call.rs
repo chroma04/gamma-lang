@@ -377,7 +377,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             return mk(ty, tir::ExprKind::Uninit, e.span);
         }
+        self.temp_ref_arg = is_const_ref_arg(e, ty);
         let v = self.expr(e, Some(ty));
+        self.temp_ref_arg = false;
         self.coerce(v, ty)
     }
 
@@ -788,6 +790,17 @@ fn is_literal(e: &Expr) -> bool {
         tir::ExprKind::Binary { lhs, rhs, .. } => is_literal(lhs) && is_literal(rhs),
         _ => false,
     }
+}
+
+/// True if argument `e` is `&x` (possibly parenthesized) for a parameter of type `ty`
+/// that is a read-only pointer, where `x` may be a temporary (§7.10).
+pub(super) fn is_const_ref_arg(e: &ast::Expr, ty: Ty) -> bool {
+    let mut e = e;
+    while let ExprKind::Paren(inner) = &e.kind {
+        e = inner;
+    }
+    matches!(e.kind, ExprKind::Unary { op: ast::UnOp::AddrOf, .. })
+        && matches!(ty.kind(), TyKind::Ptr { is_const: true, .. })
 }
 
 #[cfg(test)]

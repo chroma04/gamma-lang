@@ -1,0 +1,22 @@
+// `&e` of a temporary is allowed as an argument for a ^const T parameter (§7.2); the
+// temporary lives for the call.
+Mat :: struct(R: usize, C: usize) { v: [R][C]i32 }
+transpose :: fn(R :: usize, C :: usize, m: ^const Mat(R, C)) -> Mat(C, R) {
+    out := Mat(C, R)(v: ---)
+    for i in 0..R { for j in 0..C { out.v[j][i] = m.v[i][j] } }
+    return out
+}
+trace :: fn(N :: usize, m: ^const Mat(N, N)) -> i32 {
+    s: i32 = 0
+    for i in 0..N { s += m.v[i][i] }
+    return s
+}
+Pt :: struct { x, y: i32 }
+len2 :: fn(p: ^const Pt) -> i32 => p.x * p.x + p.y * p.y
+bump :: fn(p: ^Pt) { p.x += 1 }
+mk :: fn(x: i32) -> Pt => Pt(x: x, y: 2)
+main :: fn() \ {Out} {
+    m := Mat(2, 2)(v: [2][2]i32([2]i32(1, 2), [2]i32(3, 4)))
+    print("{} {}\n", (trace(&transpose(&m)), len2(&mk(3))))
+    print("{}\n", len2(&(Pt(x: 1, y: 1))))
+}

@@ -89,6 +89,9 @@ pub struct FnCx<'a, 's> {
     pub obligations: Vec<Obligation>,
     /// True while checking a deferred statement (§8.8 restrictions).
     pub in_defer: bool,
+    /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
+    /// temporary, which lives until the call returns (§7.10).
+    pub temp_ref_arg: bool,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
@@ -254,6 +257,7 @@ impl<'a, 's> FnCx<'a, 's> {
             pending: vec![],
             obligations: vec![],
             in_defer: false,
+            temp_ref_arg: false,
             defer_label_base: 0,
             failed_coercions: vec![],
             fn_id: None,

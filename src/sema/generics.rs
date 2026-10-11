@@ -755,7 +755,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     values[*i] = Some(self.arg_value(e, expect));
                     continue;
                 }
+                self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
+                self.temp_ref_arg = false;
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
                 if !fixed.is_empty() && !mentions_free && !has_param(expect) {
@@ -813,7 +815,11 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         // An argument with an error (already reported) leaves its parameters unbound;
         // say nothing more about them.
-        let failed_arg = values.iter().flatten().any(|v| self.infer.resolve(v.ty).is_error());
+        let failed_arg = values.iter().flatten().any(|v| {
+            let mut bad = false;
+            self.infer.resolve(v.ty).walk(&mut |t| bad |= t.is_error());
+            bad
+        });
         let mut targs = vec![];
         for pid in &sig.generics {
             if failed_arg && !binds.contains_key(pid) {

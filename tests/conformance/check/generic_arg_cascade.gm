@@ -11,5 +11,5 @@ mul :: fn(R :: usize, K :: usize, C :: usize, a: ^const Mat(R, K), b: ^const Mat
 }
 main :: fn() {
     mi := Mat(2, 3)(v: ---)
-    p := mul(&mi, &transpose(&mi))     //~ ERROR `&` needs a place
+    p := mul(&mi, &missing)            //~ ERROR unknown name
 }
