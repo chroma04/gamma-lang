@@ -124,10 +124,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => None,
                 })
                 .collect();
+            // With exactly one instantiation available, that one is performed (§12.1), so
+            // the arguments are checked against its parameter types: `emit(.Opened(…))`.
+            let avail = self.available(eff);
+            let only = match avail.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            };
             let mut binds = HashMap::new();
             let mut probe = vec![];
             for (i, e) in positional.iter().enumerate() {
-                let v = self.expr(e, None);
+                let expect = match (&only, op_info.params.get(i)) {
+                    (Some(one), Some(p)) => Some(subst(p.ty, &params, &one.args)),
+                    _ => None,
+                };
+                let v = self.expr(e, expect);
                 if let Some(p) = op_info.params.get(i) {
                     let t = self.infer.resolve(v.ty);
                     match_params(p.ty, t, &mut binds);

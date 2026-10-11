@@ -21,8 +21,7 @@
     spread over eval_small/call_function/frames; no single hotspot). Real fix = bytecode VM
     (future project); cheap bits: perform clones CtxNode, args Vec, ctl_ops SipHash lookup.
 ## Round 5 (s4) leftovers
-27. Generic effect op shorthand variant: `es.emit(.Opened(..))` in fn with \ {es.Events(Event)}
-    can't infer the union (expected type from the single instance in the effect set).
+27. (fixed s4: perform_op checks args against the single available instance)
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
