@@ -23,7 +23,15 @@ impl<'a, 's> FnCx<'a, 's> {
         inclusive: bool,
         span: Span,
     ) -> Expr {
-        let b = self.expr(base, None);
+        let temp_ok = std::mem::take(&mut self.temp_ref_arg);
+        let mut b = self.expr(base, None);
+        // A temporary array sliced as an argument for a `[]const T` parameter lives for
+        // the call, like `&e` for a `^const T` one (§7.2).
+        if temp_ok && self.infer.resolve(b.ty).is_array() && self.place_mutability(&b).is_none() {
+            let t = b.ty;
+            let p = mk(Ty::ptr(true, t), tir::ExprKind::AddrOfTemp(Box::new(b)), base.span);
+            b = mk(t, tir::ExprKind::Deref(Box::new(p)), base.span);
+        }
         let bound = |e: Option<&ast::Expr>, cx: &mut Self| e.map(|e| cx.expr(e, None));
         let lo = bound(lo, self);
         let hi = bound(hi, self);

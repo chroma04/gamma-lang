@@ -20,3 +20,11 @@
 24. Interp speed: perform ≈ 0.7 µs vs call 0.1 µs, new+destroy ≈ 4 µs (s4 callgrind:
     spread over eval_small/call_function/frames; no single hotspot). Real fix = bytecode VM
     (future project); cheap bits: perform clones CtxNode, args Vec, ctl_ops SipHash lookup.
+## Round 5 (s4) leftovers
+27. Generic effect op shorthand variant: `es.emit(.Opened(..))` in fn with \ {es.Events(Event)}
+    can't infer the union (expected type from the single instance in the effect set).
+28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
+29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
+    for fiber overflow can't be shared.
+30. Wishes: T.MIN/T.MAX, generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
+    runnable from a root (`gamma test --all`?), x.to(f64) widening shorthand, @fn_cast.

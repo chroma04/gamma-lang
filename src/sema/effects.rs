@@ -321,7 +321,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => {
                     let decls = self.sema.handlers_for(t);
                     if decls.is_empty() {
-                        self.error(h.span, format!("expected a handler, but no handler is declared for `{}`", t));
+                        let mut d = crate::diag::Diagnostic::error(
+                            h.span,
+                            format!("expected a handler, but no handler is declared for `{}`", t),
+                        );
+                        if !matches!(t.kind(), TyKind::Ptr { .. })
+                            && !self.sema.handlers_for(Ty::ptr(false, t)).is_empty()
+                        {
+                            d = d.with_note(format!(
+                                "a handler is declared for `^{}`: install it from a variable with `with &x`",
+                                t
+                            ));
+                        }
+                        self.sema.emit(d);
                         continue;
                     }
                     for d in &decls {

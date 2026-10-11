@@ -78,8 +78,10 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
                 self.range_value(*op == ast::BinOp::RangeIncl, lhs, rhs, expect, span)
             }
+            // `()` is a type only next to another type: `r is ()` compares values.
             ExprKind::Binary { op: op @ (ast::BinOp::Is | ast::BinOp::IsNot), lhs, rhs }
-                if self.denotes_type(lhs) || self.denotes_type(rhs) =>
+                if (!is_unit_tuple(lhs) && self.denotes_type(lhs))
+                    || (!is_unit_tuple(rhs) && self.denotes_type(rhs)) =>
             {
                 self.type_is(*op == ast::BinOp::IsNot, lhs, rhs, span)
             }
@@ -2426,4 +2428,9 @@ pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
         Some(out)
     }
     push_down(e, inner)
+}
+
+/// True for `()`, which is both the unit type and the unit value.
+fn is_unit_tuple(e: &ast::Expr) -> bool {
+    matches!(&e.kind, ExprKind::Tuple(elems) if elems.is_empty())
 }

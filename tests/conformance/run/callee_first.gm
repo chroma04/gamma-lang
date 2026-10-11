@@ -1,0 +1,19 @@
+// The callee of a call is evaluated before its arguments (§7.1), also for function pointers
+// and fields holding them.
+dbl :: fn(x: i64) -> i64 => x * 2
+neg :: fn(x: i64) -> i64 => -x
+pick :: fn(p: ^i64) -> ^fn(x: i64) -> i64 {
+    p^ += 1
+    return dbl
+}
+Ops :: struct { f: ^fn(x: i64) -> i64 }
+swap_op :: fn(o: ^Ops) -> i64 {
+    o.f = neg
+    return 10
+}
+main :: fn() \ {Out} {
+    n: i64 = 0
+    print("{}\n", pick(&n)(n))
+    o := Ops(f: dbl)
+    print("{}\n", o.f(swap_op(&o)))
+}

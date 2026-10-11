@@ -618,7 +618,7 @@ fn suppresses_newline_after(kind: &TokenKind) -> bool {
 
 /// True if the rest of a line, `rest`, has a `:=` outside brackets, which makes a line
 /// starting with `.name` a pattern binding (§2.8 rule 2).
-fn line_binds(rest: &[u8]) -> bool {
+pub(crate) fn line_binds(rest: &[u8]) -> bool {
     let mut depth = 0i32;
     let mut i = 0;
     while i < rest.len() {

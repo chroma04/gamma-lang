@@ -405,9 +405,12 @@ fn would_merge(a: &str, b: &str) -> bool {
     n != 2 || diags.has_errors()
 }
 
-/// True for a `.` directly followed by a name, which joins the line to the previous one.
+/// True for a `.` directly followed by a name, which joins the line to the previous one,
+/// unless the line is a pattern binding `.V(…) := …` (§2.8).
 fn continues_with_name(src: &str, info: &Info) -> bool {
-    info.text == "." && src[info.hi..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+    info.text == "."
+        && src[info.hi..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && !crate::syntax::lexer::line_binds(&src.as_bytes()[info.hi..])
 }
 
 /// True if the lexer joins the next line to a line ending in this token (§2.8).

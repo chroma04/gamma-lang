@@ -256,3 +256,11 @@ fn else_chains_after_blocks_align_with_their_statement() {
     let want = "f :: fn() {\n    when A { g() }\n    else when B { h() }\n    else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n";
     check(src, want);
 }
+
+#[test]
+fn pattern_bindings_starting_with_a_dot_are_statements() {
+    check(
+        "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n",
+        "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n",
+    );
+}

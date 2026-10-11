@@ -877,13 +877,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // --- calls and effects -----------------------------------------------------------------------
 
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr]) -> CResult<String> {
+        // The callee is evaluated before the arguments (§7.1).
+        let cv = match callee {
+            Callee::Indirect(c) => Some(self.expr(c)?),
+            _ => None,
+        };
         let mut vals = vec![];
         let mut tys = vec![];
         for (i, a) in args.iter().enumerate() {
             // A large argument read from a place is passed as the place itself when
             // nothing evaluated before the call can change it (see `Types::by_ref`).
-            let later_pure =
-                || args[i + 1..].iter().all(no_writes) && !matches!(callee, Callee::Indirect(c) if !no_writes(c));
+            let later_pure = || args[i + 1..].iter().all(no_writes);
             let v = if self.g.ty.by_ref(a.ty)
                 && matches!(a.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
                 && later_pure()
@@ -896,10 +900,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
             vals.push(v);
             tys.push(a.ty);
         }
-        let cv = match callee {
-            Callee::Indirect(c) => Some(self.expr(c)?),
-            _ => None,
-        };
         self.call_site(e.span);
         match callee {
             Callee::Fn(f) => self.call_fn(e, *f, &vals),

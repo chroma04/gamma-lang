@@ -793,14 +793,23 @@ fn is_literal(e: &Expr) -> bool {
 }
 
 /// True if argument `e` is `&x` (possibly parenthesized) for a parameter of type `ty`
-/// that is a read-only pointer, where `x` may be a temporary (§7.10).
+/// that is a read-only pointer, or `x[…]` for a read-only slice parameter, where `x` may
+/// be a temporary (§7.2).
 pub(super) fn is_const_ref_arg(e: &ast::Expr, ty: Ty) -> bool {
     let mut e = e;
     while let ExprKind::Paren(inner) = &e.kind {
         e = inner;
     }
-    matches!(e.kind, ExprKind::Unary { op: ast::UnOp::AddrOf, .. })
-        && matches!(ty.kind(), TyKind::Ptr { is_const: true, .. })
+    // `[_]T(…)[..]` is parsed with the array type outermost.
+    let hoisted = super::expr::hoist_prefix(e);
+    if let Some(h) = &hoisted {
+        e = h;
+    }
+    match &e.kind {
+        ExprKind::Unary { op: ast::UnOp::AddrOf, .. } => matches!(ty.kind(), TyKind::Ptr { is_const: true, .. }),
+        ExprKind::Slice { .. } => matches!(ty.kind(), TyKind::Slice { is_const: true, .. }),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

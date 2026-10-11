@@ -272,6 +272,18 @@ impl<'s> Sema<'s> {
                     _ => None,
                 }
             }
+            // `m.X`, an untyped constant of another module.
+            ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                let d = *self.modules[m.0 as usize].scope.get(&name.name)?;
+                if !self.decls[d.0 as usize].item.is_pub {
+                    return None;
+                }
+                match self.resolve_decl(d) {
+                    DeclValue::Untyped(v) => Some(Ok(v)),
+                    _ => None,
+                }
+            }
             ExprKind::Unary { op: ast::UnOp::Neg, operand } => {
                 let v = self.try_untyped(module, operand)?;
                 Some(v.and_then(|v| untyped::negate(&v).map_err(|m| self.error(e.span, m))))
@@ -605,6 +617,7 @@ impl<'s> Sema<'s> {
             | DeclValue::Fn(_)
             | DeclValue::Op(..)
             | DeclValue::Module(_)
+            | DeclValue::Untyped(_)
             | DeclValue::Error = v
             {
                 return v;

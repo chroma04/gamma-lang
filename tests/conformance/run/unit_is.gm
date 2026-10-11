@@ -1,0 +1,12 @@
+// `()` next to a value is the unit value: `r is ()` tests an E!() result for success.
+E :: union { Bad }
+f :: fn(ok: bool) -> E!() {
+    if not ok { return !.Bad }
+    return ()
+}
+Log :: effect { note: fn(m: string) }
+S :: struct { n: u32 = 0 }
+handler Log for ^S { note(self, m) => { self.n += 1 } }
+main :: fn() \ {Out} {
+    print("{} {} {}\n", (f(true) is (), f(false) is not (), () is ()))
+}

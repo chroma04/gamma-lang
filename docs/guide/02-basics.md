@@ -50,6 +50,10 @@ digits_in :: fn(n: u32) -> u32 {
 }
 ```
 
+### Reserved words
+
+These 34 words are keywords everywhere and cannot name anything: `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl` and `resume` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`), and `type` and `cont` are reserved type names (§B.3).
+
 ### No shadowing
 
 Within a function, a local may not reuse the name of another local or parameter that is in scope. Nested blocks do not get a fresh start:
