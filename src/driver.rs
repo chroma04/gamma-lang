@@ -15,6 +15,8 @@ pub struct Session {
     pub ids: NodeIdGen,
     /// The build mode (§1.4): `target.mode`, and how checked operations behave.
     pub mode: crate::interp::Mode,
+    /// `-g`: native builds carry debug information mapping them to the source.
+    pub debug_info: bool,
 }
 
 impl Default for Session {
@@ -30,6 +32,7 @@ impl Session {
             diags: Diagnostics::new(),
             ids: NodeIdGen::new(),
             mode: crate::interp::Mode::Debug,
+            debug_info: false,
         }
     }
 

@@ -27,6 +27,9 @@ options:
   --filter=<text>             (test) run only the tests whose name or module path
                               contains <text>
   -o <file>                   (build) the executable to write (default: the input's name)
+  -g                          (build, and run and test via C) add debug information that maps
+                              the executable to the Gamma source, for debuggers; a Debug build
+                              is then compiled without optimization
   --mode=debug|checked|fast   (run, build, test) the build mode (default: debug): Debug and
                               Checked trap on failed checks, Fast omits them; Debug also
                               checks every free
@@ -45,6 +48,8 @@ struct Options {
     output: Option<PathBuf>,
     /// `--mode=…`: the build mode.
     mode: gamma::interp::Mode,
+    /// `-g`: native code carries debug information.
+    debug_info: bool,
     /// `--filter=…`: run only the tests that match.
     filter: Option<String>,
 }
@@ -61,6 +66,7 @@ fn parse_args() -> Result<Options, String> {
         c_backend: false,
         output: None,
         mode: gamma::interp::Mode::Debug,
+        debug_info: false,
         filter: None,
     };
     let mut args = args.peekable();
@@ -74,6 +80,7 @@ fn parse_args() -> Result<Options, String> {
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
+            "-g" => opts.debug_info = true,
             "--mode=debug" => opts.mode = gamma::interp::Mode::Debug,
             "--mode=checked" => opts.mode = gamma::interp::Mode::Checked,
             "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
@@ -149,6 +156,7 @@ fn run_front_end(opts: &Options) -> ExitCode {
     };
     let mut sess = Session::new();
     sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
     let mut out = String::new();
     if let Some(file) = sess.load(path) {
         if opts.command == "lex" {
@@ -173,6 +181,7 @@ fn check(opts: &Options) -> ExitCode {
     };
     let mut sess = Session::new();
     sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
     eprint!("{}", sess.render_diagnostics(opts.format));
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -185,6 +194,7 @@ fn run(opts: &Options) -> ExitCode {
     };
     let mut sess = Session::new();
     sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -306,6 +316,7 @@ fn test(opts: &Options) -> ExitCode {
     };
     let mut sess = Session::new();
     sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -347,9 +358,7 @@ fn test_native(sess: &Session, prog: &gamma::tir::Program, selected: &[usize], m
     let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
     let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
     let exe = dir.join("tests");
-    let built = generated
-        .map_err(|u| cgen_error(sess, u))
-        .and_then(|out| gamma::cgen::compile(&out.code, &out.libs, &exe).map(|_| ()));
+    let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| gamma::cgen::compile(&out, &exe).map(|_| ()));
     let code = match built {
         Ok(()) => {
             for (j, &i) in selected.iter().enumerate() {
@@ -395,6 +404,7 @@ fn c_options(sess: &Session) -> gamma::cgen::Options {
     gamma::cgen::Options {
         checks: sess.mode != gamma::interp::Mode::Fast,
         debug: sess.mode == gamma::interp::Mode::Debug,
+        debug_info: sess.debug_info,
     }
 }
 
@@ -410,7 +420,7 @@ fn cgen_error(sess: &Session, u: gamma::cgen::Unsupported) -> String {
 fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::Path) -> Result<(), String> {
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
-    gamma::cgen::compile(&out.code, &out.libs, exe).map(|_| ())
+    gamma::cgen::compile(&out, exe).map(|_| ())
 }
 
 /// Creates a temporary directory for a native build, reporting a failure.
@@ -440,6 +450,7 @@ fn build(opts: &Options) -> ExitCode {
     };
     let mut sess = Session::new();
     sess.mode = opts.mode;
+    sess.debug_info = opts.debug_info;
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };

@@ -24,6 +24,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let saved_indent = std::mem::replace(&mut self.indent, 1);
         let saved_check = std::mem::replace(&mut self.no_check, false);
         let r = emit(self);
+        self.end_lines();
         let text = std::mem::replace(&mut self.out, saved_out);
         self.scopes = saved_scopes;
         self.cx = saved_cx;

@@ -33,6 +33,11 @@ pub struct Types<'a> {
     /// Mirror C types by Gamma type (`None`: the type has none).
     mirrors: HashMap<Ty, Option<String>>,
     mirror_defs: String,
+    /// `-g`: mirror fields and frame fields are also named after the Gamma ones
+    /// (see `super::debug`).
+    pub debug_names: bool,
+    /// The Gamma names given to members so far.
+    member_names: BTreeSet<String>,
 }
 
 /// An integer wider than 128 bits: `bits` bits, little-endian two's complement in
@@ -77,6 +82,8 @@ impl<'a> Types<'a> {
             desc_defs: String::new(),
             mirrors: HashMap::new(),
             mirror_defs: String::new(),
+            debug_names: false,
+            member_names: BTreeSet::new(),
         }
     }
 
@@ -164,11 +171,20 @@ impl<'a> Types<'a> {
         if fields.is_empty() || self.size(t) == 0 {
             return None;
         }
+        let names: Vec<String> = if self.debug_names {
+            let gamma = super::debug::unique_members(fields.iter().map(|f| f.name.as_str()), &mut BTreeSet::new());
+            gamma.into_iter().enumerate().map(|(i, n)| n.unwrap_or_else(|| format!("f{}", i))).collect()
+        } else {
+            (0..fields.len()).map(|i| format!("f{}", i)).collect()
+        };
         let mut members = vec![];
         for (i, f) in fields.iter().enumerate() {
             let (ty, dims) = self.field_cty(f.ty)?;
             let al = f.align.map_or(String::new(), |a| format!("_Alignas({}) ", a));
-            members.push(format!("{}{} f{}{};", al, ty, i, dims));
+            members.push(format!("{}{} {}{};", al, ty, names[i], dims));
+        }
+        if self.debug_names {
+            self.member_names.extend(names.iter().filter(|n| super::debug::member_name(n).is_some()).cloned());
         }
         let name = format!("gm_cs{}", self.mirrors.len());
         let mut attrs = vec![];
@@ -190,10 +206,20 @@ impl<'a> Types<'a> {
             n = name
         );
         for (i, off) in self.offsets(t).iter().enumerate().take(fields.len()) {
-            let _ = write!(self.mirror_defs, " && offsetof({}, f{}) == {}", name, i, off);
+            let _ = write!(self.mirror_defs, " && offsetof({}, {}) == {}", name, names[i], off);
         }
         let _ = writeln!(self.mirror_defs, ", \"layout of `{}`\");", t);
         Some(name)
+    }
+
+    /// Records `name` as a Gamma name given to a member (see `super::debug::guard`).
+    pub fn add_member_name(&mut self, name: &str) {
+        self.member_names.insert(name.to_string());
+    }
+
+    /// The Gamma names given to members.
+    pub fn member_names(&self) -> BTreeSet<String> {
+        self.member_names.clone()
     }
 
     /// The C type of a mirror's field of type `t`, and the array dimensions that follow

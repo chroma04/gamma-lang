@@ -14,7 +14,8 @@ gcc and clang (macOS CI = clang). Fibers, foreign fns, #global, #bits all done.
 Elementwise array ops done (sema finalize Numeric peels arrays; cgen/elementwise.rs loops).
 Wide ints (>128 bits) done: runtime gm_w* routines (LE two's complement, ext. on write), cgen/wide.rs;
 std/fmt hex/bin of wide ints still traps (library). Stack check disabled under ASan (GM_ASAN).
-Not yet: static handler specialization (D.3),
+Debug info: `-g` (decisions/013). Further work: roadmap/c-backend-plan.md.
+Not yet: 2-level handler specialization,
 `gamma test` native. Main/thread stack overflow traps in checked builds (gm_stack_limit TLS,
 gm_thread_stack(), 256 KiB reserve; fast mode segfaults = UB).
 Gotchas: Const is a place (static gm_cN) — `&CONST` must not copy; pattern types needed
