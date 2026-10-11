@@ -96,22 +96,28 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     // docs/architecture.md); the others take the hidden env, cx and inst first.
     let plain = g.is_plain(f);
     let void_ret = plain && def.ret.is_unit();
+    // Large values cross by address (`Types::by_ref`); a plain function's C-ABI entry
+    // point is then a wrapper (`Gen::needs_wrapper`).
+    let blob_ret = !plain || g.ty.by_ref(def.ret);
     let ret = if void_ret {
         "void".to_string()
-    } else if plain {
-        g.ty.plain_cty(def.ret)
-    } else {
+    } else if blob_ret {
         g.ty.cty(def.ret)
+    } else {
+        g.ty.plain_cty(def.ret)
     };
     let mut params =
         if plain { vec![] } else { vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()] };
     for (i, p) in def.params.iter().enumerate() {
         let t = def.locals[p.index()].ty;
-        let c = if plain { g.ty.plain_cty(t) } else { g.ty.cty(t) };
+        let c = if plain && !g.ty.by_ref(t) { g.ty.plain_cty(t) } else { g.ty.param_cty(t) };
         params.push(format!("{} a{}", c, i));
     }
     if params.is_empty() {
         params.push("void".into());
+    }
+    if spec.is_none() && g.needs_wrapper(f) {
+        c_abi_wrapper(g, f, def);
     }
     let sig = format!(
         "static __attribute__((aligned(4))) {}{}{} {}({})",
@@ -174,6 +180,10 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     fg.line("(void)inst;");
     for (i, p) in def.params.iter().enumerate() {
         let t = def.locals[p.index()].ty;
+        if fg.g.ty.by_ref(t) {
+            fg.line(&format!("memcpy(&F.l{}, a{}, sizeof F.l{});", p.0, i, p.0));
+            continue;
+        }
         let a = if plain { fg.gamma_value(t, &format!("a{}", i)) } else { format!("a{}", i) };
         fg.line(&format!("F.l{} = {};", p.0, a));
     }
@@ -186,10 +196,10 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     if void_ret {
         let _ = write!(fg.out, "gm_fret:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n");
     } else if kill.is_empty() {
-        let r = if plain { fg.plain_value(def.ret, "F.ret") } else { "F.ret".into() };
+        let r = if !blob_ret { fg.plain_value(def.ret, "F.ret") } else { "F.ret".into() };
         let _ = write!(fg.out, "gm_fret:\n    return {r};\ngm_fprop:\n    return {r};\n}}\n");
     } else {
-        let r = if plain { fg.plain_value(def.ret, "gm_r") } else { "gm_r".into() };
+        let r = if !blob_ret { fg.plain_value(def.ret, "gm_r") } else { "gm_r".into() };
         let ct = fg.g.ty.cty(def.ret);
         let tail = format!("{{ {ct} gm_r = F.ret; {kill}return {r}; }}");
         let _ = write!(fg.out, "gm_fret:\n    {tail}\ngm_fprop:\n    {tail}\n}}\n");
@@ -202,6 +212,41 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
 }
 
 /// The C attributes (each with a trailing space) for a function's hints (§11.10).
+/// Emits `gm_fN_c`, the C-ABI entry point of plain function `f` (see
+/// `Gen::needs_wrapper`): it takes and returns values as C does and calls `gm_fN`.
+fn c_abi_wrapper(g: &mut Gen, f: FnId, def: &FnDef) {
+    let mut params = vec![];
+    let mut args = vec![];
+    for (i, p) in def.params.iter().enumerate() {
+        let t = def.locals[p.index()].ty;
+        params.push(format!("{} a{}", g.ty.plain_cty(t), i));
+        args.push(if g.ty.by_ref(t) { format!("&a{}", i) } else { format!("a{}", i) });
+    }
+    if params.is_empty() {
+        params.push("void".into());
+    }
+    let call = format!("{}({})", g.fn_name(f), args.join(", "));
+    let (ret, body) = if def.ret.is_unit() {
+        ("void".to_string(), format!("{};", call))
+    } else {
+        let r = g.ty.plain_cty(def.ret);
+        let v = match g.ty.mirror(def.ret) {
+            Some(m) if g.ty.by_ref(def.ret) => format!("GM_CONV({}, {})", m, call),
+            _ => call,
+        };
+        (r, format!("return {};", v))
+    };
+    let sig = format!(
+        "static __attribute__((aligned(4))) {}{} gm_f{}_c({})",
+        conv_attr(def.callconv),
+        ret,
+        f.0,
+        params.join(", ")
+    );
+    let _ = writeln!(g.protos, "{};", sig);
+    let _ = writeln!(g.bodies, "{} {{ {} }}", sig, body);
+}
+
 fn hint_attrs(h: crate::tir::FnHints) -> String {
     let mut s = String::new();
     match h.inline {

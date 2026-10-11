@@ -1,0 +1,129 @@
+// Large values through function pointers, closures, defer, try/else, optionals and results of big structs.
+Rec :: struct { id: u32, vals: [5]i64, name: [12]u8 }
+Err :: union { Bad, Worse }
+
+mkrec :: fn(id: u32) -> Rec {
+    r := Rec(id: id, vals: [5]i64(fill: i64(id)), name: [12]u8(fill: 65))
+    r.vals[4] = i64(id) * 100
+    r.name[0] = (66 + id % 20).trunc(u8)
+    return r
+}
+
+total :: fn(r: Rec) -> i64 {
+    t: i64 = 0
+    for v in r.vals { t += v }
+    return t + i64(r.id) + i64(r.name[0])
+}
+
+inc :: fn(r: Rec) -> Rec {
+    s := r
+    s.id += 1
+    s.vals[0] += 10
+    return s
+}
+
+dbl :: fn(r: Rec) -> Rec {
+    s := r
+    for i in 0..5 { s.vals[i] *= 2 }
+    return s
+}
+
+// A pointer to a plain function whose address is taken (needs a C-ABI wrapper in the C back end).
+Op :: ^fn(r: Rec) -> Rec
+apply_ptr :: fn(f: ^fn(r: Rec) -> Rec, r: Rec) -> Rec => f(r)
+
+compose :: fn(f: ^fn(r: Rec) -> Rec, g: ^fn(r: Rec) -> Rec, r: Rec) -> Rec => g(f(r))
+
+
+// second-class closure parameter
+repeat :: fn(n: u32, f: fn(r: Rec) -> Rec, r: Rec) -> Rec {
+    acc := r
+    for i in 0..n { acc = f(acc) }
+    return acc
+}
+
+maybe :: fn(k: u32) -> ?Rec {
+    if k % 2 is 0 { return null }
+    return mkrec(k)
+}
+
+checked :: fn(k: u32) -> Err!Rec {
+    if k > 5 { return !.Worse }
+    if k is 0 { return !.Bad }
+    return mkrec(k * 3)
+}
+
+both :: fn(a, b: u32) -> Err!(Rec, Rec) {
+    x := try checked(a)
+    y := try checked(b)
+    return (x, y)
+}
+
+Holder :: struct { r: Rec, cb: ?^fn(r: Rec) -> Rec }
+
+run_holder :: fn(h: Holder) -> i64 {
+    cb := h.cb else return total(h.r)
+    return total(cb(h.r))
+}
+
+log_total :: fn(r: Rec) -> i64 \ {Out} {
+    // the deferred call reads the variable at exit time but the argument is copied when `defer` runs
+    x := r
+    defer print("defer total {}\n", total(x))
+    x.vals[0] = 1000
+    return total(x)
+}
+
+main :: fn() \ {Out} {
+    r := mkrec(7)
+    print("base {}\n", total(r))
+    print("ptr {}\n", total(apply_ptr(inc, r)))
+    print("compose {}\n", total(compose(inc, dbl, r)))
+    print("compose2 {}\n", total(compose(dbl, inc, r)))
+    acc := r
+    table := [3]Op(inc, dbl, inc)
+    for f in table { acc = f(acc) }
+    print("table {} {}\n", (acc.id, total(acc)))
+    // function pointer stored in a struct, nullable
+    h := Holder(r: r, cb: null)
+    print("holder {}\n", run_holder(h))
+    h.cb = dbl
+    print("holder {}\n", run_holder(h))
+    // closures capture by reference
+    offset: i64 = 5
+    out := repeat(3, fn(x: Rec) -> Rec {
+        y := inc(x)
+        y.vals[1] += offset
+        offset += 1
+        return y
+    }, r)
+    print("closure {} {} {}\n", (out.id, out.vals[1], offset))
+    // optionals of big structs
+    for k in 0..3 {
+        if m := maybe(k) {
+            print("some {} {}\n", (k, total(m)))
+        } else {
+            print("none {}\n", k)
+        }
+    }
+    v := maybe(3) else mkrec(0)
+    w := maybe(4) else mkrec(0)
+    print("else {} {}\n", (v.id, w.id))
+    // results with try / else / match
+    for k in 0..8 {
+        res := checked(k)
+        match res {
+            !e => print("err {} {}\n", (k, e))
+            x => print("ok {} {}\n", (k, total(x)))
+        }
+    }
+    z := checked(9) else e => mkrec(1)
+    print("z {}\n", z.id)
+    pr := both(1, 2)
+    if p := pr {
+        print("both {} {}\n", (p.0.id, p.1.id))
+    }
+    pe := both(1, 7)
+    print("both err {}\n", pe is !.Worse)
+    print("deferred {}\n", log_total(r))
+}

@@ -1,0 +1,12 @@
+//! stage: check
+// `&` of a temporary is allowed only as an argument for a ^const T parameter (§7.2).
+Pt :: struct { x, y: i32 }
+bump :: fn(p: ^Pt) { p.x += 1 }
+mk :: fn() -> Pt => Pt(x: 1, y: 2)
+fill :: fn(xs: []i64) { xs[0] = 9 }
+main :: fn() {
+    fill([_]i64(1, 2)[..])      //~ ERROR only an array variable
+    s := [_]i64(1)[..]          //~ ERROR only an array variable
+    bump(&mk())                 //~ ERROR `&` needs a place
+    q: ^const Pt = &mk()        //~ ERROR `&` needs a place
+}

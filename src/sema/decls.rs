@@ -272,6 +272,18 @@ impl<'s> Sema<'s> {
                     _ => None,
                 }
             }
+            // `m.X`, an untyped constant of another module.
+            ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                let d = *self.modules[m.0 as usize].scope.get(&name.name)?;
+                if !self.decls[d.0 as usize].item.is_pub {
+                    return None;
+                }
+                match self.resolve_decl(d) {
+                    DeclValue::Untyped(v) => Some(Ok(v)),
+                    _ => None,
+                }
+            }
             ExprKind::Unary { op: ast::UnOp::Neg, operand } => {
                 let v = self.try_untyped(module, operand)?;
                 Some(v.and_then(|v| untyped::negate(&v).map_err(|m| self.error(e.span, m))))
@@ -593,6 +605,24 @@ impl<'s> Sema<'s> {
         annot: Option<&ast::Expr>,
         init: &ast::Expr,
     ) -> DeclValue {
+        // A name for another declaration (§3.5): `mk :: shapes.make`, `Map :: HashMap`.
+        if annot.is_none()
+            && let Some(d) = self.aliased_decl(module, init)
+        {
+            let Some(d) = d else { return DeclValue::Error };
+            let v = self.resolve_decl(d);
+            if let DeclValue::Type(_)
+            | DeclValue::GenericType(_)
+            | DeclValue::Effect(_)
+            | DeclValue::Fn(_)
+            | DeclValue::Op(..)
+            | DeclValue::Module(_)
+            | DeclValue::Untyped(_)
+            | DeclValue::Error = v
+            {
+                return v;
+            }
+        }
         if annot.is_none() && self.looks_like_type(module, init) {
             let ty = self.resolve_type(module, init);
             return if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) };
@@ -615,9 +645,26 @@ impl<'s> Sema<'s> {
     }
 }
 
+impl<'s> Sema<'s> {
+    /// The declaration that `e` names if it is a plain name or `m.name`: a candidate for
+    /// an alias declaration. `Some(None)` if `name` is missing from or private to module
+    /// `m` (reported).
+    fn aliased_decl(&mut self, module: ModuleId, e: &ast::Expr) -> Option<Option<DeclId>> {
+        match &e.kind {
+            ast::ExprKind::Ident(id) => self.lookup_module_name(module, id.name).map(Some),
+            ast::ExprKind::Paren(inner) => self.aliased_decl(module, inner),
+            ast::ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                Some(self.module_member(m, *name))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// The part of a type that a constant may not contain (§17.4): mutable pointers,
 /// `rawptr`, continuations, and allocator handles.
-fn non_constant_part(t: Ty) -> Option<Ty> {
+pub fn non_constant_part(t: Ty) -> Option<Ty> {
     let mut bad = None;
     t.walk(&mut |x| {
         let is_bad = match x.kind() {

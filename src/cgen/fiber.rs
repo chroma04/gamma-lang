@@ -136,7 +136,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         ptys.push(cont);
         let fp = self.fn_ptr_type(Ty::never(), &ptys);
         let kc = self.g.ty.cty(cont);
-        let mut args: Vec<String> = (0..tys.len()).map(|i| format!("r->a{}", i)).collect();
+        let mut args: Vec<String> = (0..tys.len())
+            .map(|i| if self.g.ty.by_ref(tys[i]) { format!("&r->a{}", i) } else { format!("r->a{}", i) })
+            .collect();
         args.push("kb".into());
         let head = format!("static void {}(void *req, gm_cont k)", thunk);
         let _ = writeln!(self.g.protos, "{};", head);

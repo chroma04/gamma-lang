@@ -1,0 +1,178 @@
+// A register VM whose whole state (16 registers, output log) is passed and returned by value: a match-based stepper, a function-pointer table, and an effect with a big-self handler, plus snapshots and a fiber that emits output.
+Instr :: union {
+    Li: (a: u8, imm: i64)
+    Mov: (a: u8, b: u8)
+    Add: (a: u8, b: u8, c: u8)
+    Mul: (a: u8, b: u8, c: u8)
+    Rem: (a: u8, b: u8, c: u8)
+    Jmp: u32
+    Jlt: (a: u8, b: u8, to: u32)
+    Jeq: (a: u8, b: u8, to: u32)
+    Out: u8
+    Halt
+}
+
+Vm :: struct {
+    regs: [16]i64
+    pc: u32
+    steps: u32
+    out: [6]i64
+    nout: u32
+    halted: bool
+}
+
+fresh :: fn() -> Vm => Vm(regs: [16]i64(fill: 0), pc: 0, steps: 0, out: [6]i64(fill: 0), nout: 0, halted: false)
+
+set :: fn(vm: Vm, r: u8, v: i64) -> Vm {
+    n := vm
+    n.regs[usize(r)] = v
+    return n
+}
+
+emit_out :: fn(vm: Vm, v: i64) -> Vm {
+    n := vm
+    if n.nout < 6 {
+        n.out[usize(n.nout)] = v
+    }
+    n.nout += 1
+    return n
+}
+
+// 1. A stepper with a match.
+step :: fn(vm: Vm, ins: Instr) -> Vm {
+    n := vm
+    n.steps += 1
+    n.pc += 1
+    match ins {
+        .Li(a, imm) => { n.regs[usize(a)] = imm }
+        .Mov(a, b) => { n.regs[usize(a)] = n.regs[usize(b)] }
+        .Add(a, b, c) => { n.regs[usize(a)] = n.regs[usize(b)] + n.regs[usize(c)] }
+        .Mul(a, b, c) => { n.regs[usize(a)] = n.regs[usize(b)] * n.regs[usize(c)] }
+        .Rem(a, b, c) => { n.regs[usize(a)] = n.regs[usize(b)] % n.regs[usize(c)] }
+        .Jmp(to) => { n.pc = to }
+        .Jlt(a, b, to) => { if n.regs[usize(a)] < n.regs[usize(b)] { n.pc = to } }
+        .Jeq(a, b, to) => { if n.regs[usize(a)] is n.regs[usize(b)] { n.pc = to } }
+        .Out(a) => { n = emit_out(n, n.regs[usize(a)]) }
+        .Halt => { n.halted = true; n.pc -= 1 }
+    }
+    return n
+}
+
+run :: fn(start: Vm, code: []const Instr) -> Vm {
+    vm := start
+    while not vm.halted {
+        vm = step(vm, code[usize(vm.pc)])
+    }
+    return vm
+}
+
+// 2. Handlers in a table indexed by a tag; each takes and returns the machine by value.
+Handler :: ^fn(vm: Vm, ins: Instr) -> Vm
+
+h_arith :: fn(vm: Vm, ins: Instr) -> Vm => step(vm, ins)
+
+h_out :: fn(vm: Vm, ins: Instr) -> Vm {
+    n := step(vm, ins)
+    return n
+}
+
+kind :: fn(ins: Instr) -> usize {
+    return match ins {
+        .Out(_) => 1
+        .Halt => 2
+        _ => 0
+    }
+}
+
+run_table :: fn(start: Vm, code: []const Instr) -> Vm {
+    table := [3]Handler(h_arith, h_out, h_arith)
+    vm := start
+    while not vm.halted {
+        ins := code[usize(vm.pc)]
+        vm = table[kind(ins)](vm, ins)
+    }
+    return vm
+}
+
+// 3. An effect whose handler carries a big configuration by value.
+Exec :: effect { exec: fn(vm: Vm, ins: Instr) -> Vm }
+
+Config :: struct { limit: [8]u32, name: [16]u8, scale: i64 }
+
+handler Exec for Config {
+    exec(self, vm, ins) => {
+        n := step(vm, ins)
+        if n.steps >= self.limit[3] { n.halted = true }
+        n
+    }
+}
+
+run_effect :: fn(start: Vm, code: []const Instr) -> Vm \ {Exec} {
+    vm := start
+    while not vm.halted {
+        vm = exec(vm, code[usize(vm.pc)])
+    }
+    return vm
+}
+
+// Sum of the primes below 60, then the count of steps.
+program :: [_]Instr(
+    .Li(0, 2), .Li(1, 60), .Li(2, 0), .Li(5, 1), .Li(6, 0),
+    .Jlt(0, 1, 7),
+    .Jmp(18),
+    .Li(3, 2),
+    .Mul(4, 3, 3),
+    .Jlt(0, 4, 15),
+    .Rem(4, 0, 3),
+    .Jeq(4, 6, 16),
+    .Add(3, 3, 5),
+    .Jmp(8),
+    .Halt,
+    .Add(2, 2, 0),
+    .Add(0, 0, 5),
+    .Jmp(5),
+    .Out(2),
+    .Halt
+)
+
+Gen :: effect { give: ctl(v: i64) }
+
+// A fiber runs the machine and hands every output value to the driver, passing the VM by value to the driver too.
+run_gen :: fn(start: Vm, code: []const Instr) -> Vm \ {Gen} {
+    vm := start
+    while not vm.halted {
+        ins := code[usize(vm.pc)]
+        if ins is .Out(_) { give(vm.regs[usize(vm.pc % 16)]) }
+        vm = step(vm, ins)
+    }
+    return vm
+}
+
+main :: fn() \ {Out} {
+    code := program[..]
+    a := run(fresh(), code)
+    print("switch: out {} steps {} sum {}\n", (a.out[0], a.steps, a.regs[2]))
+    b := run_table(fresh(), code)
+    print("table: out {} steps {} same {}\n", (b.out[0], b.steps, a is b))
+    cfg := Config(limit: [8]u32(fill: 100000), name: [16]u8(fill: 120), scale: 3)
+    c := with cfg { run_effect(fresh(), code) }
+    print("effect: out {} steps {} same {}\n", (c.out[0], c.steps, a is c))
+    short := Config(limit: [8]u32(1, 2, 3, 150, 5, 6, 7, 8), name: [16]u8(fill: 121), scale: 1)
+    d := with short { run_effect(fresh(), code) }
+    print("effect cut: steps {} halted {} out {}\n", (d.steps, d.halted, d.nout))
+    // Snapshot and restore: resume from a copy taken mid-run.
+    mid := fresh()
+    for _ in 0..40 { mid = step(mid, code[usize(mid.pc)]) }
+    snap := mid
+    mid = set(mid, 0, 1000)
+    e := run(snap, code)
+    f := run(mid, code)
+    print("snapshot: {} {} {} {}\n", (snap.pc, e.out[0], f.nout, snap.regs[0] is mid.regs[0]))
+    // The same machine on a fiber.
+    stack: [32768]u8 = ---
+    given: i64 = 0
+    g := with (handler Gen { give(v, k) => { given += v + 1; resume k() } }) on stack[..] {
+        run_gen(fresh(), code)
+    }
+    print("fiber: out {} given {} steps {}\n", (g.out[0], given, g.steps))
+}

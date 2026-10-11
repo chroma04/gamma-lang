@@ -124,10 +124,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => None,
                 })
                 .collect();
+            // With exactly one instantiation available, that one is performed (§12.1), so
+            // the arguments are checked against its parameter types: `emit(.Opened(…))`.
+            let avail = self.available(eff);
+            let only = match avail.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            };
             let mut binds = HashMap::new();
             let mut probe = vec![];
             for (i, e) in positional.iter().enumerate() {
-                let v = self.expr(e, None);
+                let expect = match (&only, op_info.params.get(i)) {
+                    (Some(one), Some(p)) => Some(subst(p.ty, &params, &one.args)),
+                    _ => None,
+                };
+                let v = self.expr(e, expect);
                 if let Some(p) = op_info.params.get(i) {
                     let t = self.infer.resolve(v.ty);
                     match_params(p.ty, t, &mut binds);
@@ -299,6 +310,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut handled: Vec<EffectRef> = vec![];
         let mut literal_ids = vec![];
         for h in &w.handlers {
+            // `with a, b` is `with a { with b { … } }`: earlier handlers handle what later
+            // ones' clauses perform (§12.7).
+            let earlier = handled.clone();
             let v = match &h.kind {
                 ExprKind::Handler(lit) => self.handler_literal(lit, h.span),
                 _ => self.expr(h, None),
@@ -318,7 +332,19 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => {
                     let decls = self.sema.handlers_for(t);
                     if decls.is_empty() {
-                        self.error(h.span, format!("expected a handler, but no handler is declared for `{}`", t));
+                        let mut d = crate::diag::Diagnostic::error(
+                            h.span,
+                            format!("expected a handler, but no handler is declared for `{}`", t),
+                        );
+                        if !matches!(t.kind(), TyKind::Ptr { .. })
+                            && !self.sema.handlers_for(Ty::ptr(false, t)).is_empty()
+                        {
+                            d = d.with_note(format!(
+                                "a handler is declared for `^{}`: install it from a variable with `with &x`",
+                                t
+                            ));
+                        }
+                        self.sema.emit(d);
                         continue;
                     }
                     for d in &decls {
@@ -328,7 +354,8 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         handled.push(eref);
                         // The clauses' effects are performed at the `with`, outside it (§12.6).
-                        let effs = self.sema.handler_decl_effects[d.index()].clone();
+                        let mut effs = self.sema.handler_decl_effects[d.index()].clone();
+                        effs.effects = effs.effects.iter().filter(|e| !earlier.contains(e)).cloned().collect();
                         self.record_effects(&effs, h.span);
                     }
                     handlers.push(tir::HandlerValue::Decl { decls, value: v });

@@ -1,0 +1,86 @@
+// C-ABI wrappers of plain functions whose address is taken: called through function pointers re-typed to the scalars the System V ABI splits their big parameters into.
+//! arch: x86_64
+c :: import "std/c"
+
+S3 :: struct { x: i64, y: i64, z: i64 }
+P2 :: struct { lo: u64, hi: u64 }
+F2 :: struct { a: f32, b: f32 }
+V2 :: struct { x: f64, y: f64 }
+
+// The first six integer arguments use registers; S3 then travels on the stack.
+with_s3 :: fn(a: i64, b: i64, c: i64, d: i64, e: i64, s: S3) -> i64 => a + b * 2 + c * 3 + d * 4 + e * 5 + s.x * 100 + s.y * 1000 + s.z * 10000
+
+// P2 is two INTEGER eightbytes: two registers.
+with_p2 :: fn(a: i64, p: P2, b: i64) -> u64 => a.trunc(u64) + p.lo * 10 + p.hi * 100 + b.trunc(u64) * 1000
+
+// F2 is one SSE eightbyte.
+with_f2 :: fn(k: i64, f: F2, d: f64) -> f64 => k.round(f64) + f64(f.a) * 10.0 + f64(f.b) * 100.0 + d * 1000.0
+
+// V2 is two SSE eightbytes.
+with_v2 :: fn(v: V2, w: V2) -> f64 => v.x + v.y * 10.0 + w.x * 100.0 + w.y * 1000.0
+
+// A 24-byte result is written through a hidden first argument.
+ret_s3 :: fn(k: i64) -> S3 => S3(x: k, y: k + 1, z: k + 2)
+
+// A 16-byte result comes back in rax:rdx.
+ret_p2 :: fn(k: u64) -> P2 => P2(lo: k, hi: k * 2)
+
+U1 :: #c_union union {
+    typed: ^fn(a: i64, b: i64, c: i64, d: i64, e: i64, s: S3) -> i64
+    flat: ^fn(a: i64, b: i64, c: i64, d: i64, e: i64, unused: i64, x: i64, y: i64, z: i64) -> i64
+}
+
+U2 :: #c_union union {
+    typed: ^fn(a: i64, p: P2, b: i64) -> u64
+    flat: ^fn(a: i64, lo: u64, hi: u64, b: i64) -> u64
+}
+
+U3 :: #c_union union {
+    typed: ^fn(k: i64, f: F2, d: f64) -> f64
+    flat: ^fn(k: i64, packed: f64, d: f64) -> f64
+}
+
+U4 :: #c_union union {
+    typed: ^fn(v: V2, w: V2) -> f64
+    flat: ^fn(a: f64, b: f64, c: f64, d: f64) -> f64
+}
+
+U5 :: #c_union union {
+    typed: ^fn(k: i64) -> S3
+    flat: ^fn(out: ^S3, k: i64) -> ^S3
+}
+
+U6 :: #c_union union {
+    typed: ^fn(k: u64) -> P2
+    flat: ^fn(k: u64) -> u128
+}
+
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> usize \ {}
+}
+
+main :: fn() \ {Out, Sys} {
+    // Forces the program to be compiled natively in both modes.
+    print("strlen {}\n", libc.strlen(c"abcd"))
+    // Typed calls: ordinary Gamma-to-Gamma calls through the pointers.
+    t1: ^fn(a: i64, b: i64, c: i64, d: i64, e: i64, s: S3) -> i64 = with_s3
+    print("typed s3 {}\n", t1(1, 2, 3, 4, 5, S3(x: 6, y: 7, z: 8)))
+    // Re-typed calls: what a C caller would do.
+    f1 := U1(typed: with_s3).flat
+    print("flat s3 {}\n", f1(1, 2, 3, 4, 5, -1, 6, 7, 8))
+    f2 := U2(typed: with_p2).flat
+    print("flat p2 {}\n", f2(1, 2, 3, 4))
+    f3 := U3(typed: with_f2).flat
+    pk := F2(a: 1.5, b: 0.5)
+    packed := (u64(pk.b.bits(u32)) << 32 | u64(pk.a.bits(u32))).bits(f64)
+    print("flat f2 {}\n", f3(7, packed, 0.25))
+    f4 := U4(typed: with_v2).flat
+    print("flat v2 {}\n", f4(1.0, 2.0, 3.0, 4.0))
+    f5 := U5(typed: ret_s3).flat
+    out: S3 = ---
+    back := f5(&out, 40)
+    print("flat ret s3 {} {} {} same {}\n", (out.x, out.y, out.z, back is &out))
+    f6 := U6(typed: ret_p2).flat
+    r6 := f6(21)
+    print("flat ret p2 {} {}\n", ((r6 & 0xffff_ffff_ffff_ffff).trunc(u64), (r6 >> 64).trunc(u64)))
+}

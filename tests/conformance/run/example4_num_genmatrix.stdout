@@ -1,0 +1,10 @@
+F(1) = 1
+F(10) = 55
+F(50) = 12586269025
+F(90) = 2880067194370816120
+rotation^10 close to identity: true
+trace(rot) = 1.618033988749895
+f32 gram: Matrix(d: [[14, 32], [32, 77]])
+i32 3x3: Matrix(d: [[5, -5, -17], [-5, 25, 9], [-17, 9, 61]])
+small squared: Matrix(d: [[7, 10], [15, 22]])
+large squared: null

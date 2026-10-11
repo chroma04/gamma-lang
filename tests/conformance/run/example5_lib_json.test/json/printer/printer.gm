@@ -1,0 +1,150 @@
+// Serializers written against a Sink effect, with two handler types: stdout and a growable buffer.
+value :: import "../value"
+fmt :: import "std/fmt"
+
+Value :: value.Value
+
+/// Where serialized text goes.
+pub Sink :: effect {
+    put: fn(text: string)
+}
+
+/// A sink that collects text in memory.
+pub Buffer :: struct {
+    bytes: List(u8)
+    pub puts: u32 = 0
+}
+
+pub buffer :: fn() -> Buffer \ {Alloc} => Buffer(bytes: list(u8))
+
+pub text :: fn(b: ^const Buffer) -> string => b.bytes.items
+
+pub deinit :: fn(b: ^Buffer) { b.bytes.deinit() }
+
+handler Sink for ^Buffer \ {Alloc} {
+    put(self, t) => {
+        self.puts += 1
+        self.bytes.extend(t) else trap("out of memory")
+    }
+}
+
+/// A sink that writes through the Out effect.
+pub Stdout :: struct {}
+
+handler Sink for ^Stdout \ {Out} {
+    put(self, t) => print("{}", t)
+}
+
+hex_digit :: fn(n: u8) -> u8 => if n < 10 { '0' + n } else { 'a' + (n - 10) }
+
+quote :: fn(s: string) \ {Sink} {
+    put("\"")
+    start: usize = 0
+    for i in 0..s.len {
+        c := s[i]
+        escaped: string = match c {
+            '"' => "\\\""
+            '\\' => "\\\\"
+            '\n' => "\\n"
+            '\t' => "\\t"
+            '\r' => "\\r"
+            _ => ""
+        }
+        if escaped.len > 0 or c < 0x20 {
+            put(s[start..i])
+            if escaped.len > 0 {
+                put(escaped)
+            } else {
+                uni: [6]u8 = [_]u8('\\', 'u', '0', '0', hex_digit(c >> 4), hex_digit(c & 15))
+                put(uni[..])
+            }
+            start = i + 1
+        }
+    }
+    put(s[start..])
+    put("\"")
+}
+
+number :: fn(x: f64) \ {Sink} {
+    buf: [400]u8 = ---
+    put(fmt.general(x, 12, buf[..]))
+}
+
+int :: fn(x: i64) \ {Sink} {
+    buf: [fmt.INT_BUF]u8 = ---
+    put(fmt.dec(x, buf[..]))
+}
+
+/// Compact output: no whitespace at all.
+pub compact :: fn(v: ^const Value) \ {Sink} {
+    match v^ {
+        .Null => put("null")
+        .Bool(b) => put(if b { "true" } else { "false" })
+        .Int(n) => int(n)
+        .Num(x) => number(x)
+        .Str(s) => quote(s)
+        .Arr(xs) => {
+            put("[")
+            for i in 0..xs.items.len {
+                if i > 0 { put(",") }
+                compact(&xs.items[i])
+            }
+            put("]")
+        }
+        .Obj(ms) => {
+            put("{")
+            for i in 0..ms.items.len {
+                if i > 0 { put(",") }
+                quote(ms.items[i].key)
+                put(":")
+                compact(&ms.items[i].val)
+            }
+            put("}")
+        }
+    }
+}
+
+indent :: fn(level: u32, width: u32) \ {Sink} {
+    for _ in 0..level * width { put(" ") }
+}
+
+/// Indented output; empty containers stay on one line.
+pub pretty :: fn(v: ^const Value, width: u32 = 2) \ {Sink} {
+    pretty_at(v, 0, width)
+}
+
+pretty_at :: fn(v: ^const Value, level: u32, width: u32) \ {Sink} {
+    match v^ {
+        .Arr(xs) => {
+            if xs.items.len is 0 {
+                put("[]")
+                return
+            }
+            put("[\n")
+            for i in 0..xs.items.len {
+                indent(level + 1, width)
+                pretty_at(&xs.items[i], level + 1, width)
+                put(if i + 1 < xs.items.len { ",\n" } else { "\n" })
+            }
+            indent(level, width)
+            put("]")
+        }
+        .Obj(ms) => {
+            if ms.items.len is 0 {
+                put("{}")
+                return
+            }
+            put("{\n")
+            for i in 0..ms.items.len {
+                indent(level + 1, width)
+                quote(ms.items[i].key)
+                put(": ")
+                pretty_at(&ms.items[i].val, level + 1, width)
+                put(if i + 1 < ms.items.len { ",\n" } else { "\n" })
+            }
+            indent(level, width)
+            put("}")
+        }
+        _ => compact(v)
+    }
+}

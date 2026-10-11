@@ -1,0 +1,120 @@
+// Pattern bindings and destructuring copy big values; results, optionals and nested optionals of big structs and wide integers with try, defer and else.
+Big :: struct { a: [6]i64 }
+ErrB :: struct { code: i32, ctx: [8]i64 }
+Shape :: union {
+    Wide: [12]i64
+    Box: Big
+    Empty
+}
+
+mk :: fn(k: i64) -> Big => Big(a: [6]i64(fill: k))
+
+sum :: fn(b: Big) -> i64 {
+    s: i64 = 0
+    for v in b.a { s += v }
+    return s
+}
+
+box_sum :: fn(s: Shape) -> i64 {
+    return match s {
+        .Box(x) => sum(x)
+        _ => 0
+    }
+}
+
+fallible :: fn(k: i64) -> ErrB!Big {
+    if k < 0 { return !ErrB(code: k.trunc(i32), ctx: [8]i64(fill: k)) }
+    return mk(k)
+}
+
+chain :: fn(a, b: i64) -> ErrB!Big {
+    x := try fallible(a)
+    defer x.a[0] = -999
+    y := try fallible(b)
+    r := x
+    for i in 0..6 { r.a[i] += y.a[i] }
+    return r
+}
+
+nested :: fn(k: i64) -> ??Big {
+    if k is 0 { return null }
+    if k is 1 { return ?Big(null) }
+    return mk(k)
+}
+
+opt_pair :: fn(k: i64) -> ?(Big, Big) {
+    if k < 0 { return null }
+    return (mk(k), mk(k + 1))
+}
+
+wide_opt :: fn(k: u256) -> ?u256 {
+    if k is 0 { return null }
+    return k * k
+}
+
+wide_res :: fn(k: u256) -> Big!u256 {
+    if k > 100 { return !mk(i64(k.trunc(u32))) }
+    return k << 100
+}
+
+main :: fn() \ {Out} {
+    // binding from an optional is a copy
+    o: ?Big = mk(1)
+    if v := o {
+        o = mk(2)
+        print("opt copy {} now {}\n", (sum(v), sum(o?)))
+    }
+    // union payload binding is a copy
+    s: Shape = .Box(mk(3))
+    match s {
+        .Box(b) => {
+            s = .Box(mk(4))
+            print("match copy {} now {}\n", (sum(b), box_sum(s)))
+        }
+        _ => {}
+    }
+    w: Shape = .Wide([12]i64(fill: 2))
+    if .Wide(a) := w {
+        w = .Wide([12]i64(fill: 9))
+        print("wide copy {}\n", a[11])
+    }
+    // tuple destructuring is a copy
+    t := (mk(5), mk(6))
+    x, y := t
+    t.0.a[0] = 100
+    print("destructure {} {} {}\n", (x.a[0], y.a[0], t.0.a[0]))
+    // results with big errors and payloads, try and defer
+    for pair in [3]Big(Big(a: [6]i64(1, 2, 3, 4, 5, 6)), Big(a: [6]i64(fill: -1)), Big(a: [6]i64(fill: 0))) {
+        a := pair.a[0]
+        b := pair.a[1]
+        if r := chain(a, b) {
+            print("chain ok {}\n", sum(r))
+        } else e => {
+            print("chain err {} {}\n", (e.code, e.ctx[7]))
+        }
+    }
+    r1 := chain(2, 3) else e => mk(e.ctx[0])
+    print("else {}\n", sum(r1))
+    r2 := chain(2, -7) else e => mk(e.ctx[0])
+    print("else err {}\n", sum(r2))
+    // nested optionals
+    for k in 0..4 {
+        n := nested(k)
+        if inner := n {
+            if b := inner { print("some some {}\n", sum(b)) } else { print("some none\n") }
+        } else {
+            print("none\n")
+        }
+    }
+    // optional tuples
+    if p := opt_pair(3) { print("pair {} {}\n", (p.0.a[0], p.1.a[0])) }
+    print("pair none {}\n", opt_pair(-1) is null)
+    // wide optionals and results
+    print("wide opt {} {}\n", (wide_opt(0) is null, wide_opt(1 << 100)?))
+    wr := wide_res(5)
+    if v := wr { print("wide res {}\n", v) }
+    wr2 := wide_res(500)
+    if wr2 is !_ { print("wide res err\n") }
+    v3 := wide_res(500) else e => sum(e).trunc(u256)
+    print("wide else {}\n", v3)
+}

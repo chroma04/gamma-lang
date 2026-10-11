@@ -49,3 +49,24 @@ yields :: fn() \ {Yield(u8)} {
 }
 
 main :: fn() {}
+
+// The clauses of a later handler may use an earlier one, not the reverse (§12.7).
+Note :: effect { note: fn(msg: string) }
+Job :: effect { job: fn(x: u32) -> u32 }
+Noter :: struct { n: u32 = 0 }
+handler Note for ^Noter { note(self, msg) => { self.n += 1 } }
+Runner :: struct { n: u32 = 0 }
+handler Job for ^Runner \ {Note} {
+    job(self, x) => {
+        note("job")
+        x + 1
+    }
+}
+
+order :: fn() -> u32 {
+    a := Noter()
+    b := Runner()
+    x := with &a, &b { job(1) }
+    y := with &b, &a { job(2) }         //~ ERROR performs the effect `Note`
+    return x + y
+}

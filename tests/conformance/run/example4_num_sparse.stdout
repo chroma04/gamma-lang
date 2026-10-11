@@ -1,0 +1,10 @@
+816 triplets for a 144x144 system
+nonzeros after summing duplicates: 672
+all diagonal entries are 4: true
+cg converged in 46 iterations
+max error below 1e-8: true
+x[0..4] = ("1.000000", "0.750000", "0.500000", "1.750000")
+3 iterations are not enough: true
+distinct coefficient values: 2
+count of -1.0 entries: 528
+count of 4.0 entries:  144

@@ -22,19 +22,48 @@ impl<'s> Sema<'s> {
     /// returns `None`; returns `None` silently if the expression or a function
     /// it reaches contains an error that was already reported.
     pub fn eval_tir_const(&mut self, e: &Expr) -> Option<ConstValue> {
+        match self.try_eval_const(e) {
+            Ok(v) => Some(v),
+            Err(None) => None,
+            Err(Some(t)) => {
+                self.report_eval_failure(e, &t);
+                None
+            }
+        }
+    }
+
+    /// Evaluates a checked, closed expression: `Err(None)` if it (or a function it
+    /// reaches) has an error already reported, `Err(Some(trap))` if the evaluation fails.
+    pub fn try_eval_const(&mut self, e: &Expr) -> Result<ConstValue, Option<interp::Trap>> {
         if e.ty.is_error() || !self.prepare_for_eval(e) {
-            return None;
+            return Err(None);
         }
         let cfg = RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel) };
-        match interp::eval_const(&self.prog, &cfg, e) {
-            Ok(v) => Some(v),
-            Err(t) => {
+        interp::eval_const(&self.prog, &cfg, e).map_err(Some)
+    }
+
+    /// Reports the failed compile-time evaluation of `e` with its call stack (§17.1).
+    pub fn report_eval_failure(&mut self, e: &Expr, t: &interp::Trap) {
+        {
+            {
                 let mut d = Diagnostic::error(e.span, format!("compile-time evaluation failed: {}", t.message));
                 if t.span != Span::DUMMY && t.span != e.span {
                     d = d.with_label(t.span, "the evaluation stopped here");
                 }
+                // The compile-time call stack, innermost call first (§17.1).
+                const SHOWN: usize = 12;
+                for (f, call) in t.trace.iter().take(SHOWN) {
+                    if *call == Span::DUMMY || *call == e.span {
+                        continue;
+                    }
+                    let name = self.prog.backtrace_name(*f, &self.sess.sources);
+                    let what = name.map_or("a core library function".to_string(), |n| format!("`{}`", n));
+                    d = d.with_label(*call, format!("{} was called here", what));
+                }
+                if t.trace.len() > SHOWN {
+                    d = d.with_note(format!("{} more calls are not shown", t.trace.len() - SHOWN));
+                }
                 self.emit(d);
-                None
             }
         }
     }
@@ -268,7 +297,7 @@ impl<'s> Sema<'s> {
         walk(&ex, &mut |n| {
             generic |= super::generics::has_param(n.ty)
                 || matches!(n.kind, ExprKind::ValueParam(_))
-                || matches!(&n.kind, ExprKind::SizeOf { .. });
+                || matches!(&n.kind, ExprKind::SizeOf { .. } | ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. });
         });
         if generic {
             self.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)");
@@ -300,7 +329,8 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
 fn depends_on_params(e: &Expr) -> bool {
     let mut found = crate::sema::generics::has_param(e.ty)
         || matches!(&e.kind, ExprKind::ValueParam(_))
-        || matches!(&e.kind, ExprKind::SizeOf { of, .. } if crate::sema::generics::has_param(*of));
+        || matches!(&e.kind, ExprKind::SizeOf { of, .. } if crate::sema::generics::has_param(*of))
+        || matches!(&e.kind, ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. });
     e.for_each_child(&mut |c| found |= depends_on_params(c));
     found
 }

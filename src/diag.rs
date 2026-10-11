@@ -152,6 +152,12 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
                 let _ = write!(out, "{}:{}:{}: ", f.path.display(), line, col);
             }
             let _ = writeln!(out, "{}: {}", d.severity.as_str(), d.message);
+            // Secondary locations follow as notes, one per line.
+            for l in d.labels.iter().filter(|l| l.span != Span::DUMMY) {
+                let f = sm.file(l.span.file);
+                let (line, col) = f.line_col(l.span.lo);
+                let _ = writeln!(out, "{}:{}:{}: note: {}", f.path.display(), line, col, l.message);
+            }
         }
         DiagFormat::Human => {
             let _ = writeln!(out, "{}: {}", d.severity.as_str(), d.message);

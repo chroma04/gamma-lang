@@ -1,0 +1,68 @@
+// Clause bodies of handler declarations (§12.6): `return` and `try` end the clause with a
+// value, and loops over iterators and function literals in them capture the clause's frame.
+Say :: effect { say: fn(n: u32) }
+Pick :: effect { pick: fn(n: u32) -> u32 }
+Parse :: effect { parse: fn(s: string) -> u8!u32 }
+
+Wrapper :: struct { lines: u32 = 0 }
+
+countdown :: fn(n: u32) \ {Yield(u32)} {
+    i := n
+    while i > 0 {
+        yield(i)
+        i -= 1
+    }
+}
+
+handler Say for ^Wrapper {
+    say(self, n) => {
+        col: u32 = 0
+        for i in countdown(n) { col += i }
+        twice :: fn(x: u32) -> u32 => x * 2 + col
+        self.lines += twice(1)
+    }
+}
+
+S :: struct { x: u32 = 0 }
+
+handler Pick for ^S {
+    pick(self, n) => {
+        if n > 5 { return n }
+        self.x += 1
+        self.x
+    }
+}
+
+digit :: fn(c: u8) -> u8!u32 {
+    if c < '0' or c > '9' { return !1 }
+    return u32(c - '0')
+}
+
+Dec :: struct { calls: u32 = 0 }
+
+handler Parse for ^Dec {
+    parse(self, s) => {
+        self.calls += 1
+        v: u32 = 0
+        for c in s { v = v * 10 + try digit(c) }
+        return v
+    }
+}
+
+main :: fn() \ {Out} {
+    wrap := Wrapper()
+    with &wrap {
+        say(4)
+        say(2)
+    }
+    print("lines {}\n", wrap.lines)
+    s := S()
+    with &s { print("pick {}\n", pick(9) + pick(1) + pick(2)) }
+    d := Dec()
+    with &d {
+        print("{} ", parse("472") else 0)
+        r := parse("4x2")
+        if !e := r { print("error {} ", e) }
+        print("calls {}\n", d.calls)
+    }
+}

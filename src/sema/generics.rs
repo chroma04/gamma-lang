@@ -267,6 +267,21 @@ impl<'s> Sema<'s> {
                 e.kind = tir::ExprKind::SizeOf { of: t, align: *align };
             }
         }
+        if let tir::ExprKind::IntLimit { of, max } = &e.kind {
+            let (t, max) = (self.subst(*of, cx.map), *max);
+            e.kind = match super::expr::int_limit(t, max, &self.target) {
+                Some(v) => tir::ExprKind::Int(v),
+                None => tir::ExprKind::IntLimit { of: t, max },
+            };
+        }
+        if let tir::ExprKind::TypeIs { a, b, negated } = &e.kind {
+            let (a, b, negated) = (self.subst(*a, cx.map), self.subst(*b, cx.map), *negated);
+            e.kind = if has_param(a) || has_param(b) {
+                tir::ExprKind::TypeIs { a, b, negated }
+            } else {
+                tir::ExprKind::Bool((a == b) != negated)
+            };
+        }
         if let tir::ExprKind::UntypedFloat(r) = &e.kind {
             let r = (**r).clone();
             match e.ty.kind() {
@@ -680,6 +695,18 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));
             return error_expr(span);
         }
+        // Too many arguments to leave the type parameters out, and the first of them is
+        // not a type: more arguments than the function takes, rather than explicit types.
+        if !omit
+            && positional.len() > n
+            && let Some(&first) = positional.first()
+            && sig.params[targets[0]].generic.is_some_and(|p| !self.sema.value_params.contains_key(&p))
+            && self.clearly_value(first)
+        {
+            let what = if receiver.is_some() { " besides the receiver" } else { "" };
+            self.error(span, format!("too many arguments: the function takes {}{}", n, what));
+            return error_expr(span);
+        }
         let mut binds: HashMap<ParamId, Ty> = HashMap::new();
         // Arguments whose types still contain untyped literals.
         let mut literal_args: Vec<(Ty, Ty)> = vec![];
@@ -735,11 +762,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     values[*i] = Some(self.arg_value(e, expect));
                     continue;
                 }
+                self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
+                self.temp_ref_arg = false;
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
                 if !fixed.is_empty() && !mentions_free && !has_param(expect) {
-                    values[*i] = Some(self.coerce(v, expect));
+                    // Coerced to `expect` with the others below.
+                    values[*i] = Some(v);
                     continue;
                 }
                 let t = self.infer.resolve(v.ty);
@@ -790,8 +820,18 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
+        // An argument with an error (already reported) leaves its parameters unbound;
+        // say nothing more about them.
+        let failed_arg = values.iter().flatten().any(|v| {
+            let mut bad = false;
+            self.infer.resolve(v.ty).walk(&mut |t| bad |= t.is_error());
+            bad
+        });
         let mut targs = vec![];
         for pid in &sig.generics {
+            if failed_arg && !binds.contains_key(pid) {
+                return error_expr(span);
+            }
             match binds.get(pid) {
                 Some(t) if self.sema.value_params.contains_key(pid) => {
                     let pty = self.sema.value_params[pid];
@@ -821,7 +861,20 @@ impl<'a, 's> FnCx<'a, 's> {
                         matches!(p.ty.kind(), TyKind::Slice { .. })
                             && v.as_ref().is_some_and(|v| matches!(v.ty.kind(), TyKind::Array { .. }))
                     });
-                    let hint = if array_for_slice { "; an array is not a slice: pass `a[..]`" } else { "" };
+                    let pointer_for_slice = sig.params.iter().zip(&values).any(|(p, v)| {
+                        matches!(p.ty.kind(), TyKind::Slice { .. })
+                            && v.as_ref().is_some_and(|v| matches!(self.infer.resolve(v.ty).kind(), TyKind::Ptr { .. }))
+                    });
+                    let name = self.sema.prog.fns[f.index()].name;
+                    let hint = if array_for_slice {
+                        "; an array is not a slice: pass `a[..]`"
+                    } else if pointer_for_slice && name.as_str() == "free" {
+                        "; `free` releases a slice from `make`: release a value from `new` with `destroy(p)`"
+                    } else if pointer_for_slice {
+                        "; a pointer is not a slice"
+                    } else {
+                        ""
+                    };
                     self.error(
                         span,
                         format!(
@@ -892,6 +945,15 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
+    /// True if `e` cannot denote a type: a literal or a local variable.
+    fn clearly_value(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Ident(id) => self.lookup_local(id.name).is_some(),
+            ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Str(_) | ast::ExprKind::Bool(_) => true,
+            _ => false,
+        }
+    }
+
     /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
     fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
         if let ast::ExprKind::Ident(id) = &e.kind

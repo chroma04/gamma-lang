@@ -267,7 +267,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `\`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm.
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains `:=` outside brackets, which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.
@@ -308,7 +308,7 @@ A module is identified by its resolved directory. Importing the same module twic
 
 The import graph must be acyclic; a cycle is a compile error naming the modules in it.
 
-An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared.
+An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared. A `pub` module binding is itself a member: if module `top` declares `pub s :: import "./shapes"`, then `top.s.area(c)` and `top.s.Circle` reach `shapes`'s declarations, so a module can gather others under one import.
 
 ### 3.3 Visibility
 
@@ -336,7 +336,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Map :: HashMap`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Map(K, V)` then instantiates `HashMap`, and a `pub` alias re-exports the declaration. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -378,7 +378,7 @@ test "parse rejects letters" {
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it; returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); every later `try` must have that error type or one that lifts into it (§10.6), as in any function returning `E!()`. A test that propagates unrelated errors calls a helper function that declares a common error type; returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module only; the tests of an imported module run when that module is the root. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
 
 ---
 
@@ -430,6 +430,17 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 `a, b := e` requires `e` to be a tuple with exactly as many elements; `a, b := 1, 2` is `a, b := (1, 2)`, as in multiple assignment (§4.7). Each name binds the corresponding element; `_` discards one. The names may not be annotated individually; annotate the whole binding with a tuple type instead: `q, r: (u32, u32) = divmod(17, 5)`.
 
 Destructuring is the only multi-name binding form outside patterns (§9).
+
+**Pattern bindings with `else`.** A statement `P := e else d`, where `P` is a pattern other than a plain name or `_` (§9), matches `e` against `P` as a binding condition does (§8.2), including the unwrapping of optionals and results (§9.3). If it matches, `P`'s names are bound for the rest of the enclosing block; otherwise `d` is evaluated, and `d` must have type `never`: `return`, `break`, `continue`, `trap(…)`, or a block ending in one of them.
+
+```
+eval_pair :: fn(v: Value) -> EvalError!i64 {
+    .Pair(a, b) := v else return !.NotAPair
+    return a + b
+}
+```
+
+The statement means `if P := e { rest of the block } else { d }`. A pattern binding without `else` is a compile error, and so is one whose `else` captures an error (`else e => …`); a plain name keeps the meaning of §10.4 (`x := opt else d` binds `x` to the fallback's result).
 
 ### 4.6 Scopes and shadowing
 
@@ -547,6 +558,8 @@ A tuple type `(T1, T2, …)` or `(a: T1, b: T2, …)` is structural: two tuple t
 Elements are accessed by position `t.0`, `t.1` or, if named, by name `t.a`.
 
 **Name-erasing coercion.** A tuple value converts implicitly to a tuple type with the same element types in the same order if either type is unnamed (`(q: u32, r: u32)` ↔ `(u32, u32)`). Between two differently named tuple types there is no implicit conversion.
+
+**Tuple expressions.** When a tuple expression `(e1, e2, …)` appears where a tuple type with as many elements is expected — directly, or wrapped in optionals or results (`?(T1, T2)`, `E!(T1, T2)`) — each element is a coercion site (§6.4) for the corresponding element type: `(a: 1, b: null)` where `(a: u8, b: ?u8)` is expected is `(a: u8(1), b: ?u8(null))`, and `(1, v)` with `v: u8` where `(u8, ?u8)` is expected wraps `v`. A tuple value that is not written as a tuple expression converts only by name erasure.
 
 Layout: like a struct with the same fields in the same order (§5.10.4).
 
@@ -776,9 +789,9 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 
 | Method | On | Meaning |
 | --- | --- | --- |
-| `x.trunc(T)` | integer → integer | keep the low bits (two's-complement truncation); always defined |
+| `x.trunc(T)` | integer → integer | the value modulo 2^bits(T), as `T`: keep the low bits of the two's-complement representation, which sign-extends a negative signed `x` when `T` is wider (`i8(-1).trunc(u32)` is `0xFFFF_FFFF`); always defined |
 | `x.trunc(T)` | float → integer | round toward zero; **checked**: the result must fit `T` and `x` must not be NaN |
-| `x.round(T)` | float → integer | round to nearest, ties to even; checked as above |
+| `x.round(T)` | float → integer | round to nearest, ties to even (`2.5.round(i32)` is 2); checked as above |
 | `x.floor(T)`, `x.ceil(T)` | float → integer | checked as above |
 | `x.round(T)` | integer → float, float → narrower float | round to nearest-even; overflow gives ±∞ |
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |
@@ -807,7 +820,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized).
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise a slice `a[…]` of a temporary array, written as an argument for a `[]const T` parameter, slices a temporary that lives for the call: `total([_]i64(1, 2, 3)[..])`.
 
 ### 7.3 Operator summary
 
@@ -1154,7 +1167,7 @@ A pattern is matched against a value of a known type, the **scrutinee type**.
 
 - Literal patterns are permitted for integer, `bool`, and `string` scrutinees (strings compare by content). Float literal patterns are not permitted.
 - Range patterns are permitted for integer scrutinees. Bounds must be constant, `lo <= hi` (for `..`, `lo < hi`).
-- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`.
+- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`. A single name for a payload of two or more elements binds the whole tuple: `.Rect(r)` binds `r: (w: f64, h: f64)`.
 - In a struct pattern, the struct's fields must be visible (§3.3).
 - A binding pattern binds an immutable name (a copy of the matched part).
 - **Bare names always bind.** A pattern consisting of a bare identifier is always a binding, never a comparison. To prevent the classic mistake of a binding silently capturing everything, a bare identifier pattern that names a visible constant value (a top-level or local `::` binding of a number, string, `bool` or enum — not a function, type, module or effect) is a compile error: compare with a guard (`x if x is PAGE => …`) or, for a constant of another module, with a qualified pattern (`limits.MAX => …`).
@@ -1215,7 +1228,7 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
 - If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
-- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), or `never`.
+- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), or `never`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
 
@@ -1488,7 +1501,7 @@ handler Log for ^FileLogger \ {Fs} {
 - The first clause parameter (`self`) has type `T`; the rest are the operation's parameters (and for `ctl`, the continuation).
 - `\ {A}` declares the effects the clauses may perform; the effects performed by every clause body must be a subset of `A`, checked as for functions (§12.3). They are handled by the handlers in scope at the `with` that installs the handler, **outside** that `with` (a clause never handles its own performs). They count as effects performed by the `with` statement.
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
-- Clauses of a handler declaration have no enclosing function: `return`, labeled `break`/`continue`, and captures are not available. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
+- Clauses of a handler declaration have no enclosing function, so labeled `break`/`continue` and captures are not available. A clause body behaves like a function body of its own: `return v` (and `try`, §10.3) ends the clause with the value `v`, which is the clause's result exactly as if it were the body's last expression. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
 - **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
 
@@ -2342,6 +2355,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | Intrinsic | Result | Compile-time | § |
 | --- | --- | --- | --- |
 | `@size_of(T)`, `@align_of(T)` | `usize` | yes | 5 |
+| `@min_value(T)`, `@max_value(T)` | `T`, the smallest or largest value of integer type `T` (a type parameter needs `Int(T)`) | yes | 5.1 |
 | `@offset_of(S, field)` | `usize` | yes | 5.10.4 |
 | `@type_of(e)` | `type` (`e` is not evaluated) | yes | — |
 | `@type_name(T)` | `string` | yes | — |
@@ -2703,6 +2717,7 @@ stmt          = binding
               | 'break' [ IDENT ] [ expr ]
               | 'continue' [ IDENT ]
               | 'discard' expr
+              | pattern ':=' expr 'else' expr                     // §4.5; not a plain name
               | intrinsic_call
               | block                                             // a nested scope
               | expr

@@ -21,7 +21,9 @@
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
-//!   Every reported error or warning must be expected this way.
+//!   Every reported error or warning must be expected this way. `//~ NOTE text`
+//!   expects a secondary location of some diagnostic on that line (such as a call
+//!   in a compile-time call stack); notes that no annotation names are allowed.
 //!
 //! A directory whose name ends in `.test` is one test of several modules. The
 //! program's root module is its `main/` subdirectory if there is one, and the
@@ -113,6 +115,7 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
             let sev = match sev {
                 "ERROR" => "error",
                 "WARNING" => "warning",
+                "NOTE" => "note",
                 other => return Err(format!("{}:{}: unknown annotation `{}`", path.display(), i + 1, other)),
             };
             let line_no = if unlocated { 0 } else { i as u32 + 1 };
@@ -151,7 +154,7 @@ fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
         let _col = parts.next();
         let tail = parts.next().unwrap_or("").trim_start();
         let (sev, msg) = tail.split_once(": ").unwrap_or((tail, ""));
-        if sev == "error" || sev == "warning" {
+        if sev == "error" || sev == "warning" || sev == "note" {
             out.push(Reported {
                 file: Some(file.clone()),
                 line: line_no,
@@ -297,6 +300,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if !unmatched_expected.is_empty() {
         problems.push(format!("missing diagnostics:\n{}", unmatched_expected.join("\n")));
     }
+    // Notes (secondary locations) need not be expected.
+    reported.retain(|r| r.severity != "note");
     if !reported.is_empty() {
         let list: Vec<String> = reported
             .iter()

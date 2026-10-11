@@ -211,7 +211,7 @@ If `main` returns a result and ends with an error, the runtime writes the error'
 Some rules for `try`:
 
 - It works only in a function that returns an optional (with an optional operand) or a result (with a result operand whose error type is the function's, or lifts into it). In any other function it is a compile error.
-- It never converts between the two. If a lookup gives `null` and you want an error, say so: `v := lookup(k) else return !.Missing`.
+- It never converts between the two. If a lookup gives `null` and you want an error, say so: `v := lookup(k) else return !.Missing`. In the other direction, `parse(s) else null` turns a result into an optional, discarding the error.
 - It is a prefix operator at the same level as unary minus, so `try a.b()` applies to `a.b()`, and `try x + 1` means `(try x) + 1`.
 - Unparenthesized `try x else d` is an error because it could mean either `(try x) else d` or `try (x else d)`. Write the one you mean.
 - Inside a function literal or a handler clause, `try` returns from the literal's function or, for a handler literal's clause, from the enclosing function ([chapter 7](07-effects.md)).

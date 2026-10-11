@@ -1,0 +1,63 @@
+// The result of a successful parse: option values by name, positional arguments in order,
+// and typed accessors (generic over the integer type the caller wants).
+
+pub Value :: union {
+    Flag: bool
+    Count: u32
+    Int: i64
+    Str: string
+}
+
+pub Matches :: struct {
+    vals: HashMap(string, Value)
+    rest: List(string)
+}
+
+pub matches :: fn() -> Matches \ {Alloc} {
+    return Matches(vals: map(string, Value), rest: list(string))
+}
+
+pub deinit :: fn(m: ^Matches) {
+    m.vals.deinit()
+    m.rest.deinit()
+}
+
+pub set :: fn(m: ^Matches, name: string, v: Value) -> AllocError!() => m.vals.put(name, v)
+
+pub push_positional :: fn(m: ^Matches, text: string) -> AllocError!() => m.rest.push(text)
+
+pub value :: fn(m: ^const Matches, name: string) -> ?Value => m.vals.get(name)
+
+pub flag :: fn(m: ^const Matches, name: string) -> bool {
+    .Flag(b) := m.vals.get(name) else return false
+    return b
+}
+
+pub count :: fn(m: ^const Matches, name: string) -> u32 {
+    .Count(n) := m.vals.get(name) else return 0
+    return n
+}
+
+pub text :: fn(m: ^const Matches, name: string) -> ?string {
+    .Str(s) := m.vals.get(name) else return null
+    return s
+}
+
+/// An integer option converted to `T`; null if absent or out of range for `T`.
+pub get :: fn(T: type, m: ^const Matches, name: string) -> ?T where Int(T) {
+    .Int(n) := m.vals.get(name) else return null
+    return n.checked(T)
+}
+
+/// A choice option mapped through a table of (name, value) pairs.
+pub pick :: fn(T: type, m: ^const Matches, name: string, table: []const (string, T)) -> ?T {
+    s := m.text(name) else return null
+    for entry in table {
+        if entry.0 is s { return entry.1 }
+    }
+    return null
+}
+
+pub positional :: fn(m: ^const Matches, i: usize) -> ?string => m.rest.items.get(i)
+
+pub positionals :: fn(m: ^const Matches) -> []const string => m.rest.items

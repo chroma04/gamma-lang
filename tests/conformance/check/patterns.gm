@@ -59,6 +59,7 @@ tests :: fn(s: Shape, x: ?i32) -> bool {
     if v := x and v > 3 { return true }
     if .Circle(r) := s { return r > 1.0 }
     if y := 5 { }                          //~ ERROR always succeeds
+    if _ := x { }                          //~ ERROR `_` matches a missing value too
     return a and b and c
 }
 
@@ -68,3 +69,6 @@ alternatives :: fn(d: Dir) -> bool => match d {
 }
 
 main :: fn() {}
+
+// Testing for absence needs no equality on the payload (§7.6).
+held :: fn(k: ?cont(())) -> bool => k is not null

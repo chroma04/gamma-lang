@@ -1,0 +1,13 @@
+// Untyped constants of another module keep their untypedness through aliases and constant
+// expressions (§6.2, §3.5).
+lib :: import "../lib"
+A :: lib.LIMIT
+E :: lib.LIMIT + 1
+main :: fn() \ {Out} {
+    x: [lib.LIMIT]u8 = [lib.LIMIT]u8(fill: 1)
+    y: [A]u8 = [A]u8(fill: 2)
+    n: u8 = A
+    e: u8 = E
+    f: f64 = E
+    print("{} {} {} {} {}\n", (x.len, y.len, n, e, f))
+}

@@ -1,0 +1,11 @@
+//! stage: test
+// A test's error type is that of its first `try` (§3.8).
+A :: union { X }
+B :: union { Y }
+fa :: fn() -> A!u8 => 1
+fb :: fn() -> B!u8 => 2
+test "two error types" {
+    a := try fa()
+    b := try fb()                   //~ ERROR `A` has no variant carrying `B`
+    expect(a + b is 3)
+}

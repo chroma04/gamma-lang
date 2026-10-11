@@ -50,6 +50,10 @@ digits_in :: fn(n: u32) -> u32 {
 }
 ```
 
+### Reserved words
+
+These 34 words are keywords everywhere and cannot name anything: `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl` and `resume` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`), and `type` and `cont` are reserved type names (§B.3).
+
 ### No shadowing
 
 Within a function, a local may not reuse the name of another local or parameter that is in scope. Nested blocks do not get a fresh start:
@@ -201,6 +205,8 @@ mask_demo :: fn(addr: u64) -> u64 => addr & MASK    // MASK is u64 here
 | `bool` | `true` or `false`; not an integer |
 
 Arbitrary widths such as `u3` or `i24` make protocol fields exact. They are stored in whole bytes in memory (1, 2, 4, 8 or 16 bytes for widths up to 128 bits), with unspecified padding bits; bit-level packing is opt-in through `#bits` structs ([chapter 14](14-interop.md)). `usize` is deliberately not an alias of `u64`, so that code which is correct on a 64-bit target does not silently break on a 32-bit one.
+
+The range of an integer type is available as `@min_value(T)` and `@max_value(T)`, constants of type `T`: `@max_value(u8)` is 255 and `@min_value(i16)` is -32768. They also work for a type parameter constrained with `Int(T)` (chapter 10).
 
 **There are no implicit conversions between numeric types in expressions.** Binary operators need operands of the identical type. Lossless *widening* happens only at coercion sites: initialization, assignment, argument passing, return, and the like.
 

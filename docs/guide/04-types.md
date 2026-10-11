@@ -105,7 +105,7 @@ tuples_demo :: fn() \ {Out} {
 }
 ```
 
-Two tuple types are the same if they have the same element types in the same order and the same names. A tuple is either fully named or fully unnamed. A tuple value converts to a tuple type with the same element types if *either* side is unnamed, which is why `return (n / d, n % d)` works for a function declared `-> (q: u32, r: u32)`. Two differently named tuples never convert to each other. Tuples are how functions return several values. They compare with `is` element by element, and with `<` lexicographically when their elements are orderable.
+Two tuple types are the same if they have the same element types in the same order and the same names. A tuple is either fully named or fully unnamed. A tuple value converts to a tuple type with the same element types if *either* side is unnamed, which is why `return (n / d, n % d)` works for a function declared `-> (q: u32, r: u32)`. Two differently named tuples never convert to each other. A tuple *expression* written where a tuple type is expected converts each element on its own, so `(a: 1, b: null)` fits `(a: u8, b: ?u8)`, and `return (n, v)` with `v: u8` fits `-> (u32, ?u8)`. Tuples are how functions return several values. They compare with `is` element by element, and with `<` lexicographically when their elements are orderable.
 
 ## Structs
 

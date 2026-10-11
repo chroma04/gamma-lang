@@ -1,0 +1,150 @@
+// Root finding and quadrature with second-class function arguments that capture counters, a Trace effect, and a Diverged escape handled to produce NaN.
+math :: import "std/math"
+fmt :: import "std/fmt"
+
+Trace :: effect {
+    step: fn(iter: u32, x: f64, fx: f64)
+}
+
+Diverged :: effect {
+    diverged: esc(iters: u32) -> never
+}
+
+newton :: fn(f: fn(f64) -> f64, df: fn(f64) -> f64, x0, tol: f64) -> f64 \ {Trace, Diverged} {
+    x := x0
+    for i in 0..50 {
+        fx := f(x)
+        step(i, x, fx)
+        if fx.abs() < tol { return x }
+        d := df(x)
+        if d is 0.0 { diverged(i) }
+        x = x - fx / d
+        if not x.is_finite() { diverged(i) }
+    }
+    diverged(50)
+}
+
+// Bisection; null if the endpoints do not bracket a root.
+bisect :: fn(f: fn(f64) -> f64, lo0, hi0, tol: f64) -> ?f64 {
+    lo := lo0
+    hi := hi0
+    flo := f(lo)
+    fhi := f(hi)
+    if flo is 0.0 { return lo }
+    if fhi is 0.0 { return hi }
+    if (flo < 0.0) is (fhi < 0.0) { return null }
+    while hi - lo > tol {
+        mid := lo + (hi - lo) / 2.0
+        fm := f(mid)
+        if fm is 0.0 { return mid }
+        if (fm < 0.0) is (flo < 0.0) {
+            lo = mid
+            flo = fm
+        } else {
+            hi = mid
+        }
+    }
+    return lo + (hi - lo) / 2.0
+}
+
+// Recursive adaptive Simpson: the closure is passed down through the recursion.
+simpson_rec :: fn(f: fn(f64) -> f64, a, b, fa, fm, fb, whole, tol: f64, depth: u32) -> f64 {
+    m := (a + b) / 2.0
+    lm := (a + m) / 2.0
+    rm := (m + b) / 2.0
+    flm := f(lm)
+    frm := f(rm)
+    left := (m - a) / 6.0 * (fa + 4.0 * flm + fm)
+    right := (b - m) / 6.0 * (fm + 4.0 * frm + fb)
+    delta := left + right - whole
+    if depth is 0 or delta.abs() <= 15.0 * tol {
+        return left + right + delta / 15.0
+    }
+    return simpson_rec(f, a, m, fa, flm, fm, left, tol / 2.0, depth - 1) + simpson_rec(f, m, b, fm, frm, fb, right, tol / 2.0, depth - 1)
+}
+
+adaptive_simpson :: fn(f: fn(f64) -> f64, a, b, tol: f64) -> f64 {
+    fa := f(a)
+    fb := f(b)
+    m := (a + b) / 2.0
+    fm := f(m)
+    whole := (b - a) / 6.0 * (fa + 4.0 * fm + fb)
+    return simpson_rec(f, a, b, fa, fm, fb, whole, tol, 40)
+}
+
+// 5-point Gauss-Legendre on [a, b]
+gauss5 :: fn(f: fn(f64) -> f64, a, b: f64) -> f64 {
+    xs := [_]f64(0.0, 0.5384693101056831, -0.5384693101056831, 0.9061798459386640, -0.9061798459386640)
+    ws := [_]f64(0.5688888888888889, 0.4786286704993665, 0.4786286704993665, 0.2369268850561891, 0.2369268850561891)
+    half := (b - a) / 2.0
+    mid := (a + b) / 2.0
+    total := 0.0
+    for i in 0..5 { total += ws[i] * f(mid + half * xs[i]) }
+    return total * half
+}
+
+fx :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.fixed(x, d, buf)
+
+main :: fn() \ {Out} {
+    b1: [400]u8 = ---
+    b2: [400]u8 = ---
+    b3: [400]u8 = ---
+
+    // sqrt(2) by Newton on x^2 - 2, tracing the iterates through a Trace handler.
+    trace_count: u32 = 0
+    printer :: handler Trace {
+        step(iter, x, fx_val) => {
+            trace_count += 1
+            print("  iter {}: x = {}\n", (iter, fmt.fixed(x, 12, b1[..])))
+        }
+    }
+    nan_on_failure :: handler Diverged {
+        diverged(iters) => break math.nan
+    }
+    evals: u32 = 0
+    root := with printer, nan_on_failure {
+        newton(fn(x) -> f64 {
+            evals += 1
+            return x * x - 2.0
+        }, fn(x) => 2.0 * x, 1.0, 1e-14)
+    }
+    print("sqrt(2) = {} after {} trace steps, {} function evaluations\n", (fx(root, 15, b2[..]), trace_count, evals))
+
+    // Newton on x^3 - 2x + 2 from 0 cycles between 0 and 1 and is stopped by the iteration limit.
+    silent :: handler Trace {
+        step(iter, x, fx_val) => {}
+    }
+    cycle := with silent, nan_on_failure {
+        newton(fn(x) => x * x * x - 2.0 * x + 2.0, fn(x) => 3.0 * x * x - 2.0, 0.0, 1e-12)
+    }
+    print("cycling newton gives: {}\n", cycle)
+    // Derivative zero at the start is reported at once.
+    flat := with silent, nan_on_failure { newton(fn(x) => x * x + 1.0, fn(x) => 2.0 * x, 0.0, 1e-12) }
+    print("flat start gives: {}\n", flat)
+
+    // Bisection for cos(x) = x.
+    calls: u32 = 0
+    dottie := bisect(fn(x) -> f64 {
+        calls += 1
+        return math.cos(x) - x
+    }, 0.0, 1.0, 1e-13) else math.nan
+    print("dottie number {} using {} calls\n", (fx(dottie, 12, b1[..]), calls))
+    print("no bracket: {}\n", bisect(fn(x) => x * x + 1.0, -1.0, 1.0, 1e-9) is null)
+
+    // Quadrature: the number of evaluations tells the story.
+    n_eval: u32 = 0
+    counted_sin :: fn(x: f64) -> f64 {
+        n_eval += 1
+        return math.sin(x)
+    }
+    s1 := adaptive_simpson(counted_sin, 0.0, math.pi, 1e-10)
+    print("adaptive simpson of sin on [0, pi] = {} with {} evaluations\n", (fx(s1, 10, b1[..]), n_eval))
+    atan_part := adaptive_simpson(fn(x) => 1.0 / (1.0 + x * x), 0.0, 1.0, 1e-12)
+    print("integral of 1/(1+x^2) = {} (pi/4 = {})\n", (fx(atan_part, 12, b1[..]), fx(math.pi / 4.0, 12, b2[..])))
+    g1 := gauss5(fn(x) => math.exp(x), 0.0, 1.0)
+    print("gauss5 of exp on [0,1] = {} (e-1 = {})\n", (fx(g1, 12, b1[..]), fx(math.e - 1.0, 12, b2[..])))
+    g2 := gauss5(fn(x) => x * x * x * x * x * x * x * x * x, 0.0, 1.0)
+    print("gauss5 is exact to degree 9: {} vs {}\n", (fx(g2, 14, b1[..]), fx(0.1, 14, b2[..])))
+    sqrt_rough := adaptive_simpson(fn(x) => math.sqrt(x), 0.0, 1.0, 1e-9)
+    print("integral of sqrt on [0,1] = {} (2/3 = {}), error {}\n", (fx(sqrt_rough, 9, b1[..]), fx(2.0 / 3.0, 9, b2[..]), fmt.sci((sqrt_rough - 2.0 / 3.0).abs(), 1, b3[..])))
+}

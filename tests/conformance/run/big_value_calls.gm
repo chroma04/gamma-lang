@@ -1,0 +1,98 @@
+// Large values (structs, arrays, tuples) as arguments and results of every kind of call:
+// plain and effectful functions, function pointers, closures, effect operations, ctl
+// clauses and handler declarations; arguments are evaluated before the call even when
+// later arguments change the place an earlier one was read from.
+Big :: struct { a: [8]i64, tag: u8 }
+
+total :: fn(b: Big) -> i64 {
+    s: i64 = 0
+    for x in b.a { s += x }
+    return s + i64(b.tag)
+}
+
+make :: fn(k: i64) -> Big {
+    b := Big(a: [8]i64(fill: k), tag: 1)
+    b.a[7] = 100
+    return b
+}
+
+bump :: fn(p: ^Big) -> i64 {
+    p.a[0] += 1000
+    return 0
+}
+
+both :: fn(x: Big, n: i64, y: Big) -> i64 => total(x) * 10000 + n + total(y)
+
+Log :: effect { note: fn(b: Big) -> Big }
+
+logged :: fn(b: Big) -> i64 \ {Log} {
+    c := note(b)
+    return total(c)
+}
+
+Pull :: effect { give: ctl(b: Big) -> i64 }
+
+producer :: fn() -> i64 \ {Pull} {
+    x := make(2)
+    r := give(x)
+    x.a[1] = 50
+    return r + give(x)
+}
+
+Scaler :: struct { by: [6]i64 }
+
+Scale :: effect { scale: fn(v: i64) -> i64 }
+
+handler Scale for Scaler {
+    scale(self, v) => v * self.by[3]
+}
+
+apply :: fn(f: ^fn(b: Big) -> i64, b: Big) -> i64 => f(b)
+
+twice :: fn(f: fn(b: Big) -> Big, b: Big) -> Big => f(f(b))
+
+main :: fn() \ {Out} {
+    b := make(3)
+    print("total {}\n", total(b))
+    // The first argument is read before `bump` changes it.
+    print("order {}\n", both(b, bump(&b), b))
+    p := &b
+    print("deref {}\n", total(p^))
+    print("ptr {}\n", apply(total, b))
+    c := twice(fn(x: Big) -> Big {
+        y := x
+        y.tag += 1
+        return y
+    }, b)
+    print("closure {} {}\n", (c.tag, total(c)))
+    seen: i64 = 0
+    r := with (handler Log {
+        note(v) => {
+            seen = total(v)
+            w := v
+            w.a[2] = 0
+            w
+        }
+    }) {
+        logged(b)
+    }
+    print("op {} {}\n", (seen, r))
+    stack: [32768]u8 = ---
+    got: i64 = 0
+    q := with (handler Pull {
+        give(v, k) => {
+            got += total(v)
+            resume k(total(v) % 7)
+        }
+    }) on stack[..] {
+        producer()
+    }
+    print("ctl {} {}\n", (got, q))
+    s := Scaler(by: [6]i64(fill: 4))
+    with s {
+        print("self {}\n", scale(5))
+    }
+    arr: [16]u32 = [16]u32(fill: 9)
+    tup := (arr, b, 7)
+    print("tuple {} {}\n", (tup.0[15], total(tup.1)))
+}

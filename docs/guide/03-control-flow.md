@@ -105,6 +105,17 @@ show :: fn(c: u8) \ {Out} {
 
 This capture form is permitted only when the `if` has a single condition part. [Chapter 5](05-optionals-and-errors.md) covers results in depth.
 
+When a mismatch should leave the function (or loop) early, a pattern binding with `else` avoids nesting the rest of the code inside an `if`. The names stay bound for the rest of the block, and the `else` part must leave it with `return`, `break`, `continue` or `trap(...)`:
+
+```gamma
+area :: fn(s: Shape) -> ?f64 {
+    .Circle(r) := s else return null
+    return 3.14159 * r * r
+}
+```
+
+It means `if .Circle(r) := s { rest of the block } else { return null }`. A line that starts with `.Name(...)` and contains `:=` is such a binding, not a continuation of the previous line.
+
 > **Common mistake.** There is no way to write the C typo `if (x = 0)`. Assignment is a statement and equality is `is`, so `if x = 0 { ... }` is simply a syntax error. Likewise, `if (n)` on an integer is an error; write `if n is not 0`.
 
 ## `while`
@@ -288,6 +299,8 @@ describe_shape :: fn(s: Shape) -> f32 \ {Out} => match s {
     .Empty      => 0
 }
 ```
+
+The elements of a tuple payload are written directly (`.Rect(w, h)`); a single name instead binds the whole tuple, so `.Rect(r) => r.w * r.h` works too.
 
 > **Common mistake: a bare name always binds.** A pattern that is a bare identifier is *never* a comparison with an existing constant; it introduces a new binding that matches everything. In C, `case LIMIT:` compares; here the equivalent would silently capture. To prevent that mistake, the compiler rejects a bare identifier pattern that names a visible constant:
 >

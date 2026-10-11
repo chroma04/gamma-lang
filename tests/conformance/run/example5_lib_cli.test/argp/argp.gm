@@ -1,0 +1,40 @@
+// The library's public face. `parse_or_exit` is the one-call entry point for programs.
+specm :: import "./spec"
+matchesm :: import "./matches"
+parsem :: import "./parse"
+helpm :: import "./help"
+pub testenv :: import "./testenv"
+
+pub Spec :: specm.Spec
+pub Opt :: specm.Opt
+pub Positional :: specm.Positional
+pub Kind :: specm.Kind
+pub Matches :: matchesm.Matches
+pub Error :: parsem.Error
+pub FakeEnv :: testenv.FakeEnv
+
+pub spec :: specm.spec
+pub int_kind :: specm.int_kind
+pub parse :: parsem.parse
+pub parse_env :: parsem.parse_env
+pub usage :: helpm.usage
+pub help :: helpm.help
+
+/// Parses the process arguments. On `--help` prints the help text and exits with 0; on
+/// any other failure prints the problem and the usage line and exits with 2.
+pub parse_or_exit :: fn(sp: ^const Spec) -> Matches \ {Env, Alloc, Out} {
+    return parse_env(sp) else e => {
+        match e {
+            .Help => {
+                help(sp)
+                exit(0)
+            }
+            _ => {
+                print("{}: ", sp.program)
+                parsem.report(e)
+                usage(sp)
+                exit(2)
+            }
+        }
+    }
+}

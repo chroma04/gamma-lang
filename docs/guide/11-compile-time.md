@@ -91,7 +91,7 @@ A compile-time value that becomes part of the program (a top-level constant, a `
 
 So a table built at compile time is returned **by value** (`[256]u32`) rather than as a pointer to a buffer the function allocated. Other constants can then refer to it through `const` slices.
 
-Values of type `type`, effect types, modules and untyped constants exist only at compile time. You can bind them with `::`, pass them to compile-time parameters, compare types with `is`, and use them in `when`, but you cannot put them in a run-time variable.
+Values of type `type`, effect types, modules and untyped constants exist only at compile time. You can bind them with `::`, pass them to compile-time parameters, compare types with `is` (`T is f64`, also inside a generic function, where each instantiation decides it), and use them in `when`, but you cannot put them in a run-time variable.
 
 > **Common mistake: effects in a constant.** A constant initializer must perform no effects:
 >

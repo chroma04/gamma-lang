@@ -1,0 +1,53 @@
+== clean build
+  built util.o
+  built lib.o
+  built app.o
+  built app
+  built docs
+result (); built 5, cached 0
+    $ cc -c util.c
+    $ cc -c lib.c
+    $ cc -c app.c
+    $ ld -o app app.o lib.o util.o
+    $ mkdoc readme.txt
+== nothing changed
+  cached util.o
+  cached lib.o
+  cached app.o
+  cached app
+  cached docs
+result (); built 0, cached 5
+== lib.c touched
+  cached util.o
+  built lib.o
+  built app.o
+  built app
+  cached docs
+result (); built 3, cached 2
+    $ cc -c lib.c
+    $ cc -c app.c
+    $ ld -o app app.o lib.o util.o
+== only the docs target
+  built docs
+result (); built 1, cached 0
+    $ mkdoc readme.txt
+== dry run
+    would run cc -c util.c
+  built util.o
+    would run cc -c lib.c
+  built lib.o
+    would run cc -c app.c
+  built app.o
+    would run ld -o app app.o lib.o util.o
+  built app
+    would run mkdoc readme.txt
+  built docs
+result (); would run 5
+== failing command
+  built ok.o
+result !.CommandFailed("bad.o"); built 1
+    $ cc -c ok.c
+    $ cc -c bad.c
+== cycle
+  cycle through x
+result !.Cyclic("z"); built 0

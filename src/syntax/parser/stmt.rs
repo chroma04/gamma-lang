@@ -117,6 +117,12 @@ impl Parser<'_> {
             }
             TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.parse_block()?),
             TokenKind::Ident(_) | TokenKind::Underscore => self.parse_name_stmt()?,
+            TokenKind::Punct(Punct::Dot | Punct::Bang | Punct::LParen | Punct::Minus)
+            | TokenKind::Int(_)
+            | TokenKind::Str(_) => match self.parse_let_else()? {
+                Some(k) => k,
+                None => self.parse_expr_or_assign()?,
+            },
             _ => self.parse_expr_or_assign()?,
         };
         let id = self.ids.next();
@@ -141,7 +147,45 @@ impl Parser<'_> {
             let binding = self.parse_binding()?;
             return Ok(StmtKind::Binding { attrs: Vec::new(), binding });
         }
+        if let Some(k) = self.parse_let_else()? {
+            return Ok(k);
+        }
         self.parse_expr_or_assign()
+    }
+
+    /// `pattern := value else fallback` with a pattern that is not a plain name (§4.5),
+    /// or `None` (consuming nothing) if no such binding starts here.
+    fn parse_let_else(&mut self) -> PResult<Option<StmtKind>> {
+        let pat = self.speculate(|p| {
+            let pat = p.parse_pattern()?;
+            if p.at(Punct::ColonEq) && !matches!(pat.kind, PatternKind::Bind(_) | PatternKind::Wildcard) {
+                Ok(pat)
+            } else {
+                Err(Abort)
+            }
+        });
+        let Some(pat) = pat else { return Ok(None) };
+        self.bump();
+        let value = self.parse_expr()?;
+        match value.kind {
+            ExprKind::Else { lhs, capture: None, rhs } => {
+                Ok(Some(StmtKind::LetElse { pat, value: *lhs, fallback: *rhs }))
+            }
+            ExprKind::Else { capture: Some(c), .. } => {
+                self.report(
+                    c.span,
+                    "the `else` of a pattern binding cannot capture an error; match the error with `!e` in a `match`",
+                );
+                Ok(Some(StmtKind::Expr(value)))
+            }
+            _ => {
+                self.report(
+                    pat.span,
+                    "a binding with a pattern that can fail needs `else` to leave the block: `.V(x) := e else return …` (§4.5)",
+                );
+                Ok(Some(StmtKind::Expr(value)))
+            }
+        }
     }
 
     /// True if a binding (`x :: e`, `x := e`, `x: T …`, `a, b := e`) starts here.

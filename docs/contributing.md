@@ -70,6 +70,7 @@ main :: fn() {
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
+| `//~ NOTE text` | a secondary location of some diagnostic on this line, such as a call in a compile-time call stack (unannotated notes are allowed) |
 | `//~? ERROR text` | an error without a source location (e.g. a missing `main`) |
 
 Every error and warning the compiler reports must be expected by an annotation,

@@ -1,14 +1,29 @@
 # Open implementation bugs (dogfooding, session 2). Delete entries when fixed.
-7. (perf) C: big by-value aggregates still use several copies per frame (args, GM_LD, GM_CONV);
-   overflow now traps (SIGSEGV altstack handler + temp bytes in check). Measured s3: main with
-   two 4 KB locals passed by value = 53 KB stack. Statements are now C blocks (temps of one
-   statement reuse slots); the rest is per-call: tmp load + GM_CONV union + ABI copy. Ideas:
-   -fno-strict-aliasing + pointer punning for mirrors; pass big args by pointer (D.5).
+7. (perf) C big values: s4 passes values >16 bytes by address between Gamma functions
+   (Types::by_ref; plain fns get a C-ABI wrapper gm_fN_c via Gen::needs_wrapper/addr_name),
+   place args passed as the place when later args are pure (no_writes), return of a place
+   copies straight into F.ret. Bench: 57→29 KB (work+fill), callee 12→4 KB. Remaining: call
+   result temp then copy into the local (t1 → F.l0); fill/aggregate construction temps.
 10. Usability: std/str + HashMap.get_ptr/get_or_put done; templates from comptime params done
     (WriteDeferred resolved in mono). Remaining: integer sign/abs helpers; print width specs
     (spec says library functions; Builder.write + fmt cover it).
 11. Interpreter speed: s3 fast paths (interp/fast.rs: ≤64-bit ints as i128, word loads/stores,
     inline small allocs, address cache, &TyInfo, frame pool) took a simple loop from 700 to
-    ~180 ns/iteration. Fiber switches still ~34 µs (thread handoff per switch).
+    ~180 ns/iteration. Fiber switches: s4 recv_soon (poll before blocking) 12 µs → ~2 µs.
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
     §21.6.1 (shortest round-trip) but differs from Ryu/Python.
+## Dogfood round 4 (s4) leftovers (13–22 fixed in s4)
+23. Wishes (let-else done s4: StmtKind::LetElse lowered in block_expected; lexer line_binds); bind a whole
+    tuple payload (`.Cat(c)` for a 2-tuple payload); interp `new` ~10 µs each (Alloc perform
+    + vtable + AllocError!^T); block-bodied closure return inference; `&rvalue` for ^const
+    params; i.to_f64-style helper; std channels/queue/generator; print from passing tests.
+24. Interp speed: perform ≈ 0.7 µs vs call 0.1 µs, new+destroy ≈ 4 µs (s4 callgrind:
+    spread over eval_small/call_function/frames; no single hotspot). Real fix = bytecode VM
+    (future project); cheap bits: perform clones CtxNode, args Vec, ctl_ops SipHash lookup.
+## Round 5 (s4) leftovers
+27. (fixed s4: perform_op checks args against the single available instance)
+28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
+29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
+    for fiber overflow can't be shared.
+30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
+    runnable from a root (`gamma test --all`?), x.to(f64) widening shorthand, @fn_cast.

@@ -1,0 +1,8 @@
+pub A :: struct(T: type, N: usize = 3) { pub x: T }
+pub mk :: fn(T: type, x: T) -> A(T) => A(T)(x: x)
+pub B :: struct { pub y: i32 }
+pub pmk :: fn(x: i32) -> i32 => x + 1
+
+// The default refers to a name private to this module.
+DEF :: 3
+pub P :: struct(T: type, N: usize = DEF) { pub b: [N]T }

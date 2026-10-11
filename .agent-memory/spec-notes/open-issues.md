@@ -1,7 +1,6 @@
 # Known spec issues not yet resolved (decide when the milestone arrives)
-- Generic bodies checked once (§16.1) with array lengths depending on comptime params
-  (`[N*2]T`): type equality needs symbolic lengths. Plan: equal iff normalized length
-  expressions are identical. (M5)
+- Computed array lengths from comptime params (`[N*2]T`): §16.5 forbids them (diagnosed).
+  Possible extension: symbolic lengths, equal iff normalized expressions are identical.
 - §6.5 "`T(x)` with a single positional argument whose type is not a tuple whose fields fill T"
   is murky for tuple types `T`. Clarify in M3.
 - §21.1 puts `current` (Alloc op) and other effect ops in the universe; common names — fine since

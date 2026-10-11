@@ -1,0 +1,166 @@
+// Sparse linear algebra with heap-allocated List and HashMap: triplets with tuple keys, CSR conversion, mat-vec products and a conjugate-gradient solve of a 2D Poisson problem.
+math :: import "std/math"
+fmt :: import "std/fmt"
+
+Entry :: struct {
+    row, col: u32
+    val: f64
+}
+
+Csr :: struct {
+    n: usize
+    row_start: []usize
+    cols: []u32
+    vals: []f64
+}
+
+free_csr :: fn(m: ^Csr) \ {Alloc} {
+    free(m.row_start)
+    free(m.cols)
+    free(m.vals)
+}
+
+// Assembles duplicate (row, col) entries by summing them, then builds the CSR arrays.
+assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr \ {Alloc} {
+    sums := map((u32, u32), f64)
+    defer sums.deinit()
+    for e in entries {
+        slot := try sums.get_or_put((e.row, e.col), 0.0)
+        slot^ += e.val
+    }
+    flat := list(Entry)
+    defer flat.deinit()
+    for kv in sums.entries() {
+        try flat.push(Entry(row: kv.key.0, col: kv.key.1, val: kv.value))
+    }
+    flat.items.sort_by_key(fn(e) => (e.row, e.col))
+
+    row_start := try make_fill(usize, n + 1, 0)
+    errdefer free(row_start)
+    cols := try make(u32, flat.items.len)
+    errdefer free(cols)
+    vals := try make(f64, flat.items.len)
+    for i, e in enumerate(flat.items) {
+        cols[i] = e.col
+        vals[i] = e.val
+        row_start[usize(e.row) + 1] += 1
+    }
+    for r in 0..n { row_start[r + 1] += row_start[r] }
+    return Csr(n: n, row_start: row_start, cols: cols, vals: vals)
+}
+
+matvec :: fn(m: ^const Csr, x, y: []f64) {
+    for r in 0..m.n {
+        acc := 0.0
+        for k in m.row_start[r]..m.row_start[r + 1] { acc += m.vals[k] * x[usize(m.cols[k])] }
+        y[r] = acc
+    }
+}
+
+dot :: fn(a, b: []const f64) -> f64 {
+    s := 0.0
+    for i in 0..a.len { s += a[i] * b[i] }
+    return s
+}
+
+// Conjugate gradients; returns the iteration count or null if it did not converge.
+cg :: fn(m: ^const Csr, b, x: []f64, tol: f64, max_iter: u32) -> AllocError!?u32 \ {Alloc} {
+    n := m.n
+    r := try make(f64, n)
+    defer free(r)
+    p := try make(f64, n)
+    defer free(p)
+    ap := try make(f64, n)
+    defer free(ap)
+    x.fill(0.0)
+    r.copy_from(b)
+    p.copy_from(b)
+    rs := dot(r, r)
+    for it in 0..max_iter {
+        if math.sqrt(rs) < tol { return it }
+        matvec(m, p, ap)
+        alpha := rs / dot(p, ap)
+        for i in 0..n {
+            x[i] += alpha * p[i]
+            r[i] -= alpha * ap[i]
+        }
+        rs_new := dot(r, r)
+        beta := rs_new / rs
+        for i in 0..n { p[i] = r[i] + beta * p[i] }
+        rs = rs_new
+    }
+    return null
+}
+
+main :: fn() -> AllocError!() \ {Alloc, Out} {
+    fb: [400]u8 = ---
+
+    // 2D Poisson (5-point Laplacian) on a K x K grid: unknown (i, j) is row i*K+j.
+    K :: 12
+    n :: K * K
+    triplets := list(Entry)
+    defer triplets.deinit()
+    for i in 0..K {
+        for j in 0..K {
+            row := (i * K + j).trunc(u32)
+            // split the diagonal over two entries to exercise duplicate summation
+            try triplets.push(Entry(row: row, col: row, val: 3.0))
+            try triplets.push(Entry(row: row, col: row, val: 1.0))
+            if i > 0 { try triplets.push(Entry(row: row, col: row - K, val: -1.0)) }
+            if i + 1 < K { try triplets.push(Entry(row: row, col: row + K, val: -1.0)) }
+            if j > 0 { try triplets.push(Entry(row: row, col: row - 1, val: -1.0)) }
+            if j + 1 < K { try triplets.push(Entry(row: row, col: row + 1, val: -1.0)) }
+        }
+    }
+    print("{} triplets for a {}x{} system\n", (triplets.items.len, n, n))
+
+    m := try assemble(n, triplets.items)
+    defer free_csr(&m)
+    print("nonzeros after summing duplicates: {}\n", m.vals.len)
+    diag_ok := true
+    for r in 0..n {
+        for k in m.row_start[r]..m.row_start[r + 1] {
+            if usize(m.cols[k]) is r and m.vals[k] is not 4.0 { diag_ok = false }
+        }
+    }
+    print("all diagonal entries are 4: {}\n", diag_ok)
+
+    // Manufactured solution x* = sin-like values, b = A x*.
+    xstar := try make(f64, n)
+    defer free(xstar)
+    for i in 0..n { xstar[i] = 1.0 + (i % 7).round(f64) * 0.25 - (i % 3).round(f64) * 0.5 }
+    b := try make(f64, n)
+    defer free(b)
+    matvec(&m, xstar, b)
+
+    x := try make(f64, n)
+    defer free(x)
+    iters := try cg(&m, b, x, 1e-10, 200)
+    if k := iters {
+        print("cg converged in {} iterations\n", k)
+    } else {
+        print("cg did not converge\n")
+    }
+    worst := 0.0
+    for i in 0..n {
+        d := (x[i] - xstar[i]).abs()
+        if d > worst { worst = d }
+    }
+    print("max error below 1e-8: {}\n", worst < 1e-8)
+    print("x[0..4] = {}\n", (fmt.fixed(x[0], 6, fb[0..60]), fmt.fixed(x[1], 6, fb[60..120]), fmt.fixed(x[2], 6, fb[120..180]), fmt.fixed(x[3], 6, fb[180..240])))
+
+    // Too few iterations: reported as null, not as a wrong answer.
+    short := try cg(&m, b, x, 1e-10, 3)
+    print("3 iterations are not enough: {}\n", short is null)
+
+    // Histogram of the coefficient values with a HashMap keyed by the bit pattern.
+    hist := map(u64, u32)
+    defer hist.deinit()
+    for v in m.vals {
+        c := try hist.get_or_put(v.bits(u64), 0)
+        c^ += 1
+    }
+    print("distinct coefficient values: {}\n", hist.len())
+    print("count of -1.0 entries: {}\n", hist.get((-1.0).bits(u64)) else 0)
+    print("count of 4.0 entries:  {}\n", hist.get((4.0).bits(u64)) else 0)
+}

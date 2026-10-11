@@ -24,6 +24,11 @@ pub enum LocalBinding {
     NestedFn(FnId),
     /// A local type alias (`T :: []u8`, §3.5).
     Type(Ty),
+    /// An immutable local evaluated at compile time (§17.2): a constant in static memory.
+    Const {
+        ty: Ty,
+        id: tir::ConstId,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +89,9 @@ pub struct FnCx<'a, 's> {
     pub obligations: Vec<Obligation>,
     /// True while checking a deferred statement (§8.8 restrictions).
     pub in_defer: bool,
+    /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
+    /// temporary, which lives until the call returns (§7.10).
+    pub temp_ref_arg: bool,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
@@ -249,6 +257,7 @@ impl<'a, 's> FnCx<'a, 's> {
             pending: vec![],
             obligations: vec![],
             in_defer: false,
+            temp_ref_arg: false,
             defer_label_base: 0,
             failed_coercions: vec![],
             fn_id: None,
@@ -470,14 +479,43 @@ impl<'a, 's> FnCx<'a, 's> {
                     };
                 }
                 if !ret.is_unit() && !block.ty.is_never() {
-                    self.error(
-                        b.span.shrink_to_hi(),
-                        format!("function returning `{}` can reach the end of its body without returning a value", ret),
-                    );
+                    self.missing_return(b, ret);
                 }
                 block
             }
         }
+    }
+
+    /// Reports that a block body returning `ret` can end without a value. A final
+    /// expression statement gets one error saying how to return it, instead of an unused
+    /// value plus a missing return.
+    pub fn missing_return(&mut self, b: &ast::Block, ret: Ty) {
+        if let Some(ast::Stmt { kind: ast::StmtKind::Expr(e), .. }) = b.stmts.last()
+            && !matches!(
+                e.kind,
+                ExprKind::If(_) | ExprKind::Match(_) | ExprKind::For(_) | ExprKind::With(_) | ExprKind::Block(_)
+            )
+            && let Some(k) = self.obligations.iter().rposition(|o| {
+                matches!(o, Obligation::UnitStatement { ty, span } if *span == e.span && {
+                    let t = self.infer.resolve(*ty);
+                    !t.is_unit() && !t.is_never()
+                })
+            })
+        {
+            self.obligations.remove(k);
+            self.error(
+                e.span,
+                format!(
+                    "a block body's last expression is not its value: write `return …`, or `=> …` for a body that is one expression (this function returns `{}`)",
+                    ret
+                ),
+            );
+            return;
+        }
+        self.error(
+            b.span.shrink_to_hi(),
+            format!("function returning `{}` can reach the end of its body without returning a value", ret),
+        );
     }
 
     /// Checks a block. If `value` is true, the block's value is used: its final
@@ -498,6 +536,46 @@ impl<'a, 's> FnCx<'a, 's> {
                 break;
             }
             let last = i + 1 == n;
+            // `P := v else d`: `if P := v { rest of the block } else { d }` (§4.5).
+            if let StmtKind::LetElse { pat, value: v, fallback } = &s.kind {
+                let rest_span = match b.stmts.get(i + 1) {
+                    Some(next) => next.span.to(b.span.shrink_to_hi()),
+                    None => s.span.shrink_to_hi(),
+                };
+                let rest = ast::Block { id: b.id, stmts: b.stmts[i + 1..].to_vec(), span: rest_span };
+                let fb = ast::Block {
+                    id: b.id,
+                    stmts: vec![ast::Stmt { id: s.id, kind: StmtKind::Expr(fallback.clone()), span: fallback.span }],
+                    span: fallback.span,
+                };
+                let cond = ast::Cond {
+                    parts: vec![ast::CondPart::Bind { pat: pat.clone(), value: v.clone() }],
+                    span: pat.span.to(v.span),
+                };
+                let lowered =
+                    ast::IfExpr { branches: vec![(cond, rest)], else_: Some(ast::IfElse::Block(fb)), span: s.span };
+                let ex = self.if_expr(&lowered, value, expected);
+                diverges = ex.ty.is_never();
+                if let tir::ExprKind::If { else_: Some(e), .. } = &ex.kind
+                    && !e.ty.is_never()
+                    && !e.ty.is_error()
+                {
+                    // One error, not also an unused value or a missing return after it.
+                    self.obligations
+                        .retain(|o| !matches!(o, Obligation::UnitStatement { span, .. } if *span == fallback.span));
+                    self.error(
+                        fallback.span,
+                        "the `else` of a pattern binding must leave the block: `return`, `break`, `continue` or `trap(…)` (§4.5)",
+                    );
+                    diverges = true;
+                }
+                if value {
+                    tail = Some(ex);
+                } else {
+                    stmts.push(Stmt::Expr(ex));
+                }
+                break;
+            }
             if last
                 && value
                 && let StmtKind::Expr(e) = &s.kind
@@ -549,6 +627,10 @@ impl<'a, 's> FnCx<'a, 's> {
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
             StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
             StmtKind::Discard(e) => Stmt::Expr(self.discard_stmt(e, s.span)),
+            StmtKind::LetElse { value, .. } => {
+                self.error(s.span, "a binding with a pattern that can fail must be a statement of a block");
+                Stmt::Expr(self.expr(value, None))
+            }
         }
     }
 
@@ -564,6 +646,52 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         self.obligations.push(Obligation::UnitStatement { ty: ex.ty, span: e.span });
         ex
+    }
+
+    /// Evaluates the initializer of immutable local `b` at compile time if it is a
+    /// constant expression (§17.2) whose value may live in static memory (§17.4): it reads
+    /// no locals and no compile-time parameters, and checks again as a constant. Returns
+    /// the constant's binding, or `None` to evaluate the local at run time. Running out of
+    /// steps falls back to run time; any other failure is a compile error.
+    fn opportunistic_const(&mut self, b: &ast::Binding, annot: Option<Ty>, init: &Expr) -> Option<LocalBinding> {
+        if matches!(b.init.kind, ExprKind::Uninit)
+            || !self.sema.type_params.is_empty()
+            || !self.sema.value_scope.is_empty()
+            || !closed_const(init)
+        {
+            return None;
+        }
+        let module = self.module;
+        let n = self.sema.sess.diags.len();
+        let checked = self.sema.check_const_expr(module, &b.init, annot);
+        // Checked as a constant, the initializer may fail where it is fine at run time
+        // (it uses a local type alias, for instance): then it simply runs.
+        let ok = self.sema.sess.diags.len() == n;
+        self.sema.sess.diags.truncate(n);
+        let cex = checked.filter(|_| ok)?;
+        if cex.ty.is_error() || super::decls::non_constant_part(cex.ty).is_some() {
+            return None;
+        }
+        let value = match self.sema.try_eval_const(&cex) {
+            Ok(v) => v,
+            Err(None) => return None,
+            Err(Some(t)) if t.message.contains("step budget") => return None,
+            Err(Some(t)) => {
+                self.sema.report_eval_failure(&cex, &t);
+                return None;
+            }
+        };
+        let id = tir::ConstId(self.sema.prog.consts.len() as u32);
+        let ty = cex.ty;
+        let name = b.names[0];
+        self.sema.prog.consts.push(tir::ConstDef {
+            name: name.name,
+            ty,
+            span: name.span,
+            init: cex,
+            value: Some(value),
+        });
+        Some(LocalBinding::Const { ty, id })
     }
 
     /// `a, b := e`: binds the elements of a tuple (§4.5).
@@ -650,6 +778,7 @@ impl<'a, 's> FnCx<'a, 's> {
             return Stmt::Expr(unit(b.span));
         }
         let mutable = b.kind == ast::BindingKind::Var;
+        let errors_before = self.sema.sess.diags.error_count();
         let init = if let ExprKind::Uninit = b.init.kind {
             match annot {
                 Some(t) => {
@@ -670,6 +799,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 None => ex,
             }
         };
+        // An immutable local whose initializer is a constant expression is evaluated at
+        // compile time when that succeeds within the step budget (§17.2).
+        if b.kind == ast::BindingKind::Const
+            && errors_before == self.sema.sess.diags.error_count()
+            && let Some(c) = self.opportunistic_const(b, annot, &init)
+        {
+            self.declare(name.name, c, name.span);
+            return Stmt::Expr(unit(b.span));
+        }
         let ty = annot.unwrap_or(init.ty);
         if ty.is_never() && annot.is_none() {
             // `x := return 5` — the binding is unreachable; give it the error type quietly.
@@ -1168,6 +1306,27 @@ fn stmt_to_expr(s: Stmt, span: Span) -> Expr {
         Stmt::Expr(e) => e,
         other => block_of(vec![other], span),
     }
+}
+
+/// True if `e` mentions no locals, compile-time parameters or types of parameters: a
+/// candidate for evaluation without its function's frame.
+fn closed_const(e: &Expr) -> bool {
+    let mut ok = !super::generics::has_param(e.ty)
+        && !matches!(
+            e.kind,
+            tir::ExprKind::Local(_)
+                | tir::ExprKind::Upvar { .. }
+                | tir::ExprKind::ValueParam(_)
+                | tir::ExprKind::SizeOf { .. }
+                | tir::ExprKind::TypeIs { .. }
+                | tir::ExprKind::IntLimit { .. }
+                | tir::ExprKind::Closure(_)
+                | tir::ExprKind::HandlerRef(_)
+        );
+    if ok {
+        e.for_each_child(&mut |c| ok = ok && closed_const(c));
+    }
+    ok
 }
 
 fn stmt_diverges(s: &Stmt) -> bool {

@@ -1,0 +1,126 @@
+// std/collections/bitset: every operation, with members around the 64-bit word
+// boundaries, sets of different capacities, and iteration order.
+bs :: import "std/collections/bitset"
+
+// Prints the members an iterator yields, on one line.
+show :: fn(label: string, it: fn() \ {Yield(usize), Out}) \ {Out} {
+    print("{}:", label)
+    for i in it() { print(" {}", i) }
+    print("\n")
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    // Capacity zero.
+    z := try bs.bitset(0)
+    defer z.deinit()
+    print("zero: capacity {} count {} is_empty {} contains(0) {} next {}\n",
+          (z.capacity(), z.count(), z.is_empty(), z.contains(0), z.next_member(0)))
+    z.remove(5)
+    z.clear()
+    show("zero items", fn() \ {Yield(usize)} { z.items() })
+
+    // Members around the word boundary.
+    s := try bs.bitset(130)
+    defer s.deinit()
+    print("new: capacity {} count {} is_empty {}\n", (s.capacity(), s.count(), s.is_empty()))
+    for i in [_]usize(0, 1, 62, 63, 64, 65, 127, 128, 129) { s.insert(i) }
+    show("members", fn() \ {Yield(usize)} { s.items() })
+    print("count {} is_empty {}\n", (s.count(), s.is_empty()))
+    for i in [_]usize(0, 2, 62, 63, 64, 65, 66, 128, 129, 130, 1000) {
+        print("contains({}) {}\n", (i, s.contains(i)))
+    }
+
+    // Insert is idempotent; remove clears one bit and nothing else.
+    s.insert(63)
+    s.insert(63)
+    print("after duplicate insert: count {}\n", s.count())
+    s.remove(63)
+    s.remove(63)
+    s.remove(3)
+    s.remove(5000)
+    print("after remove: count {} contains(62) {} contains(63) {} contains(64) {}\n",
+          (s.count(), s.contains(62), s.contains(63), s.contains(64)))
+    s.remove(64)
+    s.remove(0)
+    show("after more removes", fn() \ {Yield(usize)} { s.items() })
+
+    // next_member steps through the set.
+    print("next_member:")
+    from: usize = 0
+    while m := s.next_member(from) {
+        print(" {}", m)
+        from = m + 1
+    }
+    print("\n")
+    print("next_member(2) {} next_member(66) {} next_member(129) {} next_member(130) {} next_member(999) {}\n",
+          (s.next_member(2), s.next_member(66), s.next_member(129), s.next_member(130), s.next_member(999)))
+
+    // Clear keeps the capacity.
+    s.clear()
+    print("cleared: count {} capacity {} next {}\n", (s.count(), s.capacity(), s.next_member(0)))
+    s.insert(129)
+    print("after clear: contains(129) {}\n", s.contains(129))
+
+    // Capacities around a word: the last bit works (the next one traps, see
+    // std_collections_bitset_bounds).
+    for n in [_]usize(1, 63, 64, 65) {
+        t := try bs.bitset(n)
+        defer t.deinit()
+        t.insert(n - 1)
+        t.insert(0)
+        print("n {}: count {} contains(n-1) {} contains(n) {}\n", (n, t.count(), t.contains(n - 1), t.contains(n)))
+    }
+
+    // Union and intersection.
+    a := try bs.bitset(130)
+    defer a.deinit()
+    b := try bs.bitset(130)
+    defer b.deinit()
+    for i in [_]usize(1, 5, 63, 64, 100) { a.insert(i) }
+    for i in [_]usize(5, 6, 64, 65, 129) { b.insert(i) }
+    u := try bs.bitset(130)
+    defer u.deinit()
+    u.union_with(&a)
+    u.union_with(&b)
+    show("a | b", fn() \ {Yield(usize)} { u.items() })
+    i := try bs.bitset(130)
+    defer i.deinit()
+    i.union_with(&a)
+    i.intersect_with(&b)
+    show("a & b", fn() \ {Yield(usize)} { i.items() })
+    print("a unchanged: count {}, b unchanged: count {}\n", (a.count(), b.count()))
+    a.union_with(&a)
+    a.intersect_with(&a)
+    print("a with itself: count {}\n", a.count())
+
+    // Sets of different capacities.
+    small := try bs.bitset(70)
+    defer small.deinit()
+    for k in [_]usize(3, 64, 69) { small.insert(k) }
+    big := try bs.bitset(200)
+    defer big.deinit()
+    for k in [_]usize(3, 64, 150, 199) { big.insert(k) }
+    big.union_with(&small)
+    show("big | small", fn() \ {Yield(usize)} { big.items() })
+    big.intersect_with(&small)
+    show("big & small", fn() \ {Yield(usize)} { big.items() })
+    wide := try bs.bitset(200)
+    defer wide.deinit()
+    wide.insert(7)
+    wide.insert(8)
+    small.intersect_with(&wide)
+    show("small & wide", fn() \ {Yield(usize)} { small.items() })
+    narrow := try bs.bitset(10)
+    defer narrow.deinit()
+    narrow.union_with(&wide)
+    show("narrow | wide", fn() \ {Yield(usize)} { narrow.items() })
+
+    // A full word.
+    f := try bs.bitset(128)
+    defer f.deinit()
+    for k in 0..128 { f.insert(k) }
+    print("full: count {}\n", f.count())
+    f.remove(64)
+    print("full minus one: count {} contains(63) {} contains(65) {}\n", (f.count(), f.contains(63), f.contains(65)))
+    return ()
+}

@@ -1,0 +1,36 @@
+empty: len 0 is_empty true capacity 0
+empty: front null back null get null pop_back null pop_front null
+get_ptr(0) is null: true
+items:
+cursor next null
+0..3: 0 1 2 3
+len 4 front 0 back 3 get(2) 2 get(4) null
+pop_front 0 pop_back 3
+1 2: 1 2
+cleared: len 0 capacity 4
+front pushes: 3 2 1
+full: len 4 capacity 4
+wrapped: len 4 capacity 4
+wrapped: 3 4 5 6
+wrapped: front 3 back 6 get(1) 4 get(3) 6
+grown: len 5 capacity 8
+grown: 3 4 5 6 7
+push_front after growth: 2 3 4 5 6 7
+e: len 5 capacity 8
+e: 10 9 4 3 2
+edited: 100 3 4 5 6 1007
+get_ptr past the end is null: true
+reserve: capacity at least 100: true
+reserve: no growth: true
+reserve(0): capacity unchanged: true
+reserve beyond: capacity grew: true
+pair 0 12
+pair 1 11
+pair 2 10
+pair 3 0
+pair 4 0
+after the end: null null
+point -1 -2
+point 1 20
+random: final len 1715 (model 1715), mismatches 0
+queue: len 0 capacity 4

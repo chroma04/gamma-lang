@@ -154,7 +154,7 @@ impl<'a> Machine<'a> {
         // about it is assumed unchanged across the wait.
         std::hint::black_box(self as *mut Self);
         let sent = tx.send(Sendable(msg)).is_ok();
-        let got = if sent { rx.recv().ok().map(|m| m.0) } else { None };
+        let got = if sent { recv_soon(rx).map(|m| m.0) } else { None };
         std::hint::black_box(self as *mut Self);
         self.restore_thread(saved);
         got
@@ -361,7 +361,7 @@ impl<'a> Machine<'a> {
             let (m, rx, start, driver, stack) = payload.into_inner();
             let rx = Rc::new(rx);
             FIBER_RX.with(|c| *c.borrow_mut() = Some(rx.clone()));
-            let first = rx.recv().map(|m| m.0);
+            let first = recv_soon(&rx).ok_or(std::sync::mpsc::RecvError).map(|m| m.0);
             let result = match first {
                 Ok(ToFiber::Resume(_)) => {
                     // SAFETY: the thread that sent the message is now blocked until this one
@@ -507,4 +507,22 @@ fn exits_past(f: &Flow, key: WithKey) -> bool {
         Flow::Continue { .. } | Flow::Return { .. } | Flow::Cancel => true,
         _ => false,
     }
+}
+
+/// Receives the next message on `rx`, waiting for it. A fiber handed control away usually
+/// gets it back within microseconds (a generator and its consumer alternate), so the wait
+/// first polls for a short while, which avoids the cost of waking a blocked thread, and
+/// then blocks.
+fn recv_soon<T>(rx: &Receiver<T>) -> Option<T> {
+    use std::sync::mpsc::TryRecvError;
+    for i in 0..600u32 {
+        match rx.try_recv() {
+            Ok(m) => return Some(m),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) if i < 200 => std::hint::spin_loop(),
+            // Let a sender on the same core run.
+            Err(TryRecvError::Empty) => std::thread::yield_now(),
+        }
+    }
+    rx.recv().ok()
 }

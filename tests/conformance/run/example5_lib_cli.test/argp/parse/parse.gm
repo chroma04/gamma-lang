@@ -1,0 +1,164 @@
+// The parser: long and short options, `--name=value`, clustered short flags, `--` and defaults.
+spec :: import "../spec"
+matches :: import "../matches"
+str :: import "std/str"
+
+pub Error :: union {
+    Unknown: string
+    MissingValue: string
+    BadValue: (name: string, text: string)
+    OutOfRange: (name: string, text: string)
+    NotAChoice: (name: string, text: string)
+    NoValueAllowed: string
+    MissingRequired: string
+    MissingPositional: string
+    Extra: string
+    Help
+    Memory: AllocError
+}
+
+/// Prints a one-line description of a parse failure.
+pub report :: fn(e: Error) \ {Out} {
+    match e {
+        .Unknown(a) => print("unknown option `{}`\n", a)
+        .MissingValue(n) => print("option --{} needs a value\n", n)
+        .BadValue(v) => print("option --{}: `{}` is not a number\n", (v.name, v.text))
+        .OutOfRange(v) => print("option --{}: {} is out of range\n", (v.name, v.text))
+        .NotAChoice(v) => print("option --{}: `{}` is not one of the allowed values\n", (v.name, v.text))
+        .NoValueAllowed(n) => print("option --{} takes no value\n", n)
+        .MissingRequired(n) => print("option --{} is required\n", n)
+        .MissingPositional(n) => print("missing argument <{}>\n", n)
+        .Extra(a) => print("unexpected argument `{}`\n", a)
+        .Help => print("help requested\n")
+        .Memory(_) => print("out of memory\n")
+    }
+}
+
+/// Validates `text` against the option's kind and records it.
+store :: fn(m: ^matches.Matches, o: ^const spec.Opt, text: string) -> Error!() \ {Alloc} {
+    match o.kind {
+        .Str => try m.set(o.name, .Str(text))
+        .Int(fits) => {
+            n := str.parse_int(i64, text) else return !.BadValue(name: o.name, text: text)
+            if not fits(n) { return !.OutOfRange(name: o.name, text: text) }
+            try m.set(o.name, .Int(n))
+        }
+        .Choice(names) => {
+            ok := false
+            for nm in names {
+                if nm is text { ok = true }
+            }
+            if not ok { return !.NotAChoice(name: o.name, text: text) }
+            try m.set(o.name, .Str(text))
+        }
+        .Flag, .Count => {}
+    }
+    return ()
+}
+
+is_valued :: fn(o: ^const spec.Opt) -> bool => match o.kind {
+    .Flag, .Count => false
+    _ => true
+}
+
+/// Applies one option occurrence; returns the index of the next unread argument.
+take :: fn(m: ^matches.Matches, o: ^const spec.Opt, attached: ?string, args: []const string, next: usize) -> Error!usize \ {Alloc} {
+    match o.kind {
+        .Flag => {
+            if attached is not null { return !.NoValueAllowed(o.name) }
+            try m.set(o.name, .Flag(true))
+            return next
+        }
+        .Count => {
+            if attached is not null { return !.NoValueAllowed(o.name) }
+            try m.set(o.name, .Count(m.count(o.name) + 1))
+            return next
+        }
+        _ => {
+            if v := attached {
+                try store(m, o, v)
+                return next
+            }
+            if next >= args.len { return !.MissingValue(o.name) }
+            try store(m, o, args[next])
+            return next + 1
+        }
+    }
+}
+
+/// Fills in defaults and checks that required options and arguments are present.
+finish :: fn(sp: ^const spec.Spec, m: ^matches.Matches) -> Error!() \ {Alloc} {
+    opts := sp.options()
+    for i in 0..opts.len {
+        o := &opts[i]
+        if m.value(o.name) is not null { continue }
+        if d := o.default {
+            try store(m, o, d)
+            continue
+        }
+        match o.kind {
+            .Flag => try m.set(o.name, .Flag(false))
+            .Count => try m.set(o.name, .Count(0))
+            _ => if o.required { return !.MissingRequired(o.name) }
+        }
+    }
+    ps := sp.positionals()
+    n := m.positionals().len
+    for k in 0..ps.len {
+        if k >= n and ps[k].required { return !.MissingPositional(ps[k].name) }
+    }
+    open_ended := ps.len > 0 and ps[ps.len - 1].many
+    if not open_ended and n > ps.len {
+        return !.Extra(m.positional(ps.len) else "?")
+    }
+    return ()
+}
+
+/// Parses `args` (without the program name) against `sp`.
+pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Matches \ {Alloc} {
+    m := matches.matches()
+    errdefer m.deinit()
+    only_positional := false
+    i: usize = 0
+    while i < args.len {
+        a := args[i]
+        i += 1
+        if only_positional or a.len < 2 or a[0] is not '-' {
+            try m.push_positional(a)
+            continue
+        }
+        if a is "--" {
+            only_positional = true
+            continue
+        }
+        if a is "--help" or a is "-h" { return !.Help }
+        if a[1] is '-' {
+            name := a[2..]
+            attached: ?string = null
+            if kv := str.split_once(name, "=") {
+                name = kv.before
+                attached = kv.after
+            }
+            o := sp.find_long(name) else return !.Unknown(a)
+            i = try take(&m, o, attached, args, i)
+        } else {
+            j: usize = 1
+            while j < a.len {
+                o := sp.find_short(a[j]) else return !.Unknown(a)
+                j += 1
+                if is_valued(o) {
+                    tail: ?string = null
+                    if j < a.len { tail = a[j..] }
+                    i = try take(&m, o, tail, args, i)
+                    break
+                }
+                i = try take(&m, o, null, args, i)
+            }
+        }
+    }
+    try finish(sp, &m)
+    return m
+}
+
+/// Parses the process arguments, as the `Env` effect supplies them.
+pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, args())

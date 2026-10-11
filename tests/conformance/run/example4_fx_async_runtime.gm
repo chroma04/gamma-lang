@@ -1,0 +1,262 @@
+// A cooperative async runtime: tasks on fibers, bounded channels with blocking send/recv, round-robin scheduling and a deadlock detector, all behind one Async effect.
+STACK :: 24576
+MAX_TASKS :: 6
+CAP :: 3
+
+Async :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(a: ^TaskArg) -> never \ {Async, Out}, a: ^TaskArg)
+    exit: ctl() -> never
+    park: ctl(chan: u32)          // sleep until `wake(chan)`
+    wake: fn(chan: u32)           // make every task parked on `chan` runnable
+    join: ctl()                   // wait for all spawned tasks
+}
+
+Chan :: struct {
+    id: u32
+    buf: [CAP]i32 = [CAP]i32(fill: 0)
+    head: usize = 0
+    len: usize = 0
+    closed: bool = false
+}
+
+TaskArg :: struct {
+    name: string
+    a: ^Chan
+    b: ^Chan
+    n: i32 = 0
+}
+
+Runtime :: struct {
+    ready: [16]?cont(())
+    qh: usize = 0
+    qn: usize = 0
+    parked: [MAX_TASKS + 1]?cont(()) = [MAX_TASKS + 1]?cont(())(fill: null)
+    parked_on: [MAX_TASKS + 1]u32 = [MAX_TASKS + 1]u32(fill: 0)
+    stacks: [MAX_TASKS][STACK]u8
+    nspawned: usize = 0
+    live: usize = 0
+    joiner: ?cont(()) = null
+    deadlock: bool = false
+}
+
+enqueue :: fn(rt: ^Runtime, k: cont(())) {
+    rt.ready[(rt.qh + rt.qn) % 16] = k
+    rt.qn += 1
+}
+
+// Pop the next runnable continuation; null when nothing is runnable.
+pop_ready :: fn(rt: ^Runtime) -> ?cont(()) {
+    if rt.qn is 0 { return null }
+    k := rt.ready[rt.qh]
+    rt.ready[rt.qh] = null
+    rt.qh = (rt.qh + 1) % 16
+    rt.qn -= 1
+    return k
+}
+
+// `k is null` is rejected for a continuation, so presence is tested with `match`.
+occupied :: fn(k: ?cont(())) -> bool {
+    return match k {
+        null => false
+        _ => true
+    }
+}
+
+// Everything is stuck: report the parked tasks.
+report_deadlock :: fn(rt: ^Runtime) \ {Out} {
+    rt.deadlock = true
+    for i in 0..MAX_TASKS + 1 {
+        if occupied(rt.parked[i]) {
+            print("  deadlock: slot {} waits on channel {}\n", (i, rt.parked_on[i]))
+        }
+    }
+}
+
+handler Async for ^Runtime \ {Out} {
+    yield_now(self, k) => {
+        enqueue(self, k)
+        r := pop_ready(self)?
+        resume r()
+    }
+    spawn(self, entry, a, k) => {
+        mem := self.stacks[self.nspawned][..]
+        self.nspawned += 1
+        self.live += 1
+        enqueue(self, @fiber(entry, a, mem))
+        resume k()
+    }
+    wake(self, chan) => {
+        for i in 0..MAX_TASKS + 1 {
+            if self.parked_on[i] is chan {
+                if pk := self.parked[i] {
+                    self.parked[i] = null
+                    self.parked_on[i] = 0
+                    enqueue(self, pk)
+                }
+            }
+        }
+    }
+    park(self, chan, k) => {
+        slot: usize = 0
+        while occupied(self.parked[slot]) { slot += 1 }
+        self.parked[slot] = k
+        self.parked_on[slot] = chan
+        if r := pop_ready(self) { resume r() }
+        // nothing runnable: deadlock
+        report_deadlock(self)
+        if j := self.joiner {
+            self.joiner = null
+            discard j
+        }
+        for i in 0..MAX_TASKS + 1 {
+            if pk := self.parked[i] {
+                self.parked[i] = null
+                discard pk
+            }
+        }
+        break
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 {
+            if j := self.joiner {
+                self.joiner = null
+                resume j()
+            }
+        }
+        if r := pop_ready(self) { resume r() }
+        // nobody is runnable and this task is gone: only parked tasks remain
+        report_deadlock(self)
+        if j := self.joiner {
+            self.joiner = null
+            discard j
+        }
+        for i in 0..MAX_TASKS + 1 {
+            if pk := self.parked[i] {
+                self.parked[i] = null
+                discard pk
+            }
+        }
+        break
+    }
+    join(self, k) => {
+        if self.live is 0 { resume k() }
+        self.joiner = k
+        if r := pop_ready(self) { resume r() }
+        self.joiner = null
+        report_deadlock(self)
+        discard k
+        for i in 0..MAX_TASKS + 1 {
+            if pk := self.parked[i] {
+                self.parked[i] = null
+                discard pk
+            }
+        }
+        break
+    }
+}
+
+send :: fn(c: ^Chan, x: i32) -> bool \ {Async} {
+    while c.len is CAP {
+        if c.closed { return false }
+        park(c.id)
+    }
+    if c.closed { return false }
+    c.buf[(c.head + c.len) % CAP] = x
+    c.len += 1
+    wake(c.id)
+    return true
+}
+
+recv :: fn(c: ^Chan) -> ?i32 \ {Async} {
+    while c.len is 0 {
+        if c.closed { return null }
+        park(c.id)
+    }
+    x := c.buf[c.head]
+    c.head = (c.head + 1) % CAP
+    c.len -= 1
+    wake(c.id)
+    return x
+}
+
+close :: fn(c: ^Chan) \ {Async} {
+    c.closed = true
+    wake(c.id)
+}
+
+producer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+    defer print("  [{}] done\n", a.name)
+    for i in 1..=a.n {
+        _ = send(a.a, i * 10)
+        print("  [{}] sent {}\n", (a.name, i * 10))
+    }
+    close(a.a)
+    exit()
+}
+
+doubler :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+    defer print("  [{}] done\n", a.name)
+    while x := recv(a.a) {
+        _ = send(a.b, x * 2)
+    }
+    close(a.b)
+    exit()
+}
+
+summer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+    total: i32 = 0
+    defer print("  [{}] done, total {}\n", (a.name, total))
+    while x := recv(a.a) {
+        total += x
+        print("  [{}] got {}\n", (a.name, x))
+    }
+    exit()
+}
+
+// A task that waits for a message nobody will ever send.
+stuck :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+    defer print("  [{}] cancelled\n", a.name)
+    v := recv(a.a)
+    print("  [{}] unreachable {}\n", (a.name, v))
+    exit()
+}
+
+pipeline :: fn() \ {Out} {
+    c1 := Chan(id: 1)
+    c2 := Chan(id: 2)
+    rt := Runtime(ready: [16]?cont(())(fill: null), stacks: ---)
+    p := TaskArg(name: "producer", a: &c1, b: &c1, n: 5)
+    d := TaskArg(name: "doubler", a: &c1, b: &c2)
+    s := TaskArg(name: "summer", a: &c2, b: &c2)
+    main_stack: [STACK]u8 = ---
+    with &rt on main_stack[..] {
+        spawn(summer, &s)
+        spawn(doubler, &d)
+        spawn(producer, &p)
+        join()
+    }
+    print("pipeline: deadlock={} live={}\n", (rt.deadlock, rt.live))
+}
+
+deadlocked :: fn() \ {Out} {
+    c1 := Chan(id: 1)
+    c2 := Chan(id: 2)
+    rt := Runtime(ready: [16]?cont(())(fill: null), stacks: ---)
+    a := TaskArg(name: "waiter-a", a: &c1, b: &c1)
+    b := TaskArg(name: "waiter-b", a: &c2, b: &c2)
+    main_stack: [STACK]u8 = ---
+    with &rt on main_stack[..] {
+        spawn(stuck, &a)
+        spawn(stuck, &b)
+        join()
+    }
+    print("deadlocked: deadlock={} live={}\n", (rt.deadlock, rt.live))
+}
+
+main :: fn() \ {Out} {
+    pipeline()
+    deadlocked()
+}

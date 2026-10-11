@@ -582,7 +582,10 @@ impl<'a> Lexer<'a> {
             return;
         }
         if innermost != Some(BracketKind::MatchBrace) {
-            let dot_name = next.is_punct(Punct::Dot) && self.bytes.get(next_hi).is_some_and(|&b| is_ident_start(b));
+            // A line `.V(x) := v else …` is a pattern binding, not a continuation.
+            let dot_name = next.is_punct(Punct::Dot)
+                && self.bytes.get(next_hi).is_some_and(|&b| is_ident_start(b))
+                && !line_binds(&self.bytes[next_hi..]);
             if dot_name || starts_continuation(next) {
                 return;
             }
@@ -611,6 +614,38 @@ fn suppresses_newline_after(kind: &TokenKind) -> bool {
         ),
         _ => false,
     }
+}
+
+/// True if the rest of a line, `rest`, has a `:=` outside brackets, which makes a line
+/// starting with `.name` a pattern binding (§2.8 rule 2).
+pub(crate) fn line_binds(rest: &[u8]) -> bool {
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            b'\n' => return false,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            b'"' | b'\'' => {
+                let q = rest[i];
+                i += 1;
+                while i < rest.len() && rest[i] != q && rest[i] != b'\n' {
+                    i += if rest[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if rest.get(i + 1) == Some(&b'/') => return false,
+            b'`' => return false,
+            b':' if depth == 0 && rest.get(i + 1) == Some(&b'=') => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Rule 2 of §2.8 (except for `.name`, which needs the following byte): a

@@ -665,6 +665,21 @@ pub enum ExprKind {
         of: Ty,
         align: bool,
     },
+    /// `@min_value(T)` (or `@max_value(T)` when `max`) of a type parameter with `Int(T)`;
+    /// folded to an `Int` when the generic body is instantiated. Never present in
+    /// executable code.
+    IntLimit {
+        of: Ty,
+        max: bool,
+    },
+    /// `a is b` (or `is not`, when `negated`) on types that mention type parameters;
+    /// folded to a `Bool` when the generic body is instantiated. Never present in
+    /// executable code.
+    TypeIs {
+        a: Ty,
+        b: Ty,
+        negated: bool,
+    },
     /// An untyped float literal's exact value. Exists only while semantic analysis
     /// is inferring literal types; never present in a finished [`Program`].
     UntypedFloat(Rc<num_rational::BigRational>),

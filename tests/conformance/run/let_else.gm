@@ -1,0 +1,50 @@
+// Pattern bindings with else (§4.5): the names are bound for the rest of the block, and
+// the fallback leaves it. Lines starting with .V(...) := are bindings (§2.8).
+Val :: union { Num: i64, Pair: (a: i64, b: i64), Nil }
+Err :: union { NotNum, NotPair }
+
+num :: fn(v: Val) -> Err!i64 {
+    .Num(n) := v else return !.NotNum
+    .Num(m) := v else return !.NotNum
+    return n + m
+}
+
+sum_pair :: fn(v: Val) -> Err!i64 \ {Out} {
+    defer print("checked\n")
+    Val.Pair(a, b) := v else {
+        print("not a pair\n")
+        return !.NotPair
+    }
+    return a + b
+}
+
+first_small :: fn(xs: []const i64) -> i64 {
+    for x in xs {
+        0..=9 := x else continue
+        return x
+    }
+    return -1
+}
+
+parse :: fn(s: string) -> u8!u32 {
+    if s.len is 0 { return !1 }
+    return s.len.trunc(u32)
+}
+
+lengths :: fn(items: []const string) -> u32 {
+    total: u32 = 0
+    for s in items {
+        n := parse(s) else e => break
+        total += n
+    }
+    return total
+}
+
+main :: fn() \ {Out} {
+    print("{} {}\n", (num(.Num(4)), num(.Nil)))
+    print("{}\n", sum_pair(.Pair(a: 2, b: 3)))
+    print("{}\n", sum_pair(.Num(1)))
+    xs := [_]i64(12, 40, 7, 3)
+    words := [_]string("ab", "cde", "", "zz")
+    print("{} {}\n", (first_small(xs[..]), lengths(words[..])))
+}

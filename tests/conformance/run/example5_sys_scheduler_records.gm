@@ -1,0 +1,116 @@
+// A round-robin scheduler on fibers whose tasks swap 96-byte records through ctl operations (big parameters and big resume values); every task stack is sized with @stack_size.
+Rec :: struct { owner: u32, round: u32, cells: [10]i64 }
+
+Sched :: effect {
+    yield_now: ctl()
+    spawn: ctl(entry: ^fn(slot: ^Slot) -> never \ {Sched}, slot: ^Slot)
+    exit: ctl() -> never
+    // Hand a record to the scheduler's mailbox and receive whatever was there before.
+    swap: ctl(r: Rec) -> Rec
+}
+
+Slot :: struct { id: u32, mine: Rec, history: [4]u32, done: bool }
+
+NTASKS :: 3
+
+// Work with large locals and by-value parameters.
+mix :: fn(a: Rec, b: Rec, salt: i64) -> Rec {
+    scratch: [128]i64 = [128]i64(fill: salt)
+    r := a
+    for i in 0..10 { r.cells[i] = a.cells[i] + b.cells[9 - i] + scratch[i * 3] }
+    r.round += 1
+    return r
+}
+
+task :: fn(slot: ^Slot) -> never \ {Sched} {
+    for round in 0..4 {
+        slot.mine = mix(slot.mine, slot.mine, i64(slot.id))
+        yield_now()
+        got := swap(slot.mine)
+        slot.history[round] = got.owner
+        slot.mine = mix(got, slot.mine, 1)
+        slot.mine.owner = slot.id
+    }
+    slot.done = true
+    exit()
+}
+
+TASK_STACK :: @stack_size(task)
+
+Runtime :: struct {
+    ready: [8]?cont(())
+    head: usize
+    count: usize
+    stacks: [NTASKS][TASK_STACK]u8
+    spawned: usize
+    live: u32
+    mailbox: Rec
+    switches: u32
+}
+
+enqueue :: fn(rt: ^Runtime, k: cont(())) {
+    rt.ready[(rt.head + rt.count) % 8] = k
+    rt.count += 1
+}
+
+dequeue :: fn(rt: ^Runtime) -> cont(()) {
+    k := rt.ready[rt.head]?
+    rt.ready[rt.head] = null
+    rt.head = (rt.head + 1) % 8
+    rt.count -= 1
+    rt.switches += 1
+    return k
+}
+
+handler Sched for ^Runtime {
+    yield_now(self, k) => {
+        enqueue(self, k)
+        r := dequeue(self)
+        resume r()
+    }
+    spawn(self, entry, slot, k) => {
+        mem := self.stacks[self.spawned][..]
+        self.spawned += 1
+        self.live += 1
+        enqueue(self, @fiber(entry, slot, mem))
+        resume k()
+    }
+    exit(self, k) => {
+        discard k
+        self.live -= 1
+        if self.live is 0 { break }
+        r := dequeue(self)
+        resume r()
+    }
+    swap(self, r, k) => {
+        old := self.mailbox
+        self.mailbox = r
+        resume k(old)
+    }
+}
+
+checksum :: fn(r: Rec) -> i64 {
+    s: i64 = i64(r.owner) * 1000 + i64(r.round)
+    for c in r.cells { s = s * 7 + c }
+    return s % 1_000_000_007
+}
+
+main :: fn() \ {Out} {
+    rt := Runtime(ready: [8]?cont(())(fill: null), head: 0, count: 0, stacks: ---, spawned: 0, live: 1,
+                  mailbox: Rec(owner: 99, round: 0, cells: [10]i64(fill: 1)), switches: 0)
+    slots := [NTASKS]Slot(fill: Slot(id: 0, mine: Rec(owner: 0, round: 0, cells: [10]i64(fill: 0)), history: [4]u32(fill: 0), done: false))
+    for i in 0..NTASKS {
+        slots[i] = Slot(id: i.trunc(u32) + 1, mine: Rec(owner: i.trunc(u32) + 1, round: 0, cells: [10]i64(fill: i.trunc(i64) + 2)), history: [4]u32(fill: 0), done: false)
+    }
+    main_stack: [32768]u8 = ---
+    print("task stack ok {}\n", TASK_STACK >= @min_stack)
+    with &rt on main_stack[..] {
+        for i in 0..NTASKS { spawn(task, &slots[i]) }
+        exit()
+    }
+    print("switches {} live {}\n", (rt.switches, rt.live))
+    for s in slots {
+        print("task {} done {} history {} round {} sum {}\n", (s.id, s.done, s.history, s.mine.round, checksum(s.mine)))
+    }
+    print("mailbox owner {} round {} sum {}\n", (rt.mailbox.owner, rt.mailbox.round, checksum(rt.mailbox)))
+}

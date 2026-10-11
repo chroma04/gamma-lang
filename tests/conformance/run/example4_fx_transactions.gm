@@ -1,0 +1,153 @@
+// Transactions with effects: a Store effect whose handler keeps an undo log, an Abort esc operation that unwinds a transaction (running defer and errdefer), nested savepoints, and a middleware handler that audits writes.
+NAMES :: [_]string("alice", "bob", "carol", "dave")
+LOG_MAX :: 64
+
+Store :: effect {
+    read: fn(slot: usize) -> i64
+    write: fn(slot: usize, v: i64)
+}
+
+Abort :: effect {
+    abort: esc(reason: string) -> never
+}
+
+Ledger :: struct {
+    slots: [4]i64
+    undo_slot: [LOG_MAX]usize = [LOG_MAX]usize(fill: 0)
+    undo_old: [LOG_MAX]i64 = [LOG_MAX]i64(fill: 0)
+    undo_len: usize = 0
+    writes: u32 = 0
+}
+
+handler Store for ^Ledger {
+    read(self, slot) => self.slots[slot]
+    write(self, slot, v) => {
+        self.undo_slot[self.undo_len] = slot
+        self.undo_old[self.undo_len] = self.slots[slot]
+        self.undo_len += 1
+        self.slots[slot] = v
+        self.writes += 1
+    }
+}
+
+rollback_to :: fn(l: ^Ledger, mark: usize) -> usize {
+    undone: usize = 0
+    while l.undo_len > mark {
+        l.undo_len -= 1
+        l.slots[l.undo_slot[l.undo_len]] = l.undo_old[l.undo_len]
+        undone += 1
+    }
+    return undone
+}
+
+Outcome :: union { Committed, Aborted: string }
+
+// Runs `body` as a transaction. The body's Store and Abort performs are handled here; an abort
+// unwinds the body and undoes its writes back to where the transaction began.
+atomically :: fn(l: ^Ledger, label: string, body: fn() \ {Store, Abort}) -> Outcome \ {Out} {
+    mark := l.undo_len
+    why := ""
+    failed := false
+    on_abort :: handler Abort {
+        abort(reason) => {
+            why = reason
+            failed = true
+            break
+        }
+    }
+    with l, on_abort { body() }
+    if failed {
+        n := rollback_to(l, mark)
+        print("  [{}] aborted ({}): undid {} writes\n", (label, why, n))
+        return .Aborted(why)
+    }
+    print("  [{}] committed\n", label)
+    return .Committed
+}
+
+transfer :: fn(from, to: usize, amount: i64) \ {Store, Abort, Out} {
+    defer print("    transfer {}->{}: leave\n", (NAMES[from], NAMES[to]))
+    errdefer print("    transfer {}->{}: unwound\n", (NAMES[from], NAMES[to]))
+    bal := read(from)
+    write(from, bal - amount)
+    if bal < amount {
+        abort("insufficient funds")
+    }
+    write(to, read(to) + amount)
+}
+
+show :: fn(l: ^Ledger) \ {Out} {
+    total: i64 = 0
+    print("  state:", ())
+    for i in 0..4 {
+        print(" {}={}", (NAMES[i], l.slots[i]))
+        total += l.slots[i]
+    }
+    print("  total={}\n", total)
+}
+
+scenario_plain :: fn(l: ^Ledger) \ {Out} {
+    print("-- commit and abort\n")
+    r1 := atomically(l, "pay bob", fn() { transfer(0, 1, 30) })
+    show(l)
+    r2 := atomically(l, "overdraw", fn() { transfer(0, 2, 500) })
+    show(l)
+    print("  outcomes: {} {}\n", (r1, r2))
+}
+
+scenario_nested :: fn(l: ^Ledger) \ {Out} {
+    print("-- nested savepoints\n")
+    outer: fn() \ {Store, Abort} : fn() {
+        transfer(1, 2, 10)
+        inner := atomically(l, "inner", fn() {
+            transfer(2, 0, 999)       // aborts: only the inner part is undone
+        })
+        print("    inner gave {}\n", inner)
+        transfer(1, 3, 5)
+    }
+    r := atomically(l, "outer", outer)
+    show(l)
+    print("  outcome: {}\n", r)
+}
+
+scenario_outer_abort :: fn(l: ^Ledger) \ {Out} {
+    print("-- the outer transaction aborts after the inner one committed\n")
+    r := atomically(l, "outer", fn() {
+        inner := atomically(l, "inner", fn() { transfer(3, 0, 5) })
+        print("    inner gave {}\n", inner)
+        abort("changed my mind")
+    })
+    show(l)
+    print("  outcome: {}\n", r)
+}
+
+// A handler literal that forwards to the handler outside it and reports every write.
+scenario_audit :: fn(l: ^Ledger) \ {Out} {
+    print("-- audited writes\n")
+    r := atomically(l, "audited", fn() {
+        // The clauses perform Store themselves; those performs reach the handler installed by `atomically`.
+        audit :: handler Store {
+            read(slot) => read(slot)
+            write(slot, v) => {
+                print("    audit: {} := {}\n", (NAMES[slot], v))
+                write(slot, v)
+            }
+        }
+        with audit {
+            transfer(0, 3, 20)
+            transfer(3, 1, 100)       // aborts, passing through the audit layer
+        }
+    })
+    show(l)
+    print("  outcome: {}\n", r)
+}
+
+main :: fn() \ {Out} {
+    ledger := Ledger(slots: [4]i64(100, 50, 0, 0))
+    show(&ledger)
+    scenario_plain(&ledger)
+    scenario_nested(&ledger)
+    scenario_outer_abort(&ledger)
+    scenario_audit(&ledger)
+    print("{} writes in total, undo log holds {}\n", (ledger.writes, ledger.undo_len))
+}

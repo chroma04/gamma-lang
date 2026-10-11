@@ -1,0 +1,87 @@
+// The JSON document model: a recursive union plus accessors and cleanup.
+str :: import "std/str"
+
+pub Member :: struct {
+    pub key: string
+    pub val: Value
+}
+
+pub Value :: union {
+    Null
+    Bool: bool
+    Int: i64
+    Num: f64
+    Str: string
+    Arr: List(Value)
+    Obj: List(Member)
+}
+
+/// The member `key` of an object, or null for other kinds of value.
+pub get :: fn(v: ^const Value, key: string) -> ?^const Value {
+    .Obj(members) := v^ else return null
+    for i in 0..members.items.len {
+        if members.items[i].key is key { return &members.items[i].val }
+    }
+    return null
+}
+
+/// The element `i` of an array.
+pub at :: fn(v: ^const Value, i: usize) -> ?^const Value {
+    .Arr(xs) := v^ else return null
+    if i >= xs.items.len { return null }
+    return &xs.items[i]
+}
+
+/// Follows a path such as `users[1].name`; null when any step is missing.
+pub lookup :: fn(v: ^const Value, path: string) -> ?^const Value {
+    cur := v
+    for seg in str.split(path, ".") {
+        rest := seg
+        if br := str.find(rest, "[") {
+            name := rest[0..br]
+            if name.len > 0 { cur = get(cur, name) else return null }
+            rest = rest[br..]
+            while rest.len > 0 {
+                close := str.find(rest, "]") else return null
+                idx := str.parse_int(usize, rest[1..close]) else return null
+                cur = at(cur, idx) else return null
+                rest = rest[close + 1..]
+            }
+        } else {
+            cur = get(cur, rest) else return null
+        }
+    }
+    return cur
+}
+
+/// Releases everything a value owns (strings, arrays, objects) recursively.
+pub free_value :: fn(v: ^Value) \ {Alloc} {
+    match v^ {
+        .Str(s) => free(s)
+        .Arr(xs) => {
+            l := xs
+            for i in 0..l.items.len { free_value(&l.items[i]) }
+            l.deinit()
+        }
+        .Obj(ms) => {
+            l := ms
+            for i in 0..l.items.len {
+                free(l.items[i].key)
+                free_value(&l.items[i].val)
+            }
+            l.deinit()
+        }
+        _ => {}
+    }
+}
+
+/// A short name for the kind of value.
+pub kind :: fn(v: ^const Value) -> string => match v^ {
+    .Null => "null"
+    .Bool(_) => "bool"
+    .Int(_) => "int"
+    .Num(_) => "number"
+    .Str(_) => "string"
+    .Arr(_) => "array"
+    .Obj(_) => "object"
+}

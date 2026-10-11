@@ -1,0 +1,174 @@
+// Dijkstra's shortest paths with a heap of (distance, node) pairs, checked against a
+// quadratic version on a pseudo-random graph; and the same search with heap_by on a
+// struct, which also yields the paths.
+hp :: import "std/collections/heap"
+
+INF: u32 : 0xffff_ffff
+
+Edge :: struct {
+    to: u32
+    w: u32
+}
+
+next_random :: fn(state: ^u64) -> u64 {
+    state^ = state^ *% 6364136223846793005 +% 1442695040888963407
+    return state^ >> 33
+}
+
+free_graph :: fn(adj: ^List(List(Edge))) {
+    for l in each_ptr(adj.items) { l.deinit() }
+    adj.deinit()
+}
+
+make_graph :: fn(n: usize) -> AllocError!List(List(Edge)) \ {Alloc} {
+    adj := list(List(Edge))
+    errdefer free_graph(&adj)
+    for _ in 0..n { try adj.push(list(Edge)) }
+    return adj
+}
+
+add_edge :: fn(adj: ^List(List(Edge)), a, b, w: u32) -> AllocError!() {
+    try adj.items[a].push(Edge(to: b, w: w))
+    try adj.items[b].push(Edge(to: a, w: w))
+    return ()
+}
+
+// With the heap of tuples ordered by distance first.
+shortest :: fn(adj: []List(Edge), src: u32, dist: []u32) -> AllocError!() \ {Alloc} {
+    for i in 0..dist.len { dist[i] = INF }
+    pq := hp.heap((u32, u32))
+    defer pq.deinit()
+    dist[src] = 0
+    try pq.push((0, src))
+    while top := pq.pop() {
+        d := top.0
+        u := top.1
+        if d > dist[u] { continue }
+        for e in adj[u].items {
+            nd := d + e.w
+            if nd < dist[e.to] {
+                dist[e.to] = nd
+                try pq.push((nd, e.to))
+            }
+        }
+    }
+    return ()
+}
+
+// Without a heap: scan for the nearest unfinished node each round.
+shortest_slow :: fn(adj: []List(Edge), src: u32, dist: []u32, done: []u8) {
+    for i in 0..dist.len {
+        dist[i] = INF
+        done[i] = 0
+    }
+    dist[src] = 0
+    for _ in 0..dist.len {
+        best := INF
+        u: usize = dist.len
+        for i in 0..dist.len {
+            if done[i] is 0 and dist[i] < best {
+                best = dist[i]
+                u = i
+            }
+        }
+        if u is dist.len { break }
+        done[u] = 1
+        for e in adj[u].items {
+            if dist[u] + e.w < dist[e.to] { dist[e.to] = dist[u] + e.w }
+        }
+    }
+}
+
+State :: struct {
+    cost: u32
+    node: u32
+    via: u32
+}
+
+cheaper :: fn(a, b: ^const State) -> bool => a.cost < b.cost
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    // A small graph with a known answer.
+    g := try make_graph(6)
+    defer free_graph(&g)
+    try add_edge(&g, 0, 1, 7)
+    try add_edge(&g, 0, 2, 9)
+    try add_edge(&g, 0, 5, 14)
+    try add_edge(&g, 1, 2, 10)
+    try add_edge(&g, 1, 3, 15)
+    try add_edge(&g, 2, 3, 11)
+    try add_edge(&g, 2, 5, 2)
+    try add_edge(&g, 3, 4, 6)
+    try add_edge(&g, 4, 5, 9)
+    dist: [6]u32 = ---
+    try shortest(g.items, 0, dist[..])
+    print("distances from 0:")
+    for d in dist[..] { print(" {}", d) }
+    print("\n")
+
+    // Paths, using a heap ordered by a function on a struct.
+    prev: [6]u32 = [6]u32(fill: INF)
+    best: [6]u32 = [6]u32(fill: INF)
+    pq := hp.heap_by(State, cheaper)
+    defer pq.deinit()
+    best[0] = 0
+    try pq.push(State(cost: 0, node: 0, via: INF))
+    while s := pq.pop() {
+        if s.cost > best[s.node] { continue }
+        prev[s.node] = s.via
+        for e in g.items[s.node].items {
+            nc := s.cost + e.w
+            if nc < best[e.to] {
+                best[e.to] = nc
+                try pq.push(State(cost: nc, node: e.to, via: s.node))
+            }
+        }
+    }
+    route := list(u32)
+    defer route.deinit()
+    at: u32 = 4
+    while at is not INF {
+        try route.push(at)
+        at = prev[at]
+    }
+    print("path to 4 (cost {}):", best[4])
+    i := route.items.len
+    while i > 0 {
+        i -= 1
+        print(" {}", route.items[i])
+    }
+    print("\n")
+
+    // A pseudo-random graph: the two algorithms agree everywhere.
+    n: usize = 300
+    big := try make_graph(n)
+    defer free_graph(&big)
+    seed: u64 = 2024
+    for u in 1..n {
+        // A spanning chain keeps it connected, then extra random edges.
+        try add_edge(&big, (u - 1).trunc(u32), u.trunc(u32), (next_random(&seed) % 50).trunc(u32) + 1)
+    }
+    for _ in 0..900 {
+        a := (next_random(&seed) % 300).trunc(u32)
+        b := (next_random(&seed) % 300).trunc(u32)
+        try add_edge(&big, a, b, (next_random(&seed) % 100).trunc(u32) + 1)
+    }
+    fast := try make(u32, n)
+    defer free(fast)
+    slow := try make(u32, n)
+    defer free(slow)
+    done := try make(u8, n)
+    defer free(done)
+    try shortest(big.items, 0, fast)
+    shortest_slow(big.items, 0, slow, done)
+    differ: u32 = 0
+    total: u64 = 0
+    far: u32 = 0
+    for k in 0..n {
+        if fast[k] is not slow[k] { differ += 1 }
+        total += u64(fast[k])
+        if fast[k] > far { far = fast[k] }
+    }
+    print("random graph: {} nodes differ, total distance {}, farthest {}\n", (differ, total, far))
+    return ()
+}

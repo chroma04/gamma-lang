@@ -1,0 +1,100 @@
+// Fibers on stacks sized by @stack_size for functions with large locals and by-value parameters; big values cross ctl operations.
+Frame :: struct { regs: [12]i64, pc: u32, flags: u8 }
+Chunk :: struct { data: [96]u8, len: u32 }
+
+Gen :: effect {
+    emit: ctl(f: Frame) -> Frame
+}
+
+Log :: effect { log: fn(c: Chunk) -> u32 }
+
+// Large locals and by-value parameters, a bounded call chain.
+checksum :: fn(c: Chunk) -> u32 {
+    scratch: [512]u8 = [512]u8(fill: 3)
+    s: u32 = 0
+    for i in 0..usize(c.len) {
+        s = s *% 31 +% u32(c.data[i]) +% u32(scratch[i])
+    }
+    return s
+}
+
+step :: fn(f: Frame, k: i64) -> Frame {
+    tmp: [64]i64 = [64]i64(fill: k)
+    g := f
+    g.regs[usize(g.pc % 12)] += tmp[3]
+    g.pc += 1
+    return g
+}
+
+advance :: fn(f: Frame, n: u32) -> Frame {
+    big: [256]u32 = [256]u32(fill: n)
+    cur := f
+    for i in 0..usize(n) {
+        cur = step(cur, i64(big[i]) + i.trunc(i64))
+    }
+    return cur
+}
+
+make_chunk :: fn(seed: u8) -> Chunk {
+    c := Chunk(data: [96]u8(fill: seed), len: 40)
+    for i in 0..96 { c.data[i] = seed +% i.trunc(u8) }
+    return c
+}
+
+worker :: fn(rounds: u32) -> u32 \ {Gen, Log} {
+    f := Frame(regs: [12]i64(fill: 1), pc: 0, flags: 7)
+    total: u32 = 0
+    for r in 0..rounds {
+        f = advance(f, r + 2)
+        f = emit(f)
+        total = total +% log(make_chunk(r.trunc(u8)))
+    }
+    return total + f.regs[0].trunc(u32) + f.pc
+}
+
+// The fiber's entry: the Log handler is installed on the fiber, so its clause is part of the bound.
+fiber_main :: fn(rounds: u32) -> u32 \ {Gen} {
+    calls: u32 = 0
+    r := with (handler Log { log(c) => { calls += 1; checksum(c) + calls } }) {
+        worker(rounds)
+    }
+    return r + calls * 1000
+}
+
+STACK :: @stack_size(fiber_main)
+
+sum_regs :: fn(f: Frame) -> i64 {
+    s: i64 = 0
+    for v in f.regs { s += v }
+    return s
+}
+
+main :: fn() \ {Out} {
+    print("stack ok {}\n", STACK >= @min_stack)
+    stack: [STACK]u8 = ---
+    seen: i64 = 0
+    hold: Frame = Frame(regs: [12]i64(fill: 0), pc: 0, flags: 0)
+    r := with (handler Gen {
+        emit(f, k) => {
+            seen += sum_regs(f)
+            hold = f
+            g := f
+            g.flags += 1
+            g.regs[11] = 100
+            resume k(g)
+        }
+    }) on stack[..] {
+        fiber_main(4)
+    }
+    print("result {} seen {} hold.pc {} hold.flags {}\n", (r, seen, hold.pc, hold.flags))
+    // Same work with the stack split from a larger arena, twice in a row on the same memory.
+    arena: [STACK * 2]u8 = ---
+    for round in 0..2 {
+        t := with (handler Gen {
+            emit(f, k) => resume k(f)
+        }) on arena[STACK * round..STACK * (round + 1)] {
+            fiber_main(3)
+        }
+        print("round {} -> {}\n", (round, t))
+    }
+}

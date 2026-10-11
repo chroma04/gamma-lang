@@ -1,7 +1,8 @@
 //! Evaluating type expressions to [`Ty`] (§5, §A.2).
 
 use super::builtins::builtin_type;
-use super::{DeclValue, ModuleId, Sema, Untyped};
+use super::{DeclId, DeclValue, ModuleId, Sema, Untyped};
+use crate::source::Span;
 use crate::syntax::ast::{self, ExprKind};
 use crate::tir;
 use crate::types::{CallConv, FnTy, Ty, TyKind};
@@ -39,12 +40,9 @@ impl<'s> Sema<'s> {
             | ExprKind::Struct(_)
             | ExprKind::Union(_) => true,
             ExprKind::Bang { lhs, .. } => self.looks_like_type(module, lhs),
-            ExprKind::Call { callee, .. } => match &callee.kind {
-                ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
-                    Some(d) => matches!(self.resolve_decl(d), DeclValue::GenericType(_)),
-                    None => false,
-                },
-                _ => false,
+            ExprKind::Call { callee, .. } => match self.generic_decl(module, callee, false) {
+                Some((d, _)) => matches!(self.resolve_decl(d), DeclValue::GenericType(_)),
+                None => false,
             },
             ExprKind::Attributed { inner, .. } => self.looks_like_type(module, inner),
             _ => false,
@@ -163,19 +161,22 @@ impl<'s> Sema<'s> {
             ExprKind::ContType(inner) => Ty::intern(TyKind::Cont(self.resolve_type(module, inner))),
             // `G(args)` — an instantiation of a generic type (§16.4).
             ExprKind::Call { callee, args, .. } => {
-                let template = match &callee.kind {
-                    ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
-                        Some(d) => match self.resolve_decl(d) {
-                            DeclValue::GenericType(t) => {
-                                self.check_deprecated(d, id.span);
-                                Some(t)
-                            }
-                            DeclValue::Error => return Ty::error(),
-                            _ => None,
-                        },
-                        None => None,
+                if let ExprKind::Field { base, .. } = &callee.kind
+                    && self.names_error(module, base)
+                {
+                    return Ty::error();
+                }
+                let template = match self.generic_decl(module, callee, true) {
+                    Some((d, span)) => match self.resolve_decl(d) {
+                        DeclValue::GenericType(t) => {
+                            self.check_deprecated(d, span);
+                            Some(t)
+                        }
+                        DeclValue::Error => return Ty::error(),
+                        _ => None,
                     },
-                    _ => None,
+                    None if matches!(callee.kind, ExprKind::Field { .. }) => return Ty::error(),
+                    None => None,
                 };
                 let Some(template) = template else {
                     self.error(e.span, "expected a type");
@@ -243,6 +244,24 @@ impl<'s> Sema<'s> {
                 self.error(e.span, "expected a type");
                 Ty::error()
             }
+        }
+    }
+
+    /// The declaration that `callee` of a type instantiation `G(args)` names: `G` or
+    /// `m.G`, with the span of the name. With `report`, a missing or private member of
+    /// a module is reported.
+    fn generic_decl(&mut self, module: ModuleId, callee: &ast::Expr, report: bool) -> Option<(DeclId, Span)> {
+        match &callee.kind {
+            ExprKind::Ident(id) => Some((self.lookup_module_name(module, id.name)?, id.span)),
+            ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                if report {
+                    return Some((self.module_member(m, *name)?, name.span));
+                }
+                let d = *self.modules[m.0 as usize].scope.get(&name.name)?;
+                self.decls[d.0 as usize].item.is_pub.then_some((d, name.span))
+            }
+            _ => None,
         }
     }
 
@@ -353,9 +372,10 @@ impl<'s> Sema<'s> {
         let mut out = vec![];
         for (i, pid) in params.iter().enumerate() {
             let default = defaults.get(i).cloned().flatten();
-            let e: &ast::Expr = match (given[i], &default) {
-                (Some(e), _) => e,
-                (None, Some(d)) => d,
+            // A default is written in the module that declares the type.
+            let (e, module): (&ast::Expr, ModuleId) = match (given[i], &default) {
+                (Some(e), _) => (e, module),
+                (None, Some(d)) => (d, self.adts[&template].module),
                 (None, None) => {
                     self.error(
                         span,

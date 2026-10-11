@@ -1,0 +1,24 @@
+// `with a, b` is `with a { with b { … } }` (§12.7): a handler listed first handles the effects
+// that the clauses of a later handler declaration perform.
+Log :: effect { note: fn(msg: string) }
+Work :: effect { run: fn(x: u32) -> u32 }
+Ind :: struct { n: u32 = 0 }
+handler Log for ^Ind \ {Out} {
+    note(self, msg) => {
+        self.n += 1
+        print("{} {}\n", (self.n, msg))
+    }
+}
+Dry :: struct { n: u32 = 0 }
+handler Work for ^Dry \ {Log} {
+    run(self, x) => {
+        note("run")
+        x + 1
+    }
+}
+main :: fn() \ {Out} {
+    ind := Ind()
+    dry := Dry()
+    with &ind, &dry { print("{}\n", run(1)) }
+    with (handler Log { note(m) => print("lit {}\n", m) }), &dry { print("{}\n", run(2)) }
+}

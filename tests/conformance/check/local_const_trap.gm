@@ -1,0 +1,8 @@
+//! stage: check
+// A failing check in an immutable local evaluated at compile time is a compile error (§17.2).
+inner :: fn(x: u8) -> u8 => x + 200
+f :: fn() -> u8 {
+    a :: inner(100)             //~ ERROR compile-time evaluation failed: integer overflow
+    return a
+}
+main :: fn() {}

@@ -1,0 +1,21 @@
+// Facade: one import gives the table, query and executor APIs.
+pub table :: import "./table"
+pub query :: import "./query"
+pub exec :: import "./exec"
+
+pub Table :: table.Table
+pub Index :: table.Index
+pub Query :: query.Query
+pub Trace :: exec.Trace
+pub Tracer :: exec.Tracer
+pub Tally :: exec.Tally
+pub Group :: exec.Group
+
+pub new_table :: table.table
+pub new_query :: query.query
+pub rows :: exec.rows
+pub count :: exec.count
+pub sum :: exec.sum
+pub group_by :: exec.group_by
+pub join :: exec.join
+pub mask :: exec.mask

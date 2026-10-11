@@ -1,0 +1,339 @@
+// A text adventure driven by stdin through std/io Reader: commands return error unions handled with try and match, a Say effect with a word-wrapping handler, a Quit esc operation, undo snapshots, and a labelled `with` expression that yields the outcome.
+io :: import "std/io"
+str :: import "std/str"
+
+N_ROOMS :: 5
+N_ITEMS :: 4
+UNDO_DEPTH :: 6
+WIDTH :: 44
+
+// ---- Effects --------------------------------------------------------------------
+
+Say :: effect {
+    say: fn(text: string)           // one paragraph; the handler decides how to lay it out
+}
+
+Outcome :: union { Won: u32, Quit, Eof }
+
+Quit :: effect {
+    leave: esc(why: Outcome) -> never
+}
+
+// Wraps paragraphs at WIDTH columns.
+Wrapper :: struct { lines: u32 = 0 }
+
+// (The loop lives in a plain function: a `for` over an iterator that updates a local, written
+// directly in a handler declaration's clause, makes the C back end fail.)
+wrap_paragraph :: fn(self: ^Wrapper, text: string) \ {Out} {
+    col: usize = 0
+    for w in str.fields(text) {
+        if col > 0 and col + 1 + w.len > WIDTH {
+            print("\n", ())
+            self.lines += 1
+            col = 0
+        }
+        if col > 0 {
+            print(" ", ())
+            col += 1
+        }
+        print("{}", w)
+        col += w.len
+    }
+    print("\n", ())
+    self.lines += 1
+}
+
+handler Say for ^Wrapper \ {Out} {
+    say(self, text) => wrap_paragraph(self, text)
+}
+
+// ---- The world ------------------------------------------------------------------
+
+NORTH :: 0
+EAST :: 1
+SOUTH :: 2
+WEST :: 3
+
+Room :: struct {
+    name: string
+    desc: string
+    exits: [4]usize
+    dark: bool
+}
+
+ROOMS :: [N_ROOMS]Room(
+    Room(name: "cabin", desc: "A one-room cabin with a cold hearth. A door leads east.", exits: [4]usize(NO_EXIT, 1, NO_EXIT, NO_EXIT), dark: false),
+    Room(name: "clearing", desc: "A sunny clearing. Paths lead west, north and east.", exits: [4]usize(2, 3, NO_EXIT, 0), dark: false),
+    Room(name: "cave mouth", desc: "The mouth of a cave. A heavy iron door is set in the north wall. The way south is back to the clearing.", exits: [4]usize(4, NO_EXIT, 1, NO_EXIT), dark: true),
+    Room(name: "lake", desc: "A still lake. Something glints in the reeds. The only path leads west.", exits: [4]usize(NO_EXIT, NO_EXIT, NO_EXIT, 1), dark: false),
+    Room(name: "vault", desc: "A dusty vault. The door you came through is to the south.", exits: [4]usize(NO_EXIT, NO_EXIT, 2, NO_EXIT), dark: true),
+)
+
+LAMP :: 0
+KEY :: 1
+TREASURE :: 2
+ROCK :: 3
+
+ITEM_NAMES :: [N_ITEMS]string("lamp", "key", "treasure", "rock")
+
+HELD :: 99
+NO_EXIT :: 99
+
+World :: struct {
+    where_: [N_ITEMS]usize          // room index, or HELD
+    here: usize
+    door_open: bool
+    moves: u32
+    capacity: u32
+}
+
+new_world :: fn() -> World => World(where_: [N_ITEMS]usize(0, 3, 4, 1), here: 0, door_open: false, moves: 0, capacity: 2)
+
+CmdError :: union {
+    Unknown: string
+    NoExit
+    Locked
+    Dark
+    Heavy
+    Full
+    NotHere: string
+    NotCarrying: string
+    Missing: string
+}
+
+item_id :: fn(name: string) -> ?usize {
+    for i in 0..N_ITEMS {
+        if ITEM_NAMES[i] is name { return i }
+    }
+    return null
+}
+
+carried :: fn(w: ^const World) -> u32 {
+    n: u32 = 0
+    for i in 0..N_ITEMS {
+        if w.where_[i] is HELD { n += 1 }
+    }
+    return n
+}
+
+has_lamp :: fn(w: ^const World) -> bool => w.where_[LAMP] is HELD
+
+visible :: fn(w: ^const World) -> bool => not ROOMS[w.here].dark or has_lamp(w)
+
+// ---- Commands -------------------------------------------------------------------
+
+look :: fn(w: ^World) \ {Say} {
+    r := ROOMS[w.here]
+    if not visible(w) {
+        say("It is pitch dark. You can't see a thing.")
+        return
+    }
+    say(r.desc)
+    for i in 0..N_ITEMS {
+        if w.where_[i] is w.here {
+            buf: [48]u8 = ---
+            b := str.builder(buf[..])
+            b.write("You see a {} here.", ITEM_NAMES[i])
+            say(b.str())
+        }
+    }
+}
+
+go :: fn(w: ^World, dir: usize) -> CmdError!() \ {Say} {
+    next := ROOMS[w.here].exits[dir]
+    if next is NO_EXIT { return !.NoExit }
+    // The iron door in the cave mouth is locked until the key is used.
+    if w.here is 2 and dir is NORTH and not w.door_open { return !.Locked }
+    w.here = next
+    w.moves += 1
+    look(w)
+}
+
+take :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+    id := item_id(name) else return !.Unknown(name)
+    if not visible(w) or w.where_[id] is not w.here { return !.NotHere(name) }
+    if id is ROCK { return !.Heavy }
+    if carried(w) >= w.capacity { return !.Full }
+    w.where_[id] = HELD
+    w.moves += 1
+    say("Taken.")
+}
+
+drop :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+    id := item_id(name) else return !.Unknown(name)
+    if w.where_[id] is not HELD { return !.NotCarrying(name) }
+    w.where_[id] = w.here
+    w.moves += 1
+    say("Dropped.")
+}
+
+use :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+    id := item_id(name) else return !.Unknown(name)
+    if w.where_[id] is not HELD { return !.NotCarrying(name) }
+    if id is KEY and w.here is 2 {
+        w.door_open = true
+        w.moves += 1
+        say("The key turns with a groan and the iron door swings open.")
+        return ()
+    }
+    say("Nothing happens.")
+}
+
+inventory :: fn(w: ^const World) \ {Say} {
+    n := carried(w)
+    if n is 0 {
+        say("You carry nothing.")
+        return
+    }
+    buf: [96]u8 = ---
+    b := str.builder(buf[..])
+    b.push("You carry:")
+    for i in 0..N_ITEMS {
+        if w.where_[i] is HELD {
+            b.push(" ")
+            b.push(ITEM_NAMES[i])
+        }
+    }
+    say(b.str())
+}
+
+direction :: fn(name: string) -> ?usize {
+    if name is "north" or name is "n" { return NORTH }
+    if name is "east" or name is "e" { return EAST }
+    if name is "south" or name is "s" { return SOUTH }
+    if name is "west" or name is "w" { return WEST }
+    return null
+}
+
+report :: fn(e: CmdError) \ {Say} {
+    buf: [96]u8 = ---
+    b := str.builder(buf[..])
+    match e {
+        .Unknown(what) => b.write("I don't know what \"{}\" means.", what)
+        .NoExit => b.push("You can't go that way.")
+        .Locked => b.push("The iron door is locked.")
+        .Dark => b.push("It is too dark.")
+        .Heavy => b.push("The rock is far too heavy to carry.")
+        .Full => b.push("Your hands are full. Drop something first.")
+        .NotHere(what) => b.write("There is no {} here.", what)
+        .NotCarrying(what) => b.write("You are not carrying a {}.", what)
+        .Missing(verb) => {
+            if verb is "go" { b.push("Go where?") } else { b.write("{} what?", verb) }
+        }
+    }
+    say(b.str())
+}
+
+// Runs one command line. Returns an error for the player to read; `leave` ends the session.
+// Error payloads point into `scratch`, which therefore has to outlive the call.
+execute :: fn(w: ^World, line: string, scratch: []u8) -> CmdError!() \ {Say, Quit} {
+    trimmed := str.trim(line)
+    text := str.to_lower(trimmed[0..trimmed.len.min(scratch.len)], scratch)
+    text = str.trim(text)
+    if text.len is 0 { return () }
+    verb := text
+    noun := ""
+    if parts := str.split_once(text, " ") {
+        verb = parts.before
+        noun = str.trim(parts.after)
+    }
+    match verb {
+        "look", "l" => look(w)
+        "go" => {
+            if noun.len is 0 { return !.Missing("go") }
+            d := direction(noun) else return !.Unknown(noun)
+            try go(w, d)
+        }
+        "north", "n", "east", "e", "south", "s", "west", "w" => {
+            try go(w, direction(verb)?)
+        }
+        "take", "get" => {
+            if noun.len is 0 { return !.Missing("take") }
+            try take(w, noun)
+        }
+        "drop" => {
+            if noun.len is 0 { return !.Missing("drop") }
+            try drop(w, noun)
+        }
+        "use" => {
+            if noun.len is 0 { return !.Missing("use") }
+            try use(w, noun)
+        }
+        "inventory", "i" => inventory(w)
+        "quit", "q" => leave(.Quit)
+        _ => return !.Unknown(verb)
+    }
+}
+
+// ---- The session ----------------------------------------------------------------
+
+Session :: struct {
+    history: [UNDO_DEPTH]World
+    depth: usize = 0
+}
+
+push_snapshot :: fn(s: ^Session, w: ^const World) {
+    if s.depth is UNDO_DEPTH {
+        for i in 1..UNDO_DEPTH { s.history[i - 1] = s.history[i] }
+        s.depth -= 1
+    }
+    s.history[s.depth] = w^
+    s.depth += 1
+}
+
+play :: fn(r: ^io.Reader) -> IoError!Outcome \ {Say, In} {
+    w := new_world()
+    s := Session(history: [UNDO_DEPTH]World(fill: new_world()))
+    scratch: [80]u8 = ---
+    say("Welcome to the little cabin. Type commands; `quit` leaves.")
+    look(&w)
+    outcome := session: with (handler Quit { leave(why) => { break why } }) {
+        while line := try r.next_line() {
+            text := str.trim(line)
+            if text is "undo" {
+                if s.depth is 0 {
+                    say("Nothing to undo.")
+                } else {
+                    s.depth -= 1
+                    w = s.history[s.depth]
+                    say("Undone.")
+                    look(&w)
+                }
+                continue
+            }
+            before := w
+            execute(&w, line, scratch[..]) else e => {
+                report(e)
+                continue
+            }
+            if w.moves is not before.moves { push_snapshot(&s, &before) }
+            if w.here is 0 and w.where_[TREASURE] is HELD {
+                break session Outcome.Won(w.moves)
+            }
+        }
+        Outcome.Eof
+    }
+    return outcome
+}
+
+main :: fn() -> IoError!() \ {Out, In} {
+    wrap := Wrapper()
+    r := io.reader()
+    // One reader serves several games in a row, until the input runs out.
+    games: u32 = 0
+    finished := false
+    while not finished {
+        games += 1
+        print("=== game {} ===\n", games)
+        outcome := with &wrap { try play(&r) }
+        match outcome {
+            .Won(moves) => print("*** You win in {} moves! ***\n", moves)
+            .Quit => print("Bye.\n", ())
+            .Eof => {
+                print("(end of input)\n", ())
+                finished = true
+            }
+        }
+    }
+    print("{} games, {} lines of output\n", (games, wrap.lines))
+}

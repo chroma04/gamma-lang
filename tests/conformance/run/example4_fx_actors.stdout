@@ -1,0 +1,12 @@
+pipeline: 200 values, sum of squares 2686700
+  source: source done;
+  squarer: squarer done;saw all 200;
+  summer: summer done;
+fan-in: 150 messages, total 303675
+fib(10) = 55
+fib(20) = 6765
+fib(30) = 832040
+fib(50) = 12586269025
+fib(70) = 190392490709135
+fib(90) = 2880067194370816120
+server handled 6 requests; log: server stopped;

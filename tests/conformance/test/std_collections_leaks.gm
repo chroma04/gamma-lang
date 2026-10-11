@@ -1,0 +1,91 @@
+//! stage: test
+// The test allocator fails a test that leaks, so these show that `deinit` returns
+// every block the containers took, including after growth, wrap-around and `clear`.
+dq :: import "std/collections/deque"
+hp :: import "std/collections/heap"
+bs :: import "std/collections/bitset"
+fixed_buffer :: import "std/fixed_buffer"
+
+test "an unused container takes nothing" {
+    d := dq.deque(u64)
+    h := hp.heap(u64)
+    d.deinit()
+    h.deinit()
+    s := try bs.bitset(0)
+    s.deinit()
+}
+
+test "a deque frees its ring after growing while wrapped" {
+    d := dq.deque(u64)
+    defer d.deinit()
+    for i in 0..5 { try d.push_back(i) }
+    _ = d.pop_front()
+    _ = d.pop_front()
+    for i in 0..40 {
+        if i % 2 is 0 { try d.push_front(i) } else { try d.push_back(i) }
+    }
+    expect(d.len() is 43)
+    d.clear()
+    try d.push_back(1)
+    expect(d.pop_back() is 1)
+}
+
+test "a deque frees its old buffer on every growth" {
+    d := dq.deque(u8)
+    defer d.deinit()
+    for i in 0..1000 { try d.push_back(i.trunc(u8)) }
+    try d.reserve(5000)
+    expect(d.capacity() >= 5000)
+}
+
+test "a deque can be reused after deinit" {
+    d := dq.deque(u32)
+    try d.push_back(1)
+    d.deinit()
+    expect(d.len() is 0 and d.capacity() is 0)
+    try d.push_back(2)
+    expect(d.front() is 2)
+    d.deinit()
+}
+
+test "a heap frees its storage" {
+    h := hp.heap(i64)
+    defer h.deinit()
+    for i in 0..100 { try h.push(100 - i) }
+    expect(h.pop() is 1)
+    h.clear()
+    try h.push(5)
+}
+
+test "a heap built from a slice frees its storage" {
+    xs := [_]i32(5, 4, 3, 2, 1)
+    h := try hp.heap_from(i32, xs[..])
+    defer h.deinit()
+    expect(h.peek() is 1)
+}
+
+test "a bit set frees its words" {
+    s := try bs.bitset(1000)
+    defer s.deinit()
+    s.insert(999)
+    expect(s.count() is 1)
+}
+
+test "containers free through the allocator they were created with" {
+    d := dq.deque(u32)
+    defer d.deinit()
+    h := hp.heap(u32)
+    defer h.deinit()
+    s := try bs.bitset(100)
+    defer s.deinit()
+    // The current allocator at the time of use does not matter: a fixed buffer that
+    // is installed afterwards is never touched by the containers.
+    store: [64]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        try d.push_back(1)
+        try h.push(2)
+        s.insert(3)
+    }
+    expect(d.len() is 1 and h.len() is 1 and s.count() is 1)
+}

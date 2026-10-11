@@ -1,0 +1,78 @@
+$ tally --help
+Usage: tally [OPTIONS] <text>...
+
+Counts how often each word occurs in the arguments.
+
+Arguments:
+  <text>                        Text to scan
+
+Options:
+  -n, --top <N>                 Show at most N words [default: 10]
+  -m, --min-len <LEN>           Ignore shorter words [default: 1]
+  -f, --format <text|csv|json>  Output format [default: text]
+      --sep <TEXT>              CSV separator [default: ,]
+  -i, --ignore-case             Fold upper case
+  -v, --verbose                 Report more (repeatable)
+  -h, --help                    Show this help
+[exit 0]
+$ tally the quick brown fox jumps over the lazy dog the end
+the x3
+brown x1
+dog x1
+end x1
+fox x1
+jumps x1
+lazy x1
+over x1
+quick x1
+$ tally -n 3 --format=csv -i The the THE a A b
+the,3
+a,2
+b,1
+$ tally -vv -m 4 -n2 --format json alpha beta alpha gamma delta alpha beta
+[{"alpha": 3}, {"beta": 2}]
+4 distinct, 2 shown
+0 dropped by --min-len
+$ tally -iv --sep ; -fcsv x X y
+x;2
+y;1
+2 distinct, 2 shown
+$ tally -- -n --format -n
+-n x2
+--format x1
+$ tally --top
+tally: option --top needs a value
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally -n 300 a
+tally: option --top: 300 is out of range
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally -n abc a
+tally: option --top: `abc` is not a number
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally --format xml a
+tally: option --format: `xml` is not one of the allowed values
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally --bogus
+tally: unknown option `--bogus`
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally -vq a
+tally: unknown option `-vq`
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally --verbose=1 a
+tally: option --verbose takes no value
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally --min-len -5 a
+tally: option --min-len: -5 is out of range
+Usage: tally [OPTIONS] <text>...
+[exit 2]
+$ tally
+tally: missing argument <text>
+Usage: tally [OPTIONS] <text>...
+[exit 2]

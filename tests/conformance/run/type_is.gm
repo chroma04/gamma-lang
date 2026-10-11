@@ -1,0 +1,21 @@
+// Types compare with `is` at compile time (§17.4), also inside generic bodies, where the
+// comparison is decided for each instantiation.
+S :: struct(F: u32) { raw: i32 }
+A :: S(8)
+Bytes :: []const u8
+@static_assert(i32 is i32)
+@static_assert(A is S(8))
+@static_assert(A is not S(9))
+@static_assert(Bytes is string)
+
+same :: fn(A: type, B: type) -> bool => A is B
+describe :: fn(T: type) -> string {
+    if T is f64 { return "f64" }
+    if T is ^T { return "impossible" }
+    return "other"
+}
+main :: fn() \ {Out} {
+    x: u8 = 1
+    print("{} {} {}\n", (same(i32, i32), same(u8, @type_of(x)), same(i32, u32)))
+    print("{} {}\n", (describe(f64), describe(bool)))
+}

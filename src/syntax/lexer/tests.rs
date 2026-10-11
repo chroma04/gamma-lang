@@ -618,6 +618,10 @@ fn rule_2_defers_newlines_before_continuations() {
     assert_eq!(toks("a\n.0"), "a NL . 0 EOF");
     assert_eq!(toks("a\n...b"), "a NL ... b EOF");
     assert_eq!(toks("a\n. b"), "a NL . b EOF");
+    // A line `.V(x) := …` is a pattern binding; `:=` inside brackets or a string does not count.
+    assert_eq!(toks("a\n.V(x) := v else c"), "a NL . V ( x ) := v else c EOF");
+    assert_eq!(toks("a\n.f(g(x := 1))"), "a . f ( g ( x := 1 ) ) EOF");
+    assert_eq!(toks("a\n.f(\":=\")"), "a . f ( Regular\":=\" ) EOF");
     // Other keywords and `not`/`is` do not continue.
     assert_eq!(toks("a\nnot b"), "a NL not b EOF");
     assert_eq!(toks("a\nis b"), "a NL is b EOF");

@@ -1,0 +1,83 @@
+// Usage and help text, laid out in two columns.
+spec :: import "../spec"
+str :: import "std/str"
+fmt :: import "std/fmt"
+
+LEFT_MAX :: 64
+
+describe_choice :: fn(names: []const string, b: ^str.Builder) {
+    for i in 0..names.len {
+        if i > 0 { b.push("|") }
+        b.push(names[i])
+    }
+}
+
+/// The left column of an option's entry, e.g. `-p, --port <PORT>`.
+left_of :: fn(o: ^const spec.Opt, b: ^str.Builder) {
+    if o.short is not 0 {
+        b.push_byte('-')
+        b.push_byte(o.short)
+        b.push(", ")
+    } else {
+        b.push("    ")
+    }
+    b.push("--")
+    b.push(o.name)
+    match o.kind {
+        .Flag, .Count => {}
+        .Choice(names) => {
+            b.push(" <")
+            describe_choice(names, b)
+            b.push(">")
+        }
+        _ => {
+            b.push(" <")
+            b.push(o.metavar)
+            b.push(">")
+        }
+    }
+}
+
+/// One line: `Usage: prog [OPTIONS] <a> [b...]`.
+pub usage :: fn(sp: ^const spec.Spec) \ {Out} {
+    print("Usage: {} [OPTIONS]", sp.program)
+    for p in sp.positionals() {
+        if p.required { print(" <{}>", p.name) } else { print(" [{}]", p.name) }
+        if p.many { print("...") }
+    }
+    print("\n")
+}
+
+pub help :: fn(sp: ^const spec.Spec) \ {Out} {
+    usage(sp)
+    print("\n{}\n", sp.about)
+    pos := sp.positionals()
+    opts := sp.options()
+    width: usize = "-h, --help".len
+    buf: [LEFT_MAX]u8 = ---
+    for p in pos { width = width.max(p.name.len + 2) }
+    for i in 0..opts.len {
+        b := str.builder(buf[..])
+        left_of(&opts[i], &b)
+        width = width.max(b.len())
+    }
+    pad: [LEFT_MAX]u8 = ---
+    if pos.len > 0 {
+        print("\nArguments:\n")
+        for p in pos {
+            b := str.builder(buf[..])
+            b.write("<{}>", p.name)
+            print("  {}  {}\n", (fmt.pad_right(b.str(), width, ' ', pad[..]), p.help))
+        }
+    }
+    print("\nOptions:\n")
+    for i in 0..opts.len {
+        b := str.builder(buf[..])
+        left_of(&opts[i], &b)
+        print("  {}  {}", (fmt.pad_right(b.str(), width, ' ', pad[..]), opts[i].help))
+        if d := opts[i].default { print(" [default: {}]", d) }
+        if opts[i].required { print(" [required]") }
+        print("\n")
+    }
+    print("  {}  {}\n", (fmt.pad_right("-h, --help", width, ' ', pad[..]), "Show this help"))
+}

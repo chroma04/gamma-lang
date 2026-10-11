@@ -149,6 +149,13 @@ pub enum StmtKind {
     },
     /// `discard k` (§14.5).
     Discard(Expr),
+    /// `pattern := value else fallback` with a refutable pattern (§4.5): binds the
+    /// pattern's names for the rest of the block, or runs `fallback`, which must leave it.
+    LetElse {
+        pat: Pattern,
+        value: Expr,
+        fallback: Expr,
+    },
     /// A nested block `{ … }` used as a statement.
     Block(Block),
 }

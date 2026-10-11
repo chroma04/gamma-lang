@@ -1,0 +1,92 @@
+=== game 1 ===
+Welcome to the little cabin. Type commands;
+`quit` leaves.
+A one-room cabin with a cold hearth. A door
+leads east.
+You see a lamp here.
+A one-room cabin with a cold hearth. A door
+leads east.
+You see a lamp here.
+I don't know what "dance" means.
+Go where?
+I don't know what "nowhere" means.
+You can't go that way.
+You carry nothing.
+Taken.
+There is no lamp here.
+A sunny clearing. Paths lead west, north and
+east.
+You see a rock here.
+The rock is far too heavy to carry.
+Undone.
+A one-room cabin with a cold hearth. A door
+leads east.
+A sunny clearing. Paths lead west, north and
+east.
+You see a rock here.
+A still lake. Something glints in the reeds.
+The only path leads west.
+You see a key here.
+Taken.
+There is no treasure here.
+You carry: lamp key
+A sunny clearing. Paths lead west, north and
+east.
+You see a rock here.
+The mouth of a cave. A heavy iron door is
+set in the north wall. The way south is back
+to the clearing.
+Dropped.
+It is pitch dark. You can't see a thing.
+There is no lamp here.
+Undone.
+The mouth of a cave. A heavy iron door is
+set in the north wall. The way south is back
+to the clearing.
+The mouth of a cave. A heavy iron door is
+set in the north wall. The way south is back
+to the clearing.
+The iron door is locked.
+The key turns with a groan and the iron door
+swings open.
+A dusty vault. The door you came through is
+to the south.
+You see a treasure here.
+Your hands are full. Drop something first.
+Dropped.
+Taken.
+You carry: lamp treasure
+The mouth of a cave. A heavy iron door is
+set in the north wall. The way south is back
+to the clearing.
+A sunny clearing. Paths lead west, north and
+east.
+You see a rock here.
+A one-room cabin with a cold hearth. A door
+leads east.
+*** You win in 13 moves! ***
+=== game 2 ===
+Welcome to the little cabin. Type commands;
+`quit` leaves.
+A one-room cabin with a cold hearth. A door
+leads east.
+You see a lamp here.
+I don't know what "this" means.
+A one-room cabin with a cold hearth. A door
+leads east.
+You see a lamp here.
+Taken.
+A sunny clearing. Paths lead west, north and
+east.
+You see a rock here.
+Bye.
+=== game 3 ===
+Welcome to the little cabin. Type commands;
+`quit` leaves.
+A one-room cabin with a cold hearth. A door
+leads east.
+You see a lamp here.
+I don't know what "what" means.
+take what?
+(end of input)
+3 games, 85 lines of output

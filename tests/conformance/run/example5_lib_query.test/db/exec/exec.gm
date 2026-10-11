@@ -1,0 +1,128 @@
+// The executor: scans are iterators, plans report to a Trace effect, ordering uses a heap.
+table :: import "../table"
+query :: import "../query"
+heap :: import "std/collections/heap"
+bits :: import "std/collections/bitset"
+
+/// Execution steps, for logging and statistics.
+pub Trace :: effect {
+    step: fn(what: string, n: usize)
+}
+
+/// Prints each step.
+pub Tracer :: struct {
+    pub prefix: string = "  | "
+}
+
+handler Trace for ^Tracer \ {Out} {
+    step(self, what, n) => print("{}{}: {}\n", (self.prefix, what, n))
+}
+
+/// Counts steps and the rows they mention.
+pub Tally :: struct {
+    pub steps: u32 = 0
+    pub rows: usize = 0
+}
+
+handler Trace for ^Tally {
+    step(self, what, n) => {
+        self.steps += 1
+        self.rows += n
+    }
+}
+
+/// Yields the rows of `t` that satisfy `q`, in the query's order and up to its limit.
+pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!() \ {Yield(T), Alloc, Trace} {
+    all := t.all()
+    lim := q.limit_of() else all.len
+    step("scan", all.len)
+    emitted: usize = 0
+    if less := q.ordering() {
+        h := heap.heap_by(T, less)
+        defer h.deinit()
+        for i in 0..all.len {
+            if q.accepts(&all[i]) { try h.push(all[i]) }
+        }
+        step("sort", h.len())
+        while emitted < lim {
+            x := h.pop() else break
+            yield(x)
+            emitted += 1
+        }
+    } else {
+        for i in 0..all.len {
+            if emitted >= lim { break }
+            if q.accepts(&all[i]) {
+                yield(all[i])
+                emitted += 1
+            }
+        }
+    }
+    step("emit", emitted)
+    return ()
+}
+
+pub count :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!usize \ {Alloc, Trace} {
+    n: usize = 0
+    try for _ in rows(t, q) { n += 1 }
+    return n
+}
+
+pub sum :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T), val: fn(row: ^const T) -> i64) -> AllocError!i64 \ {Alloc, Trace} {
+    total: i64 = 0
+    try for r in rows(t, q) {
+        copy := r
+        total += val(&copy)
+    }
+    return total
+}
+
+pub Group :: struct {
+    pub n: u32 = 0
+    pub total: i64 = 0
+}
+
+/// Groups the matching rows by `key` and totals `val` per group.
+pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Query(T),
+                   key: fn(row: ^const T) -> K, val: fn(row: ^const T) -> i64) -> AllocError!HashMap(K, Group) \ {Alloc, Trace} where Eq(K) {
+    groups := map(K, Group)
+    errdefer groups.deinit()
+    try for r in rows(t, q) {
+        copy := r
+        g := try groups.get_or_put(key(&copy), Group())
+        g.n += 1
+        g.total += val(&copy)
+    }
+    step("groups", groups.len())
+    return groups
+}
+
+/// An inner hash join of `ta` and `tb` on equal keys; `tb`'s key should be unique.
+pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const table.Table(B),
+               ka: fn(row: ^const A) -> K, kb: fn(row: ^const B) -> K) -> AllocError!() \ {Yield((left: A, right: B)), Alloc, Trace} where Eq(K) {
+    build := map(K, usize)
+    defer build.deinit()
+    right := tb.all()
+    for i in 0..right.len { try build.put(kb(&right[i]), i) }
+    step("build", build.len())
+    left := ta.all()
+    matched: usize = 0
+    for i in 0..left.len {
+        if j := build.get(ka(&left[i])) {
+            yield((left: left[i], right: right[j]))
+            matched += 1
+        }
+    }
+    step("join matched", matched)
+    return ()
+}
+
+/// The set of row numbers satisfying `pred`.
+pub mask :: fn(T: type, t: ^const table.Table(T), pred: fn(row: ^const T) -> bool) -> AllocError!bits.BitSet \ {Alloc} {
+    all := t.all()
+    set := try bits.bitset(all.len)
+    for i in 0..all.len {
+        if pred(&all[i]) { set.insert(i) }
+    }
+    return set
+}

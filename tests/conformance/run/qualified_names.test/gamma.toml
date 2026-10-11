@@ -1,0 +1,3 @@
+# Modules reached through qualified names, aliases and re-exports.
+[package]
+name = "qualified_names"

@@ -107,10 +107,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     && !block.ty.is_never()
                     && !matches!(ret.kind(), TyKind::Result { ok, .. } if ok.is_unit())
                 {
-                    self.error(
-                        b.span.shrink_to_hi(),
-                        format!("function returning `{}` can reach the end of its body without returning a value", ret),
-                    );
+                    self.missing_return(b, ret);
                 }
                 block
             }

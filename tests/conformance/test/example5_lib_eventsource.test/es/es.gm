@@ -1,0 +1,93 @@
+// Event sourcing in a generic library: an append-only log, a live projection and replay.
+
+/// Commands report what happened by emitting events of type `E`.
+pub Events :: effect(E: type) {
+    emit: fn(e: E)
+}
+
+pub Stamped :: struct(E: type) {
+    pub seq: u64
+    pub event: E
+}
+
+/// A state captured at a point in the log.
+pub Snapshot :: struct(S: type) {
+    pub seq: u64
+    pub state: S
+}
+
+/// Folds `step` over events to get a state.
+pub fold :: fn(S: type, E: type, init: S, evs: []const Stamped(E), step: fn(s: S, e: E) -> S) -> S {
+    s := init
+    for ev in evs { s = step(s, ev.event) }
+    return s
+}
+
+/// Like `fold`, but only for events after `snap`.
+pub resume_from :: fn(S: type, E: type, snap: Snapshot(S), evs: []const Stamped(E), step: fn(s: S, e: E) -> S) -> S {
+    s := snap.state
+    for ev in evs {
+        if ev.seq > snap.seq { s = step(s, ev.event) }
+    }
+    return s
+}
+
+/// The log plus the state it projects to, kept up to date as events are emitted.
+pub Store :: struct(S: type, E: type) {
+    pub state: S
+    init: S
+    step: ^fn(s: S, e: E) -> S
+    log: List(Stamped(E))
+    next_seq: u64 = 1
+}
+
+pub store :: fn(S: type, E: type, init: S, step: ^fn(s: S, e: E) -> S) -> Store(S, E) \ {Alloc} {
+    return Store(S, E)(state: init, init: init, step: step, log: list(Stamped(E)))
+}
+
+pub deinit :: fn(S: type, E: type, st: ^Store(S, E)) { st.log.deinit() }
+
+handler(S: type, E: type) Events(E) for ^Store(S, E) {
+    emit(self, e) => {
+        self.log.push(Stamped(E)(seq: self.next_seq, event: e)) else trap("out of memory")
+        self.next_seq += 1
+        self.state = self.step(self.state, e)
+    }
+}
+
+pub events :: fn(S: type, E: type, st: ^const Store(S, E)) -> []const Stamped(E) => st.log.items
+
+pub len :: fn(S: type, E: type, st: ^const Store(S, E)) -> usize => st.log.items.len
+
+pub snapshot :: fn(S: type, E: type, st: ^const Store(S, E)) -> Snapshot(S) {
+    return Snapshot(S)(seq: st.next_seq - 1, state: st.state)
+}
+
+/// Drops all events after the first `n` and recomputes the state from the rest.
+pub rollback :: fn(S: type, E: type, st: ^Store(S, E), n: usize) {
+    st.log.truncate(n)
+    st.next_seq = u64(n) + 1
+    st.state = fold(st.init, st.log.items, st.step)
+}
+
+test "fold adds up" {
+    add :: fn(s: i32, e: i32) -> i32 => s + e
+    evs := [_]Stamped(i32)(Stamped(i32)(seq: 1, event: 5), Stamped(i32)(seq: 2, event: 7))
+    expect(fold(0, evs[..], add) is 12)
+    snap := Snapshot(i32)(seq: 1, state: 5)
+    expect(resume_from(snap, evs[..], add) is 12)
+}
+
+test "store keeps log and state in step" {
+    add :: fn(s: i32, e: i32) -> i32 => s + e
+    st := store(0, add)
+    defer st.deinit()
+    with &st {
+        emit(3)
+        emit(4)
+    }
+    expect(st.len() is 2)
+    expect(st.state is 7)
+    st.rollback(1)
+    expect(st.state is 3)
+}

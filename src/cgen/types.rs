@@ -215,6 +215,20 @@ impl<'a> Types<'a> {
         }
     }
 
+    /// Whether values of `t` cross calls between Gamma functions by address: blobs larger
+    /// than two words, which the C ABI would copy through memory anyway. The callee copies
+    /// the value into its frame before anything else runs, so the address may be any
+    /// place holding it.
+    pub fn by_ref(&self, t: Ty) -> bool {
+        matches!(self.repr(t), Repr::Blob) && self.size(t) > 16
+    }
+
+    /// The C type of a parameter of type `t` of a Gamma function (not of a plain C
+    /// signature): an address if `by_ref`.
+    pub fn param_cty(&mut self, t: Ty) -> String {
+        if self.by_ref(t) { "const void *".into() } else { self.cty(t) }
+    }
+
     /// The C type of `t` in the plain C calling convention: its mirror if it has one.
     pub fn plain_cty(&mut self, t: Ty) -> String {
         match self.mirror(t) {

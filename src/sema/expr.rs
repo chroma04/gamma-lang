@@ -78,6 +78,13 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
                 self.range_value(*op == ast::BinOp::RangeIncl, lhs, rhs, expect, span)
             }
+            // `()` is a type only next to another type: `r is ()` compares values.
+            ExprKind::Binary { op: op @ (ast::BinOp::Is | ast::BinOp::IsNot), lhs, rhs }
+                if (!is_unit_tuple(lhs) && self.denotes_type(lhs))
+                    || (!is_unit_tuple(rhs) && self.denotes_type(rhs)) =>
+            {
+                self.type_is(*op == ast::BinOp::IsNot, lhs, rhs, span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
@@ -245,6 +252,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
                 LocalBinding::NestedFn(f) => self.fn_ref(f, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
+                LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 LocalBinding::Label => {
                     self.error(span, format!("`{}` is a label, not a value", name));
                     error_expr(span)
@@ -309,6 +317,11 @@ impl<'a, 's> FnCx<'a, 's> {
     /// The module a module-binding expression (`m` in `m.x`) names, unless a
     /// local shadows it.
     pub fn module_of(&mut self, e: &ast::Expr) -> Option<super::ModuleId> {
+        // `m.n` where `n` is a public module binding of module `m`.
+        if let ExprKind::Field { base, name } = &e.kind {
+            let m = self.module_of(base)?;
+            return self.sema.public_module_member(m, name.name);
+        }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
             return None;
@@ -362,7 +375,12 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     fn tuple(&mut self, elems: &[ast::TupleElem], expect: Option<Ty>, span: Span) -> Expr {
-        let expected_elems: Option<Vec<Ty>> = expect.and_then(|t| match self.infer.shallow(t).kind() {
+        // The expected tuple type, also through optionals and results that would wrap it.
+        let mut want = expect.map(|t| self.infer.shallow(t));
+        while let Some(TyKind::Optional(inner) | TyKind::Result { ok: inner, .. }) = want.map(|t| t.kind().clone()) {
+            want = Some(self.infer.shallow(inner));
+        }
+        let expected_elems: Option<Vec<Ty>> = want.and_then(|t| match t.kind() {
             TyKind::Tuple { elems: es, .. } if es.len() == elems.len() => Some(es.to_vec()),
             _ => None,
         });
@@ -373,7 +391,18 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut vals = vec![];
         for (i, el) in elems.iter().enumerate() {
             let exp = expected_elems.as_ref().map(|v| v[i]);
-            let v = self.expr(&el.value, exp);
+            let mut v = self.expr(&el.value, exp);
+            // Each element converts to the expected element type where it can (§6.4):
+            // `(a: 1, b: null)` for `(a: u8, b: ?u8)`. A mismatch is left for the
+            // coercion of the whole tuple to report.
+            if let Some(exp) = exp.map(|t| self.infer.resolve(t))
+                && !exp.has_infer()
+            {
+                let vt = self.infer.resolve(v.ty);
+                if vt != exp && (vt.is_infer() || (!vt.has_infer() && self.coercion_steps(vt, exp).is_some())) {
+                    v = self.coerce(v, exp);
+                }
+            }
             vals.push(v);
         }
         let names = if named {
@@ -453,12 +482,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
             ast::UnOp::AddrOf => {
+                let temp_ok = std::mem::take(&mut self.temp_ref_arg);
                 let v = self.expr(operand, None);
                 match self.place_mutability(&v) {
                     Some(m) => {
                         let ty = Ty::ptr(!m, v.ty);
                         mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
                     }
+                    // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
+                    // the call returns, as for a method's receiver (§7.10).
+                    None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
                     None => {
                         self.error(
                             span,
@@ -512,7 +545,7 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.unify(a, b).is_err() {
             let (a, b) = (self.infer.resolve(a), self.infer.resolve(b));
             let mut d = Diagnostic::error(span, format!("{} have different types: `{}` and `{}`", what, a, b));
-            let is_array = |t: Ty| matches!(t.kind(), TyKind::Array { .. });
+            let is_array = |t: Ty| t.is_array();
             if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
                 d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
             }
@@ -525,6 +558,43 @@ impl<'a, 's> FnCx<'a, 's> {
             return Ty::error();
         }
         self.infer.shallow(a)
+    }
+
+    /// True if `e` denotes a type rather than a value: a type parameter in scope, a type
+    /// name or instantiation, or a type expression.
+    fn denotes_type(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Paren(inner) => self.denotes_type(inner),
+            ExprKind::Ident(id) => {
+                if self.lookup_local(id.name).is_some() {
+                    return false;
+                }
+                self.sema.type_params.iter().any(|(n, _)| *n == id.name) || self.type_of_name(e).is_some()
+            }
+            ExprKind::Call { .. } | ExprKind::Field { .. } => self.type_of_name(e).is_some(),
+            ExprKind::Intrinsic { name, .. } => name.name.as_str() == "type_of",
+            _ => {
+                let module = self.module;
+                self.sema.looks_like_type(module, e)
+            }
+        }
+    }
+
+    /// `A is B` on types (§17): a compile-time `bool`, decided when a generic body is
+    /// instantiated if either side mentions its parameters.
+    fn type_is(&mut self, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        if !self.denotes_type(lhs) || !self.denotes_type(rhs) {
+            self.error(span, "`is` compares a type only with another type");
+            return error_expr(span);
+        }
+        let (a, b) = (self.resolve_type(lhs), self.resolve_type(rhs));
+        if a.is_error() || b.is_error() {
+            return error_expr(span);
+        }
+        if super::generics::has_param(a) || super::generics::has_param(b) {
+            return mk(Ty::bool(), tir::ExprKind::TypeIs { a, b, negated }, span);
+        }
+        mk(Ty::bool(), tir::ExprKind::Bool((a == b) != negated), span)
     }
 
     /// Checks `lhs op rhs` given the already-checked left operand.
@@ -847,6 +917,21 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             return None;
         }
+        // `m.G(args)` where `G` is a generic type of module `m`.
+        if let ExprKind::Call { callee, .. } = &e.kind
+            && let ExprKind::Field { base, name } = &callee.kind
+            && let Some(m) = self.module_of(base)
+        {
+            let d = self.sema.modules[m.0 as usize].scope.get(&name.name).copied();
+            if let Some(d) = d
+                && self.sema.decls[d.0 as usize].item.is_pub
+                && let DeclValue::GenericType(_) = self.sema.resolve_decl(d)
+            {
+                let t = self.resolve_type(e);
+                return (!t.is_error()).then_some(t);
+            }
+            return None;
+        }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
             return None;
@@ -1039,6 +1124,24 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
                 usize_const(if name.name.as_str() == "size_of" { size } else { align })
+            }
+            "min_value" | "max_value" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let max = name.name.as_str() == "max_value";
+                if let TyKind::Param(p) = t.kind() {
+                    if !self.sema.param_has(*p, super::generics::Constraint::Int) {
+                        self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
+                        return error_expr(span);
+                    }
+                    return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
+                }
+                match int_limit(t, max, &self.sema.target) {
+                    Some(v) => mk(t, tir::ExprKind::Int(v), span),
+                    None => {
+                        self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
+                        error_expr(span)
+                    }
+                }
             }
             "offset_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
@@ -1319,6 +1422,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 TyKind::Result { err, .. } => Some(Ty::result(*err, present)),
                 _ => None,
             },
+            // A result with an optional fallback drops the error: `parse(s) else null`.
+            (ExprKind::Null, _) if err.is_some() => Some(Ty::optional(present)),
             _ => Some(present),
         };
         let r = self.expr(rhs, rhs_expect);
@@ -1328,7 +1433,9 @@ impl<'a, 's> FnCx<'a, 's> {
             (present, r)
         } else if rt == lt && err.is_none() {
             (lt, r)
-        } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present) {
+        } else if matches!(rt.kind(), TyKind::Result { ok, .. } if *ok == present)
+            || (err.is_some() && rt == Ty::optional(present))
+        {
             (rt, r)
         } else {
             let r = self.coerce(r, present);
@@ -1366,7 +1473,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     match self.lift_variant(*err, *f) {
                         Ok(i) => Some(tir::Lift::Variant(i)),
                         Err(msg) => {
-                            self.error(span, msg);
+                            let mut d = crate::diag::Diagnostic::error(span, msg);
+                            if self.infer_test_error && self.outer.is_empty() {
+                                d = d.with_note(format!(
+                                    "a test's error type is that of its first `try`, here `{}` (§3.8); call a helper that declares a common error type",
+                                    f
+                                ));
+                            }
+                            self.sema.emit(d);
                             None
                         }
                     }
@@ -2332,4 +2446,27 @@ pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
         Some(out)
     }
     push_down(e, inner)
+}
+
+/// True for `()`, which is both the unit type and the unit value.
+fn is_unit_tuple(e: &ast::Expr) -> bool {
+    matches!(&e.kind, ExprKind::Tuple(elems) if elems.is_empty())
+}
+
+/// The smallest (or, with `max`, the largest) value of integer type `t`, or `None` if
+/// `t` is not an integer type.
+pub fn int_limit(t: Ty, max: bool, target: &crate::layout::Target) -> Option<num_bigint::BigInt> {
+    let (signed, bits) = match t.kind() {
+        TyKind::Int(i) => (i.signed, i.bits as u32),
+        TyKind::Usize => (false, target.ptr_bits()),
+        TyKind::Isize => (true, target.ptr_bits()),
+        _ => return None,
+    };
+    let one = num_bigint::BigInt::from(1u8);
+    Some(match (signed, max) {
+        (false, false) => num_bigint::BigInt::from(0u8),
+        (false, true) => (one << bits as usize) - 1u8,
+        (true, false) => -(one << (bits - 1) as usize),
+        (true, true) => (one << (bits - 1) as usize) - 1u8,
+    })
 }

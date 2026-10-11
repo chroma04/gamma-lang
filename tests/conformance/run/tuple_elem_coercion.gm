@@ -1,0 +1,23 @@
+// Tuple expressions convert element by element to an expected tuple type (§5.9), also
+// through optionals and results.
+Op :: union { And, Or }
+f :: fn(x: i32) -> (a: u8, b: ?u8) => (a: 1, b: 2)
+g :: fn() -> (u8, ?u8) {
+    v: u8 = 3
+    return (1, v)
+}
+h :: fn() -> ?(a: u8, b: ?u8) => (a: 1, b: null)
+k :: fn(i: u8) -> ?(l: u8, r: u8, op: ?Op) {
+    if i is 0 { return null }
+    return (l: 2, r: i, op: Op.Or)
+}
+e :: fn(ok: bool) -> u8!(i64, string) {
+    if not ok { return !7 }
+    return (5, "five")
+}
+main :: fn() \ {Out} {
+    print("{} {} {} {}\n", (f(0), g(), h(), k(1)))
+    print("{} {}\n", (k(0), e(true)))
+    t: (f64, ?i64) = (1, 2)
+    print("{}\n", t)
+}

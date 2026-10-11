@@ -1,0 +1,7 @@
+//! stage: parse
+// A pattern binding needs an `else` that does not capture an error (§4.5).
+f :: fn(v: V) -> i32 {
+    .A(m) := v              //~ ERROR needs `else` to leave the block
+    .A(k) := v else e => 1  //~ ERROR cannot capture an error
+    return 0
+}

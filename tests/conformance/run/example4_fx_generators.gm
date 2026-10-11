@@ -1,0 +1,296 @@
+// Generators: generic lazy iterator adapters over Yield, early exit running defers, and a lockstep driver that pulls two iterators on separate fibers to build zip and a sorted merge.
+STACK :: 16384
+
+// ---- Lazy adapters over iterators passed as second-class functions ----------------
+
+mapped :: fn(T, U: type, src: fn() \ {Yield(T)}, f: fn(x: T) -> U) \ {Yield(U)} {
+    for x in src() { yield(f(x)) }
+}
+
+filtered :: fn(T: type, src: fn() \ {Yield(T)}, keep: fn(x: T) -> bool) \ {Yield(T)} {
+    for x in src() {
+        if keep(x) { yield(x) }
+    }
+}
+
+taking :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
+    if n is 0 { return }
+    count: usize = 0
+    for x in src() {
+        yield(x)
+        count += 1
+        if count is n { break }
+    }
+}
+
+skipping :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
+    seen: usize = 0
+    for x in src() {
+        if seen >= n { yield(x) }
+        seen += 1
+    }
+}
+
+taking_while :: fn(T: type, src: fn() \ {Yield(T)}, ok: fn(x: T) -> bool) \ {Yield(T)} {
+    for x in src() {
+        if not ok(x) { break }
+        yield(x)
+    }
+}
+
+// Sources.
+naturals :: fn() \ {Yield(i64), Out} {
+    defer print("  (naturals closed)\n")
+    n: i64 = 1
+    while true {
+        yield(n)
+        n += 1
+    }
+}
+
+fibs :: fn() \ {Yield(i64)} {
+    a: i64 = 0
+    b: i64 = 1
+    while true {
+        yield(a)
+        t := a + b
+        a = b
+        b = t
+    }
+}
+
+is_prime :: fn(n: i64) -> bool {
+    if n < 2 { return false }
+    d: i64 = 2
+    while d * d <= n {
+        if n % d is 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+primes :: fn() \ {Yield(i64), Out} {
+    filtered(i64, fn() { naturals() }, is_prime)
+}
+
+show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
+    print("{}:", label)
+    for x in src() { print(" {}", x) }
+    print("\n", ())
+}
+
+adapters :: fn() \ {Out} {
+    print("-- adapters\n")
+    show_stream("first 10 primes", fn() { taking(i64, 10, primes) })
+    show_stream("squares of 1..5", fn() {
+        taking(i64, 5, fn() { mapped(i64, i64, naturals, fn(x: i64) -> i64 => x * x) })
+    })
+    show_stream("fibs from the 10th, 6 of them", fn() { taking(i64, 6, fn() { skipping(i64, 10, fibs) }) })
+    show_stream("fibs below 100", fn() { taking_while(i64, fibs, fn(x: i64) -> bool => x < 100) })
+    // The same stream consumed twice by different loops is two independent runs.
+    total: i64 = 0
+    for p in taking(i64, 100, primes) { total += p }
+    print("sum of the first 100 primes: {}\n", total)
+}
+
+// ---- Lockstep driver: two iterators, each on its own fiber ------------------------
+
+Lock :: effect {
+    begin: ctl() -> never
+    head: ctl(side: u8, x: i64)
+    finished: ctl(side: u8) -> never
+}
+
+LockArg :: struct {
+    side: u8
+    src: ^fn() \ {Yield(i64), Out}
+}
+
+producer :: fn(a: ^LockArg) -> never \ {Lock, Out} {
+    for x in a.src() { head(a.side, x) }
+    finished(a.side)
+}
+
+Act :: union { ResumeLeft, ResumeRight, Stop }
+
+// Calls `pick(l, r)` with the current heads (null once an iterator is exhausted) and
+// advances according to its answer: 0 stops, 1 consumes the left head, 2 the right, 3 both.
+lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pick: fn(l: ?i64, r: ?i64) -> u8) \ {Out} {
+    stack_main: [STACK]u8 = ---
+    stack_l: [STACK]u8 = ---
+    stack_r: [STACK]u8 = ---
+    la := LockArg(side: 0, src: fa)
+    ra := LockArg(side: 1, src: fb)
+    lk: ?cont(()) = null
+    rk: ?cont(()) = null
+    lh: ?i64 = null
+    rh: ?i64 = null
+    ldone := false
+    rdone := false
+    want_l := true
+    want_r := true
+    // Decides what the driver does next, calling `pick` as often as needed.
+    step :: fn() -> Act {
+        while true {
+            if want_l and not ldone { return .ResumeLeft }
+            if want_r and not rdone { return .ResumeRight }
+            if want_l { lh = null }
+            if want_r { rh = null }
+            want_l = false
+            want_r = false
+            c := pick(lh, rh)
+            if c is 0 { return .Stop }
+            if c is 1 or c is 3 { want_l = true }
+            if c is 2 or c is 3 { want_r = true }
+        }
+    }
+    with (handler Lock {
+        begin(k) => {
+            discard k
+            lk = @fiber(producer, &la, stack_l[..])
+            rk = @fiber(producer, &ra, stack_r[..])
+            match step() {
+                .ResumeLeft => {
+                    c := lk?
+                    lk = null
+                    resume c()
+                }
+                _ => trap("unexpected first step")
+            }
+        }
+        head(side, x, k) => {
+            if side is 0 {
+                lh = x
+                lk = k
+                want_l = false
+            } else {
+                rh = x
+                rk = k
+                want_r = false
+            }
+            match step() {
+                .ResumeLeft => {
+                    c := lk?
+                    lk = null
+                    resume c()
+                }
+                .ResumeRight => {
+                    c := rk?
+                    rk = null
+                    resume c()
+                }
+                .Stop => {
+                    if c := lk { discard c }
+                    if c := rk { discard c }
+                    break
+                }
+            }
+        }
+        finished(side, k) => {
+            discard k
+            if side is 0 { ldone = true } else { rdone = true }
+            match step() {
+                .ResumeLeft => {
+                    c := lk?
+                    lk = null
+                    resume c()
+                }
+                .ResumeRight => {
+                    c := rk?
+                    rk = null
+                    resume c()
+                }
+                .Stop => {
+                    if c := lk { discard c }
+                    if c := rk { discard c }
+                    break
+                }
+            }
+        }
+    }) on stack_main[..] {
+        begin()
+    }
+}
+
+multiples_of_3 :: fn() \ {Yield(i64)} {
+    n: i64 = 3
+    while n < 40 {
+        yield(n)
+        n += 3
+    }
+}
+
+multiples_of_5 :: fn() \ {Yield(i64)} {
+    n: i64 = 5
+    while n < 40 {
+        yield(n)
+        n += 5
+    }
+}
+
+squares :: fn() \ {Yield(i64), Out} {
+    for x in naturals() { yield(x * x) }
+}
+
+short :: fn() \ {Yield(i64)} {
+    yield(100)
+    yield(200)
+    yield(300)
+}
+
+lockstep_demo :: fn() \ {Out} {
+    print("-- zip: naturals with squares, stopped by the shorter side\n")
+    n: u32 = 0
+    lockstep(naturals, short, fn(l: ?i64, r: ?i64) -> u8 {
+        if a := l {
+            if b := r {
+                print("  ({}, {})\n", (a, b))
+                n += 1
+                return 3
+            }
+        }
+        return 0
+    })
+    print("  {} pairs\n", n)
+
+    print("-- zip of two infinite streams, cut after 4\n")
+    n = 0
+    lockstep(squares, fibs, fn(l: ?i64, r: ?i64) -> u8 {
+        if a := l {
+            if b := r {
+                print("  {} + {} = {}\n", (a, b, a + b))
+                n += 1
+                if n is 4 { return 0 }
+                return 3
+            }
+        }
+        return 0
+    })
+
+    print("-- merge of the multiples of 3 and of 5 below 40, without duplicates\n")
+    print(" ", ())
+    last: i64 = 0
+    lockstep(multiples_of_3, multiples_of_5, fn(l: ?i64, r: ?i64) -> u8 {
+        if a := l {
+            if b := r {
+                if a < b { print(" {}", a); return 1 }
+                if b < a { print(" {}", b); return 2 }
+                print(" {}", a)
+                return 3
+            }
+            print(" {}", a)
+            return 1
+        }
+        if b := r {
+            print(" {}", b)
+            return 2
+        }
+        return 0
+    })
+    print("\n", ())
+}
+
+main :: fn() \ {Out} {
+    adapters()
+    lockstep_demo()
+}

@@ -85,7 +85,25 @@ fn parse_args() -> Result<Options, String> {
     Ok(opts)
 }
 
+/// Lets a closed output pipe end the process quietly, as for other command-line tools
+/// (`gamma test … | head`), instead of a panic on the failed write. Rust ignores
+/// `SIGPIPE` by default.
+#[cfg(unix)]
+fn default_sigpipe() {
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13; // the same on Linux, macOS and the BSDs
+    const SIG_DFL: usize = 0;
+    // SAFETY: restoring the default disposition of a signal has no preconditions.
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
 fn main() -> ExitCode {
+    #[cfg(unix)]
+    default_sigpipe();
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
     }
@@ -368,14 +386,22 @@ fn compile_native(sess: &Session, prog: &gamma::tir::Program, exe: &std::path::P
 
 /// Creates a temporary directory for a native build, reporting a failure.
 fn native_dir(what: &str) -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("gamma-{}-{}", what, std::process::id()));
-    match std::fs::create_dir_all(&dir) {
-        Ok(()) => Some(dir),
-        Err(e) => {
-            eprintln!("gamma: cannot create {}: {}", dir.display(), e);
-            None
+    // A directory no other process uses: created here, never reused (a process id alone
+    // can repeat across sandboxes sharing one temporary directory).
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    for attempt in 0..100u32 {
+        let dir = std::env::temp_dir().join(format!("gamma-{}-{}-{:x}-{}", what, std::process::id(), nanos, attempt));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Some(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                eprintln!("gamma: cannot create {}: {}", dir.display(), e);
+                return None;
+            }
         }
     }
+    eprintln!("gamma: cannot create a temporary directory in {}", std::env::temp_dir().display());
+    None
 }
 
 fn build(opts: &Options) -> ExitCode {

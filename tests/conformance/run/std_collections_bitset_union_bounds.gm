@@ -1,0 +1,18 @@
+//! exit: 134
+// A union with a set that has members beyond the capacity traps; a larger set whose
+// extra words are empty is fine.
+bs :: import "std/collections/bitset"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    small := try bs.bitset(64)
+    defer small.deinit()
+    big := try bs.bitset(200)
+    defer big.deinit()
+    big.insert(10)
+    small.union_with(&big)
+    print("union ok: {}\n", small.contains(10))
+    big.insert(100)
+    small.union_with(&big)
+    print("unreachable\n")
+    return ()
+}

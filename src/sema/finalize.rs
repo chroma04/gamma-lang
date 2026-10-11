@@ -107,7 +107,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 // elementwise (§7.4.6).
                 let base = op.trim_end_matches(['%', '|']);
                 if matches!(base, "+" | "-" | "*" | "/") && (base.len() == op.len() || base != "/") {
-                    while let TyKind::Array { elem, .. } = t.kind() {
+                    while let TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } = t.kind() {
                         t = *elem;
                     }
                 }

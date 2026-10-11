@@ -1,0 +1,156 @@
+// Radix-2 FFT over a Complex struct with method-style arithmetic; checks a convolution against the direct sum and Parseval's identity.
+math :: import "std/math"
+fmt :: import "std/fmt"
+
+Complex :: struct {
+    re, im: f64
+}
+
+cx :: fn(re, im: f64) -> Complex => Complex(re: re, im: im)
+
+add :: fn(a: Complex, b: Complex) -> Complex => Complex(re: a.re + b.re, im: a.im + b.im)
+sub :: fn(a: Complex, b: Complex) -> Complex => Complex(re: a.re - b.re, im: a.im - b.im)
+mul :: fn(a: Complex, b: Complex) -> Complex =>
+    Complex(re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re)
+conj :: fn(a: Complex) -> Complex => Complex(re: a.re, im: -a.im)
+scale :: fn(a: Complex, k: f64) -> Complex => Complex(re: a.re * k, im: a.im * k)
+norm2 :: fn(a: Complex) -> f64 => a.re * a.re + a.im * a.im
+
+// e^(i*theta)
+expi :: fn(theta: f64) -> Complex => Complex(re: math.cos(theta), im: math.sin(theta))
+
+is_pow2 :: fn(n: usize) -> bool => n > 0 and n & (n - 1) is 0
+
+// In-place iterative FFT. `inverse` selects the sign of the exponent and applies 1/N scaling.
+fft :: fn(N :: usize, x: ^[N]Complex, inverse: bool) {
+    @static_assert(is_pow2(N), "FFT length must be a power of two")
+    // bit-reversal permutation
+    j: usize = 0
+    for i in 1..N {
+        bit := N >> 1
+        while j & bit is not 0 {
+            j = j ~ bit
+            bit = bit >> 1
+        }
+        j = j ~ bit
+        if i < j { x.swap(i, j) }
+    }
+    sign := if inverse { 1.0 } else { -1.0 }
+    len: usize = 2
+    while len <= N {
+        step := sign * math.tau / len.round(f64)
+        half := len / 2
+        start: usize = 0
+        while start < N {
+            for k in 0..half {
+                w := expi(step * k.round(f64))
+                u := x[start + k]
+                v := mul(w, x[start + k + half])
+                x[start + k] = add(u, v)
+                x[start + k + half] = sub(u, v)
+            }
+            start += len
+        }
+        len *= 2
+    }
+    if inverse {
+        inv_n := 1.0 / N.round(f64)
+        for i in 0..N { x[i] = scale(x[i], inv_n) }
+    }
+}
+
+// Convolution of two integer sequences through the frequency domain.
+convolve :: fn(N :: usize, a, b: []const i64, out: []i64) {
+    fa := [N]Complex(fill: cx(0.0, 0.0))
+    fb := [N]Complex(fill: cx(0.0, 0.0))
+    for i, v in enumerate(a) { fa[i] = cx(v.round(f64), 0.0) }
+    for i, v in enumerate(b) { fb[i] = cx(v.round(f64), 0.0) }
+    fft(N, &fa, false)
+    fft(N, &fb, false)
+    for i in 0..N { fa[i] = mul(fa[i], fb[i]) }
+    fft(N, &fa, true)
+    for i in 0..out.len { out[i] = fa[i].re.round(i64) }
+}
+
+direct_convolve :: fn(a, b: []const i64, out: []i64) {
+    out.fill(0)
+    for i, x in enumerate(a) {
+        for j, y in enumerate(b) { out[i + j] += x * y }
+    }
+}
+
+main :: fn() \ {Out} {
+    fbuf: [400]u8 = ---
+
+    // The DFT of a unit impulse is flat; of a constant it is a single spike.
+    imp := [8]Complex(fill: cx(0.0, 0.0))
+    imp[0] = cx(1.0, 0.0)
+    fft(8, &imp, false)
+    flat := true
+    for c in imp { if c.re is not 1.0 or c.im is not 0.0 { flat = false } }
+    print("impulse spectrum flat: {}\n", flat)
+
+    ones := [8]Complex(fill: cx(1.0, 0.0))
+    fft(8, &ones, false)
+    print("constant: X[0] = {}, others tiny: {}\n", (fmt.fixed(ones[0].re, 6, fbuf[..]), ones[1].re.abs() < 1e-12 and ones[5].im.abs() < 1e-12))
+
+    // A pure cosine with 3 cycles over 16 samples has two spikes of N/2 at bins 3 and 13.
+    cosine: [16]Complex = ---
+    for i in 0..16 {
+        cosine[i] = cx(math.cos(math.tau * 3.0 * i.round(f64) / 16.0), 0.0)
+    }
+    fft(16, &cosine, false)
+    print("cosine bins:")
+    for k in 0..16 {
+        m := math.sqrt(norm2(cosine[k]))
+        if m > 1e-9 { print(" {}={}", (k, fmt.fixed(m, 3, fbuf[..]))) }
+    }
+    print("\n")
+
+    // Round trip and Parseval: sum |x|^2 = (1/N) sum |X|^2.
+    sig: [32]Complex = ---
+    seed: u32 = 12345
+    for i in 0..32 {
+        seed = seed *% 1103515245 +% 12345
+        r := ((seed >> 16) & 0x7fff).round(f64) / 32768.0
+        sig[i] = cx(r - 0.5, 0.25 - r * r)
+    }
+    orig := sig
+    energy_t := 0.0
+    for c in sig { energy_t += norm2(c) }
+    fft(32, &sig, false)
+    energy_f := 0.0
+    for c in sig { energy_f += norm2(c) }
+    energy_f /= 32.0
+    print("Parseval holds: {}\n", (energy_t - energy_f).abs() < 1e-12)
+    fft(32, &sig, true)
+    worst := 0.0
+    for i in 0..32 {
+        d := norm2(sub(sig[i], orig[i]))
+        if d > worst { worst = d }
+    }
+    print("round trip error < 1e-24: {}\n", worst < 1e-24)
+
+    // Convolution: polynomial multiplication (1 + 2x + 3x^2)(4 + 5x + 6x^2 + 7x^3).
+    a := [_]i64(1, 2, 3)
+    b := [_]i64(4, 5, 6, 7)
+    fast: [6]i64 = ---
+    slow: [6]i64 = ---
+    convolve(8, a[..], b[..], fast[..])
+    direct_convolve(a[..], b[..], slow[..])
+    print("fft convolution:    {}\n", fast)
+    print("direct convolution: {}\n", slow)
+    print("equal: {}\n", fast is slow)
+
+    // A bigger one: squaring a number written in base 10 digits, 1..=9 repeated.
+    digits: [12]i64 = ---
+    for i in 0..12 { digits[i] = (i % 9).trunc(i64) + 1 }
+    big_fast: [24]i64 = ---
+    big_slow: [24]i64 = ---
+    convolve(32, digits[..], digits[..], big_fast[..23])
+    direct_convolve(digits[..], digits[..], big_slow[..23])
+    big_fast[23] = 0
+    big_slow[23] = 0
+    print("{}\n", big_fast)
+    print("big equal: {}\n", big_fast is big_slow)
+}

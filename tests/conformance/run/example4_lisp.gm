@@ -1,0 +1,557 @@
+// A small Scheme: reader, arena-allocated cons cells, frame-chained environments, closures, tail calls in a loop, errors as unions.
+arena :: import "std/arena"
+str :: import "std/str"
+
+Prim :: union { Add, Sub, Mul, Div, Lt, NumEq, Car, Cdr, Cons, IsNull, IsPair, List, Not }
+
+Cell :: struct { car, cdr: Val }
+
+Val :: union {
+    Nil
+    Int: i64
+    Bool: bool
+    Sym: string
+    Pair: ^Cell
+    Prim: Prim
+    Lambda: ^Closure
+}
+
+Binding :: struct { name: string, val: Val, next: ?^Binding }
+Frame :: struct { vars: ?^Binding, parent: ?^Frame }
+Closure :: struct { params: Val, body: Val, env: ^Frame }
+
+LispError :: union {
+    Alloc: AllocError
+    Syntax: string
+    Unbound: string
+    Type: string
+    Arity
+    DivZero
+    Overflow
+    TooDeep
+}
+
+Interp :: struct {
+    depth: u32 = 0
+    max_depth: u32 = 0
+    steps: u64 = 0
+}
+
+// ---------------------------------------------------------------- lists
+
+cons :: fn(a, d: Val) -> LispError!Val \ {Alloc} {
+    cell := try new(Cell, Cell(car: a, cdr: d))
+    return Val.Pair(cell)
+}
+
+// Yields the elements of a proper list; an improper tail is an error result.
+elems :: fn(list: Val) -> LispError!() \ {Yield(Val)} {
+    cur := list
+    while true {
+        match cur {
+            .Nil => return ()
+            .Pair(c) => {
+                yield(c.car)
+                cur = c.cdr
+            }
+            _ => return !.Type("improper list")
+        }
+    }
+}
+
+list_len :: fn(list: Val) -> LispError!usize {
+    n: usize = 0
+    try for _ in elems(list) { n += 1 }
+    return n
+}
+
+// ---------------------------------------------------------------- reader
+
+Reader :: struct {
+    src: string
+    pos: usize = 0
+}
+
+is_delim :: fn(c: u8) -> bool => c in (' ', '\n', '\t', '(', ')', '\'', ';')
+
+skip_blank :: fn(r: ^Reader) {
+    while r.pos < r.src.len {
+        c := r.src[r.pos]
+        if c in (' ', '\n', '\t') {
+            r.pos += 1
+        } else if c is ';' {
+            while r.pos < r.src.len and r.src[r.pos] is not '\n' { r.pos += 1 }
+        } else {
+            break
+        }
+    }
+}
+
+read :: fn(r: ^Reader) -> LispError!Val \ {Alloc} {
+    skip_blank(r)
+    if r.pos >= r.src.len { return !.Syntax("unexpected end of input") }
+    c := r.src[r.pos]
+    if c is '(' {
+        r.pos += 1
+        head: Val = .Nil
+        tail: ?^Cell = null
+        while true {
+            skip_blank(r)
+            if r.pos >= r.src.len { return !.Syntax("missing )") }
+            if r.src[r.pos] is ')' {
+                r.pos += 1
+                return head
+            }
+            item := try read(r)
+            cell := try new(Cell, Cell(car: item, cdr: .Nil))
+            if t := tail {
+                t.cdr = Val.Pair(cell)
+            } else {
+                head = Val.Pair(cell)
+            }
+            tail = cell
+        }
+    }
+    if c is ')' { return !.Syntax("unexpected )") }
+    if c is '\'' {
+        r.pos += 1
+        quoted := try read(r)
+        rest := try cons(quoted, .Nil)
+        return try cons(Val.Sym("quote"), rest)
+    }
+    start := r.pos
+    while r.pos < r.src.len and not is_delim(r.src[r.pos]) { r.pos += 1 }
+    word := r.src[start..r.pos]
+    if word is "#t" { return Val.Bool(true) }
+    if word is "#f" { return Val.Bool(false) }
+    digits := if word.len > 1 and word[0] is '-' { word[1..] } else { word }
+    if digits.len > 0 and digits[0] in '0'..='9' {
+        n := str.parse_int(i64, word) else return !.Syntax("bad number")
+        return Val.Int(n)
+    }
+    return Val.Sym(word)
+}
+
+// ---------------------------------------------------------------- printer
+
+show :: fn(v: Val, b: ^str.Builder) {
+    match v {
+        .Nil => b.push("()")
+        .Int(n) => b.write("{}", n)
+        .Bool(t) => b.push(if t { "#t" } else { "#f" })
+        .Sym(s) => b.push(s)
+        .Prim(_) => b.push("#<primitive>")
+        .Lambda(_) => b.push("#<lambda>")
+        .Pair(c) => {
+            b.push_byte('(')
+            show(c.car, b)
+            cur := c.cdr
+            while true {
+                match cur {
+                    .Nil => break
+                    .Pair(next) => {
+                        b.push_byte(' ')
+                        show(next.car, b)
+                        cur = next.cdr
+                    }
+                    _ => {
+                        b.push(" . ")
+                        show(cur, b)
+                        break
+                    }
+                }
+            }
+            b.push_byte(')')
+        }
+    }
+}
+
+// ---------------------------------------------------------------- environments
+
+lookup :: fn(env: ^Frame, name: string) -> ?Val {
+    f: ?^Frame = env
+    while fr := f {
+        b := fr.vars
+        while bind := b {
+            if bind.name is name { return bind.val }
+            b = bind.next
+        }
+        f = fr.parent
+    }
+    return null
+}
+
+define :: fn(env: ^Frame, name: string, v: Val) -> LispError!() \ {Alloc} {
+    bind := try new(Binding, Binding(name: name, val: v, next: env.vars))
+    env.vars = bind
+    return ()
+}
+
+assign :: fn(env: ^Frame, name: string, v: Val) -> bool {
+    f: ?^Frame = env
+    while fr := f {
+        b := fr.vars
+        while bind := b {
+            if bind.name is name {
+                bind.val = v
+                return true
+            }
+            b = bind.next
+        }
+        f = fr.parent
+    }
+    return false
+}
+
+prim_named :: fn(name: string) -> ?Prim => match name {
+    "+" => Prim.Add
+    "-" => Prim.Sub
+    "*" => Prim.Mul
+    "/" => Prim.Div
+    "<" => Prim.Lt
+    "=" => Prim.NumEq
+    "car" => Prim.Car
+    "cdr" => Prim.Cdr
+    "cons" => Prim.Cons
+    "null?" => Prim.IsNull
+    "pair?" => Prim.IsPair
+    "list" => Prim.List
+    "not" => Prim.Not
+    _ => null
+}
+
+// ---------------------------------------------------------------- evaluator
+
+as_int :: fn(v: Val) -> LispError!i64 {
+    match v {
+        .Int(n) => return n
+        _ => return !.Type("expected a number")
+    }
+}
+
+as_pair :: fn(v: Val) -> ?^Cell => match v {
+    .Pair(c) => c
+    _ => null
+}
+
+as_sym :: fn(v: Val) -> ?string => match v {
+    .Sym(s) => s
+    _ => null
+}
+
+truthy :: fn(v: Val) -> bool => v is not .Bool(false)
+
+apply_prim :: fn(p: Prim, args: Val) -> LispError!Val \ {Alloc} {
+    n := try list_len(args)
+    match p {
+        .Add, .Mul => {
+            acc: i64 = if p is .Add { 0 } else { 1 }
+            try for a in elems(args) {
+                x := try as_int(a)
+                acc = if p is .Add { acc +? x else return !.Overflow } else { acc *? x else return !.Overflow }
+            }
+            return Val.Int(acc)
+        }
+        .Sub, .Div => {
+            if n is 0 { return !.Arity }
+            first := true
+            acc: i64 = 0
+            try for a in elems(args) {
+                x := try as_int(a)
+                if first {
+                    acc = x
+                    first = false
+                    if n is 1 and p is .Sub { acc = 0 -? x else return !.Overflow }
+                } else if p is .Sub {
+                    acc = acc -? x else return !.Overflow
+                } else {
+                    if x is 0 { return !.DivZero }
+                    acc = acc / x
+                }
+            }
+            return Val.Int(acc)
+        }
+        .Lt, .NumEq => {
+            if n is not 2 { return !.Arity }
+            a: i64 = 0
+            b: i64 = 0
+            idx: usize = 0
+            try for v in elems(args) {
+                x := try as_int(v)
+                if idx is 0 { a = x } else { b = x }
+                idx += 1
+            }
+            return Val.Bool(if p is .Lt { a < b } else { a is b })
+        }
+        .Car, .Cdr, .IsNull, .IsPair, .Not => {
+            if n is not 1 { return !.Arity }
+            arg := match args {
+                .Pair(c) => c.car
+                _ => Val.Nil
+            }
+            return match p {
+                .Car => match arg {
+                    .Pair(c) => c.car
+                    _ => return !.Type("car of a non-pair")
+                }
+                .Cdr => match arg {
+                    .Pair(c) => c.cdr
+                    _ => return !.Type("cdr of a non-pair")
+                }
+                .IsNull => Val.Bool(arg is .Nil)
+                .IsPair => Val.Bool(arg is .Pair(_))
+                _ => Val.Bool(not truthy(arg))
+            }
+        }
+        .Cons => {
+            if n is not 2 { return !.Arity }
+            c := as_pair(args) else return !.Arity
+            c2 := as_pair(c.cdr) else return !.Arity
+            return try cons(c.car, c2.car)
+        }
+        .List => return args
+    }
+}
+
+eval_args :: fn(it: ^Interp, args: Val, env: ^Frame) -> LispError!Val \ {Alloc} {
+    head: Val = .Nil
+    tail: ?^Cell = null
+    try for a in elems(args) {
+        v := try eval(it, a, env)
+        cell := try new(Cell, Cell(car: v, cdr: .Nil))
+        if t := tail { t.cdr = Val.Pair(cell) } else { head = Val.Pair(cell) }
+        tail = cell
+    }
+    return head
+}
+
+// Binds parameters to arguments in a fresh frame whose parent is the closure's frame.
+bind_params :: fn(f: ^Closure, args: Val) -> LispError!^Frame \ {Alloc} {
+    frame := try new(Frame, Frame(vars: null, parent: f.env))
+    ps := f.params
+    as := args
+    while true {
+        match (ps, as) {
+            (.Nil, .Nil) => return frame
+            (.Pair(p), .Pair(a)) => {
+                name := as_sym(p.car) else return !.Syntax("parameter must be a symbol")
+                try define(frame, name, a.car)
+                ps = p.cdr
+                as = a.cdr
+            }
+            _ => return !.Arity
+        }
+    }
+}
+
+eval :: fn(it: ^Interp, expr0: Val, env0: ^Frame) -> LispError!Val \ {Alloc} {
+    if it.depth >= it.max_depth { return !.TooDeep }
+    it.depth += 1
+    defer it.depth -= 1
+    expr := expr0
+    env := env0
+    while true {
+        it.steps += 1
+        match expr {
+            .Nil, .Int(_), .Bool(_), .Prim(_), .Lambda(_) => return expr
+            .Sym(name) => {
+                if v := lookup(env, name) { return v }
+                if p := prim_named(name) { return Val.Prim(p) }
+                return !.Unbound(name)
+            }
+            .Pair(form) => {
+                if .Sym(head) := form.car {
+                    if head is "quote" {
+                        q := as_pair(form.cdr) else return !.Syntax("quote needs an argument")
+                        return q.car
+                    }
+                    if head is "if" {
+                        c1 := as_pair(form.cdr) else return !.Syntax("bad if")
+                        c2 := as_pair(c1.cdr) else return !.Syntax("bad if")
+                        test := try eval(it, c1.car, env)
+                        if truthy(test) {
+                            expr = c2.car
+                        } else if .Pair(c3) := c2.cdr {
+                            expr = c3.car
+                        } else {
+                            return Val.Nil
+                        }
+                        continue                         // tail position: loop instead of recursing
+                    }
+                    if head is "define" {
+                        c1 := as_pair(form.cdr) else return !.Syntax("bad define")
+                        c2 := as_pair(c1.cdr) else return !.Syntax("bad define")
+                        name := as_sym(c1.car) else return !.Syntax("define needs a symbol")
+                        v := try eval(it, c2.car, env)
+                        try define(env, name, v)
+                        return Val.Sym(name)
+                    }
+                    if head is "set!" {
+                        c1 := as_pair(form.cdr) else return !.Syntax("bad set!")
+                        c2 := as_pair(c1.cdr) else return !.Syntax("bad set!")
+                        name := as_sym(c1.car) else return !.Syntax("set! needs a symbol")
+                        v := try eval(it, c2.car, env)
+                        if not assign(env, name, v) { return !.Unbound(name) }
+                        return v
+                    }
+                    if head is "lambda" {
+                        c1 := as_pair(form.cdr) else return !.Syntax("bad lambda")
+                        clo := try new(Closure, Closure(params: c1.car, body: c1.cdr, env: env))
+                        return Val.Lambda(clo)
+                    }
+                    if head is "begin" {
+                        cur := form.cdr
+                        while .Pair(c) := cur {
+                            if c.cdr is .Nil {
+                                expr = c.car
+                                break
+                            }
+                            _ = try eval(it, c.car, env)
+                            cur = c.cdr
+                        }
+                        if cur is .Nil { return Val.Nil }
+                        continue
+                    }
+                    if head is "let" {
+                        c1 := as_pair(form.cdr) else return !.Syntax("bad let")
+                        frame := try new(Frame, Frame(vars: null, parent: env))
+                        try for binding in elems(c1.car) {
+                            b1 := as_pair(binding) else return !.Syntax("bad let binding")
+                            name := as_sym(b1.car) else return !.Syntax("let needs a symbol")
+                            b2 := as_pair(b1.cdr) else return !.Syntax("bad let binding")
+                            v := try eval(it, b2.car, env)
+                            try define(frame, name, v)
+                        }
+                        // The body is a sequence; evaluate all but the last here.
+                        body := c1.cdr
+                        while .Pair(c) := body {
+                            if c.cdr is .Nil { break }
+                            _ = try eval(it, c.car, frame)
+                            body = c.cdr
+                        }
+                        last := as_pair(body) else return Val.Nil
+                        expr = last.car
+                        env = frame
+                        continue
+                    }
+                }
+                f := try eval(it, form.car, env)
+                args := try eval_args(it, form.cdr, env)
+                match f {
+                    .Prim(p) => return try apply_prim(p, args)
+                    .Lambda(clo) => {
+                        frame := try bind_params(clo, args)
+                        body := clo.body
+                        while .Pair(c) := body {
+                            if c.cdr is .Nil { break }
+                            _ = try eval(it, c.car, frame)
+                            body = c.cdr
+                        }
+                        last := as_pair(body) else return Val.Nil
+                        expr = last.car                  // tail call
+                        env = frame
+                    }
+                    _ => return !.Type("not a procedure")
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- driver
+
+describe :: fn(e: LispError) -> string => match e {
+    .Alloc(_) => "out of memory"
+    .Syntax(m) => m
+    .Unbound(_) => "unbound variable"
+    .Type(m) => m
+    .Arity => "wrong number of arguments"
+    .DivZero => "division by zero"
+    .Overflow => "integer overflow"
+    .TooDeep => "recursion too deep"
+}
+
+run :: fn(it: ^Interp, global: ^Frame, src: string) \ {Alloc, Out} {
+    r := Reader(src: src)
+    while true {
+        skip_blank(&r)
+        if r.pos >= r.src.len { break }
+        result := match read(&r) {
+            !e => {
+                print("read error: {}\n", describe(e))
+                break
+            }
+            form => match eval(it, form, global) {
+                !e => {
+                    print("error: {}\n", describe(e))
+                    if .Unbound(name) := e { print("  unbound name: {}\n", name) }
+                    continue
+                }
+                v => v
+            }
+        }
+        buf: [256]u8 = ---
+        b := str.builder(buf[..])
+        show(result, &b)
+        print("{}\n", b.str())
+    }
+}
+
+PROGRAM :: `
+(define fact (lambda (n) (if (< n 2) 1 (* n (fact (- n 1))))))
+(fact 10)
+(fact 20)
+(fact 21)
+(define loop (lambda (i acc) (if (= i 0) acc (loop (- i 1) (+ acc i)))))
+(loop 2000 0)
+(define compose (lambda (f g) (lambda (x) (f (g x)))))
+(define inc (lambda (x) (+ x 1)))
+((compose inc inc) 40)
+(define make-counter
+  (lambda ()
+    (let ((n 0))
+      (lambda () (set! n (+ n 1)) n))))
+(define c1 (make-counter))
+(define c2 (make-counter))
+(c1) (c1) (c1)
+(c2)
+(define map
+  (lambda (f xs)
+    (if (null? xs) '() (cons (f (car xs)) (map f (cdr xs))))))
+(map (lambda (x) (* x x)) '(1 2 3 4 5))
+(define fold
+  (lambda (f acc xs)
+    (if (null? xs) acc (fold f (f acc (car xs)) (cdr xs)))))
+(fold + 0 (list 1 2 3 4 5 6 7 8 9 10))
+(cons 1 2)
+'(a (b c) d)
+(car '())
+(undefined-fn 1)
+(+ 1 #t)
+((lambda (x y) x) 1)
+(/ 10 0)
+(- 5)
+(+ 9223372036854775807 1)
+(define deep (lambda (n) (if (= n 0) 0 (+ 1 (deep (- n 1))))))
+(deep 50)
+(deep 5000)
+(not (< 3 2))
+(begin 1 2 3)
+`
+
+main :: fn() \ {Out, Alloc} {
+    a := arena.new()
+    defer a.deinit()
+    it := Interp(max_depth: 200)
+    with a.allocator() {
+        global := new(Frame, Frame(vars: null, parent: null)) else {
+            print("cannot allocate\n")
+            return
+        }
+        run(&it, global, PROGRAM)
+        run(&it, global, "(1 2")
+        run(&it, global, ")")
+        run(&it, global, "(car 'x) 'ok")
+    }
+    print("steps: {}\n", it.steps)
+}
