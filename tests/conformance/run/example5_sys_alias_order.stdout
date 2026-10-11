@@ -1,0 +1,16 @@
+sum 46
+three 46851
+poke 1019
+after poke 999 77
+scribble 2 1 -1 200
+deref -196
+deref-then-mutate -11
+d.a[2] now 7
+twice 0
+swap 123 4 4 40
+wide 4035
+w 1001 1
+elem -30
+nested 269
+selfassign -1 200
+selfswap 6 6 200

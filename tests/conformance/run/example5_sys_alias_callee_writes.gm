@@ -1,0 +1,110 @@
+// A callee that overwrites the variable it was passed (closure, effect clause, global, defer) must not change its by-value copy; aggregates evaluate big operands left to right.
+Big :: struct { a: [6]i64, tag: u8 }
+
+sum :: fn(b: Big) -> i64 {
+    s: i64 = 0
+    for v in b.a { s += v }
+    return s + i64(b.tag)
+}
+
+mk :: fn(k: i64) -> Big {
+    b := Big(a: [6]i64(fill: k), tag: 1)
+    b.a[5] = k * 10
+    return b
+}
+
+bump :: fn(p: ^Big) -> i64 {
+    p.a[0] += 100
+    return p.a[0]
+}
+
+// A: closure called with a variable; closure writes the variable then reads its parameter
+call_cl :: fn(f: fn(b: Big) -> i64, b: Big) -> i64 => f(b)
+
+#global G: Big = Big(a: [6]i64(fill: 1), tag: 2)
+
+read_after_global :: fn(b: Big) -> i64 \ {Sys} {
+    G.a[0] = 5000
+    return sum(b)
+}
+
+setg :: fn() -> i64 \ {Sys} {
+    G.a[1] = 777
+    return 1
+}
+
+Log :: effect { note: fn(b: Big) -> i64 }
+
+with_note :: fn(b: Big) -> i64 \ {Log} => note(b)
+
+PairBig :: struct { x: Big, y: Big }
+
+twice_ret :: fn(p: ^Big) -> Big {
+    r := p^
+    defer p.a[0] = -1
+    return r
+}
+
+defer_ret :: fn() -> Big {
+    x := mk(2)
+    defer x.a[0] = 12345
+    return x
+}
+
+main :: fn() \ {Out, Sys} {
+    // A
+    x := mk(3)
+    r := call_cl(fn(b: Big) -> i64 {
+        x.a[0] = 900
+        x.tag = 9
+        return sum(b)
+    }, x)
+    print("A {} {}\n", (r, x.a[0]))
+    // B: effect op with the variable as the argument, clause writes the variable
+    y := mk(3)
+    r2 := with (handler Log {
+        note(b) => {
+            y.a[0] = 900
+            sum(b)
+        }
+    }) {
+        with_note(y)
+    }
+    print("B {} {}\n", (r2, y.a[0]))
+    // B2: perform directly inside with, handler writes variable
+    z := mk(3)
+    r3 := with (handler Log {
+        note(b) => {
+            z.a[0] = 900
+            sum(b)
+        }
+    }) {
+        note(z)
+    }
+    print("B2 {} {}\n", (r3, z.a[0]))
+    // D: global
+    g := G
+    print("D {}\n", read_after_global(G))
+    print("D2 {} {}\n", (sum(G), sum(g)))
+    G = Big(a: [6]i64(fill: 1), tag: 2)
+    print("D3 {}\n", sum(G) - setg() * 0 + sum(G))
+    // aggregates: evaluation order of fields
+    w := mk(1)
+    pb := PairBig(x: w, y: Big(a: [6]i64(fill: bump(&w)), tag: 0))
+    print("agg {} {}\n", (pb.x.a[0], pb.y.a[0]))
+    w2 := mk(1)
+    tup := (w2, bump(&w2), w2)
+    print("tup {} {} {}\n", (tup.0.a[0], tup.1, tup.2.a[0]))
+    w3 := mk(1)
+    arr := [2]Big(w3, mk(bump(&w3)))
+    print("arr {} {}\n", (arr[0].a[0], arr[1].a[0]))
+    // equality on big structs with side effects
+    w4 := mk(1)
+    print("eq {}\n", w4 is mk(1 + bump(&w4) - 101))
+    // defers
+    pp := mk(4)
+    q := twice_ret(&pp)
+    print("defer {} {}\n", (q.a[0], pp.a[0]))
+    dr := defer_ret()
+    print("defer2 {}\n", dr.a[0])
+}

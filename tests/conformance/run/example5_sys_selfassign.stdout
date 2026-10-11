@@ -1,0 +1,20 @@
+swap-ctor 2 101 1 1
+swap-fn 2 101 1 1
+arr-swap 2 1
+tuple-swap 4 3
+small 3 2 1
+rev 8 7 2 1
+shape 0 5
+shape 1 10
+shape 2 11
+shape 3 -1
+shape 4 7
+rect 6
+ident 2
+pick 2
+swap_in 20 10
+swap_self 20
+loop 102 99
+slice 2 2
+opt 8
+opt null true

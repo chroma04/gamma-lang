@@ -1,0 +1,8 @@
+line 0 7
+after 999
+page 0 9
+packed 3022 size 16
+empty 8012
+union 33 12
+flags true 101 2000 / 512203
+fiber 304

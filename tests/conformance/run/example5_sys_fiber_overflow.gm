@@ -1,0 +1,27 @@
+// A fiber stack too small for a chain of calls passing 2 KiB records by value: the overflow traps cleanly after the shallow call succeeded.
+//! exit: 134
+Gen :: effect { emit: ctl(x: u32) }
+
+Rec :: struct { words: [256]u64 }
+
+leaf :: fn(r: Rec, depth: u32) -> u32 \ {Gen} {
+    emit(depth)
+    return r.words[3].trunc(u32) + depth
+}
+
+descend :: fn(r: Rec, depth: u32) -> u32 \ {Gen} {
+    if depth is 0 { return leaf(r, 0) }
+    s := r
+    s.words[3] += 1
+    return descend(s, depth - 1) + 1
+}
+
+main :: fn() \ {Out} {
+    stack: [40000]u8 = ---
+    with (handler Gen { emit(x, k) => resume k() }) on stack[..] {
+        r := Rec(words: [256]u64(fill: 5))
+        print("shallow {}\n", descend(r, 1))
+        print("deep {}\n", descend(r, 50))
+    }
+    print("unreachable\n")
+}

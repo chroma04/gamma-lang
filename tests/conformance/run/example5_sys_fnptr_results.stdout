@@ -1,0 +1,25 @@
+base 808
+ptr 819
+compose 1557
+compose2 1547
+table 9 1568
+holder 808
+holder 1536
+closure 10 25 8
+none 0
+some 1 172
+none 2
+else 3 0
+err 0 .Bad
+ok 1 384
+ok 2 702
+ok 3 1020
+ok 4 1338
+ok 5 1656
+err 6 .Worse
+err 7 .Worse
+z 1
+both 3 6
+both err true
+defer total 1801
+deferred 1801

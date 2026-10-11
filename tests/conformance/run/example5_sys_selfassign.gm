@@ -1,0 +1,103 @@
+// Self-referential assignment of big values (swapping fields through a constructor, arrays and tuples), union payload matching, generics over big types, and loop and slice aliasing.
+Pair :: struct { a: [5]i64, b: [5]i64 }
+Shape :: union {
+    Small: i32
+    Wide: [12]i64
+    Rect: (w: [4]i64, h: [4]i64)
+    Empty
+}
+
+mk :: fn(k: i64) -> Pair {
+    p := Pair(a: [5]i64(fill: k), b: [5]i64(fill: k + 100))
+    p.a[4] = 1
+    p.b[0] = 2
+    return p
+}
+
+sw :: fn(p: Pair) -> Pair => Pair(a: p.b, b: p.a)
+
+total :: fn(s: Shape) -> i64 {
+    return match s {
+        .Small(v) => i64(v)
+        .Wide(w) => w[0] + w[11]
+        .Rect(w, h) => w[0] + h[3]
+        .Empty => -1
+    }
+}
+
+grow :: fn(s: Shape) -> Shape {
+    return match s {
+        .Small(v) => .Wide([12]i64(fill: i64(v)))
+        .Wide(w) => .Rect(w: [4]i64(fill: w[1]), h: [4]i64(fill: w[2] + 1))
+        .Rect(w, h) => .Empty
+        .Empty => .Small(7)
+    }
+}
+
+ident :: fn(T: type, x: T) -> T => x
+pick :: fn(T: type, a: T, b: T, first: bool) -> T => if first { a } else { b }
+swap_in :: fn(T: type, a: ^T, b: ^T) {
+    t := a^
+    a^ = b^
+    b^ = t
+}
+
+main :: fn() \ {Out} {
+    p := mk(1)
+    p = Pair(a: p.b, b: p.a)
+    print("swap-ctor {} {} {} {}\n", (p.a[0], p.a[4], p.b[0], p.b[4]))
+    q := mk(1)
+    q = sw(q)
+    print("swap-fn {} {} {} {}\n", (q.a[0], q.a[4], q.b[0], q.b[4]))
+    arr := [2]Pair(mk(1), mk(2))
+    arr = [2]Pair(arr[1], arr[0])
+    print("arr-swap {} {}\n", (arr[0].a[0], arr[1].a[0]))
+    t := (mk(3), mk(4))
+    t = (t.1, t.0)
+    print("tuple-swap {} {}\n", (t.0.a[0], t.1.a[0]))
+    ts := [3]i64(1, 2, 3)
+    ts = [3]i64(ts[2], ts[1], ts[0])
+    print("small {} {} {}\n", (ts[0], ts[1], ts[2]))
+    ws := [8]i64(1, 2, 3, 4, 5, 6, 7, 8)
+    ws = [8]i64(ws[7], ws[6], ws[5], ws[4], ws[3], ws[2], ws[1], ws[0])
+    print("rev {} {} {} {}\n", (ws[0], ws[1], ws[6], ws[7]))
+    // unions
+    s: Shape = .Small(5)
+    for i in 0..5 {
+        print("shape {} {}\n", (i, total(s)))
+        s = grow(s)
+    }
+    w: Shape = .Wide([12]i64(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12))
+    w = grow(w)
+    print("rect {}\n", total(w))
+    // generics
+    g := ident(Pair, mk(5))
+    print("ident {}\n", g.b[0])
+    h := pick(Pair, mk(1), mk(2), false)
+    print("pick {}\n", h.a[0])
+    x := mk(10)
+    y := mk(20)
+    swap_in(Pair, &x, &y)
+    print("swap_in {} {}\n", (x.a[0], y.a[0]))
+    swap_in(Pair, &x, &x)
+    print("swap_self {}\n", x.a[0])
+    // loop variable is a copy
+    recs := [3]Pair(mk(1), mk(2), mk(3))
+    seen: i64 = 0
+    for r in recs {
+        recs[2].a[0] = 99
+        seen += r.a[0]
+    }
+    print("loop {} {}\n", (seen, recs[2].a[0]))
+    // slices of big values
+    sl := recs[..]
+    sl[0] = sw(sl[0])
+    print("slice {} {}\n", (recs[0].a[0], sl[1].a[0]))
+    // optional big
+    o: ?Pair = mk(8)
+    if v := o {
+        o = null
+        print("opt {}\n", v.a[0])
+    }
+    print("opt null {}\n", o is null)
+}

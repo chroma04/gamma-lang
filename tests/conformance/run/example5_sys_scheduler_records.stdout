@@ -1,0 +1,6 @@
+task stack ok true
+switches 15 live 0
+task 1 done true history [99, 3, 3, 3] round 6 sum 694900402
+task 2 done true history [1, 1, 1, 1] round 6 sum 279107780
+task 3 done true history [2, 2, 2, 2] round 6 sum 689800276
+mailbox owner 3 round 6 sum 424800350

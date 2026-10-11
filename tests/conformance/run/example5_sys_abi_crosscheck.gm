@@ -1,0 +1,86 @@
+// The x86-64 C ABI cross-checked: structs passed and returned by value are received as the scalars the System V ABI splits them into, and the other way round.
+//! arch: x86_64
+c :: import "std/c"
+
+S3 :: struct { x: i64, y: i64, z: i64 }
+V2 :: struct { x: f64, y: f64 }
+IF :: struct { n: i64, f: f64 }
+F2 :: struct { a: f32, b: f32 }
+Pair64 :: struct { lo: u64, hi: u64 }
+LDiv :: struct { quot: c.c_long, rem: c.c_long }
+Mixed :: struct { a: i32, b: i32, c: i64 }
+
+// Scalar-side definitions, exported under the names that the struct-side declarations below also use.
+#export("abi_sum9")
+sum9 :: fn(a1, a2, a3, a4, a5, a6, x, y, z: i64) -> i64 => a1 + a2 * 2 + a3 * 3 + a4 * 4 + a5 * 5 + a6 * 6 + x * 100 + y * 1000 + z * 10000
+
+#export("abi_two_doubles")
+two_doubles :: fn(x: f64, y: f64) -> f64 => x * 10.0 + y
+
+#export("abi_mixed")
+mixed :: fn(n: i64, f: f64, k: c.c_int) -> f64 => n.round(f64) * 100.0 + f * 10.0 + f64(k)
+
+#export("abi_pair_f32")
+pair_f32 :: fn(packed: f64) -> u64 => packed.bits(u64)
+
+#export("abi_fill")
+fill :: fn(out: ^S3, k: i64) -> ^S3 {
+    out.x = k
+    out.y = k * 2
+    out.z = k * 3
+    return out
+}
+
+#export("abi_u128")
+take_u128 :: fn(lo, hi: u64) -> u64 => lo + hi * 3
+
+#export("abi_ret_pair")
+ret_pair :: fn(a, b: u64) -> Pair64 => Pair64(lo: a + 1, hi: b + 2)
+
+#export("abi_mixed_pair")
+mixed_pair :: fn(packed: u64, c, extra: i64) -> i64 => (packed & 0xffff_ffff).trunc(i64) + (packed >> 32).trunc(i64) * 10 + c * 100 + extra * 10000
+
+lib :: foreign "c" {
+    #link_name("abi_sum9")
+    sum9s :: fn(a1, a2, a3, a4, a5, a6: i64, s: S3) -> i64 \ {}
+    #link_name("abi_two_doubles")
+    two_doubles_s :: fn(v: V2) -> f64 \ {}
+    #link_name("abi_mixed")
+    mixed_s :: fn(p: IF, k: c.c_int) -> f64 \ {}
+    #link_name("abi_pair_f32")
+    pair_f32_s :: fn(p: F2) -> u64 \ {}
+    #link_name("abi_fill")
+    fill_s :: fn(k: i64) -> S3 \ {}
+    #link_name("abi_u128")
+    take_u128_s :: fn(v: u128) -> u64 \ {}
+    #link_name("abi_ret_pair")
+    ret_pair_s :: fn(a, b: u64) -> u128 \ {}
+    #link_name("abi_mixed_pair")
+    mixed_pair_s :: fn(m: Mixed, c: i64) -> i64 \ {}
+    ldiv :: fn(n, d: c.c_long) -> LDiv \ {}
+}
+
+main :: fn() \ {Out} {
+    // Memory class: three eightbytes on the stack after the six register arguments.
+    print("sum9 {} {}\n", (sum9(1, 2, 3, 4, 5, 6, 7, 8, 9), lib.sum9s(1, 2, 3, 4, 5, 6, S3(x: 7, y: 8, z: 9))))
+    // SSE, SSE.
+    print("two {} {}\n", (two_doubles(1.5, 2.5), lib.two_doubles_s(V2(x: 1.5, y: 2.5))))
+    // INTEGER, SSE, then another register argument.
+    print("mixed {} {}\n", (mixed(3, 0.25, 7), lib.mixed_s(IF(n: 3, f: 0.25), 7)))
+    // Two floats share one SSE register.
+    p := F2(a: 1.0, b: -2.0)
+    print("f32 pair {}\n", lib.pair_f32_s(p))
+    print("f32 bits {} {}\n", (p.a.bits(u32), p.b.bits(u32)))
+    // A memory-class result is written through a hidden pointer.
+    s := lib.fill_s(5)
+    print("fill {} {} {}\n", (s.x, s.y, s.z))
+    // 128-bit integers travel in two registers.
+    v: u128 = (u128(7) << 64) | u128(100)
+    print("u128 {}\n", lib.take_u128_s(v))
+    r := lib.ret_pair_s(40, 50)
+    print("ret pair {} {}\n", ((r & 0xffff_ffff_ffff_ffff).trunc(u64), (r >> 64).trunc(u64)))
+    // A struct of 16 bytes: INTEGER, INTEGER.
+    print("mixed pair {}\n", lib.mixed_pair_s(Mixed(a: 3, b: 4, c: 9), 2))
+    d := lib.ldiv(-17, 5)
+    print("ldiv {} {}\n", (d.quot, d.rem))
+}

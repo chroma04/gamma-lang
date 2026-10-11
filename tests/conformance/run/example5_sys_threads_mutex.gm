@@ -1,0 +1,175 @@
+// Threads sharing big structs under a Mutex (copied in and out by value), a producer and a consumer over a ring buffer of big records, and atomics on a #bits status word.
+thread :: import "std/thread"
+
+Acct :: struct {
+    id: u32
+    balance: [4]i64
+    history: [6]i32
+    ops: u32
+}
+
+Shared :: struct {
+    lock: thread.Mutex
+    acct: Acct
+}
+
+// Pure functions taking and returning the big value.
+deposit :: fn(a: Acct, slot: usize, amount: i64) -> Acct {
+    r := a
+    r.balance[slot] += amount
+    r.history[(r.ops % 6).trunc(usize)] = amount.trunc(i32)
+    r.ops += 1
+    return r
+}
+
+total :: fn(a: Acct) -> i64 {
+    t: i64 = 0
+    for b in a.balance { t += b }
+    return t
+}
+
+Job :: struct { sh: ^Shared, who: u32, rounds: u32 }
+
+teller :: fn(raw: rawptr) \ {Sys} {
+    job := raw.cast(^Job)
+    for i in 0..job.rounds {
+        job.sh.lock.lock()
+        a := job.sh.acct                                   // copy out
+        a = deposit(a, usize(job.who % 4), i64(job.who) * 10 + i64(i % 3))
+        job.sh.acct = a                                    // copy in
+        job.sh.lock.unlock()
+        if i % 50 is 0 { thread.yield_now() }
+    }
+}
+
+// A bounded ring of big records between two threads.
+Msg :: struct { seq: u32, payload: [10]u32, stamp: u64 }
+
+Ring :: struct {
+    lock: thread.Mutex
+    buf: [8]Msg
+    head: usize
+    count: usize
+    closed: bool
+}
+
+ring_push :: fn(r: ^Ring, m: Msg) -> bool \ {Sys} {
+    r.lock.lock()
+    defer r.lock.unlock()
+    if r.count is 8 { return false }
+    r.buf[(r.head + r.count) % 8] = m
+    r.count += 1
+    return true
+}
+
+ring_pop :: fn(r: ^Ring) -> ?Msg \ {Sys} {
+    r.lock.lock()
+    defer r.lock.unlock()
+    if r.count is 0 { return null }
+    m := r.buf[r.head]
+    r.head = (r.head + 1) % 8
+    r.count -= 1
+    return m
+}
+
+make_msg :: fn(seq: u32) -> Msg {
+    m := Msg(seq: seq, payload: [10]u32(fill: seq), stamp: u64(seq) * 1_000_003)
+    for i in 0..10 { m.payload[i] += i.trunc(u32) }
+    return m
+}
+
+fold :: fn(acc: u64, m: Msg) -> u64 {
+    s: u64 = 0
+    for p in m.payload { s += u64(p) }
+    return acc *% 31 +% s +% m.stamp +% u64(m.seq)
+}
+
+PC :: struct { ring: Ring, produced: u32, result: u64, got: u32 }
+
+COUNT :: 500
+
+producer :: fn(raw: rawptr) \ {Sys} {
+    pc := raw.cast(^PC)
+    seq: u32 = 0
+    while seq < COUNT {
+        if ring_push(&pc.ring, make_msg(seq)) {
+            seq += 1
+        } else {
+            thread.yield_now()
+        }
+    }
+    @atomic_store(&pc.produced, seq, .Release)
+}
+
+consumer :: fn(raw: rawptr) \ {Sys} {
+    pc := raw.cast(^PC)
+    acc: u64 = 0
+    got: u32 = 0
+    expect: u32 = 0
+    while got < COUNT {
+        if m := ring_pop(&pc.ring) {
+            if m.seq is not expect { acc = 0xdead }
+            expect += 1
+            acc = fold(acc, m)
+            got += 1
+        } else {
+            thread.yield_now()
+        }
+    }
+    pc.result = acc
+    pc.got = got
+}
+
+// A status word shared as bits.
+Status :: #bits(u32) struct {
+    ready: bool
+    err: bool
+    stage: u4
+    count: u10
+    _: u16
+}
+
+bump_stage :: fn(p: ^u32) {
+    while true {
+        old := @atomic_load(p, .Acquire)
+        s := Status(old)
+        s.stage = s.stage +% 1
+        s.count += 1
+        if @atomic_cas(p, old, u32(s), .AcqRel, .Acquire) is null { return }
+    }
+}
+
+stage_worker :: fn(raw: rawptr) \ {Sys} {
+    p := raw.cast(^u32)
+    for _ in 0..200 { bump_stage(p) }
+}
+
+main :: fn() -> IoError!() \ {Out, Sys} {
+    sh := Shared(lock: thread.mutex(), acct: Acct(id: 7, balance: [4]i64(fill: 0), history: [6]i32(fill: 0), ops: 0))
+    jobs := [4]Job(fill: Job(sh: &sh, who: 0, rounds: 0))
+    ts: [4]thread.Thread = ---
+    for i in 0..4 {
+        jobs[i] = Job(sh: &sh, who: i.trunc(u32) + 1, rounds: 300)
+        ts[i] = try thread.spawn(teller, (&jobs[i]).cast(rawptr))
+    }
+    for i in 0..4 { ts[i].join() }
+    // each who adds 300 * who * 10 plus (0+1+2)*100 to its own slot
+    print("ops {} total {} id {}\n", (sh.acct.ops, total(sh.acct), sh.acct.id))
+    for i in 0..4 { print("slot {} {}\n", (i, sh.acct.balance[i])) }
+
+    pc := PC(ring: Ring(lock: thread.mutex(), buf: ---, head: 0, count: 0, closed: false), produced: 0, result: 0, got: 0)
+    tp := try thread.spawn(producer, (&pc).cast(rawptr))
+    tc := try thread.spawn(consumer, (&pc).cast(rawptr))
+    tp.join()
+    tc.join()
+    expected: u64 = 0
+    for s in 0..COUNT { expected = fold(expected, make_msg(s)) }
+    print("consumed {} produced {} match {}\n", (pc.got, @atomic_load(&pc.produced, .Acquire), pc.result is expected))
+
+    word: u32 = u32(Status(ready: true, err: false, stage: 0, count: 0))
+    ws: [3]thread.Thread = ---
+    for i in 0..3 { ws[i] = try thread.spawn(stage_worker, (&word).cast(rawptr)) }
+    for i in 0..3 { ws[i].join() }
+    st := Status(word)
+    print("status ready {} stage {} count {}\n", (st.ready, st.stage, st.count))
+}
