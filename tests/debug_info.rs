@@ -92,6 +92,7 @@ fn build_program(name: &str, stem: &str, program: &str, args: &[&str]) -> PathBu
     std::fs::write(&src, program).unwrap();
     let exe = dir.join(stem);
     let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .env("GAMMA_CACHE_DIR", PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"))
         .arg("build")
         .args(args)
         .arg("-o")

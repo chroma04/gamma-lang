@@ -1,9 +1,13 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 5, 2026-10-11) — PRs #1–#7 merged (#7: gamma test runs imported modules' tests, --filter); s5 = PR #8 (claude/project-thread-rxakzv)
+## State (session 6, 2026-10-11) — PRs #1–#8 merged; s6 = several parallel Claude Projects threads
+- s6 thread "Speed up native builds" (branch claude/project-thread-1hib7q): Debug builds link a
+  cached runtime object, -O1 (decisions/014). Other s6 threads: CC/CFLAGS cross, C codegen.
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md. Thread "Better debugger
   views" (branch claude/project-thread-scimha): plan item 7, typed views + gdb printers.
+- Parallel s6 threads (2026-10-11): std/text graphemes (branch claude/project-thread-rk2qb5,
+  see roadmap/M11), plus others on native build speed, cross-compiling, C perf, debugger.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
 - Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified
@@ -17,7 +21,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. C back end plan items 2–6 (roadmap/c-backend-plan.md; other threads may own some).
+1. C back end plan items 3–6 (roadmap/c-backend-plan.md); items 1, 2, 7 done.
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
@@ -31,6 +35,7 @@
                   · 007 value params + sema-time const eval · 008 C back end · 009 interop
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
                   · 013 debug info (-g: #line per C line, named frame fields)
+                  · 014 native build speed (cached runtime object, GM_API linkage)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md

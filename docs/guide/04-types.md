@@ -80,6 +80,8 @@ count_runes :: fn(s: string) -> usize {
 }
 ```
 
+For what a reader sees as one character (`é` written as `e` plus a combining accent, a flag, an emoji sequence), iterate grapheme clusters with `graphemes` from `std/text`; each one is a substring.
+
 - `s.len` is the byte length, and `s[i]` is a `u8` (bounds-checked).
 - `s[a..b]` is a substring (it shares memory with `s`; nothing is copied).
 - `a is b` compares **contents**, so `name is "admin"` does what you meant. `<` and friends compare bytewise.
