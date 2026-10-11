@@ -1,0 +1,118 @@
+// The banking domain: events, a reducer, and commands that emit events or fail with a reason.
+es :: import "../es"
+
+pub Event :: union {
+    Opened: (id: u32, owner: string)
+    Deposited: (id: u32, cents: u64)
+    Withdrawn: (id: u32, cents: u64)
+    Closed: u32
+}
+
+pub Why :: union {
+    NoSuchAccount: u32
+    AlreadyOpen: u32
+    Insufficient: (id: u32, have: u64, want: u64)
+    NotEmpty: u32
+    TooMany
+}
+
+/// Abandons the running command with a reason.
+pub Fail :: effect {
+    fail: esc(why: Why) -> never
+}
+
+pub Acct :: struct {
+    pub id: u32
+    pub owner: string
+    pub cents: u64
+    pub open: bool
+}
+
+pub MAX_ACCOUNTS :: 4
+
+pub Bank :: struct {
+    pub accts: [MAX_ACCOUNTS]Acct = [MAX_ACCOUNTS]Acct(fill: Acct(id: 0, owner: "", cents: 0, open: false))
+    pub n: usize = 0
+}
+
+index_of :: fn(b: ^const Bank, id: u32) -> ?usize {
+    for i in 0..b.n {
+        if b.accts[i].id is id and b.accts[i].open { return i }
+    }
+    return null
+}
+
+/// The pure reducer: the state after one more event.
+pub apply :: fn(b: Bank, e: Event) -> Bank {
+    s := b
+    match e {
+        .Opened(o) => {
+            s.accts[s.n] = Acct(id: o.id, owner: o.owner, cents: 0, open: true)
+            s.n += 1
+        }
+        .Deposited(id, cents) => {
+            i := index_of(&s, id) else return s
+            s.accts[i].cents += cents
+        }
+        .Withdrawn(w) => {
+            i := index_of(&s, w.id) else return s
+            s.accts[i].cents -= w.cents
+        }
+        .Closed(id) => {
+            i := index_of(&s, id) else return s
+            s.accts[i].open = false
+        }
+    }
+    return s
+}
+
+pub balance :: fn(b: ^const Bank, id: u32) -> ?u64 {
+    i := index_of(b, id) else return null
+    return b.accts[i].cents
+}
+
+pub total :: fn(b: ^const Bank) -> u64 {
+    t: u64 = 0
+    for i in 0..b.n {
+        if b.accts[i].open { t += b.accts[i].cents }
+    }
+    return t
+}
+
+pub open_account :: fn(b: ^const Bank, id: u32, owner: string) \ {es.Events(Event), Fail} {
+    if index_of(b, id) is not null { fail(.AlreadyOpen(id)) }
+    if b.n >= MAX_ACCOUNTS { fail(.TooMany) }
+    es.emit(Event.Opened(id: id, owner: owner))
+}
+
+pub deposit :: fn(b: ^const Bank, id: u32, cents: u64) \ {es.Events(Event), Fail} {
+    if index_of(b, id) is null { fail(.NoSuchAccount(id)) }
+    es.emit(Event.Deposited(id: id, cents: cents))
+}
+
+pub withdraw :: fn(b: ^const Bank, id: u32, cents: u64) \ {es.Events(Event), Fail} {
+    have := balance(b, id) else fail(.NoSuchAccount(id))
+    if have < cents { fail(.Insufficient(id: id, have: have, want: cents)) }
+    es.emit(Event.Withdrawn(id: id, cents: cents))
+}
+
+pub transfer :: fn(b: ^const Bank, from, to: u32, cents: u64) \ {es.Events(Event), Fail} {
+    if index_of(b, to) is null { fail(.NoSuchAccount(to)) }
+    withdraw(b, from, cents)
+    deposit(b, to, cents)
+}
+
+pub close :: fn(b: ^const Bank, id: u32) \ {es.Events(Event), Fail} {
+    have := balance(b, id) else fail(.NoSuchAccount(id))
+    if have is not 0 { fail(.NotEmpty(id)) }
+    es.emit(Event.Closed(id))
+}
+
+test "reducer opens and deposits" {
+    s := apply(Bank(), .Opened(id: 1, owner: "ada"))
+    s = apply(s, .Deposited(id: 1, cents: 250))
+    expect(balance(&s, 1) is 250)
+    expect(balance(&s, 2) is null)
+    s = apply(s, .Closed(1))
+    expect(balance(&s, 1) is null)
+}

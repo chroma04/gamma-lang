@@ -1,0 +1,22 @@
+// A scripted process environment for exercising command-line programs without a real process.
+
+pub FakeEnv :: struct {
+    pub argv: []const string
+    pub vars: []const (string, string) = empty_slice((string, string))
+    pub exit_code: ?u8 = null
+}
+
+handler Env for ^FakeEnv {
+    args(self) => self.argv
+    var(self, name) => {
+        found: ?string = null
+        for kv in self.vars {
+            if kv.0 is name { found = kv.1 }
+        }
+        found
+    }
+    exit(self, code) => {
+        self.exit_code = code
+        break
+    }
+}

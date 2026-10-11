@@ -1,0 +1,45 @@
+// Generic row storage and unique hash indexes over a key extracted from each row.
+pub Table :: struct(T: type) {
+    pub name: string
+    rows: List(T)
+}
+
+pub table :: fn(T: type, name: string) -> Table(T) \ {Alloc} {
+    return Table(T)(name: name, rows: list(T))
+}
+
+pub deinit :: fn(T: type, t: ^Table(T)) { t.rows.deinit() }
+
+/// Appends a row and returns its row number.
+pub insert :: fn(T: type, t: ^Table(T), row: T) -> AllocError!usize {
+    try t.rows.push(row)
+    return t.rows.items.len - 1
+}
+
+pub len :: fn(T: type, t: ^const Table(T)) -> usize => t.rows.items.len
+
+pub row :: fn(T: type, t: ^const Table(T), i: usize) -> ?^const T {
+    if i >= t.rows.items.len { return null }
+    return &t.rows.items[i]
+}
+
+pub all :: fn(T: type, t: ^const Table(T)) -> []const T => t.rows.items
+
+/// Maps a key to the row number of the first row with that key.
+pub Index :: struct(T: type, K: type) {
+    map: HashMap(K, usize)
+}
+
+pub index :: fn(T: type, K: type, t: ^const Table(T), key: ^fn(row: ^const T) -> K) -> AllocError!Index(T, K) \ {Alloc} where Eq(K) {
+    m := map(K, usize)
+    errdefer m.deinit()
+    for i in 0..t.rows.items.len {
+        k := key(&t.rows.items[i])
+        if not m.contains(k) { try m.put(k, i) }
+    }
+    return Index(T, K)(map: m)
+}
+
+pub find :: fn(T: type, K: type, ix: ^const Index(T, K), k: K) -> ?usize => ix.map.get(k)
+
+pub release :: fn(T: type, K: type, ix: ^Index(T, K)) { ix.map.deinit() }

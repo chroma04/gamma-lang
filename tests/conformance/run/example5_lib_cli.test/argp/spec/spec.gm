@@ -1,0 +1,71 @@
+// Option declarations: what a command line may contain. Value kinds are checked at parse
+// time; integer kinds are made from a Gamma integer type, so their range follows the type.
+
+/// What an option takes.
+pub Kind :: union {
+    Flag
+    Count
+    Str
+    Int: ^fn(v: i64) -> bool
+    Choice: []const string
+}
+
+/// The integer kind for type `T`: any `i64` that converts to `T` is accepted.
+pub int_kind :: fn(T: type) -> Kind where Int(T) {
+    return .Int(fn(v: i64) -> bool => v.checked(T) is not null)
+}
+
+pub Opt :: struct {
+    pub name: string
+    pub short: u8 = 0
+    pub kind: Kind
+    pub help: string = ""
+    pub required: bool = false
+    pub default: ?string = null
+    pub metavar: string = "VALUE"
+}
+
+pub Positional :: struct {
+    pub name: string
+    pub help: string = ""
+    pub required: bool = true
+    pub many: bool = false
+}
+
+pub Spec :: struct {
+    pub program: string
+    pub about: string
+    opts: List(Opt)
+    pos: List(Positional)
+}
+
+pub spec :: fn(program, about: string) -> Spec \ {Alloc} {
+    return Spec(program: program, about: about, opts: list(Opt), pos: list(Positional))
+}
+
+pub deinit :: fn(s: ^Spec) {
+    s.opts.deinit()
+    s.pos.deinit()
+}
+
+pub add :: fn(s: ^Spec, o: Opt) -> AllocError!() => s.opts.push(o)
+
+pub add_positional :: fn(s: ^Spec, p: Positional) -> AllocError!() => s.pos.push(p)
+
+pub options :: fn(s: ^const Spec) -> []const Opt => s.opts.items
+
+pub positionals :: fn(s: ^const Spec) -> []const Positional => s.pos.items
+
+pub find_long :: fn(s: ^const Spec, name: string) -> ?^const Opt {
+    for i in 0..s.opts.items.len {
+        if s.opts.items[i].name is name { return &s.opts.items[i] }
+    }
+    return null
+}
+
+pub find_short :: fn(s: ^const Spec, c: u8) -> ?^const Opt {
+    for i in 0..s.opts.items.len {
+        if s.opts.items[i].short is c { return &s.opts.items[i] }
+    }
+    return null
+}

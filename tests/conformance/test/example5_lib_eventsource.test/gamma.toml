@@ -1,0 +1,3 @@
+# An event-sourcing library with generic stores and reducers, a bank domain and tests in every module.
+[package]
+name = "eventsource"

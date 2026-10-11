@@ -1,0 +1,121 @@
+> look
+  == Cellar ==
+  Damp stone walls. A stair leads up.
+  You see: lamp
+  Exits: up
+> take lamp
+  Taken: lamp.
+> take sword
+  There is no sword.
+> up
+  == Hall ==
+  A draughty hall with a heavy oak door to the east.
+  Exits: north, east (locked), west, down
+  A rat scurries past your feet.
+> route Library
+  Route to Library: north
+> e
+  The way east is locked.
+> use key on door
+  You are not carrying the key.
+> west
+  == Kitchen ==
+  Copper pots hang over a cold hearth.
+  You see: bread
+  Exits: east, south
+> take bread
+  Taken: bread.
+> inventory
+  - lamp: A brass oil lamp.
+  - bread: A stale loaf.
+  Load: 5 of 10
+> south
+  == Garden ==
+  Overgrown roses. A rope ladder climbs a tower to the north.
+  You see: anvil
+  Exits: north, up
+  A rat scurries past your feet.
+> take anvil
+  The anvil cannot be taken.
+> go up
+  == Tower ==
+  Wind whistles through arrow slits.
+  You see: key
+  Exits: down
+> get key
+  Taken: key.
+> examine key
+  An iron key.
+> dance
+  I don't know how to `dance`.
+> go
+  `go` what?
+> go sideways
+  `sideways` is not a direction.
+> use lamp on door
+  Using the lamp on the door does nothing.
+> route Vault
+  There is no open route to Vault.
+> go down
+  == Garden ==
+  Overgrown roses. A rope ladder climbs a tower to the north.
+  You see: anvil
+  Exits: north, up
+> go north
+  == Kitchen ==
+  Copper pots hang over a cold hearth.
+  Exits: east, south
+  A rat scurries past your feet.
+> go north
+  You can't go north.
+> drop lamp
+  Dropped: lamp.
+> e
+  == Hall ==
+  A draughty hall with a heavy oak door to the east.
+  Exits: north, east (locked), west, down
+> use key on door
+  The lock clicks open.
+> n
+  == Library ==
+  Shelves of mouldering books.
+  You see: book
+  Exits: south
+  A rat scurries past your feet.
+> take book
+  Taken: book.
+> inventory
+  - bread: A stale loaf.
+  - key: An iron key.
+  - book: A leather-bound diary.
+  Load: 7 of 10
+> route Vault
+  Route to Vault: south, east
+> route Cellar
+  Route to Cellar: south, down
+> s
+  == Hall ==
+  A draughty hall with a heavy oak door to the east.
+  Exits: north, east, west, down
+> e
+  == Vault ==
+  Gold glitters in the dark.
+  You see: gold
+  Exits: west
+> take gold
+  The gold is too heavy to add to your load.
+> drop book
+  Dropped: book.
+> take gold
+  The gold is too heavy to add to your load.
+> drop bread
+  Dropped: bread.
+> take gold
+  Taken: gold.
+> inventory
+  - key: An iron key.
+  - gold: A pile of coins.
+  Load: 9 of 10
+> quit
+  Goodbye after 10 moves with 80 points.
+played 37 commands, 77 lines of narration, 10 moves, score 80

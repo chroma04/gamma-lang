@@ -1,0 +1,36 @@
+// A query description: stored predicates, an optional ordering and a row limit.
+pub Query :: struct(T: type) {
+    filters: List(^fn(row: ^const T) -> bool)
+    order: ?^fn(a, b: ^const T) -> bool = null
+    limit: ?usize = null
+}
+
+pub query :: fn(T: type) -> Query(T) \ {Alloc} {
+    return Query(T)(filters: list(^fn(row: ^const T) -> bool))
+}
+
+pub deinit :: fn(T: type, q: ^Query(T)) { q.filters.deinit() }
+
+/// Adds a predicate; a row must satisfy all of them.
+pub filter :: fn(T: type, q: ^Query(T), pred: ^fn(row: ^const T) -> bool) -> AllocError!() {
+    return q.filters.push(pred)
+}
+
+/// Rows come out in the order `less` defines (`less(a, b)`: a before b).
+pub order_by :: fn(T: type, q: ^Query(T), less: ^fn(a, b: ^const T) -> bool) { q.order = less }
+
+pub take :: fn(T: type, q: ^Query(T), n: usize) { q.limit = n }
+
+/// Whether `row` passes every predicate.
+pub accepts :: fn(T: type, q: ^const Query(T), row: ^const T) -> bool {
+    for f in q.filters.items {
+        if not f(row) { return false }
+    }
+    return true
+}
+
+pub ordering :: fn(T: type, q: ^const Query(T)) -> ?^fn(a, b: ^const T) -> bool => q.order
+
+pub limit_of :: fn(T: type, q: ^const Query(T)) -> ?usize => q.limit
+
+pub predicate_count :: fn(T: type, q: ^const Query(T)) -> usize => q.filters.items.len

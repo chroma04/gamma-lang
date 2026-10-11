@@ -1,0 +1,3 @@
+# A tiny relational query engine: generic tables, a query builder and an iterator-based executor.
+[package]
+name = "query"

@@ -1,0 +1,318 @@
+// A recursive-descent JSON parser with error positions, depth limit and exact cleanup on failure.
+value :: import "../value"
+
+pub Value :: value.Value
+Member :: value.Member
+
+pub Kind :: union {
+    Eof
+    Unexpected: u8
+    BadNumber
+    BadEscape
+    BadLiteral
+    Trailing
+    TooDeep
+    ExpectedColon
+}
+
+pub SyntaxError :: struct {
+    pub pos: usize
+    pub kind: Kind
+}
+
+pub Error :: union {
+    Syntax: SyntaxError
+    Memory: AllocError
+}
+
+MAX_DEPTH :: 6
+
+Parser :: struct {
+    src: string
+    pos: usize = 0
+    depth: u32 = 0
+}
+
+fail :: fn(p: ^const Parser, kind: Kind) -> Error => .Syntax(SyntaxError(pos: p.pos, kind: kind))
+
+peek :: fn(p: ^const Parser) -> ?u8 => p.src.get(p.pos)
+
+skip_ws :: fn(p: ^Parser) {
+    while c := peek(p) {
+        if c in (' ', '\t', '\n', '\r') { p.pos += 1 } else { break }
+    }
+}
+
+/// Parses a whole document: one value, then nothing but whitespace.
+pub parse :: fn(src: string) -> Error!Value \ {Alloc} {
+    p := Parser(src: src)
+    v := try parse_value(&p)
+    skip_ws(&p)
+    if p.pos < src.len {
+        value.free_value(&v)
+        return !fail(&p, .Trailing)
+    }
+    return v
+}
+
+parse_value :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+    skip_ws(p)
+    c := peek(p) else return !fail(p, .Eof)
+    return match c {
+        '{' => object(p)
+        '[' => array(p)
+        '"' => Value.Str(try string_value(p))
+        't' => literal(p, "true", .Bool(true))
+        'f' => literal(p, "false", .Bool(false))
+        'n' => literal(p, "null", .Null)
+        '-', '0'..='9' => number(p)
+        _ => !fail(p, .Unexpected(c))
+    }
+}
+
+literal :: fn(p: ^Parser, word: string, v: Value) -> Error!Value {
+    end := p.pos + word.len
+    if end > p.src.len or p.src[p.pos..end] is not word { return !fail(p, .BadLiteral) }
+    p.pos = end
+    return v
+}
+
+enter :: fn(p: ^Parser) -> Error!() {
+    if p.depth >= MAX_DEPTH { return !fail(p, .TooDeep) }
+    p.depth += 1
+    return ()
+}
+
+array :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+    try enter(p)
+    defer p.depth -= 1
+    p.pos += 1
+    items := list(Value)
+    errdefer {
+        v := Value.Arr(items)
+        value.free_value(&v)
+    }
+    skip_ws(p)
+    if peek(p) is ']' {
+        p.pos += 1
+        return Value.Arr(items)
+    }
+    while true {
+        item := try parse_value(p)
+        items.push(item) else e => {
+            value.free_value(&item)
+            return !e
+        }
+        skip_ws(p)
+        c := peek(p) else return !fail(p, .Eof)
+        p.pos += 1
+        if c is ']' { break }
+        if c is not ',' {
+            p.pos -= 1
+            return !fail(p, .Unexpected(c))
+        }
+    }
+    return Value.Arr(items)
+}
+
+object :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+    try enter(p)
+    defer p.depth -= 1
+    p.pos += 1
+    members := list(Member)
+    errdefer {
+        v := Value.Obj(members)
+        value.free_value(&v)
+    }
+    skip_ws(p)
+    if peek(p) is '}' {
+        p.pos += 1
+        return Value.Obj(members)
+    }
+    while true {
+        skip_ws(p)
+        c := peek(p) else return !fail(p, .Eof)
+        if c is not '"' { return !fail(p, .Unexpected(c)) }
+        key := try string_value(p)
+        skip_ws(p)
+        if peek(p) is not ':' {
+            free(key)
+            return !fail(p, .ExpectedColon)
+        }
+        p.pos += 1
+        val := parse_value(p) else e => {
+            free(key)
+            return !e
+        }
+        members.push(Member(key: key, val: val)) else e => {
+            free(key)
+            value.free_value(&val)
+            return !e
+        }
+        skip_ws(p)
+        d := peek(p) else return !fail(p, .Eof)
+        p.pos += 1
+        if d is '}' { break }
+        if d is not ',' {
+            p.pos -= 1
+            return !fail(p, .Unexpected(d))
+        }
+    }
+    return Value.Obj(members)
+}
+
+digit_run :: fn(p: ^Parser) -> usize {
+    n := 0
+    while c := peek(p) {
+        if c not in '0'..='9' { break }
+        n += 1
+        p.pos += 1
+    }
+    return n
+}
+
+number :: fn(p: ^Parser) -> Error!Value {
+    start := p.pos
+    if peek(p) is '-' { p.pos += 1 }
+    if digit_run(p) is 0 { return !fail(p, .BadNumber) }
+    int_end := p.pos
+    is_float := false
+    frac_digits: usize = 0
+    if peek(p) is '.' {
+        p.pos += 1
+        frac_digits = digit_run(p)
+        if frac_digits is 0 { return !fail(p, .BadNumber) }
+        is_float = true
+    }
+    exp_at := p.pos
+    exp: i32 = 0
+    if c := peek(p) and c in ('e', 'E') {
+        p.pos += 1
+        neg := false
+        if s := peek(p) and s in ('+', '-') {
+            neg = s is '-'
+            p.pos += 1
+        }
+        digits_at := p.pos
+        if digit_run(p) is 0 { return !fail(p, .BadNumber) }
+        for d in p.src[digits_at..p.pos] {
+            shifted := exp *? 10 else return !fail(p, .BadNumber)
+            exp = shifted +? i32(d - '0') else return !fail(p, .BadNumber)
+        }
+        if neg { exp = -exp }
+        is_float = true
+    }
+    text := p.src[start..p.pos]
+    neg := text[0] is '-'
+    if not is_float {
+        n: i64 = 0
+        for d in p.src[if neg { start + 1 } else { start }..int_end] {
+            n = n *? 10 else return !fail(p, .BadNumber)
+            n = (if neg { n -? i64(d - '0') } else { n +? i64(d - '0') }) else return !fail(p, .BadNumber)
+        }
+        return Value.Int(n)
+    }
+    // Digits of the integer and fraction parts form one mantissa; the scale is applied once.
+    mant: f64 = 0
+    for d in p.src[if neg { start + 1 } else { start }..exp_at] {
+        if d is '.' { continue }
+        mant = mant * 10 + f64(d - '0')
+    }
+    scale: i32 = exp - i32(frac_digits.checked(u16) else 0)
+    while scale < 0 {
+        mant = mant / 10
+        scale += 1
+    }
+    while scale > 0 {
+        mant = mant * 10
+        scale -= 1
+    }
+    return Value.Num(if neg { -mant } else { mant })
+}
+
+hex4 :: fn(p: ^Parser) -> Error!u32 {
+    if p.pos + 4 > p.src.len { return !fail(p, .Eof) }
+    cp: u32 = 0
+    for i in 0..4 {
+        c := p.src[p.pos + i]
+        d: u32 = match c {
+            '0'..='9' => u32(c - '0')
+            'a'..='f' => u32(c - 'a') + 10
+            'A'..='F' => u32(c - 'A') + 10
+            _ => return !fail(p, .BadEscape)
+        }
+        cp = cp * 16 + d
+    }
+    p.pos += 4
+    return cp
+}
+
+utf8 :: fn(cp: u32, out: []u8, write: bool) -> usize {
+    n: usize = if cp < 0x80 { 1 } else if cp < 0x800 { 2 } else { 3 }
+    if write {
+        match n {
+            1 => { out[0] = cp.trunc(u8) }
+            2 => {
+                out[0] = (0xC0 | (cp >> 6)).trunc(u8)
+                out[1] = (0x80 | (cp & 0x3F)).trunc(u8)
+            }
+            _ => {
+                out[0] = (0xE0 | (cp >> 12)).trunc(u8)
+                out[1] = (0x80 | ((cp >> 6) & 0x3F)).trunc(u8)
+                out[2] = (0x80 | (cp & 0x3F)).trunc(u8)
+            }
+        }
+    }
+    return n
+}
+
+/// Scans a string body. With `write` false only the decoded length is computed.
+scan_string :: fn(p: ^Parser, out: []u8, write: bool) -> Error!usize {
+    p.pos += 1
+    n: usize = 0
+    while true {
+        c := peek(p) else return !fail(p, .Eof)
+        p.pos += 1
+        if c is '"' { break }
+        if c is '\\' {
+            e := peek(p) else return !fail(p, .Eof)
+            p.pos += 1
+            if e is 'u' {
+                cp := try hex4(p)
+                n += utf8(cp, if write { out[n..] } else { out }, write)
+                continue
+            }
+            r: u8 = match e {
+                '"' => '"'
+                '\\' => '\\'
+                '/' => '/'
+                'n' => '\n'
+                't' => '\t'
+                'r' => '\r'
+                'b' => 8
+                'f' => 12
+                _ => {
+                    p.pos -= 1
+                    return !fail(p, .BadEscape)
+                }
+            }
+            if write { out[n] = r }
+            n += 1
+        } else {
+            if write { out[n] = c }
+            n += 1
+        }
+    }
+    return n
+}
+
+/// A freshly allocated, decoded copy of the string at the cursor.
+string_value :: fn(p: ^Parser) -> Error!string \ {Alloc} {
+    save := p.pos
+    n := try scan_string(p, empty_slice(u8), false)
+    p.pos = save
+    buf := try make(u8, n)
+    errdefer free(buf)
+    _ = try scan_string(p, buf, true)
+    return buf
+}

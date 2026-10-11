@@ -1,0 +1,3 @@
+# A JSON library split into value, parser and printer modules behind a facade.
+[package]
+name = "json_app"

@@ -1,0 +1,72 @@
+// A JSON library behind a facade module (aliases, pub module members, handler types) used by an app.
+json :: import "../json"
+
+Doc :: json.Value
+
+describe :: fn(label: string, r: json.Error!Doc) \ {Out, Alloc} {
+    match r {
+        !.Syntax(e) => print("{}: syntax error at {}: {}\n", (label, e.pos, e.kind))
+        !.Memory(_) => print("{}: out of memory\n", label)
+        _ => print("{}: ok\n", label)
+    }
+    if v := r {
+        owned := v
+        json.free_value(&owned)
+    }
+}
+
+show :: fn(v: ^const Doc) \ {Out, Alloc} {
+    b := json.buffer()
+    defer b.deinit()
+    with &b { json.compact(v) }
+    print("{} ({} chunks)\n", (b.text(), b.puts))
+}
+
+main :: fn() \ {Out, Alloc} {
+    src :: `{"name": "gamma", "tags": ["lang", "fx", "c"], "ver": {"major": 0, "minor": 5}, "pi": 3.25, "neg": -12, "big": 1.5e3, "ok": true, "none": null, "esc": "a\"b\\c\ndéA"}`
+    doc := json.parse(src) else {
+        print("failed\n")
+        return
+    }
+    defer json.free_value(&doc)
+    show(&doc)
+    print("--- pretty ---\n")
+    stdout := json.printer.Stdout()
+    with &stdout {
+        json.pretty(&doc)
+        print("\n")
+    }
+    print("--- lookups ---\n")
+    paths := [_]string("name", "tags[1]", "ver.minor", "tags[9]", "pi", "esc", "nothing.here", "ver.major")
+    for p in paths {
+        if hit := doc.lookup(p) {
+            b := json.buffer()
+            defer b.deinit()
+            with &b { json.compact(hit) }
+            print("{} -> {} {}\n", (p, json.kind(hit), b.text()))
+        } else {
+            print("{} -> missing\n", p)
+        }
+    }
+    print("--- errors ---\n")
+    bad := [_](label: string, text: string)(
+        ("empty", ""),
+        ("trailing", "[1, 2] x"),
+        ("missing colon", `{"a" 1}`),
+        ("bad literal", "[tru]"),
+        ("bad number", "[1.]"),
+        ("bad escape", `["a\qb"]`),
+        ("unterminated", `["abc`),
+        ("too deep", "[[[[[[[[1]]]]]]]]"),
+        ("unexpected", "[1, ?]"),
+        ("nested ok", "[[[[[1]]]]]"),
+        ("empty containers", `{"a": [], "b": {}}`),
+    )
+    for t in bad {
+        describe(t.label, json.parse(t.text))
+    }
+    d2 := json.parse(`{"a": [], "b": {}, "c": [1, [2, {"d": "x"}]]}`)!
+    defer json.free_value(&d2)
+    with &stdout { json.pretty(&d2, 4) }
+    print("\n")
+}

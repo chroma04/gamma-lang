@@ -1,0 +1,3 @@
+# A text-adventure engine: registry, world model, content and a command engine with effects.
+[package]
+name = "adventure"
