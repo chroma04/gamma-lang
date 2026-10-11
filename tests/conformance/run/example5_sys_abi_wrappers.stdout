@@ -1,0 +1,8 @@
+strlen 4
+typed s3 87655
+flat s3 87655
+flat p2 4321
+flat f2 322
+flat v2 4321
+flat ret s3 40 41 42 same true
+flat ret p2 21 42

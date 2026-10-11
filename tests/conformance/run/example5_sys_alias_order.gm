@@ -1,0 +1,98 @@
+// Argument evaluation order and aliasing of large values: by-value copies versus pointers to the same variable.
+Big :: struct { a: [6]i64, tag: u8 }
+Wide :: struct { x: i128, y: i128 }
+
+sum :: fn(b: Big) -> i64 {
+    s: i64 = 0
+    for v in b.a { s += v }
+    return s + i64(b.tag)
+}
+
+mk :: fn(k: i64) -> Big {
+    b := Big(a: [6]i64(fill: k), tag: 1)
+    b.a[5] = k * 10
+    return b
+}
+
+// Mutates the original through the pointer while holding a by-value copy.
+poke :: fn(copy: Big, p: ^Big) -> i64 {
+    p.a[0] = 999
+    p.tag = 77
+    return copy.a[0] * 1000 + i64(copy.tag) * 10 + p.a[0] - 990
+}
+
+// Modifies its own by-value copy; the caller's variable must be untouched.
+scribble :: fn(b0: Big) -> Big {
+    b := b0
+    b.a[1] = -1
+    b.tag = 200
+    return b
+}
+
+mutate :: fn(p: ^Big) -> i64 {
+    p.a[2] += 5
+    return p.a[2]
+}
+
+three :: fn(x: Big, n: i64, y: Big) -> i64 => sum(x) * 1000 + n * 100 + sum(y)
+
+pair_diff :: fn(x: Big, y: Big) -> i64 => sum(x) - sum(y)
+
+wide3 :: fn(a: Wide, b: i128, c: Wide) -> i128 => a.x + a.y * 2 + b * 3 + c.x * 4 + c.y * 5
+
+bump_w :: fn(w: ^Wide) -> i128 {
+    w.x += 1000
+    w.y -= 1
+    return 7
+}
+
+swap_fields :: fn(a: Big, p: ^Big) -> Big {
+    r := a
+    r.a[0] = p.a[0]
+    p.a[0] = 123
+    r.a[1] = a.a[0]
+    return r
+}
+
+main :: fn() \ {Out} {
+    b := mk(3)
+    print("sum {}\n", sum(b))
+    // 1. earlier arg read before later arg's side effect
+    print("three {}\n", three(b, mutate(&b), b))
+    // 2. same variable by value and by pointer
+    c := mk(1)
+    print("poke {}\n", poke(c, &c))
+    print("after poke {} {}\n", (c.a[0], c.tag))
+    // 3. by-value param modified inside; original untouched
+    d := mk(2)
+    e := scribble(d)
+    print("scribble {} {} {} {}\n", (d.a[1], d.tag, e.a[1], e.tag))
+    // 4. pass through a pointer, mutate through another
+    p := &d
+    print("deref {}\n", pair_diff(p^, scribble(p^)))
+    q := &d
+    print("deref-then-mutate {}\n", pair_diff(p^, Big(a: [6]i64(fill: mutate(q)), tag: 0)))
+    print("d.a[2] now {}\n", d.a[2])
+    // 5. same variable twice
+    print("twice {}\n", pair_diff(b, b))
+    // 6. callee overwrites the original through the pointer while returning a modified copy
+    f := mk(4)
+    g := swap_fields(f, &f)
+    print("swap {} {} {} {}\n", (f.a[0], g.a[0], g.a[1], g.a[5]))
+    // 7. wide integers
+    w := Wide(x: 1, y: 2)
+    print("wide {}\n", wide3(w, i128(bump_w(&w)), w))
+    print("w {} {}\n", (w.x, w.y))
+    // 8. arguments from array elements and fields
+    arr := [3]Big(mk(1), mk(2), mk(3))
+    i := 0
+    print("elem {}\n", pair_diff(arr[i], arr[2]))
+    // 9. struct return used directly as argument (nested)
+    print("nested {}\n", sum(scribble(scribble(mk(5)))))
+    // 10. assignment from a call that takes the destination
+    h := mk(6)
+    h = scribble(h)
+    print("selfassign {} {}\n", (h.a[1], h.tag))
+    h = swap_fields(h, &h)
+    print("selfswap {} {} {}\n", (h.a[0], h.a[1], h.tag))
+}

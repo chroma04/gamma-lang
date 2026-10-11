@@ -1,0 +1,133 @@
+// Recursion with large values passed and returned by value: merge sort on arrays, n-queens with a board struct, mutual recursion, and nested calls on results.
+Arr :: struct { v: [32]i32, n: u32 }
+Board :: struct { cols: [10]i8, row: u32, diag1: u32, diag2: u32, used: u32 }
+
+LCG :: struct { s: u64 }
+
+next :: fn(g: ^LCG) -> u32 {
+    g.s = g.s *% 6364136223846793005 +% 1442695040888963407
+    return (g.s >> 40).trunc(u32)
+}
+
+// Merge sort on whole arrays: halves are copied out, sorted by recursive calls, and merged into a result.
+merge :: fn(a: Arr, b: Arr) -> Arr {
+    r := Arr(v: [32]i32(fill: 0), n: a.n + b.n)
+    i: u32 = 0
+    j: u32 = 0
+    for k in 0..usize(r.n) {
+        if j >= b.n or (i < a.n and a.v[usize(i)] <= b.v[usize(j)]) {
+            r.v[k] = a.v[usize(i)]
+            i += 1
+        } else {
+            r.v[k] = b.v[usize(j)]
+            j += 1
+        }
+    }
+    return r
+}
+
+sort :: fn(a: Arr) -> Arr {
+    if a.n <= 1 { return a }
+    mid := a.n / 2
+    left := Arr(v: [32]i32(fill: 0), n: mid)
+    right := Arr(v: [32]i32(fill: 0), n: a.n - mid)
+    for i in 0..usize(mid) { left.v[i] = a.v[i] }
+    for i in 0..usize(a.n - mid) { right.v[i] = a.v[usize(mid) + i] }
+    return merge(sort(left), sort(right))
+}
+
+is_sorted :: fn(a: Arr) -> bool {
+    for i in 1..usize(a.n) {
+        if a.v[i - 1] > a.v[i] { return false }
+    }
+    return true
+}
+
+// N-queens: the board is passed by value so backtracking is just returning.
+place :: fn(b: Board, n: u32) -> u32 {
+    if b.row is n { return 1 }
+    count: u32 = 0
+    for c in 0..n {
+        bit: u32 = 1 << c
+        d1: u32 = 1 << (b.row + c)
+        d2: u32 = 1 << (b.row + n - c)
+        if b.used & bit is not 0 or b.diag1 & d1 is not 0 or b.diag2 & d2 is not 0 { continue }
+        nb := b
+        nb.cols[usize(b.row)] = c.trunc(i8)
+        nb.row += 1
+        nb.used |= bit
+        nb.diag1 |= d1
+        nb.diag2 |= d2
+        count += place(nb, n)
+    }
+    return count
+}
+
+first_solution :: fn(b: Board, n: u32) -> ?Board {
+    if b.row is n { return b }
+    for c in 0..n {
+        bit: u32 = 1 << c
+        d1: u32 = 1 << (b.row + c)
+        d2: u32 = 1 << (b.row + n - c)
+        if b.used & bit is not 0 or b.diag1 & d1 is not 0 or b.diag2 & d2 is not 0 { continue }
+        nb := b
+        nb.cols[usize(b.row)] = c.trunc(i8)
+        nb.row += 1
+        nb.used |= bit
+        nb.diag1 |= d1
+        nb.diag2 |= d2
+        if sol := first_solution(nb, n) { return sol }
+    }
+    return null
+}
+
+// Mutual recursion with big values.
+is_even :: fn(a: Arr, k: u32) -> Arr {
+    if k is 0 { return a }
+    b := a
+    b.v[0] += 1
+    return is_odd(b, k - 1)
+}
+
+is_odd :: fn(a: Arr, k: u32) -> Arr {
+    if k is 0 { return a }
+    b := a
+    b.v[1] += 10
+    return is_even(b, k - 1)
+}
+
+// f(f(f(x))) with a big result used directly as the next argument.
+rot :: fn(a: Arr) -> Arr {
+    r := a
+    first := a.v[0]
+    for i in 1..usize(a.n) { r.v[i - 1] = a.v[i] }
+    r.v[usize(a.n) - 1] = first
+    return r
+}
+
+main :: fn() \ {Out} {
+    g := LCG(s: 12345)
+    a := Arr(v: [32]i32(fill: 0), n: 32)
+    for i in 0..32 { a.v[i] = (next(&g) % 1000).trunc(i32) - 500 }
+    s := sort(a)
+    print("sorted {} first {} last {} n {}\n", (is_sorted(s), s.v[0], s.v[31], s.n))
+    print("original sorted {}\n", is_sorted(a))
+    same: i64 = 0
+    for i in 0..32 { same += i64(a.v[i]) - i64(s.v[i]) }
+    print("sum preserved {}\n", same is 0)
+    for n in 4..9 {
+        b0 := Board(cols: [10]i8(fill: -1), row: 0, diag1: 0, diag2: 0, used: 0)
+        print("queens {} -> {}\n", (n, place(b0, n)))
+    }
+    b0 := Board(cols: [10]i8(fill: -1), row: 0, diag1: 0, diag2: 0, used: 0)
+    if sol := first_solution(b0, 8) {
+        print("first {} {} {} {} {} {} {} {}\n", (sol.cols[0], sol.cols[1], sol.cols[2], sol.cols[3], sol.cols[4], sol.cols[5], sol.cols[6], sol.cols[7]))
+    }
+    z := Arr(v: [32]i32(fill: 0), n: 5)
+    r := is_even(z, 9)
+    print("mutual {} {}\n", (r.v[0], r.v[1]))
+    q := Arr(v: [32]i32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31), n: 6)
+    t := rot(rot(rot(q)))
+    print("rot {} {} {} {}\n", (t.v[0], t.v[1], t.v[5], t.v[6]))
+    print("rot ring {}\n", rot(rot(rot(rot(rot(rot(q)))))).v[0])
+}

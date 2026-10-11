@@ -1,0 +1,19 @@
+opt copy 6 now 12
+match copy 18 now 24
+wide copy 2
+destructure 5 6 100
+chain ok 18
+chain err -1 -1
+chain ok 0
+else 30
+else err -42
+none
+some none
+some some 12
+some some 18
+pair 3 4
+pair none true
+wide opt true 1606938044258990275541962092341162602522202993782792835301376
+wide res 6338253001141147007483516026880
+wide res err
+wide else 3000

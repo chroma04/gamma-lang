@@ -1,0 +1,108 @@
+// Big records sorted by libc qsort with callbacks that pass elements by value, searched with bsearch, shuffled with memcpy and compared with memcmp; the result matches sort_by.
+c :: import "std/c"
+
+Rec :: struct {
+    key: u32
+    weight: f64
+    tags: [4]u16
+    name: [10]u8
+    next: i64
+}
+
+libc :: foreign "c" {
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) \ {Sys}
+    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) -> ?rawptr \ {Sys}
+    memcpy :: fn(d: rawptr, s: rawptr, n: usize) -> rawptr \ {}
+    memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int \ {}
+}
+
+#global compares: u32 = 0
+
+// Records order by key, then weight: big values passed by value to ordinary Gamma functions.
+order :: fn(a: Rec, b: Rec) -> c.c_int {
+    if a.key < b.key { return -1 }
+    if a.key > b.key { return 1 }
+    if a.weight < b.weight { return -1 }
+    if a.weight > b.weight { return 1 }
+    return 0
+}
+
+cmp_rec :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+    compares += 1
+    return order(a.cast(^const Rec)^, b.cast(^const Rec)^)
+}
+
+// The same comparison reading fields through pointers: no copies at all.
+cmp_rec_ptr :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+    x := a.cast(^const Rec)
+    y := b.cast(^const Rec)
+    compares += 1
+    if x.key is not y.key { return if x.key < y.key { -1 } else { 1 } }
+    return if x.weight < y.weight { -1 } else if x.weight > y.weight { 1 } else { 0 }
+}
+
+// Key-only comparison for bsearch: the search key is a whole record.
+cmp_key :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+    x := a.cast(^const Rec)^
+    y := b.cast(^const Rec)^
+    return if x.key < y.key { -1 } else if x.key > y.key { 1 } else { 0 }
+}
+
+make_rec :: fn(i: u32) -> Rec {
+    r := Rec(key: (i * 37) % 11, weight: f64(i % 5) * 0.5, tags: [4]u16(fill: i.trunc(u16)), name: [10]u8(fill: 97), next: -i.trunc(i64))
+    r.name[0] = 97 +% (i % 26).trunc(u8)
+    r.tags[3] = 0xbeef
+    return r
+}
+
+describe :: fn(r: Rec) -> u64 {
+    return u64(r.key) * 1000000 + (r.weight * 2.0).trunc(u64) * 10000 + u64(r.name[0]) * 10 + u64(r.tags[3] % 7)
+}
+
+N :: 14
+
+main :: fn() \ {Out, Sys} {
+    recs: [N]Rec = ---
+    for i in 0..N { recs[i] = make_rec(i.trunc(u32)) }
+    orig := recs
+    print("size {} align {}\n", (@size_of(Rec), @align_of(Rec)))
+
+    // Sort two copies the C way and one the Gamma way.
+    a := recs
+    b := recs
+    libc.qsort(&a, N, @size_of(Rec), cmp_rec)
+    libc.qsort(&b, N, @size_of(Rec), cmp_rec_ptr)
+    sorted := recs
+    sorted[..].sort_by(fn(x, y: ^const Rec) -> bool => order(x^, y^) < 0)
+    same_ab := libc.memcmp(&a, &b, @size_of(Rec) * N) is 0
+    print("a keys:")
+    for r in a { print(" {}", r.key) }
+    print("\n")
+    // qsort is not stable: compare the (key, weight) pairs only.
+    ok := true
+    for i in 0..N {
+        if order(a[i], sorted[i]) is not 0 or order(b[i], sorted[i]) is not 0 { ok = false }
+    }
+    print("same order {} {} (compared {})\n", (ok, same_ab, compares > 0))
+    print("first {} last {}\n", (describe(a[0]), describe(a[N - 1])))
+
+    // bsearch for each key that exists, with a whole record as the search key.
+    found := 0
+    for k in 0..12 {
+        probe := make_rec(0)
+        probe.key = k.trunc(u32)
+        if hit := libc.bsearch(&probe, &a, N, @size_of(Rec), cmp_key) {
+            found += 1
+            r := hit.cast(^const Rec)^
+            if r.key is not probe.key { print("wrong hit {}\n", k) }
+        }
+    }
+    print("keys found {}\n", found)
+
+    // memcpy a record onto itself shifted by one slot, as a ring buffer rotate does.
+    last := a[N - 1]
+    _ = libc.memcpy(&b[1], &a[0], @size_of(Rec) * (N - 1))
+    b[0] = last
+    print("rotated {} {} {}\n", (b[0].key is a[N - 1].key, b[1].key is a[0].key, b[N - 1].key is a[N - 2].key))
+    print("orig untouched {}\n", libc.memcmp(&orig, &recs, @size_of(Rec) * N) is 0)
+}

@@ -1,0 +1,158 @@
+// Allocator benchmark: 72-byte records through an arena, a fixed buffer, a counting wrapper allocator, List, HashMap, a heap and a deque, with checksums.
+arena :: import "std/arena"
+fixed_buffer :: import "std/fixed_buffer"
+dq :: import "std/collections/deque"
+hp :: import "std/collections/heap"
+
+Rec :: struct {
+    id: u32
+    prio: i32
+    vals: [6]f64
+    tag: [8]u8
+    link: ?^Rec
+}
+
+make_rec :: fn(i: u32) -> Rec {
+    r := Rec(id: i, prio: (i * 7919 % 101).trunc(i32) - 50, vals: [6]f64(fill: 0.5), tag: [8]u8(fill: 0), link: null)
+    r.vals[(i % 6).trunc(usize)] = f64(i % 100)
+    r.tag[(i % 8).trunc(usize)] = (i % 250).trunc(u8)
+    return r
+}
+
+digest :: fn(r: Rec) -> u64 {
+    h: u64 = u64(r.id) * 1_000_003 + (r.prio + 100).trunc(u64)
+    for v in r.vals { h = h *% 31 +% v.trunc(u64) }
+    for t in r.tag { h = h *% 31 +% u64(t) }
+    return h
+}
+
+// A wrapper allocator that counts what passes through it.
+Counting :: struct { parent: Allocator, allocs: u32, frees: u32, bytes: usize }
+
+counting_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    c := data.cast(^Counting)
+    p := c.parent.vt.alloc(c.parent.data, size, align) else return null
+    c.allocs += 1
+    c.bytes += size
+    return p
+}
+
+counting_resize :: fn(data: rawptr, ptr: [^]u8, old, new, align: usize) -> bool {
+    c := data.cast(^Counting)
+    return c.parent.vt.resize(c.parent.data, ptr, old, new, align)
+}
+
+counting_free :: fn(data: rawptr, ptr: [^]u8, size, align: usize) {
+    c := data.cast(^Counting)
+    c.frees += 1
+    c.parent.vt.free(c.parent.data, ptr, size, align)
+}
+
+COUNTING_VT :: AllocVtable(alloc: counting_alloc, resize: counting_resize, free: counting_free)
+
+N :: 2000
+
+// Builds a linked list of records inside whatever allocator is current; returns the head.
+build_list :: fn(n: u32) -> AllocError!?^Rec \ {Alloc} {
+    head: ?^Rec = null
+    for i in 0..n {
+        r := make_rec(i)
+        r.link = head
+        head = try new(Rec, r)
+    }
+    return head
+}
+
+sum_list :: fn(h: ?^Rec) -> u64 {
+    t: u64 = 0
+    cur := h
+    while n := cur {
+        t = t +% digest(n^)
+        cur = n.link
+    }
+    return t
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    print("size {}\n", @size_of(Rec))
+    expected: u64 = 0
+    for i in 0..N { expected = expected +% digest(make_rec(i.trunc(u32))) }
+
+    // Arena: one big list, everything released at once.
+    ar := arena.new()
+    with ar.allocator() {
+        head := try build_list(N)
+        print("arena list {}\n", sum_list(head) is expected)
+    }
+    ar.deinit()
+
+    // A fixed buffer holding exactly 100 records, then running out.
+    store: [7300]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    stored := 0
+    with fb.allocator() {
+        for i in 0..200 {
+            if p := new(Rec, make_rec(i.trunc(u32))) {
+                stored += 1
+                if p.id is not i.trunc(u32) { print("corrupt\n") }
+            } else {
+                break
+            }
+        }
+    }
+    print("fixed stored {} used>{}\n", (stored, fb.bytes_used() > 7000))
+    fb.reset()
+
+    // Counting allocator on the heap: List, HashMap and a heap of records.
+    cnt := Counting(parent: current(), allocs: 0, frees: 0, bytes: 0)
+    with Allocator(data: &cnt, vt: &COUNTING_VT) {
+        l := list(Rec)
+        for i in 0..N { try l.push(make_rec(i.trunc(u32))) }
+        m := map(u32, Rec)
+        for i in 0..500 { try m.put(i.trunc(u32) * 3, make_rec(i.trunc(u32))) }
+        h := hp.heap_by(Rec, fn(a, b: ^const Rec) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id))
+        for r in l.items { try h.push(r) }
+        d := dq.deque(Rec)
+        for i in 0..300 {
+            if i % 3 is 0 { try d.push_front(make_rec(i.trunc(u32))) } else { try d.push_back(make_rec(i.trunc(u32))) }
+        }
+
+        lsum: u64 = 0
+        for r in l.items { lsum = lsum +% digest(r) }
+        msum: u64 = 0
+        want: u64 = 0
+        for i in 0..500 {
+            v := m.get(i.trunc(u32) * 3) else make_rec(0)
+            msum = msum +% digest(v)
+            want = want +% digest(make_rec(i.trunc(u32)))
+        }
+        print("list {} map {} {}\n", (lsum is expected, msum is want, msum))
+
+        // The heap yields the records ordered by (prio, id).
+        prev_prio: i32 = -1000
+        ordered := true
+        count: u32 = 0
+        first_ids: u32 = 0
+        while r := h.pop() {
+            if r.prio < prev_prio { ordered = false }
+            prev_prio = r.prio
+            if count < 3 { first_ids = first_ids * 10000 + r.id }
+            count += 1
+        }
+        print("heap ordered {} count {} first {}\n", (ordered, count, first_ids))
+
+        dsum: u64 = 0
+        pops: u32 = 0
+        while r := d.pop_front() {
+            dsum = dsum +% digest(r) *% u64(pops + 1)
+            pops += 1
+        }
+        print("deque {} {}\n", (pops, dsum))
+
+        m.deinit()
+        l.deinit()
+        h.deinit()
+        d.deinit()
+    }
+    print("counting: balanced {} grew {}\n", (cnt.allocs is cnt.frees, cnt.bytes > 100000))
+}
