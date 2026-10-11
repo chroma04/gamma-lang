@@ -1,0 +1,17 @@
+//! stage: test
+//! filter: parse
+// `--filter` runs only the tests whose name contains the text; the summary
+// counts the others.
+parse_digit :: fn(c: u8) -> ?u8 => if c >= '0' and c <= '9' { c - '0' } else { null }
+
+test "parse accepts digits" {
+    expect(parse_digit('7') is 7)
+}
+
+test "parse rejects letters" {
+    expect(parse_digit('x') is null)
+}
+
+test "never selected" {
+    expect(false)
+}

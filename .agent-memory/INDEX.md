@@ -1,13 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 5, 2026-10-11) — PRs #1–#6 merged; s5 = PR #8 (claude/project-thread-rxakzv)
+## State (session 5, 2026-10-11) — PRs #1–#7 merged (#7: gamma test runs imported modules' tests, --filter); s5 = PR #8 (claude/project-thread-rxakzv)
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
 - Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified
   generic names + declaration aliases + re-exported modules, dogfood round 4 (example4_*) and
-  its fixes (sessions/s04).
+  its fixes (sessions/s04). Session 5: `gamma test` runs imported same-package modules'
+  tests, `--filter=` (sessions/s05).
 - GitHub Actions currently gets no runners (account-level); verify locally (fmt, clippy -D
   warnings, cargo test, CC=clang conformance) before pushing.
 - Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
