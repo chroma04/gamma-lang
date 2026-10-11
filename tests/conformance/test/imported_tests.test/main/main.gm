@@ -1,0 +1,13 @@
+//! stage: test
+//! exit: 1
+util :: import "../util"
+ext :: import "ext"
+
+test "uses both modules" {
+    expect(util.double(ext.triple(2)) is 12)
+}
+
+// Test names need only be distinct within a module.
+test "same name" {
+    expect(util.double(1) is 2)
+}

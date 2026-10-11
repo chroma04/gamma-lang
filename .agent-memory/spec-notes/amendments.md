@@ -43,3 +43,5 @@
   aliased_decl). `m.G(args)` works in type and value positions (ty_expr generic_decl,
   expr type_of_name).
 - s4: §4.5 pattern bindings with else (let-else) + §2.8 rule-2 exception for '.V(..) :=' lines; §5.9 tuple-expression element coercion; §10.4 result else ?T; §3.8 test error type; §12.6 return/try in decl clauses; §12.7 enforced.
+- s5: §3.8 `gamma test` runs the tests of the root module and of every same-package module it
+  imports (transitively); std and dependency packages excluded. Names distinct per module.

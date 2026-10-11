@@ -1,0 +1,5 @@
+pub add :: fn(a: i32, b: i32) -> i32 => a + b
+
+test "modules imported indirectly are tested too" {
+    expect(add(2, 3) is 5)
+}

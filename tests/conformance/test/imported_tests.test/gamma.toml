@@ -1,0 +1,7 @@
+# Tests run in the root module and in the modules of its package that it imports,
+# but not in dependency packages.
+[package]
+name = "imported_tests"
+
+[dependencies]
+ext = { path = "deps/ext" }

@@ -9,27 +9,59 @@ use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ItemKind};
 use crate::tir::{self, FnId};
 use crate::types::{EffectRef, EffectSet, FnTy, Ty, TyKind};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 impl<'s> Sema<'s> {
-    /// Checks the tests of the root module and records them in the program.
+    /// Checks the tests of the root module and of the modules of its package
+    /// that it imports, and records them in the program: the root module's
+    /// first, then each other module's in the order of their paths (§3.8).
     pub(super) fn check_tests(&mut self, root: ModuleId) {
-        let items: Vec<(ModuleId, Rc<ast::Item>)> =
-            std::mem::take(&mut self.test_items).into_iter().filter(|(m, _)| *m == root).collect();
-        let mut names: Vec<(String, Span)> = vec![];
-        for (module, item) in items {
-            let ItemKind::Test { name, name_span, body } = &item.kind else { continue };
-            let text = String::from_utf8_lossy(&name.bytes).into_owned();
-            if let Some((_, prev)) = names.iter().find(|(n, _)| *n == text) {
-                let d = crate::diag::Diagnostic::error(*name_span, format!("the test \"{}\" is declared twice", text))
-                    .with_label(*prev, "first declared here");
-                self.emit(d);
+        let package = self.modules[root.0 as usize].package;
+        // By module label; the root module's (`None`) sorts first.
+        let mut groups: BTreeMap<Option<String>, Vec<(ModuleId, Rc<ast::Item>)>> = BTreeMap::new();
+        for (module, item) in std::mem::take(&mut self.test_items) {
+            let m = &self.modules[module.0 as usize];
+            if module != root && (m.package != package || m.is_prelude) {
                 continue;
             }
-            names.push((text.clone(), *name_span));
-            if let Some(entry) = self.check_test(module, &text, *name_span, body) {
-                self.prog.tests.push(tir::TestCase { name: text, entry, span: *name_span });
+            let label = (module != root).then(|| self.module_label(module));
+            groups.entry(label).or_default().push((module, item));
+        }
+        for (label, items) in groups {
+            let mut names: Vec<(String, Span)> = vec![];
+            for (module, item) in items {
+                let ItemKind::Test { name, name_span, body } = &item.kind else { continue };
+                let text = String::from_utf8_lossy(&name.bytes).into_owned();
+                if let Some((_, prev)) = names.iter().find(|(n, _)| *n == text) {
+                    let d =
+                        crate::diag::Diagnostic::error(*name_span, format!("the test \"{}\" is declared twice", text))
+                            .with_label(*prev, "first declared here");
+                    self.emit(d);
+                    continue;
+                }
+                names.push((text.clone(), *name_span));
+                if let Some(entry) = self.check_test(module, &text, *name_span, body) {
+                    self.prog.tests.push(tir::TestCase { name: text, module: label.clone(), entry, span: *name_span });
+                }
             }
+        }
+    }
+
+    /// The path of `module`'s directory relative to its package's root, with `/`
+    /// separators (`.` for the root itself), which names it in test reports.
+    fn module_label(&self, module: ModuleId) -> String {
+        let m = &self.modules[module.0 as usize];
+        let dir = m.dir.as_deref().map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        let root = m.package.map(|p| &self.packages[p].root);
+        let rel = match (&dir, root) {
+            (Some(d), Some(r)) => d.strip_prefix(r).ok(),
+            _ => None,
+        };
+        match rel {
+            Some(r) if r.as_os_str().is_empty() => ".".to_string(),
+            Some(r) => r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"),
+            None => m.name.to_string(),
         }
     }
 

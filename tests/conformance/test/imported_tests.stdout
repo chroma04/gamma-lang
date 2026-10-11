@@ -1,0 +1,9 @@
+test "uses both modules" ... ok
+test "same name" ... ok
+test "same name" in util ... ok
+test "a failing test reports its module" in util ... FAILED
+    half of 7 is 3
+    expectation failed
+      at tests/conformance/test/imported_tests.test/util/util.gm:14:5 in test "a failing test reports its module"
+test "modules imported indirectly are tested too" in util/deep ... ok
+4 passed, 1 failed

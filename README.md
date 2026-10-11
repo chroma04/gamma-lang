@@ -48,7 +48,8 @@ gamma run file.gm            # type-check and run a program (a file or a module 
 gamma run --backend=c file.gm  # compile through C and run (default backend: interp)
 gamma build file.gm -o prog  # compile to a native executable via the system C compiler
 gamma check file.gm          # type-check only
-gamma test file.gm           # run the `test` declarations of a module
+gamma test file.gm           # run the `test` declarations of a module and its imports
+gamma test --filter=parse file.gm  # only the tests whose name contains `parse`
 gamma lex file.gm            # print the token stream
 gamma parse file.gm          # check syntax
 gamma parse --dump file.gm   # print the syntax tree

@@ -381,7 +381,8 @@ pub struct Program {
     pub adts: HashMap<AdtId, AdtDef>,
     /// The entry point, for executables.
     pub main: Option<FnId>,
-    /// The tests of the root module, when compiled for testing (§3.8).
+    /// The tests of the root module and of the modules of its package that it
+    /// imports, when compiled for testing (§3.8).
     pub tests: Vec<TestCase>,
     /// Functions exported to C under a symbol (§19.4).
     pub exports: Vec<(Symbol, FnId)>,
@@ -558,6 +559,9 @@ pub struct VariantDef {
 #[derive(Clone, Debug)]
 pub struct TestCase {
     pub name: String,
+    /// The module of a test outside the root module: its directory relative to the
+    /// package root (§3.8).
+    pub module: Option<String>,
     /// A parameterless function returning `u8`: 0 if the test passed.
     pub entry: FnId,
     pub span: Span,

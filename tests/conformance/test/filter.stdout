@@ -1,0 +1,3 @@
+test "parse accepts digits" ... ok
+test "parse rejects letters" ... ok
+2 passed, 0 failed, 1 filtered out
