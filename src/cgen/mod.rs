@@ -14,6 +14,7 @@ mod fiber;
 mod func;
 mod helpers;
 mod types;
+mod views;
 mod wide;
 
 use crate::layout::{Layouts, Target};
@@ -132,6 +133,10 @@ fn generate_entries(
     // macro of the same name suspended.
     let names = g.ty.member_names();
     out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
+    out.push_str(&debug::guard(&names, g.ty.view_defs()));
+    if opts.debug_info && matches!(Target::host().os, "Linux" | "FreeBSD") {
+        out.push_str(&debug::gdb_script_section());
+    }
     out.push_str(&g.ty.descriptors());
     out.push_str(&g.static_defs);
     out.push_str(&debug::guard(&names, &g.frames));

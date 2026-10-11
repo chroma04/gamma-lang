@@ -38,7 +38,8 @@
 //! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
-//! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
+//! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
+//! `GAMMA_TEST_DEBUG_INFO=1` to build the C back end's programs with `-g`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -228,6 +229,9 @@ fn run_c(
     let exit = exp.exit;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
     cmd.args([command, "--backend=c", "--diag-format=short"]);
+    if std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
+        cmd.arg("-g");
+    }
     if let Some(m) = &exp.mode {
         cmd.arg(format!("--mode={}", m));
     }
