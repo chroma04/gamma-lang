@@ -1,0 +1,40 @@
+//! stage: test
+// In a test, `try` accepts any error type (§3.8): errors of the test's own type are
+// returned, others fail the test where they occur.
+ParseError :: union { Empty, Bad: u8 }
+OtherError :: union { Nope }
+
+parse :: fn(s: string) -> ParseError!u32 {
+    if s.len is 0 { return !.Empty }
+    return 7
+}
+other :: fn(ok: bool) -> OtherError!u32 {
+    if ok { return 1 }
+    return !.Nope
+}
+
+test "mixed error types" {
+    a := try parse("x")
+    b := try other(true)
+    c := try fs_read()
+    expect(a + b + c is 8)
+}
+
+fs_read :: fn() -> IoError!u32 => 0
+
+test "a later error fails in place" {
+    a := try parse("x")
+    print("got {}\n", a)
+    b := try other(false)
+    print("not reached {}\n", b)
+}
+
+test "the first error still returns" {
+    _ = try parse("")
+}
+
+test "inside a loop" {
+    for i in range(0u32, 3) {
+        _ = try other(i < 2)
+    }
+}

@@ -1477,15 +1477,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 } else {
                     match self.lift_variant(*err, *f) {
                         Ok(i) => Some(tir::Lift::Variant(i)),
+                        // In a test, an error that does not lift into the test's error type
+                        // fails the test where it occurs (§3.8).
+                        Err(_) if in_test_body => return self.try_failing_test(v, vt, *err, *ok, span),
                         Err(msg) => {
-                            let mut d = crate::diag::Diagnostic::error(span, msg);
-                            if in_test_body {
-                                d = d.with_note(format!(
-                                    "a test's error type is that of its first `try`, here `{}` (§3.8); call a helper that declares a common error type",
-                                    f
-                                ));
-                            }
-                            self.sema.emit(d);
+                            self.error(span, msg);
                             None
                         }
                     }
@@ -1508,6 +1504,47 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// `try v` in a test for an error that the test cannot return: writes `error: ` and the
+    /// error to `Err` and stops the test, as a failed `expect` does (§3.8).
+    fn try_failing_test(&mut self, v: Expr, vt: Ty, err: Ty, ok: Ty, span: Span) -> Expr {
+        let Some(effect) = self.sema.prog.ambient.err else {
+            return error_expr(span);
+        };
+        let eref = crate::types::EffectRef { effect, args: Box::new([]) };
+        self.record_effects(&crate::types::EffectSet::new(vec![eref.clone()]), span);
+        let sym = crate::symbol::Symbol::intern;
+        let x = self.new_local(sym("$ok"), ok, false, span);
+        let e = self.new_local(sym("$err"), err, false, span);
+        let bind = |id, ty| tir::Pat { ty, kind: tir::PatKind::Bind(id), span };
+        let write = mk(
+            Ty::unit(),
+            tir::ExprKind::Write {
+                sink: tir::WriteSink::Perform { effect: eref, op: 0 },
+                pieces: vec![std::rc::Rc::from(&b"error: "[..]), std::rc::Rc::from(&b"\n"[..])],
+                specs: vec![tir::FmtSpec::default()],
+                args: vec![mk(err, tir::ExprKind::Local(e), span)],
+            },
+            span,
+        );
+        let msg = mk(Ty::string(), tir::ExprKind::Str(std::rc::Rc::from(&b"the test failed at this `try`"[..])), span);
+        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
+        let block = tir::Block { stmts: vec![tir::Stmt::Expr(write)], tail: Some(stop), span };
+        let fail = mk(Ty::never(), tir::ExprKind::Block(Box::new(block)), span);
+        let arms = vec![
+            tir::Arm {
+                pat: tir::Pat { ty: vt, kind: tir::PatKind::Ok(Box::new(bind(x, ok))), span },
+                guard: None,
+                body: mk(ok, tir::ExprKind::Local(x), span),
+            },
+            tir::Arm {
+                pat: tir::Pat { ty: vt, kind: tir::PatKind::Err(Box::new(bind(e, err))), span },
+                guard: None,
+                body: fail,
+            },
+        ];
+        mk(ok, tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span)
     }
 
     /// The variant of union `f` whose payload is `e`, for error lifting (§10.6).

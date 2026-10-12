@@ -1,0 +1,11 @@
+test "mixed error types" ... ok
+test "a later error fails in place" ... FAILED
+    got 7
+    error: .Nope
+    the test failed at this `try`
+      at tests/conformance/test/try_any_error_type.gm:28:10 in test "a later error fails in place"
+test "the first error still returns" ... FAILED
+    error: .Empty
+test "inside a loop" ... FAILED
+    error: .Nope
+1 passed, 3 failed
