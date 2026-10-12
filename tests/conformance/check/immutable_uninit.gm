@@ -1,0 +1,10 @@
+//! stage: check
+// `---` leaves storage to be set later, so it cannot initialize an immutable
+// binding (§4.4).
+main :: fn() {
+    a: i32 : --- //~ ERROR an immutable binding cannot be `---`
+    b, c: (i32, i32) : --- //~ ERROR an immutable binding cannot be `---`
+    d: i32 = ---
+    d = 1
+    _ = d
+}

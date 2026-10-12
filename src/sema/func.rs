@@ -757,6 +757,9 @@ impl<'a, 's> FnCx<'a, 's> {
     fn destructure(&mut self, b: &ast::Binding) -> Stmt {
         let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
         let init = if let ExprKind::Uninit = b.init.kind {
+            if b.kind != ast::BindingKind::Var {
+                self.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)");
+            }
             match annot {
                 Some(t) if self.is_plain_data(t) => Expr { ty: t, kind: tir::ExprKind::Uninit, span: b.init.span },
                 _ => {
@@ -839,6 +842,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let mutable = b.kind == ast::BindingKind::Var;
         let errors_before = self.sema.sess.diags.error_count();
         let init = if let ExprKind::Uninit = b.init.kind {
+            if !mutable {
+                self.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)");
+            }
             match annot {
                 Some(t) => {
                     if !self.is_plain_data(t) {

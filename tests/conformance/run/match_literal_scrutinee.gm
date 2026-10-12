@@ -1,0 +1,21 @@
+// A `match` on a local initialized with a literal uses the type the local was given by
+// an earlier use, and tuples of such locals take their default types (§6.1, §7.12).
+main :: fn() \ {Out} {
+    a := 200
+    n: u8 = a
+    r := match a {
+        200 => "two hundred"
+        _ => "other"
+    }
+    x, y := 0, 0
+    r2 := match (x, y) {
+        (0, 0) => "origin"
+        _ => "elsewhere"
+    }
+    t := (1, 2)
+    r3 := match t {
+        (1, 2) => "yes"
+        _ => "no"
+    }
+    print("{} {} {} {}\n", (n, r, r2, r3))
+}

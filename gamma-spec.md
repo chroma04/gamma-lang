@@ -639,7 +639,7 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Tag values.** By default variants are numbered 0, 1, 2, … in declaration order. Explicit values `Name = c` are allowed only when a tag type is given; a variant without an explicit value takes the previous value plus one. Tag values must be distinct and fit `T`.
 - **Construction.** `.Name(payload)` or `.Name` when the union type is known from context; `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly as arguments: `.Rect(w: 2, h: 3)`.
 - **Inspection.** `match` (§8.6), `if pattern := e` (§8.2) and `is` (§7.6). `u.tag()` returns the tag value as the tag type.
-- **From a raw tag.** `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of a payload-less variant. It is the only way to turn an integer into an enum; there is no unchecked form.
+- **From a raw tag.** For an enum, `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of one of its variants. It is the only way to turn an integer into an enum; there is no unchecked form. A union with payloads has no `from_tag`, since a tag alone cannot give a payload.
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
 
 #### 5.11.1 Untagged unions

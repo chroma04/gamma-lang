@@ -27,12 +27,9 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Checks a `match`. With `value` false, arms are statements (§7.12).
     pub fn match_expr(&mut self, m: &ast::MatchExpr, value: bool, expect: Option<Ty>) -> Expr {
         let scrutinee = self.expr(&m.scrutinee, None);
-        let sty = self.infer.resolve(scrutinee.ty);
-        if sty.has_infer() {
-            // Integer literals as scrutinees take their fallback now.
-            self.infer.unify(sty, Ty::i32()).ok();
-        }
-        let mut sty = self.infer.resolve(scrutinee.ty);
+        // Patterns are checked against a known type, so literals in the scrutinee take
+        // their fallback types now (§6.1).
+        let mut sty = self.settle_now(scrutinee.ty);
         if self.is_c_union(sty) {
             self.error(m.scrutinee.span, c_union_match(sty));
             sty = Ty::error();

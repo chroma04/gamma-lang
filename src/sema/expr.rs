@@ -250,7 +250,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(ty, tir::ExprKind::Upvar { levels: self.depth() - depth, local: id }, span)
                 }
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
-                LocalBinding::NestedFn(f) => self.fn_ref(f, span),
+                LocalBinding::NestedFn(f) => self.named_fn_value(f, name, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 LocalBinding::Label => {
@@ -285,7 +285,7 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, span: Span) -> Expr {
         self.sema.check_deprecated(d, span);
         match self.sema.resolve_decl(d) {
-            DeclValue::Fn(f) => self.fn_ref(f, span),
+            DeclValue::Fn(f) => self.named_fn_value(f, name, span),
             DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
             DeclValue::Untyped(v) => self.untyped_literal(&v, span),
             DeclValue::Type(_) | DeclValue::GenericType(_) => {
@@ -340,6 +340,21 @@ impl<'a, 's> FnCx<'a, 's> {
         let ExprKind::Field { base, name } = &e.kind else { return None };
         let m = self.module_of(base)?;
         Some(self.sema.module_member(m, *name))
+    }
+
+    /// The named function `f` used as a value; a generic one has none (§16.7).
+    fn named_fn_value(&mut self, f: tir::FnId, name: crate::symbol::Symbol, span: Span) -> Expr {
+        if !self.sema.sigs[&f].generics.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`{}` is generic, so it can only be called; it does not convert to a function pointer (§16.7)",
+                    name
+                ),
+            );
+            return error_expr(span);
+        }
+        self.fn_ref(f, span)
     }
 
     /// A named function used as a value: a function pointer (§5.14).
