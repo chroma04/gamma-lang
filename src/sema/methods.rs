@@ -257,6 +257,18 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             (TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::Optional(_), "cast") => {
                 let t = self.type_arg(args, 0, span)?;
+                let is_ptr = |t: Ty| {
+                    matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_))
+                };
+                let ok = match (rty.kind(), t.kind()) {
+                    (TyKind::Optional(a), TyKind::Optional(b)) => is_ptr(*a) && is_ptr(*b),
+                    (TyKind::Optional(_), _) | (_, TyKind::Optional(_)) => false,
+                    _ => is_ptr(t),
+                };
+                if !ok {
+                    self.error(span, format!("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", rty, t));
+                    return Some(error_expr(span));
+                }
                 Some(b(Builtin::Cast, t, vec![recv]))
             }
             // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.

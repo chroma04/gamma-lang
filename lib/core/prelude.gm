@@ -482,7 +482,7 @@ tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
     // The test allocator remembers where each block came from, to report leaks.
     if a.vt.cast(rawptr) is (&TRACKING).cast(rawptr) {
         t := a.data.cast(^TestTracker)
-        if b := t.blocks.get_ptr(raw.cast(usize)) { b.site = site }
+        if b := t.blocks.get_ptr(raw.addr()) { b.site = site }
     }
 }
 
@@ -605,7 +605,7 @@ track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
     t := data.cast(^TestTracker)
     p := t.inner.vt.alloc(t.inner.data, size, align) else return null
     t.live += size
-    t.blocks.put(p.cast(usize), LiveBlock(size: size)) else {}
+    t.blocks.put(p.addr(), LiveBlock(size: size)) else {}
     return p
 }
 
@@ -614,7 +614,7 @@ track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => fa
 track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
     t := data.cast(^TestTracker)
     t.live -= size
-    _ = t.blocks.remove(p.cast(usize))
+    _ = t.blocks.remove(p.addr())
     t.inner.vt.free(t.inner.data, p, size, align)
 }
 

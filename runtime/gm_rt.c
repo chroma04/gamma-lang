@@ -2339,15 +2339,41 @@ GM_API _Noreturn void gm_stack_overflow(void) {
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
 
 #ifndef GM_NO_FRAME_PROBES
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
+#include <ucontext.h>
+#endif
+/* The stack pointer of the interrupted code, or 0 where it is not known. */
+static uintptr_t gm_fault_sp(void *uc) {
+    ucontext_t *u = uc;
+#if defined(__linux__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext.gregs[REG_RSP];
+#elif defined(__linux__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext.sp;
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__rsp;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__sp;
+#else
+    (void)u;
+    return 0;
+#endif
+}
+
 /* A fault just below a thread's stack limit is an overflow that a function's prologue
- * hit before its stack check ran (compilers probe each page of a large frame): report it
- * as the trap it is. Any other fault gets the default action. */
+ * hit before its stack check ran (compilers probe each page of a large frame), and so is
+ * any fault while the stack pointer is below the limit (a frame so large that it skipped
+ * the guard pages, with the check inlined after the frame was allocated): report it as
+ * the trap it is. Any other fault gets the default action. */
 static void gm_segv(int sig, siginfo_t *si, void *uc) {
-    (void)uc;
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t limit = gm_thread_stack_limit;
+    uintptr_t sp = gm_fault_sp(uc);
     if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
         gm_stack_overflow();
+    /* The running stack may be a fiber's, whose limit is its own. */
+    if (gm_stack_limit != 0 && sp != 0 && sp < gm_stack_limit) gm_stack_overflow();
     signal(sig, SIG_DFL);
 }
 

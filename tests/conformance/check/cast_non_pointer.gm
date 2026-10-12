@@ -1,0 +1,12 @@
+//! stage: check
+// `cast` converts between pointer types only (§6.6); `addr` gives an address.
+main :: fn() {
+    x: u32 = 1
+    p := &x
+    a := p.cast(usize)                //~ ERROR
+    b := p.cast(^u8)
+    c := p.addr()
+    o: ?^u32 = p
+    d := o.cast(?^u8)
+    e := o.cast(^u8)                  //~ ERROR
+}
