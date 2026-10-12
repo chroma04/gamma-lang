@@ -25,6 +25,7 @@ src/cgen/          C back end (decisions/008); rtcache.rs = cached runtime objec
                    debug.rs = `-g` (#line mapping, named frame fields, macro guards);
                    views.rs = `-g` debugger views; gdb_printers.py embedded in .debug_gdb_scripts
                    borrow.rs = pure fns / params read in place (decisions/016)
+                   constarg.rs = literal-only by_ref args in static gm_kN (PR #17)
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handler
                    structs gm_node/gm_unw, fibers + asm context switch); rt_test.c
 lib/core/prelude.gm  core declarations in Gamma (embedded via include_str!)

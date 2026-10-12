@@ -1,0 +1,60 @@
+//! mode: checked
+// Locals that closures and handler clauses reach live in the frame; the others
+// are plain C locals. Both kinds mixed in one function must agree.
+Log :: effect {
+    log: fn(n: u32)
+}
+
+Pt :: struct { x: i32, y: i32 }
+
+pairs :: fn(n: u32) \ {Yield(u32)} {
+    i: u32 = 0
+    while i < n {
+        yield(i)
+        i += 1
+    }
+}
+
+Bad :: union { Empty }
+
+parse :: fn(s: string) -> Bad!u32 {
+    if s.len is 0 { return !.Empty }
+    return s.len.trunc(u32)
+}
+
+bump :: fn(p: ^i32) { p^ += 10 }
+
+mixed :: fn(n: u32) -> u32 \ {Out} {
+    seen: u32 = 0
+    plain: u32 = 1
+    sink :: handler Log { log(v) => { seen += v } }
+    with sink {
+        for v in pairs(n) {
+            plain = plain * 3 + v
+            log(v)
+        }
+    }
+    // A closure two levels down reaches `base` through both frames.
+    base: u32 = 5
+    outer :: fn(a: u32) -> u32 {
+        inner :: fn(b: u32) -> u32 => b + base
+        return inner(a) * 2
+    }
+    q, r := (n / 3, n % 3)
+    pt := Pt(x: 1, y: 2)
+    pt.y += q.trunc(i32)
+    z: i32 = 7
+    bump(&z)
+    tag: u32 = if v := parse("abc") { v } else e => 0
+    bad: u32 = parse("") else e => 99
+    defer print("deferred plain={} r={}\n", (plain, r))
+    print("seen={} outer={} pt=({},{}) z={} tag={} bad={}\n",
+        (seen, outer(n), pt.x, pt.y, z, tag, bad))
+    return seen + plain + q + r
+}
+
+main :: fn() \ {Out} {
+    total: u32 = 0
+    for k in pairs(4) { total += mixed(k + 3) }
+    print("total={}\n", total)
+}

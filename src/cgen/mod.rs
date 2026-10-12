@@ -8,6 +8,7 @@
 
 mod arith;
 mod borrow;
+mod constarg;
 pub mod debug;
 mod elementwise;
 mod expr;
@@ -120,6 +121,8 @@ fn generate_entries(
         spec_tables: std::collections::HashSet::new(),
         exits: HashMap::new(),
         pure_memo: HashMap::new(),
+        captured: None,
+        site_consts: vec![],
         handler_tables: String::new(),
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
@@ -208,6 +211,11 @@ pub struct Gen<'a> {
     exits: HashMap<(FnId, Option<func::Spec>), Option<bool>>,
     /// Memo of `is_pure` (`None` while being computed).
     pure_memo: HashMap<FnId, Option<bool>>,
+    /// The locals that function literals or handler clauses reach through their
+    /// environment, by function (computed on first use, see `Gen::frame_locals`).
+    captured: Option<std::collections::HashSet<(FnId, crate::tir::LocalId)>>,
+    /// Constant large arguments, in static storage `gm_kN` (see `constarg`).
+    site_consts: Vec<crate::tir::ConstValue>,
     pub handler_tables: String,
     /// Libraries to link, from foreign blocks.
     pub libs: std::collections::BTreeSet<String>,
@@ -421,15 +429,22 @@ impl<'a> Gen<'a> {
     fn gen_consts(&mut self) -> CResult<String> {
         let mut decls = String::new();
         let mut init = String::from("static void gm_init_consts(void) {\n");
+        let mut values = vec![];
         for (i, c) in self.prog.consts.iter().enumerate() {
             let Some(v) = &c.value else {
                 return unsupported(c.span, "a constant without a compile-time value");
             };
-            let (size, align) = (self.ty.size(c.ty), self.ty.align(c.ty).max(1));
-            let _ = writeln!(decls, "static uint8_t gm_c{}[{}] __attribute__((aligned({})));", i, size.max(1), align);
+            values.push((format!("gm_c{i}"), v.clone()));
+        }
+        for (i, v) in std::mem::take(&mut self.site_consts).into_iter().enumerate() {
+            values.push((format!("gm_k{i}"), v));
+        }
+        for (name, v) in &values {
+            let (size, align) = (self.ty.size(v.ty), self.ty.align(v.ty).max(1));
+            let _ = writeln!(decls, "static uint8_t {}[{}] __attribute__((aligned({})));", name, size.max(1), align);
             if !v.bytes.is_empty() {
                 let s = self.static_bytes(&v.bytes);
-                let _ = writeln!(init, "    memcpy(gm_c{}, {}, {});", i, s, v.bytes.len());
+                let _ = writeln!(init, "    memcpy({}, {}, {});", name, s, v.bytes.len());
             }
             for r in &v.relocs {
                 let target = match &r.target {
@@ -442,8 +457,8 @@ impl<'a> Gen<'a> {
                 };
                 let _ = writeln!(
                     init,
-                    "    {{ void *p = (uint8_t *){} + {}; memcpy(gm_c{} + {}, &p, sizeof p); }}",
-                    target, r.addend, i, r.offset
+                    "    {{ void *p = (uint8_t *){} + {}; memcpy({} + {}, &p, sizeof p); }}",
+                    target, r.addend, name, r.offset
                 );
             }
         }

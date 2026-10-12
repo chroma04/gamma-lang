@@ -357,9 +357,23 @@ multiplication and shift-and-subtract division. `runtime/rt_test.c` checks them
 against `__int128` and against exact big-integer vectors.
 
 **Functions and frames.** Each function becomes
-`RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. Its locals live in
-a frame struct whose address is the `env` of the function literals and handler
-clauses it creates, so captured variables are shared, as §11.6 requires.
+`RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. The locals that
+function literals and handler clauses reach live in a frame struct whose
+address is the `env` of those literals and clauses, so captured variables are
+shared, as §11.6 requires. The other locals of up to 32 bytes are plain C
+locals (larger ones gain nothing from registers, and the stack check, which must
+assume they lie below the frame, would overestimate what the function needs;
+Safe builds have no such check, so there every uncaptured local is a C local, and
+one whose address escapes goes to the heap alone instead of with the frame):
+once the frame's
+address escapes (into a handler node or a closure), the C compiler must keep
+every field of the frame in memory, but it can still keep the locals outside it
+in registers, and under Fil-C an escaping frame is allocated on the
+garbage-collected heap, so a smaller one costs less. Every local stays in the
+frame in a function that contains a `with … on`, whose body is moved into a
+function of its own and reaches the locals through a pointer to the frame, and
+in Debug builds and with `-g`, so that the dead frame filled with `0xDD`
+(§18.3) covers every local and debuggers show them all as its fields.
 
 **Effects.** The handler context `cx` is a linked list of `gm_node`s, built on
 the C stack by `with`. Performing an operation finds the innermost node for the
@@ -398,7 +412,7 @@ lets a chain of adapters compile to a plain loop.
 
 **Non-local exits.** An exit whose target is in the same C function runs the
 deferred statements it crosses and jumps there with `goto`; since nothing then
-takes the frame's address, the C compiler can keep the locals of simple
+takes the frame's address, the C compiler can keep the frame of simple
 functions in registers. `break`, `continue`, `return` and `try` aimed at another
 frame, clause exits to a `with`, and `Env.exit` set a global exit record and
 return. After each call that may exit this way, the caller tests the record and
@@ -516,7 +530,13 @@ fiber stacks sized by `@stack_size` must hold them. Because the copy happens on
 entry, the address may be that of any place holding the value: an argument read
 from a local or through a pointer is passed as that place when no later argument
 can write memory (`no_writes`), and `return x` copies `x` straight into the result
-slot. A plain function whose own signature differs from the C ABI as a result
+slot. An argument built from literals only, such as the `SourceLocation` that
+`@caller_location()` fills in for `new`, lives in static storage initialized at
+startup like a top-level constant (`src/cgen/constarg.rs`), and the call passes
+its address instead of building a temporary at every call; under Fil-C that
+temporary's escaping address cost a heap allocation per call. (Passing such
+values by value instead is slower still under Fil-C: its calling convention
+copies an aggregate argument through memory it allocates.) A plain function whose own signature differs from the C ABI as a result
 (it has a large parameter, or returns a large mirror type) gets a separate entry
 point `gm_fN_c` with the C signature (`Gen::needs_wrapper`, `c_abi_wrapper`); it
 is what function pointers, constants and `#export` refer to (`Gen::addr_name`),

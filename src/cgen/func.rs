@@ -2,8 +2,10 @@
 //! runs on non-local exits.
 //!
 //! Every Gamma function becomes `static RET gm_fN(void *env, gm_node *cx,
-//! gm_node *inst, params…)`. Its locals live in a frame struct `F` so that
-//! function literals and handler clauses can reach them through `env`.
+//! gm_node *inst, params…)`. The locals that function literals and handler
+//! clauses reach through `env` live in a frame struct `F`; the others are plain C
+//! locals `gm_lN`, which the C compiler can keep in registers even when the
+//! frame's address escapes (see `Gen::frame_locals`).
 //!
 //! `break`, `continue`, `return`, `try` and `Env.exit` set `gm_unw` and run the
 //! *ladder* for the current position: the pending `defer`s from the innermost
@@ -89,6 +91,8 @@ pub struct FnGen<'g, 'a> {
     /// For each parameter, by position: whether it is read in place, through its
     /// address `aN`, instead of from a copy in the frame (see `Gen::borrowed_params`).
     pub borrowed: Vec<bool>,
+    /// For each local: whether it lives in the frame struct (`Gen::frame_locals`).
+    pub in_frame: Vec<bool>,
 }
 
 /// Generates function `f` into `g`, or its clone specialized by `spec`.
@@ -104,6 +108,7 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
     if g.frame_done(f) {
         return gen_body(g, f, def, body, spec);
     }
+    let in_frame = g.frame_locals(f);
     // The frame struct, shared by the function and its clones.
     let mut frame = format!("struct gm_fr{} {{\n    gm_frame h;\n", f.0);
     // With `-g`, a field also has its local's name, with the type's debugger view.
@@ -113,6 +118,9 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
         vec![None; def.locals.len()]
     };
     for (i, l) in def.locals.iter().enumerate() {
+        if !in_frame[i] {
+            continue;
+        }
         let c = g.ty.cty(l.ty);
         match &names[i] {
             Some(n) => {
@@ -170,6 +178,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         c_abi_wrapper(g, f, def);
     }
     let borrowed = g.borrowed_params(f);
+    let in_frame = g.frame_locals(f);
     let sig = format!(
         "static __attribute__((aligned(4))) {}{}{} {}({})",
         hint_attrs(def.hints),
@@ -205,6 +214,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         outlined: false,
         temp_bytes: 0,
         borrowed,
+        in_frame,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
     fg.src_line(def.span);
@@ -215,6 +225,13 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;");
     }
     fg.line(&format!("struct gm_fr{} F;", f.0));
+    for (i, l) in def.locals.iter().enumerate() {
+        if !fg.in_frame[i] {
+            fg.temp_bytes += fg.g.ty.size(l.ty);
+            let c = fg.g.ty.cty(l.ty);
+            fg.line(&format!("{} gm_l{}; /* {} */", c, i, l.name));
+        }
+    }
     // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
     if fg.g.opts.checks {
         fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);");
@@ -240,11 +257,13 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
             continue;
         }
         if fg.g.ty.by_ref(t) {
-            fg.line(&format!("memcpy(&F.l{}, a{}, sizeof F.l{});", p.0, i, p.0));
+            let lv = fg.local_lv(*p);
+            fg.line(&format!("memcpy(&{lv}, a{i}, sizeof {lv});"));
             continue;
         }
         let a = if plain { fg.gamma_value(t, &format!("a{}", i)) } else { format!("a{}", i) };
-        fg.line(&format!("F.l{} = {};", p.0, a));
+        let lv = fg.local_lv(*p);
+        fg.line(&format!("{} = {};", lv, a));
     }
     if out_ret && fg.builds_in_place(body) {
         // Built straight in the caller's destination: the body has no `defer`.
@@ -439,8 +458,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
     pub fn local_addr(&self, l: crate::tir::LocalId) -> String {
         match self.def.params.iter().position(|p| *p == l) {
             Some(i) if self.borrowed[i] => format!("((uint8_t *)a{})", i),
-            _ => format!("((uint8_t *)&F.l{})", l.0),
+            _ => format!("((uint8_t *)&{})", self.local_lv(l)),
         }
+    }
+
+    /// The C lvalue of local `l`: a frame field, or a C local of its own.
+    pub fn local_lv(&self, l: crate::tir::LocalId) -> String {
+        if self.in_frame[l.index()] { format!("F.l{}", l.0) } else { format!("gm_l{}", l.0) }
     }
 
     /// The frame `levels` up the capture chain: a `gm_frame *` expression and its function.
@@ -805,17 +829,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
             // `---` leaves the local as it is (filled with 0xAA in Debug builds, §18.3).
             Stmt::Let { local, init: Some(Expr { kind: ExprKind::Uninit, .. }) } => {
                 if self.g.opts.debug {
-                    self.line(&format!("memset(&F.l{}, 0xAA, sizeof F.l{});", local.0, local.0));
+                    let lv = self.local_lv(*local);
+                    self.line(&format!("memset(&{lv}, 0xAA, sizeof {lv});"));
                 }
             }
             // A large value read from a place is copied directly, without a temporary.
             Stmt::Let { local, init: Some(init) } if self.big_place(init) => {
                 let a = self.place_addr(init)?;
-                self.line(&format!("memmove(&F.l{}, {}, sizeof F.l{});", local.0, a, local.0));
+                let lv = self.local_lv(*local);
+                self.line(&format!("memmove(&{lv}, {a}, sizeof {lv});"));
             }
             Stmt::Let { local, init } => {
                 if let Some(init) = init {
-                    self.expr_into(init, &format!("F.l{}", local.0))?;
+                    let lv = self.local_lv(*local);
+                    self.expr_into(init, &lv)?;
                 }
             }
             Stmt::LetTuple { locals, init } => {
@@ -826,7 +853,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     if let Some(l) = l {
                         let lt = self.def.locals[l.index()].ty;
                         let c = self.g.ty.cty(lt);
-                        self.line(&format!("F.l{} = GM_LD({}, (uint8_t *)&{} + {});", l.0, c, t, offs[i]));
+                        let lv = self.local_lv(*l);
+                        self.line(&format!("{} = GM_LD({}, (uint8_t *)&{} + {});", lv, c, t, offs[i]));
                     }
                 }
             }
@@ -910,4 +938,77 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         Ok(())
     }
+}
+
+impl Gen<'_> {
+    /// For each local of `f`: whether it lives in the frame struct `F` instead of in a
+    /// C local of its own. A local must be in the frame when a function literal or
+    /// handler clause reaches it through `env` (an `Upvar`), and every local is when
+    /// the body of a `with … on`, moved into a function of its own, reaches the frame
+    /// through a pointer. Debug builds and `-g` keep them all in the frame: the dead
+    /// frame is filled with 0xDD (§18.3) and debuggers show the locals as its fields.
+    ///
+    /// Locals larger than [`MAX_C_LOCAL`] stay in the frame too. They gain nothing
+    /// from registers, and the stack check, which counts the C locals with the
+    /// temporaries that may lie below the frame, would otherwise also count them
+    /// when the C compiler places them above it, and could report an overflow on a
+    /// stack that suffices (a task's array buffer on a fiber stack sized for it).
+    /// Fil-C has no such check, and there a large local passed by address is better
+    /// outside the frame: it escapes to the heap on its own instead of with the frame.
+    pub fn frame_locals(&mut self, f: FnId) -> Vec<bool> {
+        let def = &self.prog.fns[f.index()];
+        let all = self.opts.debug || self.opts.debug_info || def.body.as_ref().is_some_and(has_fiber_with);
+        if all {
+            return vec![true; def.locals.len()];
+        }
+        let prog = self.prog;
+        let captured = self.captured.get_or_insert_with(|| {
+            let mut set = std::collections::HashSet::new();
+            for (i, d) in prog.fns.iter().enumerate() {
+                if let Some(b) = &d.body {
+                    collect_upvars(prog, FnId(i as u32), b, &mut set);
+                }
+            }
+            set
+        });
+        let ty = &self.ty;
+        let filc = self.prog.target.filc;
+        def.locals
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                (!filc && ty.size(l.ty) > MAX_C_LOCAL) || captured.contains(&(f, crate::tir::LocalId(i as u32)))
+            })
+            .collect()
+    }
+}
+
+/// The largest local, in bytes, that may be a C local of its own (`Gen::frame_locals`).
+const MAX_C_LOCAL: u64 = 32;
+
+/// Whether `e` contains a `with … on` (excluding nested functions).
+fn has_fiber_with(e: &Expr) -> bool {
+    if let ExprKind::With { on: Some(_), .. } = &e.kind {
+        return true;
+    }
+    let mut found = false;
+    e.for_each_child(&mut |c| found = found || has_fiber_with(c));
+    found
+}
+
+/// Adds the locals of enclosing functions that `e`, in the body of `f`, refers to.
+fn collect_upvars(
+    prog: &crate::tir::Program,
+    f: FnId,
+    e: &Expr,
+    out: &mut std::collections::HashSet<(FnId, crate::tir::LocalId)>,
+) {
+    if let ExprKind::Upvar { levels, local } = &e.kind {
+        let mut owner = f;
+        for _ in 0..*levels {
+            owner = prog.fns[owner.index()].parent.unwrap_or(owner);
+        }
+        out.insert((owner, *local));
+    }
+    e.for_each_child(&mut |c| collect_upvars(prog, f, c, out));
 }
