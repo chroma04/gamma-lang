@@ -464,7 +464,7 @@ place = expr          place op= expr
 
 Assignment is a statement, never an expression. The left side must be a mutable place (§7.2), or `_`, which evaluates and discards the right side (§7.14). The right side is converted to the place's type by the implicit coercions of §6.4.
 
-Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists for `+ - * / % << >> & | ~` and the wrapping and saturating forms `+% -% *% <<% +| -| *| <<|`. There is no `+?=` (its result would be an optional).
+Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists for `+ - * / % << >> & | ~` and the wrapping and saturating forms `+% -% *% <<% +| -| *| <<|`. There is no `+?=` (its result would be an optional). For the arithmetic and bitwise operators, `e` may have a numeric type that converts losslessly to the type of `p` (§6.5), and is converted first: `total += x` adds a `u32` to a `u64` total. This is the one place where an operand widens implicitly; it cannot lose information, and the result has the place's type either way.
 
 The order of evaluation is: the place's sub-expressions (left to right), then the right side, then the store.
 
@@ -826,7 +826,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise a slice `a[…]` of a temporary array, written as an argument for a `[]const T` parameter, slices a temporary that lives for the call: `total([_]i64(1, 2, 3)[..])`.
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
 
 ### 7.3 Operator summary
 

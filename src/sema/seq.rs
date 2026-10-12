@@ -38,6 +38,24 @@ impl<'a, 's> FnCx<'a, 's> {
         self.slice_of(b, base.span, lo, hi, inclusive, span)
     }
 
+    /// An array argument `v` for a `[]const T` parameter is passed as a slice of the whole
+    /// array; a temporary array lives for the call, like `&e` for a `^const T` one (§7.2).
+    pub fn array_arg_as_slice(&mut self, v: Expr, param: Ty) -> Expr {
+        let param = self.infer.resolve(param);
+        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !self.infer.resolve(v.ty).is_array() {
+            return v;
+        }
+        let span = v.span;
+        let b = if self.place_mutability(&v).is_none() {
+            let t = v.ty;
+            let p = mk(Ty::ptr(true, t), tir::ExprKind::AddrOfTemp(Box::new(v)), span);
+            mk(t, tir::ExprKind::Deref(Box::new(p)), span)
+        } else {
+            v
+        };
+        self.slice_of(b, span, None, None, false, span)
+    }
+
     /// Slices the evaluated `b` (written at `base_span`) with the evaluated bounds.
     pub fn slice_of(
         &mut self,

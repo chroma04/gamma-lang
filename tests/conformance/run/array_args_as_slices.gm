@@ -1,0 +1,24 @@
+// An array is passed to a `[]const T` parameter as a slice of the whole array; a
+// temporary array lives for the call (§7.2).
+total :: fn(xs: []const i64) -> i64 {
+    s: i64 = 0
+    for x in xs { s += x }
+    return s
+}
+count :: fn(T: type, xs: []const T) -> usize => xs.len
+fill :: fn(xs: []i64) { for p in each_ptr(xs) { p^ = 9 } }
+show :: fn(xs: []const string) \ {Out} {
+    for s in xs { print("{} ", s) }
+    print("\n")
+}
+main :: fn() \ {Out} {
+    a := [3]i64(1, 2, 3)
+    print("{}\n", total(a))
+    print("{}\n", total(&a))
+    print("{}\n", total([_]i64(4, 5)))
+    print("{}\n", count(a))
+    print("{}\n", count([_]u8(1, 2, 3, 4)))
+    show([_]string("x", "y"))
+    for i, x in enumerate(a) { print("{}:{} ", (i, x)) }
+    print("\n")
+}

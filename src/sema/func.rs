@@ -957,7 +957,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ast::AssignOp::Compound(bop) => {
                 // `p op= e` is `p = p op e` with `p` evaluated once (§4.7).
                 if is_simple_place(&place) {
-                    let rhs = self.binary_op(bop, place.clone(), value, span);
+                    let rhs = self.compound_op(bop, place.clone(), value, span);
                     let rhs = self.assign_coerce(rhs, place.ty);
                     Stmt::Assign { place, value: rhs }
                 } else {
@@ -973,7 +973,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         })),
                         span: sp,
                     };
-                    let rhs = self.binary_op(bop, deref(span), value, span);
+                    let rhs = self.compound_op(bop, deref(span), value, span);
                     let rhs = self.assign_coerce(rhs, place.ty);
                     let block = tir::Block {
                         stmts: vec![
@@ -987,6 +987,26 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
+    }
+
+    /// `place op value` for `place op= value`: the right operand of an arithmetic or
+    /// bitwise operator may have a narrower numeric type that converts losslessly to the
+    /// place's type (§4.7, §6.5).
+    fn compound_op(&mut self, op: ast::BinOp, place: Expr, value: &ast::Expr, span: Span) -> Expr {
+        use ast::BinOp as B;
+        if !matches!(op, B::Add(_) | B::Sub(_) | B::Mul(_) | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor) {
+            return self.binary_op(op, place, value, span);
+        }
+        let r = self.expr(value, Some(place.ty));
+        let (pt, rt) = (self.infer.resolve(place.ty), self.infer.resolve(r.ty));
+        let numeric = |t: Ty| t.is_integer() || t.is_float();
+        let r = if pt != rt && numeric(pt) && numeric(rt) && super::finalize::lossless(rt, pt) {
+            let sp = r.span;
+            Expr { ty: pt, kind: tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![r] }, span: sp }
+        } else {
+            r
+        };
+        self.arith_op(op, place, r, span)
     }
 
     /// Both sides of an assignment have equal types after coercion (§6.1, §6.4).

@@ -660,8 +660,23 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("`{}` has no arithmetic: only many-pointers `[^]T` do (§5.5)", t));
                 error_expr(span)
             }
-            B::Add(f) | B::Sub(f) | B::Mul(f) => {
+            B::Add(_) | B::Sub(_) | B::Mul(_) | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
                 let r = self.expr(rhs, Some(lhs.ty));
+                self.arith_op(op, lhs, r, span)
+            }
+            B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
+            B::Range | B::RangeIncl => {
+                self.error(span, "a range cannot be an operand here; put it in parentheses");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// An arithmetic or bitwise operator applied to checked operands.
+    pub fn arith_op(&mut self, op: ast::BinOp, lhs: Expr, r: Expr, span: Span) -> Expr {
+        use ast::BinOp as B;
+        match op {
+            B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
                 let int_only = f != ast::Flavor::Checked;
                 self.obligations.push(Obligation::Numeric { ty, span, op: op.as_str(), int_only, signed_only: false });
@@ -673,8 +688,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let rty = if f == ast::Flavor::Opt { Ty::optional(ty) } else { ty };
                 mk(rty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
             }
-            B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
-                let r = self.expr(rhs, Some(lhs.ty));
+            _ => {
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
                 let st = self.infer.resolve(ty);
                 if op != B::Div
@@ -700,11 +714,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => tir::BinOp::BitXor,
                 };
                 mk(ty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
-            }
-            B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
-            B::Range | B::RangeIncl => {
-                self.error(span, "a range cannot be an operand here; put it in parentheses");
-                error_expr(span)
             }
         }
     }
