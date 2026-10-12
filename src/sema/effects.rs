@@ -594,6 +594,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => EffectSet::empty(),
             },
             _ => {
+                // A call of an effect operation returning an array or slice is iterated like any such value.
+                if let Some(e) = self.for_each_value(f, call.clone()) {
+                    return e;
+                }
                 if !call.ty.is_error() {
                     self.error(f.iter.span, "`for` iterates over a range, an array or slice, or a call to an iterator");
                 }

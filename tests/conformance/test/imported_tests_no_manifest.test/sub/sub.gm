@@ -1,0 +1,7 @@
+deep :: import "./deep"
+
+pub two :: fn() -> i32 => deep.one() + 1
+
+test "in sub" {
+    expect(two() is 2)
+}

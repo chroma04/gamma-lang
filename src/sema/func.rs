@@ -83,6 +83,8 @@ pub struct FnCx<'a, 's> {
     pub ret: Ty,
     pub declared: EffectSet,
     pub performed: Vec<(EffectRef, Span)>,
+    /// The calls of functions whose effects include `Yield`, as opposed to `yield` itself.
+    pub iterator_calls: Vec<Span>,
     pub labels: Vec<LabelInfo>,
     pub next_label: u32,
     pub pending: Vec<PendingCoercion>,
@@ -252,6 +254,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ret,
             declared,
             performed: vec![],
+            iterator_calls: vec![],
             labels: vec![],
             next_label: 0,
             pending: vec![],
@@ -379,14 +382,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut reported = vec![];
         for (e, span) in performed {
             if !self.declared.contains(&e) && !reported.contains(&e) {
-                let name = e.to_string();
-                self.error(
-                    span,
-                    format!(
-                        "this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)",
-                        name, name
-                    ),
-                );
+                let msg = self.undeclared_effect_message(&e, span, &self.declared);
+                self.error(span, msg);
                 reported.push(e);
             }
         }
@@ -447,8 +444,32 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn record_effects(&mut self, set: &EffectSet, span: Span) {
         for e in set.effects.iter() {
+            if Some(e.effect) == self.sema.yield_effect {
+                self.iterator_calls.push(span);
+            }
             self.performed.push((e.clone(), span));
         }
+    }
+
+    /// The message for an effect performed at `span` that the function, which declares
+    /// `declared`, does not declare. A call of an iterator from a function with no `Yield` of
+    /// its own was most likely meant as the source of a `for` loop.
+    pub fn undeclared_effect_message(&self, e: &EffectRef, span: Span, declared: &EffectSet) -> String {
+        let name = e.to_string();
+        let yield_eff = self.sema.yield_effect;
+        if Some(e.effect) == yield_eff
+            && self.iterator_calls.contains(&span)
+            && !declared.effects.iter().any(|d| Some(d.effect) == yield_eff)
+        {
+            // The call's callee: the text before its argument list, after any receiver.
+            let text = self.sema.sess.sources.text(span);
+            let callee = text.split('(').next().unwrap_or(text);
+            let callee = callee.rsplit('.').next().unwrap_or(callee).trim();
+            return format!(
+                "`{callee}` is an iterator: call it as the source of a `for` loop (`for x in {callee}(…)`); it cannot be used as a value"
+            );
+        }
+        format!("this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)", name, name)
     }
 
     // --- bodies, blocks and statements ---
@@ -1173,6 +1194,11 @@ impl<'a, 's> FnCx<'a, 's> {
     /// type expression: the binding is then a local alias (§3.5).
     fn local_type_init(&mut self, e: &ast::Expr) -> Option<Ty> {
         match &e.kind {
+            ExprKind::ArrayType { .. } | ExprKind::OptionalType(_) if self.is_construction(e) => {
+                let module = self.module;
+                self.sema.looks_like_type(module, e).then(|| self.resolve_type(e))
+            }
+            ExprKind::Tuple(_) => self.local_is_type(e).then(|| self.resolve_type(e)),
             ExprKind::OptionalType(_)
             | ExprKind::PtrType { .. }
             | ExprKind::SliceType { .. }
@@ -1219,6 +1245,40 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// True if `e` is `[N]T(…)` or `?T(…)`, possibly followed by a postfix chain: a
+    /// construction rather than a type (§A.7 rule 12).
+    fn is_construction(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::ArrayType { elem: inner, .. } | ExprKind::OptionalType(inner) => {
+                super::expr::construction_call(inner).is_some() || super::expr::hoist_prefix(e).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// True if `e` denotes a type, given the local aliases in scope (the local counterpart
+    /// of [`Sema::looks_like_type`]); reports nothing.
+    fn local_is_type(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Tuple(elems) => elems.iter().all(|el| self.local_is_type(&el.value)),
+            ExprKind::Paren(inner) => self.local_is_type(inner),
+            ExprKind::Ident(_) | ExprKind::Field { .. } => self.local_type_init(e).is_some(),
+            ExprKind::ArrayType { .. } | ExprKind::OptionalType(_) if self.is_construction(e) => {
+                let module = self.module;
+                self.sema.looks_like_type(module, e)
+            }
+            ExprKind::OptionalType(_)
+            | ExprKind::PtrType { .. }
+            | ExprKind::SliceType { .. }
+            | ExprKind::ManyPtrType { .. }
+            | ExprKind::ArrayType { .. }
+            | ExprKind::ErrorUnionType { .. }
+            | ExprKind::FnType(_)
+            | ExprKind::ContType(_) => true,
+            _ => false,
         }
     }
 

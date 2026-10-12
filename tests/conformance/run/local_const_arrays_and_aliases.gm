@@ -1,0 +1,29 @@
+// Inside a function, `::` tells values from types as it does at top level.
+Suit :: union { Clubs, Diamonds }
+
+N :: 3
+
+main :: fn() \ {Out} {
+    a :: [_]i32(1, 2)
+    b :: [3]u8(7, 8, 9)
+    c :: [N]i32(fill: 4)
+    s :: [_]Suit(.Clubs, .Diamonds)
+    o :: ?i32(5)
+    print("{} {} {} {} {}\n", (a, b, c, s, o))
+    print("{}\n", a.len + b.len + c.len)
+
+    // Local aliases of tuple types.
+    Row :: (city: string, n: u32)
+    Pair :: (i32, Suit)
+    r: Row = (city: "x", n: 1)
+    p: Pair = (2, .Diamonds)
+    rows := [_]Row((city: "a", n: 1), (city: "b", n: 2))
+    print("{} {} {}\n", (r, p, rows))
+    Cell :: (Row, [2]i32)
+    cell: Cell = (r, [_]i32(5, 6))
+    print("{}\n", cell.1[1])
+
+    // A tuple of values is still a value.
+    t :: (1, "two")
+    print("{} {}\n", (t.0, t.1))
+}

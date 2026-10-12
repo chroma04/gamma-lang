@@ -150,3 +150,42 @@ fn safe_builds_with_fil_c() {
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "safe\n");
 }
+
+/// A program killed by `SIGPIPE` (its output read only in part) ends with the status a
+/// shell reports for that signal, with the interpreter and the C back end alike, and
+/// without a trap message.
+#[cfg(unix)]
+#[test]
+fn run_reports_a_closed_pipe_as_a_signal_status() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    if !c_compiler_available() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-build").join("closed_pipe");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("lines.gm");
+    std::fs::write(&src, "main :: fn() \\ {Out} {\n    for i in 0..200000 { print(\"line {}\\n\", i) }\n}\n").unwrap();
+    for backend in ["--backend=interp", "--backend=c"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
+            .args(["run", backend])
+            .arg(&src)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        out.read_line(&mut first).unwrap();
+        assert_eq!(first, "line 0\n");
+        drop(out);
+        let mut err = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+        let status = child.wait().unwrap();
+        let shell_status = status.code().unwrap_or_else(|| 128 + status.signal().unwrap());
+        assert_eq!(shell_status, 141, "{backend}");
+        assert!(!err.contains("trap"), "{backend}: {err}");
+    }
+}

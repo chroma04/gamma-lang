@@ -29,8 +29,9 @@ fn std_root() -> PathBuf {
 
 impl<'s> Sema<'s> {
     /// The package containing directory `dir`: the nearest enclosing directory
-    /// with a `gamma.toml`, or else `dir` itself (a package without a manifest).
-    pub(super) fn package_of(&mut self, dir: &Path) -> usize {
+    /// with a `gamma.toml`, or else the package `parent` of the importing module if `dir`
+    /// lies inside it, or else `dir` itself (a package without a manifest).
+    pub(super) fn package_of(&mut self, dir: &Path, parent: Option<usize>) -> usize {
         let mut root = dir.to_path_buf();
         let mut found = None;
         let mut cur = Some(dir);
@@ -43,6 +44,10 @@ impl<'s> Sema<'s> {
         }
         if let Some(r) = found {
             root = r;
+        } else if let Some(p) = parent
+            && dir.starts_with(&self.packages[p].root)
+        {
+            return p;
         }
         if let Some(i) = self.packages.iter().position(|p| p.root == root) {
             return i;
@@ -78,7 +83,8 @@ impl<'s> Sema<'s> {
             return None;
         };
         let package = self.modules[module.0 as usize].package;
-        let dir = if path.starts_with("./") || path.starts_with("../") {
+        let relative = path.starts_with("./") || path.starts_with("../");
+        let dir = if relative {
             let dir = normalize(&from_dir.join(path));
             let root = package.map(|p| self.packages[p].root.clone());
             let canon = dir
@@ -110,13 +116,14 @@ impl<'s> Sema<'s> {
             };
             normalize(&if rest.is_empty() { base } else { base.join(rest) })
         };
-        let m = self.load_dir_module(&dir, span)?;
+        let m = self.load_dir_module(&dir, span, if relative { package } else { None })?;
         self.import_edges.push((module, m, span));
         Some(m)
     }
 
-    /// The module of directory `dir`, loading it the first time.
-    pub(super) fn load_dir_module(&mut self, dir: &Path, span: Span) -> Option<ModuleId> {
+    /// The module of directory `dir`, loading it the first time. `parent` is the package of
+    /// the module that imports it by a relative path.
+    pub(super) fn load_dir_module(&mut self, dir: &Path, span: Span, parent: Option<usize>) -> Option<ModuleId> {
         let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         if let Some(&m) = self.module_by_dir.get(&key) {
             return Some(m);
@@ -143,7 +150,7 @@ impl<'s> Sema<'s> {
             files.push(self.sess.parse(f));
         }
         let name = key.file_name().map_or("module".to_string(), |s| s.to_string_lossy().into_owned());
-        let package = self.package_of(&key);
+        let package = self.package_of(&key, parent);
         let m = self.add_module(Symbol::intern(&name), files, false);
         self.modules[m.0 as usize].dir = Some(dir.to_path_buf());
         // Standard library modules may use the system intrinsics, like the core library.

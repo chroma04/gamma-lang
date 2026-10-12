@@ -1,0 +1,4 @@
+test "root" ... ok
+test "in sub" in sub ... ok
+test "in deep" in sub/deep ... ok
+3 passed, 0 failed
