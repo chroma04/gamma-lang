@@ -10,6 +10,14 @@
 //! scope outwards, with a test at each loop or `with` boundary for whether it is
 //! the exit's target. The same ladder runs after any call that may exit
 //! non-locally, when `gm_unw.kind` is set on return.
+//!
+//! The ladder is emitted once, not at every exit: each scope ends with its rung
+//! (a *segment*), reached only by `goto`, that runs its part and jumps to the rung
+//! of the enclosing scope. A block's segment has one entry per `defer`, so an exit
+//! runs only the ones registered before it; the outermost rung (`gm_lad`) returns
+//! or propagates. An exit is then a single `goto`, which keeps the C functions of
+//! code with many calls and `defer`s small (C compilers, Fil-C's especially, are
+//! slow on huge functions).
 
 use super::{CResult, Gen, conv_attr, unsupported};
 use crate::tir::{Block, Expr, ExprKind, FnDef, FnId, FnKind, LabelId, Stmt};
@@ -17,12 +25,13 @@ use crate::types::Ty;
 use std::fmt::Write;
 
 pub enum Scope<'a> {
-    /// A block: its `defer`s registered so far, `(is_errdefer, body)`.
-    Block(Vec<(bool, &'a Expr)>),
+    /// A block: its `defer`s registered so far, `(is_errdefer, body)`, and how many
+    /// of them the exits so far run (the deepest entry of its segment in use).
+    Block { id: u32, defers: Vec<(bool, &'a Expr)>, used: usize },
     /// A loop: C labels for leaving it and for its `continue` point.
-    Loop { label: LabelId, brk: String, cont: String },
+    Loop { id: u32, label: LabelId, brk: String, cont: String, used: bool },
     /// A `with`: the C label after it.
-    With { label: LabelId, end: String },
+    With { id: u32, label: LabelId, end: String, used: bool },
 }
 
 /// A specialization (Appendix D.3): the handler literal whose node is the `cx` of a
@@ -70,6 +79,8 @@ pub struct FnGen<'g, 'a> {
     pub cx: String,
     /// Set while generating a `defer` body: it cannot exit non-locally.
     pub no_check: bool,
+    /// Set once an exit jumps to `gm_lad`, the outermost rung of the ladder.
+    pub lad_used: bool,
     /// Set while generating the body of a `with … on`, moved into a function of its
     /// own: its ladder ends at the fiber's base.
     pub outlined: bool,
@@ -190,6 +201,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         scopes: vec![],
         cx: "cx".into(),
         no_check: false,
+        lad_used: false,
         outlined: false,
         temp_bytes: 0,
         borrowed,
@@ -243,6 +255,12 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         fg.expr_into(body, "F.ret")?;
     } else {
         fg.expr(body)?;
+    }
+    if fg.lad_used {
+        fg.line("goto gm_fret;");
+        fg.label("gm_lad");
+        fg.line("if (gm_unw.kind == GM_RETURN && gm_unw.frame == &F.h) { gm_unw.kind = GM_NONE; goto gm_fret; }");
+        fg.line("goto gm_fprop;");
     }
     // Debug builds fill a dead frame with 0xDD (§18.3).
     let kill = if fg.g.opts.debug { format!("{pop}memset(&F, 0xDD, sizeof F); ") } else { String::new() };
@@ -471,39 +489,94 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line("}");
     }
 
-    /// Runs pending defers outwards, stopping at the exit's target (see the module docs).
+    /// Runs pending defers outwards, stopping at the exit's target (see the module docs):
+    /// jumps to the rung of the ladder for the current position.
     pub fn ladder(&mut self) {
-        let scopes = std::mem::take(&mut self.scopes);
-        for s in scopes.iter().rev() {
+        let target = self.ladder_target();
+        self.line(&format!("goto {};", target));
+    }
+
+    /// The C label of the rung of the ladder for the current position, marked as used.
+    fn ladder_target(&mut self) -> String {
+        for s in self.scopes.iter_mut().rev() {
             match s {
-                Scope::Block(defers) => {
-                    for (is_err, body) in defers.iter().rev() {
-                        let guard = is_err.then_some("gm_errdefer_runs(&F.h)");
-                        self.defer_body(guard, body, true);
-                    }
+                Scope::Block { defers, .. } if defers.is_empty() => {}
+                Scope::Block { id, defers, used } => {
+                    *used = (*used).max(defers.len());
+                    return format!("gm_ld{}_{}", id, defers.len());
                 }
-                Scope::Loop { label, brk, cont } => {
-                    self.line(&format!("if (gm_unw.frame == &F.h && gm_unw.label == {}) {{", label.0));
-                    self.line(&format!("    if (gm_unw.kind == GM_BREAK) {{ gm_unw.kind = GM_NONE; goto {}; }}", brk));
-                    self.line(&format!(
-                        "    if (gm_unw.kind == GM_CONTINUE) {{ gm_unw.kind = GM_NONE; goto {}; }}",
-                        cont
-                    ));
-                    self.line("}");
-                }
-                Scope::With { label, end } => {
-                    self.line(&format!(
-                        "if (gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}) {{ gm_unw.kind = GM_NONE; goto {}; }}",
-                        label.0, end
-                    ));
+                Scope::Loop { id, used, .. } | Scope::With { id, used, .. } => {
+                    *used = true;
+                    return format!("gm_ll{}", id);
                 }
             }
         }
-        self.scopes = scopes;
-        if !self.outlined {
-            self.line("if (gm_unw.kind == GM_RETURN && gm_unw.frame == &F.h) { gm_unw.kind = GM_NONE; goto gm_fret; }");
+        if self.outlined {
+            return "gm_fprop".into();
         }
-        self.line("goto gm_fprop;");
+        self.lad_used = true;
+        "gm_lad".into()
+    }
+
+    /// A new block scope.
+    pub fn block_scope(&mut self) -> Scope<'a> {
+        Scope::Block { id: self.fresh(), defers: vec![], used: 0 }
+    }
+
+    /// A new loop scope.
+    pub fn loop_scope(&mut self, label: LabelId, brk: String, cont: String) -> Scope<'a> {
+        Scope::Loop { id: self.fresh(), label, brk, cont, used: false }
+    }
+
+    /// A new `with` scope.
+    pub fn with_scope(&mut self, label: LabelId, end: String) -> Scope<'a> {
+        Scope::With { id: self.fresh(), label, end, used: false }
+    }
+
+    /// Emits the rung of the ladder for scope `s`, just popped, if an exit uses it: it
+    /// runs the scope's part of the ladder and jumps to the rung of the enclosing
+    /// scope. `fallthrough` is true when control can reach this point normally, so the
+    /// rung is jumped over.
+    pub fn end_scope(&mut self, s: Scope<'a>, fallthrough: bool) {
+        let used = match &s {
+            Scope::Block { used, .. } => *used > 0,
+            Scope::Loop { used, .. } | Scope::With { used, .. } => *used,
+        };
+        if !used {
+            return;
+        }
+        let skip = fallthrough.then(|| format!("gm_ls{}", self.fresh()));
+        if let Some(l) = &skip {
+            self.line(&format!("goto {};", l));
+        }
+        match s {
+            Scope::Block { id, defers, used } => {
+                for k in (1..=used).rev() {
+                    self.label(&format!("gm_ld{}_{}", id, k));
+                    let (is_err, body) = defers[k - 1];
+                    let guard = is_err.then_some("gm_errdefer_runs(&F.h)");
+                    self.defer_body(guard, body, true);
+                }
+            }
+            Scope::Loop { id, label, brk, cont, .. } => {
+                self.label(&format!("gm_ll{}", id));
+                self.line(&format!("if (gm_unw.frame == &F.h && gm_unw.label == {}) {{", label.0));
+                self.line(&format!("    if (gm_unw.kind == GM_BREAK) {{ gm_unw.kind = GM_NONE; goto {}; }}", brk));
+                self.line(&format!("    if (gm_unw.kind == GM_CONTINUE) {{ gm_unw.kind = GM_NONE; goto {}; }}", cont));
+                self.line("}");
+            }
+            Scope::With { id, label, end, .. } => {
+                self.label(&format!("gm_ll{}", id));
+                self.line(&format!(
+                    "if (gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}) {{ gm_unw.kind = GM_NONE; goto {}; }}",
+                    label.0, end
+                ));
+            }
+        }
+        self.ladder();
+        if let Some(l) = &skip {
+            self.label(l);
+        }
     }
 
     /// The code of a deferred statement, run by a ladder or at the end of its block,
@@ -558,7 +631,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let found = self.scopes.iter().rposition(|s| match s {
                     Scope::Loop { label: l, .. } => l.0.to_string() == label,
                     Scope::With { label: l, .. } => kind == "GM_BREAK" && l.0.to_string() == label,
-                    Scope::Block(_) => false,
+                    Scope::Block { .. } => false,
                 });
                 match found {
                     Some(i) => Some(i),
@@ -567,27 +640,24 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             _ => return false,
         };
-        let scopes = std::mem::take(&mut self.scopes);
         let start = target.map_or(0, |i| i + 1);
         // Errdefers run on a `return` of an error only: a `break` or `continue` within
-        // the function never runs them.
-        let err_guard = (kind == "GM_RETURN" && is_err != "0").then_some(is_err);
-        for s in scopes[start..].iter().rev() {
-            if let Scope::Block(defers) = s {
-                for (is_errdefer, body) in defers.iter().rev() {
-                    match (is_errdefer, err_guard) {
-                        (false, _) => self.defer_body(None, body, false),
-                        (true, Some(g)) => self.defer_body(Some(g), body, false),
-                        (true, None) => {}
-                    }
-                }
-            }
+        // the function never runs them. An exit that crosses a `defer` takes the ladder,
+        // so that each deferred body is emitted once.
+        let err = kind == "GM_RETURN" && is_err != "0";
+        let crosses = self.scopes[start..].iter().any(|s| match s {
+            Scope::Block { defers, .. } => defers.iter().any(|(is_errdefer, _)| !is_errdefer || err),
+            _ => false,
+        });
+        if crosses {
+            return false;
         }
+        let scopes = std::mem::take(&mut self.scopes);
         let dest = match target.map(|i| &scopes[i]) {
             None => "gm_fret".to_string(),
             Some(Scope::Loop { brk, cont, .. }) => if kind == "GM_BREAK" { brk } else { cont }.clone(),
             Some(Scope::With { end, .. }) => end.clone(),
-            Some(Scope::Block(_)) => unreachable!(),
+            Some(Scope::Block { .. }) => unreachable!(),
         };
         self.scopes = scopes;
         self.line(&format!("goto {};", dest));
@@ -615,7 +685,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// True if no deferred statement is pending in the function: a `return` runs none.
     pub fn no_defers(&self) -> bool {
-        self.scopes.iter().all(|s| !matches!(s, Scope::Block(d) if !d.is_empty()))
+        self.scopes.iter().all(|s| !matches!(s, Scope::Block { defers, .. } if !defers.is_empty()))
     }
 
     /// Evaluates `e` and stores its value in `dest`, a C lvalue of its type. A large
@@ -661,14 +731,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             ExprKind::Block(b) => {
-                self.scopes.push(Scope::Block(vec![]));
+                let scope = self.block_scope();
+                self.scopes.push(scope);
                 let r = self.stmts(b).and_then(|_| {
                     let t = b.tail.as_ref().unwrap();
                     self.src_line(t.span);
                     self.expr_into(t, dest)
                 });
-                self.scopes.pop();
+                let scope = self.scopes.pop().unwrap();
                 r?;
+                self.end_scope(scope, true);
             }
             _ => unreachable!(),
         }
@@ -678,17 +750,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// A block. Temporaries have unique names, so no C braces are needed and the
     /// block's value stays visible after it.
     pub fn block(&mut self, b: &'a Block) -> CResult<String> {
-        self.scopes.push(Scope::Block(vec![]));
+        let scope = self.block_scope();
+        self.scopes.push(scope);
         let mut result = None;
         let r = self.block_inner(b, &mut result);
-        let Some(Scope::Block(defers)) = self.scopes.pop() else { unreachable!() };
+        let scope = self.scopes.pop().unwrap();
         r?;
         // Leaving normally runs the plain defers (not the errdefers), last first.
-        for (is_err, body) in defers.iter().rev() {
-            if !is_err {
-                self.defer_body(None, body, false);
+        if let Scope::Block { defers, .. } = &scope {
+            for &(is_err, body) in defers.iter().rev() {
+                if !is_err {
+                    self.defer_body(None, body, false);
+                }
             }
         }
+        self.end_scope(scope, true);
         Ok(match result {
             Some(v) => v,
             None => self.unit(),
@@ -827,8 +903,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 };
                 self.out = saved;
                 r?;
-                if let Some(Scope::Block(d)) = self.scopes.last_mut() {
-                    d.push((*is_err, body));
+                if let Some(Scope::Block { defers, .. }) = self.scopes.last_mut() {
+                    defers.push((*is_err, body));
                 }
             }
         }

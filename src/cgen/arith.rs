@@ -485,7 +485,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(self.tmp(t, &vals[0]))
             }
             Builtin::Addr => Ok(self.tmp(t, &format!("(uintptr_t){}", vals[0]))),
-            Builtin::ToPtr => Ok(self.tmp(t, &format!("(void *)(uintptr_t){}", vals[0]))),
+            Builtin::ToPtr => Ok(self.tmp(t, &format!("GM_INT_TO_PTR({})", vals[0]))),
             Builtin::PtrAdd | Builtin::PtrSub | Builtin::PtrDiff => {
                 let TyKind::ManyPtr { elem, .. } = at.kind() else { unreachable!() };
                 let stride = self.g.ty.size(*elem);

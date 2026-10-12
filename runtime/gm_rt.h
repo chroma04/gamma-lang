@@ -57,10 +57,18 @@
 
 /* ---- memory helpers ------------------------------------------------------ */
 
-/* Loads a value of C type T from address p (any alignment). */
+/* GM_LD loads a value of C type T from address p (any alignment); GM_ST stores the value
+ * v of C type T at address p. Under Fil-C a memcpy is a call into its runtime, and one
+ * on a local makes the local escape to the heap, so they are typed accesses through a
+ * packed struct (alignment 1, any type may alias) instead. */
+#ifdef __FILC__
+#define GM_UNALIGNED(T, p) (((struct __attribute__((packed, may_alias)) { T v; } *)(p))->v)
+#define GM_LD(T, p) ({ T gm_ld_v_ = GM_UNALIGNED(T, p); gm_ld_v_; })
+#define GM_ST(T, p, v) do { T gm_st_v_ = (v); GM_UNALIGNED(T, p) = gm_st_v_; } while (0)
+#else
 #define GM_LD(T, p) ({ T gm_ld_v_; memcpy(&gm_ld_v_, (const void *)(p), sizeof(T)); gm_ld_v_; })
-/* Stores the value v of C type T at address p (any alignment). */
 #define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
+#endif
 /* The value v as C type T of the same size: a blob as its mirror or back. */
 #define GM_CONV(T, v) ({ union { __typeof__(v) s; T d; } gm_cv_u_; gm_cv_u_.s = (v); gm_cv_u_.d; })
 /* `#fast_math` functions: float contraction and reassociation are permitted (§5.3). */
@@ -81,7 +89,13 @@
 #define GM_PTR_ADD(p, n) zmkptr((void *)(p), (unsigned long)(p) + (unsigned long)(n))
 #define GM_PTR_TAG(p) zorptr((void *)(p), 1)
 #define GM_PTR_UNTAG(p) zandptr((void *)(p), ~1ul)
+/* An address as a pointer (`to_ptr`): it grants no access. The empty asm hides where
+ * the address came from: the optimizer could fold a plain cast back into the pointer it
+ * was taken from, which keeps its capability. (zmkptr(NULL, n) is no better: filcc 0.686
+ * at -O1 and above drops an access through it instead of trapping.) */
+#define GM_INT_TO_PTR(n) ({ uintptr_t gm_n_ = (n); __asm__("" : "+r"(gm_n_)); (void *)gm_n_; })
 #else
+#define GM_INT_TO_PTR(n) ((void *)(uintptr_t)(n))
 #define GM_PTR_ADD(p, n) ((void *)((uintptr_t)(p) + (uintptr_t)(n)))
 #define GM_PTR_TAG(p) ((void *)((uintptr_t)(p) | 1))
 #define GM_PTR_UNTAG(p) ((void *)((uintptr_t)(p) & ~(uintptr_t)1))

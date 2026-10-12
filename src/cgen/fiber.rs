@@ -8,7 +8,7 @@
 //! same as if it were inline. Its ladder ends at the fiber's base with the exit
 //! still in progress; the driver loop then runs the ladder of the `with` itself.
 
-use super::func::{FnGen, Scope};
+use super::func::FnGen;
 use super::{CResult, unsupported};
 use crate::tir::{Expr, LabelId};
 use crate::types::{CallConv, Ty, TyKind};
@@ -23,6 +23,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let saved_cx = std::mem::replace(&mut self.cx, cx.to_string());
         let saved_indent = std::mem::replace(&mut self.indent, 1);
         let saved_check = std::mem::replace(&mut self.no_check, false);
+        let saved_lad = std::mem::replace(&mut self.lad_used, false);
         let r = emit(self);
         self.end_lines();
         let text = std::mem::replace(&mut self.out, saved_out);
@@ -30,6 +31,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.cx = saved_cx;
         self.indent = saved_indent;
         self.no_check = saved_check;
+        self.lad_used = saved_lad;
         r.map(|_| text)
     }
 
@@ -77,9 +79,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.line(&format!("    gm_with_end(&{w}, true, {loc});"));
         self.line("}");
         self.line(&format!("if (!gm_unw.kind) gm_trap(\"internal error: a `ctl` clause finished normally\", {loc});"));
-        self.scopes.push(Scope::With { label, end: end.clone() });
+        let scope = self.with_scope(label, end.clone());
+        self.scopes.push(scope);
         self.ladder();
-        self.scopes.pop();
+        let scope = self.scopes.pop().unwrap();
+        self.end_scope(scope, false);
         self.indent -= 1;
         self.line("}");
         self.label(&end);

@@ -23,6 +23,15 @@ Design doc for the user: /mnt/project-files/design/safe-mode.md (deliberation + 
   compared); `//! safe: skip <reason>` opts out. CI job "safe" installs optfil (setup.sh -u).
 
 ## Known costs / follow-ups (plan step 5)
-- Runtime 10–45× slower than Checked (memcpy-heavy blobs hurt under Fil-C); compile is slow
-  for big programs (see gotchas/environment.md). Follow-up: typed loads/stores instead of memcpy,
-  uncaptured locals as C locals.
+- Thread "Faster Fil-C codegen" (branch claude/filc-faster-codegen-ewo3pj) did:
+  1. Ladder emitted once per scope (func.rs `end_scope` rungs gm_ldN_K / gm_llN / gm_lad);
+     exits are one goto; local exits crossing a defer take the ladder. example2_editor
+     main 7.7k → 1.1k C lines; filcc 8 min → 29 s.
+  2. GM_LD/GM_ST under __FILC__ = packed-struct typed access (memcpy on a local made F
+     escape → GC alloc per call). fib(35) Safe 3.1 s → 0.09 s (clang 0.05).
+  3. GM_INT_TO_PTR (to_ptr) = empty-asm-laundered cast: with typed loads LLVM folded
+     inttoptr(ptrtoint p) → p (capability kept); zmkptr(NULL,n) made filcc -O1+ DROP the
+     faulting access (exit 0!) — filcc deletes statically-failing checks.
+- Remaining: trees 16× (new/destroy = GC alloc + by-ref args like the 40-byte location
+  struct escaping), hmap 4.3×, sieve 3.9×. Next: uncaptured locals as C locals; by-value
+  small aggregates instead of &tmp args.
