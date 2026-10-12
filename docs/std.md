@@ -63,19 +63,39 @@ literals; a failed name lookup is `.Other(0)`.
 ## `std/io`
 
 - `io.reader()` and `r.next_line()`: read `In` a line at a time (the line is valid
-  until the next call; lines longer than 4096 bytes come in pieces).
+  until the next call). A line must fit the reader's buffer together with its `\n`,
+  which holds 4095 bytes of text by default; a longer line is the error `.InvalidInput`
+  (reported once: the next call skips the rest of that line and goes on).
+  `io.reader_with(buf)` reads through a buffer you supply instead, for long lines.
 - `io.read_to_list(&list)`: all of `In` into a `List(u8)`.
+- `io.read_all() -> io.ReadError![]u8`: all of `In`, in memory from the current
+  allocator (release it with `free`). `io.ReadError` is `.Io(IoError)` or
+  `.Alloc(AllocError)`, like `fs.ReadError`.
 - Handlers that redirect the ambient effects, so code written against `In` and
   `Out` works on files and strings unchanged:
   - `with io.FileIn(f: file) { … }`: `In` reads the file.
-  - `with &out { … }` where `out := io.FileOut(f: file)`: `Out` and `Err` write to the
-    file; the first error is kept in the handler's `err` field.
+  - `with &out { … }` where `out := io.file_out(file)`: `Out` and `Err` write to the
+    file through a 4096-byte buffer, so output reaches the file only when the buffer
+    fills (or for a single piece larger than the buffer) and at `out.flush()`. Always
+    flush after the `with` block and before closing the file. The first error is kept in
+    the handler's `err` field, later output is dropped, and `flush` returns the kept error.
   - `with &input { … }` where `input := io.StringIn(data: text)`: `In` reads a string.
   - `with &cap { … }` where `cap := io.Capture(buf: storage[..])`: `Out` writes into a
     buffer; `cap.text()` returns what was written.
+  - `with &lo { … }` where `lo := io.ListOut(list: &text)`: `Out` and `Err` append to a
+    `List(u8)`, so any code that prints can build a growable string. The first
+    allocation failure is kept in `lo.err` and later output is dropped.
 
-  A handler that keeps state (`FileOut`, `StringIn`, `Capture`) is installed by address,
-  so it must first be bound to a name.
+  A handler that keeps state (`FileOut`, `StringIn`, `Capture`, `ListOut`) is installed by
+  address, so it must first be bound to a name.
+
+```gamma
+f := try open("report.txt", OpenOptions(read: false, write: true, create: true))
+defer close(f)
+out := io.file_out(f)
+with &out { write_report() }
+try out.flush()
+```
 
 ## `std/fs`
 
@@ -410,3 +430,120 @@ main :: fn() \ {Out, Env} {
 - `help(&out, usage, opts)` appends `usage: …`, a blank line, `options:` and one aligned
   line per option (`  -o, --output <file>  where to write`) to a `List(u8)`, returning
   `AllocError!()`.
+
+## `std/path`
+
+POSIX path strings with `/` as the separator. Every function is lexical: it never
+looks at the file system, performs no effect, and returns a slice of its argument (or of
+a buffer you supply).
+
+```gamma
+path :: import "std/path"
+
+path.base_name("/usr/lib/libc.so.6")       // "libc.so.6"
+path.dir_name("/usr/lib/libc.so.6")        // "/usr/lib"
+path.extension("libc.so.6")                // "6"
+buf: [64]u8 = ---
+path.clean("a//b/./c/../d", buf[..])       // "a/b/d"
+```
+
+- `path.SEP` is `'/'`; `is_absolute(p)` tests for a leading `/`.
+- `base_name(p)` is the last component, ignoring trailing slashes (`a/b/` gives `b`, `/`
+  gives `/`, the empty path gives the empty path). `dir_name(p)` is the rest, as POSIX
+  `dirname` has it (`a/b` gives `a`, `a` gives `.`, `/a` gives `/`, `a/b/` gives `a`).
+- `extension(p)` is the part of the base name after its last dot, without the dot; it is
+  empty when there is none, for a leading dot (`.bashrc`) and for a trailing one (`a.`).
+  `stem(p)` is the base name without the dot and extension.
+- `components(p)` iterates over the non-empty components (an absolute path yields `/`
+  first); `.` components are skipped, and a relative path of nothing but `.` yields a
+  single `.`.
+- `clean(p, buf)` normalises like Go's `path.Clean`: repeated slashes collapse, `.` goes,
+  `x/..` is resolved, `..` above the root of an absolute path is dropped, trailing
+  slashes go, and an empty result is `.`. The result is written to `buf`, which must
+  hold at least `max(p.len, 1)` bytes and not overlap `p`.
+- `join(&list, parts)` appends the parts to a `List(u8)` separated by single slashes:
+  empty parts are skipped, an absolute later part does not restart the path (its leading
+  slashes are dropped), and nothing else is cleaned. `join_alloc(parts)` returns the same
+  text in new memory (release it with `free`).
+- `relative_to(p, base) -> ?string` is what remains of `p` after `base` and a slash when
+  `p` is inside `base` component by component (`a/bc` is not inside `a/b`), `.` when they
+  are equal, and `null` otherwise. It compares the text as written.
+
+## `std/bytes`
+
+Binary data: integers and floats in a chosen byte order, and a cursor for taking records
+apart.
+
+```gamma
+bytes :: import "std/bytes"
+
+n := bytes.read_int(u32, header[0..4], .Big)
+r := bytes.Reader(data: packet)
+kind := r.byte() else return !.Short
+len := r.int(u16, .Little) else return !.Short
+body := r.take(usize(len)) else return !.Short
+```
+
+- `Endian` is `.Little` or `.Big`.
+- `read_int(T, b, e)` reads a `T` from the first `@size_of(T)` bytes of `b`, and
+  `write_int(T, b, x, e)` stores one; both trap if `b` is too short. `append_int(T, &list,
+  x, e)` appends the bytes to a `List(u8)` (`AllocError!()`). `T` is any integer type that
+  fills its storage (8, 16, 32, 64 or 128 bits).
+- `read_f32`, `read_f64`, `write_f32` and `write_f64` do the same for IEEE 754 floats.
+- `Reader` is a cursor, `bytes.Reader(data: bytes)` with a public `pos`. Its functions
+  return `null` when too few bytes remain and then leave `pos` alone: `take(n)` gives the
+  next `n` bytes as a slice of `data`, `int(T, e)` an integer, `byte()` one byte;
+  `skip(n)` returns `false` instead; `rest()` is what has not been taken.
+
+## `std/encoding/base64`
+
+Base64 (RFC 4648 sections 4 and 5), into a buffer you supply or appended to a list.
+
+```gamma
+base64 :: import "std/encoding/base64"
+
+buf: [64]u8 = ---
+text := base64.encode("foobar", buf[..], base64.Options())      // "Zm9vYmFy"
+raw: [48]u8 = ---
+data := try base64.decode(text, raw[..], base64.Options())      // "foobar"
+```
+
+- `Options(alphabet: .Standard | .Url, pad: true)`; the default is the standard alphabet
+  with `=` padding. `Alphabet` is `.Standard` (`+` `/`) or `.Url` (`-` `_`).
+- `encoded_len(n, o)` is the length of the encoding of `n` bytes. `encode(src, dst, o)`
+  writes it into `dst` (which must be that long; a trap otherwise) and returns the part
+  written; `encode_append(&list, src, o)` appends to a `List(u8)`.
+- `decoded_len_max(n)` is the buffer size that always holds the decoding of `n`
+  characters. `decode(src, dst, o) -> DecodeError![]u8` needs `dst` of that size.
+  `decode_append(&list, src, o)` appends, with the error type `AppendError`, which is
+  `.Decode(DecodeError)` or `.Alloc(AllocError)`; nothing is appended if `src` is invalid.
+- With `pad: true` decoding requires the padding; with `pad: false` it is optional.
+  Only canonical encodings are accepted: the unused bits of the last character must be zero.
+- `DecodeError`: `.InvalidByte(i)` for a byte outside the alphabet; `.InvalidLength` for a
+  count of characters no data produces (a lone character at the end, or missing padding
+  with `pad: true`); `.InvalidPadding(i)` for a misplaced or surplus `=` (at the first
+  offending one) or non-zero unused bits (at the last data character). Positions are
+  byte offsets in `src`. Checks run in the order bytes, length, padding.
+
+## `std/encoding/hex`
+
+Hexadecimal (RFC 4648 section 8), two digits per byte.
+
+```gamma
+hex :: import "std/encoding/hex"
+
+buf: [16]u8 = ---
+text := hex.encode("Hi!", buf[..], false)           // "486921"
+raw: [8]u8 = ---
+data := try hex.decode("4869", raw[..])             // "Hi"
+```
+
+- `encode(src, dst, upper)` writes `2 * src.len` digits into `dst` (a trap if it is
+  shorter), capital letters when `upper`, and returns the part written;
+  `encode_append(&list, src, upper)` appends to a `List(u8)`.
+- `decode(src, dst) -> DecodeError![]u8` accepts either case and needs `dst` to hold
+  `src.len / 2` bytes; `decode_append(&list, src)` appends, with the error type
+  `AppendError` (`.Decode(DecodeError)` or `.Alloc(AllocError)`), appending nothing if
+  `src` is invalid.
+- `DecodeError` is `.InvalidByte(i)` (the offset of the first bad digit) or `.OddLength`;
+  a bad digit is reported before an odd length.

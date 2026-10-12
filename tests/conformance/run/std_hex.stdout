@@ -1,0 +1,38 @@
+-- RFC 4648 section 10
+[] []
+[66] [66]
+[666F] [666f]
+[666F6F] [666f6f]
+[666F6F62] [666f6f62]
+[666F6F6261] [666f6f6261]
+[666F6F626172] [666f6f626172]
+-- cases
+000fabcdefff10
+000FABCDEFFF10
+lower: ok 7 bytes, first 0, last 16
+upper: ok 7 bytes, first 0, last 16
+mixed: ok 2 bytes, first 171, last 205
+empty: ok, no bytes
+text: ok 6 bytes: foobar
+-- errors
+odd: odd length
+odd one: odd length
+bad first: invalid byte at 0
+bad middle: invalid byte at 4
+bad last: invalid byte at 7
+space: invalid byte at 2
+prefix: invalid byte at 1
+bad before odd: invalid byte at 2
+bad in odd: invalid byte at 1
+high byte: invalid byte at 1
+-- append
+[48abcd 48ABCD ]
+[Hi*!]
+decode error .InvalidByte(2)
+decode error .OddLength
+unchanged [Hi*!]
+-- every byte
+mismatches 0
+000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff
+FAFBFCFDFEFF
+list round trip 512 256 true

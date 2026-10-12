@@ -1,0 +1,130 @@
+// std/path: taking paths apart, normalising, joining and relating them.
+path :: import "std/path"
+
+show :: fn(label: string, got: string, want: string) \ {Out} {
+    mark := if got is want { "ok  " } else { "FAIL" }
+    print("{} {} -> [{}]", (mark, label, got))
+    if got is not want { print(" wanted [{}]", want) }
+    print("\n")
+}
+
+components_of :: fn(p: string, buf: []u8) -> string \ {Alloc} {
+    list := list(u8)
+    defer list.deinit()
+    first := true
+    for c in path.components(p) {
+        if not first { list.push('|') else return "oom" }
+        first = false
+        list.extend(c) else return "oom"
+    }
+    buf[0..list.items.len].copy_from(list.items)
+    return buf[0..list.items.len]
+}
+
+main :: fn() \ {Out, Alloc} {
+    print("sep: {}\n", path.SEP)
+
+    // is_absolute
+    print("abs: {} {} {} {}\n", (path.is_absolute("/a"), path.is_absolute("a"),
+                                 path.is_absolute(""), path.is_absolute("//")))
+
+    // base_name
+    bn := [_](string, string)(("a/b", "b"), ("a/b/", "b"), ("a/b//", "b"), ("/", "/"), ("///", "/"),
+                              ("", ""), ("a", "a"), ("/a", "a"), ("a//b", "b"), (".", "."), ("..", ".."))
+    for t in bn { show("base_name", path.base_name(t.0), t.1) }
+
+    // dir_name
+    dn := [_](string, string)(("a/b", "a"), ("a", "."), ("/a", "/"), ("/", "/"), ("a/b/", "a"),
+                              ("", "."), ("//", "/"), ("/a/b", "/a"), ("a//b", "a"), ("//a", "/"),
+                              ("a/b/c/", "a/b"), ("/a/b/c", "/a/b"), (".", "."))
+    for t in dn { show("dir_name", path.dir_name(t.0), t.1) }
+
+    // extension and stem
+    ex := [_](string, string, string)(
+        ("a.txt", "txt", "a"), ("a.tar.gz", "gz", "a.tar"), (".bashrc", "", ".bashrc"),
+        ("a.", "", "a."), ("dir.d/file", "", "file"), ("dir/a.b/", "b", "a"), ("", "", ""),
+        ("/", "", "/"), ("..", "", ".."), (".a.b", "b", ".a"), ("a..b", "b", "a."), ("x", "", "x"))
+    for t in ex {
+        show("extension", path.extension(t.0), t.1)
+        show("stem", path.stem(t.0), t.2)
+    }
+
+    // components
+    cbuf: [64]u8 = ---
+    cs := [_](string, string)(("/a/b", "/|a|b"), ("a//b/", "a|b"), ("./a/./b", "a|b"), (".", "."),
+                              ("./.", "."), ("", ""), ("/", "/"), ("/.", "/"), ("../a", "..|a"),
+                              ("///x", "/|x"), ("a/../b", "a|..|b"))
+    for t in cs { show("components", try_components(t.0, cbuf[..]), t.1) }
+
+    // clean
+    buf: [64]u8 = ---
+    cl := [_](string, string)(
+        ("", "."), (".", "."), ("a", "a"), ("a/b/c", "a/b/c"), ("a//b", "a/b"), ("a/./b", "a/b"),
+        ("a/b/..", "a"), ("a/b/../c", "a/c"), ("a/../..", ".."), ("../a", "../a"), ("../../a", "../../a"),
+        ("a/../../b", "../b"), ("/", "/"), ("//", "/"), ("/..", "/"), ("/../a", "/a"), ("/a/..", "/"),
+        ("/a/../..", "/"), ("/a/b/../../c", "/c"), ("a/", "a"), ("a/b/", "a/b"), ("./", "."), ("a/..", "."),
+        ("/./a/./b/", "/a/b"), ("...", "..."), (".../a", ".../a"), ("a/.../b", "a/.../b"))
+    for t in cl { show("clean", path.clean(t.0, buf[..]), t.1) }
+    // A buffer exactly as long as the path.
+    exact: [5]u8 = ---
+    show("clean exact", path.clean("../a/", exact[..]), "../a")
+    one: [1]u8 = ---
+    show("clean empty", path.clean("", one[..]), ".")
+
+    // join
+    j0 := [_]string("a", "b", "c")
+    check_join(j0[..], "a/b/c")
+    j1 := [_]string("a/", "b")
+    check_join(j1[..], "a/b")
+    j2 := [_]string("a", "/b")
+    check_join(j2[..], "a/b")
+    j3 := [_]string("a/", "//b")
+    check_join(j3[..], "a/b")
+    j4 := [_]string("", "a", "", "b", "")
+    check_join(j4[..], "a/b")
+    j5 := [_]string("/", "a")
+    check_join(j5[..], "/a")
+    j6 := [_]string("/a", "b/", "c")
+    check_join(j6[..], "/a/b/c")
+    j7 := [_]string("a", "/")
+    check_join(j7[..], "a")
+    j8 := [_]string()
+    check_join(j8[..], "")
+    j9 := [_]string("", "")
+    check_join(j9[..], "")
+    j10 := [_]string("//a", "b")
+    check_join(j10[..], "//a/b")
+    j11 := [_]string("a", "../b", "./c")
+    check_join(j11[..], "a/../b/./c")
+
+    // relative_to
+    rt := [_](string, string, string)(
+        ("a/b/c", "a/b", "c"), ("a/b", "a/b", "."), ("a/bc", "a/b", "<null>"), ("a", "a/b", "<null>"),
+        ("a/b/c/d", "a", "b/c/d"), ("/a/b", "/a", "b"), ("/a/b", "/", "a/b"), ("a/b", "/", "<null>"),
+        ("/a", "a", "<null>"), ("a/b/", "a", "b/"), ("a/b", "a/", "b"), ("a//b", "a", "b"),
+        ("x", "", "<null>"), ("", "", "."), ("a", "a/", "."), ("/", "/", "."), ("a/b", "a/b/", "."))
+    for t in rt {
+        r := path.relative_to(t.0, t.1)
+        show("relative_to", r else "<null>", t.2)
+    }
+}
+
+check_join :: fn(parts: []const string, want: string) \ {Out, Alloc} {
+    jl := list(u8)
+    defer jl.deinit()
+    join_ok(&jl, parts)
+    show("join", jl.items, want)
+    got := try_join_alloc(parts)
+    show("join_alloc", got, want)
+    free(got)
+}
+
+join_ok :: fn(out: ^List(u8), parts: []const string) \ {Out} {
+    path.join(out, parts) else e => print("join failed: {}\n", e)
+}
+
+try_join_alloc :: fn(parts: []const string) -> []u8 \ {Alloc} {
+    return path.join_alloc(parts) else return make(u8, 0) else return empty_slice(u8)
+}
+
+try_components :: fn(p: string, buf: []u8) -> string \ {Alloc} => components_of(p, buf)

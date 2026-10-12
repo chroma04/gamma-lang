@@ -1,0 +1,50 @@
+0 LE 00 true; BE 00 true
+171 LE ab true; BE ab true
+4660 LE 3412 true; BE 1234 true
+65280 LE 00ff true; BE ff00 true
+16909060 LE 04030201 true; BE 01020304 true
+3735928559 LE efbeadde true; BE deadbeef true
+72623859790382856 LE 0807060504030201 true; BE 0102030405060708 true
+18446744073709551615 LE ffffffffffffffff true; BE ffffffffffffffff true
+1339673755198158349044581307228491536 LE 100f0e0d0c0b0a090807060504030201 true; BE 0102030405060708090a0b0c0d0e0f10 true
+-1 LE ff true; BE ff true
+-128 LE 80 true; BE 80 true
+127 LE 7f true; BE 7f true
+-2 LE feff true; BE fffe true
+-32768 LE 0080 true; BE 8000 true
+-2 LE feffffff true; BE fffffffe true
+-2147483648 LE 00000080 true; BE 80000000 true
+2147483647 LE ffffff7f true; BE 7fffffff true
+-2 LE feffffffffffffff true; BE fffffffffffffffe true
+-9223372036854775808 LE 0000000000000080 true; BE 8000000000000000 true
+72623859790382856 LE 0807060504030201 true; BE 0102030405060708 true
+-3 LE fdffffffffffffffffffffffffffffff true; BE fffffffffffffffffffffffffffffffd true
+4660 13330
+-1698898192 -253838182
+f32 BE 3fc00000
+f32 LE 000000c0 -> -2
+f64 BE 3ff8000000000000
+f64 LE 9a9999999999b93f -> 0.1
+f64 roundtrip -12345000000000
+f32 max 3.4028235e38
+appended 17 bytes: 0701020201ffffffff0000000000000001
+pos 0 rest 17
+byte 7
+u16 BE 258
+u16 LE 258
+i32 -1
+pos 9 rest 0000000000000001
+skip 5 true pos 14
+u64 short true pos 14
+skip 4 false pos 14
+take 4 null pos 14
+take 0 ""
+take 1 00 pos 15
+take 2 0001 pos 17
+exhausted: byte true u8 true skip false pos 17
+u32 true pos 0
+u16 258 pos 2
+u16 true pos 2
+byte 3 pos 3
+skip false take true
+empty: true true true 0

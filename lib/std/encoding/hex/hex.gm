@@ -1,0 +1,93 @@
+// std/encoding/hex: Base16 as in RFC 4648 section 8, two hexadecimal digits per byte.
+//
+//     hex :: import "std/encoding/hex"
+//     buf: [16]u8 = ---
+//     text := hex.encode("Hi!", buf[..], false)          // "486921"
+//     raw: [8]u8 = ---
+//     data := try hex.decode("4869", raw[..])            // "Hi"
+//
+// Encoding and decoding write into a buffer you supply and return the part of it that was
+// written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
+// effects.
+
+/// Why decoding failed.
+pub DecodeError :: union {
+    /// A byte that is not a hexadecimal digit, at this offset in the input.
+    InvalidByte: usize
+    /// The input has an odd number of digits.
+    OddLength
+}
+
+/// The error of `decode_append`: the input was invalid, or the list could not grow.
+pub AppendError :: union {
+    Decode: DecodeError
+    Alloc: AllocError
+}
+
+// The digit for the value `d` (0 to 15).
+digit :: fn(d: u8, upper: bool) -> u8 {
+    if d < 10 { return '0' + d }
+    return (if upper { 'A' } else { 'a' }) + (d - 10)
+}
+
+// The value of the digit `c` (either case), or 255.
+value :: fn(c: u8) -> u8 {
+    if c >= '0' and c <= '9' { return c - '0' }
+    if c >= 'a' and c <= 'f' { return c - 'a' + 10 }
+    if c >= 'A' and c <= 'F' { return c - 'A' + 10 }
+    return 255
+}
+
+/// Encodes `src` into `dst`, which must hold `2 * src.len` bytes (a trap otherwise), with
+/// capital digits if `upper` is set, and returns the part of `dst` written.
+pub encode :: fn(src: []const u8, dst: []u8, upper: bool) -> string {
+    assert(dst.len >= 2 * src.len, "hex.encode: buffer too small")
+    for i in 0..src.len {
+        dst[2 * i] = digit(src[i] >> 4, upper)
+        dst[2 * i + 1] = digit(src[i] & 15, upper)
+    }
+    return dst[0..2 * src.len]
+}
+
+/// Appends the encoding of `src` to `out`.
+pub encode_append :: fn(out: ^List(u8), src: []const u8, upper: bool) -> AllocError!() {
+    try out.reserve(2 * src.len)
+    for b in src {
+        try out.push(digit(b >> 4, upper))
+        try out.push(digit(b & 15, upper))
+    }
+    return ()
+}
+
+// Checks that `src` is made of digit pairs.
+check :: fn(src: string) -> DecodeError!() {
+    for i in 0..src.len {
+        if value(src[i]) is 255 { return !.InvalidByte(i) }
+    }
+    if src.len % 2 is not 0 { return !.OddLength }
+    return ()
+}
+
+/// Decodes `src`, digits of either case, into `dst`, which must hold `src.len / 2` bytes
+/// (a trap otherwise), and returns the part of `dst` written. An invalid digit is
+/// reported before an odd length.
+pub decode :: fn(src: string, dst: []u8) -> DecodeError![]u8 {
+    assert(dst.len >= src.len / 2, "hex.decode: buffer too small")
+    try check(src)
+    n := src.len / 2
+    for i in 0..n {
+        dst[i] = (value(src[2 * i]) << 4) | value(src[2 * i + 1])
+    }
+    return dst[0..n]
+}
+
+/// Appends the decoding of `src` to `out`, with the rules of `decode`. If `src` is
+/// invalid nothing is appended.
+pub decode_append :: fn(out: ^List(u8), src: string) -> AppendError!() {
+    try check(src)
+    try out.reserve(src.len / 2)
+    for i in 0..src.len / 2 {
+        try out.push((value(src[2 * i]) << 4) | value(src[2 * i + 1]))
+    }
+    return ()
+}

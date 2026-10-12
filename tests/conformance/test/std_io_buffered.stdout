@@ -1,0 +1,9 @@
+test "output waits for flush" ... ok
+test "Out and Err share the buffer in order" ... ok
+test "a full buffer is written out" ... ok
+test "a piece that exactly fills the buffer stays buffered" ... ok
+test "a piece larger than the buffer is written directly, after what precedes it" ... ok
+test "the first error is kept and later output is dropped" ... ok
+test "an error on a large piece is kept" ... ok
+test "ListOut appends printed text" ... ok
+8 passed, 0 failed

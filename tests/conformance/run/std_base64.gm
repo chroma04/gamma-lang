@@ -1,0 +1,145 @@
+// std/encoding/base64: the RFC 4648 test vectors in both alphabets, padded and not,
+// every kind of decoding error, and round trips.
+base64 :: import "std/encoding/base64"
+
+std_pad :: base64.Options()
+std_raw :: base64.Options(pad: false)
+url_pad :: base64.Options(alphabet: .Url)
+url_raw :: base64.Options(alphabet: .Url, pad: false)
+
+encode_check :: fn(src: string, o: base64.Options) \ {Out} {
+    buf: [64]u8 = ---
+    text := base64.encode(src, buf[..], o)
+    print("[{}] ", text)
+    if text.len is not base64.encoded_len(src.len, o) { print("LENGTH MISMATCH ") }
+    raw: [64]u8 = ---
+    if back := base64.decode(text, raw[..], o) {
+        if back is not src { print("ROUNDTRIP MISMATCH ") }
+    } else {
+        print("DECODE FAILED ")
+    }
+}
+
+vectors :: fn() \ {Out} {
+    inputs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")
+    for s in inputs {
+        encode_check(s, std_pad)
+        encode_check(s, std_raw)
+        print("({} -> {})\n", (s.len, base64.encoded_len(s.len, std_pad)))
+    }
+}
+
+show_decode :: fn(label: string, src: string, o: base64.Options) \ {Out} {
+    buf: [64]u8 = ---
+    print("{}: ", label)
+    data := base64.decode(src, buf[..], o) else e => {
+        match e {
+            .InvalidByte(i) => print("invalid byte at {}\n", i)
+            .InvalidLength => print("invalid length\n")
+            .InvalidPadding(i) => print("invalid padding at {}\n", i)
+        }
+        return
+    }
+    ascii := true
+    for b in data { if b >= 128 { ascii = false } }
+    if ascii { print("ok [{}]\n", data) } else { print("ok {} bytes, first {}, last {}\n", (data.len, data[0], data[data.len - 1])) }
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    print("-- RFC 4648 section 10\n")
+    vectors()
+
+    print("-- alphabets\n")
+    raw := [_]u8(0xfb, 0xff, 0xbf, 0x3e, 0x3f, 0xfe)
+    buf: [16]u8 = ---
+    print("{}\n", base64.encode(raw[..], buf[..], std_pad))
+    print("{}\n", base64.encode(raw[..], buf[..], url_pad))
+    print("{}\n", base64.encode(raw[0..2], buf[..], std_pad))
+    print("{}\n", base64.encode(raw[0..2], buf[..], url_pad))
+    print("{}\n", base64.encode(raw[0..2], buf[..], url_raw))
+    print("{}\n", base64.encode(raw[0..1], buf[..], url_raw))
+    out: [16]u8 = ---
+    if d := base64.decode("-_-_Pj_-", out[..], url_pad) { print("{} bytes, same as the original: {}\n", (d.len, d is raw[..])) }
+
+    print("-- decoding accepts\n")
+    show_decode("padded", "Zm9vYg==", std_pad)
+    show_decode("unpadded with pad: false", "Zm9vYg", std_raw)
+    show_decode("padded with pad: false", "Zm9vYg==", std_raw)
+    show_decode("one pad with pad: false", "Zm9vYmE=", std_raw)
+    show_decode("empty", "", std_pad)
+    show_decode("empty raw", "", std_raw)
+    show_decode("url chars", "-_8", url_raw)
+    show_decode("std chars", "+/8=", std_pad)
+
+    print("-- decoding errors\n")
+    show_decode("space", "Zm9v Yg==", std_pad)
+    show_decode("bad first", "!m9v", std_pad)
+    show_decode("url char in std", "-_8=", std_pad)
+    show_decode("std char in url", "+/8=", url_pad)
+    show_decode("high byte", "Zm9\xffYg==", std_pad)
+    show_decode("missing padding", "Zm9vYg", std_pad)
+    show_decode("missing padding 1", "Zm9vYmE", std_pad)
+    show_decode("short padding", "Zm9vYg=", std_pad)
+    show_decode("short padding raw", "Zm9vYg=", std_raw)
+    show_decode("one char left", "Zm9vY", std_raw)
+    show_decode("one char left padded", "Zm9vY===", std_pad)
+    show_decode("too much padding", "Zm9v====", std_pad)
+    show_decode("too much padding 2", "Zm9vYg===", std_raw)
+    show_decode("extra padding", "Zm9vYmE==", std_raw)
+    show_decode("padding in the middle", "Zm=vYmFy", std_pad)
+    show_decode("padding before data", "Zg==Zg==", std_pad)
+    show_decode("only padding", "====", std_pad)
+    show_decode("leading padding", "=m9v", std_pad)
+    show_decode("trailing bits 2", "Zh==", std_pad)
+    show_decode("trailing bits 3", "Zm9vYmF=", std_pad)
+    show_decode("trailing bits raw", "Zm9vYh", std_raw)
+    show_decode("canonical raw", "Zm9vYmE", std_raw)
+    show_decode("error order", "Z$9", std_pad)
+
+    print("-- append\n")
+    list := list(u8)
+    defer list.deinit()
+    try base64.encode_append(&list, "foob", std_pad)
+    try list.push(' ')
+    try base64.encode_append(&list, "foob", url_raw)
+    try list.push(' ')
+    try base64.encode_append(&list, "", std_pad)
+    print("[{}]\n", list.items)
+    list.clear()
+    base64.decode_append(&list, "Zm9vYg==", std_pad) else e => print("unexpected {}\n", e)
+    base64.decode_append(&list, "Zm9vYmFy", std_pad) else e => print("unexpected {}\n", e)
+    print("[{}]\n", list.items)
+    if !e := base64.decode_append(&list, "Zm9v!", std_pad) {
+        match e {
+            .Decode(d) => print("decode error {}\n", d)
+            .Alloc(_) => print("alloc error\n")
+        }
+    }
+    print("unchanged [{}]\n", list.items)
+
+    print("-- every byte\n")
+    all: [256]u8 = ---
+    for i in 0..256 { all[i] = i.trunc(u8) }
+    enc: [344]u8 = ---
+    dec: [258]u8 = ---
+    bad := 0
+    for alpha in [_]base64.Alphabet(.Standard, .Url) {
+        for pad in [_]bool(true, false) {
+            o := base64.Options(alphabet: alpha, pad: pad)
+            for n in 0..257 {
+                text := base64.encode(all[0..n], enc[..], o)
+                data := base64.decode(text, dec[..], o) else {
+                    bad += 1
+                    continue
+                }
+                if data is not all[0..n] { bad += 1 }
+            }
+        }
+    }
+    print("mismatches {}\n", bad)
+    full := base64.encode(all[..], enc[..], std_pad)
+    print("{}\n", full)
+    print("max len {} {} {} {}\n", (base64.decoded_len_max(0), base64.decoded_len_max(1),
+                                    base64.decoded_len_max(4), base64.decoded_len_max(344)))
+    return ()
+}
