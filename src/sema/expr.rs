@@ -1451,15 +1451,20 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let v = self.expr(operand, None);
         let vt = self.infer.resolve(v.ty);
-        // The first `try` of a test decides the test's error type (§3.8).
-        if self.infer_test_error
-            && self.outer.is_empty()
-            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), self.ret.kind())
+        let (levels, mut ret) = self.return_target();
+        // The first `try` of a test decides the test's error type (§3.8), also from a loop body
+        // or other clause of the test.
+        let in_test_body = self.infer_test_error && levels as usize == self.outer.len();
+        if in_test_body
+            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), ret.kind())
             && cur.is_error()
         {
-            self.ret = Ty::result(*err, *ok);
+            ret = Ty::result(*err, *ok);
+            match self.outer.first_mut() {
+                Some(f) => f.ret = ret,
+                None => self.ret = ret,
+            }
         }
-        let (levels, ret) = self.return_target();
         self.check_fn_clause_exit(levels, "try", span);
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
@@ -1474,7 +1479,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         Ok(i) => Some(tir::Lift::Variant(i)),
                         Err(msg) => {
                             let mut d = crate::diag::Diagnostic::error(span, msg);
-                            if self.infer_test_error && self.outer.is_empty() {
+                            if in_test_body {
                                 d = d.with_note(format!(
                                     "a test's error type is that of its first `try`, here `{}` (§3.8); call a helper that declares a common error type",
                                     f

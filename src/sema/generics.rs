@@ -115,23 +115,37 @@ impl<'s> Sema<'s> {
 
     /// The types `is` is defined for (§7.6).
     pub fn has_eq(&self, t: Ty) -> bool {
+        self.has_eq_in(t, &mut Vec::new())
+    }
+
+    /// `has_eq` with the ADTs being examined: a type that reaches itself again is assumed to have
+    /// equality (the other parts decide), so self-recursive types terminate.
+    fn has_eq_in(&self, t: Ty, seen: &mut Vec<Ty>) -> bool {
         match t.kind() {
             TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Cont(_) | TyKind::Type => false,
             TyKind::Param(p) => self.param_has(*p, Constraint::Eq),
-            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq(*e)),
+            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq_in(*e, seen)),
             TyKind::Array { elem, .. }
             | TyKind::ParamArray { elem, .. }
             | TyKind::Slice { elem, .. }
-            | TyKind::Optional(elem) => self.has_eq(*elem),
-            TyKind::Result { err, ok } => self.has_eq(*err) && self.has_eq(*ok),
-            TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
-                Some(tir::AdtKind::Struct { fields, .. }) => fields.iter().all(|f| self.has_eq(f.ty)),
-                Some(tir::AdtKind::Union { variants, .. }) => {
-                    variants.iter().all(|v| v.payload.is_none_or(|p| self.has_eq(p)))
+            | TyKind::Optional(elem) => self.has_eq_in(*elem, seen),
+            TyKind::Result { err, ok } => self.has_eq_in(*err, seen) && self.has_eq_in(*ok, seen),
+            TyKind::Adt(id, _) => {
+                if seen.contains(&t) {
+                    return true;
                 }
-                Some(tir::AdtKind::CUnion { .. }) => false,
-                None => true,
-            },
+                seen.push(t);
+                let r = match self.prog.adts.get(id).map(|d| &d.kind) {
+                    Some(tir::AdtKind::Struct { fields, .. }) => fields.iter().all(|f| self.has_eq_in(f.ty, seen)),
+                    Some(tir::AdtKind::Union { variants, .. }) => {
+                        variants.iter().all(|v| v.payload.is_none_or(|p| self.has_eq_in(p, seen)))
+                    }
+                    Some(tir::AdtKind::CUnion { .. }) => false,
+                    None => true,
+                };
+                seen.pop();
+                r
+            }
             _ => true,
         }
     }

@@ -1,0 +1,19 @@
+// A function literal whose block ends in `try f()` (of type `()`) succeeds with `()` when the
+// call does, as a named function does.
+E :: union { Bad }
+
+work :: fn(ok: bool) -> E!() {
+    if ok { return () }
+    return !.Bad
+}
+
+call :: fn(body: fn() -> E!()) -> E!() {
+    try body()
+    return ()
+}
+
+main :: fn() \ {Out} {
+    good := call(fn() -> E!() { try work(true) })
+    bad := call(fn() -> E!() { try work(false) })
+    print("{} {}\n", (good is !_, bad is !_))
+}

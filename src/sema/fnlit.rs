@@ -103,13 +103,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::FnBody::Block(b) => {
                 let block = self.block(b, false);
-                if !ret.is_unit()
-                    && !block.ty.is_never()
-                    && !matches!(ret.kind(), TyKind::Result { ok, .. } if ok.is_unit())
-                {
-                    self.missing_return(b, ret);
-                }
-                block
+                self.finish_block_body(block, b)
             }
         };
         let final_ret = self.ret;
