@@ -1,0 +1,6 @@
+test "write appends formatted text" ... ok
+test "into_slice hands over the storage" ... ok
+test "collect gathers an iterator" ... ok
+test "dupe copies" ... ok
+test "format allocates" ... ok
+5 passed, 0 failed

@@ -12,5 +12,6 @@ test "traps" ... FAILED
       at tests/conformance/test/foreign.gm:36:12 in test "traps"
 test "leaks are caught" ... FAILED
     leaked 4 bytes
+      4 bytes allocated at tests/conformance/test/foreign.gm:40:10
 test "allocation is balanced" ... ok
 3 passed, 4 failed

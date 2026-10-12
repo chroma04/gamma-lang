@@ -136,6 +136,26 @@ pub get_or_put :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, 
     return &m.slots[i].value
 }
 
+/// Where `entry` found or stored a key: pointers to the stored key and value, valid until
+/// the next insertion or removal, and whether the key was already present.
+pub Entry :: struct(K, V: type) {
+    pub key: ^K
+    pub value: ^V
+    pub found: bool
+}
+
+/// The entry for `k`, first storing `k` and `default` if `k` is absent. When it was absent
+/// (`found` is false), the stored key may be replaced by an equal one, such as a copy the
+/// map should own: `if not e.found { e.key^ = try str.dupe(word) }`.
+pub entry :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                m: ^HashMap(K, V, hash, eq), k: K, default: V) -> AllocError!Entry(K, V) {
+    if i := m.find(&k) { return Entry(K, V)(key: &m.slots[i].key, value: &m.slots[i].value, found: true) }
+    if (m.used + 1) * 4 > m.slots.len * 3 { try m.grow() }
+    m.insert_new(k, default)
+    i := m.find(&k) else trap("unreachable: the key was just inserted")
+    return Entry(K, V)(key: &m.slots[i].key, value: &m.slots[i].value, found: false)
+}
+
 /// Whether `k` is present.
 pub contains :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
                    m: ^const HashMap(K, V, hash, eq), k: K) -> bool {
@@ -151,6 +171,16 @@ pub remove :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :
     return m.slots[i].value
 }
 
+/// Removes `k`, returning the stored key and its value if it was present, so that a key
+/// the map owned can be released.
+pub remove_entry :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                       m: ^HashMap(K, V, hash, eq), k: K) -> ?(key: K, value: V) {
+    i := m.find(&k) else return null
+    m.slots[i].state = REMOVED
+    m.count -= 1
+    return (key: m.slots[i].key, value: m.slots[i].value)
+}
+
 /// The number of entries.
 pub len :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
               m: ^const HashMap(K, V, hash, eq)) -> usize {
@@ -163,6 +193,22 @@ pub entries :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq 
     for i in 0..m.slots.len {
         s := m.slots[i]
         if s.state is FULL { yield((key: s.key, value: s.value)) }
+    }
+}
+
+/// The keys, in the order of `entries`. The map must not change during the iteration.
+pub keys :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+               m: ^const HashMap(K, V, hash, eq)) \ {Yield(K)} {
+    for i in 0..m.slots.len {
+        if m.slots[i].state is FULL { yield(m.slots[i].key) }
+    }
+}
+
+/// The values, in the order of `entries`. The map must not change during the iteration.
+pub values :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
+                 m: ^const HashMap(K, V, hash, eq)) \ {Yield(V)} {
+    for i in 0..m.slots.len {
+        if m.slots[i].state is FULL { yield(m.slots[i].value) }
     }
 }
 

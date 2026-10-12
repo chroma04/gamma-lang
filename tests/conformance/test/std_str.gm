@@ -27,7 +27,7 @@ test "replace_alloc and dupe do not leak" {
     r := try str.replace_alloc("a-b-c", "-", "<->")
     defer free(r)
     assert(r is "a<->b<->c", "replaced")
-    d := try str.dupe("copy")
+    d := try dupe("copy")
     defer free(d)
     assert(d is "copy", "copy")
     assert(d.ptr is not "copy".ptr, "a new block")

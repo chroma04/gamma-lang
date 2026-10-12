@@ -384,7 +384,7 @@ test "parse rejects letters" {
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
 
 ---
 
@@ -2427,7 +2427,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2440,6 +2440,7 @@ make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} 
 free         :: fn(T: type, s: []const T) \ {Alloc}
 free_aligned :: fn(T: type, s: []const T, align: usize) \ {Alloc}
 destroy      :: fn(T: type, p: ^const T) \ {Alloc}
+dupe         :: fn(T: type, s: []const T) -> AllocError![]T \ {Alloc}
 ```
 
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
@@ -2503,6 +2504,9 @@ swap_remove :: fn(T: type, l: ^List(T), i: usize) -> T             // moves the 
 truncate :: fn(T: type, l: ^List(T), n: usize)                      // keeps the first n
 clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
+into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
+collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!()   // appends what `it` yields
+write  :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!()  // @write into the list
 
 // core/map
 HashMap  :: struct(K, V: type,
@@ -2515,15 +2519,20 @@ put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
 get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
 get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
+Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
+entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // as get_or_put, with the stored key
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
+remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
 len      :: fn(m: ^const HashMap(…)) -> usize
 entries  :: fn(m: ^const HashMap(…)) \ {Yield((key: K, value: V))}   // unspecified order
+keys     :: fn(m: ^const HashMap(…)) \ {Yield(K)}                   // in the order of `entries`
+values   :: fn(m: ^const HashMap(…)) \ {Yield(V)}
 clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `get_or_put` are invalidated by the next insertion or removal.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr`, `get_or_put` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2531,6 +2540,7 @@ Signatures are abbreviated: the `HashMap` functions take the map type's paramete
 trap   :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never
 assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation = @caller_location())
 expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location())
+expect_eq :: fn(T: type, actual: T, expected: T)
 print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 ```
@@ -2538,6 +2548,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 - `trap` traps in every build mode (§18.5).
 - `assert` is a checked operation: it traps on `false` in Debug and Checked builds and is removed (its argument not evaluated) in Fast builds.
 - `expect` may be called only in tests; on `false` it fails the current test (reporting the location) and stops it.
+- `expect_eq(actual, expected)` may be called only in tests; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
 - `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
 
 #### 21.6.1 Formatting: `@write`

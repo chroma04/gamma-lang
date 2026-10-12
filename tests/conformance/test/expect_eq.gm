@@ -1,0 +1,19 @@
+//! stage: test
+//! exit: 1
+// `expect_eq` shows both values when they differ (§21.6).
+Point :: struct { x: i32, y: i32 }
+add :: fn(a, b: i32) -> i32 => a + b
+test "passes" {
+    expect_eq(add(2, 2), 4)
+    expect_eq("ab", "ab")
+}
+test "fails with both values" {
+    expect_eq(add(2, 2), 5)
+}
+test "structs" {
+    expect_eq(Point(x: 1, y: 2), Point(x: 1, y: 3))
+}
+test "optional" {
+    v: ?i32 = null
+    expect_eq(v, 3)
+}

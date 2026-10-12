@@ -427,6 +427,11 @@ pub empty_slice :: fn(T: type) -> []T {
 // so that freeing it through another allocator traps reporting both sites (§18.3).
 tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
     @alloc_tag(raw, a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    // The test allocator remembers where each block came from, to report leaks.
+    if a.vt.cast(rawptr) is (&TRACKING).cast(rawptr) {
+        t := a.data.cast(^TestTracker)
+        if b := t.blocks.get_ptr(raw.cast(usize)) { b.site = site }
+    }
 }
 
 /// A new object holding `init`.
@@ -469,7 +474,18 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
     return s
 }
 
-/// Releases a slice obtained from `make` or `make_fill` under the current allocator.
+/// A copy of `s` in memory from the current allocator, released with `free`.
+pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
+    if s.len is 0 { return empty_slice(T) }
+    a := current()
+    raw := a.vt.alloc(a.data, @size_of(T) * s.len, @align_of(T)) else return !.OutOfMemory
+    tag(raw, a, site)
+    d := raw.cast([^]T)[0..s.len]
+    for i in 0..s.len { d[i] = s[i] }
+    return d
+}
+
+/// Releases a slice obtained from `make`, `make_fill` or `dupe` under the current allocator.
 /// Memory from `make_aligned` is released with `free_aligned`.
 pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) \ {Alloc} {
     if s.len is 0 { return }
@@ -515,15 +531,29 @@ pub SourceLocation :: struct {
 // for each test. The test's allocations go through a tracking allocator, and
 // memory still allocated when the test ends fails it.
 
+/// A block the test allocator handed out: its size and, when `new`, `make`, `make_fill`
+/// or `dupe` allocated it, where they were called.
+LiveBlock :: struct {
+    size: usize
+    site: ?SourceLocation = null
+}
+
 TestTracker :: struct {
     live: usize
     inner: Allocator
+    blocks: HashMap(usize, LiveBlock)       // by address, in memory from `inner`
+}
+
+test_tracker :: fn() -> TestTracker {
+    heap := heap_allocator()
+    return TestTracker(live: 0, inner: heap, blocks: with heap { map(usize, LiveBlock) })
 }
 
 track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
     t := data.cast(^TestTracker)
     p := t.inner.vt.alloc(t.inner.data, size, align) else return null
     t.live += size
+    t.blocks.put(p.cast(usize), LiveBlock(size: size)) else {}
     return p
 }
 
@@ -532,14 +562,38 @@ track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => fa
 track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
     t := data.cast(^TestTracker)
     t.live -= size
+    _ = t.blocks.remove(p.cast(usize))
     t.inner.vt.free(t.inner.data, p, size, align)
 }
 
 TRACKING :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
 
+/// Reports the blocks still allocated, with their sites, and frees the bookkeeping.
 leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
+    defer t.blocks.deinit()
     if t.live is 0 { return 0 }
     eprint("leaked {} bytes\n", t.live)
+    // Sorted by site, so the report does not depend on addresses.
+    sites := with t.inner { list((file: string, line: u32, column: u32, size: usize)) }
+    defer sites.deinit()
+    for b in t.blocks.values() {
+        s := b.site else SourceLocation(file: "", line: 0, column: 0, function: "")
+        sites.push((file: s.file, line: s.line, column: s.column, size: b.size)) else {}
+    }
+    sites.items.sort()
+    shown: usize = 0
+    for s in sites.items {
+        if shown is 10 {
+            eprint("  and {} more blocks\n", sites.items.len - shown)
+            break
+        }
+        if s.line is 0 {
+            eprint("  {} bytes allocated by a container (List, HashMap, …) or an Allocator directly\n", s.size)
+        } else {
+            eprint("  {} bytes allocated at {}:{}:{}\n", (s.size, s.file, s.line, s.column))
+        }
+        shown += 1
+    }
     return 1
 }
 
@@ -1238,7 +1292,7 @@ handler Net for ^TestIo {
 
 /// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
 run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
-    t := TestTracker(live: 0, inner: heap_allocator())
+    t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
     mem_fs_free(&io.fs)
@@ -1252,7 +1306,7 @@ run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, 
 
 /// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
 run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
-    t := TestTracker(live: 0, inner: heap_allocator())
+    t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     with Allocator(data: &t, vt: &TRACKING), &io { body() }
     mem_fs_free(&io.fs)

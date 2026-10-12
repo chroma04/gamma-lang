@@ -486,6 +486,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span)
             }
+            BuiltinFn::ExpectEq => self.expect_eq(args, span),
             BuiltinFn::Assert | BuiltinFn::Expect => {
                 let is_expect = b == BuiltinFn::Expect;
                 let what = if is_expect { "expect" } else { "assert" };
@@ -518,6 +519,61 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vec![c, m] }, span)
             }
         }
+    }
+
+    /// `expect_eq(actual, expected)` (§21.6): in a test, fails it unless the two are equal
+    /// by `is`, writing both values to `Err` first.
+    fn expect_eq(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if !self.sema.in_test {
+            self.error(span, "`expect_eq` may be called only in tests (§21.6)");
+            return error_expr(span);
+        }
+        let [ast::Arg { kind: ArgKind::Positional(a), .. }, ast::Arg { kind: ArgKind::Positional(b), .. }] = args
+        else {
+            self.error(span, "`expect_eq` takes the actual value and the expected one");
+            return error_expr(span);
+        };
+        let Some(effect) = self.sema.prog.ambient.err else {
+            return error_expr(span);
+        };
+        let l = self.expr(a, None);
+        let r = self.expr(b, Some(l.ty));
+        let (l, r) = self.equalize(l, r, span);
+        let (lt, rt) = (self.infer.settle(l.ty), self.infer.settle(r.ty));
+        let (x, y) = (self.temp(lt, a.span), self.temp(rt, b.span));
+        let local = |id, ty| mk(ty, tir::ExprKind::Local(id), span);
+        let differ = mk(
+            Ty::bool(),
+            tir::ExprKind::Eq { lhs: Box::new(local(x, lt)), rhs: Box::new(local(y, rt)), negated: true },
+            span,
+        );
+        let eref = EffectRef { effect, args: Box::new([]) };
+        self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
+        let write = mk(
+            Ty::unit(),
+            tir::ExprKind::Write {
+                sink: WriteSink::Perform { effect: eref, op: 0 },
+                pieces: vec![Rc::from(&b"expected: "[..]), Rc::from(&b"\nactual:   "[..]), Rc::from(&b"\n"[..])],
+                specs: vec![tir::FmtSpec::default(); 2],
+                args: vec![local(y, rt), local(x, lt)],
+            },
+            span,
+        );
+        let msg = mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"expectation failed: the values differ"[..])), span);
+        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
+        let fail = tir::Block { stmts: vec![Stmt::Expr(write)], tail: Some(stop), span };
+        let check = mk(
+            Ty::unit(),
+            tir::ExprKind::If {
+                cond: vec![tir::CondPart::Bool(differ)],
+                then: Box::new(mk(Ty::never(), tir::ExprKind::Block(Box::new(fail)), span)),
+                else_: None,
+            },
+            span,
+        );
+        let stmts =
+            vec![Stmt::Let { local: x, init: Some(l) }, Stmt::Let { local: y, init: Some(r) }, Stmt::Expr(check)];
+        super::func::block_of(stmts, span)
     }
 
     /// `print(template, args)` (§21.6, §21.6.1).

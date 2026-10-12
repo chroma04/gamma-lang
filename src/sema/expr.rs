@@ -819,7 +819,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// Makes two operands of `is` the same type: unify, or coerce one to the other.
-    fn equalize(&mut self, l: Expr, r: Expr, span: Span) -> (Expr, Expr) {
+    pub(super) fn equalize(&mut self, l: Expr, r: Expr, span: Span) -> (Expr, Expr) {
         let (lt, rt) = (self.infer.resolve(l.ty), self.infer.resolve(r.ty));
         if !lt.has_infer() && !lt.is_error() && !self.eq_allowed(lt) {
             self.error(span, format!("`is` is not defined for `{}` (§7.6)", lt));

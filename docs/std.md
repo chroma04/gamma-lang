@@ -180,8 +180,9 @@ of the string.
 - Replacing: `replace(out, s, from, to)` appends `s` to a `^List(u8)` with every
   non-overlapping `from` (found from the left; empty traps) replaced by `to`, and
   `replace_alloc(s, from, to) -> AllocError![]u8` returns the result in one allocation;
-  `repeat(out, s, n)` appends `n` copies of `s`. `dupe(s) -> AllocError![]u8` copies
-  `s`. Results from the allocating forms are released with `free`.
+  `repeat(out, s, n)` appends `n` copies of `s`. `format(template, args) -> AllocError![]u8`
+  formats into a new allocation (`List(u8).write` appends instead; the core `dupe(s)`
+  copies a string). Results from the allocating forms are released with `free`.
 - Integers: `parse_int(T, s) -> ParseError!T` for any integer type: an optional sign
   (`-` only for signed types), an optional `0x`, `0o` or `0b` prefix, digits with single
   `_` separators between them, and nothing else. The most negative value of a signed

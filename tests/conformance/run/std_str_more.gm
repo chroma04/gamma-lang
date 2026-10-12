@@ -94,9 +94,9 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     show_any("x", "xyz")
 
     // dupe
-    s := try str.dupe("copy me")
+    s := try dupe("copy me")
     defer free(s)
-    e := try str.dupe("")
+    e := try dupe("")
     defer free(e)
     print("<{}> {} <{}> {}\n", (s, s.len, e, e.len))
 

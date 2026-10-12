@@ -196,10 +196,11 @@ A top-level `test` declaration is compiled only when building tests. Its body ca
 ```gamma
 test "squares" {
     expect(square(7) is 49)
+    expect_eq(square(-3), 9)          // on failure, shows both values
 }
 ```
 
-A test passes if it finishes, and fails if `expect` fails, a trap occurs, or the test allocator detects a leak. Returning an error also fails the test, so `try` works inside tests. More on tests in [chapter 13](13-safety.md).
+A test passes if it finishes, and fails if `expect` or `expect_eq` fails, a trap occurs, or the test allocator detects a leak (the report lists each leaked block and, for `new`, `make` and `dupe`, the line that allocated it). `try` works inside tests on any error type: an error fails the test and is reported. More on tests in [chapter 13](13-safety.md).
 
 `gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`, and of every module of the same package that it imports, directly or indirectly. The tests of the standard library and of dependency packages are not run. Each test runs on its own; its output is captured and shown only if it fails:
 

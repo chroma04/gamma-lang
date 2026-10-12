@@ -1,0 +1,15 @@
+//! stage: test
+//! exit: 1
+// A leak report lists the leaked blocks with the sites that allocated them (§3.8).
+test "leaks" {
+    a := try make(u8, 10)
+    b := try new(u32, 7)
+    l := list(i32)
+    try l.push(1)
+    c := try dupe("xyz")
+    free(c)
+}
+test "clean" {
+    a := try make(u8, 10)
+    free(a)
+}

@@ -772,11 +772,14 @@ pub write :: fn(A: type, b: ^Builder, template :: string, args: A) {
 // Joining and copying
 // ---------------------------------------------------------------------------------
 
-/// A copy of `s` in memory from the current allocator (release it with `free`).
-pub dupe :: fn(s: string) -> AllocError![]u8 \ {Alloc} {
-    out := try make(u8, s.len)
-    out.copy_from(s)
-    return out
+/// Formatted text (§21.6.1) in memory from the current allocator (release it with
+/// `free`): `str.format("{}-{:03}", (name, n))`. To append to a list instead, use
+/// `List(u8).write`.
+pub format :: fn(A: type, template :: string, args: A = ()) -> AllocError![]u8 \ {Alloc} {
+    l := list(u8)
+    errdefer l.deinit()
+    try l.write(template, args)
+    return l.into_slice()
 }
 
 /// The `parts` with `sep` between them, in memory from the current allocator. The result

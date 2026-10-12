@@ -1,8 +1,11 @@
 test "a deque without deinit leaks" ... FAILED
     leaked 16 bytes
+      16 bytes allocated by a container (List, HashMap, …) or an Allocator directly
 test "a heap without deinit leaks" ... FAILED
     leaked 16 bytes
+      16 bytes allocated by a container (List, HashMap, …) or an Allocator directly
 test "a bit set without deinit leaks" ... FAILED
     leaked 8 bytes
+      8 bytes allocated by a container (List, HashMap, …) or an Allocator directly
 test "an empty bit set and an unused deque leak nothing" ... ok
 1 passed, 3 failed

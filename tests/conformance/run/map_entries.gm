@@ -1,0 +1,44 @@
+// `entry` exposes the stored key so a map can own copies of borrowed keys; `remove_entry`
+// returns the stored key to release it; `keys` and `values` iterate (§21.5).
+count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() \ {Alloc} {
+    // `buf` is reused for every word, as a reader's buffer would be.
+    buf: [16]u8 = ---
+    start: usize = 0
+    for i in 0..=text.len {
+        if i < text.len and text[i] is not ' ' { continue }
+        if i > start {
+            n := i - start
+            buf[0..n].copy_from(text[start..i])
+            word := buf[0..n]
+            e := try m.entry(word, 0)
+            if not e.found {
+                copy := try make(u8, n)
+                copy.copy_from(word)
+                e.key^ = copy
+            }
+            e.value^ += 1
+        }
+        start = i + 1
+    }
+    return ()
+}
+
+main :: fn() \ {Out, Alloc} {
+    m := map(string, u32)
+    count_words(&m, "the cat and the hat and the bat") else trap()
+    words := list(string)
+    words.collect(fn() => m.keys()) else trap()
+    words.items.sort()
+    for w in words.items { print("{} {}\n", (w, m.get(w) else 0)) }
+    words.deinit()
+    total: u32 = 0
+    for v in m.values() { total += v }
+    print("total {}\n", total)
+    if r := m.remove_entry("the") {
+        print("removed {} {}\n", (r.key, r.value))
+        free(r.key)
+    }
+    print("{}\n", m.remove_entry("dog"))
+    for k in m.keys() { free(k) }
+    m.deinit()
+}
