@@ -507,6 +507,8 @@ impl<'s> Sema<'s> {
         self.nested_owner.insert(new_id, new_id);
         let def = &self.prog.fns[id.index()];
         let (params, locals, body) = (def.params.clone(), def.locals.clone(), def.body.clone());
+        // Including the effects a literal performs where it is written (§11.6).
+        let effects = subst_effects(&def.effects, cx.map);
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(cx, l.ty), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
@@ -516,6 +518,7 @@ impl<'s> Sema<'s> {
         nd.locals = locals;
         nd.body = body;
         nd.parent = parent;
+        nd.effects = effects;
         new_id
     }
 
@@ -867,6 +870,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (k, v2) in b2 {
                     binds.entry(k).or_insert(v2);
                 }
+            }
+        }
+        // An omitted argument whose default is `()` determines its parameter's type:
+        // `print`'s `args: A = ()` makes `A` the unit type when there are no arguments.
+        for (p, v) in sig.params.iter().zip(&values) {
+            if let (TyKind::Param(pid), None, Some(d)) = (p.ty.kind(), v, &p.default)
+                && matches!(&d.kind, ast::ExprKind::Tuple(elems) if elems.is_empty())
+            {
+                binds.entry(*pid).or_insert(Ty::unit());
             }
         }
         // An argument with an error (already reported) leaves its parameters unbound;

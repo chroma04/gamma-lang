@@ -280,7 +280,10 @@ machine under a fair global lock (`src/interp/threads.rs`): a thread holds it wh
 it evaluates and hands it on every few thousand calls or loop iterations and around
 calls that may block. A trap on any thread is recorded and stops every thread at its
 next turn. The lock is created by the first `@thread_spawn`, so single-threaded
-programs never take it.
+programs never take it. `@futex_wait` and `@futex_wake` are emulated with one global
+wake-up counter and condition variable: a wake-up wakes every waiter, which is allowed
+because a futex wait may return early, and the waiter reads the counter before it gives
+up the lock, so no wake-up is lost. Compiled programs use the kernel's futex.
 
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so

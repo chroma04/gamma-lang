@@ -1,0 +1,56 @@
+// std/log: levels, templates, the list and discard handlers, and nested handlers.
+log :: import "std/log"
+
+work :: fn() \ {log.Log} {
+    log.debug("starting")
+    log.info("loaded {} items from {}", (3, "cache"))
+    log.warn("slow: {} ms", 250)
+    log.error("failed with code {}", -2)
+    log.log(.Info, "explicit level {}", true)
+}
+
+main :: fn() \ {Out, Alloc} {
+    out := list(u8)
+    defer out.deinit()
+
+    // Everything, in order.
+    l := log.ListLog(list: &out)
+    with &l { work() }
+    print("{}", out.items)
+
+    // Filtering by level.
+    out.clear()
+    l2 := log.ListLog(list: &out, min: .Warn)
+    with &l2 { work() }
+    print("-- warn and up\n{}", out.items)
+
+    // The discarding handler wants nothing.
+    out.clear()
+    d := log.Discard()
+    with &d { work() }
+    print("-- discard: {} bytes\n", out.items.len)
+
+    // An inner handler overrides the outer one for its body only.
+    out.clear()
+    inner: List(u8) = list(u8)
+    defer inner.deinit()
+    outer_log := log.ListLog(list: &out, min: .Info)
+    inner_log := log.ListLog(list: &inner, min: .Error)
+    with &outer_log {
+        log.info("outer first")
+        with &inner_log {
+            log.info("hidden")
+            log.error("inner error")
+        }
+        log.info("outer last")
+    }
+    print("-- nested outer\n{}-- nested inner\n{}", (out.items, inner.items))
+
+    // Levels order.
+    print("{} {} {}\n", (log.Level.Debug < log.Level.Info, log.Level.Error < log.Level.Warn, log.Level.Warn < log.Level.Error))
+
+    // A message with a brace-free template and no arguments, and an empty one.
+    out.clear()
+    with &l { log.info("plain"); log.warn("") }
+    print("{}", out.items)
+}

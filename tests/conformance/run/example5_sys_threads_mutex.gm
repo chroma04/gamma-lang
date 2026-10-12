@@ -30,8 +30,7 @@ total :: fn(a: Acct) -> i64 {
 
 Job :: struct { sh: ^Shared, who: u32, rounds: u32 }
 
-teller :: fn(raw: rawptr) \ {Sys} {
-    job := raw.cast(^Job)
+teller :: fn(job: ^Job) \ {Sys} {
     for i in 0..job.rounds {
         job.sh.lock.lock()
         a := job.sh.acct                                   // copy out
@@ -88,8 +87,7 @@ PC :: struct { ring: Ring, produced: u32, result: u64, got: u32 }
 
 COUNT :: 500
 
-producer :: fn(raw: rawptr) \ {Sys} {
-    pc := raw.cast(^PC)
+producer :: fn(pc: ^PC) \ {Sys} {
     seq: u32 = 0
     while seq < COUNT {
         if ring_push(&pc.ring, make_msg(seq)) {
@@ -101,8 +99,7 @@ producer :: fn(raw: rawptr) \ {Sys} {
     @atomic_store(&pc.produced, seq, .Release)
 }
 
-consumer :: fn(raw: rawptr) \ {Sys} {
-    pc := raw.cast(^PC)
+consumer :: fn(pc: ^PC) \ {Sys} {
     acc: u64 = 0
     got: u32 = 0
     expect: u32 = 0
@@ -139,8 +136,7 @@ bump_stage :: fn(p: ^u32) {
     }
 }
 
-stage_worker :: fn(raw: rawptr) \ {Sys} {
-    p := raw.cast(^u32)
+stage_worker :: fn(p: ^u32) \ {Sys} {
     for _ in 0..200 { bump_stage(p) }
 }
 
@@ -150,7 +146,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [4]thread.Thread = ---
     for i in 0..4 {
         jobs[i] = Job(sh: &sh, who: i.trunc(u32) + 1, rounds: 300)
-        ts[i] = try thread.spawn(teller, (&jobs[i]).cast(rawptr))
+        ts[i] = try thread.spawn(Job, teller, &jobs[i])
     }
     for i in 0..4 { ts[i].join() }
     // each who adds 300 * who * 10 plus (0+1+2)*100 to its own slot
@@ -158,8 +154,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     for i in 0..4 { print("slot {} {}\n", (i, sh.acct.balance[i])) }
 
     pc := PC(ring: Ring(lock: thread.mutex(), buf: ---, head: 0, count: 0, closed: false), produced: 0, result: 0, got: 0)
-    tp := try thread.spawn(producer, (&pc).cast(rawptr))
-    tc := try thread.spawn(consumer, (&pc).cast(rawptr))
+    tp := try thread.spawn(PC, producer, &pc)
+    tc := try thread.spawn(PC, consumer, &pc)
     tp.join()
     tc.join()
     expected: u64 = 0
@@ -168,7 +164,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
 
     word: u32 = u32(Status(ready: true, err: false, stage: 0, count: 0))
     ws: [3]thread.Thread = ---
-    for i in 0..3 { ws[i] = try thread.spawn(stage_worker, (&word).cast(rawptr)) }
+    for i in 0..3 { ws[i] = try thread.spawn(u32, stage_worker, &word) }
     for i in 0..3 { ws[i].join() }
     st := Status(word)
     print("status ready {} stage {} count {}\n", (st.ready, st.stage, st.count))

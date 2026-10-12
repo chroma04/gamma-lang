@@ -1,0 +1,128 @@
+// std/thread: Mutex, Condvar, WaitGroup and Channel (§19.6), with several threads.
+thread :: import "std/thread"
+
+Counter :: struct {
+    n: u64
+    m: thread.Mutex
+}
+
+bump :: fn(c: ^Counter) \ {Sys} {
+    for i in 0..2000 {
+        c.m.lock()
+        c.n += 1
+        c.m.unlock()
+    }
+}
+
+// Producers and consumers over a small channel: the sum is the same however they interleave.
+Pipe :: struct {
+    ch: thread.Channel(u64)
+    sum: u64
+    taken: u64
+    producers: thread.WaitGroup
+}
+
+produce :: fn(p: ^Pipe) \ {Sys} {
+    for i in 1..101 {
+        _ = p.ch.send(i)
+    }
+    p.producers.done()
+}
+
+consume :: fn(p: ^Pipe) \ {Sys} {
+    while true {
+        x := p.ch.recv() else break
+        _ = @atomic_add(&p.sum, x, .Relaxed)
+        _ = @atomic_add(&p.taken, 1, .Relaxed)
+    }
+}
+
+// A flag guarded by a mutex, announced through a condition variable.
+Gate :: struct {
+    m: thread.Mutex
+    cv: thread.Condvar
+    open: bool
+    through: u32
+}
+
+pass :: fn(g: ^Gate) \ {Sys} {
+    g.m.lock()
+    while not g.open { g.cv.wait(&g.m) }
+    g.through += 1
+    g.m.unlock()
+}
+
+Job :: struct {
+    wg: thread.WaitGroup
+    done_count: u32
+}
+
+task :: fn(j: ^Job) \ {Sys} {
+    _ = @atomic_add(&j.done_count, 1, .Relaxed)
+    j.wg.done()
+}
+
+Fail :: union { Io: IoError, Mem: AllocError }
+
+main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
+    // Mutex
+    c := Counter(n: 0, m: thread.mutex())
+    ts: [4]thread.Thread = ---
+    for i in 0..4 { ts[i] = try thread.spawn(Counter, bump, &c) }
+    for i in 0..4 { ts[i].join() }
+    print("counter {}\n", c.n)
+    print("try_lock {} {}\n", (c.m.try_lock(), c.m.try_lock()))
+    c.m.unlock()
+    print("try_lock after unlock {}\n", c.m.try_lock())
+    c.m.unlock()
+
+    // Channel pipeline: 3 producers send 1..=100 each, 2 consumers add them up.
+    p := Pipe(ch: try thread.channel(u64, 4), sum: 0, taken: 0, producers: thread.wait_group())
+    p.producers.add(3)
+    ps: [3]thread.Thread = ---
+    cs: [2]thread.Thread = ---
+    for i in 0..3 { ps[i] = try thread.spawn(Pipe, produce, &p) }
+    for i in 0..2 { cs[i] = try thread.spawn(Pipe, consume, &p) }
+    p.producers.wait_all()
+    p.ch.close()
+    for i in 0..3 { ps[i].join() }
+    for i in 0..2 { cs[i].join() }
+    print("pipeline: {} values, sum {}\n", (p.taken, p.sum))
+    print("send after close: {}\n", p.ch.send(1))
+    print("recv after drain: {}\n", p.ch.recv())
+    p.ch.deinit()
+
+    // Condvar: three threads wait at a gate that the main thread opens.
+    g := Gate(m: thread.mutex(), cv: thread.condvar(), open: false, through: 0)
+    gs: [3]thread.Thread = ---
+    for i in 0..3 { gs[i] = try thread.spawn(Gate, pass, &g) }
+    thread.yield_now()
+    g.m.lock()
+    g.open = true
+    g.m.unlock()
+    g.cv.broadcast()
+    for i in 0..3 { gs[i].join() }
+    print("through the gate: {}\n", g.through)
+
+    // WaitGroup
+    j := Job(wg: thread.wait_group(), done_count: 0)
+    j.wg.add(5)
+    js: [5]thread.Thread = ---
+    for i in 0..5 { js[i] = try thread.spawn(Job, task, &j) }
+    j.wg.wait_all()
+    print("tasks done: {}\n", j.done_count)
+    for i in 0..5 { js[i].join() }
+    j.wg.wait_all()
+    print("empty wait group returns at once\n")
+
+    // wait_timeout gives up when nobody signals.
+    m := thread.mutex()
+    cv := thread.condvar()
+    m.lock()
+    started := now()
+    got := cv.wait_timeout(&m, ms(30))
+    waited := now().since(started)
+    m.unlock()
+    print("wait_timeout: {} (waited at least 25ms: {})\n", (got, waited.to_ms() >= 25))
+    print("cpu_count >= 1: {}\n", thread.cpu_count() >= 1)
+}

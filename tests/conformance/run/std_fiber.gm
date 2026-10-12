@@ -1,0 +1,127 @@
+// std/fiber: tasks that interleave, join, spawn tasks and run their defers. Tasks may
+// perform only `Sched`, so they record what they do in a shared log that `main` prints.
+fiber :: import "std/fiber"
+
+Log :: struct {
+    events: [64]u32
+    n: usize
+}
+
+rec :: fn(l: ^Log, x: u32) {
+    l.events[l.n] = x
+    l.n += 1
+}
+
+dump :: fn(title: string, l: ^Log) \ {Out} {
+    print("{}:", title)
+    for i in 0..l.n { print(" {}", l.events[i]) }
+    print("\n", ())
+}
+
+// Event `name * 10 + round` for each round; `name * 10 + 9` when the task's defer runs.
+Job :: struct {
+    log: ^Log
+    name: u32
+    rounds: u32
+}
+
+worker :: fn(j: ^Job) \ {fiber.Sched} {
+    defer rec(j.log, j.name * 10 + 9)
+    for i in 0..j.rounds {
+        rec(j.log, j.name * 10 + i)
+        fiber.yield_now()
+    }
+}
+
+// A task that starts another and yields until the child (whose data lives in the parent's frame) is done.
+parent :: fn(j: ^Job) \ {fiber.Sched} {
+    rec(j.log, 100)
+    child := Job(log: j.log, name: 9, rounds: 2)
+    stack: [20000]u8 = ---
+    fiber.spawn(Job, worker, &child, stack[..])
+    fiber.yield_now()
+    rec(j.log, 101)
+    for i in 0..3 { fiber.yield_now() }
+    rec(j.log, 102)
+}
+
+Total :: struct { sum: u32 }
+
+adder :: fn(t: ^Total) \ {fiber.Sched} {
+    for i in 1..4 {
+        t.sum += i
+        fiber.yield_now()
+    }
+}
+
+interleave :: fn() \ {Out, Alloc} {
+    s := fiber.scheduler()
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [24576]u8 = ---
+    sa: [24576]u8 = ---
+    sb: [24576]u8 = ---
+    sc: [24576]u8 = ---
+    a := Job(log: &log, name: 1, rounds: 3)
+    b := Job(log: &log, name: 2, rounds: 2)
+    c := Job(log: &log, name: 3, rounds: 1)
+    with &s on main_stack[..] {
+        fiber.spawn(Job, worker, &a, sa[..])
+        fiber.spawn(Job, worker, &b, sb[..])
+        fiber.spawn(Job, worker, &c, sc[..])
+        rec(&log, 0)
+        fiber.join()
+        rec(&log, 1)
+    }
+    dump("interleaved", &log)
+}
+
+nested :: fn() \ {Out, Alloc} {
+    s := fiber.scheduler()
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [24576]u8 = ---
+    st: [40000]u8 = ---
+    j := Job(log: &log, name: 0, rounds: 0)
+    with &s on main_stack[..] {
+        fiber.spawn(Job, parent, &j, st[..])
+        fiber.join()
+    }
+    dump("nested", &log)
+}
+
+sums :: fn() \ {Out, Alloc} {
+    s := fiber.scheduler()
+    defer s.deinit()
+    main_stack: [24576]u8 = ---
+    s1: [24576]u8 = ---
+    s2: [24576]u8 = ---
+    t1 := Total(sum: 0)
+    t2 := Total(sum: 100)
+    with &s on main_stack[..] {
+        fiber.spawn(Total, adder, &t1, s1[..])
+        fiber.spawn(Total, adder, &t2, s2[..])
+        fiber.join()
+    }
+    print("sums {} {}\n", (t1.sum, t2.sum))
+}
+
+// Join with nothing spawned returns at once; main can yield with nobody else ready.
+idle :: fn() \ {Out, Alloc} {
+    s := fiber.scheduler()
+    defer s.deinit()
+    main_stack: [24576]u8 = ---
+    with &s on main_stack[..] {
+        fiber.join()
+        fiber.yield_now()
+        fiber.join()
+    }
+    print("idle ok\n", ())
+}
+
+main :: fn() \ {Out, Alloc} {
+    interleave()
+    nested()
+    sums()
+    idle()
+}

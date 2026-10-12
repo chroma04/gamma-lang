@@ -1,0 +1,11 @@
+// A generic parameter whose default is `()` takes the unit type when the argument is
+// omitted, as in the signature of `print`.
+note :: fn(A: type, template :: string, args: A = ()) \ {Out} {
+    print(template, args)
+}
+
+main :: fn() \ {Out} {
+    note("no arguments\n")
+    note("one {}\n", 7)
+    note("two {} {}\n", ("a", 2.5))
+}

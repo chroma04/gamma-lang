@@ -8,8 +8,7 @@ Shared :: struct {
     m: thread.Mutex
 }
 
-work :: fn(arg: rawptr) \ {Sys} {
-    s := arg.cast(^Shared)
+work :: fn(s: ^Shared) \ {Sys} {
     for i in 0..1000 {
         _ = @atomic_add(&s.atomic_total, 1, .Relaxed)
         s.m.lock()
@@ -18,14 +17,12 @@ work :: fn(arg: rawptr) \ {Sys} {
     }
 }
 
-greet :: fn(arg: rawptr) \ {Sys} {
-    n := arg.cast(^u32)
+greet :: fn(n: ^u32) \ {Sys} {
     thread.defaults(fn() \ {Out} { print("hello from thread {}\n", n^) })
 }
 
 // Waits for the main thread's signal, then answers: a handshake through atomics.
-ping :: fn(arg: rawptr) \ {Sys} {
-    flags := arg.cast(^[2]u32)
+ping :: fn(flags: ^[2]u32) \ {Sys} {
     while @atomic_load(&flags[0], .Acquire) is 0 {}
     @atomic_store(&flags[1], 7, .Release)
 }
@@ -34,7 +31,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     s := Shared(atomic_total: 0, locked_total: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
     for i in 0..4 {
-        ts[i] = try thread.spawn(work, (&s).cast(rawptr))
+        ts[i] = try thread.spawn(Shared, work, &s)
     }
     for i in 0..4 { ts[i].join() }
     print("{} {}\n", (s.atomic_total, s.locked_total))
@@ -42,11 +39,11 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     // One at a time, so the output order is fixed.
     for k in 1..4 {
         n: u32 = k
-        t := try thread.spawn(greet, (&n).cast(rawptr))
+        t := try thread.spawn(u32, greet, &n)
         t.join()
     }
     flags := [2]u32(0, 0)
-    p := try thread.spawn(ping, (&flags).cast(rawptr))
+    p := try thread.spawn([2]u32, ping, &flags)
     @atomic_store(&flags[0], 1, .Release)
     while @atomic_load(&flags[1], .Acquire) is 0 { thread.yield_now() }
     p.join()

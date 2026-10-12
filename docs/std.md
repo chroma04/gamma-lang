@@ -335,35 +335,54 @@ follow C99 Annex F.
 
 ## `std/thread`
 
-Threads (§19.6). A thread runs a plain function `^fn(arg: rawptr) \ {Sys}` and starts with
-no handlers; `thread.defaults(fn() { … })` runs a closure under the default handlers of
-every ambient effect.
+Threads (§19.6) and the synchronization between them. A thread runs a plain function
+`^fn(arg: ^T) \ {Sys}` and starts with no handlers; `thread.defaults(fn() { … })` runs a
+closure under the default handlers of every ambient effect.
 
 ```gamma
 thread :: import "std/thread"
 
-work :: fn(arg: rawptr) \ {Sys} {
-    counter := arg.cast(^u64)
-    _ = @atomic_add(counter, 1, .Relaxed)
+Counter :: struct { n: u64, m: thread.Mutex }
+
+work :: fn(c: ^Counter) \ {Sys} {
+    c.m.lock()
+    c.n += 1
+    c.m.unlock()
     thread.defaults(fn() { print("done\n") })
 }
 
-n: u64 = 0
-t := try thread.spawn(work, (&n).cast(rawptr))
+c := Counter(n: 0, m: thread.mutex())
+t := try thread.spawn(Counter, work, &c)
 t.join()
 ```
 
-- `spawn(f, arg) -> IoError!Thread`, `t.join()`, `yield_now()`.
-- `Mutex`: `mutex()`, `m.lock()`, `m.try_lock()`, `m.unlock()`.
-- Shared memory needs atomics or a mutex; a data race is undefined behavior. Handlers,
-  second-class functions and continuations never cross threads.
+- `spawn(T, f, arg) -> IoError!Thread`, `t.join()`, `yield_now()`, `cpu_count() -> u32`
+  (at least 1).
+- `Mutex` is a plain struct (no allocation) that sleeps in the kernel while it waits:
+  `mutex()`, `m.lock()`, `m.try_lock() -> bool`, `m.unlock()`.
+- `Condvar`: `condvar()`, `c.wait(&m)` unlocks `m`, waits and locks it again, and may
+  return without a signal, so wait in a loop (`while not ready { c.wait(&m) }`);
+  `c.wait_timeout(&m, d) -> bool` is `false` if `d` passed without a signal;
+  `c.signal()` wakes one waiter and `c.broadcast()` all of them.
+- `WaitGroup`: `wait_group()`, `w.add(n)` before starting work, `w.done()` when a piece
+  finishes (more calls than `add` trap), `w.wait_all()` returns when the count is zero.
+- `Channel(T)` is a bounded blocking queue for any number of senders and receivers:
+  `channel(T, capacity) -> AllocError!Channel(T)` (capacity at least 1; it keeps the
+  allocator it was created with), `c.send(x) -> bool` waits while the queue is full and
+  gives `false` if it is closed, `c.recv() -> ?T` waits while it is empty and gives `null`
+  once it is closed and drained, `c.try_send(x) -> bool`, `c.try_recv() -> ?T`,
+  `c.close()` (wakes blocked threads; values already queued are still received) and
+  `c.deinit()`.
+- Shared memory needs atomics or one of these types; a data race is undefined behavior.
+  Handlers, second-class functions and continuations never cross threads.
 - The default handlers are also available directly, for code that starts without any:
   `heap_allocator()`, `system_io()` (`In`, `Clock`, `Rand`, `Fs`, `Net`) and
   `system_output()` (`Out`, `Err`).
 
-The interpreter runs threads one at a time, switching between them often and whenever
-one blocks, so programs behave as they do compiled, without data races in the
-interpreter itself.
+The synchronization types are built on two intrinsics available to the standard library,
+`@futex_wait(addr, expected, timeout_ns)` and `@futex_wake(addr, n)`. The interpreter
+runs threads one at a time, switching between them often and whenever one blocks, so
+programs behave as they do compiled, without data races in the interpreter itself.
 
 ## `std/c`
 
@@ -614,3 +633,67 @@ for c in bytes(word) {
   alone.
 - `digit_value(c) -> ?u8` is the value of `c` as a digit in a base up to 36: 0 to 9 for
   `0`-`9`, 10 to 35 for `a`-`z` or `A`-`Z`, and `null` for any other byte.
+
+## `std/fiber`
+
+A cooperative round-robin scheduler for fibers (§14), the one sketched in the
+[fibers chapter](guide/12-fibers.md). Tasks run one at a time on the thread that
+installed the scheduler and take turns when they call `yield_now`.
+
+```gamma
+fiber :: import "std/fiber"
+
+worker :: fn(c: ^Counter) \ {fiber.Sched} {
+    c.ticks += 1
+    fiber.yield_now()
+    c.ticks += 1
+}
+
+s := fiber.scheduler()
+defer s.deinit()
+with &s on main_stack {
+    fiber.spawn(Counter, worker, &a, stack_a)
+    fiber.spawn(Counter, worker, &b, stack_b)
+    fiber.join()
+}
+```
+
+- `Sched` is the effect: `yield_now()` puts the task at the back of the queue and runs
+  the next; `exit()` ends the task and `join()` waits until every task has exited (only
+  the code under the `with` joins); `spawn_raw(entry, arg, stack)` is the operation
+  behind `spawn`.
+- `spawn(T, f, arg, stack)` starts a task calling `f(arg)` on `stack`, to run once the
+  current task gives way. The task ends, running its `defer`s, when `f` returns. A few
+  bytes at the start of `stack` hold the task's start-up data. A task performs only
+  `Sched`, so it shares data through the pointer it is given.
+- `Scheduler` is the handler's state, `scheduler()` makes one (keeping the current
+  allocator for its queue of ready tasks) and `deinit(&s)` frees the queue. A scheduler
+  with no ready task when one is needed (a task waiting forever) traps.
+
+## `std/log`
+
+Logging as an effect: code writes records, and the installed handler decides where they
+go and which are wanted. Nothing allocates, truncates or keeps global state.
+
+```gamma
+log :: import "std/log"
+
+with log.ErrLog(min: .Warn) {
+    log.info("starting")                    // dropped
+    log.warn("slow request: {} ms", 250)    // standard error: WARN slow request: 250 ms
+}
+```
+
+- `Level` is `Debug`, `Info`, `Warn` or `Error`, in that order (`<` works).
+- `Log` is the effect: `begin(level) -> bool` says whether the handler wants the record,
+  `write(bytes)` receives the message in pieces and `end()` closes the record.
+- `log(level, template, args)` formats like `print` and writes a record; it formats
+  nothing when `begin` says no. `debug`, `info`, `warn` and `error` are the same with a
+  fixed level.
+- `ErrLog(min: .Info, time: false)` prints `LEVEL message` lines to `Err` (with
+  `2026-10-12T04:38:42Z ` in front when `time` is true, from the `Clock` effect); records
+  below `min` are dropped.
+- `ListLog(list: &out, min: .Debug)` appends the same lines to a `List(u8)`, which is
+  handy in tests; the first allocation failure is kept in its `err` field.
+- `Discard()` wants no records at all.
+- An inner `with` overrides the outer handler for its body.

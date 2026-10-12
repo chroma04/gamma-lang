@@ -1,0 +1,120 @@
+// std/log: logging as an effect.
+//
+// Code writes records with `info`, `warn` and the like, and whoever runs it chooses what
+// happens to them by installing a handler for `Log`: print them to standard error, collect
+// them in a list, or drop them. A record is formatted like `print` does, piece by piece
+// into the handler, so logging allocates nothing, truncates nothing and keeps no global state.
+//
+//     log :: import "std/log"
+//
+//     with log.ErrLog(min: .Warn) {               // handler: records of level Warn and up
+//         log.info("starting")                    // dropped: below the minimum
+//         log.warn("slow request: {} ms", 250)    // WARN slow request: 250 ms
+//     }
+//
+// A handler decides in `begin` whether it wants a record of a given level. Only if it does
+// is the message formatted, so a filtered-out record costs next to nothing.
+
+time :: import "std/time"
+
+/// The importance of a record, from least to most. Levels compare with `<`.
+pub Level :: union { Debug, Info, Warn, Error }
+
+/// Where records go. `log` calls `begin`; if that returns `true` it passes the message to
+/// `write` in pieces and ends the record with `end`.
+pub Log :: effect {
+    begin: fn(level: Level) -> bool
+    write: fn(bytes: []const u8)
+    end: fn()
+}
+
+/// Writes a record of `level`, formatted from `template` and `args` as `print` does.
+pub log :: fn(A: type, level: Level, template :: string, args: A = ()) \ {Log} {
+    if begin(level) {
+        @write(fn(b) => write(b), template, args)
+        end()
+    }
+}
+
+/// Writes a `Debug` record.
+pub debug :: fn(A: type, template :: string, args: A = ()) \ {Log} => log(.Debug, template, args)
+
+/// Writes an `Info` record.
+pub info :: fn(A: type, template :: string, args: A = ()) \ {Log} => log(.Info, template, args)
+
+/// Writes a `Warn` record.
+pub warn :: fn(A: type, template :: string, args: A = ()) \ {Log} => log(.Warn, template, args)
+
+/// Writes an `Error` record.
+pub error :: fn(A: type, template :: string, args: A = ()) \ {Log} => log(.Error, template, args)
+
+// The upper-case name of a level, as written in a line.
+name :: fn(level: Level) -> string {
+    return match level {
+        .Debug => "DEBUG"
+        .Info => "INFO"
+        .Warn => "WARN"
+        .Error => "ERROR"
+    }
+}
+
+/// A handler that prints records of level `min` and above to standard error, one per line:
+/// `INFO message`, or `2026-10-12T04:38:42Z INFO message` when `time` is true (the current
+/// UTC time from the `Clock` effect, to the second).
+pub ErrLog :: struct {
+    pub min: Level = .Info
+    pub time: bool = false
+}
+
+handler Log for ^ErrLog \ {Err, Clock} {
+    begin(self, level) => {
+        if level < self.min { return false }
+        if self.time {
+            now := time.from_unix(wall())
+            now.nanosecond = 0
+            buf: [time.RFC3339_LEN]u8 = ---
+            write_err(time.format_rfc3339(now, buf[..]))
+            write_err(" ")
+        }
+        write_err(name(level))
+        write_err(" ")
+        return true
+    }
+    write(self, bytes) => write_err(bytes)
+    end(self) => write_err("\n")
+}
+
+/// A handler that appends records of level `min` and above to `list`, one line each, as
+/// `INFO message`. The first allocation failure is kept in `err` and later output is dropped.
+pub ListLog :: struct {
+    pub list: ^List(u8)
+    pub min: Level = .Debug
+    pub err: ?AllocError = null
+}
+
+add :: fn(l: ^ListLog, bytes: []const u8) {
+    if l.err is not null { return }
+    l.list.extend(bytes) else e => {
+        l.err = e
+    }
+}
+
+handler Log for ^ListLog {
+    begin(self, level) => {
+        if level < self.min { return false }
+        add(self, name(level))
+        add(self, " ")
+        return true
+    }
+    write(self, bytes) => add(self, bytes)
+    end(self) => add(self, "\n")
+}
+
+/// A handler that wants no records: nothing is formatted or written.
+pub Discard :: struct {}
+
+handler Log for ^Discard {
+    begin(self, level) => false
+    write(self, bytes) => {}
+    end(self) => {}
+}

@@ -1225,13 +1225,14 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (i, (a, t)) in args.iter().zip(params).enumerate() {
                     let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
                     if op == tir::SysOp::ThreadSpawn && i == 0 {
-                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6).
+                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6);
+                        // a typed `^T` argument has the same representation as `rawptr`.
                         let v = self.expr(e, None);
                         let vt = self.infer.resolve(v.ty);
                         let ok = match vt.kind() {
                             TyKind::FnPtr(sig) => {
                                 sig.params.len() == 1
-                                    && matches!(sig.params[0].kind(), TyKind::Rawptr)
+                                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
                                     && sig.ret.is_unit()
                                     && self.sema.within_sys(&sig.effects)
                                     && sig.callconv == CallConv::C

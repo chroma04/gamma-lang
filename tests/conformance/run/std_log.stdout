@@ -1,0 +1,17 @@
+DEBUG starting
+INFO loaded 3 items from cache
+WARN slow: 250 ms
+ERROR failed with code -2
+INFO explicit level true
+-- warn and up
+WARN slow: 250 ms
+ERROR failed with code -2
+-- discard: 0 bytes
+-- nested outer
+INFO outer first
+INFO outer last
+-- nested inner
+ERROR inner error
+true false true
+INFO plain
+WARN 
