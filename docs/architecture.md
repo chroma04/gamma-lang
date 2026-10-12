@@ -402,6 +402,15 @@ return. After each call that may exit this way, the caller tests the record and
 runs its *ladder*: the pending deferred statements from the innermost scope
 outwards, with a test at each loop and `with` for whether it is the exit's
 target. A deferred statement run by a ladder sets the exit aside while it runs.
+The ladder exists once per function, not once per exit: each scope ends with
+its rung, reached only by `goto`, which runs that scope's part and jumps to the
+rung of the enclosing scope (a block's rung has an entry per deferred
+statement, so an exit runs only those registered before it). An exit is then a
+single `goto`, and every deferred statement is emitted at most twice (its
+normal run and its rung), which keeps the C functions of code with many calls
+and `defer`s small; C compilers, Fil-C's especially, are slow on huge
+functions. An exit within the function that crosses a deferred statement takes
+the ladder too.
 The test after a call reads the thread-local exit record. Returning the exit as
 a flag next to the result instead (Appendix D.2) was measured on a recursive
 effectful function: about 15% faster with gcc and 25% slower with clang, which
@@ -552,6 +561,13 @@ make Fil-C accept and preserve the program's pointers.
   with `void*` lanes, so copying it keeps the capabilities of the pointers
   inside. This is also why a pointer rebuilt from bytes written as integers
   grants nothing.
+- **Typed accesses.** `GM_LD` and `GM_ST` load and store through a packed
+  struct instead of `memcpy`. Under Fil-C a `memcpy` is a call into its runtime,
+  and one on a local's address makes the local (in practice the whole frame
+  `F`) escape to the garbage-collected heap, which cost a heap allocation per
+  call. An address turned into a pointer (`to_ptr`, `GM_INT_TO_PTR`) passes
+  through an empty `asm`, so the optimizer cannot fold it back into the pointer
+  it came from and its capability.
 - **`_Float16`.** Fil-C 0.686 miscompiles the conversion libcalls, so
   conversions use a software routine and the build adds `-mf16c`.
 - **Debug information.** The gdb script section (top-level `asm`) is skipped.
