@@ -1,0 +1,178 @@
+// std/text: Unicode text segmentation.
+//
+// A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
+// each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
+// allocate, and the strings they return are slices of their argument, so ill-formed
+// bytes come back unchanged.
+//
+//     text :: import "std/text"
+//     for g in text.graphemes("e\u{301}🇫🇷") { … }   // "e\u{301}", then "🇫🇷"
+//
+// Grapheme clusters are the extended grapheme clusters of Unicode Standard Annex #29,
+// "Unicode Text Segmentation", for the Unicode version in `UNICODE_VERSION`.
+
+// The grapheme class of a code point (`CLASS_RUNS`, generated in tables.gm). The rules
+// of UAX #29 use the Grapheme_Cluster_Break, Extended_Pictographic and
+// Indic_Conjunct_Break properties; each class is one combination of them.
+CLASS_OTHER :: 0
+CLASS_CR :: 1
+CLASS_LF :: 2
+CLASS_CONTROL :: 3
+CLASS_EXTEND :: 4 // Extend, and not an Indic_Conjunct_Break extender
+CLASS_EXTEND_INCB :: 5 // Extend, and Indic_Conjunct_Break=Extend
+CLASS_LINKER :: 6 // Extend, and Indic_Conjunct_Break=Linker
+CLASS_ZWJ :: 7 // also Indic_Conjunct_Break=Extend
+CLASS_RI :: 8 // Regional_Indicator
+CLASS_PREPEND :: 9
+CLASS_SPACING_MARK :: 10
+CLASS_L :: 11
+CLASS_V :: 12
+CLASS_T :: 13
+CLASS_LV :: 14
+CLASS_LVT :: 15
+CLASS_PICTOGRAPHIC :: 16 // Extended_Pictographic
+CLASS_CONSONANT :: 17 // Indic_Conjunct_Break=Consonant
+
+// The grapheme class of `r`.
+class_of :: fn(r: rune) -> u8 {
+    // The last run that starts at or before `r`.
+    key := (r << 8) | 0xff
+    lo: usize = 0
+    hi := CLASS_RUNS.len
+    while hi - lo > 1 {
+        mid := lo + (hi - lo) / 2
+        if CLASS_RUNS[mid] <= key { lo = mid } else { hi = mid }
+    }
+    c := CLASS_RUNS[lo].trunc(u8)
+    // The table gives every Hangul syllable as LVT; one in 28 is LV.
+    if c is CLASS_LVT and (r - 0xac00) % 28 is 0 { return CLASS_LV }
+    return c
+}
+
+// The code point at byte `i` of `s` (with `i < s.len`) and the number of bytes it
+// takes. A maximal ill-formed subsequence is U+FFFD and takes its own length.
+decode :: fn(s: string, i: usize) -> (r: rune, len: usize) {
+    b := s[i]
+    if b < 0x80 { return (r: rune(b), len: 1) }
+    // The number of continuation bytes, and the range of the first of them.
+    n: usize = 0
+    lo: u8 = 0x80
+    hi: u8 = 0xbf
+    c: rune = 0
+    if b >= 0xc2 and b <= 0xdf {
+        n = 1
+        c = rune(b & 0x1f)
+    } else if b >= 0xe0 and b <= 0xef {
+        n = 2
+        c = rune(b & 0x0f)
+        if b is 0xe0 { lo = 0xa0 }
+        if b is 0xed { hi = 0x9f }
+    } else if b >= 0xf0 and b <= 0xf4 {
+        n = 3
+        c = rune(b & 0x07)
+        if b is 0xf0 { lo = 0x90 }
+        if b is 0xf4 { hi = 0x8f }
+    } else {
+        return (r: 0xfffd, len: 1)
+    }
+    k: usize = 1
+    while k <= n {
+        if i + k >= s.len { break }
+        d := s[i + k]
+        if d < lo or d > hi { break }
+        c = (c << 6) | rune(d & 0x3f)
+        lo = 0x80
+        hi = 0xbf
+        k += 1
+    }
+    if k > n { return (r: c, len: k) }
+    return (r: 0xfffd, len: k)
+}
+
+is_control :: fn(c: u8) -> bool => c is CLASS_CR or c is CLASS_LF or c is CLASS_CONTROL
+
+is_extend :: fn(c: u8) -> bool => c is CLASS_EXTEND or c is CLASS_EXTEND_INCB or c is CLASS_LINKER
+
+/// The byte length of the first grapheme cluster of `s`: 0 if `s` is empty, and at
+/// least 1 otherwise. `s[0..grapheme_len(s)]` is the cluster.
+pub grapheme_len :: fn(s: string) -> usize {
+    if s.len is 0 { return 0 }
+    first := decode(s, 0)
+    i := first.len
+    prev := class_of(first.r)
+    // What the cluster so far ends with, for the rules that look further back than
+    // `prev`. `ri`: the number of regional indicators in a row (GB12, GB13).
+    // `emoji`: 1 after an Extended_Pictographic and Extends, 2 after those and a ZWJ
+    // (GB11). `incb`: 1 after an Indic_Conjunct_Break consonant and extenders, 2 if a
+    // linker is among those extenders (GB9c).
+    ri: usize = 0
+    emoji: u8 = 0
+    incb: u8 = 0
+    if prev is CLASS_RI { ri = 1 }
+    if prev is CLASS_PICTOGRAPHIC { emoji = 1 }
+    if prev is CLASS_CONSONANT { incb = 1 }
+    while i < s.len {
+        d := decode(s, i)
+        next := class_of(d.r)
+        join := false
+        if prev is CLASS_CR and next is CLASS_LF {
+            join = true // GB3
+        } else if is_control(prev) or is_control(next) {
+            join = false // GB4, GB5
+        } else if prev is CLASS_L {
+            join = next is CLASS_L or next is CLASS_V or next is CLASS_LV or next is CLASS_LVT // GB6
+        } else if (prev is CLASS_LV or prev is CLASS_V) and (next is CLASS_V or next is CLASS_T) {
+            join = true // GB7
+        } else if (prev is CLASS_LVT or prev is CLASS_T) and next is CLASS_T {
+            join = true // GB8
+        }
+        if not join and not is_control(prev) and not is_control(next) {
+            if is_extend(next) or next is CLASS_ZWJ or next is CLASS_SPACING_MARK {
+                join = true // GB9, GB9a
+            } else if prev is CLASS_PREPEND {
+                join = true // GB9b
+            } else if next is CLASS_CONSONANT and incb is 2 {
+                join = true // GB9c
+            } else if next is CLASS_PICTOGRAPHIC and emoji is 2 {
+                join = true // GB11
+            } else if next is CLASS_RI and ri % 2 is 1 {
+                join = true // GB12, GB13
+            }
+        }
+        if not join { break } // GB999
+        if next is CLASS_RI { ri += 1 } else { ri = 0 }
+        if next is CLASS_PICTOGRAPHIC {
+            emoji = 1
+        } else if emoji is 1 and is_extend(next) {
+            emoji = 1
+        } else if emoji is 1 and next is CLASS_ZWJ {
+            emoji = 2
+        } else {
+            emoji = 0
+        }
+        if next is CLASS_CONSONANT {
+            incb = 1
+        } else if incb > 0 and next is CLASS_LINKER {
+            incb = 2
+        } else if incb > 0 and (next is CLASS_EXTEND_INCB or next is CLASS_ZWJ) {
+            // An extender keeps what came before.
+        } else {
+            incb = 0
+        }
+        prev = next
+        i += d.len
+    }
+    return i
+}
+
+/// The grapheme clusters of `s`, in order: what a reader sees as one character, such
+/// as `e` with a combining accent, a flag, or an emoji sequence joined with ZWJs. `\r\n`
+/// is one cluster. Every byte of `s` is in exactly one cluster.
+pub graphemes :: fn(s: string) \ {Yield(string)} {
+    rest := s
+    while rest.len > 0 {
+        n := grapheme_len(rest)
+        yield(rest[0..n])
+        rest = rest[n..rest.len]
+    }
+}

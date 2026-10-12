@@ -74,6 +74,8 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/cgen/` | the C back end (see below) |
 | `runtime/` | the C runtime of compiled programs, embedded in the compiler |
 | `lib/core/` | the parts of the core library written in Gamma, embedded in the compiler |
+| `lib/std/` | the rest of the standard library (see `docs/std.md`) |
+| `tools/` | generators for checked-in files (the Unicode tables of `std/text`) |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
 
@@ -286,12 +288,32 @@ the value can later be placed in a compiled program's read-only data.
 
 ## The C back end
 
-`gamma build` and `gamma run --backend=c` translate the checked program to one
-C translation unit (`src/cgen/`), prefixed by the runtime (`runtime/gm_rt.h`,
-`runtime/gm_rt.c`), and compile it with the system C compiler (`$CC`, default
-`cc`) in GNU C11 mode. The generated code follows the interpreter exactly, and
-the conformance runner checks this: every `run` test also runs natively and
-must print the same output and exit with the same status.
+`gamma build` and `gamma run --backend=c` translate the checked program to C
+(`src/cgen/`) and compile it, with the runtime (`runtime/gm_rt.h`,
+`runtime/gm_rt.c`), using the system C compiler (`$CC`, default `cc`) in GNU C11
+mode. The generated code follows the interpreter exactly, and the conformance
+runner checks this: every `run` test also runs natively and must print the same
+output and exit with the same status.
+
+How the runtime is linked depends on the build mode:
+
+- Checked and Fast builds are one translation unit, the runtime followed by the
+  generated code, compiled at `-O2`. Everything in the runtime is `static`, so
+  the optimizer sees the whole program and drops what it does not use.
+- Debug builds favor turnaround. Compiling the runtime is most of the work of
+  compiling a small program, so it is compiled once on its own (with
+  `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
+  linkage), cached, and linked with each program; the generated code includes
+  only `gm_rt.h` and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
+  this halves the C compiler's time, while the programs run about as fast; `-O0`
+  would compile faster again but run several times slower. The cache
+  (`src/cgen/rtcache.rs`) is the directory `$GAMMA_CACHE_DIR` (an empty value
+  turns it off), else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`
+  (`~/Library/Caches/gamma` on macOS). An object's name is a hash of the runtime
+  source, the compiler's command and `--version` output, and the flags, so a
+  changed runtime or compiler gets a new object. Without a usable cache, a Debug
+  build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
+  into Cargo's target directory.
 
 The generated `main` runs the program's entry function on a thread with a 64 MiB
 stack (`gm_run_main`), so recursion depth does not depend on the host's default
@@ -392,14 +414,28 @@ sanitizer reports, refer to `.gm` lines; each generated function ends with a
 directive that returns to the C file's own numbering. A directive per C line is
 needed because one numbers the lines after it consecutively, while a statement
 usually takes several C lines. Each frame field is an anonymous union of its `lN`
-name and the Gamma name of the local (typed with the struct mirror where the
-type has one), and mirrors name their fields after the Gamma fields, so a
-debugger prints `F.p.x`. The generated code never refers to these names, but
+name and the Gamma name of the local, typed with the type's *debugger view*
+(`src/cgen/views.rs`), so a debugger prints `F.p.x`. A view is a C type with the
+exact layout of the Gamma value but with named, typed members: struct fields by
+name, tuple elements as `_0`, `_1`…, a tagged union as a `tag` of a C enum
+(`Shape_Circle`) plus an anonymous union with a member per payload, an optional as
+`value` and `present`, a result as `is_err`, `ok` and `err`, a slice as a typed
+`ptr` and `len`, pointers as pointers to views, `bool` as `_Bool`. Views are packed
+structs with members at the Gamma offsets and unnamed bit-fields as padding (which
+debuggers skip), so their size is the value's and their alignment 1: they never
+change the frame's layout, and a `_Static_assert` checks each size. Views reached
+only through a pointer are declared after the view that points at them, so
+recursive types work. On ELF targets the executable also carries gdb pretty
+printers (`src/cgen/gdb_printers.py`) in its `.debug_gdb_scripts` section; they
+recognize views by the suffix of their struct tag (`gm_dv3_union`, `_slice`,
+`_string`, `_optional`, `_result`) and show the active variant only, slice
+elements, string text, `null` and `!error`. The generated code never refers to these names, but
 they may be macros of system headers (`linux`, `st_mtime`), so the declarations
 that contain them suspend such macros with `#pragma push_macro`. Locals that
 share a name, and names that are C keywords or reserved, keep only their `lN`
 name. A Debug build with `-g` is compiled with `-O0` so that every local is
-visible; Checked and Fast builds keep `-O2`.
+visible (the cached runtime object is compiled with `-g -O2`); Checked and Fast
+builds keep `-O2`.
 
 **Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
 and AArch64 that save the callee-saved registers. The body of a `with … on` is

@@ -1,6 +1,6 @@
 # Open implementation bugs (dogfooding, session 2). Delete entries when fixed.
 7. (perf) C big values: s6 gm_out results + in-place construction + borrowed params of pure
-   fns (decisions/014). Left: nested aggregate elements still go through a temp; gcc SRA is weak
+   fns (decisions/015). Left: nested aggregate elements still go through a temp; gcc SRA is weak
    on uint8_t-array blobs (bigcopy bench: gcc 1.9 s vs clang 0.13 s).
 10. Usability: std/str + HashMap.get_ptr/get_or_put done; templates from comptime params done
     (WriteDeferred resolved in mono). Remaining: integer sign/abs helpers; print width specs

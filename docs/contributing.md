@@ -97,12 +97,23 @@ changed.
 
 Every `run` test that expects no errors also runs through the C back end and
 must produce the same output and exit status as with the interpreter. This
-needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it. The C
+needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
+`GAMMA_TEST_DEBUG_INFO=1` to build every such program with `-g` (worth doing after
+changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
 
 When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs
 that check each compile error the section requires.
+
+## Generated files
+
+`lib/std/text/tables.gm` and the conformance test `tests/conformance/run/std_text_ucd.gm`
+are generated from the Unicode Character Database by `tools/gen_text_tables.py` (Python 3,
+standard library only). To move to a new Unicode version, download the files the script
+lists from `https://www.unicode.org/Public/<version>/ucd/` and run it from the
+repository root with the download directory as its argument. It checks the assumptions
+`std/text` makes about the properties and fails if a new version breaks them.
 
 ## The specification
 

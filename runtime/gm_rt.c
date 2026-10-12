@@ -1,10 +1,19 @@
 /* The runtime of programs compiled by the Gamma C back end: implementations of the
- * declarations in gm_rt.h. The compiler emits gm_rt.h, then this file, then the generated
- * code, as one translation unit, so this file includes nothing itself.
+ * declarations in gm_rt.h. The compiler puts gm_rt.h before this file (and the generated
+ * code after it, unless GM_RT_SEPARATE is defined), so this file includes nothing itself.
  *
  * Observable behavior (trap output, value display, heap diagnostics) mirrors the reference
  * interpreter byte for byte.
  */
+
+/* Definitions of the variables declared in gm_rt.h (gm_checks is the generated code's). */
+GM_API _Thread_local gm_bt *gm_bt_top;
+GM_API pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
+GM_API int gm_debug = 1;
+GM_API _Thread_local gm_unwind gm_unw;
+GM_API _Thread_local gm_fiber *gm_cur_fiber;
+GM_API _Thread_local uintptr_t gm_stack_limit;
+GM_API _Thread_local uintptr_t gm_thread_stack_limit;
 
 /* ---- traps ---------------------------------------------------------------- */
 
@@ -27,7 +36,7 @@ static void gm_backtrace(void) {
     }
 }
 
-static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
     gm_flush();
     fputs("trap: ", stderr);
     if (len > 0) fwrite(msg, 1, len, stderr);
@@ -43,13 +52,13 @@ static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *
     exit(134);
 }
 
-static _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col) {
+GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col) {
     gm_trap_bytes((const uint8_t *)msg, strlen(msg), file, line, col);
 }
 
 /* ---- growable byte buffer --------------------------------------------------- */
 
-static void gm_buf_push(gm_buf *b, const void *data, size_t len) {
+GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {
     if (len == 0) return;
     if (len > SIZE_MAX - b->len) gm_trap("out of memory", NULL, 0, 0);
     size_t need = b->len + len;
@@ -71,7 +80,7 @@ static void gm_buf_push(gm_buf *b, const void *data, size_t len) {
     b->len = need;
 }
 
-static void gm_buf_free(gm_buf *b) {
+GM_API void gm_buf_free(gm_buf *b) {
     free(b->data);
     b->data = NULL;
     b->len = b->cap = 0;
@@ -136,7 +145,7 @@ static uint32_t gm_wbitlen(const uint8_t *a, uint32_t bits, bool sgn, bool inv) 
     return 0;
 }
 
-static bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     unsigned k = bits & 63;
     uint64_t carry = 0, x = 0, y = 0, s = 0;
@@ -154,7 +163,7 @@ static bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bit
     return ovf;
 }
 
-static bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     unsigned k = bits & 63;
     uint64_t borrow = 0, x = 0, y = 0, s = 0;
@@ -173,7 +182,7 @@ static bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bit
     return ovf;
 }
 
-static bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     unsigned k = bits & 63;
     uint64_t borrow = 0, x = 0, s = 0;
@@ -221,7 +230,7 @@ static uint32_t gm_wwords_bitlen(const uint64_t *w, size_t n) {
 
 static bool gm_wwords_zero(const uint64_t *w, size_t n) { return gm_wwords_bitlen(w, n) == 0; }
 
-static bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     uint64_t stack[4 * GM_WSTACK];
     uint64_t *buf = gm_wscratch(stack, 4 * GM_WSTACK, 4 * n);
@@ -307,7 +316,7 @@ static void gm_wudivmod(uint64_t *q, uint64_t *rm, const uint64_t *a, const uint
     }
 }
 
-static int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     uint64_t stack[4 * GM_WSTACK];
     uint64_t *buf = gm_wscratch(stack, 4 * GM_WSTACK, 4 * n);
@@ -337,7 +346,7 @@ static int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, 
     return status;
 }
 
-static bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn) {
+GM_API bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn) {
     size_t sz = GM_WBYTES(bits);
     uint64_t stack[2 * GM_WSTACK];
     uint64_t *buf = gm_wscratch(stack, 2 * GM_WSTACK, 2 * (sz / 8));
@@ -357,31 +366,31 @@ static bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, boo
     return ovf;
 }
 
-static void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = 0; i < n; i++) gm_wput(r, i, ~gm_wget(a, i, n, bits, sgn));
     gm_wfix(r, bits, sgn);
 }
 
-static void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = 0; i < n; i++) gm_wput(r, i, gm_wget(a, i, n, bits, sgn) & gm_wget(b, i, n, bits, sgn));
     gm_wfix(r, bits, sgn);
 }
 
-static void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = 0; i < n; i++) gm_wput(r, i, gm_wget(a, i, n, bits, sgn) | gm_wget(b, i, n, bits, sgn));
     gm_wfix(r, bits, sgn);
 }
 
-static void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = 0; i < n; i++) gm_wput(r, i, gm_wget(a, i, n, bits, sgn) ^ gm_wget(b, i, n, bits, sgn));
     gm_wfix(r, bits, sgn);
 }
 
-static bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn) {
+GM_API bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     /* The value must still fit in the bits that remain. */
     uint32_t need = sgn ? gm_wbitlen(a, bits, true, gm_wisneg(a, bits, sgn)) + 1 : gm_wbitlen(a, bits, false, false);
@@ -401,7 +410,7 @@ static bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bo
     return ovf;
 }
 
-static void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn) {
+GM_API void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     uint64_t fill = gm_wisneg(a, bits, sgn) ? ~(uint64_t)0 : 0;
     size_t ws = sh / 64;
@@ -414,7 +423,7 @@ static void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bo
     gm_wfix(r, bits, sgn);
 }
 
-static uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits) {
+GM_API uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits) {
     size_t n = GM_WORDS(abits);
     for (size_t i = 1; i < n; i++) {
         if (gm_wget(amt, i, n, abits, false) != 0) return UINT64_MAX;
@@ -422,7 +431,7 @@ static uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits) {
     return gm_wget(amt, 0, n, abits, false);
 }
 
-static _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
+GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
                                     uint32_t line, uint32_t col) {
     gm_buf m = {0};
     gm_buf_push(&m, "shift amount ", 13);
@@ -432,7 +441,7 @@ static _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const ch
     gm_trap_bytes(m.data, m.len, file, line, col);
 }
 
-static int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
+GM_API int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = n; i > 0; i--) {
         uint64_t x = gm_wget(a, i - 1, n, bits, sgn), y = gm_wget(b, i - 1, n, bits, sgn);
@@ -443,18 +452,18 @@ static int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) 
     return 0;
 }
 
-static int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn) {
     if (gm_wisneg(a, bits, sgn)) return -1;
     return gm_wbitlen(a, bits, sgn, false) == 0 ? 0 : 1;
 }
 
-static void gm_wmin(uint8_t *r, uint32_t bits, bool sgn) {
+GM_API void gm_wmin(uint8_t *r, uint32_t bits, bool sgn) {
     memset(r, 0, GM_WBYTES(bits));
     if (sgn) r[(bits - 1) / 8] |= (uint8_t)(1u << ((bits - 1) % 8));
     gm_wfix(r, bits, sgn);
 }
 
-static void gm_wmax(uint8_t *r, uint32_t bits, bool sgn) {
+GM_API void gm_wmax(uint8_t *r, uint32_t bits, bool sgn) {
     memset(r, 0xff, GM_WBYTES(bits));
     if (sgn) r[(bits - 1) / 8] &= (uint8_t)~(1u << ((bits - 1) % 8));
     gm_wfix(r, bits, sgn);
@@ -474,7 +483,7 @@ static uint8_t gm_wbyte(const uint8_t *a, uint32_t bits, bool neg, size_t i) {
     return v;
 }
 
-static int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
+GM_API int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
                     uint32_t abits, bool asgn) {
     bool neg = asgn && gm_wbit(a, abits - 1);
     for (size_t i = 0; i < rsize; i++) r[i] = gm_wbyte(a, abits, neg, i);
@@ -501,7 +510,7 @@ static int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const u
     return (fits ? 1 : 0) | (neg ? 2 : 0);
 }
 
-static double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant) {
+GM_API double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant) {
     size_t n = GM_WORDS(bits);
     uint64_t stack[GM_WSTACK];
     uint64_t *m = gm_wscratch(stack, GM_WSTACK, n);
@@ -532,7 +541,7 @@ static double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant) 
     return neg ? -result : result;
 }
 
-static int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x) {
+GM_API int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x) {
     size_t sz = GM_WBYTES(bits);
     memset(r, 0, sz);
     if (x != x) return 3;
@@ -568,9 +577,9 @@ static int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x) {
     return 0;
 }
 
-static uint32_t gm_wclz(const uint8_t *a, uint32_t bits) { return bits - gm_wbitlen(a, bits, false, false); }
+GM_API uint32_t gm_wclz(const uint8_t *a, uint32_t bits) { return bits - gm_wbitlen(a, bits, false, false); }
 
-static uint32_t gm_wctz(const uint8_t *a, uint32_t bits) {
+GM_API uint32_t gm_wctz(const uint8_t *a, uint32_t bits) {
     size_t n = GM_WORDS(bits);
     for (size_t i = 0; i < n; i++) {
         uint64_t w = gm_wget(a, i, n, bits, false);
@@ -579,14 +588,14 @@ static uint32_t gm_wctz(const uint8_t *a, uint32_t bits) {
     return bits;
 }
 
-static uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits) {
+GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits) {
     size_t n = GM_WORDS(bits);
     uint32_t c = 0;
     for (size_t i = 0; i < n; i++) c += (uint32_t)__builtin_popcountll(gm_wget(a, i, n, bits, false));
     return c;
 }
 
-static void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits) {
+GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits) {
     size_t sz = GM_WBYTES(bits);
     for (size_t i = 0; i < sz / 2; i++) {
         uint8_t x = a[i], y = a[sz - 1 - i];
@@ -595,7 +604,7 @@ static void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits) {
     }
 }
 
-static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t sz = GM_WBYTES(bits);
     uint64_t stack[GM_WSTACK];
     uint64_t *t = gm_wscratch(stack, GM_WSTACK, sz / 8);
@@ -609,7 +618,7 @@ static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn
     gm_wscratch_free(t, stack);
 }
 
-static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k) {
+GM_API void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k) {
     size_t sz = GM_WBYTES(bits);
     uint64_t stack[GM_WSTACK];
     uint64_t *t = gm_wscratch(stack, GM_WSTACK, sz / 8);
@@ -625,7 +634,7 @@ static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint
     gm_wscratch_free(t, stack);
 }
 
-static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     bool neg = gm_wisneg(a, bits, sgn);
     /* As BigInt::to_signed_bytes_le: the fewest bytes holding the value in two's complement. */
@@ -638,7 +647,7 @@ static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn) 
     return h;
 }
 
-static void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn) {
+GM_API void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     uint64_t stack[GM_WSTACK];
     uint64_t *w = gm_wscratch(stack, GM_WSTACK, 2 * n + 2);
@@ -999,7 +1008,7 @@ static void gm_fmt_fields(gm_buf *out, const gm_type *t, const uint8_t *v) {
     }
 }
 
-static void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
+GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     const uint8_t *v = (const uint8_t *)vp;
     switch (t->kind) {
     case GM_K_INT: gm_fmt_int(out, t, v); break;
@@ -1139,22 +1148,22 @@ static void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
 
 /* ---- ambient effects ---------------------------------------------------------- */
 
-static void gm_write_out(const uint8_t *p, size_t len) {
+GM_API void gm_write_out(const uint8_t *p, size_t len) {
     if (len > 0) fwrite(p, 1, len, stdout);
 }
 
-static void gm_write_err(const uint8_t *p, size_t len) {
+GM_API void gm_write_err(const uint8_t *p, size_t len) {
     if (len > 0) fwrite(p, 1, len, stderr);
     fflush(stderr);
 }
 
-static void gm_flush(void) { fflush(stdout); }
+GM_API void gm_flush(void) { fflush(stdout); }
 
 typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
 static gm_rt_str *gm_rt_args;
 static size_t gm_rt_argc;
 
-static void gm_set_args(int argc, char **argv) {
+GM_API void gm_set_args(int argc, char **argv) {
     if (gm_rt_args != NULL || argc <= 0) return;
     gm_rt_args = (gm_rt_str *)malloc((size_t)argc * sizeof(gm_rt_str));
     if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
@@ -1165,12 +1174,12 @@ static void gm_set_args(int argc, char **argv) {
     gm_rt_argc = (size_t)argc;
 }
 
-static const void *gm_args(size_t *count) {
+GM_API const void *gm_args(size_t *count) {
     *count = gm_rt_argc;
     return gm_rt_args;
 }
 
-static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
     char *key = (char *)malloc(len + 1);
     if (key == NULL) gm_trap("out of memory", NULL, 0, 0);
     if (len > 0) memcpy(key, name, len);
@@ -1185,7 +1194,7 @@ static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
 
 /* ---- system services ---------------------------------------------------------------- */
 
-static int64_t gm_io_error(int err) {
+GM_API int64_t gm_io_error(int err) {
     switch (err) {
     case ENOENT: return -1;
     case EACCES: case EPERM: return -2;
@@ -1201,7 +1210,7 @@ static int64_t gm_io_error(int err) {
     }
 }
 
-static int64_t gm_sys_read(void *p, size_t n) {
+GM_API int64_t gm_sys_read(void *p, size_t n) {
     gm_flush();
     for (;;) {
         ssize_t r = read(0, p, n);
@@ -1210,25 +1219,25 @@ static int64_t gm_sys_read(void *p, size_t n) {
     }
 }
 
-static uint64_t gm_clock_now(void) {
+GM_API uint64_t gm_clock_now(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
 }
 
-static int64_t gm_clock_wall(void) {
+GM_API int64_t gm_clock_wall(void) {
     struct timespec t;
     clock_gettime(CLOCK_REALTIME, &t);
     return (int64_t)t.tv_sec * 1000000000 + (int64_t)t.tv_nsec;
 }
 
-static void gm_clock_sleep(uint64_t ns) {
+GM_API void gm_clock_sleep(uint64_t ns) {
     gm_flush();
     struct timespec t = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)}, rest;
     while (nanosleep(&t, &rest) != 0 && errno == EINTR) t = rest;
 }
 
-static void gm_rand_fill(void *vp, size_t n) {
+GM_API void gm_rand_fill(void *vp, size_t n) {
     static int fd = -1;
     uint8_t *p = (uint8_t *)vp;
     pthread_mutex_lock(&gm_rt_lock);
@@ -1257,7 +1266,7 @@ static char *gm_path(const void *p, size_t n) {
 
 #define GM_RET_ERR(cond) ((cond) ? gm_io_error(errno) : 0)
 
-static int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     int rw = (flags & GM_FS_READ) && (flags & (GM_FS_WRITE | GM_FS_APPEND)) ? O_RDWR
@@ -1273,9 +1282,9 @@ static int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
     return fd < 0 ? gm_io_error(err) : (int64_t)fd;
 }
 
-static int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(close((int)f) != 0); }
+GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(close((int)f) != 0); }
 
-static int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
     for (;;) {
         ssize_t r = read((int)f, p, n);
         if (r >= 0) return (int64_t)r;
@@ -1283,7 +1292,7 @@ static int64_t gm_fs_read(int64_t f, void *p, size_t n) {
     }
 }
 
-static int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
     for (;;) {
         ssize_t r = write((int)f, p, n);
         if (r >= 0) return (int64_t)r;
@@ -1291,13 +1300,13 @@ static int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
     }
 }
 
-static int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
     if (whence > 2 || (whence == 0 && offset < 0)) return gm_io_error(EINVAL);
     off_t r = lseek((int)f, (off_t)offset, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END);
     return r < 0 ? gm_io_error(errno) : (int64_t)r;
 }
 
-static int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     struct stat st;
@@ -1327,11 +1336,11 @@ static int64_t gm_path_call(const void *path, size_t len, int (*f)(const char *)
 
 static int gm_mkdir(const char *s) { return mkdir(s, 0777); }
 
-static int64_t gm_fs_remove(const void *path, size_t len) { return gm_path_call(path, len, unlink); }
-static int64_t gm_fs_make_dir(const void *path, size_t len) { return gm_path_call(path, len, gm_mkdir); }
-static int64_t gm_fs_remove_dir(const void *path, size_t len) { return gm_path_call(path, len, rmdir); }
+GM_API int64_t gm_fs_remove(const void *path, size_t len) { return gm_path_call(path, len, unlink); }
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len) { return gm_path_call(path, len, gm_mkdir); }
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len) { return gm_path_call(path, len, rmdir); }
 
-static int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
     char *a = gm_path(from, from_len), *b = gm_path(to, to_len);
     int r = a && b ? rename(a, b) : -1;
     int err = a && b ? errno : EINVAL;
@@ -1343,7 +1352,7 @@ static int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, s
 static DIR **gm_dirs;
 static size_t gm_ndirs;
 
-static int64_t gm_fs_open_dir(const void *path, size_t len) {
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     DIR *d = opendir(s);
@@ -1372,7 +1381,7 @@ static DIR *gm_dir(int64_t d) {
     return dir;
 }
 
-static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
     DIR *dir = gm_dir(d);
     if (dir == NULL) return gm_io_error(EBADF);
     for (;;) {
@@ -1387,7 +1396,7 @@ static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
     }
 }
 
-static int64_t gm_fs_close_dir(int64_t d) {
+GM_API int64_t gm_fs_close_dir(int64_t d) {
     DIR *dir = gm_dir(d);
     if (dir == NULL) return gm_io_error(EBADF);
     pthread_mutex_lock(&gm_rt_lock);
@@ -1430,7 +1439,7 @@ static int gm_socket(const struct addrinfo *a) {
     return fd;
 }
 
-static int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
     int64_t err = 0;
     struct addrinfo *res = gm_resolve(host, len, port, false, &err);
     if (res == NULL) return err;
@@ -1449,7 +1458,7 @@ static int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
     return fd < 0 ? gm_io_error(e) : (int64_t)fd;
 }
 
-static int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
     int64_t err = 0;
     struct addrinfo *res = gm_resolve(host, len, port, true, &err);
     if (res == NULL) return err;
@@ -1468,7 +1477,7 @@ static int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
     return fd < 0 ? gm_io_error(e) : (int64_t)fd;
 }
 
-static int64_t gm_net_local_port(int64_t h) {
+GM_API int64_t gm_net_local_port(int64_t h) {
     struct sockaddr_storage a;
     socklen_t n = sizeof a;
     if (getsockname((int)h, (struct sockaddr *)&a, &n) != 0) return gm_io_error(errno);
@@ -1477,7 +1486,7 @@ static int64_t gm_net_local_port(int64_t h) {
     return gm_io_error(EINVAL);
 }
 
-static int64_t gm_net_accept(int64_t h) {
+GM_API int64_t gm_net_accept(int64_t h) {
     for (;;) {
         int fd = accept((int)h, NULL, NULL);
         if (fd >= 0) {
@@ -1491,7 +1500,7 @@ static int64_t gm_net_accept(int64_t h) {
     }
 }
 
-static int64_t gm_net_send(int64_t h, const void *p, size_t n) {
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
 #if defined(MSG_NOSIGNAL)
     int flags = MSG_NOSIGNAL;
 #else
@@ -1504,7 +1513,7 @@ static int64_t gm_net_send(int64_t h, const void *p, size_t n) {
     }
 }
 
-static int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
     for (;;) {
         ssize_t r = recv((int)h, p, n, 0);
         if (r >= 0) return (int64_t)r;
@@ -1512,7 +1521,7 @@ static int64_t gm_net_recv(int64_t h, void *p, size_t n) {
     }
 }
 
-static int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
+GM_API int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
 
 /* ---- heap ------------------------------------------------------------------------ */
 
@@ -1566,7 +1575,7 @@ static void gm_hb_record(uintptr_t addr, size_t size) {
     s->state = GM_HB_LIVE;
 }
 
-static void *gm_heap_alloc(size_t size, size_t align) {
+GM_API void *gm_heap_alloc(size_t size, size_t align) {
     if (align == 0) align = 1;
     if (size > SIZE_MAX - align - sizeof(void *)) return NULL;
     uint8_t *raw = (uint8_t *)malloc(size + align + sizeof(void *));
@@ -1635,7 +1644,7 @@ static gm_atag *gm_atag_find(void *p) {
     }
 }
 
-static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
     char *site = gm_site_str(file, flen, line, col);
     pthread_mutex_lock(&gm_rt_lock);
     gm_atag *t = gm_atag_find(p);
@@ -1652,7 +1661,7 @@ static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, si
     pthread_mutex_unlock(&gm_rt_lock);
 }
 
-static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
                            const char *tfile, uint32_t tline, uint32_t tcol) {
     pthread_mutex_lock(&gm_rt_lock);
     gm_atag *t = gm_atag_find(p);
@@ -1672,7 +1681,7 @@ static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, 
     pthread_mutex_unlock(&gm_rt_lock);
 }
 
-static void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
     (void)align;
     if (gm_debug == 0) {
         if (p != NULL) gm_heap_release(p);
@@ -1730,7 +1739,7 @@ static void *gm_main_thread(void *p) {
 
 /* Runs entry `f` under context `cx` on a thread of its own and returns its status;
  * on the calling thread if no such thread can be started. */
-static int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     gm_main_call c = {f, cx, 0};
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -1743,7 +1752,7 @@ static int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     return c.status;
 }
 
-static int64_t gm_thread_spawn(void *f, void *arg) {
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     gm_thread *t = (gm_thread *)malloc(sizeof *t);
     if (t == NULL) return gm_io_error(ENOMEM);
     t->f = (void (*)(void *))f;
@@ -1760,23 +1769,23 @@ static int64_t gm_thread_spawn(void *f, void *arg) {
     return (int64_t)(intptr_t)t;
 }
 
-static int64_t gm_thread_join(int64_t h) {
+GM_API int64_t gm_thread_join(int64_t h) {
     gm_thread *t = (gm_thread *)(intptr_t)h;
     int r = pthread_join(t->t, NULL);
     free(t);
     return r == 0 ? 0 : gm_io_error(r);
 }
 
-static void gm_thread_yield(void) { sched_yield(); }
+GM_API void gm_thread_yield(void) { sched_yield(); }
 
-static void gm_sys_write(int32_t fd, const void *p, size_t n) {
+GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     if (fd == 2) gm_write_err((const uint8_t *)p, n);
     else gm_write_out((const uint8_t *)p, n);
 }
 
 /* ---- handler contexts and non-local exits ---------------------------------------------- */
 
-static gm_node *gm_find(gm_node *cx, uint32_t eff) {
+GM_API gm_node *gm_find(gm_node *cx, uint32_t eff) {
     for (; cx; cx = cx->next) {
         if (cx->eff == eff) return cx;
     }
@@ -1792,7 +1801,7 @@ static bool gm_lexically_same(gm_frame *fr, gm_frame *target) {
     }
 }
 
-static bool gm_errdefer_runs(gm_frame *fr) {
+GM_API bool gm_errdefer_runs(gm_frame *fr) {
     switch (gm_unw.kind) {
     case GM_RETURN: return gm_lexically_same(fr, gm_unw.frame) ? gm_unw.is_err : true;
     case GM_BREAK: case GM_CONTINUE: return !gm_lexically_same(fr, gm_unw.frame);
@@ -1919,7 +1928,7 @@ static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
 
 static _Thread_local gm_fiber *gm_fiber_pool;
 
-static _Noreturn void gm_stack_overflow(void) {
+GM_API _Noreturn void gm_stack_overflow(void) {
     const char *msg = gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow";
     /* In Debug builds, the call that overflowed is the last one the caller recorded. */
     gm_bt *b = gm_bt_top;
@@ -1966,7 +1975,7 @@ static void gm_overflow_handler(void) {
 }
 #endif
 
-static void gm_thread_stack(void) {
+GM_API void gm_thread_stack(void) {
     uintptr_t low = 0;
     size_t size = 0;
 #if defined(__APPLE__)
@@ -2000,7 +2009,7 @@ static void gm_fiber_entry(gm_fiber *fb) {
     gm_fiber_finish(fb);
 }
 
-static gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
+GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
                               const char *file, uint32_t line, uint32_t col) {
     if (gm_checks && len < GM_MIN_STACK) {
         char msg[128];
@@ -2053,13 +2062,13 @@ static void gm_susp_unlink(gm_with *w, gm_fiber *fb) {
     w->nsuspended--;
 }
 
-static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
+GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
     fb->epoch++;
     gm_susp_link(w, fb);
     return (gm_cont){fb, fb->epoch};
 }
 
-static void gm_with_go(gm_with *w, gm_fiber *fb) {
+GM_API void gm_with_go(gm_with *w, gm_fiber *fb) {
     gm_fiber *me = gm_cur_fiber;
     gm_bt *bt = gm_bt_top;
     gm_set_cur_fiber(fb);
@@ -2074,12 +2083,12 @@ static void gm_with_go(gm_with *w, gm_fiber *fb) {
     gm_set_cur_fiber(me);
 }
 
-static void gm_with_clause(gm_with *w) {
+GM_API void gm_with_clause(gm_with *w) {
     gm_fiber *fb = w->event_fiber;
     fb->thunk(fb->req, (gm_cont){fb, fb->epoch});
 }
 
-static void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res) {
+GM_API void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res) {
     gm_fiber *fb = gm_cur_fiber;
     if (fb == NULL || w == NULL) gm_trap("internal error: a `ctl` operation performed outside a fiber", NULL, 0, 0);
     fb->thunk = thunk;
@@ -2099,7 +2108,7 @@ static void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *r
     }
 }
 
-static _Noreturn void gm_fiber_finish(gm_fiber *fb) {
+GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb) {
     gm_with *w = fb->owner;
     fb->state = GM_FB_DONE;
     w->event = GM_EV_DONE;
@@ -2124,7 +2133,7 @@ static gm_fiber *gm_cont_take(gm_with *w, const void *k, const char *file, uint3
     return fb;
 }
 
-static void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+GM_API void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
     gm_fiber *fb = gm_cont_take(w, k, file, line, col);
     w->next = fb;
     return fb->res;
@@ -2148,12 +2157,12 @@ static void gm_cancel(gm_with *w, gm_fiber *fb, const char *file, uint32_t line,
     if (gm_unw.kind == GM_CANCEL || gm_unw.kind == GM_NONE) gm_unw = saved;
 }
 
-static void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+GM_API void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
     gm_fiber *fb = gm_cont_take(w, k, file, line, col);
     gm_cancel(w, fb, file, line, col);
 }
 
-static void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col) {
+GM_API void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col) {
     if (gm_unw.kind != GM_EXIT) {
         if (crossing) {
             gm_unwind saved = gm_unw;

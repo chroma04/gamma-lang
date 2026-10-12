@@ -547,7 +547,7 @@ An empty slice still holds a non-null, suitably aligned pointer, which must not 
 
 ### 5.8 Strings
 
-`string` is exactly `[]const u8`. String literals are UTF-8 (unless escapes say otherwise), but `string` values carry no encoding guarantee. There is no character type; iterate with `bytes(s)` (yields `u8`), `runes(s)` (yields `rune`, replacing invalid sequences with U+FFFD) or the library's grapheme iterator.
+`string` is exactly `[]const u8`. String literals are UTF-8 (unless escapes say otherwise), but `string` values carry no encoding guarantee. There is no character type; iterate with `bytes(s)` (yields `u8`), `runes(s)` (yields `rune`, replacing invalid sequences with U+FFFD) or the standard library's grapheme iterator (`graphemes` in `std/text`).
 
 `cstring` is exactly `[^]const u8`. A `c"..."` literal is a `cstring`. `s.cstr_len()` counts bytes up to the NUL. A string literal can also initialize a `[N]u8` whose length equals the literal's byte length.
 

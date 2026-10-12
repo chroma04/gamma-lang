@@ -1,7 +1,12 @@
 /* The runtime of programs compiled by the Gamma C back end.
  *
- * The compiler emits one C translation unit: this header, gm_rt.c, then the
- * generated code. Everything here is `static` so the unit is self-contained.
+ * The runtime is linked into a program in one of two ways. Normally the compiler
+ * emits one C translation unit: this header, gm_rt.c, then the generated code, and
+ * everything here is `static` so the unit is self-contained (and the optimizer sees
+ * the whole program). With GM_RT_SEPARATE defined, this header and gm_rt.c are
+ * compiled on their own into an object that is reused across programs, and the
+ * generated code includes only this header: the declarations marked GM_API and
+ * GM_API_VAR then have external linkage.
  * GNU C11 is required (statement expressions, zero-size arrays, __int128,
  * __builtin_*_overflow).
  */
@@ -30,6 +35,16 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sched.h>
+
+/* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
+ * GM_API_VAR: of the declarations of its variables here. */
+#ifdef GM_RT_SEPARATE
+#define GM_API
+#define GM_API_VAR extern
+#else
+#define GM_API static
+#define GM_API_VAR static
+#endif
 
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
@@ -69,20 +84,20 @@ typedef struct gm_bt {
     const char *file;
     uint32_t line, col;
 } gm_bt;
-static _Thread_local gm_bt *gm_bt_top;
+GM_API_VAR _Thread_local gm_bt *gm_bt_top;
 
 /* Stops the program: flushes stdout, writes "trap: <msg>\n  at <file>:<line>:<col>\n" to
  * stderr (the second line only if file is not NULL), followed in Debug builds by the calls
  * leading there, and exits with status 134. */
-static _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col);
 /* As gm_trap, with a message given as bytes (not NUL-terminated). */
-static _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
 
 /* ---- growable byte buffer --------------------------------------------------- */
 
 typedef struct { uint8_t *data; size_t len, cap; } gm_buf;
-static void gm_buf_push(gm_buf *b, const void *data, size_t len);
-static void gm_buf_free(gm_buf *b);
+GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len);
+GM_API void gm_buf_free(gm_buf *b);
 
 /* ---- integers wider than 128 bits ------------------------------------------------
  *
@@ -97,53 +112,53 @@ static void gm_buf_free(gm_buf *b);
  * must be less than `bits`. */
 #define GM_WBYTES(bits) ((((size_t)(bits) + 63) / 64) * 8)
 
-static bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-static bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-static bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-static bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+GM_API bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
 /* Quotient into q and remainder into rm (either may be NULL), truncating toward zero.
  * Returns 0, 1 for a zero divisor, or 2 for MIN / -1 (the quotient overflows). */
-static int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
 /* r = a ** n, wrapped; returns whether the exact power overflowed. */
-static bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn);
-static void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
-static void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-static void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-static void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn);
+GM_API void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+GM_API void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
+GM_API void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
 /* Left shift (wrapped; returns whether bits that matter were shifted out) and right shift
  * (arithmetic if `sgn`). */
-static bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
-static void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
+GM_API bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
+GM_API void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
 /* A shift amount (an unsigned integer of `abits` bits), clamped to 2^64 - 1. */
-static uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits);
+GM_API uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits);
 /* Traps: "shift amount <amt> too large for <ty>". */
-static _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
+GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
                                     uint32_t line, uint32_t col);
-static int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);  /* -1, 0 or 1 */
-static int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn);                   /* -1, 0 or 1 */
-static void gm_wmin(uint8_t *r, uint32_t bits, bool sgn);
-static void gm_wmax(uint8_t *r, uint32_t bits, bool sgn);
+GM_API int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);  /* -1, 0 or 1 */
+GM_API int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn);                   /* -1, 0 or 1 */
+GM_API void gm_wmin(uint8_t *r, uint32_t bits, bool sgn);
+GM_API void gm_wmax(uint8_t *r, uint32_t bits, bool sgn);
 /* Converts between any two integer types, given as storage sizes in bytes and widths; the
  * buffers must differ. The result is wrapped to the target. Returns bit 0: the value fits
  * the target, bit 1: the source is negative. */
-static int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
+GM_API int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
                     uint32_t abits, bool asgn);
 /* The value rounded to nearest (ties to even) to `mant` significant bits, as a double. */
-static double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant);
+GM_API double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant);
 /* Stores the integral double x into r. Returns 0, 1 (x is below the type's range), 2 (above
  * it) or 3 (NaN); r is zero unless the result is 0. */
-static int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x);
-static uint32_t gm_wclz(const uint8_t *a, uint32_t bits);
-static uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
-static uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
-static void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits);
-static void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
+GM_API int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x);
+GM_API uint32_t gm_wclz(const uint8_t *a, uint32_t bits);
+GM_API uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
+GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
+GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits);
+GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
 /* Rotates the bits of a left by k (taken modulo bits). */
-static void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k);
+GM_API void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k);
 /* Mixes the value into the FNV-1a state h as its minimal two's-complement little-endian bytes. */
-static uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn);
+GM_API uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn);
 /* Appends the decimal form. */
-static void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn);
+GM_API void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn);
 
 /* ---- type descriptors (for formatting, spec §21.6.1) -------------------------- */
 
@@ -206,82 +221,83 @@ struct gm_type {
 
 /* Appends the display form of the value of type t at address v (§21.6.1). `top` is true for
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
-static void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
+GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
 
 /* ---- ambient effects ---------------------------------------------------------- */
 
-static void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */
-static void gm_write_err(const uint8_t *p, size_t len);  /* stderr, flushed */
-static void gm_flush(void);                              /* flushes stdout */
+GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */
+GM_API void gm_write_err(const uint8_t *p, size_t len);  /* stderr, flushed */
+GM_API void gm_flush(void);                              /* flushes stdout */
 
 /* Process arguments as a Gamma `[]const string`: returns a pointer to `argc` slices
  * ({ptr, len} pairs, each 2 * sizeof(void*) bytes). Set by gm_set_args at startup. */
-static void gm_set_args(int argc, char **argv);
-static const void *gm_args(size_t *count);
+GM_API void gm_set_args(int argc, char **argv);
+GM_API const void *gm_args(size_t *count);
 /* Looks up an environment variable; returns false if unset. */
-static bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);
 
 /* ---- system services (behind the core library's default handlers, §12.9) --------- */
 
 /* Operations that can fail return a count, or an error code: -1 - i for the i-th
  * variant of IoError other than Other, and -1000 - errno for Other(errno). */
-static int64_t gm_io_error(int err);
-static int64_t gm_sys_read(void *p, size_t n);      /* standard input */
-static uint64_t gm_clock_now(void);                 /* monotonic nanoseconds */
-static int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds */
-static void gm_clock_sleep(uint64_t ns);
-static void gm_rand_fill(void *p, size_t n);
+GM_API int64_t gm_io_error(int err);
+GM_API int64_t gm_sys_read(void *p, size_t n);      /* standard input */
+GM_API uint64_t gm_clock_now(void);                 /* monotonic nanoseconds */
+GM_API int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds */
+GM_API void gm_clock_sleep(uint64_t ns);
+GM_API void gm_rand_fill(void *p, size_t n);
 /* Files and directories: the flags of gm_fs_open, and handles that are file descriptors
  * (files) or indexes into a table of open directories. */
 enum { GM_FS_READ = 1, GM_FS_WRITE = 2, GM_FS_APPEND = 4, GM_FS_CREATE = 8, GM_FS_TRUNCATE = 16, GM_FS_EXCLUSIVE = 32 };
-static int64_t gm_fs_open(const void *path, size_t len, uint32_t flags);
-static int64_t gm_fs_close(int64_t f);
-static int64_t gm_fs_read(int64_t f, void *p, size_t n);
-static int64_t gm_fs_write(int64_t f, const void *p, size_t n);
-static int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
-static int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, is_dir, mtime */
-static int64_t gm_fs_remove(const void *path, size_t len);
-static int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
-static int64_t gm_fs_make_dir(const void *path, size_t len);
-static int64_t gm_fs_remove_dir(const void *path, size_t len);
-static int64_t gm_fs_open_dir(const void *path, size_t len);
-static int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
-static int64_t gm_fs_close_dir(int64_t d);
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags);
+GM_API int64_t gm_fs_close(int64_t f);
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, is_dir, mtime */
+GM_API int64_t gm_fs_remove(const void *path, size_t len);
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
+GM_API int64_t gm_fs_close_dir(int64_t d);
 /* TCP sockets; handles are file descriptors. Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
-static int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
-static int64_t gm_net_listen(const void *host, size_t len, uint16_t port);
-static int64_t gm_net_local_port(int64_t h);
-static int64_t gm_net_accept(int64_t h);
-static int64_t gm_net_send(int64_t h, const void *p, size_t n);
-static int64_t gm_net_recv(int64_t h, void *p, size_t n);
-static int64_t gm_net_close(int64_t h);
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port);
+GM_API int64_t gm_net_local_port(int64_t h);
+GM_API int64_t gm_net_accept(int64_t h);
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n);
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n);
+GM_API int64_t gm_net_close(int64_t h);
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
  *
  * A thread runs a plain function `void f(void *arg)`. Fibers, handler contexts and the exit in
  * progress are per thread; the runtime's own shared tables are guarded by gm_rt_lock. */
-static pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
-static int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
-static int64_t gm_thread_join(int64_t h);
-static void gm_thread_yield(void);
+GM_API_VAR pthread_mutex_t gm_rt_lock;
+GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
+GM_API int64_t gm_thread_join(int64_t h);
+GM_API void gm_thread_yield(void);
 /* Writes to standard output (fd 1, buffered like Out) or standard error (fd 2). */
-static void gm_sys_write(int32_t fd, const void *p, size_t n);
+GM_API void gm_sys_write(int32_t fd, const void *p, size_t n);
 
 /* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
 
 /* Returns NULL when out of memory. In debug builds (gm_debug != 0) the block is filled with
  * 0xAA, and gm_heap_free traps on double and invalid frees (it keeps track of live blocks). */
-static void *gm_heap_alloc(size_t size, size_t align);
-static void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col);
+GM_API void *gm_heap_alloc(size_t size, size_t align);
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col);
 /* Debug builds: records the allocator (owner, vt) and site of the block at p (§18.3). */
-static void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col);
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col);
 /* Debug builds: traps if the block at p was allocated by another allocator, and forgets it. */
-static void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
                            const char *tfile, uint32_t tline, uint32_t tcol);
-static int gm_debug = 1;
+/* Nonzero in Debug builds (initially 1; set by the generated code). */
+GM_API_VAR int gm_debug;
 /* Nonzero in Debug and Checked builds (set by the generated code). */
-static int gm_checks;
+GM_API_VAR int gm_checks;
 
 /* ---- frames, handler contexts and non-local exits ----------------------------------
  *
@@ -315,12 +331,16 @@ enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT, GM_RESUME, GM_CANCEL 
 static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
 typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
 /* Each thread has its own exit in progress (§19.6). */
-static _Thread_local gm_unwind gm_unw;
+GM_API_VAR _Thread_local gm_unwind gm_unw;
+
+/* Runs entry `f` of the program under context `cx` on a thread with a large stack and
+ * returns its exit status. */
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
 
 /* The innermost handler of effect `eff` in context `cx`, or NULL. */
-static gm_node *gm_find(gm_node *cx, uint32_t eff);
+GM_API gm_node *gm_find(gm_node *cx, uint32_t eff);
 /* Whether errdefers run as the current exit leaves a block of frame `fr` (§8.8). */
-static bool gm_errdefer_runs(gm_frame *fr);
+GM_API bool gm_errdefer_runs(gm_frame *fr);
 
 /* ---- fibers (§14) ------------------------------------------------------------------------
  *
@@ -388,10 +408,10 @@ enum { GM_FB_NEW, GM_FB_RUNNING, GM_FB_SUSPENDED, GM_FB_DONE };
 /* Creates a fiber of `w` on the memory [stack, stack + len), which will run start(fiber).
  * `arg_size` bytes at the top of the stack are reserved for fiber->arg. Traps if the stack
  * is smaller than GM_MIN_STACK (checked). */
-static gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
+GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
                               const char *file, uint32_t line, uint32_t col);
 /* Registers a new fiber as suspended on `w` (made by @fiber) and returns its continuation. */
-static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
+GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 /* Checked builds: traps if a frame at address `p` is below the running fiber's limit. */
 /* Checked builds compare each frame's address with the lowest address the running stack
    may use: the fiber's limit, or the thread's (§14.1, §18). */
@@ -410,27 +430,27 @@ static gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #endif
-static _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
-static _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
-static _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
+GM_API_VAR _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
+GM_API_VAR _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
+GM_API_VAR _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
 /* Records the stack limit of the calling thread (at the start of `main` or of a thread). */
-static void gm_thread_stack(void);
-static _Noreturn void gm_stack_overflow(void);
+GM_API void gm_thread_stack(void);
+GM_API _Noreturn void gm_stack_overflow(void);
 /* Driver: switches to `fb` until something happens on `w` (an event). */
-static void gm_with_go(gm_with *w, gm_fiber *fb);
+GM_API void gm_with_go(gm_with *w, gm_fiber *fb);
 /* Driver: calls the clause for the pending perform of w->event_fiber. */
-static void gm_with_clause(gm_with *w);
+GM_API void gm_with_clause(gm_with *w);
 /* Fiber: suspends on `w` until resumed (or cancelled: gm_unw.kind is then GM_CANCEL). */
-static void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res);
+GM_API void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res);
 /* Fiber: ends the running fiber and switches to its driver. */
-static _Noreturn void gm_fiber_finish(gm_fiber *fb);
+GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb);
 /* Clause of `w`: consumes continuation *k for `resume`; returns where to store the value. */
-static void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
+GM_API void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
 /* Clause of `w`: consumes continuation *k and cancels its fiber (§14.5). */
-static void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
+GM_API void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
 /* Driver: completes `w`. `crossing`: an exit from a fiber is leaving the `with`, so the
  * suspended fibers are discarded; otherwise any suspended fiber is a checked error (§14.4).
  * Then the fibers return to the pool. */
-static void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col);
+GM_API void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col);
 
 #endif

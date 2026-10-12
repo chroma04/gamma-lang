@@ -38,7 +38,8 @@
 //! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
-//! comparing, and `GAMMA_TEST_FILTER=substring` to run only matching tests.
+//! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
+//! `GAMMA_TEST_DEBUG_INFO=1` to build the C back end's programs with `-g`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -207,6 +208,14 @@ fn c_backend_available() -> bool {
     })
 }
 
+/// A command running `gamma`, which caches compiled runtime objects under the target
+/// directory rather than in the user's cache.
+fn gamma() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"));
+    cmd
+}
+
 /// Gives the command the file `input` as standard input, if it exists.
 fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     if input.exists() {
@@ -226,8 +235,11 @@ fn run_c(
     stderr_golden: Option<&Path>,
 ) -> Result<(), String> {
     let exit = exp.exit;
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = gamma();
     cmd.args([command, "--backend=c", "--diag-format=short"]);
+    if std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
+        cmd.arg("-g");
+    }
     if let Some(m) = &exp.mode {
         cmd.arg(format!("--mode={}", m));
     }
@@ -285,7 +297,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         Stage::Run => "run",
         Stage::Test => "test",
     };
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = gamma();
     cmd.arg(command).arg("--diag-format=short");
     if exp.dump {
         cmd.arg("--dump");

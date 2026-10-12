@@ -95,8 +95,7 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
     }
     // The frame struct, shared by the function and its clones.
     let mut frame = format!("struct gm_fr{} {{\n    gm_frame h;\n", f.0);
-    // With `-g`, a field also has its local's name, with the type's mirror if it has one,
-    // for debuggers.
+    // With `-g`, a field also has its local's name, with the type's debugger view.
     let names = if g.opts.debug_info {
         super::debug::unique_members(def.locals.iter().map(|l| l.name.as_str()), &mut Default::default())
     } else {
@@ -106,9 +105,10 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
         let c = g.ty.cty(l.ty);
         match &names[i] {
             Some(n) => {
-                let alias = g.ty.mirror(l.ty).unwrap_or_else(|| c.clone());
+                let view = g.ty.debug_view(l.ty);
+                let (alias, dims) = view.map_or((c.clone(), String::new()), |v| (v.cty, v.dims));
                 g.ty.add_member_name(n);
-                let _ = writeln!(frame, "    union {{ {} l{}; {} {}; }};", c, i, alias, n);
+                let _ = writeln!(frame, "    union {{ {} l{}; {} {}{}; }};", c, i, alias, n, dims);
             }
             None => {
                 let _ = writeln!(frame, "    {} l{}; /* {} */", c, i, l.name);
