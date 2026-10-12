@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-12) — PRs #1–#15 merged; s6/s7 = parallel Claude Projects threads
+## State (2026-10-12) — PRs #1–#17 merged; s6/s7/s8 = parallel Claude Projects threads
+- s8 thread "bug-hunting round" (PR #18, branch claude/project-thread-25bz3o): ~40 compiler,
+  runtime and stdlib fixes found by hunter subagents (sessions/s08-2026-10-12-bughunt.md);
+  leftovers bugs-open.md #39–40.
 - s7 thread "Dogfooding" (branch claude/dogfooding-wnnaie): spec §22 stdlib policy (apply it
   to every stdlib addition!), format specs, L2–L6, many new std modules (decisions/018,
   sessions/s07). Leftovers in bugs-open.md #31–38.
@@ -37,7 +40,7 @@
 ## Next steps
 1. Drive the s6 PRs green; C back end plan items 1–7 done (uncaptured locals as C locals:
    thread "Uncaptured locals", branch claude/project-thread-oemqrj).
-2. bugs-open.md leftovers (#23–#38); future: interp bytecode VM, symbolic array lengths.
+2. bugs-open.md leftovers (#23–#40); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 4. Safe mode follow-up (decisions/017 end): constant large args static (done, PR #17);
    left: `&key` escapes in std maps, `new`'s GC alloc (allocation-heavy code ~13× Checked).
@@ -60,6 +63,7 @@
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
                   · s06-2026-10-12-safe.md (Safe mode) · s07-2026-10-12.md (dogfooding)
+                  · s08-2026-10-12-bughunt.md (bug hunt)
 - gotchas/        environment.md
 
 ## Conventions

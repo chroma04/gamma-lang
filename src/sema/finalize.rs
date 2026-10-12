@@ -311,6 +311,18 @@ pub fn lossless(from: Ty, to: Ty) -> bool {
     }
 }
 
+/// The type a literal coerced to `target` takes: `T` for `?T` and `E!T` (§6.1).
+fn literal_core(target: Ty) -> Ty {
+    let mut core = target;
+    loop {
+        match core.kind() {
+            TyKind::Optional(t) => core = *t,
+            TyKind::Result { ok, .. } => core = *ok,
+            _ => return core,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,17 +350,5 @@ mod tests {
         assert!(!int_fits(&BigInt::from(256), Ty::u8(), &t));
         assert!(int_fits(&BigInt::from(-128), Ty::int(true, 8), &t));
         assert!(!int_fits(&BigInt::from(-1), Ty::u8(), &t));
-    }
-}
-
-/// The type a literal coerced to `target` takes: `T` for `?T` and `E!T` (§6.1).
-fn literal_core(target: Ty) -> Ty {
-    let mut core = target;
-    loop {
-        match core.kind() {
-            TyKind::Optional(t) => core = *t,
-            TyKind::Result { ok, .. } => core = *ok,
-            _ => return core,
-        }
     }
 }
