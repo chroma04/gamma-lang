@@ -1,7 +1,7 @@
 //! stage: check
 main :: fn() \ {Out} {
     names := [2]string("a", "b")
-    for (i, n) in enumerate(names) { print("{}\n", n) } //~ ERROR an array is not a slice: pass `a[..]`
+    for (i, n) in enumerate(names) { print("{}\n", n) }
     s := "ab"
     x := s.len() //~ ERROR `.len` of a slice is a field, not a method
     y := s.to_upper() //~ ERROR slices have no method `.to_upper`

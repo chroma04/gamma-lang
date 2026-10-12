@@ -1,0 +1,6 @@
+// Two files of one module may import the same module under the same name (§3.2).
+str :: import "std/str"
+
+main :: fn() \ {Out} {
+    print("{} {}\n", (str.trim("  a  "), shout(" b ")))
+}

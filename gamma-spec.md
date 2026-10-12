@@ -310,6 +310,8 @@ The binding's name is chosen by the importer and has no relation to the path. Th
 
 A module is identified by its resolved directory. Importing the same module twice (under any names) yields the same module.
 
+Since the files of a module share one namespace, each file that uses a module may import it: an import repeated in another file of the module with the same name, the same path and the same visibility declares nothing new. Any other repeated name is an error (§3.4).
+
 The import graph must be acyclic; a cycle is a compile error naming the modules in it.
 
 An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared. A `pub` module binding is itself a member: if module `top` declares `pub s :: import "./shapes"`, then `top.s.area(c)` and `top.s.Circle` reach `shapes`'s declarations, so a module can gather others under one import.
@@ -785,7 +787,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 For `usize` and `isize` the rule is applied against every supported target (pointer width ≥ 32): `usize(x)` is permitted for `x: uN` with N ≤ 32, and so on. Converting between `usize`/`isize` and wider fixed-width types uses the methods of §6.6.
 
-When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.round(f64)`.
+When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.to(f64)`.
 
 ### 6.6 Lossy and reinterpreting conversions
 
@@ -797,7 +799,7 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.trunc(T)` | float → integer | round toward zero; **checked**: the result must fit `T` and `x` must not be NaN |
 | `x.round(T)` | float → integer | round to nearest, ties to even (`2.5.round(i32)` is 2); checked as above |
 | `x.floor(T)`, `x.ceil(T)` | float → integer | checked as above |
-| `x.round(T)` | integer → float, float → narrower float | round to nearest-even; overflow gives ±∞ |
+| `x.to(F)` | integer → float, float → float | the nearest value of float type `F` (ties to even); overflow gives ±∞; never traps |
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
@@ -901,7 +903,7 @@ If `a` and `b` are arrays `[N]T` of a numeric `T`, `a op b` for `op` in `+ - * /
 
 ### 7.5 Comparison
 
-`< <= > >=` apply to two operands of the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all integers, floats, enums, or (recursively) such tuples, arrays and slices.
+`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
 
 Tuples, arrays and slices (including `string`) compare **lexicographically**: find the first index `i` at which element `i` of `a` is not `is`-equal to element `i` of `b`; then `a < b` is element `i` of `a` `<` element `i` of `b`. If there is no such position, the shorter is less (tuples and arrays of one type have equal length, so they are equal). `a <= b` is `a < b or a is b`; `>` and `>=` are the mirror images. Strings therefore compare bytewise. Structs are deliberately **not** ordered: their field order records layout, not priority. To order structs, order a tuple of keys (`sort_by_key`, §21.3).
 
@@ -1974,7 +1976,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | Constraint | Satisfied by | Grants |
 | --- | --- | --- |
 | `Eq(T)` | every type for which `is` is defined (§7.6) | `is`, `is not`, `in` over `T`, literal patterns of `T`, `@hash` (§16.8) |
-| `Ord(T)` | integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
+| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, `.trunc` / `.checked` / `.sat` |
 | `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
@@ -2450,9 +2452,9 @@ Each of these functions also has a final parameter `site: SourceLocation = @call
 
 Builtin methods are resolved by §7.10 rule 2. `T` is a type argument.
 
-**All integers:** `trunc(T)`, `checked(T)`, `sat(T)`, `bits(T)`, `round(F)` (to float), `min(y)`, `max(y)`, `clamp(lo, hi)`, `abs()` (signed; checked like `-`), `abs_diff(y)` (unsigned result), `pow(n: u32)` (checked), and the overflow-flavored `pow_wrap`, `pow_sat`, `pow_checked`.
+**All integers:** `trunc(T)`, `checked(T)`, `sat(T)`, `bits(T)`, `to(F)` (to float), `min(y)`, `max(y)`, `clamp(lo, hi)`, `abs()` (signed; checked like `-`), `unsigned_abs()` (the magnitude in the unsigned type of the same width; never traps), `abs_diff(y)` (unsigned result), `pow(n: u32)` (checked), and the overflow-flavored `pow_wrap`, `pow_sat`, `pow_checked`.
 
-**All floats:** `trunc(T)`, `round(T)`, `floor(T)`, `ceil(T)`, `checked(T)`, `sat(T)` (to integer); `round(F)` (to narrower float); `bits(T)`; `is_nan()`, `is_inf()`, `is_finite()`, `sign_bit()`; `min(y)`, `max(y)` (IEEE `minimumNumber`/`maximumNumber`); `abs()`, `sqrt()`.
+**All floats:** `trunc(T)`, `round(T)`, `floor(T)`, `ceil(T)`, `checked(T)`, `sat(T)` (to integer); `to(F)` (to any float type); `bits(T)`; `is_nan()`, `is_inf()`, `is_finite()`, `sign_bit()`; `min(y)`, `max(y)` (IEEE `minimumNumber`/`maximumNumber`); `abs()`, `sqrt()`.
 
 **Pointers:** `cast(P)`, `addr()`; on `^S` and `^const S` with `using`, `downcast_unchecked(Outer)`.
 

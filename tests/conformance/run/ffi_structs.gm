@@ -85,7 +85,7 @@ mix_layout :: fn(p: Packed, a: Aligned) -> Packed => Packed(a: p.a + a.x, b: p.b
 scale_mixed :: fn(m: Mixed, scale: f64) -> Mixed {
     return Mixed(
         id: m.id + 1,
-        p: Pair(a: m.p.a * 2, b: (f64(m.p.b) * scale).round(f32)),
+        p: Pair(a: m.p.a * 2, b: (f64(m.p.b) * scale).to(f32)),
         xs: [3]i16(m.xs[2], m.xs[1], m.xs[0]),
         ok: not m.ok,
     )

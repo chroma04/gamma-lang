@@ -120,26 +120,47 @@ impl<'a, 's> FnCx<'a, 's> {
                     let t_float = t.is_float() || self.param_with(t, Constraint::Float);
                     let ok = match op {
                         Builtin::Trunc | Builtin::Checked | Builtin::Sat => t_int,
-                        Builtin::Round => t_int || t_float,
+                        Builtin::Round => t_int,
                         _ => t_int && is_float,
                     };
-                    if !ok {
+                    if op == Builtin::Round && t_float && !t_int {
+                        self.error(
+                            span,
+                            format!("`.round` converts to an integer; for the nearest `{}` use `.to({})`", t, t),
+                        );
+                    } else if !ok {
                         self.error(span, format!("`.{}` cannot convert to `{}`", n, t));
-                    }
-                    if is_float && matches!(op, Builtin::Round) && t.is_float() {
-                        let (TyKind::Float(a), TyKind::Float(b2)) = (self.infer.resolve(recv.ty).kind(), t.kind())
-                        else {
-                            return Some(b(op, t, vec![recv]));
-                        };
-                        if b2.bits() >= a.bits() {
-                            self.error(
-                                span,
-                                "`.round(F)` rounds to a narrower float type; widening is a plain conversion",
-                            );
-                        }
                     }
                     let ty = if op == Builtin::Checked { Ty::optional(t) } else { t };
                     return Some(b(op, ty, vec![recv]));
+                }
+                // `x.to(F)`: the nearest value of float type `F` (§6.6).
+                "to" => {
+                    if !self.arity(args, 1, n, span) {
+                        return Some(error_expr(span));
+                    }
+                    let t = self.type_arg(args, 0, span)?;
+                    if !(t.is_float() || self.param_with(t, Constraint::Float)) {
+                        self.error(
+                            span,
+                            format!("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", t),
+                        );
+                    }
+                    return Some(b(Builtin::Round, t, vec![recv]));
+                }
+                "unsigned_abs" if is_int => {
+                    self.arity(args, 0, n, span);
+                    self.obligations.push(Obligation::Numeric {
+                        ty: recv.ty,
+                        span,
+                        op: "unsigned_abs",
+                        int_only: true,
+                        signed_only: false,
+                    });
+                    let ty = recv.ty;
+                    let zero = mk(ty, tir::ExprKind::Int(num_bigint::BigInt::from(0)), span);
+                    let rty = unsigned_of(self.infer.resolve(ty));
+                    return Some(b(Builtin::AbsDiff, rty, vec![recv, zero]));
                 }
                 "bits" => {
                     if !self.arity(args, 1, n, span) {

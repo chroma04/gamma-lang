@@ -163,7 +163,7 @@ main :: fn() -> CsvError!() \ {Out, Alloc} {
         st := column_stats(body, col)
         mean := st.sum / f64(st.count)
         fb: [400]u8 = ---
-        print("{}: n={} min={} max={} mean={}\n", (header[col], st.count, fmt.fixed(st.min, 2, fb[0..200]), fmt.fixed(st.max, 2, fb[200..]), mean.round(f32)))
+        print("{}: n={} min={} max={} mean={}\n", (header[col], st.count, fmt.fixed(st.min, 2, fb[0..200]), fmt.fixed(st.max, 2, fb[200..]), mean.to(f32)))
     }
     return ()
 }

@@ -997,9 +997,12 @@ impl<'a, 's> FnCx<'a, 's> {
         if !matches!(op, B::Add(_) | B::Sub(_) | B::Mul(_) | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor) {
             return self.binary_op(op, place, value, span);
         }
+        let numeric = |t: Ty| t.is_integer() || t.is_float();
+        if !numeric(self.infer.resolve(place.ty)) {
+            return self.binary_op(op, place, value, span);
+        }
         let r = self.expr(value, Some(place.ty));
         let (pt, rt) = (self.infer.resolve(place.ty), self.infer.resolve(r.ty));
-        let numeric = |t: Ty| t.is_integer() || t.is_float();
         let r = if pt != rt && numeric(pt) && numeric(rt) && super::finalize::lossless(rt, pt) {
             let sp = r.span;
             Expr { ty: pt, kind: tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![r] }, span: sp }

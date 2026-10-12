@@ -23,8 +23,8 @@ picture :: fn() -> [H][W]u8 {
     img: [H][W]u8 = ---
     for row in 0..H {
         for col in 0..W {
-            cr := -2.2 + 3.2 * col.round(f64) / (W - 1).round(f64)
-            ci := -1.2 + 2.4 * row.round(f64) / (H - 1).round(f64)
+            cr := -2.2 + 3.2 * col.to(f64) / (W - 1).to(f64)
+            ci := -1.2 + 2.4 * row.to(f64) / (H - 1).to(f64)
             t := escape_time(cr, ci)
             img[row][col] = shades[usize(t * 9 / 30)]
         }
@@ -94,24 +94,24 @@ PRIME_LIST :: prime_list()
 // ---- floating-point tables: evaluated by the compile-time evaluator and again at run time ----
 sqrt_table :: fn() -> [16]f64 {
     t: [16]f64 = ---
-    for i in 0..16 { t[i] = math.sqrt(i.round(f64)) }
+    for i in 0..16 { t[i] = math.sqrt(i.to(f64)) }
     return t
 }
 SQRTS :: sqrt_table()
 
 harmonic :: fn(n: u32) -> f64 {
     h := 0.0
-    for i in 1..=n { h += 1.0 / i.round(f64) }
+    for i in 1..=n { h += 1.0 / i.to(f64) }
     return h
 }
 H1000 :: harmonic(1000)
 
 // Gauss-Legendre style quadrature of exp over [0, 1] by composite Simpson, to compile time.
 simpson_exp :: fn(n: u32) -> f64 {
-    h := 1.0 / n.round(f64)
+    h := 1.0 / n.to(f64)
     s := math.exp(0.0) + math.exp(1.0)
     for i in 1..n {
-        x := i.round(f64) * h
+        x := i.to(f64) * h
         s += (if i % 2 is 1 { 4.0 } else { 2.0 }) * math.exp(x)
     }
     return s * h / 3.0

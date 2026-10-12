@@ -138,7 +138,7 @@ pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
 
 /// A uniform `f64` in [0, 1), made from 53 random bits.
 pub float :: fn() -> f64 \ {Rand} {
-    return (next_u64() >> 11).round(f64) * (1.0 / 9007199254740992.0)
+    return (next_u64() >> 11).to(f64) * (1.0 / 9007199254740992.0)
 }
 
 /// `true` with probability `p` (never for `p` <= 0, always for `p` >= 1).

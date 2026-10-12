@@ -18,7 +18,7 @@ sum9 :: fn(a1, a2, a3, a4, a5, a6, x, y, z: i64) -> i64 => a1 + a2 * 2 + a3 * 3 
 two_doubles :: fn(x: f64, y: f64) -> f64 => x * 10.0 + y
 
 #export("abi_mixed")
-mixed :: fn(n: i64, f: f64, k: c.c_int) -> f64 => n.round(f64) * 100.0 + f * 10.0 + f64(k)
+mixed :: fn(n: i64, f: f64, k: c.c_int) -> f64 => n.to(f64) * 100.0 + f * 10.0 + f64(k)
 
 #export("abi_pair_f32")
 pair_f32 :: fn(packed: f64) -> u64 => packed.bits(u64)

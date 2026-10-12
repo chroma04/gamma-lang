@@ -10,11 +10,11 @@ Fx :: struct(F: u32) {
 from_int :: fn(F :: u32, n: i32) -> Fx(F) => Fx(F)(raw: n << F)
 
 from_f64 :: fn(F :: u32, x: f64) -> Fx(F) {
-    scaled := x * (i64(1) << F).round(f64)
+    scaled := x * (i64(1) << F).to(f64)
     return Fx(F)(raw: scaled.round(i64).sat(i32))
 }
 
-to_f64 :: fn(F :: u32, x: Fx(F)) -> f64 => x.raw.round(f64) / (i64(1) << F).round(f64)
+to_f64 :: fn(F :: u32, x: Fx(F)) -> f64 => x.raw.to(f64) / (i64(1) << F).to(f64)
 
 // Saturating arithmetic.
 add_sat :: fn(F :: u32, a, b: Fx(F)) -> Fx(F) => Fx(F)(raw: a.raw +| b.raw)
@@ -70,7 +70,7 @@ TABLE_N :: 65
 sin_table :: fn() -> [TABLE_N]i32 {
     t: [TABLE_N]i32 = ---
     for i in 0..TABLE_N {
-        angle := math.pi / 2.0 * i.round(f64) / 64.0
+        angle := math.pi / 2.0 * i.to(f64) / 64.0
         t[i] = (math.sin(angle) * 65536.0).round(i32)
     }
     return t
@@ -143,7 +143,7 @@ main :: fn() \ {Out} {
     // Table-driven sine against the exact function.
     worst := 0.0
     for i in 0..=100 {
-        ang := from_f64(16, math.pi / 2.0 * i.round(f64) / 100.0)
+        ang := from_f64(16, math.pi / 2.0 * i.to(f64) / 100.0)
         approx := to_f64(16, sin_quarter(ang))
         err := (approx - math.sin(to_f64(16, ang))).abs()
         if err > worst { worst = err }

@@ -1,0 +1,2 @@
+str :: import "std/fmt"               //~ ERROR `str` is declared twice
+pub fmt :: import "std/fmt"           //~ ERROR `fmt` is declared twice

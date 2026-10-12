@@ -29,14 +29,14 @@ init :: fn() -> Bodies {
     )
     seed: u32 = 7
     for i in 0..COUNT {
-        col := (i % 6).round(f32)
-        row := (i / 6).round(f32)
+        col := (i % 6).to(f32)
+        row := (i / 6).to(f32)
         b.x[i] = col * 2.0
         b.y[i] = row * 2.0
         seed = seed *% 1664525 +% 1013904223
-        b.vx[i] = ((seed >> 16) & 0xFF).round(f32) / 128.0 - 1.0
+        b.vx[i] = ((seed >> 16) & 0xFF).to(f32) / 128.0 - 1.0
         seed = seed *% 1664525 +% 1013904223
-        b.vy[i] = ((seed >> 16) & 0xFF).round(f32) / 128.0 - 1.0
+        b.vy[i] = ((seed >> 16) & 0xFF).to(f32) / 128.0 - 1.0
         if i % 5 is 0 { b.mass[i] = 2.0 }
     }
     return b

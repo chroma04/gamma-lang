@@ -38,12 +38,12 @@ fft :: fn(N :: usize, x: ^[N]Complex, inverse: bool) {
     sign := if inverse { 1.0 } else { -1.0 }
     len: usize = 2
     while len <= N {
-        step := sign * math.tau / len.round(f64)
+        step := sign * math.tau / len.to(f64)
         half := len / 2
         start: usize = 0
         while start < N {
             for k in 0..half {
-                w := expi(step * k.round(f64))
+                w := expi(step * k.to(f64))
                 u := x[start + k]
                 v := mul(w, x[start + k + half])
                 x[start + k] = add(u, v)
@@ -54,7 +54,7 @@ fft :: fn(N :: usize, x: ^[N]Complex, inverse: bool) {
         len *= 2
     }
     if inverse {
-        inv_n := 1.0 / N.round(f64)
+        inv_n := 1.0 / N.to(f64)
         for i in 0..N { x[i] = scale(x[i], inv_n) }
     }
 }
@@ -63,8 +63,8 @@ fft :: fn(N :: usize, x: ^[N]Complex, inverse: bool) {
 convolve :: fn(N :: usize, a, b: []const i64, out: []i64) {
     fa := [N]Complex(fill: cx(0.0, 0.0))
     fb := [N]Complex(fill: cx(0.0, 0.0))
-    for i, v in enumerate(a) { fa[i] = cx(v.round(f64), 0.0) }
-    for i, v in enumerate(b) { fb[i] = cx(v.round(f64), 0.0) }
+    for i, v in enumerate(a) { fa[i] = cx(v.to(f64), 0.0) }
+    for i, v in enumerate(b) { fb[i] = cx(v.to(f64), 0.0) }
     fft(N, &fa, false)
     fft(N, &fb, false)
     for i in 0..N { fa[i] = mul(fa[i], fb[i]) }
@@ -97,7 +97,7 @@ main :: fn() \ {Out} {
     // A pure cosine with 3 cycles over 16 samples has two spikes of N/2 at bins 3 and 13.
     cosine: [16]Complex = ---
     for i in 0..16 {
-        cosine[i] = cx(math.cos(math.tau * 3.0 * i.round(f64) / 16.0), 0.0)
+        cosine[i] = cx(math.cos(math.tau * 3.0 * i.to(f64) / 16.0), 0.0)
     }
     fft(16, &cosine, false)
     print("cosine bins:")
@@ -112,7 +112,7 @@ main :: fn() \ {Out} {
     seed: u32 = 12345
     for i in 0..32 {
         seed = seed *% 1103515245 +% 12345
-        r := ((seed >> 16) & 0x7fff).round(f64) / 32768.0
+        r := ((seed >> 16) & 0x7fff).to(f64) / 32768.0
         sig[i] = cx(r - 0.5, 0.25 - r * r)
     }
     orig := sig

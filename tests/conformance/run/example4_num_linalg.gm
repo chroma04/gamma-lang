@@ -193,7 +193,7 @@ main :: fn() \ {Out} {
     // Hilbert matrices get ill-conditioned quickly.
     h := zeros(4, 4)
     for i in 0..4 {
-        for j in 0..4 { h.a[i][j] = 1.0 / (i + j + 1).round(f64) }
+        for j in 0..4 { h.a[i][j] = 1.0 / (i + j + 1).to(f64) }
     }
     dh := determinant(4, &h)
     print("det(H4) = {}\n", fmt.sci(dh, 6, fb[..]))

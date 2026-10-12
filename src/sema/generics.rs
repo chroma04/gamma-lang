@@ -102,7 +102,12 @@ impl<'s> Sema<'s> {
 
     pub fn has_ord(&self, t: Ty) -> bool {
         match t.kind() {
-            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) | TyKind::ManyPtr { .. } => true,
+            TyKind::Bool
+            | TyKind::Int(_)
+            | TyKind::Usize
+            | TyKind::Isize
+            | TyKind::Float(_)
+            | TyKind::ManyPtr { .. } => true,
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_ord(*e)),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => {
                 self.has_ord(*elem)

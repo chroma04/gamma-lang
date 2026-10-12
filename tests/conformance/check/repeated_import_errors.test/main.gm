@@ -1,0 +1,6 @@
+//! stage: check
+// A repeated name is an error unless both are the same import (§3.2).
+str :: import "std/str"
+fmt :: import "std/fmt"
+
+main :: fn() {}

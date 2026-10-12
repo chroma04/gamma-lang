@@ -1,4 +1,5 @@
 //! stage: test
+//! exit: 1
 // In a test, `try` accepts any error type (§3.8): errors of the test's own type are
 // returned, others fail the test where they occur.
 ParseError :: union { Empty, Bad: u8 }

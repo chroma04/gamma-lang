@@ -120,10 +120,10 @@ conversions :: fn() \ {Out} {
     small: u8 = 200
     wide: u300 = small
     print("{}\n", wide)
-    print("{} {}\n", (x.round(f64), n.round(f32)))
-    print("{} {}\n", (x.round(f32), u200(1).round(f64)))
+    print("{} {}\n", (x.to(f64), n.to(f32)))
+    print("{} {}\n", (x.to(f32), u200(1).to(f64)))
     big: u256 = (1 << 255) + (1 << 202) + 1
-    print("{} {}\n", (big.round(f64), big.round(f32)))
+    print("{} {}\n", (big.to(f64), big.to(f32)))
     f: f64 = 1.5e60
     print("{} {}\n", (f.trunc(u256), (-f).trunc(i256)))
     print("{} {} {}\n", (f.checked(u256), f.checked(u128), (2.5).checked(u200)))

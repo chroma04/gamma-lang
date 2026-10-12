@@ -1,0 +1,10 @@
+//! stage: check
+// `.round` converts to integers and `.to` to floats (§6.6).
+main :: fn() {
+    n: u32 = 3
+    _ = n.round(f64)                  //~ ERROR for the nearest `f64` use `.to(f64)`
+    _ = 2.5.round(f32)                //~ ERROR use `.to(f32)`
+    _ = n.to(u64)                     //~ ERROR `.to` converts to a float type
+    _ = 2.5.round(i32)
+    _ = n.to(f64)
+}
