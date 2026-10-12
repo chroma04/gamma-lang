@@ -736,6 +736,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 if matches!(a.kind, tir::ExprKind::Int(_) | tir::ExprKind::Str(_) | tir::ExprKind::Bool(_)) {
                     continue;
                 }
+                // A temporary the argument points to (`&mk()`, or a temporary array passed
+                // as a slice) lives for the call, which includes the loop (§7.2): it becomes
+                // a local too, rather than dying with the statement that binds the argument.
+                self.lift_temps(a, &mut pre);
                 let span = a.span;
                 let t = self.temp(a.ty, span);
                 let v = std::mem::replace(a, mk(a.ty, tir::ExprKind::Local(t), span));
@@ -743,5 +747,23 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         (pre, call)
+    }
+
+    /// Replaces each `AddrOfTemp(v)` in `e` (outside nested calls) by the address of a
+    /// local initialized with `v` by a statement added to `pre`.
+    fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
+        if matches!(e.kind, tir::ExprKind::Call { .. } | tir::ExprKind::Closure(_)) {
+            return;
+        }
+        if let tir::ExprKind::AddrOfTemp(inner) = &mut e.kind {
+            self.lift_temps(inner, pre);
+            let (span, ty) = (inner.span, inner.ty);
+            let t = self.temp(ty, span);
+            let v = std::mem::replace(&mut **inner, mk(ty, tir::ExprKind::Local(t), span));
+            pre.push(Stmt::Let { local: t, init: Some(v) });
+            e.kind = tir::ExprKind::AddrOf(Box::new(mk(ty, tir::ExprKind::Local(t), span)));
+            return;
+        }
+        e.for_each_child_mut(&mut |c| self.lift_temps(c, pre));
     }
 }
