@@ -1,4 +1,4 @@
-# 014 C toolchain from the environment; target follows the compiler (session 6)
+# 015 C toolchain from the environment; target follows the compiler (session 6)
 Context: c-backend-plan item 3. `Command::new($CC)` broke on `zig cc …`; layouts always host.
 - src/toolchain.rs: Toolchain{cc: Vec (CC split shell-like), cflags, ldflags}. Command line:
   cc-args + back-end flags + CFLAGS (user overrides ours) + `-o exe file.c` + LDFLAGS + -l….
@@ -24,3 +24,4 @@ Context: c-backend-plan item 3. `Command::new($CC)` broke on `zig cc …`; layou
   -fno-strict-aliasing, -O1 or -fno-inline. Gamma memory is untyped, so TBAA is wrong anyway.
 - Conformance `//! arch:` now compares with the toolchain's target arch (tests/conformance.rs
   target_arch), so x86-only tests skip in cross runs.
+- Merged with #9 (cached runtime object): rtcache::runtime_object takes &Toolchain; cache key includes cc args + CFLAGS; runtime object compiled via toolchain.command. LDFLAGS after the runtime object.

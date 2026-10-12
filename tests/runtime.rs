@@ -114,3 +114,28 @@ fn free_with_the_wrong_size_traps() {
 fn assert_exit_134(out: &Output) {
     assert_eq!(out.status.code(), Some(134), "stderr: {}", text(&out.stderr));
 }
+
+/// The runtime compiles on its own (`GM_RT_SEPARATE`), as Debug builds link it: every
+/// function declared `GM_API` is defined with that linkage, and nothing warns.
+#[test]
+fn compiles_separately() {
+    let toolchain = gamma::toolchain::Toolchain::from_env().expect("CC, CFLAGS and LDFLAGS");
+    if !toolchain.base_command().arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-separate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("gm_rt_separate.c");
+    std::fs::write(&src, "#define GM_RT_SEPARATE 1\n#include \"gm_rt.h\"\n#include \"gm_rt.c\"\nint gm_checks = 1;\n")
+        .unwrap();
+    let out = toolchain
+        .command(&["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-c"])
+        .arg("-I")
+        .arg(root().join("runtime"))
+        .arg(&src)
+        .arg("-o")
+        .arg(dir.join("gm_rt_separate.o"))
+        .output()
+        .expect("run the C compiler");
+    assert!(out.status.success(), "the runtime does not compile separately:\n{}", text(&out.stderr));
+}

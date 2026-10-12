@@ -38,6 +38,8 @@ pub struct Types<'a> {
     pub debug_names: bool,
     /// The Gamma names given to members so far.
     member_names: BTreeSet<String>,
+    /// `-g`: the debugger views built so far (see `super::views`).
+    pub(super) views: super::views::Views,
 }
 
 /// An integer wider than 128 bits: `bits` bits, little-endian two's complement in
@@ -84,6 +86,7 @@ impl<'a> Types<'a> {
             mirror_defs: String::new(),
             debug_names: false,
             member_names: BTreeSet::new(),
+            views: Default::default(),
         }
     }
 

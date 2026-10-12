@@ -1,5 +1,5 @@
-//! The C back end: translates a checked [`Program`] to one C translation unit
-//! and compiles it with the system C compiler.
+//! The C back end: translates a checked [`Program`] to C and compiles it with the
+//! system C compiler, together with the runtime (`runtime/gm_rt.c`).
 //!
 //! The generated code follows the interpreter's semantics exactly: values have
 //! the same bytes (see [`types`]), checks trap with the same messages, and
@@ -13,7 +13,9 @@ mod expr;
 mod fiber;
 mod func;
 mod helpers;
+mod rtcache;
 mod types;
+mod views;
 mod wide;
 
 use crate::layout::Layouts;
@@ -56,7 +58,7 @@ pub struct Options {
 
 /// The output of [`generate`].
 pub struct Generated {
-    /// The C translation unit.
+    /// The generated C code, which follows the runtime (see [`compile`]).
     pub code: String,
     /// Libraries to link (from `foreign` blocks), beyond the C library.
     pub libs: Vec<String>,
@@ -125,18 +127,18 @@ fn generate_entries(
     let consts = g.gen_consts()?;
     let exports = g.gen_exports()?;
     let main = g.gen_main(entries, select)?;
-    let mut out = String::new();
-    out.push_str(RT_H);
-    out.push('\n');
-    out.push_str(RT_C);
-    out.push_str("\n/* ---- generated ---- */\n");
-    let _ = writeln!(out, "static int gm_checks = {};", opts.checks as u8);
+    let mut out = String::from("/* ---- generated ---- */\n");
+    let _ = writeln!(out, "GM_API int gm_checks = {};", opts.checks as u8);
     out.push_str(helpers::SUPPORT);
     out.push_str(&g.ty.blob_typedefs());
     // The Gamma names of frame fields and mirror fields (with `-g`) are declared with any
     // macro of the same name suspended.
     let names = g.ty.member_names();
     out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
+    out.push_str(&debug::guard(&names, g.ty.view_defs()));
+    if opts.debug_info && matches!(prog.target.os, "Linux" | "FreeBSD") {
+        out.push_str(&debug::gdb_script_section());
+    }
     out.push_str(&g.ty.descriptors());
     out.push_str(&g.static_defs);
     out.push_str(&debug::guard(&names, &g.frames));
@@ -148,7 +150,8 @@ fn generate_entries(
     out.push_str(&g.bodies);
     // An exported symbol must not be a name the generated program uses itself.
     if !prog.exports.is_empty() {
-        let idents = c_identifiers(&out);
+        let whole = format!("{}\n{}\n{}", RT_H, RT_C, out);
+        let idents = c_identifiers(&whole);
         for (sym, f) in &prog.exports {
             if idents.contains(sym.as_str()) {
                 return Err(Unsupported {
@@ -673,35 +676,59 @@ pub struct Build {
     pub exe: PathBuf,
 }
 
+/// The C compiler flags every build uses.
+///
+/// Gamma memory is untyped bytes (allocators hand out raw memory that is then used as any
+/// type), so C's type-based alias analysis does not hold: `-fno-strict-aliasing`.
+const BASE_CFLAGS: [&str; 6] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"];
+
 /// Compiles generated C to an executable at `exe` with `toolchain` (the source is
 /// written next to it with the extension `.c`). Returns the compiler's error output
 /// on failure.
+///
+/// Checked and Fast builds compile the runtime and the generated code as one translation
+/// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:
+/// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
+/// there in the debugger) and linked with a runtime object compiled once and cached (see
+/// [`rtcache`]); without a usable cache they fall back to one translation unit.
 pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
-    let code = if opts.debug_info {
+    let opt = match (opts.debug, opts.debug_info) {
+        (true, true) => "-O0",
+        (true, false) => "-O1",
+        (false, _) => "-O2",
+    };
+    let runtime = if opts.debug { rtcache::runtime_object(toolchain, &rt_flags(opts)) } else { None };
+    let mut code = String::new();
+    if runtime.is_some() {
+        code.push_str("#define GM_RT_SEPARATE 1\n");
+        code.push_str(RT_H);
+    } else {
+        code.push_str(RT_H);
+        code.push('\n');
+        code.push_str(RT_C);
+    }
+    code.push('\n');
+    code.push_str(&generated.code);
+    if opts.debug_info {
         // The debugger finds the C file by this name, so it is absolute when possible.
         let dir = c_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let abs = std::fs::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
-        std::borrow::Cow::Owned(debug::resolve_lines(&generated.code, &abs.display().to_string()))
-    } else {
-        std::borrow::Cow::Borrowed(&generated.code)
-    };
+        code = debug::resolve_lines(&code, &abs.display().to_string());
+    }
     std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
-    // A Debug build with debug information is not optimized, so every variable and line
-    // is there in the debugger; Checked and Fast builds keep their optimization.
-    let opt = if opts.debug_info && opts.debug { "-O0" } else { "-O2" };
     // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come
-    // after the source, before the libraries, as for `make`.
-    // Gamma memory is untyped bytes (allocators hand out raw memory that is then used as
-    // any type), so C's type-based alias analysis does not hold: `-fno-strict-aliasing`.
-    let mut flags = vec!["-std=gnu11", opt, "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"];
+    // after the source and the runtime object, before the libraries, as for `make`.
+    let mut flags = BASE_CFLAGS.to_vec();
+    flags.push(opt);
     flags.extend(opts.debug_info.then_some("-g"));
     let out = toolchain
         .command(&flags)
         .arg("-o")
         .arg(exe)
         .arg(&c_file)
+        .args(&runtime)
         .args(&toolchain.ldflags)
         .args(generated.libs.iter().map(|l| format!("-l{}", l)))
         .arg("-lm")
@@ -711,6 +738,22 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
         return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     Ok(Build { c_file, exe: exe.to_path_buf() })
+}
+
+/// The flags the separately compiled runtime object of a build with `opts` is compiled
+/// with. It is optimized whatever the build's optimization: it is compiled only once.
+fn rt_flags(opts: &Options) -> Vec<String> {
+    let mut flags: Vec<String> = BASE_CFLAGS.iter().map(|f| f.to_string()).collect();
+    flags.push("-O2".into());
+    if opts.debug_info {
+        flags.push("-g".into());
+    }
+    flags
+}
+
+/// The source of the runtime compiled on its own (`GM_RT_SEPARATE`).
+fn separate_runtime_source() -> String {
+    format!("#define GM_RT_SEPARATE 1\n{}\n{}", RT_H, RT_C)
 }
 
 /// The identifiers of C source `code`, outside comments and string and character
