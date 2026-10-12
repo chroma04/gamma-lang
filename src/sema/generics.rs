@@ -1147,7 +1147,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
     fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
         if let ast::ExprKind::Ident(id) = &e.kind
-            && self.lookup_local(id.name).is_some()
+            && self.lookup_local(id.name).is_some_and(|b| !matches!(b, super::func::LocalBinding::NestedFn(_)))
         {
             self.error(
                 e.span,

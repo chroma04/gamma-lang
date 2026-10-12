@@ -211,6 +211,9 @@ pub struct Sema<'s> {
     pub import_edges: Vec<(ModuleId, ModuleId, Span)>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
+    /// The capture-free nested functions in scope in the body being checked: like
+    /// top-level functions, they may be compile-time arguments (§11.8).
+    pub local_fns: Vec<(Symbol, FnId)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
@@ -344,6 +347,7 @@ impl<'s> Sema<'s> {
             module_by_dir: HashMap::new(),
             import_edges: vec![],
             type_params: vec![],
+            local_fns: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
             yield_effect: None,

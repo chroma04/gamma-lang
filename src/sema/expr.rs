@@ -267,6 +267,10 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
             return mk(self.sema.value_params[&pid], tir::ExprKind::ValueParam(pid), span);
         }
+        // A nested function of the body whose compile-time argument this is.
+        if let Some(&(_, f)) = self.sema.local_fns.iter().rev().find(|(n, _)| *n == name) {
+            return self.fn_ref(f, span);
+        }
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
             return self.decl_expr(d, name, span);

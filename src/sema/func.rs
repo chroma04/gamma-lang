@@ -113,7 +113,7 @@ pub struct FnCx<'a, 's> {
     scope_depths: Vec<u32>,
     /// For each scope, the length of `sema.type_params` when it began: local type
     /// aliases are visible to type expressions through that list.
-    scope_types: Vec<usize>,
+    scope_types: Vec<(usize, usize)>,
     /// Nested function bodies, finalized together with the enclosing body.
     pub nested: Vec<NestedFn>,
     /// Set while checking a handler clause (§12.5): how its exits behave.
@@ -181,6 +181,7 @@ impl<'s> Sema<'s> {
         let ExprKind::Fn(lit) = &b.init.kind else { return };
         let sig = self.sigs[&fn_id].clone();
         self.checking.push(fn_id);
+        let outer_fns = std::mem::take(&mut self.local_fns);
         // A generic body is checked once, with its type parameters opaque (§16.1).
         let scope_len = self.type_params.len();
         let value_scope_len = self.value_scope.len();
@@ -218,6 +219,7 @@ impl<'s> Sema<'s> {
         let (body, locals) = cx.finish(body);
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
+        self.local_fns = outer_fns;
         self.checking.pop();
         let def = &mut self.prog.fns[fn_id.index()];
         def.params = params;
@@ -430,14 +432,15 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn push_scope(&mut self) {
         self.scopes.push(vec![]);
         self.scope_depths.push(self.depth());
-        self.scope_types.push(self.sema.type_params.len());
+        self.scope_types.push((self.sema.type_params.len(), self.sema.local_fns.len()));
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
         self.scope_depths.pop();
-        if let Some(n) = self.scope_types.pop() {
+        if let Some((n, f)) = self.scope_types.pop() {
             self.sema.type_params.truncate(n);
+            self.sema.local_fns.truncate(f);
         }
     }
 

@@ -231,6 +231,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 tir::Stmt::Let { local: id, init: Some(v) }
             }
+            tir::ExprKind::FnRef(f) => {
+                self.sema.local_fns.push((name.name, f));
+                tir::Stmt::Expr(super::func::unit(span))
+            }
             _ => tir::Stmt::Expr(super::func::unit(span)),
         }
     }
