@@ -1,4 +1,4 @@
-// std/text: Unicode text segmentation.
+// std/text: Unicode text segmentation and UTF-8 encoding of scalar values.
 //
 // A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
 // each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
@@ -175,4 +175,61 @@ pub graphemes :: fn(s: string) \ {Yield(string)} {
         yield(rest[0..n])
         rest = rest[n..rest.len]
     }
+}
+
+// ---------------------------------------------------------------------------------
+// UTF-8 scalar values
+// ---------------------------------------------------------------------------------
+//
+// Reading text as scalar values is `runes(s)`, and checking it is `s.utf8_valid()`;
+// these functions step through a string without an iterator and write scalar values.
+
+/// The first Unicode scalar value of `s` and the number of bytes it takes, or `null` if
+/// `s` is empty or does not start with a well-formed UTF-8 sequence (a stray
+/// continuation byte, a truncated or overlong sequence, a surrogate, or a value above
+/// U+10FFFF). Unlike `runes`, ill-formed input is reported, not replaced.
+pub decode_rune :: fn(s: string) -> ?(rune: u32, len: usize) {
+    if s.len is 0 { return null }
+    d := decode(s, 0)
+    // `decode` gives U+FFFD for ill-formed input, always with fewer than 3 bytes unless
+    // the sequence is a genuine U+FFFD (EF BF BD).
+    if d.r is 0xfffd and not (d.len is 3 and s[0] is 0xef) { return null }
+    return (rune: d.r, len: d.len)
+}
+
+/// Writes the UTF-8 encoding of `cp` at the start of `buf` and returns the bytes written,
+/// a slice of `buf`; `null` if `cp` is a surrogate (U+D800 to U+DFFF) or above U+10FFFF.
+/// Traps if `buf` is shorter than 4 bytes.
+pub encode_rune :: fn(cp: u32, buf: []u8) -> ?string {
+    assert(buf.len >= 4, "text: encode_rune needs a buffer of at least 4 bytes")
+    if cp >= 0xd800 and cp <= 0xdfff { return null }
+    if cp < 0x80 {
+        buf[0] = cp.trunc(u8)
+        return buf[0..1]
+    }
+    if cp < 0x800 {
+        buf[0] = (0xc0 | (cp >> 6)).trunc(u8)
+        buf[1] = (0x80 | (cp & 0x3f)).trunc(u8)
+        return buf[0..2]
+    }
+    if cp < 0x10000 {
+        buf[0] = (0xe0 | (cp >> 12)).trunc(u8)
+        buf[1] = (0x80 | ((cp >> 6) & 0x3f)).trunc(u8)
+        buf[2] = (0x80 | (cp & 0x3f)).trunc(u8)
+        return buf[0..3]
+    }
+    if cp > 0x10ffff { return null }
+    buf[0] = (0xf0 | (cp >> 18)).trunc(u8)
+    buf[1] = (0x80 | ((cp >> 12) & 0x3f)).trunc(u8)
+    buf[2] = (0x80 | ((cp >> 6) & 0x3f)).trunc(u8)
+    buf[3] = (0x80 | (cp & 0x3f)).trunc(u8)
+    return buf[0..4]
+}
+
+/// Appends the UTF-8 encoding of `cp` to `out`. Traps if `cp` is a surrogate or above
+/// U+10FFFF.
+pub append_rune :: fn(out: ^List(u8), cp: u32) -> AllocError!() {
+    tmp: [4]u8 = ---
+    enc := encode_rune(cp, tmp[..]) else trap("text: append_rune of a value that is not a scalar value")
+    try out.extend(enc)
 }

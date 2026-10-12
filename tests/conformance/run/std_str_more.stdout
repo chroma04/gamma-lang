@@ -1,0 +1,48 @@
+"bar" null null
+"foo" null null
+"" "foo" ""
+6 4 null
+0 0 null
+2 2
+4 1 2
+0 0 1
+4 0
+replace(hello world, o, 0) = <hell0 w0rld> true
+replace(aaaa, aa, b) = <bb> true
+replace(aaa, aa, b) = <ba> true
+replace(abc, abc, ) = <> true
+replace(abc, x, y) = <abc> true
+replace(, x, y) = <> true
+replace(a-b-c, -, --) = <a--b--c> true
+replace(xaxbx, x, ) = <ab> true
+replace(abcabc, bc, bcbc) = <abcbcabcbc> true
+repeat(ab, 3) = <ababab>
+repeat(ab, 0) = <>
+repeat(, 5) = <>
+repeat(-, 1) = <->
+split_into(a,b,c,d, ,, 2) = 2: <a> <b,c,d>
+split_into(a,b,c,d, ,, 4) = 4: <a> <b> <c> <d>
+split_into(a,b,c,d, ,, 6) = 4: <a> <b> <c> <d>
+split_into(a,b, ,, 5) = 2: <a> <b>
+split_into(a,,b, ,, 3) = 3: <a> <> <b>
+split_into(,, ,, 3) = 2: <> <>
+split_into(, ,, 2) = 1: <>
+split_into(abc, ,, 1) = 1: <abc>
+split_into(a::b::c, ::, 2) = 2: <a> <b::c>
+split_into(a,b, , 3) = 1: <a,b>
+split_into(a,b, ,, 0) = 0:
+"a" "c" null
+"" "" null
+"abc" null
+split_any(a, b;c, , ;): <a> <> <b> <c>
+split_any(a,b, ,): <a> <b>
+split_any(abc, ): <abc>
+split_any(, ,): <>
+split_any(,,, ,): <> <> <>
+split_any(a	b c
+d,  	
+): <a> <b> <c> <d>
+split_any(x, xyz): <> <>
+<copy me> 7 <> 0
+true true true
+true true
