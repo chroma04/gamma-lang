@@ -17,7 +17,7 @@ include_str!, concatenated into ONE translation unit with the generated code). B
 
 ## Functions and frames
 - Every Gamma fn → `static RET fN(void *env, gm_node *cx, [gm_node *inst if Clause], params…)`
-  (s6: a >16 B result goes through a leading `void *gm_out` and RET is void; decisions/015).
+  (s6: a >16 B result goes through a leading `void *gm_out` and RET is void; decisions/016).
   Uniform so fn pointers/closures can be called without knowing the target.
 - Locals live in a frame struct `struct frN { gm_frame h; …locals; ret slot; with slots }`, a C
   local `F`; `h.up` = env (parent frame), `h.clause_lit` flag. Upvar{levels} walks h.up.

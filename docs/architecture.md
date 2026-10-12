@@ -290,8 +290,14 @@ the value can later be placed in a compiled program's read-only data.
 
 `gamma build` and `gamma run --backend=c` translate the checked program to C
 (`src/cgen/`) and compile it, with the runtime (`runtime/gm_rt.h`,
-`runtime/gm_rt.c`), using the system C compiler (`$CC`, default `cc`) in GNU C11
-mode. The generated code follows the interpreter exactly, and the conformance
+`runtime/gm_rt.c`), using the system C compiler (`$CC`, default `cc`, plus `$CFLAGS`
+and `$LDFLAGS`; see `src/toolchain.rs`) in GNU C11 mode, with `-fwrapv` and
+`-fno-strict-aliasing` (Gamma memory is untyped bytes). The compilation target is
+decided before semantic analysis, because layouts and the `target` module depend
+on it: the default compiler means the host, and any other toolchain is asked for
+its predefined macros (`$CC $CFLAGS -dM -E`). The checked program records its
+target (`Program::target`), and the interpreter and the C back end both use it.
+The generated code follows the interpreter exactly, and the conformance
 runner checks this: every `run` test also runs natively and must print the same
 output and exit with the same status.
 
@@ -310,7 +316,8 @@ How the runtime is linked depends on the build mode:
   (`src/cgen/rtcache.rs`) is the directory `$GAMMA_CACHE_DIR` (an empty value
   turns it off), else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`
   (`~/Library/Caches/gamma` on macOS). An object's name is a hash of the runtime
-  source, the compiler's command and `--version` output, and the flags, so a
+  source, the compiler's command (with its arguments and `$CFLAGS`) and `--version`
+  output, and the flags, so a
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
   build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
   into Cargo's target directory.

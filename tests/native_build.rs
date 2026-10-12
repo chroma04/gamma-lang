@@ -17,8 +17,8 @@ main :: fn() \\ {Out} {
 ";
 
 fn c_compiler_available() -> bool {
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success())
+    gamma::toolchain::Toolchain::from_env()
+        .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
 /// A fresh directory for test `name`, holding the program.

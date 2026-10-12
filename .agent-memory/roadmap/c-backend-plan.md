@@ -1,10 +1,9 @@
 # C back end strengthening plan (from the Oct 9 LLVM evaluation; prioritized in session 5)
-Status: 1, 7 done (s5), 2 done (s6), 4–6 done (s6, decisions/015). Order = value / cost. Keep every item differential-tested on both back ends.
+Status: 1, 7 done (s5), 2, 3, 4–6 done (s6; 4–6: decisions/016). Order = value / cost. Keep every item differential-tested on both back ends.
 1. DONE Source-level debugging: `-g` (decisions/013).
 2. DONE Faster native builds (decisions/014): cached runtime object + -O1 for Debug.
-3. Toolchain/cross: `CC` with arguments (`zig cc -target …`, `clang --target=…`) — today
-   Command::new($CC) fails on spaces; honor CFLAGS/LDFLAGS; layouts use Target::host() so a
-   cross target needs Target from flags; wasm32-wasi without fibers.
+3. DONE (s6, decisions/015) Toolchain/cross: CC with args, CFLAGS/LDFLAGS, target probed from
+   the compiler. Left: big-endian runtime, wasm32-wasi (no fibers/threads), `--target=` flag.
 4. DONE s6 differently (measured flag = wash; static test removal instead). Exit flag (Appendix D.2): calls test the TLS `gm_unw.kind` after every effectful call and
    every frame keeps locals in struct F; return the flag (or a bool) instead and keep
    uncaptured locals as C locals (needs escape info: closures/handler clauses via env).

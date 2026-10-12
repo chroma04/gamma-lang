@@ -19,9 +19,10 @@ mod types;
 mod views;
 mod wide;
 
-use crate::layout::{Layouts, Target};
+use crate::layout::Layouts;
 use crate::source::{SourceMap, Span};
 use crate::tir::{FnId, FnKind, Program};
+use crate::toolchain::Toolchain;
 use crate::types::{AdtId, CallConv, EffectRef, Ty, TyKind};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -85,7 +86,11 @@ fn generate_entries(
     select: bool,
     opts: &Options,
 ) -> CResult<Generated> {
-    let target = Target::host();
+    let target = prog.target.clone();
+    // The runtime and the generated code read integers as little-endian bytes.
+    if !target.little_endian {
+        return unsupported(Span::DUMMY, "big-endian targets");
+    }
     let lookup = |id: AdtId| prog.adts.get(&id);
     let layouts = Layouts::new(target, &lookup);
     let mut ty = Types::new(prog, &layouts);
@@ -137,7 +142,7 @@ fn generate_entries(
     let names = g.ty.member_names();
     out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
     out.push_str(&debug::guard(&names, g.ty.view_defs()));
-    if opts.debug_info && matches!(Target::host().os, "Linux" | "FreeBSD") {
+    if opts.debug_info && matches!(prog.target.os, "Linux" | "FreeBSD") {
         out.push_str(&debug::gdb_script_section());
     }
     out.push_str(&g.ty.descriptors());
@@ -816,29 +821,30 @@ pub struct Build {
 
 /// The C compiler flags every build uses.
 ///
-/// Values are blobs of bytes written and read piecewise with memcpy; type-based alias
-/// analysis buys nothing on such code, and gcc 13 at -O2 drops some of those writes under
-/// it (a slice length written into a temporary was lost), hence `-fno-strict-aliasing`.
+/// Gamma memory is untyped bytes (allocators hand out raw memory that is then used as any
+/// type, and values are blobs written and read piecewise with memcpy), so C's type-based
+/// alias analysis does not hold: `-fno-strict-aliasing`. Without it gcc 13 at -O2 drops
+/// some of those writes (a slice length written into a temporary was lost).
 const BASE_CFLAGS: [&str; 6] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"];
 
-/// Compiles generated C to an executable at `exe` (the source is written next to it
-/// with the extension `.c`). Returns the compiler's error output on failure.
+/// Compiles generated C to an executable at `exe` with `toolchain` (the source is
+/// written next to it with the extension `.c`). Returns the compiler's error output
+/// on failure.
 ///
 /// Checked and Fast builds compile the runtime and the generated code as one translation
 /// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:
 /// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
 /// there in the debugger) and linked with a runtime object compiled once and cached (see
 /// [`rtcache`]); without a usable cache they fall back to one translation unit.
-pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
+pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
     let opt = match (opts.debug, opts.debug_info) {
         (true, true) => "-O0",
         (true, false) => "-O1",
         (false, _) => "-O2",
     };
-    let runtime = if opts.debug { rtcache::runtime_object(&cc, &rt_flags(opts)) } else { None };
+    let runtime = if opts.debug { rtcache::runtime_object(toolchain, &rt_flags(opts)) } else { None };
     let mut code = String::new();
     if runtime.is_some() {
         code.push_str("#define GM_RT_SEPARATE 1\n");
@@ -857,18 +863,22 @@ pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
         code = debug::resolve_lines(&code, &abs.display().to_string());
     }
     std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
-    let out = std::process::Command::new(&cc)
-        .args(BASE_CFLAGS)
-        .arg(opt)
-        .args(opts.debug_info.then_some("-g"))
+    // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come
+    // after the source and the runtime object, before the libraries, as for `make`.
+    let mut flags = BASE_CFLAGS.to_vec();
+    flags.push(opt);
+    flags.extend(opts.debug_info.then_some("-g"));
+    let out = toolchain
+        .command(&flags)
         .arg("-o")
         .arg(exe)
         .arg(&c_file)
         .args(&runtime)
+        .args(&toolchain.ldflags)
         .args(generated.libs.iter().map(|l| format!("-l{}", l)))
         .arg("-lm")
         .output()
-        .map_err(|e| format!("cannot run the C compiler `{}`: {}", cc, e))?;
+        .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
     if !out.status.success() {
         return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }

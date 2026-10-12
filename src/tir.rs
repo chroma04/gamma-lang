@@ -391,6 +391,9 @@ pub struct Program {
     /// The `ctl` operations (§14), by effect and operation index: performing one
     /// suspends the running fiber.
     pub ctl_ops: std::collections::HashSet<(EffectId, u32)>,
+    /// The target the program was checked for: layouts and `target` constants
+    /// depend on it, so back ends use the same one.
+    pub target: crate::layout::Target,
 }
 
 /// Ids of the predeclared ambient effects, when the program uses them.

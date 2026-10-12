@@ -1,12 +1,15 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 6, 2026-10-12) — PRs #1–#11 merged; s6 = several parallel Claude Projects threads
+## State (session 6, 2026-10-12) — PRs #1–#12 merged; s6 = several parallel Claude Projects threads
 - s6 thread "C perf" (branch claude/project-thread-8a201g): items 4–6 — nested handler
   specialization, exit-test omission, gm_out results, in-place construction, borrowed params,
-  -fno-strict-aliasing (decisions/015, sessions/s06). Other s6 threads: build speed,
+  -fno-strict-aliasing (decisions/016, sessions/s06). Other s6 threads: build speed,
   cross-compiling, debugger views (expect merges touching src/cgen).
 - s6 thread "Speed up native builds" (branch claude/project-thread-1hib7q): Debug builds link a
-  cached runtime object, -O1 (decisions/014).
+  cached runtime object, -O1 (decisions/014). C codegen thread too.
+- s6 thread "Support cross-compiling" (branch claude/project-thread-y3y0bn, PR #12): CC with
+  args, CFLAGS/LDFLAGS, target probed from the compiler (decisions/015); suite passes
+  cross-compiled for aarch64 under qemu.
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md. Thread "Better debugger
   views" (branch claude/project-thread-scimha): plan item 7, typed views + gdb printers.
@@ -25,7 +28,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive the s6 PRs green; plan item 3 (cross) open; leftover: uncaptured locals as C
+1. Drive the s6 PRs green; C back end plan items 1–7 done; leftover: uncaptured locals as C
    locals (c-backend-plan.md end).
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
@@ -41,10 +44,11 @@
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
                   · 013 debug info (-g: #line per C line, named frame fields)
                   · 014 native build speed (cached runtime object, GM_API linkage)
-                  · 015 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
+                  · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
+                  · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
-                  · s05-2026-10-11.md · s06-2026-10-12.md
+                  · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
 - gotchas/        environment.md
 
 ## Conventions

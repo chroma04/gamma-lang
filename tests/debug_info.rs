@@ -72,8 +72,8 @@ main :: fn() \\ {Out} {
 ";
 
 fn c_compiler_available() -> bool {
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success())
+    gamma::toolchain::Toolchain::from_env()
+        .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
 /// Writes the program to a fresh directory and builds it with `args`; returns the

@@ -275,6 +275,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program>
     if sema.sess.diags.has_errors() {
         return None;
     }
+    sema.prog.target = sema.target.clone();
     Some(sema.prog)
 }
 
@@ -285,9 +286,10 @@ impl<'s> Sema<'s> {
             crate::interp::Mode::Checked => "Checked",
             crate::interp::Mode::Fast => "Fast",
         };
+        let target = sess.target.clone();
         Sema {
             sess,
-            target: Target::host(),
+            target,
             build_mode,
             caller_site: None,
             fuel: consteval::STEP_BUDGET,

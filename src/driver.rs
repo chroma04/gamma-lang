@@ -17,6 +17,8 @@ pub struct Session {
     pub mode: crate::interp::Mode,
     /// `-g`: native builds carry debug information mapping them to the source.
     pub debug_info: bool,
+    /// The compilation target (§3.6): layouts and the `target` module follow it.
+    pub target: crate::layout::Target,
 }
 
 impl Default for Session {
@@ -33,6 +35,7 @@ impl Session {
             ids: NodeIdGen::new(),
             mode: crate::interp::Mode::Debug,
             debug_info: false,
+            target: crate::layout::Target::host(),
         }
     }
 

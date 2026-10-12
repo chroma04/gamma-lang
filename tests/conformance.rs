@@ -12,8 +12,9 @@
 //!   with the sibling `<name>.stderr`, for tests of trap reports.
 //! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in
 //!   that build mode (default: debug).
-//! - `//! arch: x86_64` (or `aarch64`, …) runs the test only on hosts of that
-//!   architecture, for tests of features that exist on some targets only.
+//! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for
+//!   that architecture (the host's, or the one a cross compiler in `CC` targets),
+//!   for tests of features that exist on some targets only.
 //! - `//! filter: text` runs a `test` test with `gamma test --filter=text`.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
@@ -196,6 +197,23 @@ fn gm_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The architecture the tests compile for, as `std::env::consts::ARCH` names it: the
+/// target of the C compiler in `CC` and `CFLAGS`, which is the host's by default.
+fn target_arch() -> &'static str {
+    static ARCH: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ARCH.get_or_init(|| {
+        let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
+        match target.map(|t| t.arch) {
+            Ok("X86_64") => "x86_64",
+            Ok("Aarch64") => "aarch64",
+            Ok("Riscv64") => "riscv64",
+            Ok("Wasm32") => "wasm32",
+            Ok(_) => "other",
+            Err(_) => std::env::consts::ARCH,
+        }
+    })
+}
+
 /// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
 fn c_backend_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -203,8 +221,8 @@ fn c_backend_available() -> bool {
         if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
             return false;
         }
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-        Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success())
+        gamma::toolchain::Toolchain::from_env()
+            .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
     })
 }
 
@@ -287,7 +305,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         (vec![path.to_path_buf()], path.to_path_buf())
     };
     let exp = parse_expectations(&files)?;
-    if exp.arch.as_deref().is_some_and(|a| a != std::env::consts::ARCH) {
+    if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {
         return Ok(());
     }
     let command = match exp.stage {

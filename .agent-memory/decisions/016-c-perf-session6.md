@@ -1,4 +1,4 @@
-# 015 C back end performance (session 6): exits, nested specialization, big values
+# 016 C back end performance (session 6): exits, nested specialization, big values
 Bench files were in scratchpad (adapter/tree/fib/closure/bigcopy .gm); numbers gcc, fast mode.
 ## Exit flag (D.2): measured, not adopted
 - Hand C microbench (recursive fib with esc effect): returned {v, flag} pair vs TLS gm_unw
