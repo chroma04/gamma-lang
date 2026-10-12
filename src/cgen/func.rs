@@ -25,15 +25,25 @@ pub enum Scope<'a> {
     With { label: LabelId, end: String },
 }
 
-/// A clone of a function specialized for the handler literal installed around its
-/// call (Appendix D.3): performs of that effect at the function's own level call the
-/// clause directly, and the C compiler can inline it.
+/// A specialization (Appendix D.3): the handler literal whose node is the `cx` of a
+/// clone of a function, so performs of its effect at the clone's own level call the
+/// clause directly and the C compiler can inline it. Interned by `Gen::spec`; the
+/// number names clones (`gm_fN_sK`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Spec {
+pub struct Spec(pub u32);
+
+/// What a [`Spec`] stands for.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct SpecKey {
     /// The handler literal.
     pub handler: u32,
     /// The effect instance it handles (see `Gen::effect_id`).
     pub effect: u32,
+    /// Set when the handler was installed by a clone specialized for `outer` at its own
+    /// level: the handler's clauses run with `outer`'s node as their context, so they
+    /// are called as clones specialized for `outer` too (an iterator adapter's loop
+    /// body yields straight into the loop body of its consumer).
+    pub outer: Option<Spec>,
 }
 
 pub struct FnGen<'g, 'a> {
@@ -46,6 +56,11 @@ pub struct FnGen<'g, 'a> {
     pub spec: Option<Spec>,
     /// The call that a `with` being generated specializes for its handler.
     pub spec_call: Option<(*const Expr, Spec)>,
+    /// The call expression whose large result goes straight into a destination, and
+    /// that destination (a C lvalue); see `expr_into`.
+    pub dest_call: Option<(*const Expr, String)>,
+    /// The destination of the call being emitted, from `dest_call`.
+    pub call_dest: Option<String>,
     pub def: &'a FnDef,
     pub out: String,
     pub indent: usize,
@@ -60,6 +75,9 @@ pub struct FnGen<'g, 'a> {
     pub outlined: bool,
     /// The bytes of the temporaries declared so far, for the stack check.
     pub temp_bytes: u64,
+    /// For each parameter, by position: whether it is read in place, through its
+    /// address `aN`, instead of from a copy in the frame (see `Gen::borrowed_params`).
+    pub borrowed: Vec<bool>,
 }
 
 /// Generates function `f` into `g`, or its clone specialized by `spec`.
@@ -112,10 +130,12 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
     let plain = g.is_plain(f);
-    let void_ret = plain && def.ret.is_unit();
-    // Large values cross by address (`Types::by_ref`); a plain function's C-ABI entry
-    // point is then a wrapper (`Gen::needs_wrapper`).
-    let blob_ret = !plain || g.ty.by_ref(def.ret);
+    // Large values cross by address (`Types::by_ref`): a large result is written to
+    // `gm_out`, and a plain function's C-ABI entry point is then a wrapper
+    // (`Gen::needs_wrapper`).
+    let out_ret = g.ty.by_ref(def.ret);
+    let void_ret = (plain && def.ret.is_unit()) || out_ret;
+    let blob_ret = !plain;
     let ret = if void_ret {
         "void".to_string()
     } else if blob_ret {
@@ -123,8 +143,10 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     } else {
         g.ty.plain_cty(def.ret)
     };
-    let mut params =
-        if plain { vec![] } else { vec!["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()] };
+    let mut params = if out_ret { vec!["void *gm_out".to_string()] } else { vec![] };
+    if !plain {
+        params.extend(["void *env".to_string(), "gm_node *cx".into(), "gm_node *inst".into()]);
+    }
     for (i, p) in def.params.iter().enumerate() {
         let t = def.locals[p.index()].ty;
         let c = if plain && !g.ty.by_ref(t) { g.ty.plain_cty(t) } else { g.ty.param_cty(t) };
@@ -136,6 +158,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     if spec.is_none() && g.needs_wrapper(f) {
         c_abi_wrapper(g, f, def);
     }
+    let borrowed = g.borrowed_params(f);
     let sig = format!(
         "static __attribute__((aligned(4))) {}{}{} {}({})",
         hint_attrs(def.hints),
@@ -149,7 +172,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     );
     let _ = writeln!(g.protos, "{};", sig);
     let tag = match spec {
-        Some(s) => format!("{}_h{}", f.0, s.handler),
+        Some(s) => format!("{}_s{}", f.0, s.0),
         None => f.0.to_string(),
     };
     let mut fg = FnGen {
@@ -158,6 +181,8 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         tag,
         spec,
         spec_call: None,
+        dest_call: None,
+        call_dest: None,
         def,
         out: String::new(),
         indent: 1,
@@ -167,6 +192,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         no_check: false,
         outlined: false,
         temp_bytes: 0,
+        borrowed,
     };
     let _ = writeln!(fg.out, "{} {{", sig);
     fg.src_line(def.span);
@@ -198,6 +224,9 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     fg.line("(void)inst;");
     for (i, p) in def.params.iter().enumerate() {
         let t = def.locals[p.index()].ty;
+        if fg.borrowed[i] {
+            continue;
+        }
         if fg.g.ty.by_ref(t) {
             fg.line(&format!("memcpy(&F.l{}, a{}, sizeof F.l{});", p.0, i, p.0));
             continue;
@@ -205,13 +234,25 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         let a = if plain { fg.gamma_value(t, &format!("a{}", i)) } else { format!("a{}", i) };
         fg.line(&format!("F.l{} = {};", p.0, a));
     }
-    let v = fg.expr(body)?;
-    if !body.ty.is_never() {
-        fg.line(&format!("F.ret = {};", v));
+    if out_ret && fg.builds_in_place(body) {
+        // Built straight in the caller's destination: the body has no `defer`.
+        let ct = fg.g.ty.cty(def.ret);
+        fg.expr_into(body, &format!("(*({} *)gm_out)", ct))?;
+        fg.line("goto gm_fdone;");
+    } else if !body.ty.is_never() {
+        fg.expr_into(body, "F.ret")?;
+    } else {
+        fg.expr(body)?;
     }
     // Debug builds fill a dead frame with 0xDD (§18.3).
     let kill = if fg.g.opts.debug { format!("{pop}memset(&F, 0xDD, sizeof F); ") } else { String::new() };
-    if void_ret {
+    if out_ret {
+        // `gm_fdone`: a `return` that wrote its value to `gm_out` itself.
+        let _ = write!(
+            fg.out,
+            "gm_fret:\n    memcpy(gm_out, &F.ret, sizeof F.ret);\ngm_fdone:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n"
+        );
+    } else if void_ret {
         let _ = write!(fg.out, "gm_fret:\n    {kill}return;\ngm_fprop:\n    {kill}return;\n}}\n");
     } else if kill.is_empty() {
         let r = if !blob_ret { fg.plain_value(def.ret, "F.ret") } else { "F.ret".into() };
@@ -223,7 +264,9 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         let _ = write!(fg.out, "gm_fret:\n    {tail}\ngm_fprop:\n    {tail}\n}}\n");
     }
     // The epilogue copies the result (and a plain function converts it).
-    fg.temp_bytes += 2 * fg.g.ty.size(def.ret);
+    if !out_ret {
+        fg.temp_bytes += 2 * fg.g.ty.size(def.ret);
+    }
     fg.end_lines();
     let out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
     g.bodies.push_str(&out);
@@ -247,6 +290,16 @@ fn c_abi_wrapper(g: &mut Gen, f: FnId, def: &FnDef) {
     let call = format!("{}({})", g.fn_name(f), args.join(", "));
     let (ret, body) = if def.ret.is_unit() {
         ("void".to_string(), format!("{};", call))
+    } else if g.ty.by_ref(def.ret) {
+        let r = g.ty.plain_cty(def.ret);
+        let c = g.ty.cty(def.ret);
+        args.insert(0, "&gm_r".into());
+        let call = format!("{}({})", g.fn_name(f), args.join(", "));
+        let v = match g.ty.mirror(def.ret) {
+            Some(m) => format!("GM_CONV({}, gm_r)", m),
+            None => "gm_r".into(),
+        };
+        (r, format!("{} gm_r; {}; return {};", c, call, v))
     } else {
         let r = g.ty.plain_cty(def.ret);
         let v = match g.ty.mirror(def.ret) {
@@ -362,6 +415,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     // --- frames ------------------------------------------------------------------------------
+
+    /// The address (`uint8_t *`) of local `l`: in the frame, or the caller's value for
+    /// a parameter read in place.
+    pub fn local_addr(&self, l: crate::tir::LocalId) -> String {
+        match self.def.params.iter().position(|p| *p == l) {
+            Some(i) if self.borrowed[i] => format!("((uint8_t *)a{})", i),
+            _ => format!("((uint8_t *)&F.l{})", l.0),
+        }
+    }
 
     /// The frame `levels` up the capture chain: a `gm_frame *` expression and its function.
     pub fn frame_up(&self, levels: u32) -> (String, FnId) {
@@ -534,6 +596,85 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     // --- blocks and statements ------------------------------------------------------------------
 
+    /// True if `e` is a large value (`Types::by_ref`) that `expr_into` builds in its
+    /// destination rather than in a temporary copied there.
+    pub fn builds_in_place(&mut self, e: &Expr) -> bool {
+        if !self.g.ty.by_ref(e.ty) || e.ty.is_never() {
+            return false;
+        }
+        match &e.kind {
+            ExprKind::Call { .. } | ExprKind::Array(_) => true,
+            ExprKind::Aggregate(_) => self.g.ty.bits_layout(e.ty).is_none(),
+            ExprKind::Block(b) => {
+                !b.stmts.iter().any(|s| matches!(s, Stmt::Defer { .. }))
+                    && b.tail.as_ref().is_some_and(|t| self.builds_in_place(t))
+            }
+            _ => false,
+        }
+    }
+
+    /// True if no deferred statement is pending in the function: a `return` runs none.
+    pub fn no_defers(&self) -> bool {
+        self.scopes.iter().all(|s| !matches!(s, Scope::Block(d) if !d.is_empty()))
+    }
+
+    /// Evaluates `e` and stores its value in `dest`, a C lvalue of its type. A large
+    /// value (see `builds_in_place`) is built there instead of in a temporary: a call
+    /// writes its result there and an aggregate stores its elements there. Either way
+    /// `dest` is written only once everything in `e` has been evaluated, as an
+    /// assignment would, so `e` may read what `dest` holds.
+    pub fn expr_into(&mut self, e: &'a Expr, dest: &str) -> CResult<()> {
+        if !self.builds_in_place(e) {
+            let v = self.expr(e)?;
+            if !e.ty.is_never() {
+                self.line(&format!("{} = {};", dest, v));
+            }
+            return Ok(());
+        }
+        match &e.kind {
+            ExprKind::Call { .. } => {
+                self.dest_call = Some((e as *const Expr, dest.to_string()));
+                let v = self.expr(e);
+                self.dest_call = None;
+                let v = v?;
+                if v != dest {
+                    self.line(&format!("{} = {};", dest, v));
+                }
+            }
+            ExprKind::Aggregate(elems) | ExprKind::Array(elems) => {
+                let mut vals = vec![];
+                for x in elems {
+                    vals.push(self.expr(x)?);
+                }
+                let offs: Vec<u64> = match &e.kind {
+                    ExprKind::Aggregate(_) => self.g.ty.offsets(e.ty),
+                    _ => elems.iter().enumerate().map(|(i, x)| i as u64 * self.g.ty.size(x.ty)).collect(),
+                };
+                // Padding is zero, as in the interpreter.
+                let filled: u64 = elems.iter().map(|x| self.g.ty.size(x.ty)).sum();
+                if filled < self.g.ty.size(e.ty) {
+                    self.line(&format!("memset(&{}, 0, sizeof {});", dest, dest));
+                }
+                for (i, (x, v)) in elems.iter().zip(&vals).enumerate() {
+                    let c = self.g.ty.cty(x.ty);
+                    self.line(&format!("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, offs[i], v));
+                }
+            }
+            ExprKind::Block(b) => {
+                self.scopes.push(Scope::Block(vec![]));
+                let r = self.stmts(b).and_then(|_| {
+                    let t = b.tail.as_ref().unwrap();
+                    self.src_line(t.span);
+                    self.expr_into(t, dest)
+                });
+                self.scopes.pop();
+                r?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
     /// A block. Temporaries have unique names, so no C braces are needed and the
     /// block's value stays visible after it.
     pub fn block(&mut self, b: &'a Block) -> CResult<String> {
@@ -555,6 +696,18 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn block_inner(&mut self, b: &'a Block, result: &mut Option<String>) -> CResult<()> {
+        self.stmts(b)?;
+        if let Some(t) = &b.tail {
+            self.src_line(t.span);
+            let v = self.expr(t)?;
+            // Defers run after the value is computed, so it is kept in a temporary.
+            *result = Some(if t.ty.is_never() { self.zero(t.ty) } else { self.tmp(t.ty, &v) });
+        }
+        Ok(())
+    }
+
+    /// The statements of block `b`.
+    fn stmts(&mut self, b: &'a Block) -> CResult<()> {
         // Each statement's temporaries are in a C block of their own, so the C compiler
         // can reuse their stack space for the next statement's.
         for s in &b.stmts {
@@ -567,12 +720,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.indent -= 1;
             self.line("}");
             r?;
-        }
-        if let Some(t) = &b.tail {
-            self.src_line(t.span);
-            let v = self.expr(t)?;
-            // Defers run after the value is computed, so it is kept in a temporary.
-            *result = Some(if t.ty.is_never() { self.zero(t.ty) } else { self.tmp(t.ty, &v) });
         }
         Ok(())
     }
@@ -592,10 +739,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Stmt::Let { local, init } => {
                 if let Some(init) = init {
-                    let v = self.expr(init)?;
-                    if !init.ty.is_never() {
-                        self.line(&format!("F.l{} = {};", local.0, v));
-                    }
+                    self.expr_into(init, &format!("F.l{}", local.0))?;
                 }
             }
             Stmt::LetTuple { locals, init } => {
@@ -639,6 +783,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let p = self.place_addr(place)?;
                 let a = self.place_addr(value)?;
                 self.line(&format!("memmove({}, {}, {});", p, a, self.g.ty.size(value.ty)));
+            }
+            Stmt::Assign { place, value } if self.builds_in_place(value) => {
+                let p = self.place_addr(place)?;
+                let c = self.g.ty.cty(place.ty);
+                self.expr_into(value, &format!("(*({} *){})", c, p))?;
             }
             Stmt::Assign { place, value } => {
                 let p = self.place_addr(place)?;

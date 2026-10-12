@@ -14,3 +14,7 @@
 - Force-push is denied by the permission classifier: never push a commit you may want to drop.
   Never make memory-only commits (their messages can't avoid mentioning notes); fold memory
   edits into code commits.
+- Don't edit src/ while a background `cargo test` runs: the CC=clang second run rebuilds
+  with the half-edited sources. Docs/memory edits are fine.
+- To find which gcc pass breaks generated C: compile with -fno-<pass> flags one by one, then
+  bisect functions with `__attribute__((optimize("no-strict-aliasing")))` (s6 found main()).

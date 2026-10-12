@@ -7,6 +7,7 @@
 //! descriptors. The design is described in `docs/architecture.md`.
 
 mod arith;
+mod borrow;
 pub mod debug;
 mod elementwise;
 mod expr;
@@ -102,8 +103,13 @@ fn generate_entries(
         reachable: vec![],
         queued: vec![false; prog.fns.len()],
         frames_done: vec![false; prog.fns.len()],
-        specs: std::collections::HashSet::new(),
+        spec_keys: vec![],
+        spec_ids: HashMap::new(),
+        clones: std::collections::HashSet::new(),
         spec_queue: vec![],
+        spec_tables: std::collections::HashSet::new(),
+        exits: HashMap::new(),
+        pure_memo: HashMap::new(),
         handler_tables: String::new(),
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
@@ -178,9 +184,18 @@ pub struct Gen<'a> {
     queued: Vec<bool>,
     /// Functions whose frame struct has been emitted.
     frames_done: Vec<bool>,
+    /// The specializations interned so far, by number, and the numbers by key.
+    spec_keys: Vec<func::SpecKey>,
+    spec_ids: HashMap<func::SpecKey, func::Spec>,
     /// Specialized clones requested so far, and those still to generate.
-    specs: std::collections::HashSet<(FnId, func::Spec)>,
+    clones: std::collections::HashSet<(FnId, func::Spec)>,
     spec_queue: Vec<(FnId, func::Spec)>,
+    /// Handler literals whose table of clause clones for a specialization was emitted.
+    spec_tables: std::collections::HashSet<(usize, func::Spec)>,
+    /// Memo of `clause_may_exit` (`None` while being computed).
+    exits: HashMap<(FnId, Option<func::Spec>), Option<bool>>,
+    /// Memo of `is_pure` (`None` while being computed).
+    pure_memo: HashMap<FnId, Option<bool>>,
     pub handler_tables: String,
     /// Libraries to link, from foreign blocks.
     pub libs: std::collections::BTreeSet<String>,
@@ -206,15 +221,47 @@ impl<'a> Gen<'a> {
 
     /// The C name of the clone of `f` specialized by `s`.
     pub fn spec_name(&self, f: FnId, s: func::Spec) -> String {
-        format!("gm_f{}_h{}", f.0, s.handler)
+        format!("gm_f{}_s{}", f.0, s.0)
     }
 
     /// Marks the clone of `f` specialized by `s` as needed; returns its C name.
     pub fn queue_spec(&mut self, f: FnId, s: func::Spec) -> String {
-        if self.specs.insert((f, s)) {
+        if self.clones.insert((f, s)) {
             self.spec_queue.push((f, s));
         }
         self.spec_name(f, s)
+    }
+
+    /// The number of specialization `key`.
+    pub fn spec(&mut self, key: func::SpecKey) -> func::Spec {
+        if let Some(&s) = self.spec_ids.get(&key) {
+            return s;
+        }
+        let s = func::Spec(self.spec_keys.len() as u32);
+        self.spec_keys.push(key.clone());
+        self.spec_ids.insert(key, s);
+        s
+    }
+
+    pub fn spec_key(&self, s: func::Spec) -> &func::SpecKey {
+        &self.spec_keys[s.0 as usize]
+    }
+
+    /// How many specializations `s` is nested in, itself included.
+    pub fn spec_depth(&self, s: func::Spec) -> u32 {
+        1 + self.spec_key(s).outer.map_or(0, |o| self.spec_depth(o))
+    }
+
+    /// The C name of clause `c` of a handler whose node is the context `outer` is
+    /// specialized for (or of the clause itself).
+    pub fn clause_name(&mut self, c: FnId, outer: Option<func::Spec>) -> String {
+        match outer {
+            Some(o) => self.queue_spec(c, o),
+            None => {
+                self.queue(c);
+                self.fn_name(c)
+            }
+        }
     }
 
     /// Generates every function and clone queued so far, and those they reach.
@@ -281,6 +328,19 @@ impl<'a> Gen<'a> {
         Some(format!("#line {} {}", line, path))
     }
 
+    /// The table of the clauses of handler literal `h` as clones specialized for `s`:
+    /// the handler is installed where `s`'s node is the context, so its clauses run
+    /// with that node as theirs.
+    pub fn spec_handler_table(&mut self, h: usize, s: func::Spec) -> String {
+        let name = format!("gm_hl{}_s{}", h, s.0);
+        if self.spec_tables.insert((h, s)) {
+            let clauses = self.prog.handlers[h].clauses.clone();
+            let names: Vec<String> = clauses.iter().map(|c| format!("(void *){}", self.queue_spec(*c, s))).collect();
+            let _ = writeln!(self.handler_tables, "static void *const {}[] = {{{}}};", name, names.join(", "));
+        }
+        name
+    }
+
     /// The table of clause functions of handler literal `h`, generating it on first use.
     pub fn handler_table(&mut self, h: usize) -> String {
         if !self.handler_done[h] {
@@ -318,13 +378,22 @@ impl<'a> Gen<'a> {
                     args.push(format!("a{}", i));
                 }
                 let name = format!("gm_dt{}_{}", d, k);
+                // A large result goes to `gm_out`, as for every Gamma function.
+                let (ret, ret_kw) = if self.ty.by_ref(def.ret) {
+                    params.insert(0, "void *gm_out".into());
+                    args.insert(0, "gm_out".into());
+                    ("void".to_string(), "")
+                } else {
+                    (ret, "return ")
+                };
                 let _ = writeln!(self.protos, "static {} {}({});", ret, name, params.join(", "));
                 let _ = writeln!(
                     self.bodies,
-                    "static {} {}({}) {{ return {}({}); }}",
+                    "static {} {}({}) {{ {}{}({}); }}",
                     ret,
                     name,
                     params.join(", "),
+                    ret_kw,
                     self.fn_name(*c),
                     args.join(", ")
                 );
@@ -502,7 +571,10 @@ impl<'a> Gen<'a> {
         let ret = def.ret;
         let rc = self.ty.cty(ret);
         let mut s = format!("static int gm_entry{n}(gm_node *cx) {{\n");
-        if self.is_plain(entry) {
+        if self.ty.by_ref(ret) {
+            let hidden = if self.is_plain(entry) { "" } else { ", NULL, cx, NULL" };
+            let _ = writeln!(s, "    {} r; {}(&r{});", rc, self.fn_name(entry), hidden);
+        } else if self.is_plain(entry) {
             if ret.is_unit() || ret.is_never() {
                 let _ = writeln!(s, "    {}();\n    {} r = GM_ZERO({});", self.fn_name(entry), rc, rc);
             } else {
@@ -547,6 +619,77 @@ impl<'a> Gen<'a> {
         Ok(s)
     }
 
+    /// Whether a call of clause `c`, as a clone specialized for `outer` when given, may
+    /// return with an exit in progress. False only when that is certain: its body
+    /// leaves only locally, and its calls and performs reach only code that does too.
+    /// The caller then needs no test of `gm_unw` after the call.
+    pub fn clause_may_exit(&mut self, c: FnId, outer: Option<func::Spec>) -> bool {
+        match self.exits.get(&(c, outer)) {
+            Some(Some(r)) => return *r,
+            // Recursion: assume the worst.
+            Some(None) => return true,
+            None => {}
+        }
+        self.exits.insert((c, outer), None);
+        let prog = self.prog;
+        let r = match &prog.fns[c.index()].body {
+            Some(b) => self.expr_may_exit(b, outer),
+            None => true,
+        };
+        self.exits.insert((c, outer), Some(r));
+        r
+    }
+
+    /// Whether evaluating `e` in a function whose context is the node of `spec` may
+    /// leave it by a non-local exit, or return from a call with one in progress.
+    fn expr_may_exit(&mut self, e: &'a crate::tir::Expr, spec: Option<func::Spec>) -> bool {
+        use crate::tir::{Callee, ExprKind, Target};
+        match &e.kind {
+            ExprKind::Break { target: Target::InstallingWith, .. } => return true,
+            ExprKind::Break { target: Target::Label { levels, .. }, .. }
+            | ExprKind::Continue { target: Target::Label { levels, .. } }
+            | ExprKind::Return { levels, .. }
+            | ExprKind::Try { levels, .. }
+                if *levels > 0 =>
+            {
+                return true;
+            }
+            // Handlers change the context, and fibers and continuations exit through the
+            // runtime.
+            ExprKind::With { .. } | ExprKind::Resume { .. } | ExprKind::Discard(_) => return true,
+            ExprKind::Builtin { op: crate::tir::Builtin::Fiber, .. } => return true,
+            // The sink is a perform or a function value.
+            ExprKind::Write { .. } => return true,
+            ExprKind::Call { callee, .. } => {
+                let may = match callee {
+                    Callee::Fn(f) => self.may_unwind(*f),
+                    Callee::Indirect(_) => true,
+                    Callee::Perform { effect, op } => match spec {
+                        Some(s) if !self.prog.ctl_ops.contains(&(effect.effect, *op)) => {
+                            let key = self.spec_key(s).clone();
+                            match self.prog.handlers[key.handler as usize].clauses.get(*op as usize) {
+                                Some(&c) if self.effect_id(effect) == key.effect => self.clause_may_exit(c, key.outer),
+                                _ => true,
+                            }
+                        }
+                        _ => true,
+                    },
+                };
+                if may {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        let mut may = false;
+        e.for_each_child(&mut |c| {
+            if !may {
+                may = self.expr_may_exit(c, spec);
+            }
+        });
+        may
+    }
+
     /// True if calls to `f` can leave by a non-local exit (§D.2).
     pub fn may_unwind(&self, f: FnId) -> bool {
         let def = &self.prog.fns[f.index()];
@@ -582,7 +725,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether plain function `f` needs a separate C-ABI entry point: its own signature
-    /// passes large values by address or returns a large value as a blob (see
+    /// passes large values by address or returns a large value through `gm_out` (see
     /// `Types::by_ref`), so C code and plain function pointers call a wrapper.
     pub fn needs_wrapper(&mut self, f: FnId) -> bool {
         let def = &self.prog.fns[f.index()];
@@ -591,7 +734,7 @@ impl<'a> Gen<'a> {
         }
         let ret = def.ret;
         let params: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
-        params.iter().any(|t| self.ty.by_ref(*t)) || (self.ty.by_ref(ret) && self.ty.mirror(ret).is_some())
+        params.iter().any(|t| self.ty.by_ref(*t)) || self.ty.by_ref(ret)
     }
 
     /// The C name of `f` where its address is taken: the C-ABI entry point of a plain
@@ -686,8 +829,11 @@ pub fn compile(generated: &Generated, exe: &Path) -> Result<Build, String> {
     // A Debug build with debug information is not optimized, so every variable and line
     // is there in the debugger; Checked and Fast builds keep their optimization.
     let opt = if opts.debug_info && opts.debug { "-O0" } else { "-O2" };
+    // Values are blobs of bytes written and read piecewise with memcpy; type-based alias
+    // analysis buys nothing on such code, and gcc 13 at -O2 drops some of those writes
+    // under it (a slice length written into a temporary was lost).
     let out = std::process::Command::new(&cc)
-        .args(["-std=gnu11", opt, "-w", "-fwrapv", "-ffp-contract=off", "-pthread"])
+        .args(["-std=gnu11", opt, "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"])
         .args(opts.debug_info.then_some("-g"))
         .arg("-o")
         .arg(exe)

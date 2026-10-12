@@ -1,7 +1,7 @@
 # 008 C backend design (M7)
 Module `src/cgen/` (codegen) + runtime `runtime/gm_rt.h`, `runtime/gm_rt.c` (embedded via
 include_str!, concatenated into ONE translation unit with the generated code). Build: write
-`<tmp>/prog.c`, run `cc -std=gnu11 -O2 -w prog.c -o out -lm` ($CC overrides). GNU C needed
+`<tmp>/prog.c`, run `cc -std=gnu11 -O2 -w -fno-strict-aliasing prog.c -o out -lm` ($CC overrides). GNU C needed
 (statement exprs, zero-size arrays, __int128, __builtin_*_overflow). Host target only.
 
 ## Values
@@ -16,7 +16,8 @@ include_str!, concatenated into ONE translation unit with the generated code). B
   {env, cx} (2p); the literal id is static from TyKind::Handler(id).
 
 ## Functions and frames
-- Every Gamma fn → `static RET fN(void *env, gm_node *cx, [gm_node *inst if Clause], params…)`.
+- Every Gamma fn → `static RET fN(void *env, gm_node *cx, [gm_node *inst if Clause], params…)`
+  (s6: a >16 B result goes through a leading `void *gm_out` and RET is void; decisions/014).
   Uniform so fn pointers/closures can be called without knowing the target.
 - Locals live in a frame struct `struct frN { gm_frame h; …locals; ret slot; with slots }`, a C
   local `F`; `h.up` = env (parent frame), `h.clause_lit` flag. Upvar{levels} walks h.up.

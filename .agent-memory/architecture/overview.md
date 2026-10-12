@@ -21,7 +21,8 @@ src/sema/          semantic analysis (see architecture/sema-notes.md); cont_chec
 src/interp/        tree-walking interpreter; run_main / eval_const; fiber.rs = fibers (threads)
 src/cgen/          C back end (decisions/008); fiber.rs = with-on outlining, ctl thunks;
                    values >16 B by address (types.rs by_ref/param_cty, func.rs c_abi_wrapper);
-                   debug.rs = `-g` (#line mapping, named frame fields, macro guards)
+                   debug.rs = `-g` (#line mapping, named frame fields, macro guards);
+                   borrow.rs = pure fns / params read in place (decisions/014)
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handler
                    structs gm_node/gm_unw, fibers + asm context switch); rt_test.c
 lib/core/prelude.gm  core declarations in Gamma (embedded via include_str!)

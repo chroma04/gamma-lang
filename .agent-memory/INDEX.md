@@ -1,6 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (session 5, 2026-10-11) — PRs #1–#7 merged (#7: gamma test runs imported modules' tests, --filter); s5 = PR #8 (claude/project-thread-rxakzv)
+## State (session 6, 2026-10-12) — PRs #1–#8 merged; s6 = parallel Claude Projects threads on c-backend-plan items
+- s6 thread "C perf" (branch claude/project-thread-8a201g): items 4–6 — nested handler
+  specialization, exit-test omission, gm_out results, in-place construction, borrowed params,
+  -fno-strict-aliasing (decisions/014, sessions/s06). Other s6 threads: build speed,
+  cross-compiling, debugger views (expect merges touching src/cgen).
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
@@ -16,7 +20,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive PR #8 green; then C back end plan items 2–7 (roadmap/c-backend-plan.md).
+1. Drive the s6 PRs green; leftover: uncaptured locals as C locals (c-backend-plan.md end).
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
@@ -30,9 +34,10 @@
                   · 007 value params + sema-time const eval · 008 C back end · 009 interop
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
                   · 013 debug info (-g: #line per C line, named frame fields)
+                  · 014 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
-                  · s05-2026-10-11.md
+                  · s05-2026-10-11.md · s06-2026-10-12.md
 - gotchas/        environment.md
 
 ## Conventions

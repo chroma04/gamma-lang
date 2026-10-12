@@ -4,7 +4,7 @@
 //! expression for its value (usually a temporary). Operands are evaluated into
 //! temporaries in order, so evaluation order is the program's.
 
-use super::func::{FnGen, Scope, Spec};
+use super::func::{FnGen, Scope, Spec, SpecKey};
 use super::types::Repr;
 use super::{CResult, conv_attr, unsupported};
 use crate::tir::{
@@ -538,6 +538,42 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 Ok(self.zero(t))
             }
+            ExprKind::Return { levels, value } if self.builds_in_place(value) => {
+                // A large value is built in the result slot, or straight in the caller's
+                // destination when no deferred statement can run after it.
+                let ct = self.g.ty.cty(value.ty);
+                if *levels == 0 && !self.outlined && self.no_defers() && self.g.ty.by_ref(self.def.ret) {
+                    self.expr_into(value, &format!("(*({} *)gm_out)", ct))?;
+                    self.line("goto gm_fdone;");
+                    return Ok(self.zero(t));
+                }
+                let slot = self.frame_field(*levels, "ret");
+                self.expr_into(value, &slot)?;
+                let target_ret = self.target_ret(*levels);
+                let is_err = if matches!(target_ret.kind(), TyKind::Result { .. }) {
+                    let a = format!("((uint8_t *)&{})", slot);
+                    self.res_is_err(target_ret, &a)
+                } else {
+                    "0".into()
+                };
+                let is_err = self.tmp(Ty::bool(), &is_err);
+                let (fr, _) = self.frame_up(*levels);
+                self.start_exit("GM_RETURN", &fr, "0", &is_err);
+                Ok(self.zero(t))
+            }
+            // A large place is copied straight to the caller's destination.
+            ExprKind::Return { levels: 0, value }
+                if self.g.ty.by_ref(value.ty)
+                    && self.g.ty.by_ref(self.def.ret)
+                    && !self.outlined
+                    && self.no_defers()
+                    && matches!(value.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_)) =>
+            {
+                let addr = self.place_addr(value)?;
+                self.line(&format!("memmove(gm_out, {}, {});", addr, self.g.ty.size(value.ty)));
+                self.line("goto gm_fdone;");
+                Ok(self.zero(t))
+            }
             ExprKind::Return { levels, value } => {
                 let target_ret = self.target_ret(*levels);
                 // A large value read from a place is copied into the slot directly.
@@ -650,7 +686,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// The address (`uint8_t *`) of a place, or of a temporary holding a value.
     pub fn place_addr(&mut self, e: &'a Expr) -> CResult<String> {
         match &e.kind {
-            ExprKind::Local(l) => Ok(format!("((uint8_t *)&F.l{})", l.0)),
+            ExprKind::Local(l) => Ok(self.local_addr(*l)),
             ExprKind::Global(id) => {
                 let gl = &self.g.prog.globals[id.index()];
                 if gl.thread_local && gl.link_name.is_none() {
@@ -879,6 +915,25 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // --- calls and effects -----------------------------------------------------------------------
 
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr]) -> CResult<String> {
+        let dest = match self.dest_call.take() {
+            Some((c, d)) if std::ptr::eq(c, e) => Some(d),
+            other => {
+                self.dest_call = other;
+                None
+            }
+        };
+        let r = self.call_inner(e, callee, args, dest);
+        self.call_dest = None;
+        r
+    }
+
+    fn call_inner(
+        &mut self,
+        e: &'a Expr,
+        callee: &'a Callee,
+        args: &'a [Expr],
+        dest: Option<String>,
+    ) -> CResult<String> {
         // The callee is evaluated before the arguments (§7.1).
         let cv = match callee {
             Callee::Indirect(c) => Some(self.expr(c)?),
@@ -903,6 +958,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             tys.push(a.ty);
         }
         self.call_site(e.span);
+        // Set only now: the arguments' own calls have their own destinations.
+        self.call_dest = dest;
         match callee {
             Callee::Fn(f) => self.call_fn(e, *f, &vals),
             Callee::Indirect(c) => {
@@ -938,8 +995,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// The C function pointer type of a Gamma function returning `ret`.
     pub fn fn_ptr_type(&mut self, ret: Ty, params: &[Ty]) -> String {
-        let r = self.g.ty.cty(ret);
-        let mut ps = vec!["void *".to_string(), "gm_node *".into(), "gm_node *".into()];
+        let (r, mut ps) = if self.g.ty.by_ref(ret) {
+            ("void".to_string(), vec!["void *".to_string()])
+        } else {
+            (self.g.ty.cty(ret), vec![])
+        };
+        ps.extend(["void *".to_string(), "gm_node *".into(), "gm_node *".into()]);
         for p in params {
             ps.push(self.g.ty.param_cty(*p));
         }
@@ -995,6 +1056,23 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
+    /// The variable a call writes its large result to (`Types::by_ref`): the call's
+    /// destination if it has one (see `expr_into`), else a new temporary.
+    pub fn result_var(&mut self, ret: Ty) -> String {
+        match self.call_dest.take() {
+            Some(d) => d,
+            None => self.tmp_uninit(ret),
+        }
+    }
+
+    /// Emits a call of function `callee` with arguments `args` (each preceded by a
+    /// comma) whose large result it writes through its first parameter, `gm_out`.
+    fn out_call(&mut self, ret: Ty, callee: &str, args: &str) -> String {
+        let r = self.result_var(ret);
+        self.line(&format!("{}((void *)&{}{});", callee, r, args));
+        r
+    }
+
     fn call_fn(&mut self, e: &Expr, f: FnId, vals: &[String]) -> CResult<String> {
         self.g.queue(f);
         let def = &self.g.prog.fns[f.index()];
@@ -1011,7 +1089,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.spec_call = None;
                 self.g.queue_spec(f, s)
             }
-            _ => self.g.callee_name(f),
+            _ => match self.passed_spec(f) {
+                Some(s) => self.g.queue_spec(f, s),
+                None => self.g.callee_name(f),
+            },
         };
         let r = if self.g.is_plain(f) {
             // C's `_Bool` crosses the boundary as 0 or 1 either way.
@@ -1026,7 +1107,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             args.extend(vals[n..].iter().cloned()); // variadic
             let call = format!("{}({})", name, args.join(", "));
-            if def.ret.is_unit() || def.ret.is_never() {
+            if !foreign && self.g.ty.by_ref(def.ret) {
+                let rest: String = args.iter().map(|a| format!(", {}", a)).collect();
+                self.out_call(def.ret, &name, &rest)
+            } else if def.ret.is_unit() || def.ret.is_never() {
                 self.line(&format!("{};", call));
                 self.zero(e.ty)
             } else {
@@ -1037,8 +1121,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
             let cx = self.cx.clone();
             let tys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
             let args = self.gamma_args(vals, &tys);
-            let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, args);
-            self.call_result(e.ty, &call)
+            if self.g.ty.by_ref(def.ret) {
+                self.out_call(def.ret, &name, &format!(", (void *){}, {}, NULL{}", env, cx, args))
+            } else {
+                let call = format!("{}((void *){}, {}, NULL{})", name, env, cx, args);
+                self.call_result(e.ty, &call)
+            }
         };
         if self.g.may_unwind(f) {
             self.check_unwind();
@@ -1103,7 +1191,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             if ps.is_empty() { "void".into() } else { ps.join(", ") }
         );
         let p = self.tmp(Ty::intern(TyKind::Rawptr), code);
-        let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
+        let res = (!ret.is_never()).then(|| self.result_var(ret));
         let plain_args = self.plain_args(vals, tys);
         let plain_call = format!("(({})((uintptr_t){} & ~(uintptr_t)1))({})", plain_ty, p, plain_args.join(", "));
         let plain_call = self.gamma_value(ret, &plain_call);
@@ -1114,7 +1202,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         if hidden {
             let fp = self.fn_ptr_type(ret, tys);
             let args = self.gamma_args(vals, tys);
-            let hidden_call = format!("(({}){})({}, {}, NULL{})", fp, p, env, cx, args);
+            let out = match &res {
+                Some(r) if self.g.ty.by_ref(ret) => format!("(void *)&{}, ", r),
+                _ => String::new(),
+            };
+            let hidden_call = format!("(({}){})({}{}, {}, NULL{})", fp, p, out, env, cx, args);
             self.line(&format!("if ((uintptr_t){} & 1) {{", p));
             self.indent += 1;
             emit_plain(self);
@@ -1122,8 +1214,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.line("} else {");
             self.indent += 1;
             match &res {
-                Some(r) => self.line(&format!("{} = {};", r, hidden_call)),
-                None => self.line(&format!("{};", hidden_call)),
+                Some(r) if out.is_empty() => self.line(&format!("{} = {};", r, hidden_call)),
+                _ => self.line(&format!("{};", hidden_call)),
             }
             self.indent -= 1;
             self.line("}");
@@ -1159,10 +1251,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
         if self.g.prog.ctl_ops.contains(&(effect.effect, op)) {
             return self.ctl_perform(&n, op, vals, tys, ret);
         }
-        let res = (!ret.is_never()).then(|| self.tmp_uninit(ret));
+        let res = (!ret.is_never()).then(|| self.result_var(ret));
         let fp = self.fn_ptr_type(ret, tys);
         let args = self.gamma_args(vals, tys);
-        let clause_call = format!("(({}){}->clauses[{}])({}->env, {}->hctx, {}{})", fp, n, op, n, n, n, args);
+        let out = match &res {
+            Some(r) if self.g.ty.by_ref(ret) => format!("(void *)&{}, ", r),
+            _ => String::new(),
+        };
+        let clause_call = format!("(({}){}->clauses[{}])({}{}->env, {}->hctx, {}{})", fp, n, op, out, n, n, n, args);
         let amb = self.g.prog.ambient.clone();
         let native = [amb.out, amb.err, amb.env].contains(&Some(effect.effect));
         if native {
@@ -1174,8 +1270,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.indent += 1;
         }
         match &res {
-            Some(r) => self.line(&format!("{} = {};", r, clause_call)),
-            None => self.line(&format!("{};", clause_call)),
+            Some(r) if out.is_empty() => self.line(&format!("{} = {};", r, clause_call)),
+            _ => self.line(&format!("{};", clause_call)),
         }
         if native {
             self.indent -= 1;
@@ -1203,27 +1299,80 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let s = self.spec?;
         // In the body of a `with … on`, moved to a function of its own, `cx` is the
         // fiber's context instead.
-        if s.effect != id || self.cx != "cx" || self.outlined || self.g.prog.ctl_ops.contains(&(effect.effect, op)) {
+        let key = self.g.spec_key(s);
+        if key.effect != id || self.cx != "cx" || self.outlined || self.g.prog.ctl_ops.contains(&(effect.effect, op)) {
             return None;
         }
-        let clause = *self.g.prog.handlers[s.handler as usize].clauses.get(op as usize)?;
+        let clause = *self.g.prog.handlers[key.handler as usize].clauses.get(op as usize)?;
         let def = &self.g.prog.fns[clause.index()];
         let ptys: Vec<Ty> = def.params.iter().map(|p| def.locals[p.index()].ty).collect();
         if def.ret != ret || ptys != tys {
             return None;
         }
-        self.g.queue(clause);
+        let outer = self.g.spec_key(s).outer;
+        let name = self.g.clause_name(clause, outer);
         let args = self.gamma_args(vals, tys);
-        let call = format!("{}(cx->env, cx->hctx, cx{})", self.g.fn_name(clause), args);
-        let r = self.call_result(ret, &call);
-        self.check_unwind();
+        let r = if self.g.ty.by_ref(ret) {
+            self.out_call(ret, &name, &format!(", cx->env, cx->hctx, cx{}", args))
+        } else {
+            let call = format!("{}(cx->env, cx->hctx, cx{})", name, args);
+            self.call_result(ret, &call)
+        };
+        // A clause that cannot exit needs no test after it: the common loop body.
+        if self.g.clause_may_exit(clause, outer) {
+            self.check_unwind();
+        }
         Some(r)
+    }
+
+    /// The specialization a direct call of `f` passes on: in a clone, a call made in
+    /// the clone's own context to a function that performs the effect the clone is
+    /// specialized for runs that function's clone for the same handler (a recursive
+    /// iterator calling itself, or a helper of the loop).
+    fn passed_spec(&mut self, f: FnId) -> Option<Spec> {
+        let s = self.spec?;
+        if self.cx != "cx" || self.outlined {
+            return None;
+        }
+        let def = &self.g.prog.fns[f.index()];
+        let handler = self.g.spec_key(s).handler as usize;
+        let effect = &self.g.prog.handlers[handler].effect;
+        (def.kind == FnKind::Named && def.body.is_some() && def.effects.effects.contains(effect)).then_some(s)
+    }
+
+    /// The specialization a `with` installing `handlers` passes to the clauses of its
+    /// handler: in a clone, a single handler literal installed in the clone's own
+    /// context whose clauses perform the clone's effect has them called as clones for
+    /// the clone's handler (Appendix D.3, two levels and more). Nesting is limited, as a
+    /// recursive iterator would otherwise nest without end.
+    fn nested_spec(&mut self, handlers: &[HandlerValue], on: Option<&Expr>) -> Option<Spec> {
+        const MAX_DEPTH: u32 = 3;
+        let s = self.spec?;
+        let [HandlerValue::Literal(h)] = handlers else { return None };
+        let ExprKind::HandlerRef(hid) = h.kind else { return None };
+        if on.is_some() || self.cx != "cx" || self.outlined || self.g.spec_depth(s) >= MAX_DEPTH {
+            return None;
+        }
+        let prog = self.g.prog;
+        let lit = &prog.handlers[hid.index()];
+        if (0..lit.clauses.len()).any(|op| prog.ctl_ops.contains(&(lit.effect.effect, op as u32))) {
+            return None;
+        }
+        let effect = &prog.handlers[self.g.spec_key(s).handler as usize].effect;
+        let uses =
+            lit.clauses.iter().any(|c| prog.fns[c.index()].body.as_ref().is_some_and(|b| uses_effect(prog, b, effect)));
+        uses.then_some(s)
     }
 
     /// The call in `body` that a `with` installing `handlers` around it can make to a
     /// clone specialized for the handler (Appendix D.3): a single handler literal
     /// around a direct call to a function that performs its effect.
-    fn specializable(&mut self, handlers: &[HandlerValue], body: &'a Expr) -> Option<(*const Expr, Spec)> {
+    fn specializable(
+        &mut self,
+        handlers: &[HandlerValue],
+        body: &'a Expr,
+        outer: Option<Spec>,
+    ) -> Option<(*const Expr, Spec)> {
         let [HandlerValue::Literal(h)] = handlers else { return None };
         let TyKind::Handler(hid) = h.ty.kind() else { return None };
         let mut call = body;
@@ -1239,7 +1388,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return None;
         }
         let effect = effect.clone();
-        let spec = Spec { handler: *hid, effect: self.g.effect_id(&effect) };
+        let effect = self.g.effect_id(&effect);
+        let spec = self.g.spec(SpecKey { handler: *hid, effect, outer });
         Some((call as *const Expr, spec))
     }
 
@@ -1308,6 +1458,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             None => String::new(),
         };
         let fw_ref = if on.is_some() { format!("&{}", fw) } else { "NULL".into() };
+        let nested = self.nested_spec(handlers, on);
         for h in handlers {
             match h {
                 HandlerValue::Literal(x) => {
@@ -1315,7 +1466,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     let TyKind::Handler(hid) = x.ty.kind() else {
                         return unsupported(x.span, "this handler value");
                     };
-                    let table = self.g.handler_table(*hid as usize);
+                    let table = match nested {
+                        Some(s) => self.g.spec_handler_table(*hid as usize, s),
+                        None => self.g.handler_table(*hid as usize),
+                    };
                     let effect = self.g.prog.handlers[*hid as usize].effect.clone();
                     let id = self.g.effect_id(&effect);
                     let n = format!("wn{}", self.fresh());
@@ -1352,7 +1506,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let end = format!("we{}", self.fresh());
         self.scopes.push(Scope::With { label, end: end.clone() });
         let saved_spec = self.spec_call.take();
-        self.spec_call = self.specializable(handlers, body);
+        self.spec_call = self.specializable(handlers, body, nested);
         let v = self.expr(body);
         self.spec_call = saved_spec;
         self.scopes.pop();
@@ -1698,6 +1852,18 @@ fn no_writes(e: &Expr) -> bool {
         e.for_each_child(&mut |c| ok = ok && no_writes(c));
     }
     ok
+}
+
+/// True if `e` performs `effect` or calls a function that does.
+fn uses_effect(prog: &crate::tir::Program, e: &Expr, effect: &EffectRef) -> bool {
+    let found = match &e.kind {
+        ExprKind::Call { callee: Callee::Perform { effect: x, .. }, .. } => x == effect,
+        ExprKind::Call { callee: Callee::Fn(f), .. } => prog.fns[f.index()].effects.effects.contains(effect),
+        _ => false,
+    };
+    let mut found = found;
+    e.for_each_child(&mut |c| found = found || uses_effect(prog, c, effect));
+    found
 }
 
 fn find_with(e: &Expr, label: LabelId, found: &mut bool) {

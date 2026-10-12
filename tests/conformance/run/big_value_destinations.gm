@@ -1,0 +1,127 @@
+// A large result may be built where it is stored rather than in a temporary, and a large
+// parameter may be read where the caller keeps it. Neither may change what a program
+// observes: an assignment happens after its value is complete, deferred statements see
+// the old value, an exit leaves the destination as it was, and a parameter is a value of
+// its own.
+Big :: struct { a: [6]i64, tag: u8 }
+Pair :: struct { x: Big, y: Big }
+Stop :: effect { stop: esc(code: i64) -> never }
+Fail :: union { Bad: i64 }
+
+big :: fn(k: i64) -> Big => Big(a: [6]i64(k, k + 1, k + 2, k + 3, k + 4, k + 5), tag: (k % 7).trunc(u8))
+
+sum :: fn(b: Big) -> i64 {
+    s: i64 = 0
+    for v in b.a { s += v }
+    return s + i64(b.tag)
+}
+
+// Builds its result from the parameter it is about to replace (`p = swap(p)`).
+swap :: fn(p: Pair) -> Pair => Pair(x: p.y, y: p.x)
+
+// Reads the caller's value through a pointer while building the result (`b = via(&b)`).
+via :: fn(p: ^const Big) -> Big => Big(a: [6]i64(p.a[5], p.a[4], p.a[3], p.a[2], p.a[1], p.a[0]), tag: p.tag + 1)
+
+// Changes the caller's value, then returns another: the returned value wins.
+clobber :: fn(p: ^Big) -> Big {
+    p.a[0] = -1
+    return big(40)
+}
+
+// A deferred statement runs after the result is computed and before it is stored.
+deferred :: fn(p: ^const Big) -> Big \ {Out} {
+    defer print("deferred sees {}\n", p.a[0])
+    return big(70)
+}
+
+// Exits before returning: the destination keeps its value.
+maybe :: fn(k: i64) -> Big \ {Stop} {
+    b := big(k)
+    if k > 50 { stop(k) }
+    return b
+}
+
+checked :: fn(k: i64) -> Fail!Big {
+    if k < 0 { return !Fail.Bad(k) }
+    return big(k)
+}
+
+relay :: fn(k: i64) -> Fail!Big \ {Out} {
+    errdefer print("relay failed for {}\n", k)
+    b := try checked(k)
+    return b
+}
+
+// A pure function reading its parameters in place, recursively.
+depth_sum :: fn(b: Big, n: i64) -> i64 {
+    if n is 0 { return sum(b) }
+    c := b
+    c.a[0] += n
+    return depth_sum(c, n - 1) + b.a[0]
+}
+
+// A parameter whose address is taken is a copy.
+peek :: fn(b: Big, p: ^Big) -> i64 {
+    q := &b
+    p.a[2] = 0
+    return q.a[2]
+}
+
+pick :: fn(T: type, c: bool, x, y: T) -> T {
+    if c { return x }
+    return y
+}
+
+Maker :: struct { base: i64 }
+Make :: effect { make: fn(k: i64) -> Big }
+handler Make for Maker {
+    make(self, k) => big(self.base + k)
+}
+
+build :: fn() -> Big \ {Make} => make(5)
+
+// A body whose final expression is its value.
+pair_of :: fn(k: i64) -> Pair {
+    t := big(k)
+    return Pair(x: t, y: big(k + 1))
+}
+
+main :: fn() \ {Out} {
+    p := Pair(x: big(1), y: big(10))
+    p = swap(p)
+    print("swap {} {}\n", (p.x.a[0], p.y.a[0]))
+    b := big(3)
+    b = via(&b)
+    print("via {} {} {}\n", (b.a[0], b.a[5], b.tag))
+    b = clobber(&b)
+    print("clobber {} {}\n", (b.a[0], b.a[5]))
+    b = deferred(&b)
+    print("after defer {}\n", b.a[0])
+    kept := big(2)
+    r := with (handler Stop { stop(c) => break c }) {
+        kept = maybe(30)
+        kept = maybe(60)
+        0
+    }
+    print("stopped {} kept {}\n", (r, kept.a[0]))
+    arr := [2]Big(big(4), big(5))
+    arr[1] = big(6)
+    arr[0] = arr[1]
+    print("array {} {}\n", (arr[0].a[0], arr[1].a[0]))
+    blk := pair_of(8)
+    print("block {} {}\n", (blk.x.a[0], blk.y.a[0]))
+    ok := relay(11) else big(0)
+    bad := relay(-1) else big(0)
+    print("results {} {}\n", (ok.a[0], bad.a[0]))
+    print("depth {}\n", depth_sum(big(1), 3))
+    c := big(1)
+    print("peek {} {}\n", (peek(c, &c), c.a[2]))
+    print("pick {}\n", pick(Big, false, big(1), big(2)).a[0])
+    m := with Maker(base: 100) { build() }
+    print("decl {}\n", m.a[0])
+    twice :: fn(f: fn(k: i64) -> Big) -> Big {
+        first := f(1)
+        return f(first.a[0])
+    }
+    print("closure {}\n", twice(fn(k) => big(k * 2)).a[0])
+}

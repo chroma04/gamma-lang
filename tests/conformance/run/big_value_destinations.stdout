@@ -1,0 +1,15 @@
+swap 10 1
+via 8 3 4
+clobber 40 45
+deferred sees 40
+after defer 70
+stopped 60 kept 30
+array 6 6
+block 8 9
+relay failed for -1
+results 11 0
+depth 39
+peek 3 0
+pick 2
+decl 105
+closure 4
