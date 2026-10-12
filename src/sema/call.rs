@@ -217,7 +217,19 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut bound: Vec<Option<Expr>> = vec![None; params.len()];
         let mut next_positional = 0;
         let mut seen_named = false;
-        let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        // Arguments are evaluated in the order written (§11.3): with spreads, or named
+        // arguments out of parameter order, each goes into a temporary first.
+        let mut order = vec![];
+        for a in args {
+            match &a.kind {
+                ArgKind::Positional(_) => order.push(order.len()),
+                ArgKind::Named(n, _) => order.extend(params.iter().position(|p| p.name == n.name)),
+                ArgKind::Spread(_) => {}
+            }
+        }
+        let reordered = order.windows(2).any(|w| w[0] > w[1]);
+        let has_spread = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        let spreading = reordered || has_spread;
         let mut stmts = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
@@ -251,7 +263,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         let _ = self.expr(e, None);
                         continue;
                     };
-                    if explicit[i] || (bound[i].is_some() && !spreading) {
+                    if explicit[i] || (bound[i].is_some() && !has_spread) {
                         self.error(name.span, format!("parameter `{}` is given more than once", name.name));
                     }
                     explicit[i] = true;

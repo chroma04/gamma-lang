@@ -199,6 +199,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             let ret = subst(op_info.ret, &params, &eref.args);
             self.performed.push((eref.clone(), span));
+            if self.sema.effects[&eref.effect].ops[op as usize].kind == ast::OpKind::Fn {
+                self.fn_performs.push(span);
+            }
             return mk(
                 ret,
                 tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals },
@@ -208,6 +211,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let module = self.sema.effects[&eff].module;
         let (vals, pre) = self.bind_args(&op_info.params, module, args, span, "operation");
         self.performed.push((eref.clone(), span));
+        if self.sema.effects[&eref.effect].ops[op as usize].kind == ast::OpKind::Fn {
+            self.fn_performs.push(span);
+        }
         let call = mk(
             op_info.ret,
             tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals },
@@ -254,6 +260,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 handler: Some(hid),
                 break_ty: None,
                 effect: Some(eref.clone()),
+                decl_clause: None,
             };
             let f = self.clause_fn(c, &params, ret, info);
             clauses.push(f);
@@ -282,9 +289,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ids.push(id);
         }
+        // A `ctl` clause must not finish normally (§14.3): its body is checked without an
+        // expected type, so that a branch that finishes gives it a type other than `never`.
+        let expect = (info.op_kind != ast::OpKind::Ctl).then_some(ret);
         let body = match &c.body.kind {
-            ExprKind::Block(b) => self.block_expected(b, true, Some(ret)),
-            _ => self.expr(&c.body, Some(ret)),
+            ExprKind::Block(b) => self.block_expected(b, true, expect),
+            _ => self.expr(&c.body, expect),
         };
         let body = self.clause_body(body, info.op_kind, ret);
         self.finish_clause(fn_id, ids, body)
@@ -448,6 +458,19 @@ impl<'a, 's> FnCx<'a, 's> {
             tir::HandlerValue::Literal(_) => false,
         });
         let clause_exits = any_break || decl_exits;
+        // Clauses of handler declarations are checked after function bodies, so their
+        // `break`s are checked against this `with` later (`check_decl_breaks`).
+        let decl_ids: Vec<usize> = handlers
+            .iter()
+            .flat_map(|h| match h {
+                tir::HandlerValue::Decl { decls, .. } => decls.iter().map(|d| d.index()).collect(),
+                tir::HandlerValue::Literal(_) => vec![],
+            })
+            .collect();
+        let with_ty = self.infer.resolve(ty);
+        if !decl_ids.is_empty() && !with_ty.has_infer() && !with_ty.is_error() {
+            self.sema.decl_with_checks.push((decl_ids, with_ty, span));
+        }
         let ty = if !value && body.ty.is_never() && !clause_exits { Ty::never() } else { ty };
         mk(ty, tir::ExprKind::With { label, handlers, on, body: Box::new(body) }, span)
     }
@@ -661,6 +684,7 @@ impl<'a, 's> FnCx<'a, 's> {
             handler: Some(hid),
             break_ty: Some(result_ty),
             effect: Some(eref.clone()),
+            decl_clause: None,
         });
         let xid = self.new_local(x, elem, false, span);
         let pat_ast = if f.pats.len() == 1 {

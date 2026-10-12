@@ -91,6 +91,9 @@ pub struct FnCx<'a, 's> {
     pub obligations: Vec<Obligation>,
     /// True while checking a deferred statement (§8.8 restrictions).
     pub in_defer: bool,
+    /// The sites of performs of `fn` operations: a deferred statement may make them even
+    /// when the effect has other kinds of operations (§8.8).
+    pub fn_performs: Vec<Span>,
     /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
     /// temporary, which lives until the call returns (§7.10).
     pub temp_ref_arg: bool,
@@ -138,6 +141,9 @@ pub struct ClauseInfo {
     pub break_ty: Option<Ty>,
     /// The effect whose operation the clause handles.
     pub effect: Option<EffectRef>,
+    /// For a clause of a handler declaration: its function, under which the values of
+    /// its `break`s to the installing `with` are recorded.
+    pub decl_clause: Option<FnId>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested
@@ -260,6 +266,7 @@ impl<'a, 's> FnCx<'a, 's> {
             pending: vec![],
             obligations: vec![],
             in_defer: false,
+            fn_performs: vec![],
             temp_ref_arg: false,
             defer_label_base: 0,
             failed_coercions: vec![],
@@ -641,9 +648,32 @@ impl<'a, 's> FnCx<'a, 's> {
                 let (was, base) = (self.in_defer, self.defer_label_base);
                 self.in_defer = true;
                 self.defer_label_base = self.labels.len();
+                let performed_base = self.performed.len();
                 self.push_scope();
                 let inner = self.stmt(body);
                 self.pop_scope();
+                // It may only perform `fn` operations, unless it handles them itself (§8.8).
+                let exits: Vec<(EffectRef, Span)> = self.performed[performed_base..]
+                    .iter()
+                    .filter(|(e, sp)| {
+                        !self.fn_performs.contains(sp)
+                            && self
+                                .sema
+                                .effects
+                                .get(&e.effect)
+                                .is_some_and(|info| info.ops.iter().any(|o| o.kind != ast::OpKind::Fn))
+                    })
+                    .cloned()
+                    .collect();
+                for (e, sp) in exits {
+                    self.error(
+                        sp,
+                        format!(
+                            "a deferred statement may not perform `{}`, whose operations can exit or suspend, unless it handles it (§8.8)",
+                            e
+                        ),
+                    );
+                }
                 self.in_defer = was;
                 self.defer_label_base = base;
                 let body = stmt_to_expr(inner, body.span);

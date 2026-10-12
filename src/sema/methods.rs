@@ -543,6 +543,9 @@ impl<'a, 's> FnCx<'a, 's> {
         vals.extend(rest);
         let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
         self.performed.push((eref.clone(), span));
+        if o.kind == ast::OpKind::Fn {
+            self.fn_performs.push(span);
+        }
         let call = mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span);
         Some(self.finish_call(pre, call, true))
     }

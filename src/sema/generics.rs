@@ -1067,12 +1067,21 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         let map: Vec<(ParamId, Ty)> = sig.generics.iter().copied().zip(targs.iter().copied()).collect();
+        // The run-time arguments in the order written (the receiver first).
+        let written: Vec<usize> = recv_index
+            .into_iter()
+            .chain(sources.iter().map(|(i, _)| *i))
+            .filter(|&i| sig.params[i].generic.is_none() && values[i].is_some())
+            .collect();
         let mut out = vec![];
+        // The position in `out` of each parameter's argument.
+        let mut slot = vec![usize::MAX; sig.params.len()];
         for (i, p) in sig.params.iter().enumerate() {
             if p.generic.is_some() {
                 continue;
             }
             let pty = self.sema.subst(p.ty, &map);
+            slot[i] = out.len();
             match values[i].take() {
                 Some(v) => out.push(self.coerce(v, pty)),
                 None => match &p.default {
@@ -1096,12 +1105,22 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let effects = subst_effects(&sig.effects, &map);
         self.record_effects(&effects, span);
+        // Named arguments out of parameter order are evaluated in the order written
+        // (§11.3), into temporaries.
+        let mut pre = vec![];
+        if written.windows(2).any(|w| w[0] > w[1]) {
+            for i in written {
+                let v = std::mem::replace(&mut out[slot[i]], e_unit(span));
+                out[slot[i]] = self.bind_temp(v, &mut pre);
+            }
+        }
         let inst = self.sema.instantiate(f, targs, span);
-        Expr {
+        let call = Expr {
             ty: self.sema.subst(sig.ret, &map),
             kind: tir::ExprKind::Call { callee: tir::Callee::Fn(inst), args: out },
             span,
-        }
+        };
+        self.finish_call(pre, call, false)
     }
 }
 

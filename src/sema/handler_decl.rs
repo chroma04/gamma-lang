@@ -163,6 +163,35 @@ impl<'s> Sema<'s> {
         pending
     }
 
+    /// A `break` in a clause of a handler declaration exits the `with` that installed
+    /// the handler, so its value must have that `with`'s type (§12.7).
+    pub(super) fn check_decl_breaks(&mut self) {
+        let mut errors = vec![];
+        for (decls, ty, with_span) in std::mem::take(&mut self.decl_with_checks) {
+            for d in decls {
+                for f in &self.prog.handler_decls[d].clauses {
+                    for (bt, span) in self.decl_clause_breaks.get(f).into_iter().flatten() {
+                        if *bt != ty && !bt.is_never() && !bt.is_error() && !errors.iter().any(|(s, _, _)| s == span) {
+                            errors.push((
+                                *span,
+                                format!(
+                                    "this `break` gives a `with` a `{}`, but the `with` has the type `{}` (§12.7)",
+                                    bt, ty
+                                ),
+                                with_span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (span, msg, with_span) in errors {
+            let d =
+                crate::diag::Diagnostic::error(span, msg).with_label(with_span, "the `with` that installs the handler");
+            self.emit(d);
+        }
+    }
+
     /// Checks the bodies of declared handlers' clauses.
     pub(super) fn check_handler_clauses(&mut self, pending: Vec<PendingClause>) {
         for p in pending {
@@ -178,6 +207,7 @@ impl<'s> Sema<'s> {
                 handler: None,
                 break_ty: None,
                 effect: Some(p.effect.clone()),
+                decl_clause: Some(p.fn_id),
             });
             if c.params.len() != p.params.len() {
                 cx.error(
@@ -198,11 +228,17 @@ impl<'s> Sema<'s> {
                 }
                 ids.push(id);
             }
+            // A `ctl` clause must not finish normally (§14.3); see `clause_fn`.
+            let expect = (p.kind != ast::OpKind::Ctl).then_some(p.ret);
             let body = match &c.body.kind {
-                ExprKind::Block(b) => cx.block_expected(b, true, Some(p.ret)),
-                _ => cx.expr(&c.body, Some(p.ret)),
+                ExprKind::Block(b) => cx.block_expected(b, true, expect),
+                _ => cx.expr(&c.body, expect),
             };
             let body = cx.clause_body(body, p.kind, p.ret);
+            // The types of untyped literals given to `break` are known now.
+            let breaks = cx.sema.decl_clause_breaks.remove(&p.fn_id).unwrap_or_default();
+            let breaks = breaks.into_iter().map(|(t, s)| (cx.infer.settle(t), s)).collect();
+            cx.sema.decl_clause_breaks.insert(p.fn_id, breaks);
             let (body, locals) = cx.finish(body);
             let def = &mut self.prog.fns[p.fn_id.index()];
             def.params = ids;

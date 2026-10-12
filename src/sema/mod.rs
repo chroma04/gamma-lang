@@ -220,6 +220,11 @@ pub struct Sema<'s> {
     /// Types and locations of clause-level `break`s of each handler literal,
     /// checked against the value of the `with` that installs it.
     pub handler_breaks: HashMap<u32, Vec<(Ty, Span)>>,
+    /// The values of `break`s to the installing `with` in each clause of a handler
+    /// declaration.
+    pub decl_clause_breaks: HashMap<FnId, Vec<(Ty, Span)>>,
+    /// Each `with` that installs handler declarations: their indices and its type.
+    pub decl_with_checks: Vec<(Vec<usize>, Ty, Span)>,
     /// Handler declarations (§12.6) found while loading modules.
     handler_items: Vec<(ModuleId, Rc<ast::Item>)>,
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
@@ -343,6 +348,8 @@ impl<'s> Sema<'s> {
             value_params: HashMap::new(),
             yield_effect: None,
             handler_breaks: HashMap::new(),
+            decl_clause_breaks: HashMap::new(),
+            decl_with_checks: vec![],
             handler_items: vec![],
             handler_decl_effects: vec![],
             handler_templates: vec![],
@@ -490,6 +497,7 @@ impl<'s> Sema<'s> {
         self.drain_bodies();
         self.check_handler_clauses(clauses);
         self.drain_bodies();
+        self.check_decl_breaks();
         self.monomorphize();
     }
 

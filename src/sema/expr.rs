@@ -1815,6 +1815,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 );
                 return None;
             }
+            if is_continue && clause.op_kind == ast::OpKind::Ctl && clause.for_label.is_none() {
+                self.error(
+                    span,
+                    "a `ctl` clause cannot `continue`: end it with `resume`, `break` or an exit (§12.7.1)",
+                );
+                return None;
+            }
+            // `continue` produces `()` as the operation's result (§12.7.1).
+            let ret = self.infer.resolve(self.ret);
+            if is_continue && !ret.is_unit() && !ret.is_error() {
+                self.error(
+                    span,
+                    format!("`continue` finishes the clause with `()`, but the operation returns `{}` (§12.7.1)", ret),
+                );
+                return None;
+            }
             return Some(if is_continue { Jump::ClauseReturn { levels: 0 } } else { Jump::InstallingWith });
         };
         // A labeled jump from a handler clause to a construct enclosing the handler.
@@ -1882,6 +1898,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
                 if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
                     self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
+                }
+                if let Some(f) = self.clause.as_ref().and_then(|c| c.decl_clause) {
+                    let ty = self.infer.resolve(ty);
+                    self.sema.decl_clause_breaks.entry(f).or_default().push((ty, span));
                 }
                 ex.map(Box::new)
             }
