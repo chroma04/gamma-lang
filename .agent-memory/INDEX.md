@@ -2,7 +2,10 @@
 
 ## State (session 6, 2026-10-11) — PRs #1–#8 merged; s6 = several parallel Claude Projects threads
 - s6 thread "Speed up native builds" (branch claude/project-thread-1hib7q): Debug builds link a
-  cached runtime object, -O1 (decisions/014). Other s6 threads: CC/CFLAGS cross, C codegen.
+  cached runtime object, -O1 (decisions/014). C codegen thread too.
+- s6 thread "Support cross-compiling" (branch claude/project-thread-y3y0bn, PR #12): CC with
+  args, CFLAGS/LDFLAGS, target probed from the compiler (decisions/015); suite passes
+  cross-compiled for aarch64 under qemu.
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
   (decisions/013); plan for the rest in roadmap/c-backend-plan.md. Thread "Better debugger
   views" (branch claude/project-thread-scimha): plan item 7, typed views + gdb printers.
@@ -21,7 +24,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. C back end plan items 3–6 (roadmap/c-backend-plan.md); items 1, 2, 7 done.
+1. Drive PR #12 green; C back end plan items 4–6 (roadmap/c-backend-plan.md); 1, 2, 3, 7 done.
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
@@ -36,9 +39,10 @@
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
                   · 013 debug info (-g: #line per C line, named frame fields)
                   · 014 native build speed (cached runtime object, GM_API linkage)
+                  · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
-                  · s05-2026-10-11.md
+                  · s05-2026-10-11.md · s06-2026-10-11.md
 - gotchas/        environment.md
 
 ## Conventions

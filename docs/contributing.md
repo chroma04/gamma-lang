@@ -102,6 +102,16 @@ needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
 
+The suite also runs with a cross compiler, when the machine can run its output
+(for example through qemu-user and binfmt):
+
+```sh
+CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance --test runtime
+```
+
+`tests/cross.rs` checks the toolchain variables and target detection; most of it
+needs `clang`.
+
 When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs
 that check each compile error the section requires.

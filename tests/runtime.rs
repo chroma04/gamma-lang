@@ -20,16 +20,19 @@ fn test_binary() -> Option<&'static Path> {
 }
 
 fn build() -> Option<PathBuf> {
-    let cc = std::env::var("CC").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "cc".to_string());
+    let toolchain = gamma::toolchain::Toolchain::from_env().expect("CC, CFLAGS and LDFLAGS");
+    let cc = toolchain.display();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-test");
     std::fs::create_dir_all(&dir).ok()?;
     let exe = dir.join(if cfg!(windows) { "rt_test.exe" } else { "rt_test" });
-    let out = Command::new(&cc)
-        .args(["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-I"])
+    let out = toolchain
+        .command(&["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function"])
+        .arg("-I")
         .arg(root().join("runtime"))
         .arg(root().join("runtime/rt_test.c"))
         .arg("-o")
         .arg(&exe)
+        .args(&toolchain.ldflags)
         .output();
     match out {
         Err(e) => {
@@ -116,8 +119,8 @@ fn assert_exit_134(out: &Output) {
 /// function declared `GM_API` is defined with that linkage, and nothing warns.
 #[test]
 fn compiles_separately() {
-    let cc = std::env::var("CC").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "cc".to_string());
-    if !Command::new(&cc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+    let toolchain = gamma::toolchain::Toolchain::from_env().expect("CC, CFLAGS and LDFLAGS");
+    if !toolchain.base_command().arg("--version").output().is_ok_and(|o| o.status.success()) {
         return;
     }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-separate");
@@ -125,8 +128,9 @@ fn compiles_separately() {
     let src = dir.join("gm_rt_separate.c");
     std::fs::write(&src, "#define GM_RT_SEPARATE 1\n#include \"gm_rt.h\"\n#include \"gm_rt.c\"\nint gm_checks = 1;\n")
         .unwrap();
-    let out = Command::new(&cc)
-        .args(["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-c", "-I"])
+    let out = toolchain
+        .command(&["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function", "-c"])
+        .arg("-I")
         .arg(root().join("runtime"))
         .arg(&src)
         .arg("-o")

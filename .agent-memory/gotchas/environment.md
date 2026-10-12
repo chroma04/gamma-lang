@@ -14,3 +14,7 @@
 - Force-push is denied by the permission classifier: never push a commit you may want to drop.
   Never make memory-only commits (their messages can't avoid mentioning notes); fold memory
   edits into code commits.
+- Cross testing: `apt-get install gcc-aarch64-linux-gnu qemu-user gdb-multiarch` works; register
+  binfmt with `cat /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register`, then
+  `CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance` runs natively-built
+  tests under qemu. Debug: `qemu-aarch64 -g 12345 exe & gdb-multiarch -ex "target remote :12345"`.

@@ -29,6 +29,12 @@ pub struct Target {
     pub arch: &'static str,
 }
 
+impl Default for Target {
+    fn default() -> Self {
+        Target::host()
+    }
+}
+
 impl Target {
     /// The target the compiler itself runs on.
     pub fn host() -> Target {

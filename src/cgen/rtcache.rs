@@ -3,17 +3,17 @@
 //! Compiling the runtime is most of the work of compiling a small program, so Debug
 //! builds link with a runtime object compiled once (see [`super::compile`]). Objects are
 //! kept in the cache directory under a name derived from everything that affects them:
-//! the runtime's source, the C compiler (its command and `--version` output) and the
-//! flags. The directory is `$GAMMA_CACHE_DIR` if set (an empty value turns the cache
+//! the runtime's source, the C compiler (its command with its arguments, `CFLAGS` and its
+//! `--version` output) and the flags. The directory is `$GAMMA_CACHE_DIR` if set (an empty value turns the cache
 //! off), else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and
 //! `~/.cache/gamma` elsewhere.
 //!
 //! Concurrent builds may compile the same object at once: each writes a file of its
 //! own and renames it into place, so a reader never sees a partial object.
 
+use crate::toolchain::Toolchain;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The cache directory, or `None` if there is none.
 pub fn cache_dir() -> Option<PathBuf> {
@@ -27,15 +27,15 @@ pub fn cache_dir() -> Option<PathBuf> {
     Some(if cfg!(target_os = "macos") { home.join("Library/Caches/gamma") } else { home.join(".cache/gamma") })
 }
 
-/// The runtime object for C compiler `cc` and `flags`, compiled now if it is not in the
+/// The runtime object for `toolchain` and `flags`, compiled now if it is not in the
 /// cache. `None` if there is no cache or the object cannot be made; the caller then
 /// compiles the runtime with the program.
-pub fn runtime_object(cc: &str, flags: &[String]) -> Option<PathBuf> {
+pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf> {
     let dir = cache_dir()?;
-    let version = Command::new(cc).arg("--version").output().ok().filter(|o| o.status.success())?;
+    let version = toolchain.base_command().arg("--version").output().ok().filter(|o| o.status.success())?;
     let source = super::separate_runtime_source();
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (env!("CARGO_PKG_VERSION"), &source, cc, flags, &version.stdout).hash(&mut h);
+    (env!("CARGO_PKG_VERSION"), &source, &toolchain.cc, &toolchain.cflags, flags, &version.stdout).hash(&mut h);
     let stem = format!("gm_rt-{:016x}", h.finish());
     let obj = dir.join(format!("{stem}.o"));
     if obj.is_file() {
@@ -51,14 +51,8 @@ pub fn runtime_object(cc: &str, flags: &[String]) -> Option<PathBuf> {
         rename_or_remove(&tmp, &c_file)?;
     }
     let tmp = private_name(&dir, &stem, "o");
-    let ok = Command::new(cc)
-        .args(flags)
-        .arg("-c")
-        .arg("-o")
-        .arg(&tmp)
-        .arg(&c_file)
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let ok =
+        toolchain.command(flags).arg("-c").arg("-o").arg(&tmp).arg(&c_file).output().is_ok_and(|o| o.status.success());
     if !ok {
         let _ = std::fs::remove_file(&tmp);
         return None;
