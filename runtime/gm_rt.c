@@ -1982,6 +1982,69 @@ GM_API int64_t gm_thread_join(int64_t h) {
 
 GM_API void gm_thread_yield(void) { sched_yield(); }
 
+#if defined(__linux__) && defined(SYS_futex) && !defined(__FILC__)
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    struct timespec ts, *tp = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+        tp = &ts;
+    }
+    /* FUTEX_WAIT_PRIVATE */
+    long r = syscall(SYS_futex, addr, 128, expected, tp, NULL, 0);
+    if (r != 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) return gm_io_error(errno);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* FUTEX_WAKE_PRIVATE */
+    syscall(SYS_futex, addr, 129, n > 0x7fffffffu ? 0x7fffffff : (int)n, NULL, NULL, 0);
+    return 0;
+}
+#elif defined(__APPLE__)
+extern int __ulock_wait(uint32_t op, void *addr, uint64_t value, uint32_t timeout_us);
+extern int __ulock_wake(uint32_t op, void *addr, uint64_t wake_value);
+
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    uint64_t us = timeout_ns < 0 ? 0 : (uint64_t)timeout_ns / 1000 + 1;
+    if (us > 0xffffffffu) us = 0xffffffffu;
+    /* UL_COMPARE_AND_WAIT; a timeout of 0 means forever */
+    __ulock_wait(1, addr, expected, (uint32_t)us);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* UL_COMPARE_AND_WAIT | ULF_WAKE_ALL: one wake-up per call is not offered */
+    (void)n;
+    __ulock_wake(1 | 0x100, addr, 0);
+    return 0;
+}
+#else
+/* No futex: poll the word, sleeping a little between looks. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    int64_t waited = 0;
+    while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) {
+        if (timeout_ns >= 0 && waited >= timeout_ns) break;
+        struct timespec t = {0, 50000};
+        nanosleep(&t, NULL);
+        waited += 50000;
+        if (waited >= 1000000) break; /* wake up spuriously now and then */
+    }
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    (void)addr;
+    (void)n;
+    return 0;
+}
+#endif
+
+GM_API uint32_t gm_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1 : (uint32_t)n;
+}
+
 GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     if (fd == 2) gm_write_err((const uint8_t *)p, n);
     else gm_write_out((const uint8_t *)p, n);

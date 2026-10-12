@@ -139,7 +139,7 @@ A single fiber is enough for generators and cooperative sub-tasks. A scheduler n
 
 ## A scheduler sketch
 
-The specification's own example is a cooperative round-robin scheduler. This is a trimmed version of it, as a sketch. `Queue`, `new_scheduler`, `next` and `spawn_task` are **library code that you would write**; they are not defined by the core library. Assume a `Queue(T)` that has a `push` method and needs no effects (for example a fixed-capacity ring buffer), and that `next` removes and returns a ready continuation.
+The specification's own example is a cooperative round-robin scheduler. This is a trimmed version of it, as a sketch, and you do not have to write it yourself: the standard library module `std/fiber` provides it (see the [standard library reference](../std.md)), with `Sched`, `Scheduler`, `scheduler()`, a typed `spawn(T, f, arg, stack)` and the same `yield_now` and `join`. Reading the sketch is still the best way to see how the pieces fit. In it, `Queue`, `new_scheduler`, `next` and `spawn_task` stand for code that `std/fiber` contains (a queue of ready continuations from `std/collections/deque`, and a start-up wrapper that ends the task with `exit`). Assume a `Queue(T)` that has a `push` method and needs no effects, and that `next` removes and returns a ready continuation.
 
 ```gamma
 Sched :: effect {

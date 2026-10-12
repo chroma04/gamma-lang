@@ -31,8 +31,7 @@ handler Log for ^Counter {
     log(self, code) => { self.n += 1; self.sum += u64(code) }
 }
 
-run :: fn(raw: rawptr) \ {Sys} {
-    job := raw.cast(^Job)
+run :: fn(job: ^Job) \ {Sys} {
     c := Counter(n: 0, sum: 0)
     thread.defaults(fn() {
         a := arena.new()
@@ -50,7 +49,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [4]thread.Thread = ---
     for i in 0..4 {
         jobs[i] = Job(id: i.trunc(u32) * 10, result: 0, cancelled: false)
-        ts[i] = try thread.spawn(run, (&jobs[i]).cast(rawptr))
+        ts[i] = try thread.spawn(Job, run, &jobs[i])
     }
     for i in 0..4 { ts[i].join() }
     for j in jobs { print("{} {}\n", (j.id, j.result)) }

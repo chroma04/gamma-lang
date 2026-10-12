@@ -120,18 +120,15 @@ sum_body :: fn(p: ^Pipe) \ {Sys, Log} {
     log("summer done")
 }
 
-source_main :: fn(raw: rawptr) \ {Sys} {
-    p := raw.cast(^Pipe)
+source_main :: fn(p: ^Pipe) \ {Sys} {
     thread.defaults(fn() { with &p.source_log { source_body(p) } })
 }
 
-square_main :: fn(raw: rawptr) \ {Sys} {
-    p := raw.cast(^Pipe)
+square_main :: fn(p: ^Pipe) \ {Sys} {
     thread.defaults(fn() { with &p.square_log { square_body(p) } })
 }
 
-sum_main :: fn(raw: rawptr) \ {Sys} {
-    p := raw.cast(^Pipe)
+sum_main :: fn(p: ^Pipe) \ {Sys} {
     thread.defaults(fn() { with &p.sum_log { sum_body(p) } })
 }
 
@@ -140,9 +137,9 @@ pipeline :: fn() -> IoError!() \ {Out, Sys} {
               source_log: ActorLog(storage: [256]u8(fill: 0)),
               square_log: ActorLog(storage: [256]u8(fill: 0)),
               sum_log: ActorLog(storage: [256]u8(fill: 0)))
-    t1 := try thread.spawn(sum_main, (&p).cast(rawptr))
-    t2 := try thread.spawn(square_main, (&p).cast(rawptr))
-    t3 := try thread.spawn(source_main, (&p).cast(rawptr))
+    t1 := try thread.spawn(Pipe, sum_main, &p)
+    t2 := try thread.spawn(Pipe, square_main, &p)
+    t3 := try thread.spawn(Pipe, source_main, &p)
     t1.join()
     t2.join()
     t3.join()
@@ -164,8 +161,7 @@ ProducerArg :: struct {
     id: u64
 }
 
-producer_main :: fn(raw: rawptr) \ {Sys} {
-    a := raw.cast(^ProducerArg)
+producer_main :: fn(a: ^ProducerArg) \ {Sys} {
     for i in 0..50 {
         post(&a.f.box, a.id * 1000 + u64(i))
     }
@@ -175,8 +171,7 @@ producer_main :: fn(raw: rawptr) \ {Sys} {
     }
 }
 
-consumer_main :: fn(raw: rawptr) \ {Sys} {
-    f := raw.cast(^FanIn)
+consumer_main :: fn(f: ^FanIn) \ {Sys} {
     while x := take(&f.box) {
         f.total += x
         f.received += 1
@@ -187,9 +182,9 @@ fan_in :: fn() -> IoError!() \ {Out, Sys} {
     f := FanIn(box: mailbox(u64, 2, 0), producers_left: 3, total: 0, received: 0)
     args := [3]ProducerArg(fill: ProducerArg(f: &f, id: 0))
     for i in 0..3 { args[i] = ProducerArg(f: &f, id: u64(i) + 1) }
-    c := try thread.spawn(consumer_main, (&f).cast(rawptr))
+    c := try thread.spawn(FanIn, consumer_main, &f)
     ts: [3]thread.Thread = ---
-    for i in 0..3 { ts[i] = try thread.spawn(producer_main, (&args[i]).cast(rawptr)) }
+    for i in 0..3 { ts[i] = try thread.spawn(ProducerArg, producer_main, &args[i]) }
     for i in 0..3 { ts[i].join() }
     c.join()
     // 50 messages each from ids 1, 2 and 3: sum of (id*1000 + i) over i in 0..50.
@@ -237,8 +232,7 @@ server_body :: fn(s: ^Server) \ {Sys, Log} {
     log("server stopped")
 }
 
-server_main :: fn(raw: rawptr) \ {Sys} {
-    s := raw.cast(^Server)
+server_main :: fn(s: ^Server) \ {Sys} {
     thread.defaults(fn() { with &s.log { server_body(s) } })
 }
 
@@ -254,7 +248,7 @@ await :: fn(reply: ^Reply) -> u64 \ {Sys} {
 
 request_reply :: fn() -> IoError!() \ {Out, Sys} {
     s := Server(inbox: mailbox(?Request, 4, null), served: 0, log: ActorLog(storage: [256]u8(fill: 0)))
-    t := try thread.spawn(server_main, (&s).cast(rawptr))
+    t := try thread.spawn(Server, server_main, &s)
     replies := [6]Reply(fill: Reply(ready: 0, value: 0))
     ns := [6]u32(10, 20, 30, 50, 70, 90)
     for i in 0..6 { ask(&s, ns[i], &replies[i]) }

@@ -30,8 +30,7 @@ Worker :: struct {
     id: u32
 }
 
-work :: fn(raw: rawptr) \ {Sys} {
-    w := raw.cast(^Worker)
+work :: fn(w: ^Worker) \ {Sys} {
     sh := w.sh
     for i in 0..ITER {
         lock(&sh.lk)
@@ -56,8 +55,7 @@ Ring :: struct {
 
 COUNT :: 300
 
-producer :: fn(raw: rawptr) \ {Sys} {
-    r := raw.cast(^Ring)
+producer :: fn(r: ^Ring) \ {Sys} {
     n: u32 = 0
     while n < COUNT {
         head := @atomic_load(&r.head, .Relaxed)
@@ -72,8 +70,7 @@ producer :: fn(raw: rawptr) \ {Sys} {
     }
 }
 
-consumer :: fn(raw: rawptr) \ {Sys} {
-    r := raw.cast(^Ring)
+consumer :: fn(r: ^Ring) \ {Sys} {
     got: u32 = 0
     while got < COUNT {
         tail := @atomic_load(&r.tail, .Relaxed)
@@ -95,7 +92,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NT]thread.Thread = ---
     for i in 0..NT {
         ws[i] = Worker(sh: &sh, id: i.trunc(u32))
-        ts[i] = try thread.spawn(work, (&ws[i]).cast(rawptr))
+        ts[i] = try thread.spawn(Worker, work, &ws[i])
     }
     for i in 0..NT { ts[i].join() }
     print("plain counter {} (expected {})\n", (sh.plain, NT * ITER))
@@ -103,8 +100,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     print("bits {} parity {}\n", (sh.bits, sh.parity))
 
     ring := Ring(slots: [RING]u32(fill: 0), head: 0, tail: 0, sum: 0, received: 0)
-    p := try thread.spawn(producer, (&ring).cast(rawptr))
-    c := try thread.spawn(consumer, (&ring).cast(rawptr))
+    p := try thread.spawn(Ring, producer, &ring)
+    c := try thread.spawn(Ring, consumer, &ring)
     p.join()
     c.join()
     expected: u64 = 0

@@ -170,6 +170,24 @@ impl<'a> Machine<'a> {
                 self.yield_thread()?;
                 Ok(Value::unit())
             }
+            SysOp::FutexWait => {
+                let addr = self.ptr_of(&vals[0]);
+                let expected = self.int_arg(&args[1], &vals[1]) as u32;
+                let timeout = self.int_arg(&args[2], &vals[2]);
+                let n = self.futex_wait(e.span, addr, expected, timeout)?;
+                Ok(int(self, e.ty, n as i128))
+            }
+            SysOp::FutexWake => {
+                // Every waiter wakes (a wake-up may be spurious) and re-checks its word.
+                let (lock, cv) = &*futex();
+                *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                cv.notify_all();
+                Ok(int(self, e.ty, 0))
+            }
+            SysOp::CpuCount => {
+                let n = std::thread::available_parallelism().map_or(1, |n| n.get());
+                Ok(int(self, e.ty, n as i128))
+            }
             SysOp::SysWrite => {
                 let fd = self.int_arg(&args[0], &vals[0]);
                 let data = self.read_str(e.span, &vals[1])?;
@@ -195,7 +213,43 @@ impl<'a> Machine<'a> {
     }
 }
 
+type Futex = (std::sync::Mutex<u64>, std::sync::Condvar);
+
+/// The wake-up counter and condition variable shared by all futex waiters.
+fn futex() -> std::sync::Arc<Futex> {
+    static F: std::sync::OnceLock<std::sync::Arc<Futex>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default).clone()
+}
+
 impl<'a> Machine<'a> {
+    /// `@futex_wait`: sleeps while the word at `addr` is `expected`. The interpreter lock
+    /// serializes the check with every wake-up, so none is missed.
+    fn futex_wait(&mut self, span: crate::source::Span, addr: u64, expected: u32, timeout: i64) -> R<i64> {
+        let word = self.load(span, addr, 4, 4)?;
+        if self.int_of(Ty::u32(), &word).to_big() != expected.into() {
+            return Ok(0);
+        }
+        let fx = futex();
+        let seen = *fx.0.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = (timeout >= 0).then(|| Instant::now() + std::time::Duration::from_nanos(timeout as u64));
+        self.without_gil(|| {
+            let mut g = fx.0.lock().unwrap_or_else(|e| e.into_inner());
+            while *g == seen {
+                match deadline {
+                    None => g = fx.1.wait(g).unwrap_or_else(|e| e.into_inner()),
+                    Some(d) => {
+                        let now = Instant::now();
+                        if now >= d {
+                            break;
+                        }
+                        g = fx.1.wait_timeout(g, d - now).unwrap_or_else(|e| e.into_inner()).0;
+                    }
+                }
+            }
+        });
+        Ok(0)
+    }
+
     fn path_arg(&self, e: &Expr, v: &[u8]) -> R<PathBuf> {
         Ok(path_of(self.read_str(e.span, v)?))
     }

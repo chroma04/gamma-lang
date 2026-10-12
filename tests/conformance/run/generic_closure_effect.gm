@@ -1,0 +1,23 @@
+Sink :: effect {
+    begin: fn() -> bool
+    put: fn(bytes: []const u8)
+}
+
+emit :: fn(A: type, x: A) \ {Sink} {
+    if begin() {
+        @write(fn(b) => put(b), "abc {}", x)
+    }
+}
+
+S :: struct { n: u32 }
+
+handler Sink for ^S {
+    begin(self) => true
+    put(self, bytes) => { self.n += bytes.len.trunc(u32) }
+}
+
+main :: fn() \ {Out} {
+    s := S(n: 0)
+    with &s { emit(5) }
+    print("{}\n", s.n)
+}

@@ -1,0 +1,11 @@
+counter 8000
+try_lock true false
+try_lock after unlock true
+pipeline: 300 values, sum 15150
+send after close: false
+recv after drain: null
+through the gate: 3
+tasks done: 5
+empty wait group returns at once
+wait_timeout: false (waited at least 25ms: true)
+cpu_count >= 1: true

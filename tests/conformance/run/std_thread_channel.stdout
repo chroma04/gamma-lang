@@ -1,0 +1,9 @@
+try_recv empty: null
+try_send: true true false
+try_recv: 1 2
+try_recv empty again: null
+0 1 2 3 4 
+received in order: 1234567
+closed: send false try_send false recv null try_recv null
+after close: 5 6 null
+signaled: true ready: true

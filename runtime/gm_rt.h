@@ -35,6 +35,9 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sched.h>
+#if defined(__linux__) && !defined(__FILC__)
+#include <sys/syscall.h>
+#endif
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
  * GM_API_VAR: of the declarations of its variables here. */
@@ -353,6 +356,11 @@ GM_API_VAR pthread_mutex_t gm_rt_lock;
 GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
 GM_API int64_t gm_thread_join(int64_t h);
 GM_API void gm_thread_yield(void);
+/* Blocks while *addr == expected, until woken or the timeout (ns; negative: none) passes;
+ * 0 or an error code. May return early. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns);
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n);   /* UINT32_MAX: all */
+GM_API uint32_t gm_cpu_count(void);
 /* Writes to standard output (fd 1, buffered like Out) or standard error (fd 2). */
 GM_API void gm_sys_write(int32_t fd, const void *p, size_t n);
 

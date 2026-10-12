@@ -8,8 +8,8 @@ thread :: import "std/thread"
 #global msg: cstring = c"hi"
 #global ptr: ?^u32 = null
 
-worker :: fn(arg: rawptr) \ {Sys} {
-    id := arg.cast(^u32)^
+worker :: fn(arg: ^u32) \ {Sys} {
+    id := arg^
     for _ in 0..1000 { _ = @atomic_add(&hits, 1, .Relaxed) }
     tl += id
     thread.defaults(fn() {
@@ -21,7 +21,7 @@ worker :: fn(arg: rawptr) \ {Sys} {
 main :: fn() -> IoError!() \ {Out, Sys} {
     ids := [_]u32(1, 2, 3)
     ts: [3]thread.Thread = ---
-    for i in 0..3 { ts[i] = try thread.spawn(worker, (&ids[i]).cast(rawptr)); ts[i].join() }
+    for i in 0..3 { ts[i] = try thread.spawn(u32, worker, &ids[i]); ts[i].join() }
     print("hits {} flag {} tl {}\n", (@atomic_load(&hits, .SeqCst), @atomic_load(&flag, .SeqCst), tl))
     table[2] = 30
     print("{} {}\n", (table[2], msg.cstr_len()))

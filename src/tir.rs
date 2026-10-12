@@ -123,6 +123,15 @@ pub enum SysOp {
     ThreadJoin,
     /// `@thread_yield()`: lets other threads run.
     ThreadYield,
+    /// `@futex_wait(addr: ^u32, expected: u32, timeout_ns: i64) -> i64`: blocks while
+    /// `addr^` is `expected`, until woken or the timeout passes (negative: no timeout).
+    /// Returns 0 or an error code; wakes up spuriously now and then.
+    FutexWait,
+    /// `@futex_wake(addr: ^u32, n: u32) -> i64`: wakes up to `n` threads waiting on `addr`
+    /// (`u32::MAX`: all).
+    FutexWake,
+    /// `@cpu_count() -> u32`: the number of processors available to the program (at least 1).
+    CpuCount,
     /// `@sys_write(fd: i32, bytes: []const u8)`: standard output (1) or error (2).
     SysWrite,
 }
@@ -174,11 +183,14 @@ impl SysOp {
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
             SysOp::ThreadYield => ("thread_yield", vec![], Ty::unit()),
+            SysOp::FutexWait => ("futex_wait", vec![Ty::ptr(false, Ty::u32()), Ty::u32(), i64], i64),
+            SysOp::FutexWake => ("futex_wake", vec![Ty::ptr(false, Ty::u32()), Ty::u32()], i64),
+            SysOp::CpuCount => ("cpu_count", vec![], Ty::u32()),
             SysOp::SysWrite => ("sys_write", vec![Ty::int(true, 32), Ty::string()], Ty::unit()),
         }
     }
 
-    pub const ALL: [SysOp; 29] = [
+    pub const ALL: [SysOp; 32] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -207,6 +219,9 @@ impl SysOp {
         SysOp::ThreadSpawn,
         SysOp::ThreadJoin,
         SysOp::ThreadYield,
+        SysOp::FutexWait,
+        SysOp::FutexWake,
+        SysOp::CpuCount,
         SysOp::SysWrite,
     ];
 }
