@@ -1,0 +1,8 @@
+test "send_all and recv_exact" ... ok
+test "recv_exact reports a peer that closed early" ... ok
+test "shutdown of the write side ends the peer's stream" ... ok
+test "shutdown of the read side" ... ok
+test "shutdown of both sides" ... ok
+test "set_timeouts is accepted and nothing blocks" ... ok
+test "peer reports the address of the other end" ... ok
+7 passed, 0 failed

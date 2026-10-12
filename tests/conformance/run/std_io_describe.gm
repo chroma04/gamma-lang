@@ -1,0 +1,11 @@
+// std/io.describe: a message for every `IoError` variant.
+io :: import "std/io"
+
+main :: fn() \ {Out} {
+    all := [_]IoError(.NotFound, .PermissionDenied, .AlreadyExists, .WouldBlock, .Interrupted,
+                      .BrokenPipe, .ConnectionReset, .InvalidInput, .UnexpectedEof, .NoSpace,
+                      .ConnectionRefused, .TimedOut, .Other(0), .Other(13))
+    for e in all {
+        print("{} -> error: {}\n", (e, io.describe(e)))
+    }
+}

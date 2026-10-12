@@ -1,0 +1,14 @@
+.NotFound -> error: file or directory not found
+.PermissionDenied -> error: permission denied
+.AlreadyExists -> error: already exists
+.WouldBlock -> error: operation would block
+.Interrupted -> error: interrupted
+.BrokenPipe -> error: broken pipe
+.ConnectionReset -> error: connection reset by peer
+.InvalidInput -> error: invalid input
+.UnexpectedEof -> error: unexpected end of input
+.NoSpace -> error: no space left
+.ConnectionRefused -> error: connection refused
+.TimedOut -> error: timed out
+.Other(0) -> error: operating-system error
+.Other(13) -> error: operating-system error

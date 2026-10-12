@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sched.h>
@@ -330,14 +331,18 @@ GM_API int64_t gm_fs_close(int64_t f);
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
 GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
 GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, is_dir, mtime */
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime */
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n);   /* as stat; no final symlink followed */
 GM_API int64_t gm_fs_remove(const void *path, size_t len);
 GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
 GM_API int64_t gm_fs_make_dir(const void *path, size_t len);
 GM_API int64_t gm_fs_remove_dir(const void *path, size_t len);
 GM_API int64_t gm_fs_open_dir(const void *path, size_t len);
-GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);   /* length + kind * 2^32; 0 after the last */
 GM_API int64_t gm_fs_close_dir(int64_t d);
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
+GM_API int64_t gm_fs_sync(int64_t f);
+GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
 /* TCP sockets; handles are file descriptors. Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
@@ -347,6 +352,9 @@ GM_API int64_t gm_net_accept(int64_t h);
 GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n);
 GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n);
 GM_API int64_t gm_net_close(int64_t h);
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2 both */
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
  *

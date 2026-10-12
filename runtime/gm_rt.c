@@ -1368,6 +1368,7 @@ GM_API int64_t gm_io_error(int err) {
     case EINVAL: return -8;
     case ENOSPC: return -10;
     case ECONNREFUSED: return -11;
+    case ETIMEDOUT: return -12;
     default: return -1000 - (int64_t)err;
     }
 }
@@ -1468,11 +1469,15 @@ GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
     return r < 0 ? gm_io_error(errno) : (int64_t)r;
 }
 
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+static int64_t gm_mode_kind(mode_t mode) {
+    return S_ISREG(mode) ? 0 : S_ISDIR(mode) ? 1 : S_ISLNK(mode) ? 2 : 3;
+}
+
+static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, bool follow) {
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     struct stat st;
-    int r = stat(s, &st);
+    int r = follow ? stat(s, &st) : lstat(s, &st);
     int err = errno;
     free(s);
     if (r != 0) return gm_io_error(err);
@@ -1481,9 +1486,17 @@ GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
 #else
     int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
 #endif
-    int64_t v[3] = {(int64_t)st.st_size, S_ISDIR(st.st_mode) ? 1 : 0, mtime};
+    int64_t v[3] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime};
     memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
     return 0;
+}
+
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, true);
+}
+
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, false);
 }
 
 /* Calls f on the NUL-terminated copy of a path. */
@@ -1553,8 +1566,21 @@ GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
         size_t len = strlen(e->d_name);
         if (len > n) return gm_io_error(EINVAL);
+        int64_t kind;
+        switch (e->d_type) {
+        case DT_REG: kind = 0; break;
+        case DT_DIR: kind = 1; break;
+        case DT_LNK: kind = 2; break;
+        case DT_UNKNOWN: {
+            struct stat st;
+            if (fstatat(dirfd(dir), e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) return gm_io_error(errno);
+            kind = gm_mode_kind(st.st_mode);
+            break;
+        }
+        default: kind = 3;
+        }
         memcpy(p, e->d_name, len);
-        return (int64_t)len;
+        return (int64_t)len + (kind << 32);
     }
 }
 
@@ -1565,6 +1591,22 @@ GM_API int64_t gm_fs_close_dir(int64_t d) {
     gm_dirs[d - 1] = NULL;
     pthread_mutex_unlock(&gm_rt_lock);
     return GM_RET_ERR(closedir(dir) != 0);
+}
+
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
+    if (size > (uint64_t)INT64_MAX) return gm_io_error(EINVAL);
+    return GM_RET_ERR(ftruncate((int)f, (off_t)size) != 0);
+}
+
+GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(fsync((int)f) != 0); }
+
+GM_API int64_t gm_fs_cwd(void *p, size_t n) {
+    char tmp[4096];
+    if (getcwd(tmp, sizeof tmp) == NULL) return gm_io_error(errno);
+    size_t len = strlen(tmp);
+    if (len > n) return gm_io_error(EINVAL);
+    memcpy(p, tmp, len);
+    return (int64_t)len;
 }
 
 /* Resolves host:port for a stream socket (passive: for listening). */
@@ -1662,6 +1704,11 @@ GM_API int64_t gm_net_accept(int64_t h) {
     }
 }
 
+/* A timed-out blocking call fails with EAGAIN; sockets are never non-blocking. */
+static int64_t gm_net_error(int err) {
+    return err == EAGAIN || err == EWOULDBLOCK ? gm_io_error(ETIMEDOUT) : gm_io_error(err);
+}
+
 GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
 #if defined(MSG_NOSIGNAL)
     int flags = MSG_NOSIGNAL;
@@ -1671,7 +1718,7 @@ GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
     for (;;) {
         ssize_t r = send((int)h, p, n, flags);
         if (r >= 0) return (int64_t)r;
-        if (errno != EINTR) return gm_io_error(errno);
+        if (errno != EINTR) return gm_net_error(errno);
     }
 }
 
@@ -1679,11 +1726,52 @@ GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
     for (;;) {
         ssize_t r = recv((int)h, p, n, 0);
         if (r >= 0) return (int64_t)r;
-        if (errno != EINTR) return gm_io_error(errno);
+        if (errno != EINTR) return gm_net_error(errno);
     }
 }
 
 GM_API int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
+
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) {
+    return GM_RET_ERR(shutdown((int)h, how == 0 ? SHUT_RD : how == 1 ? SHUT_WR : SHUT_RDWR) != 0);
+}
+
+static int gm_set_timeout(int fd, int opt, uint64_t ns) {
+    struct timeval tv;
+    tv.tv_sec = (time_t)(ns / 1000000000u);
+    tv.tv_usec = (suseconds_t)((ns % 1000000000u) / 1000u);
+    if (ns > 0 && tv.tv_sec == 0 && tv.tv_usec == 0) tv.tv_usec = 1;   /* zero would mean no timeout */
+    return setsockopt(fd, SOL_SOCKET, opt, &tv, sizeof tv);
+}
+
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    if (gm_set_timeout((int)h, SO_RCVTIMEO, recv_ns) != 0) return gm_io_error(errno);
+    return GM_RET_ERR(gm_set_timeout((int)h, SO_SNDTIMEO, send_ns) != 0);
+}
+
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
+    struct sockaddr_storage a;
+    socklen_t al = sizeof a;
+    if (getpeername((int)h, (struct sockaddr *)&a, &al) != 0) return gm_io_error(errno);
+    char text[INET6_ADDRSTRLEN + 16];
+    int len;
+    if (a.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&a;
+        char host[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &s->sin_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "%s:%u", host, (unsigned)ntohs(s->sin_port));
+    } else if (a.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&a;
+        char host[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "[%s]:%u", host, (unsigned)ntohs(s->sin6_port));
+    } else {
+        return gm_io_error(EINVAL);
+    }
+    if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
+    memcpy(p, text, (size_t)len);
+    return len;
+}
 
 /* ---- heap ------------------------------------------------------------------------ */
 

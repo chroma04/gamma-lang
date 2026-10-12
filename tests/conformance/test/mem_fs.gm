@@ -40,8 +40,8 @@ list_dir :: fn(path: string, name: string) -> IoError!Listing \ {Fs} {
     buf: [32]u8 = ---
     out := Listing(count: 0, found: false)
     while true {
-        n := try d.next_entry(buf[..])
-        if n is 0 { break }
+        e := (try d.next_entry(buf[..])) else break
+        n := e.len
         out.count += 1
         if buf[0..n] is name { out.found = true }
     }
@@ -54,15 +54,15 @@ test "a written file reads back" {
     expect(not try holds("greeting.txt", "hello"))
     info := try stat("greeting.txt")
     expect(info.size is 12)
-    expect(not info.is_dir)
+    expect(info.kind is .File)
     print("size {}\n", info.size)
 }
 
 test "the root is an empty directory" {
     info := try stat("/")
-    expect(info.is_dir)
+    expect(info.kind is .Dir)
     expect(info.size is 0)
-    expect((try stat("")).is_dir)
+    expect((try stat("")).kind is .Dir)
     l := try list_dir("/", "")
     expect(l.count is 0)
 }
@@ -88,7 +88,7 @@ test "paths are normalized" {
     expect(try holds("a/b/c", "deep"))
     expect(try holds("/a/b/c", "deep"))
     expect(try holds("./a/./b//c/", "deep"))
-    expect((try stat("a/b")).is_dir)
+    expect((try stat("a/b")).kind is .Dir)
     expect(open("a/../a/b/c", OpenOptions()) is !.InvalidInput)
     expect(stat("..") is !.InvalidInput)
 }
@@ -230,7 +230,7 @@ test "making directories" {
     expect(open("file/sub", OpenOptions(write: true, create: true)) is !.Other(20))
     expect(stat("file/sub") is !.Other(20))
     try make_dir("d/e")
-    expect((try stat("d/e")).is_dir)
+    expect((try stat("d/e")).kind is .Dir)
     // A file cannot be created over a directory, nor a directory written.
     expect(open("d", OpenOptions(read: false, write: true)) is !.Other(21))
     expect(open("d", OpenOptions(write: true, create: true)) is !.Other(21))
@@ -253,7 +253,7 @@ test "removing files" {
     try remove("f")
     expect(stat("f") is !.NotFound)
     expect(remove("f") is !.NotFound)
-    expect((try stat("d")).is_dir)
+    expect((try stat("d")).kind is .Dir)
 }
 
 test "an open file survives its removal" {
@@ -352,8 +352,8 @@ test "listing a directory" {
     buf: [16]u8 = ---
     count: usize = 0
     while true {
-        n := try d.next_entry(buf[..])
-        if n is 0 { break }
+        e := (try d.next_entry(buf[..])) else break
+        n := e.len
         count += 1
         which: usize = 3
         if buf[0..n] is "a.txt" { which = 0 }
@@ -363,8 +363,8 @@ test "listing a directory" {
         expect(seen & (1 << which) is 0, "an entry was listed twice")
         seen |= 1 << which
     }
-    // After the last entry it keeps returning 0.
-    expect(d.next_entry(buf[..]) is 0)
+    // After the last entry it keeps returning null.
+    expect(d.next_entry(buf[..]) is null)
     d.close_dir()
     expect(count is 3)
     expect(seen is 7)
@@ -381,8 +381,13 @@ test "a name longer than the buffer" {
     small: [4]u8 = ---
     expect(d.next_entry(small[..]) is !.InvalidInput)
     big: [32]u8 = ---
-    expect(d.next_entry(big[..]) is 18)
-    expect(d.next_entry(big[..]) is 0)
+    if e := try d.next_entry(big[..]) {
+        expect(e.len is 18)
+        expect(e.kind is .File)
+    } else {
+        expect(false, "the entry is there")
+    }
+    expect(d.next_entry(big[..]) is null)
 }
 
 test "closed and unknown handles" {

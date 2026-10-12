@@ -2626,6 +2626,7 @@ print("{}\n", pos)                                           // Vec2(x: 1.5, y: 
 IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
     BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
+    TimedOut,                                   // a send or receive outlived its timeout
     Other: i32                                  // OS error code
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
@@ -2652,7 +2653,9 @@ Env   :: effect {
 ```
 File, Dir :: struct { … }                       // handles
 OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
-FileInfo :: struct { pub size: u64; pub is_dir: bool; pub modified: i64 }   // Unix nanoseconds
+FileKind :: union { File, Dir, Symlink, Other }
+FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64 }   // Unix nanoseconds
+DirEntry :: struct { pub len: usize; pub kind: FileKind }                    // a name's length, and what it is
 SeekFrom :: union { Start, Current, End }
 Fs :: effect {
     open: fn(path: string, opts: OpenOptions) -> IoError!File
@@ -2664,8 +2667,12 @@ Fs :: effect {
     remove, make_dir, remove_dir: fn(path: string) -> IoError!()
     rename: fn(from, to: string) -> IoError!()
     open_dir: fn(path: string) -> IoError!Dir
-    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name (never . or ..); 0 after the last
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!?DirEntry     // a name into buf (never . or ..); null after the last
     close_dir: fn(d: Dir)
+    lstat: fn(path: string) -> IoError!FileInfo                 // does not follow a final symlink
+    truncate: fn(f: File, size: u64) -> IoError!()
+    sync: fn(f: File) -> IoError!()                             // flushes the file to the device
+    cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf; InvalidInput if too small
 }
 ```
 
@@ -2673,6 +2680,7 @@ and its `Net` (TCP) is:
 
 ```
 Socket, Listener :: struct { … }               // handles
+Shutdown :: union { Read, Write, Both }
 Net :: effect {
     connect: fn(host: string, port: u16) -> IoError!Socket
     listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
@@ -2682,6 +2690,9 @@ Net :: effect {
     recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
     close_socket: fn(s: Socket)
     close_listener: fn(l: Listener)
+    shutdown: fn(s: Socket, how: Shutdown) -> IoError!()
+    set_timeouts: fn(s: Socket, recv, send: ?Duration) -> IoError!()   // null: wait forever; a call that times out gives TimedOut
+    peer: fn(s: Socket, buf: []u8) -> IoError!usize                    // "host:port" into buf; InvalidInput if too small
 }
 ```
 
