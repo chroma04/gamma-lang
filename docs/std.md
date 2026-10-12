@@ -76,6 +76,36 @@ The test handlers are in-memory: nothing blocks, so timeouts are accepted and ig
 `shutdown` has the same effect on `recv` and `send` as it has on real sockets, and
 `peer` reports `127.0.0.1` with the port of the other end.
 
+## Builtin methods
+
+Numbers, slices, pointers and unions have methods built into the language (§21.3),
+so no module repeats them. The ones people look for most:
+
+- Integers: `x.trunc(T)`, `x.checked(T)`, `x.sat(T)` (narrowing), `x.to(f64)` (to a
+  float), `min`, `max`, `clamp`, `abs`, `unsigned_abs`, `abs_diff`, `pow`.
+- Floats: `round(T)`, `floor(T)`, `ceil(T)`, `trunc(T)` (to integers, checked),
+  `to(F)`, `is_nan`, `is_inf`, `abs`, `sqrt`.
+- Slices and strings: `len`, `get(i)`, `first`, `last`, `starts_with`, `ends_with`,
+  `index_of`, `copy_from`, `fill`, `swap`, `sort`, `sort_by`, `sort_by_key`, the stable
+  sorts, `min`, `max`, `binary_search`, `utf8_valid`. `is` compares strings and slices
+  by value and `<` orders them.
+
+## Formatting into your own sink: `@write`
+
+`print` is `@write` aimed at `Out`. `@write(sink, template, args)` takes the same
+templates and arguments (including format specs such as `{:>8}` and `{:.2}`) and calls
+`sink`, a function literal taking `[]const u8`, with the pieces of output, allocating
+nothing:
+
+```gamma
+total: usize = 0
+@write(fn(b) { total += b.len }, "{} items at {:.2}\n", (n, price))   // measures the text
+```
+
+For text you keep, `List(u8).write` appends to a list, `str.format` returns a new
+allocation, and `io.ListOut` and `io.Capture` are `Out` handlers that collect whatever
+code prints.
+
 ## `std/io`
 
 - `io.reader()` and `r.next_line()`: read `In` a line at a time (the line is valid

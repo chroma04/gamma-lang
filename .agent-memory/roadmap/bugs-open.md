@@ -2,9 +2,6 @@
 7. (perf) C big values: s6 gm_out results + in-place construction + borrowed params of pure
    fns (decisions/016). Left: nested aggregate elements still go through a temp; gcc SRA is weak
    on uint8_t-array blobs (bigcopy bench: gcc 1.9 s vs clang 0.13 s).
-10. Usability: std/str + HashMap.get_ptr/get_or_put done; templates from comptime params done
-    (WriteDeferred resolved in mono). Remaining: integer sign/abs helpers; print width specs
-    (spec says library functions; Builder.write + fmt cover it).
 11. Interpreter speed: s3 fast paths (interp/fast.rs: ≤64-bit ints as i128, word loads/stores,
     inline small allocs, address cache, &TyInfo, frame pool) took a simple loop from 700 to
     ~180 ns/iteration. Fiber switches: s4 recv_soon (poll before blocking) 12 µs → ~2 µs.
@@ -24,4 +21,13 @@
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
 30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
-    runnable from a root (`gamma test --all`?), x.to(f64) widening shorthand, @fn_cast.
+    runnable from a root (`gamma test --all`?), @fn_cast.
+## s7 leftovers
+31. `[@size_of(T)]u8` in a generic body: "expression kind reached the interpreter".
+32. `.bits(...)` rejected in a generic `Int(T)` body.
+33. random.below truncates n to u64 (u128 ranges wrong).
+34. std/fiber tasks may perform only `Sched` (fn pointers have fixed effects).
+35. std/log ErrLog requires Clock even when time is false.
+36. WaitGroup wait is `wait_all` (name clash in module); lstat on symlinks untested.
+37. HashMap keeps get_or_put next to entry (second way; consider removing per §22).
+38. Later (must clear §22): reflection, JSON, hashes, ordered maps.
