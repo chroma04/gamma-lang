@@ -307,6 +307,14 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
+            ExprKind::Handler(_) => {
+                self.error(
+                    init.span,
+                    "a handler literal cannot be a top-level declaration; bind it inside a function, \
+                     or declare a handler for a type with `handler E for T { … }` (§12.5)",
+                );
+                DeclValue::Error
+            }
             ExprKind::Struct(_) | ExprKind::Union(_) if b.ty.is_none() => {
                 let ty = self.declare_adt(module, Some(id), name.name, init);
                 if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) }

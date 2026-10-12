@@ -1,0 +1,12 @@
+// The source call of a `for` may spread a tuple into its arguments or name them
+// in any order (§11.4, §13.2).
+r2 :: fn(a: u32, b: u32) \ {Yield(u32)} {
+    for i in a..b { yield(i) }
+}
+main :: fn() \ {Out} {
+    args := (2u32, 5u32)
+    for v in r2(..args) { print("{} ", v) }
+    print("\n")
+    for v in r2(b: 3, a: 1) { print("{} ", v) }
+    print("\n")
+}

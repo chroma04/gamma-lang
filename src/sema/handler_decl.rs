@@ -208,6 +208,7 @@ impl<'s> Sema<'s> {
                 break_ty: None,
                 effect: Some(p.effect.clone()),
                 decl_clause: Some(p.fn_id),
+                with_expect: None,
             });
             if c.params.len() != p.params.len() {
                 cx.error(

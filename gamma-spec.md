@@ -1487,7 +1487,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 ```
 
 - Clause parameters are names only; their types come from the operation. A `ctl` clause has one extra, final parameter: the continuation (§14.2).
-- A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::`, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame.
+- A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::` to a local, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame. A handler literal cannot be a top-level declaration; a handler that needs no frame is a handler declaration (§12.6).
 - Effects performed by a clause body are handled by the handlers in scope **where the literal is written**. They count as effects performed by the enclosing function at that point.
 - `break`, `continue` and `return` in clause bodies are described in §12.7.
 

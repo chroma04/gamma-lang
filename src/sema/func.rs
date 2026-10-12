@@ -144,6 +144,9 @@ pub struct ClauseInfo {
     /// For a clause of a handler declaration: its function, under which the values of
     /// its `break`s to the installing `with` are recorded.
     pub decl_clause: Option<FnId>,
+    /// For a clause of a handler literal written in a `with`: the type expected of the
+    /// `with`'s value, which its `break`s give.
+    pub with_expect: Option<Ty>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested

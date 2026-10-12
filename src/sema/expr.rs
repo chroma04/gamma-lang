@@ -125,7 +125,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
             ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
-            ExprKind::Handler(lit) => self.handler_literal(lit, span),
+            ExprKind::Handler(lit) => self.handler_literal(lit, None, span),
             ExprKind::With(w) => self.with_expr(w, true, expect),
             ExprKind::OptUnwrap(inner) => {
                 let v = self.expr(inner, None);
@@ -1911,8 +1911,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 ex.map(Box::new)
             }
             (Jump::InstallingWith, v) => {
-                let ex = v.map(|v| self.expr(v, None));
-                let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
+                let expect = self.clause.as_ref().and_then(|c| c.with_expect);
+                let ex = v.map(|v| {
+                    let ex = self.expr(v, expect);
+                    match expect {
+                        Some(t) => self.coerce(ex, t),
+                        None => ex,
+                    }
+                });
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| expect.unwrap_or(e.ty));
                 if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
                     self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
                 }
