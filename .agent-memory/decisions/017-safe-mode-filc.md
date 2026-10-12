@@ -34,5 +34,11 @@ Design doc for the user: /mnt/project-files/design/safe-mode.md (deliberation + 
      faulting access (exit 0!) — filcc deletes statically-failing checks.
 - Remaining: trees 16× (new/destroy = GC alloc + by-ref args like the 40-byte location
   struct escaping), hmap 4.3×, sieve 3.9×. Uncaptured locals as C locals: done (few %,
-  c-backend-plan.md end). Next: by-value small aggregates instead of &tmp args (trees'
-  `new` passes &t5, a 40-byte location temp, per call → GC alloc).
+  c-backend-plan.md end). By-address temps (same PR #17): by-value aggregates measured
+  SLOWER under Fil-C (by_ref threshold 64: trees 3.9→5.2 s; microbench 40B by value 65 ns
+  vs &tmp 15 ns: Fil-C copies aggregate args through allocated memory). Done instead:
+  literal-only by_ref args → static `gm_kN` (cgen/constarg.rs, init in gm_init_consts);
+  under filc no MAX_C_LOCAL (no stack check), so a large escaping local escapes alone.
+  Trees Safe ≈ −20%. Tried & dropped: callee passing its by-ref param pointer through
+  (new→tag `site`): no measurable gain, needs caller-side no-alias protocol.
+  Remaining: GC alloc of `new` itself; `&key` (^const K) in std maps escapes per call.

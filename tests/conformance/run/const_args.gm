@@ -1,0 +1,26 @@
+//! mode: checked
+// Large arguments built from literals come from static storage; a callee that
+// changes its parameter changes only its own copy.
+Big :: struct { name: string, n: i64, xs: [4]i16, f: f64, ok: bool, c: cstring }
+
+bump :: fn(b: Big) -> i64 {
+    c := b
+    c.n += 1
+    c.xs[2] -= 7
+    w: i64 = c.xs[2]
+    return c.n * 1000 + w
+}
+
+show :: fn(b: Big, site: SourceLocation = @caller_location()) \ {Out} {
+    print("{} {} {} {} {} {} {} line {}\n", (b.name, b.n, b.xs[0], b.xs[3], b.f, b.ok, b.c[0], site.line))
+}
+
+main :: fn() \ {Out} {
+    total: i64 = 0
+    for i in 0..3 {
+        total += bump(Big(name: "lit", n: -5, xs: [4]i16(1, -2, 3, -4), f: 2.5, ok: true, c: c"abc"))
+    }
+    print("{}\n", total)
+    show(Big(name: "héllo", n: -9_000_000_000, xs: [4]i16(-1, 0, 0, 32767), f: -0.125, ok: false, c: c"Z"))
+    show(Big(name: "héllo", n: -9_000_000_000, xs: [4]i16(-1, 0, 0, 32767), f: -0.125, ok: false, c: c"Z"))
+}

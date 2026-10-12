@@ -953,6 +953,8 @@ impl Gen<'_> {
     /// temporaries that may lie below the frame, would otherwise also count them
     /// when the C compiler places them above it, and could report an overflow on a
     /// stack that suffices (a task's array buffer on a fiber stack sized for it).
+    /// Fil-C has no such check, and there a large local passed by address is better
+    /// outside the frame: it escapes to the heap on its own instead of with the frame.
     pub fn frame_locals(&mut self, f: FnId) -> Vec<bool> {
         let def = &self.prog.fns[f.index()];
         let all = self.opts.debug || self.opts.debug_info || def.body.as_ref().is_some_and(has_fiber_with);
@@ -970,10 +972,13 @@ impl Gen<'_> {
             set
         });
         let ty = &self.ty;
+        let filc = self.prog.target.filc;
         def.locals
             .iter()
             .enumerate()
-            .map(|(i, l)| ty.size(l.ty) > MAX_C_LOCAL || captured.contains(&(f, crate::tir::LocalId(i as u32))))
+            .map(|(i, l)| {
+                (!filc && ty.size(l.ty) > MAX_C_LOCAL) || captured.contains(&(f, crate::tir::LocalId(i as u32)))
+            })
             .collect()
     }
 }

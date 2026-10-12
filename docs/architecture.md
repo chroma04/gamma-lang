@@ -362,7 +362,9 @@ function literals and handler clauses reach live in a frame struct whose
 address is the `env` of those literals and clauses, so captured variables are
 shared, as §11.6 requires. The other locals of up to 32 bytes are plain C
 locals (larger ones gain nothing from registers, and the stack check, which must
-assume they lie below the frame, would overestimate what the function needs):
+assume they lie below the frame, would overestimate what the function needs;
+Safe builds have no such check, so there every uncaptured local is a C local, and
+one whose address escapes goes to the heap alone instead of with the frame):
 once the frame's
 address escapes (into a handler node or a closure), the C compiler must keep
 every field of the frame in memory, but it can still keep the locals outside it
@@ -528,7 +530,13 @@ fiber stacks sized by `@stack_size` must hold them. Because the copy happens on
 entry, the address may be that of any place holding the value: an argument read
 from a local or through a pointer is passed as that place when no later argument
 can write memory (`no_writes`), and `return x` copies `x` straight into the result
-slot. A plain function whose own signature differs from the C ABI as a result
+slot. An argument built from literals only, such as the `SourceLocation` that
+`@caller_location()` fills in for `new`, lives in static storage initialized at
+startup like a top-level constant (`src/cgen/constarg.rs`), and the call passes
+its address instead of building a temporary at every call; under Fil-C that
+temporary's escaping address cost a heap allocation per call. (Passing such
+values by value instead is slower still under Fil-C: its calling convention
+copies an aggregate argument through memory it allocates.) A plain function whose own signature differs from the C ABI as a result
 (it has a large parameter, or returns a large mirror type) gets a separate entry
 point `gm_fN_c` with the C signature (`Gen::needs_wrapper`, `c_abi_wrapper`); it
 is what function pointers, constants and `#export` refer to (`Gen::addr_name`),

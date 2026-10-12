@@ -39,8 +39,8 @@
    thread "Uncaptured locals", branch claude/project-thread-oemqrj).
 2. bugs-open.md leftovers (#23–#38); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
-4. Safe mode follow-up (decisions/017 end): fewer by-address temporaries (by-value small
-   aggregates; allocation-heavy code still ~16× Checked).
+4. Safe mode follow-up (decisions/017 end): constant large args static (done, PR #17);
+   left: `&key` escapes in std maps, `new`'s GC alloc (allocation-heavy code ~13× Checked).
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md;

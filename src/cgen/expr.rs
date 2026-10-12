@@ -955,7 +955,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
             // A large argument read from a place is passed as the place itself when
             // nothing evaluated before the call can change it (see `Types::by_ref`).
             let later_pure = || args[i + 1..].iter().all(no_writes);
-            let v = if self.g.ty.by_ref(a.ty)
+            // A large constant is passed from static storage (see `constarg`).
+            let k = if self.g.ty.by_ref(a.ty) { self.g.const_arg(a) } else { None };
+            let v = if let Some(k) = k {
+                format!("(*({} *){})", self.g.ty.cty(a.ty), k)
+            } else if self.g.ty.by_ref(a.ty)
                 && matches!(a.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
                 && later_pure()
             {
