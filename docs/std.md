@@ -115,7 +115,8 @@ print("{}\n", fmt.fixed(2.675, 2, fb[..]))             // 2.67 (the exact binary
 Byte-oriented string utilities. A `string` is a `[]const u8`, so indices are byte
 indices and case rules are ASCII only. Strings are slices, which have no user-defined
 methods, so these are called as functions: `str.trim(s)`. Results are slices of the
-arguments (or of a buffer you supply); only `join` allocates.
+arguments (or of a buffer you supply); only `join`, `dupe`, `replace_alloc` and the
+functions that append to a `List(u8)` allocate.
 
 ```gamma
 str :: import "std/str"
@@ -128,22 +129,54 @@ for line in str.lines(text) {
 }
 ```
 
+**Already in the language, so not repeated here:** the builtin methods of slices (spec
+§21.3) work on strings: `s.starts_with(p)`, `s.ends_with(p)`, `s.index_of(byte)`,
+`s.first()`, `s.last()`, `s.get(i)` and `s.utf8_valid()`; `s is t`
+compares for equality, and `<`, `<=`, `>`, `>=` order strings lexicographically by byte;
+`bytes(s)` and `runes(s)` iterate. Use `strip_prefix` below when you also want the rest
+of the string.
+
 - Trimming: `trim`, `trim_start`, `trim_end` (ASCII whitespace: space, `\t`, `\n`, `\r`,
   `\v`, `\f`).
 - Searching: `find(s, needle) -> ?usize` (an empty needle is found at 0), `rfind` (an
-  empty needle is found at `s.len`) and `contains`.
+  empty needle is found at `s.len`), `contains`, `find_ignore_case(s, needle)` (ASCII
+  case-insensitive `find`), `count(s, needle)` (non-overlapping occurrences; an empty
+  needle traps) and `strip_prefix(s, prefix)` / `strip_suffix(s, suffix)`, which give
+  the rest of `s` or `null`.
 - Splitting: `split_once(s, sep) -> ?(before: string, after: string)` and the iterators
   `split(s, sep)` (adjacent or terminal separators give empty pieces; an empty `sep`
-  yields `s` once), `lines(s)` (splits on `\n`, drops a `\r` before it, no empty line
-  after a final `\n`) and `fields(s)` (runs of non-whitespace).
+  yields `s` once), `split_any(s, seps)` (splits at every byte that occurs in `seps`,
+  with the same empty pieces), `lines(s)` (splits on `\n`, drops a `\r` before it, no
+  empty line after a final `\n`) and `fields(s)` (runs of non-whitespace). Without an
+  iterator: `split_into(s, sep, parts) -> usize` fills `parts` with at most
+  `parts.len` pieces, the last taking the rest of `s`, and returns how many it wrote
+  (`split_into("k=v=w", "=", p[0..2])` gives `k` and `v=w`), and `nth_field(s, sep, n)`
+  is piece `n` of `split` or `null`.
 - Case: `eq_ignore_case(a, b)`, and `to_lower(s, buf)` and `to_upper(s, buf)`, which
   write into `buf` and return the part used; a buffer shorter than `s` traps.
-- `parse_int(T, s) -> ParseError!T` for any integer type: an optional sign (`-` only
-  for signed types), an optional `0x`, `0o` or `0b` prefix, digits with single `_`
-  separators between them, and nothing else. The most negative value of a signed type
-  parses. Errors are `ParseError`: `.Empty`, `.InvalidDigit(at: index)` (a bad
+  Single bytes are classified and converted by `std/ascii`.
+- Replacing: `replace(out, s, from, to)` appends `s` to a `^List(u8)` with every
+  non-overlapping `from` (found from the left; empty traps) replaced by `to`, and
+  `replace_alloc(s, from, to) -> AllocError![]u8` returns the result in one allocation;
+  `repeat(out, s, n)` appends `n` copies of `s`. `dupe(s) -> AllocError![]u8` copies
+  `s`. Results from the allocating forms are released with `free`.
+- Integers: `parse_int(T, s) -> ParseError!T` for any integer type: an optional sign
+  (`-` only for signed types), an optional `0x`, `0o` or `0b` prefix, digits with single
+  `_` separators between them, and nothing else. The most negative value of a signed
+  type parses. Errors are `ParseError`: `.Empty`, `.InvalidDigit(at: index)` (a bad
   character, a misplaced `_`, or missing digits, in which case `at` is the index where
   a digit was expected) and `.Overflow`. The first problem found from the left wins.
+  `parse_radix(T, s, base)` takes a base from 2 to 36 (letters of either case are the
+  digits above 9) and no prefix.
+- Floats: `parse_float(T, s) -> ParseError!T` for `f16`, `f32` and `f64`. The syntax is
+  an optional sign and then `inf`, `infinity` or `nan` in any case, or digits with an
+  optional fraction and exponent: `12`, `1.5`, `.5`, `5.`, `1e-3`, `6.02E+23`, with
+  single `_` separators between digits. There must be a digit in the mantissa and, if
+  there is an `e`, in the exponent; anything else, including whitespace, is
+  `.InvalidDigit(at: index)`. The result is correctly rounded, to nearest with ties to
+  even, whatever the number of digits: subnormals are exact, a number too large for
+  `T` is `inf` (no error) and one too small is zero. Digits that `print` writes parse
+  back to the same float.
 - `Builder`: appends into a buffer you supply, allocating nothing.
   `b := str.builder(buf[..])`, then `b.push(s)`, `b.push_byte(c)`, `b.str()`,
   `b.len()` and `b.reset()`. `b.write(template, args)` appends formatted text, exactly as
@@ -151,9 +184,12 @@ for line in str.lines(text) {
 - `join(parts, sep) -> AllocError![]u8`: the parts with `sep` between them in memory
   from the current allocator; release it with `free`.
 
+String comparison needs no function: `a < b` orders strings by byte, and `a is b`
+tests equality.
+
 ## `std/text`
 
-Unicode text segmentation. Strings are read as UTF-8, with each maximal ill-formed
+Unicode text segmentation and the UTF-8 encoding of scalar values. Strings are read as UTF-8, with each maximal ill-formed
 subsequence taken as one U+FFFD as `runes` does; results are slices of the argument, so
 ill-formed bytes come back unchanged, and nothing allocates.
 
@@ -172,6 +208,15 @@ for g in text.graphemes("e\u{301}🇫🇷👨\u{200d}👩\u{200d}👧") { n += 1
   for stepping through text without an iterator.
 - `UNICODE_VERSION` is the version of the Unicode Standard the rules and tables follow
   (currently `"16.0.0"`).
+- Scalar values. Reading text as scalar values is `runes(s)` and checking it is
+  `s.utf8_valid()`, both builtin. `decode_rune(s) -> ?(rune: u32, len: usize)` is the
+  first scalar value and its byte length, and `null` for empty or ill-formed input (a
+  stray continuation, a truncated or overlong sequence, a surrogate, a value above
+  U+10FFFF), where `runes` would give U+FFFD. `encode_rune(cp, buf) -> ?string` writes
+  the UTF-8 form of `cp` into `buf` (at least 4 bytes, or it traps) and returns the
+  bytes written; it is `null` for a surrogate or a value above U+10FFFF.
+  `append_rune(out, cp) -> AllocError!()` appends the encoding to a `^List(u8)` and
+  traps on a value that is not a scalar value.
 
 ## `std/collections`
 
@@ -302,3 +347,25 @@ interpreter itself.
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring
 foreign functions (§19.1).
+
+## `std/ascii`
+
+Classification and case of single bytes, for the 128 ASCII characters; a byte of 128
+or more is in no class and has no case. Nothing allocates and nothing performs effects.
+
+```gamma
+ascii :: import "std/ascii"
+
+for c in bytes(word) {
+    if ascii.is_alpha(c) { out.push(ascii.to_lower(c)) }
+}
+```
+
+- Classes, each `fn(c: u8) -> bool`: `is_alpha`, `is_digit`, `is_alnum`, `is_upper`,
+  `is_lower`, `is_hex_digit`, `is_space` (space, `\t`, `\n`, `\r`, `\v`, `\f`, the set
+  `std/str` trims), `is_print` (0x20 to 0x7e), `is_punct` (printable, but not a letter,
+  digit or space) and `is_control` (0x00 to 0x1f and 0x7f).
+- Case: `to_lower(c)` and `to_upper(c) -> u8` change letters and leave other bytes
+  alone.
+- `digit_value(c) -> ?u8` is the value of `c` as a digit in a base up to 36: 0 to 9 for
+  `0`-`9`, 10 to 35 for `a`-`z` or `A`-`Z`, and `null` for any other byte.

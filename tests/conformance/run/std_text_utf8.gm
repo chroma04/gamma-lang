@@ -1,0 +1,110 @@
+// std/text: decode_rune, encode_rune and append_rune.
+text :: import "std/text"
+
+show_decode :: fn(s: string) \ {Out} {
+    if d := text.decode_rune(s) {
+        print("{} len {}\n", (d.rune, d.len))
+    } else {
+        print("none\n", ())
+    }
+}
+
+show_encode :: fn(cp: u32) \ {Out} {
+    buf: [4]u8 = ---
+    if e := text.encode_rune(cp, buf[..]) {
+        print("{} ->", cp)
+        for b in e { print(" {}", b) }
+        print("\n", ())
+    } else {
+        print("{} -> none\n", cp)
+    }
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    // Decoding: one value of each length, and what follows is ignored.
+    show_decode("A")
+    show_decode("é!")
+    show_decode("€x")
+    show_decode("😀y")
+    show_decode("\u{fffd}")
+    show_decode("\u{7f}")
+    show_decode("\u{80}")
+    show_decode("\u{7ff}")
+    show_decode("\u{800}")
+    show_decode("\u{ffff}")
+    show_decode("\u{10000}")
+    show_decode("\u{10ffff}")
+
+    // Ill-formed input is reported, whatever the reason.
+    show_decode("")
+    show_decode("\x80")           // a continuation byte
+    show_decode("\xc0\x80")       // overlong NUL
+    show_decode("\xc1\xbf")       // overlong
+    show_decode("\xe0\x80\x80")   // overlong
+    show_decode("\xf0\x80\x80\x80")
+    show_decode("\xed\xa0\x80")   // a surrogate
+    show_decode("\xed\xbf\xbf")
+    show_decode("\xf4\x90\x80\x80") // above U+10FFFF
+    show_decode("\xf5\x80\x80\x80")
+    show_decode("\xff")
+    show_decode("\xc3")           // truncated
+    show_decode("\xe2\x82")
+    show_decode("\xf0\x9f\x98")
+    show_decode("\xe2\x28\xa1")   // a bad continuation
+    show_decode("\xef\xbf")       // truncated U+FFFD
+
+    // Encoding: the edges of each length, then values that cannot be encoded.
+    show_encode(0)
+    show_encode(0x7f)
+    show_encode(0x80)
+    show_encode(0x7ff)
+    show_encode(0x800)
+    show_encode(0xd7ff)
+    show_encode(0xd800)
+    show_encode(0xdfff)
+    show_encode(0xe000)
+    show_encode(0xffff)
+    show_encode(0x10000)
+    show_encode(0x10ffff)
+    show_encode(0x110000)
+    show_encode(0xffffffff)
+
+    // Every scalar value round-trips, and agrees with `runes`.
+    ok := true
+    n: usize = 0
+    buf: [4]u8 = ---
+    cp: u32 = 0
+    while cp <= 0x10ffff {
+        if cp is 0xd800 { cp = 0xe000 }
+        e := text.encode_rune(cp, buf[..]) else { ok = false; break }
+        d := text.decode_rune(e) else { ok = false; break }
+        if d.rune is not cp or d.len is not e.len { ok = false }
+        for r in runes(e) {
+            if r is not cp { ok = false }
+        }
+        if not e.utf8_valid() { ok = false }
+        n += 1
+        cp += 1
+    }
+    print("round trip {} {}\n", (ok, n))
+
+    // Appending to a list.
+    out := list(u8)
+    defer out.deinit()
+    try text.append_rune(&out, 'a')
+    try text.append_rune(&out, 0xe9)
+    try text.append_rune(&out, 0x20ac)
+    try text.append_rune(&out, 0x1f600)
+    print("{} {}\n", (out.items.len, out.items.utf8_valid()))
+    print("{}\n", out.items)
+
+    // Stepping through a string with decode_rune.
+    s := "a€😀é"
+    i: usize = 0
+    while i < s.len {
+        d := text.decode_rune(s[i..s.len]) else break
+        print("{} ", d.rune)
+        i += d.len
+    }
+    print("\n", ())
+}

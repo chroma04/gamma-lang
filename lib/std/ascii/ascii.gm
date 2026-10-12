@@ -1,0 +1,54 @@
+// std/ascii: classification and case of single bytes.
+//
+// Every function takes one byte and answers for the 128 ASCII characters; bytes of 128
+// and above are not letters, digits, spaces or anything else here. Nothing allocates and
+// nothing performs effects.
+//
+//     ascii :: import "std/ascii"
+//     if ascii.is_alpha(c) { out.push(ascii.to_lower(c)) }
+
+/// Whether `c` is `A`-`Z` or `a`-`z`.
+pub is_alpha :: fn(c: u8) -> bool => is_upper(c) or is_lower(c)
+
+/// Whether `c` is `0`-`9`.
+pub is_digit :: fn(c: u8) -> bool => c >= '0' and c <= '9'
+
+/// Whether `c` is a letter or a decimal digit.
+pub is_alnum :: fn(c: u8) -> bool => is_alpha(c) or is_digit(c)
+
+/// Whether `c` is ASCII whitespace: space, `\t`, `\n`, `\r`, `\v` or `\f`.
+pub is_space :: fn(c: u8) -> bool => c is ' ' or c is '\t' or c is '\n' or c is '\r' or c is 0x0b or c is 0x0c
+
+/// Whether `c` is `A`-`Z`.
+pub is_upper :: fn(c: u8) -> bool => c >= 'A' and c <= 'Z'
+
+/// Whether `c` is `a`-`z`.
+pub is_lower :: fn(c: u8) -> bool => c >= 'a' and c <= 'z'
+
+/// Whether `c` is `0`-`9`, `a`-`f` or `A`-`F`.
+pub is_hex_digit :: fn(c: u8) -> bool => is_digit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')
+
+/// Whether `c` is a visible character that is neither a letter nor a digit: one of
+/// ``!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~``.
+pub is_punct :: fn(c: u8) -> bool => is_print(c) and c is not ' ' and not is_alnum(c)
+
+/// Whether `c` is printable: a space or a visible character (0x20 to 0x7e).
+pub is_print :: fn(c: u8) -> bool => c >= 0x20 and c <= 0x7e
+
+/// Whether `c` is a control character: 0x00 to 0x1f, or 0x7f.
+pub is_control :: fn(c: u8) -> bool => c < 0x20 or c is 0x7f
+
+/// `c` as a lowercase letter if it is a capital, and `c` otherwise.
+pub to_lower :: fn(c: u8) -> u8 => if is_upper(c) { c + 32 } else { c }
+
+/// `c` as a capital if it is a lowercase letter, and `c` otherwise.
+pub to_upper :: fn(c: u8) -> u8 => if is_lower(c) { c - 32 } else { c }
+
+/// The value of `c` as a digit in a base up to 36: 0 to 9 for `0`-`9`, and 10 to 35 for
+/// `a`-`z` or `A`-`Z`. `null` for any other byte.
+pub digit_value :: fn(c: u8) -> ?u8 {
+    if is_digit(c) { return c - '0' }
+    if is_lower(c) { return c - 'a' + 10 }
+    if is_upper(c) { return c - 'A' + 10 }
+    return null
+}
