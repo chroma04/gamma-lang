@@ -1,0 +1,18 @@
+//! mode: safe
+//! exit: 134
+// Arena allocations are separate blocks in Safe builds: running off the end of one
+// allocation traps instead of reaching the next one (§18.7).
+arena :: import "std/arena"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        a := try make(u8, 8)
+        b := try make(u8, 8)
+        b.fill(7)
+        p := a.ptr
+        print("in bounds {}\n", p[7] is p[7])
+        print("neighbor {}\n", p[8 + (b.ptr.addr() - a.ptr.addr() - 8)])
+    }
+}

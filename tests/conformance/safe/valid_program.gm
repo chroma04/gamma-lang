@@ -1,0 +1,29 @@
+//! mode: safe
+// A memory-safe program behaves in a Safe build as in any other (§18.7), including
+// pointers stored in memory, pointer arithmetic, fibers and arenas.
+arena :: import "std/arena"
+
+Node :: struct { value: i64, next: ?^Node }
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    ar := arena.new()
+    defer ar.deinit()
+    total: i64 = 0
+    with ar.allocator() {
+        head: ?^Node = null
+        for i in 0..1000 { head = try new(Node, Node(value: i, next: head)) }
+        cur := head
+        while n := cur {
+            total += n.value
+            cur = n.next
+        }
+        xs := try make(u16, 10)
+        p := xs.ptr + 10
+        for i in 0..10 {
+            p = p - 1
+            p[0] = u16(i.trunc(u16))
+        }
+        print("first {} last {}\n", (xs[0], xs[9]))
+    }
+    print("total {}\n", total)
+}

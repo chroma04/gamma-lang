@@ -1,3 +1,4 @@
+//! safe: skip Fil-C rejects inline assembly with pointer operands
 //! arch: x86_64
 // Inline assembly with operand constraints (add, rdtsc, xchg, popcnt) on x86-64, selected with when on target.arch.
 add :: fn(a, b: u32) -> u32 \ {Sys} {

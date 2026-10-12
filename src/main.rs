@@ -31,13 +31,16 @@ options:
   -g                          (build, and run and test via C) add debug information that maps
                               the executable to the Gamma source, for debuggers; a Debug build
                               is then compiled without optimization
-  --mode=debug|checked|fast   (run, build, test) the build mode (default: debug): Debug and
-                              Checked trap on failed checks, Fast omits them; Debug also
-                              checks every free
+  --mode=debug|checked|safe|fast
+                              (run, build, test) the build mode (default: debug): Debug,
+                              Checked and Safe trap on failed checks, Fast omits them; Debug
+                              also checks every free; Safe compiles with Fil-C, which traps
+                              on every invalid memory access
 
 environment:
-  CC        the C compiler for native builds, with any arguments (default: cc);
-            a cross compiler (`zig cc -target aarch64-linux-musl`) makes it the target
+  CC        the C compiler for native builds, with any arguments (default: cc, and
+            for Safe builds Fil-C's filcc from PATH or /opt/fil/bin); a cross
+            compiler (`zig cc -target aarch64-linux-musl`) makes it the target
   CFLAGS    extra C compiler options
   LDFLAGS   extra linker options
 ";
@@ -90,6 +93,7 @@ fn parse_args() -> Result<Options, String> {
             "-g" => opts.debug_info = true,
             "--mode=debug" => opts.mode = gamma::interp::Mode::Debug,
             "--mode=checked" => opts.mode = gamma::interp::Mode::Checked,
+            "--mode=safe" => opts.mode = gamma::interp::Mode::Safe,
             "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
@@ -182,17 +186,31 @@ fn run_front_end(opts: &Options) -> ExitCode {
 }
 
 /// A session for `opts`, with the C toolchain from the environment (`CC`, `CFLAGS`,
-/// `LDFLAGS`). The session's target is the one the toolchain compiles for; if the
+/// `LDFLAGS`; for a Safe build, Fil-C). The session's target is the one the toolchain compiles for; if the
 /// toolchain cannot be used it stays the host, and the error is reported when a
 /// native build needs the toolchain.
 fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
     let mut sess = Session::new();
     sess.mode = opts.mode;
     sess.debug_info = opts.debug_info;
-    let toolchain = Toolchain::from_env().and_then(|t| {
-        sess.target = t.target()?;
-        Ok(t)
-    });
+    let toolchain = if opts.mode == gamma::interp::Mode::Safe {
+        Toolchain::for_safe_build().and_then(|t| {
+            let target = t.target()?;
+            if !target.filc {
+                return Err(format!(
+                    "Safe builds compile with the Fil-C compiler (https://fil-c.org), but the C compiler `{}` is not Fil-C",
+                    t.display()
+                ));
+            }
+            sess.target = target;
+            Ok(t)
+        })
+    } else {
+        Toolchain::from_env().and_then(|t| {
+            sess.target = t.target()?;
+            Ok(t)
+        })
+    };
     (sess, toolchain)
 }
 

@@ -46,3 +46,7 @@
 - s5: §3.8 `gamma test` runs the tests of the root module and of every same-package module it
   imports (transitively); std and dependency packages excluded. Names distinct per module.
 - s6: App. D.2 exit flag may be a per-thread record; test skipped when the callee cannot exit.
+- s6 Safe mode: §1.4 optional 4th mode Safe (= Checked wherever spec says "Debug and Checked");
+  §3.6 `.Safe`; §6.6 to_ptr grants no access in Safe; §14.1 impl may run fibers on own memory;
+  §18.1/18.4/18.5/18.6 adjusted, new §18.7 (Safe semantics per §18.4 item, allocator
+  granularity); §19.2 foreign libs built for Safe; §19.5 @asm limits; B.4 row; App. C rule.

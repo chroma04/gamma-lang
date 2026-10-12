@@ -1,3 +1,4 @@
+//! safe: skip an address made with to_ptr grants no access in Safe builds
 // Reinterpretation and raw pointers: volatile access to floats, pointers and #bits, bits() between structs, arrays and integers, many-pointer arithmetic and to_ptr.
 Perm :: #bits(u8) struct {
     r, w, x: bool

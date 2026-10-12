@@ -58,7 +58,7 @@ gamma fmt file.gm            # format source files in place (files or directorie
 gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
 ```
 
-`run`, `build` and `test` also take `--mode=debug|checked|fast` (default `debug`).
+`run`, `build` and `test` also take `--mode=debug|checked|safe|fast` (default `debug`). Safe builds check every memory access and need [Fil-C](https://fil-c.org) on Linux (see the [safety chapter](docs/guide/13-safety.md)).
 
 ## Testing
 

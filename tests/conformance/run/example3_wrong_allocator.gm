@@ -14,3 +14,4 @@ main :: fn() \ {Out, Alloc} {
     free(u8, s)
     print("unreachable\n")
 }
+//! safe: skip tests the Debug check of allocators; in Safe builds the heap frees the arena block and the arena traps later

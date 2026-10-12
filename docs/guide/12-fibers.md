@@ -20,7 +20,7 @@ If any handler installed by a `with` handles a `ctl` operation, the `with` must 
 - `fn` and `esc` clauses run where they are performed, as usual.
 - **`ctl` clauses run on the driver's stack**, as if called from the `with` statement.
 - The stack memory must stay valid, and unused by anything else, until the `with` completes. Stacks never grow or move, so pointers into a suspended fiber's stack remain valid.
-- The stack must be at least `@min_stack` bytes, and running out of stack is a checked error (a trap in Debug and Checked builds).
+- The stack must be at least `@min_stack` bytes, and running out of stack is a checked error (a trap in Debug, Checked and Safe builds).
 
 ## A first example
 
@@ -234,6 +234,7 @@ A `join` at the end means the `with` completes only after both tasks have exited
 - Fibers do not migrate between threads. Each thread has its own handlers, and a `with` and all its fibers belong to the thread that executed it.
 - `defer` statements cannot perform `ctl` operations, so cancellation can never suspend.
 - Debug and Checked builds check each call against the fiber's stack, so running out of it traps instead of overwriting other memory. The reference implementation keeps the lowest 8 KiB of a fiber stack in reserve for reporting the overflow, so `@min_stack` (16 KiB) leaves room for only a few calls; give fibers that do real work tens of kilobytes or more.
+- Safe builds run fibers on stacks that Fil-C allocates (the `stack` given to `with … on` only supplies the size), and running out of stack traps there too. Fil-C's frames are bigger, so a fiber that fits in a Checked build may need a larger stack in a Safe one.
 - A pull-style generator over any iterator can be built from a fiber, but the core library does not provide one.
 
 > **Common mistakes.**

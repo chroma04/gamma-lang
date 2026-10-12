@@ -1,3 +1,4 @@
+//! safe: skip Fil-C allocates large locals off the stack, so nothing overflows
 //! exit: 134
 // A local too large for any stack is a stack overflow trap, not a crash.
 main :: fn() \ {Out} {

@@ -638,8 +638,14 @@ fn const_table_built_by_a_function() {
 #[test]
 fn big_endian_32_bit_target() {
     // Layout and arithmetic follow the target.
-    let target =
-        crate::layout::Target { ptr_bytes: 4, little_endian: false, int128_align: 8, os: "Linux", arch: "Other" };
+    let target = crate::layout::Target {
+        ptr_bytes: 4,
+        little_endian: false,
+        int128_align: 8,
+        os: "Linux",
+        arch: "Other",
+        filc: false,
+    };
     let c = RunConfig { target, mode: Mode::Checked, step_budget: None };
     let prog = Program::default();
     let v = eval_const(&prog, &c, &add(int(0x0102, Ty::int(false, 16)), int(1, Ty::int(false, 16)))).unwrap();

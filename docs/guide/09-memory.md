@@ -205,7 +205,9 @@ Gamma removes C's *implicit* memory hazards but not all of them. These are undef
 - out-of-allocation pointer arithmetic or a many-pointer access out of bounds;
 - a data race.
 
-Checked builds check local facts (array bounds, overflow, unwraps) but do not track lifetimes; Debug builds poison freed memory and tag allocations, which catches a lot but costs time. See [chapter 13](13-safety.md).
+Checked builds check local facts (array bounds, overflow, unwraps) but do not track lifetimes; Debug builds poison freed memory and tag allocations, which catches a lot but costs time. Safe builds turn most of the errors above into traps. See [chapter 13](13-safety.md).
+
+Safe builds protect whole allocations, not pieces of them: an allocator that carves many objects out of one big block protects only the block, so an overrun from one object into its neighbor goes unnoticed. For that reason `std/arena` gives each allocation its own block in Safe builds (slower, but every object is protected; `deinit` still frees them all), and an allocator you write can do the same under `when target.mode is .Safe { … }`.
 
 ## Summary
 

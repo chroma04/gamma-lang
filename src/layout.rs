@@ -27,6 +27,10 @@ pub struct Target {
     pub os: &'static str,
     /// The architecture, as a variant name of `target.Arch`.
     pub arch: &'static str,
+    /// The C compiler is Fil-C, whose pointers carry capabilities that are lost when a
+    /// pointer travels as an integer: the C back end keeps pointers as C pointers, and
+    /// Safe builds (§18.7) require it.
+    pub filc: bool,
 }
 
 impl Default for Target {
@@ -64,6 +68,7 @@ impl Target {
             } else {
                 "Other"
             },
+            filc: false,
         }
     }
 

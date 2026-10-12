@@ -77,13 +77,16 @@ In code examples, `...` stands for elided code and is not Gamma syntax.
 
 ### 1.4 Conformance and build modes
 
-A conforming implementation provides three build modes. They differ only in the handling of checked operations and in diagnostic extras; a program that performs no failing checked operation and no UB has the same observable behavior in all three.
+A conforming implementation provides three build modes, Debug, Checked and Fast, and may provide a fourth, Safe, on the targets where it can. They differ only in the handling of checked operations, in diagnostic extras and in what memory errors do; a program that performs no failing checked operation and no UB has the same observable behavior in all of them.
 
 | Mode | Checked operations | Required extras |
 | --- | --- | --- |
 | **Debug** | trap on failure | see §18.3 |
 | **Checked** | trap on failure | none |
+| **Safe** (optional) | trap on failure | memory errors trap (§18.7) |
 | **Fast** | not performed | none |
+
+Safe builds follow every rule this specification states for Checked builds; where it says "Debug and Checked builds", Safe builds are included.
 
 ### 1.5 Organization
 
@@ -354,7 +357,7 @@ when target.os is .Linux {
 - `when` may appear at top level, among the fields of a `struct` body or the variants of a `union` body, and as a statement (§8.9).
 - A `when` condition may not depend on a type parameter of an enclosing generic (§16.7).
 
-The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, …), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.Wasm32`, …), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Fast`).
+The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, …), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.Wasm32`, …), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
 
 ### 3.7 The entry point
 
@@ -803,6 +806,8 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
 `bits` accepts `bool` and any `#bits` struct as a source but not as a target, and accepts no non-plain-data target, so it can never create an invalid value. `cast` between `?P` types maps null to null.
+
+In a Safe build (§18.7) an address is not a pointer: a pointer made by `to_ptr` has the right address but grants access to no object, so accessing memory through it traps, even when the address came from `addr` of a valid pointer.
 
 ### 6.7 Conversions that do not exist
 
@@ -1708,6 +1713,7 @@ If any handler installed by a `with` handles a `ctl` operation, the `with` must 
 - `ctl` clauses run **on the driver's stack**, as if called from the `with` statement. Their effects are handled as stated in §12.5 and §12.6.
 - The stack memory must stay valid, and must not be used for anything else, until the `with` completes. Stacks never grow or move; pointers into a suspended fiber's stack remain valid while the fiber exists.
 - Running out of fiber stack is a **checked** condition (§18): it traps in Debug and Checked builds. `stack` must be at least `@min_stack` bytes (checked).
+- An implementation may run the fiber on memory of its own, of at least the size of `stack`, rather than on `stack` itself; Safe builds do (§18.7). The rules above hold either way.
 
 ### 14.2 Continuations
 
@@ -2124,7 +2130,7 @@ Values of type `type`, effect types, modules, and untyped constants exist only a
 
 ### 18.1 The one rule
 
-Every run-time check in Gamma follows one rule: **it traps in Debug and Checked builds and is removed in Fast builds.** There is no syntax to disable a check locally. Implementations remove checks they can prove cannot fail, in every mode. Two checks are exceptions and are never removed: integer division by zero and signed division overflow (§7.4.5).
+Every run-time check in Gamma follows one rule: **it traps in Debug, Checked and Safe builds and is removed in Fast builds.** There is no syntax to disable a check locally. Implementations remove checks they can prove cannot fail, in every mode. Two checks are exceptions and are never removed: integer division by zero and signed division overflow (§7.4.5).
 
 ### 18.2 Checked operations
 
@@ -2159,7 +2165,7 @@ Debug builds may skip optimizations, including handler specialization; this neve
 
 ### 18.4 Undefined behavior
 
-The following, and only the following, have undefined behavior in Checked and Fast builds:
+The following, and only the following, have undefined behavior in Checked and Fast builds (Debug builds catch some of them, §18.3; Safe builds turn most of them into traps, §18.7):
 
 1. Accessing an object outside its lifetime: use after `free`, use of a dangling pointer to a dead local or fiber stack.
 2. Accessing memory through a pointer that does not point to an object of a compatible type (including misaligned access, and a `downcast_unchecked` to the wrong type).
@@ -2176,11 +2182,34 @@ Everything else is defined. In particular, integer overflow, reading `---` stora
 
 ### 18.5 Traps
 
-A trap terminates the process immediately (Debug and Checked builds report the location and reason to standard error first). It does not unwind, run `defer` statements, or return to any handler. `trap(msg)` (§21.6) traps unconditionally in every build mode.
+A trap terminates the process immediately (Debug, Checked and Safe builds report the reason, and Debug and Checked builds the location, to standard error first). It does not unwind, run `defer` statements, or return to any handler. `trap(msg)` (§21.6) traps unconditionally in every build mode.
 
 ### 18.6 What Checked mode does not check
 
-Checked mode checks local facts: arithmetic, bounds, unwraps and the continuation rules. It does not check use-after-free, dangling pointers, wrong-allocator frees or data races; those need tracking that only Debug builds (or external tools) pay for. The mode is called Checked, not Safe, for this reason.
+Checked mode checks local facts: arithmetic, bounds, unwraps and the continuation rules. It does not check use-after-free, dangling pointers, accesses through many-pointers or data races; those need a pointer to know what it points to, which costs more than a release build should pay by default. Safe builds (§18.7) pay it.
+
+### 18.7 Safe builds
+
+A Safe build performs every check of a Checked build and also checks every memory access. Each pointer carries, invisibly, the **allocation** it was derived from: a global, a local, a `#thread_local`, or a block obtained from the system by an allocator. An access through a pointer traps unless it lies within that allocation, the allocation is still live, and the access is otherwise permitted. A trap reports its reason; it need not report the source location. Safe builds are optional (§1.4); where `target.mode` can be `.Safe`, they behave as follows.
+
+The cases of §18.4 become:
+
+1. Accessing an object outside its lifetime traps: use after `free`, use of a pointer to a dead local or to the stack of a fiber that has completed.
+2. Accessing memory as a type other than the one stored there reinterprets the bytes, as `bits` would, for data other than pointers. A pointer read from memory that does not hold that pointer (written as bytes, or partly overwritten) grants access to nothing, and accessing through it traps.
+3. Out-of-bounds indexing in Fast builds is not possible (Safe builds check it), and any access through a many-pointer outside its allocation traps. Pointer arithmetic is defined whatever the result; only the access is checked. Subtracting or comparing many-pointers into different allocations gives an unspecified value.
+4. Writing to read-only memory traps.
+5. Reading a value whose bytes are not valid for its type gives unspecified results, which may differ between reads, but cannot access memory outside what the program's pointers permit.
+6. Freeing memory twice, or freeing a pointer that is not the start of a live allocation, traps. Freeing through the wrong allocator traps or frees the allocation, depending on how the allocators obtain memory.
+7. A data race gives unspecified values to the racing reads, but a pointer read in a race is one of the pointers written to that location, with its access intact; a race cannot corrupt memory.
+8. Fast-build cases do not arise.
+9. Foreign code must itself be compiled for Safe builds (§19.2), and is then held to the same checks; its own errors trap.
+10. `@asm` is limited to what the implementation can check (§19.5); assembly it cannot check traps or is rejected.
+
+Running out of stack, on a thread or a fiber, traps. Frames may be larger than in other builds, so a deep recursion that fits in a Checked build's stack can trap in a Safe build's.
+
+Safe builds protect allocations, not what a program does inside them: an allocator that hands out pieces of one large block protects only the block, so an access past the end of one piece into the next is not caught. The library's allocators (§15.2) give each allocation its own block in Safe builds so that the checks reach every object; an allocator written in Gamma can do the same by testing `target.mode`.
+
+*Rationale:* Safe builds follow the model of Fil-C (a memory-safe implementation of C), which a C-generating implementation can use directly. Because the checks are on accesses, not on the source program, code written for other builds needs no change, and code that is memory-safe behaves the same in all builds.
 
 ---
 
@@ -2222,7 +2251,7 @@ libc :: foreign "c" {
 }
 ```
 
-- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name.
+- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
 - Parameter and result types must be C-compatible.
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
 - **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
@@ -2282,6 +2311,7 @@ All of these perform `Sys`.
 - `clobbers` is a list of compile-time strings naming registers, `"cc"` or `"memory"`.
 - A list is written `()` when empty, as its single entry, or as a tuple of entries: `("=r", &x)` is one output, `(("=r", &x), ("=r", &y))` two.
 - Operand types are integers of 8 to 64 bits, `usize`, `isize`, `f32`, `f64`, `bool` and pointers (`T` for outputs).
+- In Safe builds (§18.7), `@asm` is limited to what the implementation can check: operands that are pointers, and templates that access memory, may trap or be rejected.
 - The assembly is never removed, duplicated or reordered with other `@asm` or volatile accesses. Its meaning, and any misuse of constraints, registers or memory, is up to the target: violating the compiler's assumptions is undefined behavior. It is never evaluated at compile time.
 
 ### 19.6 Threads and atomics
@@ -2864,6 +2894,7 @@ Assignment (`=` and compound forms) is a statement.
 | --- | --- | --- | --- |
 | Debug | no | all | poisoning, allocation tags, fiber guard pages, leak-checking tests |
 | Checked (release default) | yes | all | — |
+| Safe (optional) | yes | all, and every memory access | traps on use after free, out-of-bounds and invalid pointers (§18.7) |
 | Fast | yes | none (except integer division) | — |
 
 ---
@@ -2947,7 +2978,7 @@ Operator overloading is excluded for the same reason: an operator never calls us
 
 - **Allocation is explicit.** No construct allocates behind the program's back. The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is always freed through the allocator that produced it.
 - **No ownership system.** Values copy bitwise like C; there are no destructors or move semantics. `defer`/`errdefer` structure cleanup, and Debug builds tag allocations, poison freed memory and detect leaks. Ownership tracking would make Gamma a different language.
-- **One rule for checks.** Every run-time check traps in Debug and Checked builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway.
+- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway.
 - **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks. Undefined behavior is confined to a closed list (§18.4) of memory and concurrency errors that cannot be checked cheaply.
 - **Compile-time evaluation is ordinary code** whose empty effect set proves it touches nothing outside. The evaluator checks everything, so a compile-time bug is a compile error, never compiler misbehavior. Constants contain only read-only pointers into static data.
 

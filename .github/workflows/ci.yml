@@ -29,3 +29,35 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
+
+  safe:
+    # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
+    name: Safe builds (Fil-C)
+    runs-on: ubuntu-latest
+    env:
+      FILC_VERSION: "0.686"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Fil-C download
+        id: filc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/filc
+          key: optfil-${{ env.FILC_VERSION }}-linux-x86_64
+      - name: Download Fil-C
+        if: steps.filc-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/filc
+          curl -fsSL -o ~/filc/optfil.tar.xz \
+            "https://github.com/pizlonator/fil-c/releases/download/v${FILC_VERSION}/optfil-${FILC_VERSION}-linux-x86_64.tar.xz"
+      - name: Install Fil-C in /opt/fil
+        run: |
+          mkdir -p "$RUNNER_TEMP/filc"
+          tar -C "$RUNNER_TEMP/filc" -xJf ~/filc/optfil.tar.xz
+          cd "$RUNNER_TEMP/filc/optfil-${FILC_VERSION}-linux-x86_64"
+          sudo ./setup.sh -u
+          /opt/fil/bin/filcc --version
+      - name: Test Safe builds
+        run: GAMMA_TEST_SAFE=1 cargo test --test conformance --test native_build

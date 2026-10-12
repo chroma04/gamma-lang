@@ -272,10 +272,28 @@ impl<'a> Types<'a> {
     }
 
     /// Typedefs of the blob types used.
+    ///
+    /// Under Fil-C (`Target::filc`), a blob that can hold a pointer is a union with
+    /// pointer-typed lanes: a pointer keeps its capability only while it is stored as a
+    /// pointer, and a struct of bytes passed or returned by value travels in integer
+    /// registers, which would drop the capabilities of the pointers in it.
     pub fn blob_typedefs(&self) -> String {
         let mut out = String::new();
+        let pb = self.lay.target.ptr_bytes;
         for (s, a) in &self.blobs {
-            let _ = writeln!(out, "typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};", a, s, blob_name(*s, *a));
+            let name = blob_name(*s, *a);
+            if self.lay.target.filc && *a >= pb && *s >= pb && s % pb == 0 {
+                let _ = writeln!(
+                    out,
+                    "typedef union {{ _Alignas({}) uint8_t b[{}]; void *gm_lanes[{}]; }} {};",
+                    a,
+                    s,
+                    s / pb,
+                    name
+                );
+            } else {
+                let _ = writeln!(out, "typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};", a, s, name);
+            }
         }
         out
     }

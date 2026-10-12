@@ -1,7 +1,8 @@
 //! Tests of how native builds link the runtime: Debug builds link a runtime object
 //! compiled once and kept in the cache directory (`GAMMA_CACHE_DIR`); Checked and Fast
 //! builds, and Debug builds without a cache, compile it with the program. Each way must
-//! give the same program. Without a usable C compiler the tests are skipped.
+//! give the same program. Safe builds need Fil-C. Without a usable C compiler (or, for
+//! the Safe build itself, without Fil-C) the tests are skipped.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,4 +96,57 @@ fn optimized_builds_and_builds_without_a_cache_are_one_unit() {
     assert!(objects(&cache).is_empty());
     let c = build_and_run(&src, &dir.join("nocache"), Path::new(""), &[]);
     assert!(!c.contains("GM_RT_SEPARATE 1"));
+}
+
+/// The target of the C compiler in `CC`, if it runs.
+fn cc_target() -> Option<gamma::layout::Target> {
+    gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).ok()
+}
+
+#[test]
+fn safe_builds_need_fil_c() {
+    // Pointing CC at a compiler that is not Fil-C must fail, naming the problem.
+    if !c_compiler_available() || cc_target().is_none_or(|t| t.filc) {
+        return;
+    }
+    let (dir, src) = setup("not-filc");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .env("CC", cc)
+        .arg("build")
+        .arg("--mode=safe")
+        .arg("-o")
+        .arg(dir.join("a"))
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("is not Fil-C"), "unexpected error:\n{}", err);
+}
+
+#[test]
+fn safe_builds_with_fil_c() {
+    // Only where Fil-C is installed: a Safe build runs and reports `target.mode`.
+    let Ok(target) = gamma::toolchain::Toolchain::for_safe_build().and_then(|t| t.target()) else { return };
+    if !target.filc {
+        return;
+    }
+    let (dir, src) = setup("filc");
+    std::fs::write(
+        &src,
+        "main :: fn() \\ {Out} {\n    when target.mode is .Safe { print(\"safe\\n\") } else { print(\"other\\n\") }\n}\n",
+    )
+    .unwrap();
+    let exe = dir.join("a");
+    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .env("GAMMA_CACHE_DIR", dir.join("cache"))
+        .args(["build", "--mode=safe", "-o"])
+        .arg(&exe)
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "gamma build failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "safe\n");
 }

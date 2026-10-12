@@ -299,7 +299,7 @@ impl<'s> Sema<'s> {
             "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Freestanding }}\n\
              pub Arch :: union {{ X86_64, Aarch64, Riscv64, Wasm32, Other }}\n\
              pub Endian :: union {{ Little, Big }}\n\
-             pub Mode :: union {{ Debug, Checked, Fast }}\n\
+             pub Mode :: union {{ Debug, Checked, Safe, Fast }}\n\
              pub os :: Os.{}\n\
              pub arch :: Arch.{}\n\
              pub endian :: Endian.{}\n\

@@ -65,6 +65,8 @@ pub struct Generated {
     pub libs: Vec<String>,
     /// The options it was generated with.
     pub opts: Options,
+    /// The target it was generated for.
+    pub target: crate::layout::Target,
 }
 
 /// Translates `prog` (whose entry is `entry`) to C source.
@@ -142,7 +144,8 @@ fn generate_entries(
     let names = g.ty.member_names();
     out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
     out.push_str(&debug::guard(&names, g.ty.view_defs()));
-    if opts.debug_info && matches!(prog.target.os, "Linux" | "FreeBSD") {
+    // Fil-C compiles no top-level assembly, so its executables go without the printers.
+    if opts.debug_info && matches!(prog.target.os, "Linux" | "FreeBSD") && !prog.target.filc {
         out.push_str(&debug::gdb_script_section());
     }
     out.push_str(&g.ty.descriptors());
@@ -172,7 +175,7 @@ fn generate_entries(
     }
     out.push_str(&exports);
     out.push_str(&main);
-    Ok(Generated { code: out, libs: g.libs.into_iter().collect(), opts: opts.clone() })
+    Ok(Generated { code: out, libs: g.libs.into_iter().collect(), opts: opts.clone(), target: prog.target.clone() })
 }
 
 pub struct Gen<'a> {
@@ -844,7 +847,8 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
         (true, false) => "-O1",
         (false, _) => "-O2",
     };
-    let runtime = if opts.debug { rtcache::runtime_object(toolchain, &rt_flags(opts)) } else { None };
+    let runtime =
+        if opts.debug { rtcache::runtime_object(toolchain, &rt_flags(opts, &generated.target)) } else { None };
     let mut code = String::new();
     if runtime.is_some() {
         code.push_str("#define GM_RT_SEPARATE 1\n");
@@ -868,6 +872,7 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
     let mut flags = BASE_CFLAGS.to_vec();
     flags.push(opt);
     flags.extend(opts.debug_info.then_some("-g"));
+    flags.extend(f16c_flag(&generated.target));
     let out = toolchain
         .command(&flags)
         .arg("-o")
@@ -887,13 +892,21 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
 
 /// The flags the separately compiled runtime object of a build with `opts` is compiled
 /// with. It is optimized whatever the build's optimization: it is compiled only once.
-fn rt_flags(opts: &Options) -> Vec<String> {
+fn rt_flags(opts: &Options, target: &crate::layout::Target) -> Vec<String> {
     let mut flags: Vec<String> = BASE_CFLAGS.iter().map(|f| f.to_string()).collect();
     flags.push("-O2".into());
+    flags.extend(f16c_flag(target).map(String::from));
     if opts.debug_info {
         flags.push("-g".into());
     }
     flags
+}
+
+/// The option that has Fil-C convert between float and f16 with the F16C instructions,
+/// which it gets right, rather than with routines it miscompiles (see `GM_F16` in the
+/// runtime). Every x86-64 processor of the last decade has them.
+fn f16c_flag(target: &crate::layout::Target) -> Option<&'static str> {
+    (target.filc && target.arch == "X86_64").then_some("-mf16c")
 }
 
 /// The source of the runtime compiled on its own (`GM_RT_SEPARATE`).

@@ -155,7 +155,7 @@ The predeclared module `target` (no import needed) provides:
 | `target.arch` | `.X86_64`, `.Aarch64`, `.Riscv64`, `.Wasm32`, ... |
 | `target.endian` | `.Little` or `.Big` |
 | `target.ptr_bits` | an untyped integer constant |
-| `target.mode` | `.Debug`, `.Checked` or `.Fast` |
+| `target.mode` | `.Debug`, `.Checked`, `.Safe` or `.Fast` |
 
 A `when` condition may not depend on a type parameter or compile-time value parameter of an enclosing generic, because generic bodies are checked once ([chapter 10](10-generics.md)). If different types need different code, write separate functions.
 

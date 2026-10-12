@@ -1,3 +1,4 @@
+//! safe: skip tests the Debug check of allocators, which Safe builds leave to the allocators
 //! exit: 134
 // Debug builds trap when memory is freed through another allocator than the one that
 // allocated it, reporting both sites (§18.3).

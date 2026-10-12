@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (session 6, 2026-10-12) — PRs #1–#12 merged; s6 = several parallel Claude Projects threads
+- s6 thread "Fil-C memory safety" (branch claude/project-thread-7tibkj): `--mode=safe` via Fil-C,
+  spec §18.7, Safe conformance lane (GAMMA_TEST_SAFE=1), CI job (decisions/017). Follow-up:
+  Fil-C-friendly codegen (Safe runs 10–45× slower than Checked).
 - s6 thread "C perf" (branch claude/project-thread-8a201g): items 4–6 — nested handler
   specialization, exit-test omission, gm_out results, in-place construction, borrowed params,
   -fno-strict-aliasing (decisions/016, sessions/s06). Other s6 threads: build speed,
@@ -24,7 +27,7 @@
 - GitHub Actions currently gets no runners (account-level); verify locally (fmt, clippy -D
   warnings, cargo test, CC=clang conformance) before pushing.
 - Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
-- Build modes: `--mode=debug|checked|fast`. Core modules (is_prelude) may use @heap_*, prelude
+- Build modes: `--mode=debug|checked|safe|fast` (Safe needs Fil-C in /opt/fil). Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params.
 
 ## Next steps
@@ -33,6 +36,8 @@
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
+4. Safe mode follow-up (decisions/017): Fil-C-friendly codegen (typed accesses, fewer memcpy
+   blobs); filcc is very slow on huge generated functions.
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md;
@@ -46,9 +51,11 @@
                   · 014 native build speed (cached runtime object, GM_API linkage)
                   · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
                   · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
+                  · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
+                  · s06-2026-10-12-safe.md (Safe mode)
 - gotchas/        environment.md
 
 ## Conventions

@@ -1,0 +1,16 @@
+//! mode: safe
+//! exit: 134
+// Safe builds trap on an access through a many-pointer outside its allocation
+// (§18.7). Pointer arithmetic itself is allowed; only the access is checked.
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    xs := try make(u32, 4)
+    defer free(xs)
+    p := xs.ptr
+    for i in 0..4 { p[i] = u32(i.trunc(u32)) * 10 }
+    print("last {}\n", p[3])
+    q := p + 5                      // past the end: fine until used
+    r := q - 2
+    print("back {}\n", r[0])
+    print("past {}\n", p[4])
+}

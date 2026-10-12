@@ -65,7 +65,8 @@ main :: fn() {
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
 | `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, …) |
-| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `fast`; default `debug`) |
+| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`; `safe` tests need Fil-C and are skipped without it) |
+| `//! safe: skip <reason>` | leave the test out of the Safe lane (below), because its behavior differs in Safe builds by design |
 | `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
@@ -101,6 +102,23 @@ needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
 `GAMMA_TEST_DEBUG_INFO=1` to build every such program with `-g` (worth doing after
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
+
+**Safe lane.** Tests marked `//! mode: safe` (in `tests/conformance/safe/`) build
+with Fil-C and run when it is found. To install it, download a release from
+<https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball),
+extract it and run `sudo ./setup.sh`, which installs to `/opt/fil`; the build
+looks for `filcc` on `PATH`, then in `/opt/fil/bin`. Then
+
+```sh
+GAMMA_TEST_SAFE=1 cargo test --test conformance
+```
+
+requires Fil-C and adds the lane: every `run` and `test` test in the default or
+Checked mode also runs as a Safe build and must match its expected output and
+exit status (standard error is not compared). Mark a test that differs by design
+(for example one that depends on a Debug-only trap or on the size of a stack)
+with `//! safe: skip <reason>`. `GAMMA_TEST_SAFE=0` turns the Safe tests off. CI has
+a job that installs Fil-C and runs the lane.
 
 The suite also runs with a cross compiler, when the machine can run its output
 (for example through qemu-user and binfmt):

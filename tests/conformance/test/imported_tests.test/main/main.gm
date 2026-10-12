@@ -1,3 +1,4 @@
+//! safe: skip Debug builds name the test in failure locations
 //! stage: test
 //! exit: 1
 util :: import "../util"

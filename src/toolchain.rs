@@ -62,6 +62,25 @@ impl Toolchain {
         Ok(t)
     }
 
+    /// The toolchain of a Safe build (§18.7), which compiles with Fil-C: as
+    /// [`Toolchain::from_env`], except that without `CC` the compiler is Fil-C's
+    /// `filcc`, found on `PATH` or in `/opt/fil/bin`. Whether the compiler really is
+    /// Fil-C is up to the caller to check, with [`Toolchain::target`].
+    pub fn for_safe_build() -> Result<Toolchain, String> {
+        let mut t = Toolchain::from_env()?;
+        if std::env::var("CC").is_ok_and(|v| !v.trim().is_empty()) {
+            return Ok(t);
+        }
+        let on_path = std::env::var_os("PATH")
+            .and_then(|p| std::env::split_paths(&p).map(|d| d.join("filcc")).find(|f| f.is_file()));
+        let installed = std::path::Path::new("/opt/fil/bin/filcc");
+        let filcc = on_path.or_else(|| installed.is_file().then(|| installed.to_path_buf())).ok_or(
+            "Safe builds compile with the Fil-C compiler (https://fil-c.org), but `filcc` is neither on PATH nor in /opt/fil/bin; install it or set CC",
+        )?;
+        t.cc = vec![filcc.display().to_string()];
+        Ok(t)
+    }
+
     /// Whether this is the plain system compiler (`cc` with no extra options), which
     /// compiles for the host.
     pub fn is_default(&self) -> bool {
@@ -161,7 +180,7 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
     };
     // `__int128` is 16-byte aligned everywhere it exists except on s390x.
     let int128_align = if has("__s390x__") { 8 } else { 16 };
-    Ok(Target { ptr_bytes, little_endian, int128_align, os, arch })
+    Ok(Target { ptr_bytes, little_endian, int128_align, os, arch, filc: has("__FILC__") })
 }
 
 /// Splits `s` into words as a shell would, without expansions: at unquoted
@@ -252,10 +271,16 @@ mod tests {
         assert!(!t(&["__SIZEOF_POINTER__ 8", "__BYTE_ORDER__ 4321"]).unwrap().little_endian);
         let a = t(&["__SIZEOF_POINTER__ 8", "__BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__", "__aarch64__ 1", "__APPLE__ 1"])
             .unwrap();
-        assert_eq!(a, Target { ptr_bytes: 8, little_endian: true, int128_align: 16, os: "MacOS", arch: "Aarch64" });
+        assert_eq!(
+            a,
+            Target { ptr_bytes: 8, little_endian: true, int128_align: 16, os: "MacOS", arch: "Aarch64", filc: false }
+        );
         let s =
             t(&["__SIZEOF_POINTER__ 8", "__BYTE_ORDER__ __ORDER_BIG_ENDIAN__", "__s390x__ 1", "__linux__ 1"]).unwrap();
-        assert_eq!(s, Target { ptr_bytes: 8, little_endian: false, int128_align: 8, os: "Linux", arch: "Other" });
+        assert_eq!(
+            s,
+            Target { ptr_bytes: 8, little_endian: false, int128_align: 8, os: "Linux", arch: "Other", filc: false }
+        );
         let r = t(&["__SIZEOF_POINTER__ 8", "__riscv 1", "__riscv_xlen 64", "__linux__ 1"]).unwrap();
         assert_eq!((r.arch, r.os), ("Riscv64", "Linux"));
         let w = t(&["__SIZEOF_POINTER__ 4", "__wasm32__ 1", "__wasi__ 1"]).unwrap();

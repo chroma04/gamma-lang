@@ -44,3 +44,4 @@ test "lists work" {
     l.push(1) else return
     expect(l.items.len is 1)
 }
+//! safe: skip Debug builds name the test in failure locations
