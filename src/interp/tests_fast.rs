@@ -8,9 +8,9 @@ use crate::layout::Target;
 fn targets() -> Vec<Target> {
     vec![
         target64(),
-        Target { ptr_bytes: 4, little_endian: true, int128_align: 16, os: "Linux", arch: "X86_64" },
-        Target { ptr_bytes: 8, little_endian: false, int128_align: 16, os: "Linux", arch: "X86_64" },
-        Target { ptr_bytes: 4, little_endian: false, int128_align: 16, os: "Linux", arch: "X86_64" },
+        Target { ptr_bytes: 4, little_endian: true, int128_align: 16, os: "Linux", arch: "X86_64", filc: false },
+        Target { ptr_bytes: 8, little_endian: false, int128_align: 16, os: "Linux", arch: "X86_64", filc: false },
+        Target { ptr_bytes: 4, little_endian: false, int128_align: 16, os: "Linux", arch: "X86_64", filc: false },
     ]
 }
 

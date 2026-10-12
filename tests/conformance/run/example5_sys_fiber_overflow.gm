@@ -1,3 +1,4 @@
+//! safe: skip Safe builds run fibers on stacks Fil-C allocates, sized but not placed by the program
 // A fiber stack too small for a chain of calls passing 2 KiB records by value: the overflow traps cleanly after the shallow call succeeded.
 //! exit: 134
 Gen :: effect { emit: ctl(x: u32) }

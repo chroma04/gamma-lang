@@ -11,7 +11,12 @@
 //! - `//! stderr` also compares the standard error of a `run` or `test` test
 //!   with the sibling `<name>.stderr`, for tests of trap reports.
 //! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in
-//!   that build mode (default: debug).
+//!   that build mode (default: debug). `//! mode: safe` tests run only through
+//!   the C back end, and only where Safe builds are available (below), since
+//!   they test what Safe builds catch and the interpreter does not.
+//! - `//! safe: skip <reason>` leaves a test out of the Safe lane (below), for
+//!   tests whose behavior differs in Safe builds by design, such as tests that
+//!   overflow the stack or turn integers into pointers.
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for
 //!   that architecture (the host's, or the one a cross compiler in `CC` targets),
 //!   for tests of features that exist on some targets only.
@@ -37,6 +42,14 @@
 //! (`gamma run --backend=c`), and every such `test` test through
 //! `gamma test --backend=c`. Both must give the same output and exit status as
 //! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
+//!
+//! Safe builds need Fil-C (found as for `gamma build --mode=safe`). Where it is
+//! found, the `mode: safe` tests run. `GAMMA_TEST_SAFE=1` requires it and adds
+//! the Safe lane: every `run` and `test` test in the default or Checked mode
+//! (except those marked `safe: skip`) also runs through the C back end in a Safe
+//! build, and must give the same output and exit status. Standard error is not
+//! compared there, since Fil-C reports memory errors in its own words.
+//! `GAMMA_TEST_SAFE=0` turns Safe tests off.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
@@ -68,6 +81,8 @@ struct Expectations {
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
+    /// Leave the test out of the Safe lane.
+    safe_skip: bool,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -81,6 +96,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         filter: None,
         exit: 0,
         arch: None,
+        safe_skip: false,
         diags: vec![],
     };
     for path in files {
@@ -114,6 +130,11 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.filter = Some(filter.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
+            } else if let Some(safe) = directive.strip_prefix("safe:") {
+                if !safe.trim().starts_with("skip ") {
+                    return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
+                }
+                e.safe_skip = true;
             } else if let Some(code) = directive.strip_prefix("exit:") {
                 e.exit = code.trim().parse().map_err(|_| format!("{}: bad exit code", path.display()))?;
             } else {
@@ -226,6 +247,29 @@ fn c_backend_available() -> bool {
     })
 }
 
+/// Whether Safe builds can be tested: Fil-C is found and `GAMMA_TEST_SAFE` is not 0.
+/// With `GAMMA_TEST_SAFE=1`, its absence fails the tests.
+fn safe_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let setting = std::env::var("GAMMA_TEST_SAFE").unwrap_or_default();
+        if setting == "0" || !c_backend_available() {
+            return false;
+        }
+        let found = gamma::toolchain::Toolchain::for_safe_build().and_then(|t| t.target()).map(|t| t.filc);
+        match found {
+            Ok(true) => true,
+            _ if setting == "1" => panic!("GAMMA_TEST_SAFE=1, but no Fil-C compiler was found: {:?}", found),
+            _ => false,
+        }
+    })
+}
+
+/// Whether the Safe lane runs: `GAMMA_TEST_SAFE=1`.
+fn safe_lane() -> bool {
+    std::env::var("GAMMA_TEST_SAFE").is_ok_and(|v| v == "1") && safe_available()
+}
+
 /// A command running `gamma`, which caches compiled runtime objects under the target
 /// directory rather than in the user's cache.
 fn gamma() -> Command {
@@ -243,22 +287,24 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs a `run` or `test` test (`command`) through the C back end and compares it
-/// with the expectations.
+/// Runs a `run` or `test` test (`command`) through the C back end in build mode
+/// `mode` and compares it with the expectations.
 fn run_c(
     command: &str,
     target: &Path,
     golden: &Path,
     exp: &Expectations,
+    mode: Option<&str>,
     stderr_golden: Option<&Path>,
 ) -> Result<(), String> {
     let exit = exp.exit;
+    let lane = if mode == Some("safe") { "[C back end, Safe build]" } else { "[C back end]" };
     let mut cmd = gamma();
     cmd.args([command, "--backend=c", "--diag-format=short"]);
     if std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
         cmd.arg("-g");
     }
-    if let Some(m) = &exp.mode {
+    if let Some(m) = mode {
         cmd.arg(format!("--mode={}", m));
     }
     if let (Some(f), "test") = (&exp.filter, command) {
@@ -273,21 +319,23 @@ fn run_c(
     let code = output.status.code().unwrap_or(-1);
     if code != exit {
         problems.push(format!(
-            "[C back end] exit status {} (expected {})\nstderr:\n{}",
+            "{} exit status {} (expected {})\nstderr:\n{}",
+            lane,
             code,
             exit,
             String::from_utf8_lossy(&output.stderr)
         ));
     }
     if expected != stdout {
-        problems.push(format!("[C back end] output differs from {}:\n{}", golden.display(), diff(&expected, &stdout)));
+        problems.push(format!("{} output differs from {}:\n{}", lane, golden.display(), diff(&expected, &stdout)));
     }
     if let Some(g) = stderr_golden {
         let expected = fs::read_to_string(g).unwrap_or_default();
         let stderr = String::from_utf8_lossy(&output.stderr);
         if expected != stderr {
             problems.push(format!(
-                "[C back end] standard error differs from {}:\n{}",
+                "{} standard error differs from {}:\n{}",
+                lane,
                 g.display(),
                 diff(&expected, &stderr)
             ));
@@ -307,6 +355,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let exp = parse_expectations(&files)?;
     if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {
         return Ok(());
+    }
+    if exp.mode.as_deref() == Some("safe") {
+        return run_safe_only(path, &target, &exp);
     }
     let command = match exp.stage {
         Stage::Lex => "lex",
@@ -416,17 +467,41 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         }
     }
 
-    if matches!(exp.stage, Stage::Run | Stage::Test)
-        && !expects_errors
+    let compiled = matches!(exp.stage, Stage::Run | Stage::Test) && !expects_errors && !bless;
+    let golden = path.with_extension("stdout");
+    if compiled
         && problems.is_empty()
-        && !bless
         && c_backend_available()
-        && let Err(p) = run_c(command, &target, &path.with_extension("stdout"), &exp, stderr_golden)
+        && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
+    {
+        problems.push(p);
+    }
+    if compiled
+        && problems.is_empty()
+        && !exp.safe_skip
+        && matches!(exp.mode.as_deref(), None | Some("checked"))
+        && safe_lane()
+        && let Err(p) = run_c(command, &target, &golden, &exp, Some("safe"), None)
     {
         problems.push(p);
     }
 
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// Runs a `mode: safe` test, which only a Safe build through the C back end runs.
+fn run_safe_only(path: &Path, target: &Path, exp: &Expectations) -> Result<(), String> {
+    if !matches!(exp.stage, Stage::Run | Stage::Test) || !exp.diags.is_empty() {
+        return Err(format!(
+            "{}: `mode: safe` applies only to `run` and `test` tests without diagnostics",
+            path.display()
+        ));
+    }
+    if !safe_available() {
+        return Ok(());
+    }
+    let command = if exp.stage == Stage::Run { "run" } else { "test" };
+    run_c(command, target, &path.with_extension("stdout"), exp, Some("safe"), None)
 }
 
 /// A minimal line diff: shows the first differing region with context.

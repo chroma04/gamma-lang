@@ -1,0 +1,16 @@
+//! mode: safe
+//! exit: 134
+// The arena gives each allocation its own block in Safe builds, so a pointer into an
+// arena that was released traps when used (§18.7).
+arena :: import "std/arena"
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    ar := arena.new()
+    p: ?^u64 = null
+    with ar.allocator() {
+        p = try new(u64, 42)
+    }
+    print("alive {}\n", p?^)
+    ar.deinit()
+    print("released {}\n", p?^)
+}

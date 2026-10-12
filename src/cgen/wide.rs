@@ -318,8 +318,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         };
         if let Repr::Float(f) = self.g.ty.repr(target) {
             let mant = if matches!(f, crate::types::FloatTy::F32) { 24 } else { 53 };
-            let c = self.g.ty.cty(target);
-            return Ok(self.tmp(target, &format!("({c})gm_wtof({}, {}, {}, {mant})", s.ptr, s.bits, s.signed as u8)));
+            let r = self.float_from(target, &format!("gm_wtof({}, {}, {}, {mant})", s.ptr, s.bits, s.signed as u8));
+            return Ok(self.tmp(target, &r));
         }
         // Integer to integer.
         let (rsize, rbits, rsigned) = if let Some(w) = self.wide(target) {

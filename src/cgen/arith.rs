@@ -161,6 +161,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
+    /// The C expression converting the number `v` (of any C arithmetic type) to the float
+    /// type `t`. An `f16` result goes through `GM_F16`, which Fil-C builds implement in
+    /// the runtime rather than with the compiler's own conversion routines.
+    pub(super) fn float_from(&mut self, t: Ty, v: &str) -> String {
+        if matches!(t.kind(), TyKind::Float(FloatTy::F16)) {
+            format!("GM_F16({v})")
+        } else {
+            format!("({})({v})", self.g.ty.cty(t))
+        }
+    }
+
     pub(super) fn int_binary(&mut self, e: &Expr, op: BinOp, lt: Ty, rt: Ty, a: &str, b: &str) -> CResult<String> {
         if self.wide(lt).is_some() {
             return self.wide_binary(e, op, lt, rt, a, b);
@@ -485,8 +496,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         self.tmp(t, &format!("(intptr_t)((uintptr_t){p} - (uintptr_t){x}) / (intptr_t){stride}"))
                     }
                     _ => {
-                        let sign = if op == Builtin::PtrAdd { '+' } else { '-' };
-                        self.tmp(t, &format!("(void *)((uintptr_t){p} {sign} (uintptr_t){x} * {stride}u)"))
+                        let sign = if op == Builtin::PtrAdd { "" } else { "-" };
+                        self.tmp(t, &format!("GM_PTR_ADD({p}, {sign}((uintptr_t){x} * {stride}u))"))
                     }
                 })
             }
@@ -521,8 +532,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 match self.g.ty.repr(at) {
                     Repr::Float(_) => {
                         let f = if op == Builtin::Min { "gm_fmin" } else { "gm_fmax" };
-                        let c = self.g.ty.cty(t);
-                        Ok(self.tmp(t, &format!("({})({}((double){}, (double){}))", c, f, vals[0], vals[1])))
+                        let r = self.float_from(t, &format!("{}((double){}, (double){})", f, vals[0], vals[1]));
+                        Ok(self.tmp(t, &r))
                     }
                     _ => Ok(self.tmp(t, &format!("({a} {gt} {b} ? {a} : {b})", a = vals[0], b = vals[1]))),
                 }
@@ -531,8 +542,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let (x, lo, hi) = (&vals[0], &vals[1], &vals[2]);
                 match self.g.ty.repr(at) {
                     Repr::Float(_) => {
-                        let c = self.g.ty.cty(t);
-                        Ok(self.tmp(t, &format!("({c})gm_fmin(gm_fmax((double){x}, (double){lo}), (double){hi})")))
+                        let r =
+                            self.float_from(t, &format!("gm_fmin(gm_fmax((double){x}, (double){lo}), (double){hi})"));
+                        Ok(self.tmp(t, &r))
                     }
                     _ => Ok(self.tmp(t, &format!("({x} < {lo} ? {lo} : ({x} > {hi} ? {hi} : {x}))"))),
                 }
@@ -565,16 +577,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Builtin::IsFinite => Ok(self.tmp(t, &format!("(uint8_t)__builtin_isfinite({})", vals[0]))),
             Builtin::SignBit => Ok(self.tmp(t, &format!("(uint8_t)(__builtin_signbit({}) != 0)", vals[0]))),
             Builtin::Sqrt => {
-                let c = self.g.ty.cty(t);
                 let f =
                     if matches!(at.kind(), TyKind::Float(FloatTy::F32)) { "__builtin_sqrtf" } else { "__builtin_sqrt" };
-                Ok(self.tmp(t, &format!("({c}){f}({})", vals[0])))
+                let r = self.float_from(t, &format!("{f}({})", vals[0]));
+                Ok(self.tmp(t, &r))
             }
             Builtin::Fma => {
-                let c = self.g.ty.cty(t);
                 let f =
                     if matches!(at.kind(), TyKind::Float(FloatTy::F32)) { "__builtin_fmaf" } else { "__builtin_fma" };
-                Ok(self.tmp(t, &format!("({c}){f}({}, {}, {})", vals[0], vals[1], vals[2])))
+                let r = self.float_from(t, &format!("{f}({}, {}, {})", vals[0], vals[1], vals[2]));
+                Ok(self.tmp(t, &r))
             }
             Builtin::Rotl | Builtin::Rotr => {
                 let ii = self.int_info(at).unwrap();
@@ -885,8 +897,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             Repr::Float(_) => {
-                let c = self.g.ty.cty(target);
-                Ok(self.tmp(t, &format!("({c}){src_val}")))
+                let r = self.float_from(target, &src_val);
+                Ok(self.tmp(t, &r))
             }
             // An integer to a `#bits` struct: its bits, wrapped to the underlying type.
             _ if src_int && self.g.ty.bits_layout(target).is_some() => {

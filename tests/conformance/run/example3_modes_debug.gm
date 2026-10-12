@@ -1,3 +1,4 @@
+//! safe: skip prints target.mode
 // #fuel, when on target.mode in a struct and a function body: the Debug-mode build.
 collatz_max :: fn(limit: u32) -> u32 {
     best: u32 = 0

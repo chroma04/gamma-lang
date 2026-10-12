@@ -1,3 +1,4 @@
+//! safe: skip Fil-C's frames are larger, so this depth overflows its stack
 // Deep recursion of small frames works alike on both back ends: native programs run
 // their entry function on a large stack.
 depth :: fn(n: u64) -> u64 {

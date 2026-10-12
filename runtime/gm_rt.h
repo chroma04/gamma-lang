@@ -67,6 +67,68 @@
 #define GM_FAST_MATH_ATTR __attribute__((optimize("associative-math", "no-signed-zeros", "no-trapping-math", "fp-contract=fast")))
 #define GM_FAST_MATH_BODY
 #endif
+/* Pointer arithmetic and tagging. Under Fil-C a pointer keeps its capability only while
+ * it is computed as a pointer (an integer turned back into a pointer has none), so the
+ * address is changed with zmkptr, which keeps the capability; elsewhere through
+ * uintptr_t, whose arithmetic wraps. GM_PTR_ADD adds a byte offset (any value: a
+ * negative offset wraps around); GM_PTR_TAG and GM_PTR_UNTAG set and clear bit 0. */
+#ifdef __FILC__
+#include <stdfil.h>
+#define GM_PTR_ADD(p, n) zmkptr((void *)(p), (unsigned long)(p) + (unsigned long)(n))
+#define GM_PTR_TAG(p) zorptr((void *)(p), 1)
+#define GM_PTR_UNTAG(p) zandptr((void *)(p), ~1ul)
+#else
+#define GM_PTR_ADD(p, n) ((void *)((uintptr_t)(p) + (uintptr_t)(n)))
+#define GM_PTR_TAG(p) ((void *)((uintptr_t)(p) | 1))
+#define GM_PTR_UNTAG(p) ((void *)((uintptr_t)(p) & ~(uintptr_t)1))
+#endif
+/* Rounds a double to the nearest binary16 (ties to even); returns its bits. */
+static inline uint16_t gm_f64_to_f16(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, 8);
+    uint16_t sign = (uint16_t)((bits >> 63) << 15);
+    int exp = (int)((bits >> 52) & 0x7ff);
+    uint64_t man = bits & ((1ull << 52) - 1);
+    if (exp == 0x7ff) return man == 0 ? (uint16_t)(sign | 0x7c00) : (uint16_t)(sign | 0x7e00);
+    if (exp == 0) return sign;
+    int e = exp - 1023;
+    int he = e + 15;
+    if (he >= 1) {
+        if (he >= 0x1f) return (uint16_t)(sign | 0x7c00);
+        uint32_t keep = (uint32_t)(man >> 42);
+        uint64_t rem = man & ((1ull << 42) - 1);
+        uint64_t half = 1ull << 41;
+        uint32_t r = ((uint32_t)he << 10) | keep;
+        if (rem > half || (rem == half && (keep & 1) == 1)) r += 1;
+        return (uint16_t)(sign | r);
+    }
+    unsigned __int128 m = ((unsigned __int128)1 << 52) | man;
+    int shift = 28 - e;
+    if (shift >= 120) return sign;
+    unsigned __int128 q = m >> shift;
+    unsigned __int128 rem = m & (((unsigned __int128)1 << shift) - 1);
+    unsigned __int128 half = (unsigned __int128)1 << (shift - 1);
+    uint32_t r = (uint32_t)q;
+    if (rem > half || (rem == half && (r & 1) == 1)) r += 1;
+    return (uint16_t)(sign | r);
+}
+
+/* The number x converted to f16. Fil-C (as of 0.686) miscompiles the compiler's own
+ * routines for converting to _Float16 (__truncdfhf2 and the like), so Fil-C builds round
+ * with gm_f64_to_f16 instead (every source value converts to double exactly or, if an
+ * integer, beyond f16's range either way); on x86-64 they also have the F16C
+ * instructions (-mf16c) do float <-> f16 for arithmetic. */
+#ifdef __FILC__
+static inline _Float16 gm_f16_from(double d) {
+    uint16_t h = gm_f64_to_f16(d);
+    _Float16 f;
+    memcpy(&f, &h, sizeof f);
+    return f;
+}
+#define GM_F16(x) gm_f16_from((double)(x))
+#else
+#define GM_F16(x) ((_Float16)(x))
+#endif
 /* A zero value of C type T (scalar or blob). */
 #define GM_ZERO(T) ((T){})
 
@@ -422,9 +484,11 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_ASAN 1
 #endif
 #endif
-#ifdef GM_ASAN
-/* AddressSanitizer may place frames on a separate "fake stack", so frame addresses say
-   nothing about the stack's depth; the sanitizer reports overflows itself. */
+#if defined(GM_ASAN) || defined(__FILC__)
+/* AddressSanitizer may place frames on a separate "fake stack", and Fil-C allocates frames
+   whose address is taken on its heap and runs fibers on stacks of its own, so frame
+   addresses say nothing about the stack's depth; both report overflows themselves. */
+#define GM_NO_FRAME_PROBES 1
 #define GM_STACK_CHECK(p, n) ((void)(p))
 #else
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */

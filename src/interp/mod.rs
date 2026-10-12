@@ -69,13 +69,16 @@ pub struct RunConfig {
     pub step_budget: Option<u64>,
 }
 
-/// Build mode (spec §1.4): checked operations trap in `Debug` and `Checked`
-/// and are skipped (giving unspecified values) in `Fast`. Integer division by
-/// zero and `MIN / -1` always trap, and so do bounds and memory checks.
+/// Build mode (spec §1.4): checked operations trap in `Debug`, `Checked` and
+/// `Safe` and are skipped (giving unspecified values) in `Fast`. Integer division
+/// by zero and `MIN / -1` always trap, and so do bounds and memory checks. The
+/// interpreter runs `Safe` exactly as `Checked`: it checks every memory access in
+/// every mode, which is what Safe builds add to Checked ones natively (§18.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Debug,
     Checked,
+    Safe,
     Fast,
 }
 

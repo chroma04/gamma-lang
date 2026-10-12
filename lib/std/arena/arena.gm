@@ -24,6 +24,17 @@ Chunk :: struct {
     size: usize
 }
 
+/// In Safe builds every allocation is a block of its own from the parent allocator, so
+/// that using it after `deinit`, or past its end, traps (§18.7). A `Block` record,
+/// allocated apart from the block, links it into the arena's list, which `chunk` then
+/// starts.
+Block :: struct {
+    prev: ?[^]u8
+    data: [^]u8
+    size: usize
+    align: usize
+}
+
 /// An empty arena whose chunks come from the current allocator.
 pub new :: fn() -> Arena \ {Alloc} => Arena(parent: current(), chunk: null, size: 0, used: 0, last: 0)
 
@@ -32,11 +43,21 @@ pub allocator :: fn(a: ^Arena) -> Allocator => Allocator(data: a.cast(rawptr), v
 
 /// Releases every chunk; the arena is empty again and can be reused.
 pub deinit :: fn(a: ^Arena) {
-    while c := a.chunk {
-        h := c.cast(^Chunk)
-        prev := h.prev
-        a.parent.vt.free(a.parent.data, c, h.size, 16)
-        a.chunk = prev
+    when target.mode is .Safe {
+        while c := a.chunk {
+            b := c.cast(^Block)
+            prev := b.prev
+            a.parent.vt.free(a.parent.data, b.data, b.size, b.align)
+            a.parent.vt.free(a.parent.data, c, @size_of(Block), @align_of(Block))
+            a.chunk = prev
+        }
+    } else {
+        while c := a.chunk {
+            h := c.cast(^Chunk)
+            prev := h.prev
+            a.parent.vt.free(a.parent.data, c, h.size, 16)
+            a.chunk = prev
+        }
     }
     a.size = 0
     a.used = 0
@@ -45,6 +66,15 @@ pub deinit :: fn(a: ^Arena) {
 
 arena_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
     a := data.cast(^Arena)
+    when target.mode is .Safe {
+        return block_alloc(a, size, align)
+    } else {
+        return chunk_alloc(a, size, align)
+    }
+}
+
+/// An allocation from the current chunk, or from a new one.
+chunk_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
     if c := a.chunk {
         base := c.addr()
         start := align_up(base + a.used, align) - base
@@ -65,11 +95,32 @@ arena_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
     a.chunk = c
     a.size = n
     a.used = header
-    return arena_alloc(data, size, align)
+    return chunk_alloc(a, size, align)
+}
+
+/// A block of its own for an allocation (Safe builds).
+block_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
+    r := a.parent.vt.alloc(a.parent.data, @size_of(Block), @align_of(Block)) else return null
+    p := a.parent.vt.alloc(a.parent.data, size, align) else {
+        a.parent.vt.free(a.parent.data, r, @size_of(Block), @align_of(Block))
+        return null
+    }
+    r.cast(^Block)^ = Block(prev: a.chunk, data: p, size: size, align: align)
+    a.chunk = r
+    return p
 }
 
 arena_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
     a := data.cast(^Arena)
+    when target.mode is .Safe {
+        // A block keeps its size: it can only shrink, in place.
+        return new <= old
+    } else {
+        return chunk_resize(a, p, old, new)
+    }
+}
+
+chunk_resize :: fn(a: ^Arena, p: [^]u8, old, new: usize) -> bool {
     c := a.chunk else return new <= old
     start := p.addr() - c.addr()
     if start is not a.last or start + old is not a.used { return new <= old }
@@ -81,7 +132,17 @@ arena_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
 arena_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
     a := data.cast(^Arena)
     c := a.chunk else return
-    if p.addr() is c.addr() + a.last and a.last + size is a.used { a.used = a.last }
+    when target.mode is .Safe {
+        // The most recent block is released at once.
+        b := c.cast(^Block)
+        if b.data is p {
+            a.chunk = b.prev
+            a.parent.vt.free(a.parent.data, p, b.size, b.align)
+            a.parent.vt.free(a.parent.data, c, @size_of(Block), @align_of(Block))
+        }
+    } else {
+        if p.addr() is c.addr() + a.last and a.last + size is a.used { a.used = a.last }
+    }
 }
 
 ARENA :: AllocVtable(alloc: arena_alloc, resize: arena_resize, free: arena_free)

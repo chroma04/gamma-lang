@@ -531,3 +531,37 @@ the caller's value runs during the call.
 Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
 written and read piecewise with `memcpy`, so type-based alias analysis gains
 nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
+
+## Safe builds (Fil-C)
+
+`--mode=safe` builds through the C back end with [Fil-C](https://fil-c.org), a
+memory-safe implementation of C in which every pointer carries an invisible
+capability for its allocation. `Toolchain::for_safe_build` (`src/toolchain.rs`)
+looks for `filcc` on `PATH`, then in `/opt/fil/bin`, honoring `$CC`; a compiler
+that is not Fil-C is an error. `Target::filc` (`src/layout.rs`) is set when the
+compiler predefines `__FILC__`, and the generated code and the runtime branch on
+it. The interpreter treats Safe as Checked. The semantics are
+§18.7 of the specification; the points below are what the C back end does to
+make Fil-C accept and preserve the program's pointers.
+
+- **Capability-clean C.** A pointer must never pass through an integer, or it
+  loses its capability. Pointer arithmetic goes through `GM_PTR_ADD` (Fil-C's
+  `zmkptr`, plain arithmetic elsewhere), and the tagging of function pointers
+  through `GM_PTR_TAG` and `GM_PTR_UNTAG` (`zorptr`, `zandptr`).
+- **Blobs.** A by-value byte blob that may hold pointers is emitted as a union
+  with `void*` lanes, so copying it keeps the capabilities of the pointers
+  inside. This is also why a pointer rebuilt from bytes written as integers
+  grants nothing.
+- **`_Float16`.** Fil-C 0.686 miscompiles the conversion libcalls, so
+  conversions use a software routine and the build adds `-mf16c`.
+- **Debug information.** The gdb script section (top-level `asm`) is skipped.
+- **Runtime.** Heap blocks come from `zgc_aligned_alloc`. Thread handles are
+  indices into a table, not pointers cast to integers. Fibers switch with
+  `swapcontext`, since Fil-C compiles no stack-switching assembly, on stacks
+  Fil-C allocates (the `stack` of `with … on` gives only the size). Stack probes
+  are off (`GM_NO_FRAME_PROBES`), because Fil-C checks stack overflow itself.
+  Standard output is flushed on every write, since a memory error ends the
+  process without running any runtime code that could flush it.
+
+Fil-C reports memory errors itself ("filc safety error: …") and exits with
+status 134, as a Gamma trap does.

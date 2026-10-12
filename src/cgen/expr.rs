@@ -250,7 +250,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 // A plain function where hidden-convention code is expected is marked by
                 // setting the low bit of its address (see `call_indirect`).
                 let code = if plain && !self.ptr_type_plain(t) {
-                    format!("((void *)((uintptr_t){} | 1))", name)
+                    format!("GM_PTR_TAG({})", name)
                 } else {
                     format!("((void *){})", name)
                 };
@@ -881,7 +881,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Coercion::FromNever => self.zero(t),
             // Widening a plain function pointer to an effectful type marks it (see `call_indirect`).
             Coercion::FnPtrWiden if self.ptr_type_plain(x.ty) && !self.ptr_type_plain(t) => {
-                self.tmp(t, &format!("((void *)((uintptr_t){} | 1))", v))
+                self.tmp(t, &format!("GM_PTR_TAG({})", v))
             }
             Coercion::PtrToPtr | Coercion::FnPtrWiden | Coercion::TupleRename | Coercion::InOptional => {
                 if self.g.ty.repr(t) == self.g.ty.repr(x.ty) && self.g.ty.repr(t) != Repr::Blob {
@@ -903,7 +903,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Coercion::FnToPtr => match (self.g.ty.repr(x.ty), self.g.ty.repr(t)) {
                 (Repr::Ptr, Repr::Closure) => {
                     let cx = self.cx.clone();
-                    let code = if self.ptr_type_plain(x.ty) { format!("((void *)((uintptr_t){} | 1))", v) } else { v };
+                    let code = if self.ptr_type_plain(x.ty) { format!("GM_PTR_TAG({})", v) } else { v };
                     self.tmp(t, &format!("((gm_closure){{{}, NULL, {}}})", code, cx))
                 }
                 _ => v,
@@ -1193,7 +1193,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let p = self.tmp(Ty::intern(TyKind::Rawptr), code);
         let res = (!ret.is_never()).then(|| self.result_var(ret));
         let plain_args = self.plain_args(vals, tys);
-        let plain_call = format!("(({})((uintptr_t){} & ~(uintptr_t)1))({})", plain_ty, p, plain_args.join(", "));
+        let plain_call = format!("(({})GM_PTR_UNTAG({}))({})", plain_ty, p, plain_args.join(", "));
         let plain_call = self.gamma_value(ret, &plain_call);
         let emit_plain = |fg: &mut Self| match &res {
             Some(r) if !ret.is_unit() => fg.line(&format!("{} = {};", r, plain_call)),

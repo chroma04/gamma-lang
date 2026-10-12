@@ -47,3 +47,4 @@ test "allocation is balanced" {
     p^ = c.c_int(libc.absolute(-3))
     expect(p^ is 3)
 }
+//! safe: skip Debug builds name the test in failure locations

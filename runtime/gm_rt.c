@@ -749,37 +749,6 @@ static double gm_f16_to_f64(uint16_t h) {
     return d;
 }
 
-/* Rounds a double to the nearest binary16 (ties to even); returns its bits. */
-static uint16_t gm_f64_to_f16(double x) {
-    uint64_t bits;
-    memcpy(&bits, &x, 8);
-    uint16_t sign = (uint16_t)((bits >> 63) << 15);
-    int exp = (int)((bits >> 52) & 0x7ff);
-    uint64_t man = bits & ((1ull << 52) - 1);
-    if (exp == 0x7ff) return man == 0 ? (uint16_t)(sign | 0x7c00) : (uint16_t)(sign | 0x7e00);
-    if (exp == 0) return sign;
-    int e = exp - 1023;
-    int he = e + 15;
-    if (he >= 1) {
-        if (he >= 0x1f) return (uint16_t)(sign | 0x7c00);
-        uint32_t keep = (uint32_t)(man >> 42);
-        uint64_t rem = man & ((1ull << 42) - 1);
-        uint64_t half = 1ull << 41;
-        uint32_t r = ((uint32_t)he << 10) | keep;
-        if (rem > half || (rem == half && (keep & 1) == 1)) r += 1;
-        return (uint16_t)(sign | r);
-    }
-    unsigned __int128 m = ((unsigned __int128)1 << 52) | man;
-    int shift = 28 - e;
-    if (shift >= 120) return sign;
-    unsigned __int128 q = m >> shift;
-    unsigned __int128 rem = m & (((unsigned __int128)1 << shift) - 1);
-    unsigned __int128 half = (unsigned __int128)1 << (shift - 1);
-    uint32_t r = (uint32_t)q;
-    if (rem > half || (rem == half && (r & 1) == 1)) r += 1;
-    return (uint16_t)(sign | r);
-}
-
 /* Splits "d.ddde+XX" into its digits and the exponent. */
 static size_t gm_split_digits(const char *s, char *digits, int *exp10) {
     size_t n = 0;
@@ -1021,7 +990,8 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
         break;
     }
     case GM_K_SLICE: {
-        const uint8_t *data = (const uint8_t *)(uintptr_t)gm_load_ptr(v);
+        const uint8_t *data;
+        memcpy(&data, v, sizeof data);
         uint64_t n = gm_load_ptr(v + sizeof(void *));
         const gm_type *e = t->elem;
         if (e->kind == GM_K_INT && e->bits == 8 && !e->is_signed) {
@@ -1150,6 +1120,11 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
 
 GM_API void gm_write_out(const uint8_t *p, size_t len) {
     if (len > 0) fwrite(p, 1, len, stdout);
+#if defined(__FILC__)
+    /* Fil-C ends the process on a memory error without running any code of ours, so
+     * output must not wait in the buffer for a trap or exit to flush it. */
+    fflush(stdout);
+#endif
 }
 
 GM_API void gm_write_err(const uint8_t *p, size_t len) {
@@ -1577,12 +1552,20 @@ static void gm_hb_record(uintptr_t addr, size_t size) {
 
 GM_API void *gm_heap_alloc(size_t size, size_t align) {
     if (align == 0) align = 1;
+#ifdef __FILC__
+    /* Under Fil-C a block is an allocation of its own, so the capability of the pointer
+       covers exactly the block, and freeing it revokes every pointer into it. */
+    uint8_t *p = (uint8_t *)zgc_aligned_alloc(align, size);
+    if (p == NULL) return NULL;
+    uintptr_t a = (uintptr_t)p;
+#else
     if (size > SIZE_MAX - align - sizeof(void *)) return NULL;
     uint8_t *raw = (uint8_t *)malloc(size + align + sizeof(void *));
     if (raw == NULL) return NULL;
     uintptr_t a = ((uintptr_t)raw + sizeof(void *) + (align - 1)) & ~(uintptr_t)(align - 1);
-    uint8_t *p = (uint8_t *)a;
+    uint8_t *p = raw + (a - (uintptr_t)raw);
     memcpy(p - sizeof(void *), &raw, sizeof raw);
+#endif
     if (gm_debug != 0) {
         memset(p, 0xAA, size);
         pthread_mutex_lock(&gm_rt_lock);
@@ -1593,9 +1576,13 @@ GM_API void *gm_heap_alloc(size_t size, size_t align) {
 }
 
 static void gm_heap_release(void *p) {
+#ifdef __FILC__
+    free(p);
+#else
     uint8_t *raw;
     memcpy(&raw, (uint8_t *)p - sizeof(void *), sizeof raw);
     free(raw);
+#endif
 }
 
 /* ---- allocation tags (Debug builds, §18.3) ---------------------------------------------- */
@@ -1752,26 +1739,56 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     return c.status;
 }
 
+/* A thread's handle is 1 + its index in this table, rather than its address: a pointer
+ * turned into an integer and back loses its capability under Fil-C. A joined thread's
+ * slot is reused. */
+static gm_thread **gm_threads;
+static size_t gm_nthreads;
+
 GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     gm_thread *t = (gm_thread *)malloc(sizeof *t);
     if (t == NULL) return gm_io_error(ENOMEM);
     t->f = (void (*)(void *))f;
     t->arg = arg;
+    pthread_mutex_lock(&gm_rt_lock);
+    size_t slot = 0;
+    while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
+    if (slot == gm_nthreads) {
+        gm_thread **tab = (gm_thread **)realloc(gm_threads, sizeof(gm_thread *) * (gm_nthreads * 2 + 4));
+        if (tab == NULL) {
+            pthread_mutex_unlock(&gm_rt_lock);
+            free(t);
+            return gm_io_error(ENOMEM);
+        }
+        for (size_t i = gm_nthreads; i < gm_nthreads * 2 + 4; i++) tab[i] = NULL;
+        gm_threads = tab;
+        gm_nthreads = gm_nthreads * 2 + 4;
+    }
+    gm_threads[slot] = t;
+    pthread_mutex_unlock(&gm_rt_lock);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GM_THREAD_STACK_SIZE);
     int r = pthread_create(&t->t, &attr, gm_thread_main, t);
     pthread_attr_destroy(&attr);
     if (r != 0) {
+        pthread_mutex_lock(&gm_rt_lock);
+        gm_threads[slot] = NULL;
+        pthread_mutex_unlock(&gm_rt_lock);
         free(t);
         return gm_io_error(r);
     }
-    return (int64_t)(intptr_t)t;
+    return (int64_t)slot + 1;
 }
 
 GM_API int64_t gm_thread_join(int64_t h) {
-    gm_thread *t = (gm_thread *)(intptr_t)h;
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_thread *t = gm_threads[h - 1];
+    pthread_mutex_unlock(&gm_rt_lock);
     int r = pthread_join(t->t, NULL);
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_threads[h - 1] = NULL;
+    pthread_mutex_unlock(&gm_rt_lock);
     free(t);
     return r == 0 ? 0 : gm_io_error(r);
 }
@@ -1816,11 +1833,53 @@ GM_API bool gm_errdefer_runs(gm_frame *fr) {
  * the stack pointer in `save`, loads `to` as the stack pointer, restores the registers saved
  * there and returns into that context. A new fiber's stack is prepared so that the switch
  * "returns" into gm_rt_fiber_tramp, which calls gm_fiber_entry(fiber).
+ * gm_ctx_init(top, len, fiber) prepares that context on the `len` bytes of stack that end
+ * at `top`.
  */
 
 static void gm_fiber_entry(gm_fiber *fb);
 
-#if defined(__x86_64__)
+#if defined(__FILC__)
+/* Fil-C compiles no assembly that switches stacks; it provides ucontext instead, and
+ * runs each context on a stack it allocates itself (the stack given to makecontext only
+ * tells its size). A saved context is then a gm_filc_ctx: a ucontext and the fiber it
+ * starts. Fil-C saves only into the context that is running (or a new one), so each
+ * execution keeps one context object, `gm_filc_running` while it runs. */
+#include <ucontext.h>
+typedef struct { ucontext_t uc; gm_fiber *fb; } gm_filc_ctx;
+static _Thread_local gm_fiber *gm_filc_starting;
+/* The context running now; NULL on the thread's own stack before its first switch. */
+static _Thread_local gm_filc_ctx *gm_filc_running;
+
+static void gm_filc_entry(void) { gm_fiber_entry(gm_filc_starting); }
+
+static void *gm_rt_switch(void **save, void *to, void *arg) {
+    gm_filc_ctx *me = gm_filc_running;
+    if (me == NULL) {
+        me = (gm_filc_ctx *)calloc(1, sizeof *me);
+        if (me == NULL) gm_trap("out of memory switching fibers", NULL, 0, 0);
+    }
+    *save = me;
+    gm_filc_ctx *t = (gm_filc_ctx *)to;
+    gm_filc_starting = t->fb;
+    gm_filc_running = t;
+    swapcontext(&me->uc, &t->uc);
+    gm_filc_running = me;
+    return arg;
+}
+
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)top;
+    gm_filc_ctx *c = (gm_filc_ctx *)calloc(1, sizeof *c);
+    if (c == NULL || getcontext(&c->uc) != 0) gm_trap("out of memory creating a fiber", NULL, 0, 0);
+    c->fb = fb;
+    c->uc.uc_stack.ss_sp = c;
+    c->uc.uc_stack.ss_size = len;
+    c->uc.uc_link = NULL;
+    makecontext(&c->uc, gm_filc_entry, 0);
+    return c;
+}
+#elif defined(__x86_64__)
 extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
 extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
 __asm__(
@@ -1852,7 +1911,8 @@ __asm__(
     "    ud2\n");
 
 /* The initial context of a fiber whose stack ends at `top` (16-byte aligned). */
-static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
     void **sp = (void **)(top - 72);
     sp[0] = NULL;                       /* r15 */
     sp[1] = NULL;                       /* r14 */
@@ -1905,7 +1965,8 @@ __asm__(
     "    blr x20\n"
     "    brk #0\n");
 
-static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
     void **sp = (void **)(top - 160);
     memset(sp, 0, 160);
     sp[0] = fb;                         /* x19 */
@@ -1918,8 +1979,8 @@ static void *gm_rt_switch(void **save, void *to, void *arg) {
     (void)save; (void)to; (void)arg;
     gm_trap("fibers are not supported on this architecture", NULL, 0, 0);
 }
-static void *gm_ctx_init(uintptr_t top, gm_fiber *fb) {
-    (void)top; (void)fb;
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)top; (void)len; (void)fb;
     return NULL;
 }
 #endif
@@ -1939,7 +2000,7 @@ GM_API _Noreturn void gm_stack_overflow(void) {
 /* The space kept below a thread's limit for reporting the overflow. */
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
 
-#ifndef GM_ASAN
+#ifndef GM_NO_FRAME_PROBES
 /* A fault just below a thread's stack limit is an overflow that a function's prologue
  * hit before its stack check ran (compilers probe each page of a large frame): report it
  * as the trap it is. Any other fault gets the default action. */
@@ -1993,7 +2054,7 @@ GM_API void gm_thread_stack(void) {
     /* Without a known stack (other systems), nothing is checked. */
     gm_thread_stack_limit = low != 0 && size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
     gm_stack_limit = gm_thread_stack_limit;
-#ifndef GM_ASAN
+#ifndef GM_NO_FRAME_PROBES
     if (gm_thread_stack_limit != 0) gm_overflow_handler();
 #endif
 }
@@ -2035,10 +2096,10 @@ GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*sta
     uintptr_t top = ((uintptr_t)stack + len) & ~(uintptr_t)15;
     if (arg_size > 0) {
         top = (top - arg_size) & ~(uintptr_t)15;
-        fb->arg = (void *)top;
+        fb->arg = stack + (top - (uintptr_t)stack);
     }
     fb->limit = (uintptr_t)stack + GM_STACK_RESERVE;
-    fb->sp = gm_ctx_init(top, fb);
+    fb->sp = gm_ctx_init(top, top - (uintptr_t)stack, fb);
     return fb;
 }
 

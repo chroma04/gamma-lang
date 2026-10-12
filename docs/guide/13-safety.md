@@ -6,21 +6,22 @@ C leaves a long list of things undefined: signed overflow, out-of-range shifts, 
 
 ## Build modes
 
-A conforming implementation provides three build modes. They differ only in what happens when a check fails and in diagnostics extras; a program that triggers no failing check and no undefined behavior behaves the same in all three.
+A conforming implementation provides three build modes, and may provide a fourth, Safe. They differ only in what happens when a check fails and in diagnostics extras; a program that triggers no failing check and no undefined behavior behaves the same in all of them.
 
 | Mode | Optimized | Checks | Extras |
 | --- | --- | --- | --- |
 | **Debug** | no | all | poisoned memory, allocation tags, fiber guard pages, leak-checking tests |
 | **Checked** (the release default) | yes | all | none |
+| **Safe** (optional) | yes | all, and every memory access | memory errors trap ([below](#safe-builds)) |
 | **Fast** | yes | none, except integer division | none |
 
-The one rule behind every check (§18.1): **it traps in Debug and Checked builds and is removed in Fast builds.** There is no syntax to disable a check locally; the way to remove checks is to choose Fast for the whole build. Implementations also remove checks they can prove cannot fail, in every mode; the design expects loops such as `for i in 0..xs.len { xs[i] }` and `for x in xs` to compile to check-free code in Checked builds (Appendix D.7 of the specification).
+The one rule behind every check (§18.1): **it traps in Debug, Checked and Safe builds and is removed in Fast builds.** There is no syntax to disable a check locally; the way to remove checks is to choose Fast for the whole build. Implementations also remove checks they can prove cannot fail, in every mode; the design expects loops such as `for i in 0..xs.len { xs[i] }` and `for x in xs` to compile to check-free code in Checked builds (Appendix D.7 of the specification).
 
-Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool takes `--mode=debug|checked|fast` on `run`, `build` and `test` (the default is `debug`).
+Your program can see the mode with `target.mode` ([chapter 11](11-compile-time.md)). How you select a mode on the command line is up to the implementation; the reference tool takes `--mode=debug|checked|safe|fast` on `run`, `build` and `test` (the default is `debug`).
 
 ## Checked operations
 
-An operation with a precondition that is verified at run time in Debug and Checked builds, and assumed in Fast builds, is a **checked operation**. These are all of them:
+An operation with a precondition that is verified at run time in Debug, Checked and Safe builds, and assumed in Fast builds, is a **checked operation**. These are all of them:
 
 | Operation | Condition checked | In Fast builds, on failure |
 | --- | --- | --- |
@@ -97,7 +98,7 @@ level_name :: fn(n: u8) -> string => match n {
 }
 ```
 
-`assert(cond, msg)` is a checked operation: it traps on a false condition in Debug and Checked builds and is **removed in Fast builds, argument and all**. That means a condition with side effects behaves differently by mode:
+`assert(cond, msg)` is a checked operation: it traps on a false condition in Debug, Checked and Safe builds and is **removed in Fast builds, argument and all**. That means a condition with side effects behaves differently by mode:
 
 ```gamma
 first_of :: fn(xs: []const u8) -> u8 {
@@ -151,7 +152,7 @@ You can see the pattern: almost everything on the list is a *memory* or *concurr
 
 ## What Checked mode does not check
 
-Checked mode checks *local facts*: arithmetic, bounds, unwraps, alignment of casts, and the continuation rules. It does **not** check use-after-free, dangling pointers, wrong-allocator frees or data races. That requires tracking that only Debug builds (or external tools such as ThreadSanitizer) pay for. This is why the mode is called Checked and not "Safe", and why Gamma does not claim memory safety.
+Checked mode checks *local facts*: arithmetic, bounds, unwraps, alignment of casts, and the continuation rules. It does **not** check use-after-free, dangling pointers, wrong-allocator frees or data races. Telling these apart needs every pointer to know what it points to, which costs more than a release build should pay by default. Safe builds pay it (next section); Debug builds detect some of them with cheaper means.
 
 Debug builds add the detection that is expensive:
 
@@ -160,9 +161,36 @@ Debug builds add the detection that is expensive:
 - every call checks that the stack (a fiber's or a thread's) has room, so running out of it traps instead of overwriting memory;
 - tests use the leak-checking allocator.
 
-A sensible workflow is to develop and test in Debug, ship Checked unless you have measured a cost, and use Fast only for code where you have convinced yourself (and tested under Debug) that no check can fire.
+A sensible workflow is to develop and test in Debug, run your tests (and untrusted inputs) under Safe where you can, ship Checked unless you have measured a cost, and use Fast only for code where you have convinced yourself (and tested under Debug) that no check can fire.
 
 The compile-time evaluator ([chapter 11](11-compile-time.md)) always performs every check and detects undefined behavior regardless of build mode, so a check that would fail at run time fails the build instead when the code is evaluated at compile time.
+
+## Safe builds
+
+A Safe build (§18.7) performs every check of a Checked build and also checks every memory access. Each pointer carries, invisibly, the allocation it came from. An access traps unless it lies inside that allocation, the allocation is still live, and the access is permitted. That turns most of the undefined-behavior list into traps: use after free, a dangling pointer to a dead local or a finished fiber's stack, a many-pointer access out of bounds, a double free, a write to read-only memory, and access through a pointer made from an integer with `to_ptr`. A data race still gives unspecified values, but it cannot corrupt memory.
+
+```gamma
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    p := try new(i32, 7)
+    destroy(p)
+    print("{}\n", p^)    // Checked: undefined behavior. Safe: traps.
+}
+```
+
+Built with `--mode=safe`, the program ends with Fil-C's own report (`filc safety error: …`) and exit status 134, the same as a Gamma trap. Source locations are not reported.
+
+The reference tool builds Safe through the C back end with [Fil-C](https://fil-c.org), a memory-safe implementation of C. That sets the requirements:
+
+- Linux on x86_64 or aarch64. The compiler looks for `filcc` on `PATH`, then in `/opt/fil/bin/filcc`; `CC` overrides. If the compiler it finds is not Fil-C, the build fails and says so. To install it, download a release from <https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball), extract it and run `sudo ./setup.sh`, which installs to `/opt/fil`.
+- Every C library you link must itself be built with Fil-C (it ships its own libc). `@asm` with pointer operands is rejected.
+- The interpreter, which has its own memory checks, treats Safe as Checked.
+- `target.mode is .Safe` lets code adapt at compile time.
+
+**Granularity.** Safe builds protect allocations, not pieces of them. An allocator that carves objects out of one big block protects only the block, so an overrun into the next object is not caught. `std/arena` therefore gives every allocation its own block in Safe builds, and your own allocator can do the same with `when target.mode is .Safe { … }` ([chapter 9](09-memory.md)).
+
+**Stacks.** Fibers run on stacks Fil-C allocates, and overflowing a thread or fiber stack traps. Fil-C's frames are bigger, so deep recursion that fits in Checked may overflow in Safe.
+
+**Costs.** Programs run roughly 10 to 45 times slower than Checked builds today, use more memory (the allocator is garbage collected) and compile more slowly. Safe is a tool for testing and for running untrusted inputs through code where memory safety matters more than speed, not a default.
 
 ## How Gamma avoids the C footguns
 
@@ -181,20 +209,20 @@ The compile-time evaluator ([chapter 11](11-compile-time.md)) always performs ev
 
 ## Common mistakes
 
-- **Relying on a plain `+` to wrap.** It traps in Debug and Checked builds and gives an unspecified value in Fast builds. Say `+%`.
+- **Relying on a plain `+` to wrap.** It traps in Debug, Checked and Safe builds and gives an unspecified value in Fast builds. Say `+%`.
 - **Relying on `x?` or `x!` for expected failures.** Those are for "cannot fail here". Use `if`, `else` or `try` for failures you expect.
 - **Side effects inside `assert`.** They disappear in Fast builds.
 - **Believing a trap can be handled.** It cannot, and `defer` does not run.
 - **Using many-pointers `p[i]` as if they were checked.** They are not; convert to a slice (`p[a..b]`) at the C boundary and use that.
-- **Assuming Checked means memory-safe.** It does not track lifetimes.
+- **Assuming Checked means memory-safe.** It does not track lifetimes. Test under Safe if memory safety matters.
 
 ## Summary
 
-- One rule: every check traps in Debug and Checked builds and vanishes in Fast builds; only integer division always traps.
+- One rule: every check traps in Debug, Checked and Safe builds and vanishes in Fast builds; only integer division always traps.
 - Overflow is never undefined. Choose among `+`, `+%`, `+|` and `+?`.
 - Traps end the process; they are not exceptions and skip `defer`.
 - Undefined behavior is a closed list of memory and concurrency errors.
-- Debug builds add poisoning, allocation tags and leak checks; Checked mode does not track lifetimes.
+- Debug builds add poisoning, allocation tags and leak checks; Checked mode does not track lifetimes; Safe builds (with Fil-C) trap on every memory error, at a large cost in speed.
 
 Next, [chapter 14](14-interop.md) covers calling and being called from C.
 

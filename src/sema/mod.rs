@@ -284,6 +284,7 @@ impl<'s> Sema<'s> {
         let build_mode = match sess.mode {
             crate::interp::Mode::Debug => "Debug",
             crate::interp::Mode::Checked => "Checked",
+            crate::interp::Mode::Safe => "Safe",
             crate::interp::Mode::Fast => "Fast",
         };
         let target = sess.target.clone();
