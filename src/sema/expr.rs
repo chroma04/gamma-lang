@@ -1120,6 +1120,19 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         let usize_const = |v: u64| mk(Ty::usize(), tir::ExprKind::Int(v.into()), span);
+        // The layout of a type whose fields are still being resolved is not known.
+        let pending = |cx: &mut Self, t: Ty| -> bool {
+            let Some(id) = cx.sema.pending_layout(t) else { return false };
+            cx.error(
+                span,
+                format!(
+                    "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
+                    name.name,
+                    id.name()
+                ),
+            );
+            true
+        };
         match name.name.as_str() {
             "size_of" | "align_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
@@ -1130,6 +1143,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 if super::generics::has_param(t) {
                     let align = name.name.as_str() == "align_of";
                     return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
+                }
+                if pending(self, t) {
+                    return error_expr(span);
                 }
                 let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
                 usize_const(if name.name.as_str() == "size_of" { size } else { align })
@@ -1154,6 +1170,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "offset_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if pending(self, t) {
+                    return error_expr(span);
+                }
                 let field = match args.get(1).map(|a| &a.kind) {
                     Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
                     _ => {
@@ -1359,6 +1378,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if super::generics::has_param(t) {
+                    // Named in each instance (§16.1).
+                    return mk(Ty::string(), tir::ExprKind::TypeName { of: t }, span);
+                }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
             other => {

@@ -441,6 +441,7 @@ fn globals_are_static_storage() {
         value: None,
         thread_local: false,
         link_name: None,
+        align: None,
     });
     let g = ex(Ty::i32(), ExprKind::Global(GlobalId(0)));
     let body = blk(

@@ -237,6 +237,8 @@ pub struct Sema<'s> {
     pub instance_of: HashMap<FnId, (FnId, Vec<Ty>)>,
     /// Instantiations whose bodies are still to be produced.
     pub mono_queue: Vec<generics::MonoRequest>,
+    /// The depth of the instantiation whose body is being produced.
+    pub mono_depth: u32,
     /// Nested functions (literals, clauses) and the outermost function they belong to.
     pub nested_owner: HashMap<FnId, FnId>,
     /// Functions whose bodies are being checked (for compile-time evaluation cycles).
@@ -249,6 +251,23 @@ pub struct Sema<'s> {
     pub adt_param_defaults: HashMap<AdtId, Vec<Option<Rc<ast::Expr>>>>,
     /// Instantiations of generic structs and unions.
     pub adt_instances: HashMap<(AdtId, Vec<Ty>), AdtId>,
+    /// The literal of each generic struct or union, for errors found when instantiating it.
+    pub adt_spans: HashMap<AdtId, Span>,
+    /// Structs and unions whose fields are being resolved (their layout is not known).
+    pub adts_in_progress: Vec<AdtId>,
+    /// The declaration of each top-level struct and union.
+    pub adt_decls: HashMap<AdtId, DeclId>,
+    /// Signatures and generic types being declared, whose `where` clauses come after
+    /// the types that mention their parameters.
+    pub constraint_defer: u32,
+    /// Constraints on type arguments to check when `constraint_defer` drops to 0.
+    pub deferred_constraints: Vec<(Ty, generics::Constraint, crate::types::ParamId, AdtId, Span)>,
+    /// How many generic type instantiations are in progress, one inside the other.
+    pub adt_inst_depth: u32,
+    /// Instances created during the outermost instantiation in progress, with their templates.
+    pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Whether ever-deeper instantiation has been reported.
+    pub adt_inst_overflowed: bool,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -332,11 +351,20 @@ impl<'s> Sema<'s> {
             instances: HashMap::new(),
             instance_of: HashMap::new(),
             mono_queue: vec![],
+            mono_depth: 0,
             nested_owner: HashMap::new(),
             adt_params: HashMap::new(),
             adt_param_defaults: HashMap::new(),
             explicit_tags: std::collections::HashSet::new(),
             adt_instances: HashMap::new(),
+            adt_spans: HashMap::new(),
+            adts_in_progress: vec![],
+            adt_decls: HashMap::new(),
+            constraint_defer: 0,
+            deferred_constraints: vec![],
+            adt_inst_depth: 0,
+            adt_new_instances: vec![],
+            adt_inst_overflowed: false,
         }
     }
 
@@ -421,6 +449,7 @@ impl<'s> Sema<'s> {
             }
         }
         self.check_import_cycles();
+        self.check_pub_signatures();
         let _ = root;
         // The core library is checked in full, so its errors surface even when unused.
         let core: Vec<ModuleId> = self.prelude.into_iter().chain(self.core_modules.iter().copied()).collect();

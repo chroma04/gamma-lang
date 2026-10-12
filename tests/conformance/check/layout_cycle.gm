@@ -1,0 +1,9 @@
+//! stage: check
+// A type's layout cannot depend on itself (§3.4).
+S :: struct { a: [N]u8, b: u32 }
+N :: @size_of(S) //~ ERROR `@size_of` needs the layout of `S`, which depends on this value
+T :: struct { a: [@align_of(T)]u8, b: u32 } //~ ERROR `@align_of` needs the layout of `T`
+U :: struct { a: [@offset_of(U, b)]u8, b: u32 } //~ ERROR `@offset_of` needs the layout of `U`
+// Through a pointer the layout is known.
+Fine :: struct { p: ?^Fine, a: [@size_of(^Fine)]u8 }
+main :: fn() {}

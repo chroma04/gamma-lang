@@ -1408,6 +1408,7 @@ fn closed_const(e: &Expr) -> bool {
                 | tir::ExprKind::SizeOf { .. }
                 | tir::ExprKind::TypeIs { .. }
                 | tir::ExprKind::IntLimit { .. }
+                | tir::ExprKind::TypeName { .. }
                 | tir::ExprKind::Closure(_)
                 | tir::ExprKind::HandlerRef(_)
         );

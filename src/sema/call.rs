@@ -451,6 +451,10 @@ impl<'a, 's> FnCx<'a, 's> {
         if !vt.has_infer() && vt != t && self.coercion_steps(vt, t).is_some() {
             return self.coerce(v, t);
         }
+        // `T(x)` of a `T` is a copy of the value (not a place).
+        if !vt.has_infer() && vt == t && !vt.is_error() {
+            return mk(t, tir::ExprKind::Coerce { kind: tir::Coercion::TupleRename, expr: Box::new(v) }, span);
+        }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
         mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)
     }

@@ -1054,7 +1054,8 @@ impl<'a> Machine<'a> {
         };
         let bytes = self.with_root_frame(def.ty, |m, act| m.eval_bytes(act, init))?;
         let ti = self.ti(def.ty);
-        let addr = self.alloc_mem(span, ti.size, ti.align, AllocKind::Global(g.0), true)?;
+        let align = ti.align.max(def.align.unwrap_or(1));
+        let addr = self.alloc_mem(span, ti.size, align, AllocKind::Global(g.0), true)?;
         let r = self.mem.init(addr, &bytes);
         self.mem_err(span, r)?;
         self.globals.insert(key, addr);

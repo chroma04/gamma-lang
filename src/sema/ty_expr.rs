@@ -187,7 +187,11 @@ impl<'s> Sema<'s> {
                 };
                 for (pid, t) in self.adt_params[&template].clone().into_iter().zip(&targs) {
                     for c in self.constraints.get(&pid).cloned().unwrap_or_default() {
-                        if !self.satisfies(*t, c) {
+                        // In a signature or a generic type, the `where` clause that follows
+                        // may still constrain the parameters mentioned here.
+                        if !self.satisfies(*t, c) && self.constraint_defer > 0 && super::generics::has_param(*t) {
+                            self.deferred_constraints.push((*t, c, pid, template, e.span));
+                        } else if !self.satisfies(*t, c) {
                             self.error(
                                 e.span,
                                 format!(
@@ -199,6 +203,11 @@ impl<'s> Sema<'s> {
                                 ),
                             );
                         }
+                    }
+                }
+                for t in &targs {
+                    if let Some(part) = super::generics::second_class_part(*t) {
+                        self.error(e.span, super::generics::not_first_class(*t, part));
                     }
                 }
                 self.instantiate_adt(template, targs)
@@ -304,7 +313,10 @@ impl<'s> Sema<'s> {
                         params.push(p.name().to_string());
                     }
                     on_type |= super::generics::has_param(n.ty)
-                        || matches!(n.kind, K::SizeOf { .. } | K::TypeIs { .. } | K::IntLimit { .. });
+                        || matches!(
+                            n.kind,
+                            K::SizeOf { .. } | K::TypeIs { .. } | K::IntLimit { .. } | K::TypeName { .. }
+                        );
                 });
                 if params.is_empty() && on_type {
                     self.error(

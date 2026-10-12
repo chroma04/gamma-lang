@@ -463,7 +463,7 @@ impl<'a> Gen<'a> {
             }
         }
         for (i, gl) in self.prog.globals.iter().enumerate() {
-            let (size, align) = (self.ty.size(gl.ty), self.ty.align(gl.ty).max(1));
+            let (size, align) = (self.ty.size(gl.ty), self.ty.align(gl.ty).max(gl.align.unwrap_or(1)).max(1));
             if let Some(link) = gl.link_name {
                 let _ = writeln!(decls, "extern uint8_t gm_g{}[] __asm__(GM_SYM(\"{}\"));", i, link);
                 continue;

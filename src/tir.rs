@@ -676,6 +676,8 @@ pub struct GlobalDef {
     pub thread_local: bool,
     /// For a foreign global: its symbol.
     pub link_name: Option<Symbol>,
+    /// The alignment `#align(n)` raises the global's to.
+    pub align: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +733,11 @@ pub enum ExprKind {
     IntLimit {
         of: Ty,
         max: bool,
+    },
+    /// `@type_name(T)` of a type that mentions type parameters; folded to a `Str` when
+    /// the generic body is instantiated. Never present in executable code.
+    TypeName {
+        of: Ty,
     },
     /// `a is b` (or `is not`, when `negated`) on types that mention type parameters;
     /// folded to a `Bool` when the generic body is instantiated. Never present in
@@ -1177,7 +1184,8 @@ pub enum Coercion {
     PtrToPtr,
     /// `^[N]T` → `[]T` (or the const forms).
     ArrayPtrToSlice,
-    /// Tuple name erasure / naming (§5.9): same layout.
+    /// Tuple name erasure / naming (§5.9), or the identity conversion `T(x)` of a `T`
+    /// (§6.5): same layout.
     TupleRename,
     /// A named function to a function pointer or second-class value.
     FnToPtr,

@@ -1,0 +1,12 @@
+//! stage: check
+// A `pub` declaration's signature must not mention a private type (§3.3).
+Priv :: struct { a: i32 }
+pub bad1 :: fn() -> Priv => Priv(a: 1) //~ ERROR the `pub` declaration `bad1` mentions the private type `Priv`
+pub bad2 :: fn(p: ^Priv) {} //~ ERROR `bad2` mentions the private type `Priv`
+pub Alias :: Priv //~ ERROR `Alias` mentions the private type `Priv`
+pub Hold :: struct { pub p: ?Priv } //~ ERROR `Hold` mentions the private type `Priv`
+pub Un :: union { A: Priv, B } //~ ERROR `Un` mentions the private type `Priv`
+// A private field may have a private type.
+pub Fine :: struct { p: Priv, pub n: i32 }
+pub ok :: fn(f: ^Fine) -> i32 => f.n
+main :: fn() {}

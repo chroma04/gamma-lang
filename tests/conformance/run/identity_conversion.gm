@@ -1,0 +1,12 @@
+// `T(x)` of a value that already has type `T` is that value (§6.5).
+Bytes :: []const u8
+E :: union { A, B: i32 }
+main :: fn() \ {Out} {
+    s: string = "abc"
+    b: Bytes = s
+    e: E = .B(4)
+    n: i32 = 7
+    print("{} {} {} {}\n", (string(s), Bytes(b), E(e), i32(n)))
+    t := string(s)
+    print("{}\n", t.len)
+}
