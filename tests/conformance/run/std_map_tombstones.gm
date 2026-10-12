@@ -1,0 +1,32 @@
+// A queue-like workload (insert a fresh key, remove the old one) keeps the table at a size
+// that follows the live entries instead of doubling it for ever.
+Counter :: struct { inner: Allocator, cur: usize, peak: usize }
+
+c_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    c := data.cast(^Counter)
+    p := c.inner.vt.alloc(c.inner.data, size, align) else return null
+    c.cur += size
+    if c.cur > c.peak { c.peak = c.cur }
+    return p
+}
+c_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+c_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    c := data.cast(^Counter)
+    c.cur -= size
+    c.inner.vt.free(c.inner.data, p, size, align)
+}
+CV :: AllocVtable(alloc: c_alloc, resize: c_resize, free: c_free)
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    c := Counter(inner: current(), cur: 0, peak: 0)
+    with Allocator(data: (&c).cast(rawptr), vt: &CV) {
+        m := map(u32, u32)
+        defer m.deinit()
+        for i in 0..200000 {
+            try m.put(i, i)
+            if i >= 1 { _ = m.remove(i - 1) }
+        }
+        print("live={} small={}\n", (m.len(), c.peak < 4096))
+    }
+    return ()
+}

@@ -53,3 +53,7 @@
 - s7: new §22 (stdlib admission + conventions); §21.6.1 format specs; §3.8 try in tests,
   expect_eq, leak sites; §4.7 op= widening; §7.2 array args to []const; §3.2 repeated
   imports; §6.6/§21.3 to(F), unsigned_abs; §7.5 bool ordered; §21.1/21.2 dupe; §21.5 List/map.
+- s8 bug hunt: §16.5 array lengths computed from type params rejected in types; §11.6
+  second-class fn not part of another type, not `&`, not returned from literals; §12.5 no
+  top-level handler literals; §5.11 from_tag enums only; §12.7/§8.8 clause exits + esc/ctl
+  performs in defer; App./§16.7 depth limits (mono 256, ADT inst 64).

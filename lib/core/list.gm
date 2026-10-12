@@ -15,11 +15,22 @@ pub list :: fn(T: type) -> List(T) \ {Alloc} => List(T)(items: empty_slice(T), c
 pub reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!() {
     n := l.items.len
     if l.cap - n >= extra { return () }
-    new_cap := if l.cap is 0 { 4 } else { l.cap * 2 }
-    if new_cap - n < extra { new_cap = n + extra }
+    return regrow(T, l, extra, empty_slice(T))
+}
+
+// Moves the list into a larger block with room for `extra` more elements and appends `tail`
+// (which may point into the old block) after the existing ones.
+regrow :: fn(T: type, l: ^List(T), extra: usize, tail: []const T) -> AllocError!() {
+    n := l.items.len
+    if extra > @max_value(usize) - n { return !.OutOfMemory }
+    new_cap := n + extra
+    if l.cap <= @max_value(usize) / 2 and l.cap * 2 > new_cap { new_cap = l.cap * 2 }
+    if l.cap is 0 and new_cap < 4 { new_cap = 4 }
+    if @size_of(T) > 0 and new_cap > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     raw := l.alloc.vt.alloc(l.alloc.data, @size_of(T) * new_cap, @align_of(T)) else return !.OutOfMemory
     p := raw.cast([^]T)
     for i in 0..n { p[i] = l.items[i] }
+    for i in 0..tail.len { p[n + i] = tail[i] }
     if l.cap > 0 {
         l.alloc.vt.free(l.alloc.data, l.items.ptr.cast([^]u8), @size_of(T) * l.cap, @align_of(T))
     }
@@ -40,11 +51,14 @@ pub push :: fn(T: type, l: ^List(T), x: T) -> AllocError!() {
 
 /// Appends the elements of `xs`.
 pub extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!() {
-    try reserve(T, l, xs.len)
     n := l.items.len
-    grown := l.items.ptr[0..n + xs.len]
-    for i in 0..xs.len { grown[n + i] = xs[i] }
-    l.items = grown
+    if l.cap - n < xs.len {
+        // `xs` may be part of the list's own storage: it is copied before that is released.
+        try regrow(T, l, xs.len, xs)
+    } else {
+        for i in 0..xs.len { l.items.ptr[n + i] = xs[i] }
+    }
+    l.items = l.items.ptr[0..n + xs.len]
     return ()
 }
 

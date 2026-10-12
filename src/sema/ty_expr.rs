@@ -77,7 +77,7 @@ impl<'s> Sema<'s> {
             ExprKind::Paren(inner) => self.resolve_type(module, inner),
             ExprKind::Tuple(elems) => {
                 let named = elems.first().is_some_and(|el| el.name.is_some());
-                let tys: Vec<Ty> = elems.iter().map(|el| self.resolve_type(module, &el.value)).collect();
+                let tys: Vec<Ty> = elems.iter().map(|el| self.component_type(module, &el.value)).collect();
                 let names = if named {
                     let names: Vec<_> = elems.iter().map(|el| el.name.map(|n| n.name)).collect();
                     if names.iter().any(|n| n.is_none()) {
@@ -97,7 +97,7 @@ impl<'s> Sema<'s> {
                 };
                 Ty::intern(TyKind::Tuple { elems: tys.into_boxed_slice(), names })
             }
-            ExprKind::OptionalType(inner) => Ty::optional(self.resolve_type(module, inner)),
+            ExprKind::OptionalType(inner) => Ty::optional(self.component_type(module, inner)),
             ExprKind::PtrType { is_const, inner } => {
                 if let ExprKind::FnType(sig) = &inner.kind {
                     if *is_const {
@@ -114,12 +114,12 @@ impl<'s> Sema<'s> {
                         None => Ty::error(),
                     };
                 }
-                Ty::ptr(*is_const, self.resolve_type(module, inner))
+                Ty::ptr(*is_const, self.component_type(module, inner))
             }
-            ExprKind::SliceType { is_const, inner } => Ty::slice(*is_const, self.resolve_type(module, inner)),
-            ExprKind::ManyPtrType { is_const, inner } => Ty::many_ptr(*is_const, self.resolve_type(module, inner)),
+            ExprKind::SliceType { is_const, inner } => Ty::slice(*is_const, self.component_type(module, inner)),
+            ExprKind::ManyPtrType { is_const, inner } => Ty::many_ptr(*is_const, self.component_type(module, inner)),
             ExprKind::ArrayType { len, elem } => {
-                let elem = self.resolve_type(module, elem);
+                let elem = self.component_type(module, elem);
                 let Some(len) = len else {
                     self.error(e.span, "`[_]` is allowed only in array constructors");
                     return Ty::error();
@@ -144,8 +144,8 @@ impl<'s> Sema<'s> {
                 }
             }
             ExprKind::ErrorUnionType { err, ok } | ExprKind::Bang { lhs: err, rhs: ok } => {
-                let err = self.resolve_type(module, err);
-                let ok = self.resolve_type(module, ok);
+                let err = self.component_type(module, err);
+                let ok = self.component_type(module, ok);
                 Ty::result(err, ok)
             }
             ExprKind::FnType(sig) => match self.resolve_fn_sig(module, sig, false, &[]) {
@@ -187,7 +187,11 @@ impl<'s> Sema<'s> {
                 };
                 for (pid, t) in self.adt_params[&template].clone().into_iter().zip(&targs) {
                     for c in self.constraints.get(&pid).cloned().unwrap_or_default() {
-                        if !self.satisfies(*t, c) {
+                        // In a signature or a generic type, the `where` clause that follows
+                        // may still constrain the parameters mentioned here.
+                        if !self.satisfies(*t, c) && self.constraint_defer > 0 && super::generics::has_param(*t) {
+                            self.deferred_constraints.push((*t, c, pid, template, e.span));
+                        } else if !self.satisfies(*t, c) {
                             self.error(
                                 e.span,
                                 format!(
@@ -199,6 +203,11 @@ impl<'s> Sema<'s> {
                                 ),
                             );
                         }
+                    }
+                }
+                for t in &targs {
+                    if let Some(part) = super::generics::second_class_part(*t) {
+                        self.error(e.span, super::generics::not_first_class(*t, part));
                     }
                 }
                 self.instantiate_adt(template, targs)
@@ -245,6 +254,22 @@ impl<'s> Sema<'s> {
                 Ty::error()
             }
         }
+    }
+
+    /// Resolves a type that is part of a larger type (an element, a pointee, a payload):
+    /// a second-class `fn(…)` type cannot be one (§11.6).
+    fn component_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
+        let t = self.resolve_type(module, e);
+        if matches!(t.kind(), TyKind::Fn(_)) {
+            self.error(
+                e.span,
+                format!(
+                    "the second-class type `{}` cannot be part of another type; use a function pointer `^{}` (§11.6)",
+                    t, t
+                ),
+            );
+        }
+        t
     }
 
     /// The declaration that `callee` of a type instantiation `G(args)` names: `G` or
@@ -295,13 +320,28 @@ impl<'s> Sema<'s> {
                 // A length computed from compile-time parameters is not known until
                 // instantiation (§16.5).
                 let mut params = vec![];
+                let mut on_type = false;
                 super::func::visit(&ex, &mut |n| {
-                    if let crate::tir::ExprKind::ValueParam(p) = n.kind
+                    use crate::tir::ExprKind as K;
+                    if let K::ValueParam(p) = n.kind
                         && !params.contains(&p.name().to_string())
                     {
                         params.push(p.name().to_string());
                     }
+                    on_type |= super::generics::has_param(n.ty)
+                        || matches!(
+                            n.kind,
+                            K::SizeOf { .. } | K::TypeIs { .. } | K::IntLimit { .. } | K::TypeName { .. }
+                        );
                 });
+                if params.is_empty() && on_type {
+                    self.error(
+                        e.span,
+                        "an array length computed from a type parameter is not supported in a type; \
+                         use a slice, or make the length a compile-time parameter (§16.5)",
+                    );
+                    return None;
+                }
                 if !params.is_empty() {
                     let list: Vec<String> = params.iter().map(|p| format!("`{}`", p)).collect();
                     self.error(

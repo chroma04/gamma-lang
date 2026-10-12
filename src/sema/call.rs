@@ -50,6 +50,20 @@ impl<'a, 's> FnCx<'a, 's> {
                 Err(()) => error_expr(span),
             };
         }
+        // `E.op(args)`: an operation named through its effect (§12.1).
+        if let ExprKind::Field { base, name } = &callee.kind
+            && let Some(eff) = self.effect_named(base)
+        {
+            let ops = &self.sema.effects[&eff].ops;
+            return match ops.iter().position(|o| o.name == name.name) {
+                Some(i) => self.perform_op(eff, i as u32, args, span),
+                None => {
+                    let e = self.sema.effects[&eff].name;
+                    self.error(name.span, format!("the effect `{}` has no operation `{}`", e, name.name));
+                    error_expr(span)
+                }
+            };
+        }
         if let ExprKind::Field { base, name } = &callee.kind
             && self.module_of(base).is_none()
         {
@@ -78,6 +92,22 @@ impl<'a, 's> FnCx<'a, 's> {
             CalleeKind::Builtin(b) => self.builtin_call(b, args, expect, span),
             CalleeKind::Variant(u, name) => self.construct_variant(u, name, Some(args), span),
             CalleeKind::Value(v) => self.call_value(v, args, span),
+        }
+    }
+
+    /// The effect that `e` names (`E` or `m.E`), unless a local shadows it.
+    fn effect_named(&mut self, e: &ast::Expr) -> Option<crate::types::EffectId> {
+        let d = match &e.kind {
+            ExprKind::Ident(id) if self.lookup_local(id.name).is_none() => {
+                let module = self.module;
+                self.sema.lookup_module_name(module, id.name)?
+            }
+            ExprKind::Field { .. } => self.qualified_decl(e)??,
+            _ => return None,
+        };
+        match self.sema.resolve_decl(d) {
+            DeclValue::Effect(eff) => Some(eff),
+            _ => None,
         }
     }
 
@@ -217,7 +247,19 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut bound: Vec<Option<Expr>> = vec![None; params.len()];
         let mut next_positional = 0;
         let mut seen_named = false;
-        let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        // Arguments are evaluated in the order written (§11.3): with spreads, or named
+        // arguments out of parameter order, each goes into a temporary first.
+        let mut order = vec![];
+        for a in args {
+            match &a.kind {
+                ArgKind::Positional(_) => order.push(order.len()),
+                ArgKind::Named(n, _) => order.extend(params.iter().position(|p| p.name == n.name)),
+                ArgKind::Spread(_) => {}
+            }
+        }
+        let reordered = order.windows(2).any(|w| w[0] > w[1]);
+        let has_spread = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        let spreading = reordered || has_spread;
         let mut stmts = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
@@ -251,7 +293,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         let _ = self.expr(e, None);
                         continue;
                     };
-                    if explicit[i] || (bound[i].is_some() && !spreading) {
+                    if explicit[i] || (bound[i].is_some() && !has_spread) {
                         self.error(name.span, format!("parameter `{}` is given more than once", name.name));
                     }
                     explicit[i] = true;
@@ -450,6 +492,10 @@ impl<'a, 's> FnCx<'a, 's> {
         let vt = self.infer.resolve(v.ty);
         if !vt.has_infer() && vt != t && self.coercion_steps(vt, t).is_some() {
             return self.coerce(v, t);
+        }
+        // `T(x)` of a `T` is a copy of the value (not a place).
+        if !vt.has_infer() && vt == t && !vt.is_error() {
+            return mk(t, tir::ExprKind::Coerce { kind: tir::Coercion::TupleRename, expr: Box::new(v) }, span);
         }
         self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
         mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span)

@@ -91,6 +91,9 @@ pub struct FnCx<'a, 's> {
     pub obligations: Vec<Obligation>,
     /// True while checking a deferred statement (§8.8 restrictions).
     pub in_defer: bool,
+    /// The sites of performs of `fn` operations: a deferred statement may make them even
+    /// when the effect has other kinds of operations (§8.8).
+    pub fn_performs: Vec<Span>,
     /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
     /// temporary, which lives until the call returns (§7.10).
     pub temp_ref_arg: bool,
@@ -110,7 +113,7 @@ pub struct FnCx<'a, 's> {
     scope_depths: Vec<u32>,
     /// For each scope, the length of `sema.type_params` when it began: local type
     /// aliases are visible to type expressions through that list.
-    scope_types: Vec<usize>,
+    scope_types: Vec<(usize, usize)>,
     /// Nested function bodies, finalized together with the enclosing body.
     pub nested: Vec<NestedFn>,
     /// Set while checking a handler clause (§12.5): how its exits behave.
@@ -138,6 +141,12 @@ pub struct ClauseInfo {
     pub break_ty: Option<Ty>,
     /// The effect whose operation the clause handles.
     pub effect: Option<EffectRef>,
+    /// For a clause of a handler declaration: its function, under which the values of
+    /// its `break`s to the installing `with` are recorded.
+    pub decl_clause: Option<FnId>,
+    /// For a clause of a handler literal written in a `with`: the type expected of the
+    /// `with`'s value, which its `break`s give.
+    pub with_expect: Option<Ty>,
 }
 
 /// The per-function state of an enclosing function, saved while a nested
@@ -172,6 +181,7 @@ impl<'s> Sema<'s> {
         let ExprKind::Fn(lit) = &b.init.kind else { return };
         let sig = self.sigs[&fn_id].clone();
         self.checking.push(fn_id);
+        let outer_fns = std::mem::take(&mut self.local_fns);
         // A generic body is checked once, with its type parameters opaque (§16.1).
         let scope_len = self.type_params.len();
         let value_scope_len = self.value_scope.len();
@@ -209,6 +219,7 @@ impl<'s> Sema<'s> {
         let (body, locals) = cx.finish(body);
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
+        self.local_fns = outer_fns;
         self.checking.pop();
         let def = &mut self.prog.fns[fn_id.index()];
         def.params = params;
@@ -260,6 +271,7 @@ impl<'a, 's> FnCx<'a, 's> {
             pending: vec![],
             obligations: vec![],
             in_defer: false,
+            fn_performs: vec![],
             temp_ref_arg: false,
             defer_label_base: 0,
             failed_coercions: vec![],
@@ -420,14 +432,15 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn push_scope(&mut self) {
         self.scopes.push(vec![]);
         self.scope_depths.push(self.depth());
-        self.scope_types.push(self.sema.type_params.len());
+        self.scope_types.push((self.sema.type_params.len(), self.sema.local_fns.len()));
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
         self.scope_depths.pop();
-        if let Some(n) = self.scope_types.pop() {
+        if let Some((n, f)) = self.scope_types.pop() {
             self.sema.type_params.truncate(n);
+            self.sema.local_fns.truncate(f);
         }
     }
 
@@ -641,9 +654,32 @@ impl<'a, 's> FnCx<'a, 's> {
                 let (was, base) = (self.in_defer, self.defer_label_base);
                 self.in_defer = true;
                 self.defer_label_base = self.labels.len();
+                let performed_base = self.performed.len();
                 self.push_scope();
                 let inner = self.stmt(body);
                 self.pop_scope();
+                // It may only perform `fn` operations, unless it handles them itself (§8.8).
+                let exits: Vec<(EffectRef, Span)> = self.performed[performed_base..]
+                    .iter()
+                    .filter(|(e, sp)| {
+                        !self.fn_performs.contains(sp)
+                            && self
+                                .sema
+                                .effects
+                                .get(&e.effect)
+                                .is_some_and(|info| info.ops.iter().any(|o| o.kind != ast::OpKind::Fn))
+                    })
+                    .cloned()
+                    .collect();
+                for (e, sp) in exits {
+                    self.error(
+                        sp,
+                        format!(
+                            "a deferred statement may not perform `{}`, whose operations can exit or suspend, unless it handles it (§8.8)",
+                            e
+                        ),
+                    );
+                }
                 self.in_defer = was;
                 self.defer_label_base = base;
                 let body = stmt_to_expr(inner, body.span);
@@ -724,6 +760,9 @@ impl<'a, 's> FnCx<'a, 's> {
     fn destructure(&mut self, b: &ast::Binding) -> Stmt {
         let annot = b.ty.as_ref().map(|t| self.resolve_type(t));
         let init = if let ExprKind::Uninit = b.init.kind {
+            if b.kind != ast::BindingKind::Var {
+                self.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)");
+            }
             match annot {
                 Some(t) if self.is_plain_data(t) => Expr { ty: t, kind: tir::ExprKind::Uninit, span: b.init.span },
                 _ => {
@@ -806,6 +845,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let mutable = b.kind == ast::BindingKind::Var;
         let errors_before = self.sema.sess.diags.error_count();
         let init = if let ExprKind::Uninit = b.init.kind {
+            if !mutable {
+                self.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)");
+            }
             match annot {
                 Some(t) => {
                     if !self.is_plain_data(t) {
@@ -1408,6 +1450,7 @@ fn closed_const(e: &Expr) -> bool {
                 | tir::ExprKind::SizeOf { .. }
                 | tir::ExprKind::TypeIs { .. }
                 | tir::ExprKind::IntLimit { .. }
+                | tir::ExprKind::TypeName { .. }
                 | tir::ExprKind::Closure(_)
                 | tir::ExprKind::HandlerRef(_)
         );

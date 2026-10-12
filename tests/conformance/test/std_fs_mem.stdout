@@ -10,4 +10,6 @@ test "write_atomic replaces the file and leaves no temporary" ... ok
 test "truncate and sync" ... ok
 test "lstat is stat, and cwd is the root" ... ok
 test "next_entry reports kinds" ... ok
-12 passed, 0 failed
+test "copying a file onto itself keeps it" ... ok
+test "copy replaces a longer file" ... ok
+14 passed, 0 failed

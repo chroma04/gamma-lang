@@ -639,7 +639,7 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Tag values.** By default variants are numbered 0, 1, 2, … in declaration order. Explicit values `Name = c` are allowed only when a tag type is given; a variant without an explicit value takes the previous value plus one. Tag values must be distinct and fit `T`.
 - **Construction.** `.Name(payload)` or `.Name` when the union type is known from context; `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly as arguments: `.Rect(w: 2, h: 3)`.
 - **Inspection.** `match` (§8.6), `if pattern := e` (§8.2) and `is` (§7.6). `u.tag()` returns the tag value as the tag type.
-- **From a raw tag.** `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of a payload-less variant. It is the only way to turn an integer into an enum; there is no unchecked form.
+- **From a raw tag.** For an enum, `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of one of its variants. It is the only way to turn an integer into an enum; there is no unchecked form. A union with payloads has no `from_tag`, since a tag alone cannot give a payload.
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
 
 #### 5.11.1 Untagged unions
@@ -1348,9 +1348,9 @@ A function returns one value. Several values are returned as a tuple, and destru
 A function literal that refers to a local binding of an enclosing function **captures** it by reference. Such a literal, and every value of a function type `fn(…)` (as opposed to a function pointer `^fn(…)`), is **second-class**:
 
 - It may be bound with `::` to a local, passed as an argument, and called.
-- It may not be stored in a mutable variable, a struct, tuple, array, union, optional, or result; returned; assigned; or captured by a function pointer or a nested named function. It may be captured by another function literal or handler literal (which is then itself second-class).
+- It may not be stored in a mutable variable, a struct, tuple, array, union, optional, or result; returned (also from a function literal); assigned; pointed to with `&`; or captured by a function pointer or a nested named function. It may be captured by another function literal or handler literal (which is then itself second-class).
 
-These restrictions ensure a second-class function never outlives the frame that created it, so captured locals are always valid while it can be called. Accordingly, a second-class function type `fn(…)` may be written only as the type of a parameter or of an immutable local; it may not be a field, element or type argument (§16.1).
+These restrictions ensure a second-class function never outlives the frame that created it, so captured locals are always valid while it can be called. Accordingly, a second-class function type `fn(…)` may be written only as the type of a parameter or of an immutable local; it may not be part of another type (a field, element, pointee, payload of `?` or `!`) or a type argument (§16.1).
 
 A handler literal's type has no name, so handler literals cannot be passed as arguments; pass a second-class function that installs the handler instead.
 
@@ -1487,7 +1487,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 ```
 
 - Clause parameters are names only; their types come from the operation. A `ctl` clause has one extra, final parameter: the continuation (§14.2).
-- A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::`, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame.
+- A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::` to a local, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame. A handler literal cannot be a top-level declaration; a handler that needs no frame is a handler declaration (§12.6).
 - Effects performed by a clause body are handled by the handlers in scope **where the literal is written**. They count as effects performed by the enclosing function at that point.
 - `break`, `continue` and `return` in clause bodies are described in §12.7.
 
@@ -2023,7 +2023,7 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
 - The body is still checked once, treating the parameter as an unknown constant of its type. `when` conditions may not depend on it (§16.7).
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
-- Inside the body, an array length that depends on a compile-time parameter must be the parameter itself: `[N]T` is allowed, `[N + 1]T` is a compile error, because the body is checked once and array types must be comparable without knowing `N`. An array `[N]T` is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown `N`), and `a.len` is `N`.
+- Inside the body, an array length that depends on a compile-time parameter must be the parameter itself: `[N]T` is allowed, `[N + 1]T` (or `[@size_of(T)]u8` for a type parameter `T`) is a compile error, because the body is checked once and array types must be comparable without knowing `N`. An array `[N]T` is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown `N`), and `a.len` is `N`.
 - A compile-time value parameter that appears in the type of another parameter is inferable (`N` above, from `a: [N]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
 

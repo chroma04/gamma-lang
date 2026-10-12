@@ -1,0 +1,13 @@
+//! stage: check
+Self :: struct(T: type) { x: Self(T) } //~ ERROR `Self(u8)` contains itself by value
+W :: struct(T: type) { s: S(T) } //~ ERROR `W(u8)` contains itself by value
+S :: struct(T: type) { w: W(T) } //~ ERROR `S(u8)` contains itself by value
+Grow :: struct(T: type) { x: T, next: ?^Grow(?T) } //~ ERROR `Grow` instantiates itself with ever-larger type arguments
+Fine :: struct(T: type) { x: T, next: ?^Fine(T) }
+
+main :: fn() {
+    _ = @size_of(Self(u8))
+    _ = @size_of(W(u8))
+    _ = @size_of(Grow(u8))
+    _ = @size_of(Fine(u8))
+}

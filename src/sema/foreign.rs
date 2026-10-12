@@ -32,6 +32,7 @@ impl<'s> Sema<'s> {
         name: ast::Ident,
         b: &ast::Binding,
         thread_local: bool,
+        align: Option<u64>,
     ) -> DeclValue {
         let Some(ty_expr) = &b.ty else {
             self.error(name.span, "a `#global` needs a type: `#global name: T = value`");
@@ -52,6 +53,7 @@ impl<'s> Sema<'s> {
             value: Some(value),
             thread_local,
             link_name: None,
+            align,
         });
         DeclValue::Global { ty, id }
     }
@@ -116,6 +118,7 @@ impl<'s> Sema<'s> {
                         value: None,
                         thread_local: false,
                         link_name: Some(link_name.unwrap_or(n.name)),
+                        align: None,
                     });
                     (*n, DeclValue::Global { ty: t, id })
                 }

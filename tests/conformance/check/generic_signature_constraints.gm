@@ -1,0 +1,9 @@
+//! stage: check
+// A signature may mention a constrained generic type when its own `where` clause
+// (written after it) provides the constraint (§16.3, §16.4).
+Num2 :: struct(T: type) where Num(T) { a, b: T }
+good :: fn(T: type, p: Num2(T)) -> T where Num(T) => p.a + p.b
+Good :: struct(T: type) where Num(T) { n: Num2(T) }
+bad :: fn(T: type, p: Num2(T)) -> usize => 0 //~ ERROR `T` does not satisfy `Num(T)` required by `Num2`
+Bad :: struct(T: type) where Ord(T) { n: Num2(T) } //~ ERROR `T` does not satisfy `Num(T)` required by `Num2`
+main :: fn() {}

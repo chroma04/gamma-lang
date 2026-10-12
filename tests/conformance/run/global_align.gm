@@ -1,0 +1,7 @@
+// `#align(n)` raises the alignment of a `#global` (§20.2), in either order.
+#global #align(64) big: [3]u8 = [3]u8(1, 2, 3)
+#align(32) #global small: u8 = 7
+main :: fn() \ {Out, Sys} {
+    print("{} {}\n", ((&big).addr() % 64, (&small).addr() % 32))
+    print("{} {}\n", (big, small))
+}

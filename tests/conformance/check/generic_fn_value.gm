@@ -1,0 +1,9 @@
+//! stage: check
+// A generic function can only be called; it has no function-pointer value (§16.7).
+f :: fn(T: type, x: T) -> T => x
+main :: fn() {
+    g := f //~ ERROR `f` is generic, so it can only be called
+    h :: fn(T: type, x: T) -> T => x
+    k := h //~ ERROR `h` is generic, so it can only be called
+    _ = f(u8, 3)
+}

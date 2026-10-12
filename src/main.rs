@@ -126,7 +126,21 @@ fn default_sigpipe() {
     }
 }
 
+/// The compiler's stack. Its passes recurse over the syntax tree, so a long operator
+/// chain or deeply nested code needs more than the default; the memory is only reserved.
+const COMPILER_STACK: usize = 1 << 30;
+
 fn main() -> ExitCode {
+    std::thread::Builder::new()
+        .name("gamma".into())
+        .stack_size(COMPILER_STACK)
+        .spawn(compiler_main)
+        .expect("cannot start the compiler thread")
+        .join()
+        .unwrap_or(ExitCode::from(101))
+}
+
+fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
     if std::env::args().nth(1).as_deref() == Some("fmt") {

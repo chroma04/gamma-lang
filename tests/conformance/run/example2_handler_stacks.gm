@@ -28,8 +28,8 @@ noisy_double :: fn(x: u32) -> u32 \ {Log} {
 
 quiet :: fn(x: u32) -> u32 => x + 1
 
-risky :: fn(n: u32) -> u32 \ {Fail, Log} {
-    defer log("risky defer")
+risky :: fn(n: u32) -> u32 \ {Fail, Out} {
+    defer print("[risky defer]\n")         // a deferred statement performs only `fn` operations (§8.8)
     if n > 3 { fail(n) }
     return n
 }

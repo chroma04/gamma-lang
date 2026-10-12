@@ -107,6 +107,17 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         let final_ret = self.ret;
+        if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
+            let at = match (&lit.sig.ret, &lit.body) {
+                (Some(r), _) => r.span,
+                (None, ast::FnBody::Expr(e)) => e.span,
+                (None, _) => lit.sig.span,
+            };
+            self.error(
+                at,
+                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
+            );
+        }
         let (locals, performed, captures) = self.exit_fn();
         if infer_ret {
             let s = self.sema.sigs.get_mut(&fn_id).unwrap();
@@ -219,6 +230,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     entry.1 = LocalBinding::Var(id);
                 }
                 tir::Stmt::Let { local: id, init: Some(v) }
+            }
+            tir::ExprKind::FnRef(f) => {
+                self.sema.local_fns.push((name.name, f));
+                tir::Stmt::Expr(super::func::unit(span))
             }
             _ => tir::Stmt::Expr(super::func::unit(span)),
         }

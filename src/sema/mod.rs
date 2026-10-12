@@ -211,6 +211,9 @@ pub struct Sema<'s> {
     pub import_edges: Vec<(ModuleId, ModuleId, Span)>,
     /// Type parameters in scope while resolving types (innermost last).
     pub type_params: Vec<(Symbol, Ty)>,
+    /// The capture-free nested functions in scope in the body being checked: like
+    /// top-level functions, they may be compile-time arguments (§11.8).
+    pub local_fns: Vec<(Symbol, FnId)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
@@ -220,6 +223,11 @@ pub struct Sema<'s> {
     /// Types and locations of clause-level `break`s of each handler literal,
     /// checked against the value of the `with` that installs it.
     pub handler_breaks: HashMap<u32, Vec<(Ty, Span)>>,
+    /// The values of `break`s to the installing `with` in each clause of a handler
+    /// declaration.
+    pub decl_clause_breaks: HashMap<FnId, Vec<(Ty, Span)>>,
+    /// Each `with` that installs handler declarations: their indices and its type.
+    pub decl_with_checks: Vec<(Vec<usize>, Ty, Span)>,
     /// Handler declarations (§12.6) found while loading modules.
     handler_items: Vec<(ModuleId, Rc<ast::Item>)>,
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
@@ -237,6 +245,8 @@ pub struct Sema<'s> {
     pub instance_of: HashMap<FnId, (FnId, Vec<Ty>)>,
     /// Instantiations whose bodies are still to be produced.
     pub mono_queue: Vec<generics::MonoRequest>,
+    /// The depth of the instantiation whose body is being produced.
+    pub mono_depth: u32,
     /// Nested functions (literals, clauses) and the outermost function they belong to.
     pub nested_owner: HashMap<FnId, FnId>,
     /// Functions whose bodies are being checked (for compile-time evaluation cycles).
@@ -249,6 +259,23 @@ pub struct Sema<'s> {
     pub adt_param_defaults: HashMap<AdtId, Vec<Option<Rc<ast::Expr>>>>,
     /// Instantiations of generic structs and unions.
     pub adt_instances: HashMap<(AdtId, Vec<Ty>), AdtId>,
+    /// The literal of each generic struct or union, for errors found when instantiating it.
+    pub adt_spans: HashMap<AdtId, Span>,
+    /// Structs and unions whose fields are being resolved (their layout is not known).
+    pub adts_in_progress: Vec<AdtId>,
+    /// The declaration of each top-level struct and union.
+    pub adt_decls: HashMap<AdtId, DeclId>,
+    /// Signatures and generic types being declared, whose `where` clauses come after
+    /// the types that mention their parameters.
+    pub constraint_defer: u32,
+    /// Constraints on type arguments to check when `constraint_defer` drops to 0.
+    pub deferred_constraints: Vec<(Ty, generics::Constraint, crate::types::ParamId, AdtId, Span)>,
+    /// How many generic type instantiations are in progress, one inside the other.
+    pub adt_inst_depth: u32,
+    /// Instances created during the outermost instantiation in progress, with their templates.
+    pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Whether ever-deeper instantiation has been reported.
+    pub adt_inst_overflowed: bool,
 }
 
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
@@ -320,10 +347,13 @@ impl<'s> Sema<'s> {
             module_by_dir: HashMap::new(),
             import_edges: vec![],
             type_params: vec![],
+            local_fns: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
             yield_effect: None,
             handler_breaks: HashMap::new(),
+            decl_clause_breaks: HashMap::new(),
+            decl_with_checks: vec![],
             handler_items: vec![],
             handler_decl_effects: vec![],
             handler_templates: vec![],
@@ -332,11 +362,20 @@ impl<'s> Sema<'s> {
             instances: HashMap::new(),
             instance_of: HashMap::new(),
             mono_queue: vec![],
+            mono_depth: 0,
             nested_owner: HashMap::new(),
             adt_params: HashMap::new(),
             adt_param_defaults: HashMap::new(),
             explicit_tags: std::collections::HashSet::new(),
             adt_instances: HashMap::new(),
+            adt_spans: HashMap::new(),
+            adts_in_progress: vec![],
+            adt_decls: HashMap::new(),
+            constraint_defer: 0,
+            deferred_constraints: vec![],
+            adt_inst_depth: 0,
+            adt_new_instances: vec![],
+            adt_inst_overflowed: false,
         }
     }
 
@@ -421,6 +460,7 @@ impl<'s> Sema<'s> {
             }
         }
         self.check_import_cycles();
+        self.check_pub_signatures();
         let _ = root;
         // The core library is checked in full, so its errors surface even when unused.
         let core: Vec<ModuleId> = self.prelude.into_iter().chain(self.core_modules.iter().copied()).collect();
@@ -461,6 +501,7 @@ impl<'s> Sema<'s> {
         self.drain_bodies();
         self.check_handler_clauses(clauses);
         self.drain_bodies();
+        self.check_decl_breaks();
         self.monomorphize();
     }
 

@@ -657,6 +657,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             ExprKind::SizeOf { .. }
             | ExprKind::TypeIs { .. }
             | ExprKind::IntLimit { .. }
+            | ExprKind::TypeName { .. }
             | ExprKind::UntypedFloat(_)
             | ExprKind::ValueParam(_) => unsupported(e.span, "an expression left over from generic checking"),
         }
@@ -731,6 +732,28 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(format!("({} + {})", b, off))
             }
             ExprKind::Index { base, index, checked } => {
+                // The base is evaluated before the index (§7): when the index has effects,
+                // the base's address (or value) is computed first, into a temporary.
+                let early = if no_writes(index) {
+                    None
+                } else {
+                    Some(match base.ty.kind() {
+                        TyKind::Array { .. } => self.base_addr(base)?,
+                        _ => self.expr(base)?,
+                    })
+                };
+                let early = early.map(|b| {
+                    let n = format!("t{}", self.fresh());
+                    let cty = if matches!(base.ty.kind(), TyKind::Array { .. }) {
+                        "uint8_t *".to_string()
+                    } else {
+                        format!("{} ", self.g.ty.cty(base.ty))
+                    };
+                    let b =
+                        if matches!(base.ty.kind(), TyKind::Array { .. }) { format!("(uint8_t *)({})", b) } else { b };
+                    self.line(&format!("{}{} = {};", cty, n, b));
+                    n
+                });
                 let i = self.expr(index)?;
                 let i = self.usize_value(index.ty, &i);
                 let i = self.tmp(Ty::usize(), &i);
@@ -746,13 +769,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 match base.ty.kind() {
                     TyKind::Array { len, elem } => {
                         let (len, esz) = (*len, self.g.ty.size(*elem));
-                        let b = self.base_addr(base)?;
+                        let b = match early {
+                            Some(b) => b,
+                            None => self.base_addr(base)?,
+                        };
                         check(self, &len.to_string());
                         Ok(format!("({} + {} * {})", b, i, esz))
                     }
                     TyKind::Slice { elem, .. } => {
                         let esz = self.g.ty.size(*elem);
-                        let v = self.expr(base)?;
+                        let v = match early {
+                            Some(v) => v,
+                            None => self.expr(base)?,
+                        };
                         let a = self.addr_of(base.ty, &v);
                         let len = self.slice_len(&a);
                         let len = self.tmp(Ty::usize(), &len);
@@ -762,7 +791,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     }
                     TyKind::ManyPtr { elem, .. } => {
                         let esz = self.g.ty.size(*elem);
-                        let v = self.expr(base)?;
+                        let v = match early {
+                            Some(v) => v,
+                            None => self.expr(base)?,
+                        };
                         Ok(format!("((uint8_t *){} + {} * {})", v, i, esz))
                     }
                     _ => unsupported(e.span, format!("indexing `{}`", base.ty)),
@@ -1834,6 +1866,7 @@ fn no_writes(e: &Expr) -> bool {
             | ExprKind::SizeOf { .. }
             | ExprKind::TypeIs { .. }
             | ExprKind::IntLimit { .. }
+            | ExprKind::TypeName { .. }
             | ExprKind::UntypedFloat(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)

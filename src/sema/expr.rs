@@ -125,7 +125,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
             ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
-            ExprKind::Handler(lit) => self.handler_literal(lit, span),
+            ExprKind::Handler(lit) => self.handler_literal(lit, None, span),
             ExprKind::With(w) => self.with_expr(w, true, expect),
             ExprKind::OptUnwrap(inner) => {
                 let v = self.expr(inner, None);
@@ -250,7 +250,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(ty, tir::ExprKind::Upvar { levels: self.depth() - depth, local: id }, span)
                 }
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
-                LocalBinding::NestedFn(f) => self.fn_ref(f, span),
+                LocalBinding::NestedFn(f) => self.named_fn_value(f, name, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 LocalBinding::Label => {
@@ -266,6 +266,10 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
             return mk(self.sema.value_params[&pid], tir::ExprKind::ValueParam(pid), span);
+        }
+        // A nested function of the body whose compile-time argument this is.
+        if let Some(&(_, f)) = self.sema.local_fns.iter().rev().find(|(n, _)| *n == name) {
+            return self.fn_ref(f, span);
         }
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
@@ -285,7 +289,7 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, span: Span) -> Expr {
         self.sema.check_deprecated(d, span);
         match self.sema.resolve_decl(d) {
-            DeclValue::Fn(f) => self.fn_ref(f, span),
+            DeclValue::Fn(f) => self.named_fn_value(f, name, span),
             DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
             DeclValue::Untyped(v) => self.untyped_literal(&v, span),
             DeclValue::Type(_) | DeclValue::GenericType(_) => {
@@ -342,6 +346,21 @@ impl<'a, 's> FnCx<'a, 's> {
         Some(self.sema.module_member(m, *name))
     }
 
+    /// The named function `f` used as a value; a generic one has none (§16.7).
+    fn named_fn_value(&mut self, f: tir::FnId, name: crate::symbol::Symbol, span: Span) -> Expr {
+        if !self.sema.sigs[&f].generics.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`{}` is generic, so it can only be called; it does not convert to a function pointer (§16.7)",
+                    name
+                ),
+            );
+            return error_expr(span);
+        }
+        self.fn_ref(f, span)
+    }
+
     /// A named function used as a value: a function pointer (§5.14).
     pub fn fn_ref(&mut self, f: tir::FnId, span: Span) -> Expr {
         let sig = &self.sema.sigs[&f];
@@ -374,6 +393,19 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// Reports a second-class function value used as `what`, which would let it outlive
+    /// its captures (§11.6). True if it was reported.
+    fn reject_second_class(&mut self, v: &Expr, what: &str) -> bool {
+        if !matches!(self.infer.resolve(v.ty).kind(), TyKind::Fn(_)) {
+            return false;
+        }
+        self.error(
+            v.span,
+            format!("a second-class function cannot be {}; use a function pointer `^fn(…)` (§11.6)", what),
+        );
+        true
+    }
+
     fn tuple(&mut self, elems: &[ast::TupleElem], expect: Option<Ty>, span: Span) -> Expr {
         // The expected tuple type, also through optionals and results that would wrap it.
         let mut want = expect.map(|t| self.infer.shallow(t));
@@ -403,6 +435,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     v = self.coerce(v, exp);
                 }
             }
+            self.reject_second_class(&v, "a tuple element");
             vals.push(v);
         }
         let names = if named {
@@ -484,6 +517,9 @@ impl<'a, 's> FnCx<'a, 's> {
             ast::UnOp::AddrOf => {
                 let temp_ok = std::mem::take(&mut self.temp_ref_arg);
                 let v = self.expr(operand, None);
+                if self.reject_second_class(&v, "the target of `&`") {
+                    return error_expr(span);
+                }
                 match self.place_mutability(&v) {
                     Some(m) => {
                         let ty = Ty::ptr(!m, v.ty);
@@ -1120,6 +1156,19 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         let usize_const = |v: u64| mk(Ty::usize(), tir::ExprKind::Int(v.into()), span);
+        // The layout of a type whose fields are still being resolved is not known.
+        let pending = |cx: &mut Self, t: Ty| -> bool {
+            let Some(id) = cx.sema.pending_layout(t) else { return false };
+            cx.error(
+                span,
+                format!(
+                    "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
+                    name.name,
+                    id.name()
+                ),
+            );
+            true
+        };
         match name.name.as_str() {
             "size_of" | "align_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
@@ -1130,6 +1179,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 if super::generics::has_param(t) {
                     let align = name.name.as_str() == "align_of";
                     return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
+                }
+                if pending(self, t) {
+                    return error_expr(span);
                 }
                 let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
                 usize_const(if name.name.as_str() == "size_of" { size } else { align })
@@ -1154,6 +1206,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "offset_of" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if pending(self, t) {
+                    return error_expr(span);
+                }
                 let field = match args.get(1).map(|a| &a.kind) {
                     Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
                     _ => {
@@ -1359,6 +1414,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             "type_name" => {
                 let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if super::generics::has_param(t) {
+                    // Named in each instance (§16.1).
+                    return mk(Ty::string(), tir::ExprKind::TypeName { of: t }, span);
+                }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
             other => {
@@ -1792,6 +1851,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 );
                 return None;
             }
+            if is_continue && clause.op_kind == ast::OpKind::Ctl && clause.for_label.is_none() {
+                self.error(
+                    span,
+                    "a `ctl` clause cannot `continue`: end it with `resume`, `break` or an exit (§12.7.1)",
+                );
+                return None;
+            }
+            // `continue` produces `()` as the operation's result (§12.7.1).
+            let ret = self.infer.resolve(self.ret);
+            if is_continue && !ret.is_unit() && !ret.is_error() {
+                self.error(
+                    span,
+                    format!("`continue` finishes the clause with `()`, but the operation returns `{}` (§12.7.1)", ret),
+                );
+                return None;
+            }
             return Some(if is_continue { Jump::ClauseReturn { levels: 0 } } else { Jump::InstallingWith });
         };
         // A labeled jump from a handler clause to a construct enclosing the handler.
@@ -1855,10 +1930,21 @@ impl<'a, 's> FnCx<'a, 's> {
                 ex.map(Box::new)
             }
             (Jump::InstallingWith, v) => {
-                let ex = v.map(|v| self.expr(v, None));
-                let ty = ex.as_ref().map_or(Ty::unit(), |e| e.ty);
+                let expect = self.clause.as_ref().and_then(|c| c.with_expect);
+                let ex = v.map(|v| {
+                    let ex = self.expr(v, expect);
+                    match expect {
+                        Some(t) => self.coerce(ex, t),
+                        None => ex,
+                    }
+                });
+                let ty = ex.as_ref().map_or(Ty::unit(), |e| expect.unwrap_or(e.ty));
                 if let Some(h) = self.clause.as_ref().and_then(|c| c.handler) {
                     self.sema.handler_breaks.entry(h.0).or_default().push((ty, span));
+                }
+                if let Some(f) = self.clause.as_ref().and_then(|c| c.decl_clause) {
+                    let ty = self.infer.resolve(ty);
+                    self.sema.decl_clause_breaks.entry(f).or_default().push((ty, span));
                 }
                 ex.map(Box::new)
             }

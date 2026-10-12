@@ -57,7 +57,12 @@ pub struct MonoRequest {
     pub instance: FnId,
     pub args: Vec<Ty>,
     pub span: Span,
+    /// How many instantiations led to this one (0 for one requested by checked code).
+    pub depth: u32,
 }
+
+/// The deepest chain of instantiations requesting each other (§16.7).
+const MAX_MONO_DEPTH: u32 = 256;
 
 impl<'s> Sema<'s> {
     pub(super) fn declare_constraint(&mut self, module: ModuleId, c: &ast::Constraint) {
@@ -85,6 +90,23 @@ impl<'s> Sema<'s> {
     }
 
     /// True if the (concrete or parameter) type `t` satisfies `c` (§16.3).
+    /// Ends a signature or generic type declaration: once the outermost one has declared
+    /// its `where` clause, checks the constraints that waited for it.
+    pub(super) fn end_constraint_defer(&mut self) {
+        self.constraint_defer -= 1;
+        if self.constraint_defer > 0 {
+            return;
+        }
+        for (t, c, pid, template, span) in std::mem::take(&mut self.deferred_constraints) {
+            if !self.satisfies(t, c) {
+                self.error(
+                    span,
+                    format!("`{}` does not satisfy `{:?}({})` required by `{}`", t, c, pid.name(), template.name()),
+                );
+            }
+        }
+    }
+
     pub fn satisfies(&self, t: Ty, c: Constraint) -> bool {
         if let TyKind::Param(p) = t.kind() {
             return self.param_has(*p, c);
@@ -202,7 +224,19 @@ impl<'s> Sema<'s> {
         self.instances.insert((f, args.clone()), id);
         self.instance_of.insert(id, (f, args.clone()));
         if !args.iter().any(|a| has_param(*a)) {
-            self.mono_queue.push(MonoRequest { generic: f, instance: id, args, span });
+            let depth = self.mono_depth + 1;
+            if depth > MAX_MONO_DEPTH {
+                self.error(
+                    span,
+                    format!(
+                        "generic instantiations nest more than {} deep; does a generic function call itself \
+                         with ever-larger type arguments? (§16.7)",
+                        MAX_MONO_DEPTH
+                    ),
+                );
+                return id;
+            }
+            self.mono_queue.push(MonoRequest { generic: f, instance: id, args, span, depth });
         }
         id
     }
@@ -232,11 +266,13 @@ impl<'s> Sema<'s> {
         let params = g.params.clone();
         let locals = g.locals.clone();
         let hints = g.hints;
+        let outer_depth = std::mem::replace(&mut self.mono_depth, req.depth);
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(&mut cx, l.ty), ..l }).collect();
         let body = self.mono_expr(&mut cx, body);
+        self.mono_depth = outer_depth;
         let def = &mut self.prog.fns[req.instance.index()];
         def.params = params;
         def.locals = locals;
@@ -291,6 +327,14 @@ impl<'s> Sema<'s> {
             e.kind = match super::expr::int_limit(t, max, &self.target) {
                 Some(v) => tir::ExprKind::Int(v),
                 None => tir::ExprKind::IntLimit { of: t, max },
+            };
+        }
+        if let tir::ExprKind::TypeName { of } = &e.kind {
+            let t = self.subst(*of, cx.map);
+            e.kind = if has_param(t) {
+                tir::ExprKind::TypeName { of: t }
+            } else {
+                tir::ExprKind::Str(std::rc::Rc::from(t.to_string().as_bytes()))
             };
         }
         if let tir::ExprKind::TypeIs { a, b, negated } = &e.kind {
@@ -356,6 +400,22 @@ impl<'s> Sema<'s> {
         }
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
+        }
+        // `.bits` between types that mention parameters is size-checked per instance (§6.6).
+        if let tir::ExprKind::Builtin { op: tir::Builtin::Bits, args } = &e.kind
+            && !cx.map.is_empty()
+            && !has_param(e.ty)
+            && !has_param(args[0].ty)
+        {
+            let (src, t) = (args[0].ty, e.ty);
+            let (a, b) = self.with_layouts(|l| (l.size_of(src), l.size_of(t)));
+            if a != b {
+                let msg = format!(
+                    "`.bits` needs equal sizes, but `{}` has {} bytes and `{}` has {} (in an instantiation used here)",
+                    src, a, t, b
+                );
+                self.error(cx.span, msg);
+            }
         }
         // Format specs on generic arguments are checked in each instance.
         if let tir::ExprKind::Write { specs, args, .. } = &e.kind
@@ -552,6 +612,48 @@ pub struct MonoCx<'m> {
     fn_map: HashMap<FnId, FnId>,
     handler_map: HashMap<HandlerId, HandlerId>,
     span: Span,
+}
+
+/// The error for a type argument `t` with the second-class part `part`.
+pub fn not_first_class(t: Ty, part: Ty) -> String {
+    if t == part {
+        format!("`{}` is not a first-class type, so it cannot be a type argument (§16.1)", t)
+    } else {
+        format!("`{}` contains the second-class type `{}`, so it cannot be a type argument (§16.1)", t, part)
+    }
+}
+
+/// The second-class part of `t` (a `fn(…)` type, a handler, `type`), if it has one: such
+/// a type is not a valid type argument (§16.1). Function pointers are first-class.
+pub fn second_class_part(t: Ty) -> Option<Ty> {
+    match t.kind() {
+        TyKind::Fn(_) => Some(t),
+        _ => inner_second_class_part(t),
+    }
+}
+
+/// `second_class_part` for the parts of a type, where a `fn(…)` type was already
+/// reported when the type was formed (§11.6).
+fn inner_second_class_part(t: Ty) -> Option<Ty> {
+    match t.kind() {
+        TyKind::Fn(_) => None,
+        TyKind::Handler(_) | TyKind::Type => Some(t),
+        TyKind::FnPtr(_) => None,
+        TyKind::Ptr { pointee: x, .. }
+        | TyKind::ManyPtr { elem: x, .. }
+        | TyKind::Slice { elem: x, .. }
+        | TyKind::Array { elem: x, .. }
+        | TyKind::ParamArray { elem: x, .. }
+        | TyKind::Optional(x)
+        | TyKind::Cont(x) => inner_second_class_part(*x),
+        TyKind::Result { err, ok } => inner_second_class_part(*err).or_else(|| inner_second_class_part(*ok)),
+        TyKind::Tuple { elems, .. } => elems.iter().find_map(|x| inner_second_class_part(*x)),
+        TyKind::Adt(_, args) => args.iter().find_map(|a| match a {
+            crate::types::GenericArg::Type(x) => inner_second_class_part(*x),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 pub fn has_param(t: Ty) -> bool {
@@ -806,15 +908,23 @@ impl<'a, 's> FnCx<'a, 's> {
                 // A function type with parameters still unbound still helps a function
                 // literal argument: it takes the parts that are known.
                 let partial = matches!(expect.kind(), TyKind::Fn(_) | TyKind::FnPtr(_));
+                // Whether the parameter's type still mentions a type parameter of the callee
+                // that no argument has bound yet. (Parameters of an enclosing generic body
+                // are fixed there: `g(?T, null)` expects a `?T`.)
+                let mut unbound = false;
+                p.ty.walk(&mut |x| {
+                    unbound |=
+                        matches!(x.kind(), TyKind::Param(q) if sig.generics.contains(q) && !binds.contains_key(q))
+                });
                 // `---` for a parameter whose type is known: `new(T, ---)`.
                 if let ast::ExprKind::Uninit = e.kind
-                    && !has_param(expect)
+                    && !unbound
                 {
                     values[*i] = Some(self.arg_value(e, expect));
                     continue;
                 }
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
-                let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
+                let v = self.expr(e, (!unbound || partial).then_some(expect));
                 self.temp_ref_arg = false;
                 let v = self.array_arg_as_slice(v, p.ty);
                 let mut mentions_free = false;
@@ -833,7 +943,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (k, v2) in b2 {
                     match binds.get(&k) {
                         Some(prev) if *prev != v2 && !omit => {}
-                        Some(prev) if *prev != v2 => {
+                        Some(prev) if *prev != v2 && !same_int_value(*prev, v2) => {
                             self.error(
                                 e.span,
                                 format!(
@@ -954,8 +1064,8 @@ impl<'a, 's> FnCx<'a, 's> {
             if t.is_error() {
                 return error_expr(span);
             }
-            if matches!(t.kind(), TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Type) {
-                self.error(span, format!("`{}` is not a first-class type, so it cannot be a type argument (§16.1)", t));
+            if let Some(part) = second_class_part(*t) {
+                self.error(span, not_first_class(*t, part));
             }
             for c in self.sema.constraints.get(pid).cloned().unwrap_or_default() {
                 if !self.sema.satisfies(*t, c) {
@@ -967,12 +1077,21 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         let map: Vec<(ParamId, Ty)> = sig.generics.iter().copied().zip(targs.iter().copied()).collect();
+        // The run-time arguments in the order written (the receiver first).
+        let written: Vec<usize> = recv_index
+            .into_iter()
+            .chain(sources.iter().map(|(i, _)| *i))
+            .filter(|&i| sig.params[i].generic.is_none() && values[i].is_some())
+            .collect();
         let mut out = vec![];
+        // The position in `out` of each parameter's argument.
+        let mut slot = vec![usize::MAX; sig.params.len()];
         for (i, p) in sig.params.iter().enumerate() {
             if p.generic.is_some() {
                 continue;
             }
             let pty = self.sema.subst(p.ty, &map);
+            slot[i] = out.len();
             match values[i].take() {
                 Some(v) => out.push(self.coerce(v, pty)),
                 None => match &p.default {
@@ -996,12 +1115,22 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let effects = subst_effects(&sig.effects, &map);
         self.record_effects(&effects, span);
+        // Named arguments out of parameter order are evaluated in the order written
+        // (§11.3), into temporaries.
+        let mut pre = vec![];
+        if written.windows(2).any(|w| w[0] > w[1]) {
+            for i in written {
+                let v = std::mem::replace(&mut out[slot[i]], e_unit(span));
+                out[slot[i]] = self.bind_temp(v, &mut pre);
+            }
+        }
         let inst = self.sema.instantiate(f, targs, span);
-        Expr {
+        let call = Expr {
             ty: self.sema.subst(sig.ret, &map),
             kind: tir::ExprKind::Call { callee: tir::Callee::Fn(inst), args: out },
             span,
-        }
+        };
+        self.finish_call(pre, call, false)
     }
 }
 
@@ -1018,7 +1147,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
     fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
         if let ast::ExprKind::Ident(id) = &e.kind
-            && self.lookup_local(id.name).is_some()
+            && self.lookup_local(id.name).is_some_and(|b| !matches!(b, super::func::LocalBinding::NestedFn(_)))
         {
             self.error(
                 e.span,
@@ -1053,6 +1182,15 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ => Some(v),
         }
+    }
+}
+
+/// Whether `a` and `b` are the same integer value, possibly of different types: a
+/// compile-time argument `N: 3` and an array length 3 bind `N` alike.
+fn same_int_value(a: Ty, b: Ty) -> bool {
+    match (a.kind(), b.kind()) {
+        (TyKind::Value(x), TyKind::Value(y)) => x.as_int().is_some_and(|i| y.as_int() == Some(i)),
+        _ => false,
     }
 }
 

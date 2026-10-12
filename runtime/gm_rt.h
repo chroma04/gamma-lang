@@ -399,6 +399,9 @@ GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, 
                            const char *tfile, uint32_t tline, uint32_t tcol);
 /* Nonzero in Debug builds (initially 1; set by the generated code). */
 GM_API_VAR int gm_debug;
+/* memset, called through a volatile pointer so that filling a frame that is about to die
+ * (Debug builds) is not removed as a dead store. */
+GM_API_VAR void *(*volatile gm_poison)(void *, int, size_t);
 /* Nonzero in Debug and Checked builds (set by the generated code). */
 GM_API_VAR int gm_checks;
 

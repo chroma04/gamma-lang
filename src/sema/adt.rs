@@ -10,6 +10,9 @@ use crate::types::{AdtId, Ty, TyKind};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
+/// How deeply instantiating a generic type may instantiate others (§16.7).
+const MAX_ADT_INST_DEPTH: u32 = 64;
+
 impl<'s> Sema<'s> {
     /// Declares the nominal type written by a `struct` or `union` literal (possibly
     /// preceded by attributes). `decl` is the binding that names it, if any.
@@ -57,11 +60,13 @@ impl<'s> Sema<'s> {
             }
         }
         if !generics.is_empty() {
+            self.adt_spans.insert(id, lit.span);
             self.adt_params.insert(id, generics.clone());
             self.adt_param_defaults.insert(id, defaults);
         }
         // The type is usable (through pointers) by its own fields.
         if let Some(d) = decl {
+            self.adt_decls.insert(id, d);
             let v = if generics.is_empty() { DeclValue::Type(ty) } else { DeclValue::GenericType(id) };
             self.decls[d.0 as usize].state = DeclState::Done(v);
         }
@@ -69,6 +74,8 @@ impl<'s> Sema<'s> {
         let placeholder =
             AdtDef { name, kind: AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None } };
         self.prog.adts.insert(id, placeholder);
+        self.adts_in_progress.push(id);
+        self.constraint_defer += 1;
         let kind = match &inner.kind {
             ExprKind::Struct(s) => self.struct_kind(module, id, s, attrs),
             ExprKind::Union(u) => {
@@ -79,9 +86,12 @@ impl<'s> Sema<'s> {
             }
             _ => {
                 self.error(lit.span, "expected a struct or union literal after the attributes");
+                self.adts_in_progress.retain(|&a| a != id);
+                self.end_constraint_defer();
                 return Ty::error();
             }
         };
+        self.adts_in_progress.retain(|&a| a != id);
         self.prog.adts.insert(id, AdtDef { name, kind });
         let wheres = match &inner.kind {
             ExprKind::Struct(s) => &s.where_,
@@ -91,6 +101,7 @@ impl<'s> Sema<'s> {
         for c in wheres.clone() {
             self.declare_constraint(module, &c);
         }
+        self.end_constraint_defer();
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
         if !generics.is_empty() {
@@ -296,7 +307,7 @@ impl<'s> Sema<'s> {
         AdtKind::Union { tag, variants }
     }
 
-    fn attr_power_of_two(&mut self, module: ModuleId, a: &ast::Attribute) -> Option<u64> {
+    pub(super) fn attr_power_of_two(&mut self, module: ModuleId, a: &ast::Attribute) -> Option<u64> {
         let Some([arg]) = a.args.as_deref() else {
             self.error(a.span, "`#align` takes one argument: `#align(16)`");
             return None;
@@ -446,6 +457,23 @@ impl<'s> Sema<'s> {
         if let Some(&inst) = self.adt_instances.get(&(template, args.clone())) {
             return Ty::intern(TyKind::Adt(inst, gargs));
         }
+        // Instantiating a type's fields instantiates the types they mention, which must
+        // end: `Bad :: struct(T: type) { next: ?^Bad(?T) }` would go on forever (§16.7).
+        if self.adt_inst_depth >= MAX_ADT_INST_DEPTH {
+            if !self.adt_inst_overflowed {
+                self.adt_inst_overflowed = true;
+                let span = self.adt_spans[&template];
+                self.error(
+                    span,
+                    format!(
+                        "`{}` instantiates itself with ever-larger type arguments (more than {} deep) (§16.7)",
+                        template.name(),
+                        MAX_ADT_INST_DEPTH
+                    ),
+                );
+            }
+            return Ty::error();
+        }
         let params = self.adt_params.get(&template).cloned().unwrap_or_default();
         let name = template.name();
         let inst = AdtId::fresh(name);
@@ -460,6 +488,7 @@ impl<'s> Sema<'s> {
             AdtDef { name, kind: AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None } };
         self.prog.adts.insert(inst, placeholder);
         let def = self.prog.adts[&template].clone();
+        self.adt_inst_depth += 1;
         let kind = match def.kind {
             AdtKind::Struct { fields, packed, align, bits } => AdtKind::Struct {
                 fields: fields.into_iter().map(|f| FieldDef { ty: self.subst(f.ty, &map), ..f }).collect(),
@@ -479,7 +508,93 @@ impl<'s> Sema<'s> {
             },
         };
         self.prog.adts.insert(inst, AdtDef { name, kind });
+        self.adt_inst_depth -= 1;
+        if !args.iter().any(|a| super::generics::has_param(*a)) {
+            self.adt_new_instances.push((template, ty));
+        }
+        // Once the outermost instantiation is complete, no instance may contain itself by
+        // value (as for non-generic types). Such an instance is left without fields, so
+        // that computing its layout ends.
+        if self.adt_inst_depth == 0 {
+            let new = std::mem::take(&mut self.adt_new_instances);
+            let infinite: Vec<(AdtId, Ty)> = new
+                .into_iter()
+                .filter(|&(_, t)| matches!(t.kind(), TyKind::Adt(id, _) if self.contains_by_value(t, *id, &mut vec![])))
+                .collect();
+            for (template, t) in infinite {
+                let TyKind::Adt(id, _) = t.kind() else { continue };
+                {
+                    let span = self.adt_spans[&template];
+                    self.error(
+                        span,
+                        format!("`{}` contains itself by value and would be infinitely large; use a pointer", t),
+                    );
+                    let empty = AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None };
+                    self.prog.adts.insert(*id, AdtDef { name: template.name(), kind: empty });
+                }
+            }
+        }
         ty
+    }
+
+    /// A struct or union whose fields are still being resolved that a value of type `ty`
+    /// contains, so that its layout is not known yet: `N :: @size_of(S)` used in a field
+    /// of `S` (a cycle, §3.4).
+    pub fn pending_layout(&self, ty: Ty) -> Option<AdtId> {
+        if self.adts_in_progress.is_empty() {
+            return None;
+        }
+        match ty.kind() {
+            TyKind::Adt(id, _) => {
+                if self.adts_in_progress.contains(id) {
+                    return Some(*id);
+                }
+                match &self.prog.adts.get(id)?.kind {
+                    AdtKind::Struct { fields, .. } | AdtKind::CUnion { fields } => {
+                        fields.iter().find_map(|f| self.pending_layout(f.ty))
+                    }
+                    AdtKind::Union { variants, .. } => variants.iter().find_map(|v| self.pending_layout(v.payload?)),
+                }
+            }
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Optional(elem) => {
+                self.pending_layout(*elem)
+            }
+            TyKind::Tuple { elems, .. } => elems.iter().find_map(|e| self.pending_layout(*e)),
+            TyKind::Result { err, ok } => self.pending_layout(*err).or_else(|| self.pending_layout(*ok)),
+            _ => None,
+        }
+    }
+
+    /// Whether a value of type `ty` contains a value of the struct or union `target`.
+    fn contains_by_value(&self, ty: Ty, target: AdtId, seen: &mut Vec<AdtId>) -> bool {
+        match ty.kind() {
+            TyKind::Adt(id, _) => {
+                if *id == target && !seen.is_empty() {
+                    return true;
+                }
+                if seen.contains(id) {
+                    return false;
+                }
+                seen.push(*id);
+                let Some(def) = self.prog.adts.get(id) else { return false };
+                match &def.kind {
+                    AdtKind::Struct { fields, .. } | AdtKind::CUnion { fields } => {
+                        fields.iter().any(|f| self.contains_by_value(f.ty, target, seen))
+                    }
+                    AdtKind::Union { variants, .. } => {
+                        variants.iter().any(|v| v.payload.is_some_and(|p| self.contains_by_value(p, target, seen)))
+                    }
+                }
+            }
+            TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Optional(elem) => {
+                self.contains_by_value(*elem, target, seen)
+            }
+            TyKind::Tuple { elems, .. } => elems.iter().any(|e| self.contains_by_value(*e, target, seen)),
+            TyKind::Result { err, ok } => {
+                self.contains_by_value(*err, target, seen) || self.contains_by_value(*ok, target, seen)
+            }
+            _ => false,
+        }
     }
 
     /// Replaces type parameters in `t`, re-instantiating generic types (§16.4).

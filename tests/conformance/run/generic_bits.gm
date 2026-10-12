@@ -1,0 +1,15 @@
+// `.bits` in generic bodies is size-checked for each instantiation (§6.6, §16.3).
+reinterp :: fn(T: type, U: type, x: T) -> U where Plain(T), Plain(U) {
+    return x.bits(U)
+}
+to_u :: fn(T: type, x: T) -> u32 where Int(T) {
+    return x.bits(u32)
+}
+from_u :: fn(T: type, x: u32) -> T where Plain(T) {
+    return x.bits(T)
+}
+main :: fn() \ {Out} {
+    print("{}\n", reinterp(f32, u32, 1.0))
+    print("{}\n", to_u(i32, -1))
+    print("{}\n", from_u(f32, 0x3f800000))
+}

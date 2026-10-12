@@ -1,0 +1,12 @@
+//! stage: check
+// A type argument may not be or contain a second-class type (§16.1).
+Box :: struct(T: type) { v: ?^T }
+id :: fn(T: type) -> usize => 1
+main :: fn() {
+    _ = Box(fn() -> i32)(v: null) //~ ERROR `fn() -> i32` is not a first-class type
+    _ = id((i32, fn() -> i32)) //~ ERROR cannot be part of another type
+    _ = id([2]fn() -> i32) //~ ERROR cannot be part of another type
+    _ = id(?fn() -> i32) //~ ERROR cannot be part of another type
+    _ = id(^fn() -> i32)
+    _ = Box(^fn() -> i32)(v: null)
+}

@@ -122,6 +122,8 @@ arena_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool {
 
 chunk_resize :: fn(a: ^Arena, p: [^]u8, old, new: usize) -> bool {
     c := a.chunk else return new <= old
+    // A block in an older chunk is not the most recent allocation.
+    if p.addr() < c.addr() or p.addr() - c.addr() > a.size { return new <= old }
     start := p.addr() - c.addr()
     if start is not a.last or start + old is not a.used { return new <= old }
     if new > a.size - start { return false }

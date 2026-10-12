@@ -150,8 +150,8 @@ try out.flush()
 
 - `fs.read_all(path) -> ReadError![]u8`: a whole file, in memory from the current
   allocator (release it with `free`).
-- `fs.write_all(path, bytes)`, `fs.append(path, bytes)`, `fs.copy(from, to)`,
-  `fs.exists(path)`, and `fs.write_all_to(file, bytes)`, which retries short writes.
+- `fs.write_all(path, bytes)`, `fs.append(path, bytes)`, `fs.copy(from, to)` (a
+  file copied onto itself is left unchanged), `fs.exists(path)`, and `fs.write_all_to(file, bytes)`, which retries short writes.
 - `fs.entries(path)` yields the entries of a directory as `IoError!fs.Entry`
   (`name`, valid until the next entry, and `kind`), in the order the operating system
   gives them; the directory is closed when the loop ends, also when it is left early.
@@ -525,7 +525,8 @@ print("{}\n", time.format_date(time.add_months(d, 1), buf[..]))   // 2024-02-29
   `ParseError` is `Syntax: usize` (byte position of the first byte that does not fit) or
   `Range: usize` (position of the field that is out of range). `parse_rfc3339` accepts
   `T`, `t` or a space as separator, 1 to 9 fraction digits and `Z`, `z` or a `+HH:MM`
-  offset, which it applies to give UTC.
+  offset, which it applies to give UTC; `Range(0)` if that puts the moment outside the
+  years 0 to 9999.
 
 ## `std/cli`
 
@@ -750,11 +751,14 @@ go and which are wanted. Nothing allocates, truncates or keeps global state.
 ```gamma
 log :: import "std/log"
 
-with log.ErrLog(min: .Warn) {
+sink := log.ErrLog(min: .Warn)
+with &sink {
     log.info("starting")                    // dropped
     log.warn("slow request: {} ms", 250)    // standard error: WARN slow request: 250 ms
 }
 ```
+
+The handlers of this module keep state, so they are installed by address (`with &sink`).
 
 - `Level` is `Debug`, `Info`, `Warn` or `Error`, in that order (`<` works).
 - `Log` is the effect: `begin(level) -> bool` says whether the handler wants the record,

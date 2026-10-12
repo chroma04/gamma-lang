@@ -1,0 +1,26 @@
+//! stage: check
+// A `break` in a clause of a handler declaration exits the installing `with`, so its
+// value must have the `with`'s type (§12.7).
+Fail :: effect { fail: esc(why: string) -> never }
+Bail :: struct { code: i64 }
+Quit :: struct {}
+handler Fail for Bail {
+    fail(self, why) => {
+        break self.code //~ ERROR this `break` gives a `with` a `i64`, but the `with` has the type `i32`
+    }
+}
+handler Fail for Quit {
+    fail(self, why) => {
+        break //~ ERROR this `break` gives a `with` a `()`, but the `with` has the type `i64`
+    }
+}
+step :: fn(n: i32) -> i32 \ {Fail} {
+    if n > 2 { fail("too big") }
+    return n * 10
+}
+main :: fn() {
+    a: i64 = with Bail(code: 1) { 5 }
+    b := with Bail(code: 4294967297) { step(3) }
+    c: i64 = with Quit() { 5 }
+    with Quit() { _ = step(1) }
+}

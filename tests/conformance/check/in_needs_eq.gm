@@ -1,0 +1,10 @@
+//! stage: check
+// `in` compares members with `is`, so their type must have it (§7.6, §7.7, §16.3).
+CU :: #c_union union { a: u8, b: u16 }
+has :: fn(T: type, x: T, xs: []const T) -> bool => x in xs //~ ERROR `in` compares with `is`, which is not defined for `T`
+has_eq :: fn(T: type, x: T, xs: []const T) -> bool where Eq(T) => x in xs
+main :: fn() {
+    a := [1]CU(CU(a: 1))
+    _ = CU(a: 1) in a //~ ERROR `in` compares with `is`, which is not defined for `CU`
+    _ = has_eq(i32, 1, [_]i32(1, 2)[..])
+}

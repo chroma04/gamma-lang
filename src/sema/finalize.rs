@@ -19,14 +19,7 @@ impl<'a, 's> FnCx<'a, 's> {
         for p in &pending {
             let src = self.infer.resolve(p.source);
             if src.is_infer() {
-                let mut core = p.target;
-                loop {
-                    match core.kind() {
-                        TyKind::Optional(t) => core = *t,
-                        TyKind::Result { ok, .. } => core = *ok,
-                        _ => break,
-                    }
-                }
+                let core = literal_core(p.target);
                 if self.infer.unify(src, core).is_err() && self.infer.unify(src, p.target).is_err() {
                     let kind = if self.infer.var_kind(src) == Some(super::infer::VarKind::Float) {
                         "a float"
@@ -52,6 +45,33 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         self.fin_expr(&mut body);
         body
+    }
+
+    /// Gives the literal types in `ty` their final types now, where a check cannot wait for
+    /// the end of the function: from the coercions already recorded for them (as
+    /// `finalize` would), else their fallbacks (§6.1).
+    pub fn settle_now(&mut self, ty: Ty) -> Ty {
+        let t = self.infer.resolve(ty);
+        if !t.has_infer() {
+            return t;
+        }
+        let mut vars = vec![];
+        t.walk(&mut |x| {
+            if x.is_infer() {
+                vars.push(x);
+            }
+        });
+        for i in 0..self.pending.len() {
+            let (source, target) = (self.pending[i].source, self.pending[i].target);
+            let src = self.infer.resolve(source);
+            if src.is_infer() && vars.iter().any(|&v| self.infer.resolve(v) == src) {
+                let core = literal_core(target);
+                if self.infer.unify(src, core).is_err() {
+                    self.infer.unify(src, target).ok();
+                }
+            }
+        }
+        self.infer.settle(ty)
     }
 
     /// Rewrites a nested function's body once inference is complete.
@@ -288,6 +308,18 @@ pub fn lossless(from: Ty, to: Ty) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+/// The type a literal coerced to `target` takes: `T` for `?T` and `E!T` (§6.1).
+fn literal_core(target: Ty) -> Ty {
+    let mut core = target;
+    loop {
+        match core.kind() {
+            TyKind::Optional(t) => core = *t,
+            TyKind::Result { ok, .. } => core = *ok,
+            _ => return core,
+        }
     }
 }
 

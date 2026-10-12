@@ -1,0 +1,9 @@
+//! stage: check
+// A handler literal cannot be a top-level declaration (§12.5); a `with` that installs
+// it reports nothing more.
+Who :: effect { who: fn() -> string }
+h1 :: handler Who { who() => "H1" } //~ ERROR a handler literal cannot be a top-level declaration
+f :: fn() -> string \ {Who} { return who() }
+main :: fn() {
+    with h1 { _ = f() }
+}

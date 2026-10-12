@@ -20,3 +20,17 @@ test "formatting the current time" {
     t := try time.parse_rfc3339(s)
     assert(t.nanosecond is 250_000_000, "parsed back")
 }
+
+test "an offset far from 1970 is applied by days" {
+    buf: [time.RFC3339_LEN]u8 = ---
+    t := try time.parse_rfc3339("0001-01-01T00:00:00+01:00")
+    expect(time.format_rfc3339(t, buf[..]) is "0000-12-31T23:00:00Z", "early")
+    u := try time.parse_rfc3339("9999-12-31T22:30:00-01:00")
+    expect(time.format_rfc3339(u, buf[..]) is "9999-12-31T23:30:00Z", "late")
+    past := false
+    if v := time.parse_rfc3339("9999-12-31T23:30:00-01:00") { _ = v } else { past = true }
+    expect(past, "past year 9999")
+    before := false
+    if v := time.parse_rfc3339("0000-01-01T00:00:00+01:00") { _ = v } else { before = true }
+    expect(before, "before year 0")
+}

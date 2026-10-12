@@ -7,7 +7,8 @@
 //
 //     log :: import "std/log"
 //
-//     with log.ErrLog(min: .Warn) {               // handler: records of level Warn and up
+//     sink := log.ErrLog(min: .Warn)              // records of level Warn and up
+//     with &sink {                                // installed by address, since it has state
 //         log.info("starting")                    // dropped: below the minimum
 //         log.warn("slow request: {} ms", 250)    // WARN slow request: 250 ms
 //     }

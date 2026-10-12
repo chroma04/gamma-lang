@@ -41,6 +41,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(e) = self.builtin_method(recv.clone(), name, args, span) {
             return e;
         }
+        // `r.len()` of a range is a function of the core library (§21.3).
+        let name = match self.sema.range_of(rty) {
+            Some((inclusive, _)) if name.name.as_str() == "len" => ast::Ident {
+                name: crate::symbol::Symbol::intern(if inclusive { "range_incl_len" } else { "range_len" }),
+                span: name.span,
+            },
+            _ => name,
+        };
         // 3. A function of the module that declares the receiver's type.
         if let Some(e) = self.module_method(recv, name, args, span) {
             return e;
@@ -393,7 +401,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let src = self.infer.resolve(v.ty);
         if !self.is_plain_data(t) {
             self.error(span, format!("`.bits` can only produce plain-data types, not `{}`", t));
-        } else if !src.has_infer() {
+        } else if !src.has_infer() && !super::generics::has_param(src) && !super::generics::has_param(t) {
             let (a, b) = self.sema.with_layouts(|l| (l.size_of(src), l.size_of(t)));
             if a != b {
                 self.error(
@@ -535,6 +543,9 @@ impl<'a, 's> FnCx<'a, 's> {
         vals.extend(rest);
         let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
         self.performed.push((eref.clone(), span));
+        if o.kind == ast::OpKind::Fn {
+            self.fn_performs.push(span);
+        }
         let call = mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span);
         Some(self.finish_call(pre, call, true))
     }

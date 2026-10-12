@@ -1,0 +1,22 @@
+//! stage: check
+// A second-class function may not be part of another type, a tuple element, the target
+// of `&`, or returned, even from a function literal (§11.6).
+Error :: union { Bad }
+mk :: fn(a: i32) -> ?fn() -> i32 { //~ ERROR cannot be part of another type
+    f :: fn() -> i32 => a
+    return f
+}
+main :: fn() {
+    n := 1
+    f :: fn() -> i32 => n
+    t := (1, f) //~ ERROR cannot be a tuple element
+    r: Error!fn() -> i32 = f //~ ERROR cannot be part of another type
+    p := &f //~ ERROR cannot be the target of `&`
+    h :: fn(y: i32) -> fn() -> i32 => fn() => n + y //~ ERROR cannot be returned
+    k :: fn(y: i32) => fn() => n + y //~ ERROR cannot be returned
+    q: ^fn() -> i32 = g
+    ok := (1, q)
+    _ = ok
+}
+g :: fn() -> i32 => 2
+each :: fn(fs: []fn() -> i32) {} //~ ERROR cannot be part of another type

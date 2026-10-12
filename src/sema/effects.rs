@@ -199,6 +199,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             let ret = subst(op_info.ret, &params, &eref.args);
             self.performed.push((eref.clone(), span));
+            if self.sema.effects[&eref.effect].ops[op as usize].kind == ast::OpKind::Fn {
+                self.fn_performs.push(span);
+            }
             return mk(
                 ret,
                 tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals },
@@ -208,6 +211,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let module = self.sema.effects[&eff].module;
         let (vals, pre) = self.bind_args(&op_info.params, module, args, span, "operation");
         self.performed.push((eref.clone(), span));
+        if self.sema.effects[&eref.effect].ops[op as usize].kind == ast::OpKind::Fn {
+            self.fn_performs.push(span);
+        }
         let call = mk(
             op_info.ret,
             tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals },
@@ -222,7 +228,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// Checks a handler literal (§12.5), producing a second-class handler value.
-    pub fn handler_literal(&mut self, lit: &ast::HandlerLit, span: Span) -> Expr {
+    pub fn handler_literal(&mut self, lit: &ast::HandlerLit, with_expect: Option<Ty>, span: Span) -> Expr {
         let module = self.module;
         let Some(eref) = self.sema.resolve_effect_ref(module, &lit.effect) else { return error_expr(span) };
         let n_params = self.sema.effects[&eref.effect].params.len();
@@ -254,6 +260,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 handler: Some(hid),
                 break_ty: None,
                 effect: Some(eref.clone()),
+                decl_clause: None,
+                with_expect,
             };
             let f = self.clause_fn(c, &params, ret, info);
             clauses.push(f);
@@ -282,9 +290,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ids.push(id);
         }
+        // A `ctl` clause must not finish normally (§14.3): its body is checked without an
+        // expected type, so that a branch that finishes gives it a type other than `never`.
+        let expect = (info.op_kind != ast::OpKind::Ctl).then_some(ret);
         let body = match &c.body.kind {
-            ExprKind::Block(b) => self.block_expected(b, true, Some(ret)),
-            _ => self.expr(&c.body, Some(ret)),
+            ExprKind::Block(b) => self.block_expected(b, true, expect),
+            _ => self.expr(&c.body, expect),
         };
         let body = self.clause_body(body, info.op_kind, ret);
         self.finish_clause(fn_id, ids, body)
@@ -309,15 +320,23 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut handlers = vec![];
         let mut handled: Vec<EffectRef> = vec![];
         let mut literal_ids = vec![];
+        // A handler with errors (already reported) may have handled anything the body does.
+        let mut bad_handler = false;
         for h in &w.handlers {
             // `with a, b` is `with a { with b { … } }`: earlier handlers handle what later
             // ones' clauses perform (§12.7).
             let earlier = handled.clone();
-            let v = match &h.kind {
-                ExprKind::Handler(lit) => self.handler_literal(lit, h.span),
+            let mut inner = h;
+            while let ExprKind::Paren(e) = &inner.kind {
+                inner = e;
+            }
+            let v = match &inner.kind {
+                ExprKind::Handler(lit) => self.handler_literal(lit, expect.filter(|_| value), h.span),
                 _ => self.expr(h, None),
             };
-            let t = self.infer.resolve(v.ty);
+            // The handler declaration is chosen by the value's type now, so an untyped
+            // literal's type is settled here (`x := 0; with &x`).
+            let t = self.infer.settle(v.ty);
             match t.kind() {
                 TyKind::Handler(id) => {
                     let eref = self.sema.prog.handlers[*id as usize].effect.clone();
@@ -328,10 +347,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     literal_ids.push(*id);
                     handlers.push(tir::HandlerValue::Literal(v));
                 }
-                TyKind::Error => {}
+                TyKind::Error => bad_handler = true,
                 _ => {
                     let decls = self.sema.handlers_for(t);
                     if decls.is_empty() {
+                        bad_handler = true;
                         let mut d = crate::diag::Diagnostic::error(
                             h.span,
                             format!("expected a handler, but no handler is declared for `{}`", t),
@@ -410,7 +430,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // Effects handled here are not performed by the `with` (§12.3).
         let mut i = start;
         while i < self.performed.len() {
-            if handled.contains(&self.performed[i].0) {
+            if bad_handler || handled.contains(&self.performed[i].0) {
                 self.performed.remove(i);
             } else {
                 i += 1;
@@ -433,7 +453,7 @@ impl<'a, 's> FnCx<'a, 's> {
         for (bt, bspan) in breaks {
             let bt = self.infer.resolve(bt);
             let agrees = bt == ty || ((bt.has_infer() || ty.has_infer()) && self.infer.unify(bt, ty).is_ok());
-            if !bt.is_never() && !ty.is_error() && !agrees {
+            if !bt.is_never() && !bt.is_error() && !ty.is_error() && !agrees {
                 self.error(bspan, format!("this `break` gives the `with` a `{}`, but its value is `{}`", bt, ty));
             }
         }
@@ -448,6 +468,19 @@ impl<'a, 's> FnCx<'a, 's> {
             tir::HandlerValue::Literal(_) => false,
         });
         let clause_exits = any_break || decl_exits;
+        // Clauses of handler declarations are checked after function bodies, so their
+        // `break`s are checked against this `with` later (`check_decl_breaks`).
+        let decl_ids: Vec<usize> = handlers
+            .iter()
+            .flat_map(|h| match h {
+                tir::HandlerValue::Decl { decls, .. } => decls.iter().map(|d| d.index()).collect(),
+                tir::HandlerValue::Literal(_) => vec![],
+            })
+            .collect();
+        let with_ty = self.infer.resolve(ty);
+        if !decl_ids.is_empty() && !with_ty.has_infer() && !with_ty.is_error() {
+            self.sema.decl_with_checks.push((decl_ids, with_ty, span));
+        }
         let ty = if !value && body.ty.is_never() && !clause_exits { Ty::never() } else { ty };
         mk(ty, tir::ExprKind::With { label, handlers, on, body: Box::new(body) }, span)
     }
@@ -587,6 +620,14 @@ impl<'a, 's> FnCx<'a, 's> {
         // The source call is evaluated as written, outside the loop's handler.
         let start = self.performed.len();
         let call = self.expr(&f.iter, None);
+        // A call with spread or reordered arguments binds some of them first.
+        let (bound, call) = match call.kind {
+            tir::ExprKind::Block(b) if matches!(b.tail.as_ref().map(|t| &t.kind), Some(tir::ExprKind::Call { .. })) => {
+                let b = *b;
+                (b.stmts, b.tail.unwrap())
+            }
+            kind => (vec![], Expr { kind, ..call }),
+        };
         let callee_effects = match &call.kind {
             tir::ExprKind::Call { callee: tir::Callee::Fn(id), .. } => self.sema.sigs[id].effects.clone(),
             tir::ExprKind::Call { callee: tir::Callee::Indirect(c), .. } => match self.infer.resolve(c.ty).kind() {
@@ -635,7 +676,8 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let result_ty = call.ty;
         // Bind the arguments first so they are evaluated outside the loop's handler.
-        let (pre, call) = self.hoist_args(call);
+        let (hoisted, call) = self.hoist_args(call);
+        let pre: Vec<Stmt> = bound.into_iter().chain(hoisted).collect();
         self.push_scope();
         if let Some(l) = f.label {
             self.declare(l.name, LocalBinding::Label, l.span);
@@ -661,6 +703,8 @@ impl<'a, 's> FnCx<'a, 's> {
             handler: Some(hid),
             break_ty: Some(result_ty),
             effect: Some(eref.clone()),
+            decl_clause: None,
+            with_expect: None,
         });
         let xid = self.new_local(x, elem, false, span);
         let pat_ast = if f.pats.len() == 1 {
@@ -712,6 +756,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 if matches!(a.kind, tir::ExprKind::Int(_) | tir::ExprKind::Str(_) | tir::ExprKind::Bool(_)) {
                     continue;
                 }
+                // A temporary the argument points to (`&mk()`, or a temporary array passed
+                // as a slice) lives for the call, which includes the loop (§7.2): it becomes
+                // a local too, rather than dying with the statement that binds the argument.
+                self.lift_temps(a, &mut pre);
                 let span = a.span;
                 let t = self.temp(a.ty, span);
                 let v = std::mem::replace(a, mk(a.ty, tir::ExprKind::Local(t), span));
@@ -719,5 +767,23 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         (pre, call)
+    }
+
+    /// Replaces each `AddrOfTemp(v)` in `e` (outside nested calls) by the address of a
+    /// local initialized with `v` by a statement added to `pre`.
+    fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
+        if matches!(e.kind, tir::ExprKind::Call { .. } | tir::ExprKind::Closure(_)) {
+            return;
+        }
+        if let tir::ExprKind::AddrOfTemp(inner) = &mut e.kind {
+            self.lift_temps(inner, pre);
+            let (span, ty) = (inner.span, inner.ty);
+            let t = self.temp(ty, span);
+            let v = std::mem::replace(&mut **inner, mk(ty, tir::ExprKind::Local(t), span));
+            pre.push(Stmt::Let { local: t, init: Some(v) });
+            e.kind = tir::ExprKind::AddrOf(Box::new(mk(ty, tir::ExprKind::Local(t), span)));
+            return;
+        }
+        e.for_each_child_mut(&mut |c| self.lift_temps(c, pre));
     }
 }

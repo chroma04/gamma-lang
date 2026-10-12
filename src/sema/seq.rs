@@ -159,6 +159,11 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         };
         self.unify_operands(elem.ty, item, span, "the element and the members of `in`");
+        // The members are compared with `is` (§7.7).
+        let et = self.infer.resolve(item);
+        if !et.has_infer() && !et.is_error() && !self.eq_allowed(et) {
+            self.error(span, format!("`in` compares with `is`, which is not defined for `{}` (§7.6)", et));
+        }
         mk(Ty::bool(), tir::ExprKind::In { elem: Box::new(elem), container: Box::new(c), negated }, span)
     }
 

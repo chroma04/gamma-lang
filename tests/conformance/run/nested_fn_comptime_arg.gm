@@ -1,0 +1,17 @@
+// A capture-free nested function is first-class like a top-level one, so it can be
+// the argument of a generic type's or function's compile-time parameter (§11.8, §16.4).
+W :: struct(f: ^fn(a, b: ^const i32) -> bool) { x: u8 }
+top :: fn(a, b: ^const i32) -> bool => a^ > b^
+pick :: fn(f :: ^fn(a, b: ^const i32) -> bool) -> bool { x: i32 = 1; y: i32 = 2; return f(&x, &y) }
+main :: fn() \ {Out} {
+    fl :: fn(a, b: ^const i32) -> bool => a^ > b^
+    p: ^fn(a, b: ^const i32) -> bool = fl
+    x: i32 = 3
+    y: i32 = 2
+    print("{}\n", p(&x, &y))
+    w := W(top)(x: 1)
+    print("{}\n", w.x)
+    v := W(fl)(x: 1)
+    print("{}\n", v.x)
+    print("{}\n", pick(fl))
+}

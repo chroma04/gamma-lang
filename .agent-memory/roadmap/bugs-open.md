@@ -23,11 +23,14 @@
 30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
     runnable from a root (`gamma test --all`?), @fn_cast.
 ## s7 leftovers
-31. `[@size_of(T)]u8` in a generic body: "expression kind reached the interpreter".
-32. `.bits(...)` rejected in a generic `Int(T)` body.
-33. random.below truncates n to u64 (u128 ranges wrong).
 34. std/fiber tasks may perform only `Sched` (fn pointers have fixed effects).
 35. std/log ErrLog requires Clock even when time is false.
 36. WaitGroup wait is `wait_all` (name clash in module); lstat on symlinks untested.
 37. HashMap keeps get_or_put next to entry (second way; consider removing per §22).
 38. Later (must clear §22): reflection, JSON, hashes, ordered maps.
+## s8 (bug hunt) leftovers
+39. `match a` before the statement that types `a` (`a := 1; match a…; n: u8 = a`) still fixes
+    `a` to i32 (settle_now only sees coercions recorded so far; whole-body inference would need
+    deferred pattern checks).
+40. A handler literal bound with `::` and later used in `with` gets no expected type for its
+    clauses' `break` values (only literals written in the `with` do).

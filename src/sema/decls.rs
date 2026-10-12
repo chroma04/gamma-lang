@@ -5,7 +5,7 @@ use super::{DeclId, DeclState, EffectInfo, FnSig, ModuleId, OpInfo, ParamInfo, P
 use crate::diag::Diagnostic;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind};
-use crate::tir::{self, FnId};
+use crate::tir::{self, AdtKind, FnId};
 use crate::types::{EffectId, EffectRef, EffectSet, GenericArg, Ty, TyKind};
 use num_traits::ToPrimitive;
 use std::rc::Rc;
@@ -36,6 +36,67 @@ pub enum DeclValue {
 }
 
 impl<'s> Sema<'s> {
+    /// A `pub` declaration's signature must not mention a private type (§3.3): the
+    /// types of a function's parameters and result, of a constant or global, an alias's
+    /// type, a struct's `pub` fields and a union's payloads.
+    pub(super) fn check_pub_signatures(&mut self) {
+        let private = |s: &Self, t: Ty| -> Option<Ty> {
+            let mut found = None;
+            t.walk(&mut |x| {
+                if found.is_none()
+                    && let TyKind::Adt(id, _) = x.kind()
+                    && let Some(d) = s.adt_decls.get(&id.template())
+                    && !s.decls[d.0 as usize].item.is_pub
+                {
+                    found = Some(x);
+                }
+            });
+            found
+        };
+        for i in 0..self.decls.len() {
+            let d = &self.decls[i];
+            // Members of foreign blocks have synthetic items: they are not `pub` declarations.
+            if !d.item.is_pub || d.op_of.is_some() || !matches!(d.item.kind, ItemKind::Binding(_)) {
+                continue;
+            }
+            let DeclState::Done(v) = &d.state else { continue };
+            let mut tys: Vec<Ty> = vec![];
+            let adt_fields =
+                |s: &Self, id: crate::types::AdtId, tys: &mut Vec<Ty>| match s.prog.adts.get(&id).map(|a| &a.kind) {
+                    Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {
+                        tys.extend(fields.iter().filter(|f| f.is_pub).map(|f| f.ty))
+                    }
+                    Some(AdtKind::Union { variants, .. }) => tys.extend(variants.iter().filter_map(|v| v.payload)),
+                    None => {}
+                };
+            match v {
+                DeclValue::Fn(f) => {
+                    let sig = &self.sigs[f];
+                    tys.extend(sig.params.iter().filter(|p| p.generic.is_none()).map(|p| p.ty));
+                    tys.push(sig.ret);
+                }
+                DeclValue::Type(t) => match t.kind() {
+                    TyKind::Adt(id, _) if self.adt_decls.get(id) == Some(&DeclId(i as u32)) => {
+                        adt_fields(self, *id, &mut tys)
+                    }
+                    _ => tys.push(*t),
+                },
+                DeclValue::GenericType(id) if self.adt_decls.get(id) == Some(&DeclId(i as u32)) => {
+                    adt_fields(self, *id, &mut tys)
+                }
+                DeclValue::Const { ty, .. } | DeclValue::Global { ty, .. } => tys.push(*ty),
+                _ => {}
+            }
+            if let Some(p) = tys.into_iter().find_map(|t| private(self, t)) {
+                let name = self.decls[i].name;
+                self.error(
+                    name.span,
+                    format!("the `pub` declaration `{}` mentions the private type `{}` (§3.3)", name.name, p),
+                );
+            }
+        }
+    }
+
     /// Resolves a declaration, reporting a cycle if it is already being resolved.
     pub fn resolve_decl(&mut self, id: DeclId) -> DeclValue {
         match &self.decls[id.0 as usize].state {
@@ -120,9 +181,12 @@ impl<'s> Sema<'s> {
         let mut fuel = None;
         let (mut global, mut thread_local, mut export, mut callconv) = (false, false, None, None);
         let mut hints = (tir::FnHints::default(), None);
+        let mut align_attr = None;
         for attr in &item.attrs {
             match attr.name.name.as_str() {
                 "global" => global = true,
+                // `#global #align(n)` (§20.2); on anything else, an error below.
+                "align" if align_attr.is_none() => align_attr = Some(attr),
                 "thread_local" => thread_local = true,
                 "export" => match attr.args.as_deref() {
                     Some([ast::Expr { kind: ExprKind::Str(s), .. }]) => {
@@ -172,9 +236,20 @@ impl<'s> Sema<'s> {
         if thread_local && !global {
             self.error(name.span, "`#thread_local` applies only to a `#global`");
         }
+        let align = match align_attr {
+            Some(a) if global => self.attr_power_of_two(module, a),
+            Some(a) => {
+                self.error(
+                    a.span,
+                    "`#align` goes directly before a `struct` or `union` literal, or on a `#global` (§20.2)",
+                );
+                None
+            }
+            None => None,
+        };
         let v = if global {
             match &item.kind {
-                ItemKind::Binding(b) => self.declare_global(module, name, b, thread_local),
+                ItemKind::Binding(b) => self.declare_global(module, name, b, thread_local, align),
                 _ => DeclValue::Error,
             }
         } else {
@@ -232,6 +307,14 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
+            ExprKind::Handler(_) => {
+                self.error(
+                    init.span,
+                    "a handler literal cannot be a top-level declaration; bind it inside a function, \
+                     or declare a handler for a type with `handler E for T { … }` (§12.5)",
+                );
+                DeclValue::Error
+            }
             ExprKind::Struct(_) | ExprKind::Union(_) if b.ty.is_none() => {
                 let ty = self.declare_adt(module, Some(id), name.name, init);
                 if ty.is_error() { DeclValue::Error } else { DeclValue::Type(ty) }
@@ -359,6 +442,7 @@ impl<'s> Sema<'s> {
         let mut params = vec![];
         let mut generics = vec![];
         let mut seen_default = false;
+        self.constraint_defer += 1;
         let scope_len = self.type_params.len();
         let value_scope_len = self.value_scope.len();
         for p in &sig.params {
@@ -451,6 +535,7 @@ impl<'s> Sema<'s> {
         for c in where_ {
             self.declare_constraint(module, c);
         }
+        self.end_constraint_defer();
         // Instantiations of one generic effect in the declared set must be told apart
         // without knowing the type arguments (§16.6). A second-class parameter's effects
         // are performed where it is called, and checked there.

@@ -123,13 +123,35 @@ below64 :: fn(n: u64) -> u64 \ {Rand} {
 /// A uniform integer in [0, n), without modulo bias. `n` must be greater than 0.
 pub below :: fn(T: type, n: T) -> T \ {Rand} where Int(T) {
     assert(n > 0, "random.below: n must be greater than 0")
-    return below64(n.trunc(u64)).trunc(T)
+    if @size_of(T) <= 8 { return below64(n.trunc(u64)).trunc(T) }
+    // Wider than 64 bits: draw masked values until one is below `n`.
+    mask: T = 0
+    while mask < n - 1 { mask = (mask << 1) | 1 }
+    while true {
+        r := wide_bits(T) & mask
+        if r < n { return r }
+    }
+}
+
+// A `T` of uniformly random bits, for integer types wider than 64 bits.
+wide_bits :: fn(T: type) -> T \ {Rand} where Int(T) {
+    r: T = 0
+    for _ in 0..@size_of(T) / 8 { r = (r <<% 64) | next_u64().trunc(T) }
+    return r
 }
 
 /// A uniform integer in [lo, hi). `lo` must be less than `hi`; the span may be the whole
 /// range of `T` minus one value.
 pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
     assert(lo < hi, "random.range: lo must be less than hi")
+    if @size_of(T) > 8 {
+        if hi -% lo > 0 { return lo +% below(T, hi -% lo) }
+        // The span is more than half the range of a signed `T`: draw until in range.
+        while true {
+            r := wide_bits(T)
+            if r >= lo and r < hi { return r }
+        }
+    }
     span := (hi -% lo).trunc(u64)
     bits := @size_of(T) * 8
     if bits < 64 { span &= (1 << bits.trunc(u32)) - 1 }

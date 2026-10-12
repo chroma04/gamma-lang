@@ -1,0 +1,29 @@
+//! stage: check
+// How clauses may end (§12.7.1, §14.3) and what deferred statements may perform (§8.8).
+Q :: effect { ask: esc(n: i32) -> i32 }
+Note :: effect { note: esc(n: i32) }
+Pause :: effect { pause: ctl() }
+Stop :: effect { stop: esc(c: i32) -> never }
+Mixed :: effect { info: fn(s: string); bail: esc() -> never }
+f :: fn() -> i32 \ {Q} => ask(5) + 1
+g :: fn() \ {Pause} { pause() }
+h :: fn() \ {Stop} { stop(1) }
+deferring :: fn() \ {Stop, Pause, Mixed} {
+    defer stop(1) //~ ERROR a deferred statement may not perform `Stop`
+    defer pause() //~ ERROR a deferred statement may not perform `Pause`
+    defer h() //~ ERROR a deferred statement may not perform `Stop`
+    defer info("fine: a `fn` operation")
+    defer { _ = with (handler Stop { stop(c) => break }) { h() } }
+}
+main :: fn() {
+    for i in 0..2 {
+        _ = with (handler Q { ask(n) => { if n > 3 { continue }; n } }) { f() } //~ ERROR `continue` finishes the clause with `()`, but the operation returns `i32`
+        with (handler Note { note(n) => { if n > 3 { continue } } }) { note(1) }
+    }
+    s: [65536]u8 = ---
+    c := false
+    with (handler Pause { pause(k) => { discard k; continue } }) on s[..] { g() } //~ ERROR a `ctl` clause cannot `continue`
+    with (handler Pause { pause(k) => if c { resume k() } else { discard k } }) on s[..] { g() } //~ ERROR a `ctl` clause must not finish normally
+    with (handler Pause { pause(k) => if c { resume k() } else { } }) on s[..] { g() } //~ ERROR a `ctl` clause must not finish normally
+    with (handler Pause { pause(k) => if c { resume k() } else { discard k; break } }) on s[..] { g() }
+}
