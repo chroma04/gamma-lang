@@ -285,6 +285,17 @@ struct gm_type {
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
 GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
 
+/* A placeholder's format spec (§21.6.1). align: 0 auto, 1 left, 2 right, 3 center; kind:
+ * 0 display, 1 x, 2 X, 3 o, 4 b, 5 e; precision -1 when absent. */
+typedef struct {
+    uint8_t fill, align, plus, alt, zero, kind;
+    uint32_t width;
+    int32_t precision;
+} gm_spec;
+
+/* Appends the value of type t at address v as a placeholder with the spec s. */
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *v, const gm_spec *s);
+
 /* ---- ambient effects ---------------------------------------------------------- */
 
 GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */

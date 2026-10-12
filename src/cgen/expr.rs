@@ -615,7 +615,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             ExprKind::WriteDeferred { .. } => {
                 unsupported(e.span, "a template in a generic function that was not instantiated")
             }
-            ExprKind::Write { sink, pieces, args } => {
+            ExprKind::Write { sink, pieces, specs, args } => {
                 let sink_v = match sink {
                     WriteSink::Fn(x) => Some((self.expr(x)?, x.ty)),
                     WriteSink::Perform { .. } => None,
@@ -636,7 +636,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         let d = self.g.ty.desc(args[i].ty);
                         let b = format!("b{}", self.fresh());
                         self.line(&format!("gm_buf {} = {{0}};", b));
-                        self.line(&format!("gm_format(&{}, {}, {}, true);", b, d, vals[i]));
+                        match specs.get(i) {
+                            Some(s) if !s.is_default() => {
+                                let c = spec_literal(s);
+                                self.line(&format!("gm_format_spec(&{}, {}, {}, &{});", b, d, vals[i], c));
+                            }
+                            _ => self.line(&format!("gm_format(&{}, {}, {}, true);", b, d, vals[i])),
+                        }
                         let sl = self.make_slice(string, &format!("{}.data", b), &format!("{}.len", b));
                         self.emit_to(sink, &sink_v, &sl, e)?;
                         self.line(&format!("gm_buf_free(&{});", b));
@@ -1906,4 +1912,34 @@ pub fn float_lit(f: FloatTy, x: f64) -> String {
 /// The mask of the low `w` bits, as an `unsigned __int128` C expression.
 pub fn mask(w: u32) -> String {
     if w >= 128 { "(~(unsigned __int128)0)".into() } else { format!("((((unsigned __int128)1) << {}) - 1)", w) }
+}
+
+/// A C compound literal for a format spec (`gm_spec` in the runtime).
+fn spec_literal(s: &crate::tir::FmtSpec) -> String {
+    use crate::tir::{FmtAlign, FmtKind};
+    let align = match s.align {
+        FmtAlign::Auto => 0,
+        FmtAlign::Left => 1,
+        FmtAlign::Right => 2,
+        FmtAlign::Center => 3,
+    };
+    let kind = match s.kind {
+        FmtKind::Display => 0,
+        FmtKind::Hex => 1,
+        FmtKind::HexUpper => 2,
+        FmtKind::Oct => 3,
+        FmtKind::Bin => 4,
+        FmtKind::Exp => 5,
+    };
+    format!(
+        "(gm_spec){{{}, {}, {}, {}, {}, {}, {}u, {}}}",
+        s.fill,
+        align,
+        s.plus as u8,
+        s.alt as u8,
+        s.zero as u8,
+        kind,
+        s.width,
+        s.precision.map_or(-1, |p| p as i64)
+    )
 }

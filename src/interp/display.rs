@@ -173,3 +173,103 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 }
+
+impl<'a> Machine<'a> {
+    /// Writes `b`, a value of type `ty`, to `out` as a placeholder with a format spec
+    /// (§21.6.1): the number in the requested form, then the padding.
+    pub fn format_spec(&self, out: &mut Vec<u8>, ty: Ty, b: &[u8], spec: &FmtSpec) -> Res<()> {
+        let neg;
+        let mut finite = true;
+        let body = match ty.kind() {
+            TyKind::Int(_) | TyKind::Usize | TyKind::Isize => {
+                let v = self.int_of(ty, b).to_big();
+                neg = v.sign() == num_bigint::Sign::Minus;
+                let m = v.magnitude();
+                match spec.kind {
+                    FmtKind::Hex => m.to_str_radix(16),
+                    FmtKind::HexUpper => m.to_str_radix(16).to_ascii_uppercase(),
+                    FmtKind::Oct => m.to_str_radix(8),
+                    FmtKind::Bin => m.to_str_radix(2),
+                    _ => m.to_string(),
+                }
+            }
+            TyKind::Float(f) => {
+                let x = self.float_of(*f, b);
+                finite = x.is_finite();
+                neg = x.is_sign_negative() && !x.is_nan();
+                let a = x.abs();
+                if x.is_nan() {
+                    "nan".to_string()
+                } else if !finite {
+                    "inf".to_string()
+                } else {
+                    match (spec.kind, spec.precision) {
+                        (FmtKind::Exp, Some(p)) => format!("{:.*e}", p as usize, a),
+                        (FmtKind::Exp, None) if a == 0.0 => "0e0".to_string(),
+                        (FmtKind::Exp, None) => {
+                            let (d, e) = num::shortest(a, *f);
+                            match d.len() {
+                                1 => format!("{}e{}", d, e),
+                                _ => format!("{}.{}e{}", &d[..1], &d[1..], e),
+                            }
+                        }
+                        (_, Some(p)) => format!("{:.*}", p as usize, a),
+                        _ => num::format_float(a, *f),
+                    }
+                }
+            }
+            _ => {
+                let mut body = vec![];
+                self.format_value(&mut body, ty, b, true)?;
+                return {
+                    pad(out, b"", &body, spec, false);
+                    Ok(())
+                };
+            }
+        };
+        let mut head: Vec<u8> = vec![];
+        if neg {
+            head.push(b'-');
+        } else if spec.plus && body != "nan" {
+            head.push(b'+');
+        }
+        if spec.alt {
+            head.extend_from_slice(match spec.kind {
+                FmtKind::Hex | FmtKind::HexUpper => b"0x",
+                FmtKind::Oct => b"0o",
+                _ => b"0b",
+            });
+        }
+        if spec.zero && !finite {
+            let s = FmtSpec { zero: false, align: FmtAlign::Right, ..*spec };
+            pad(out, &head, body.as_bytes(), &s, true);
+        } else {
+            pad(out, &head, body.as_bytes(), spec, true);
+        }
+        Ok(())
+    }
+}
+
+/// Writes `head` (a sign and base prefix) and `body` padded to the spec's width, which
+/// counts Unicode scalar values (bytes that do not continue a UTF-8 sequence).
+fn pad(out: &mut Vec<u8>, head: &[u8], body: &[u8], spec: &FmtSpec, number: bool) {
+    let len = head.iter().chain(body).filter(|&&c| c & 0xc0 != 0x80).count();
+    let gap = (spec.width as usize).saturating_sub(len);
+    if spec.zero {
+        out.extend_from_slice(head);
+        out.extend(std::iter::repeat_n(b'0', gap));
+        out.extend_from_slice(body);
+        return;
+    }
+    let (before, after) = match spec.align {
+        FmtAlign::Left => (0, gap),
+        FmtAlign::Right => (gap, 0),
+        FmtAlign::Center => (gap / 2, gap - gap / 2),
+        FmtAlign::Auto if number => (gap, 0),
+        FmtAlign::Auto => (0, gap),
+    };
+    out.extend(std::iter::repeat_n(spec.fill, before));
+    out.extend_from_slice(head);
+    out.extend_from_slice(body);
+    out.extend(std::iter::repeat_n(spec.fill, after));
+}

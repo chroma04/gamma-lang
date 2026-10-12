@@ -1116,6 +1116,193 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     }
 }
 
+/* ---- format specs (spec §21.6.1) ----------------------------------------------- */
+
+/* Writes head and body padded to the spec's width, counted in Unicode scalar values. */
+static void gm_spec_pad(gm_buf *out, const char *head, size_t hn, const uint8_t *body, size_t bn,
+                        const gm_spec *s, bool number) {
+    size_t len = 0;
+    for (size_t i = 0; i < hn; i++) len += ((uint8_t)head[i] & 0xc0) != 0x80;
+    for (size_t i = 0; i < bn; i++) len += (body[i] & 0xc0) != 0x80;
+    size_t gap = s->width > len ? s->width - len : 0, before, after;
+    if (s->zero) {
+        gm_buf_push(out, head, hn);
+        for (size_t i = 0; i < gap; i++) gm_fmt_ch(out, '0');
+        gm_buf_push(out, body, bn);
+        return;
+    }
+    switch (s->align) {
+    case 1: before = 0, after = gap; break;
+    case 2: before = gap, after = 0; break;
+    case 3: before = gap / 2, after = gap - gap / 2; break;
+    default: before = number ? gap : 0, after = number ? 0 : gap; break;
+    }
+    for (size_t i = 0; i < before; i++) gm_fmt_ch(out, (char)s->fill);
+    gm_buf_push(out, head, hn);
+    gm_buf_push(out, body, bn);
+    for (size_t i = 0; i < after; i++) gm_fmt_ch(out, (char)s->fill);
+}
+
+/* The magnitude of an integer in base 2^shift (2, 8 or 16) into body; returns whether it is
+ * negative. */
+static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsigned shift, bool upper) {
+    size_t n = t->size;
+    uint8_t *m = (uint8_t *)malloc(n ? n : 1);
+    if (m == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(m, p, n);
+    unsigned bits = t->bits;
+    /* Clear the bits above the width. */
+    for (size_t i = 0; i < n; i++) {
+        size_t lo = i * 8;
+        if (lo >= bits) m[i] = 0;
+        else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+    }
+    bool neg = t->is_signed && bits > 0 && ((m[(bits - 1) / 8] >> ((bits - 1) % 8)) & 1);
+    if (neg) {
+        unsigned carry = 1;
+        for (size_t i = 0; i < n; i++) {
+            unsigned v = (uint8_t)~m[i] + carry;
+            m[i] = (uint8_t)v;
+            carry = v >> 8;
+        }
+        for (size_t i = 0; i < n; i++) {
+            size_t lo = i * 8;
+            if (lo >= bits) m[i] = 0;
+            else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+        }
+    }
+    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    size_t ndig = (bits + shift - 1) / shift;
+    bool started = false;
+    for (size_t d = ndig; d > 0; d--) {
+        size_t bit = (d - 1) * shift;
+        unsigned v = 0;
+        for (unsigned k = 0; k < shift; k++) {
+            size_t b = bit + k;
+            if (b < (size_t)n * 8) v |= (unsigned)((m[b / 8] >> (b % 8)) & 1) << k;
+        }
+        if (v != 0) started = true;
+        if (started) gm_fmt_ch(body, dig[v]);
+    }
+    if (!started) gm_fmt_ch(body, '0');
+    free(m);
+    return neg;
+}
+
+/* Rewrites printf's exponent ("e+05", "e-07") in the display style ("e5", "e-7"). */
+static void gm_spec_exp(gm_buf *body, const char *s) {
+    const char *e = strchr(s, 'e');
+    gm_buf_push(body, s, (size_t)(e - s));
+    int x = atoi(e + 1);
+    char tmp[16];
+    int k = snprintf(tmp, sizeof tmp, "e%d", x);
+    gm_buf_push(body, tmp, (size_t)k);
+}
+
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const gm_spec *s) {
+    const uint8_t *v = (const uint8_t *)vp;
+    gm_buf body = {0};
+    bool neg = false, finite = true, nan = false, number = true;
+    if (t->kind == GM_K_INT) {
+        if (s->kind >= 1 && s->kind <= 4) {
+            unsigned shift = s->kind <= 2 ? 4 : s->kind == 3 ? 3 : 1;
+            neg = gm_spec_radix(&body, t, v, shift, s->kind == 2);
+        } else {
+            gm_fmt_int(&body, t, v);
+            if (body.len > 0 && body.data[0] == '-') {
+                neg = true;
+                memmove(body.data, body.data + 1, --body.len);
+            }
+        }
+    } else if (t->kind == GM_K_FLOAT) {
+        double x;
+        if (t->bits == 16) {
+            uint16_t h;
+            memcpy(&h, v, 2);
+            x = gm_f16_to_f64(h);
+        } else if (t->bits == 32) {
+            float f;
+            memcpy(&f, v, 4);
+            x = (double)f;
+        } else {
+            memcpy(&x, v, 8);
+        }
+        nan = __builtin_isnan(x);
+        finite = !nan && !__builtin_isinf(x);
+        neg = !nan && __builtin_signbit(x);
+        double a = __builtin_fabs(x);
+        if (nan) {
+            gm_fmt_str(&body, "nan");
+        } else if (!finite) {
+            gm_fmt_str(&body, "inf");
+        } else if (s->kind == 5 && s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*e", s->precision, a);
+            char *tmp = (char *)malloc((size_t)k + 1);
+            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+            snprintf(tmp, (size_t)k + 1, "%.*e", s->precision, a);
+            gm_spec_exp(&body, tmp);
+            free(tmp);
+        } else if (s->kind == 5) {
+            if (a == 0) {
+                gm_fmt_str(&body, "0e0");
+            } else {
+                char digits[24], tmp[16];
+                int e;
+                gm_shortest(a, t->bits, digits, &e);
+                gm_fmt_ch(&body, digits[0]);
+                if (digits[1] != '\0') {
+                    gm_fmt_ch(&body, '.');
+                    gm_fmt_str(&body, digits + 1);
+                }
+                int k = snprintf(tmp, sizeof tmp, "e%d", e);
+                gm_buf_push(&body, tmp, (size_t)k);
+            }
+        } else if (s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*f", s->precision, a);
+            char *tmp = (char *)malloc((size_t)k + 1);
+            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+            snprintf(tmp, (size_t)k + 1, "%.*f", s->precision, a);
+            gm_buf_push(&body, tmp, (size_t)k);
+            free(tmp);
+        } else {
+            uint8_t pos[8];
+            if (t->bits == 16) {
+                uint16_t h = gm_f64_to_f16(a);
+                memcpy(pos, &h, 2);
+            } else if (t->bits == 32) {
+                float f = (float)a;
+                memcpy(pos, &f, 4);
+            } else {
+                memcpy(pos, &a, 8);
+            }
+            gm_fmt_float(&body, t, pos);
+        }
+    } else {
+        number = false;
+        gm_format(&body, t, v, true);
+        gm_spec_pad(out, "", 0, body.data, body.len, s, false);
+        gm_buf_free(&body);
+        return;
+    }
+    char head[4];
+    size_t hn = 0;
+    if (neg) head[hn++] = '-';
+    else if (s->plus && !nan) head[hn++] = '+';
+    if (s->alt) {
+        head[hn++] = '0';
+        head[hn++] = s->kind <= 2 ? 'x' : s->kind == 3 ? 'o' : 'b';
+    }
+    if (s->zero && !finite) {
+        gm_spec s2 = *s;
+        s2.zero = 0;
+        s2.align = 2;
+        gm_spec_pad(out, head, hn, body.data, body.len, &s2, number);
+    } else {
+        gm_spec_pad(out, head, hn, body.data, body.len, s, number);
+    }
+    gm_buf_free(&body);
+}
+
 /* ---- ambient effects ---------------------------------------------------------- */
 
 GM_API void gm_write_out(const uint8_t *p, size_t len) {

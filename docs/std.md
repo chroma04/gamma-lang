@@ -86,9 +86,11 @@ literals; a failed name lookup is `.Other(0)`.
 
 ## `std/fmt`
 
-`print` writes each value one fixed way (§21.6.1). `std/fmt` provides the other
-presentations, written into a buffer you supply and returned as a `string` slice of
-it; nothing allocates, and a buffer that is too small traps. Size constants and
+Template placeholders cover widths, alignment, signs, zero padding, bases 2, 8 and 16,
+float precision and scientific notation (`{:>8}`, `{:08.3}`, `{:#x}`, `{:.2e}`; §21.6.1).
+`std/fmt` provides presentations they do not (other bases, digit grouping, `%g`-style
+general form) and text you need as a value rather than as output, written into a buffer
+you supply and returned as a `string` slice of it; nothing allocates, and a buffer that is too small traps. Size constants and
 functions (`INT_BUF`, `max_int_len(T)`, `fixed_buf_len(d)`, …) say how large is enough.
 
 ```gamma

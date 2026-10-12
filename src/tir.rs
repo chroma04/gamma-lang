@@ -892,10 +892,12 @@ pub enum ExprKind {
     },
     /// `@write(sink, template, args)`: `pieces` are the literal parts of the template,
     /// interleaved with `args` (`pieces.len() == args.len() + 1`). Each argument is
-    /// formatted by its type (§21.6.1) and the output passed to the sink in pieces.
+    /// formatted by its type and its format spec in `specs` (§21.6.1) and the output
+    /// passed to the sink in pieces.
     Write {
         sink: WriteSink,
         pieces: Vec<Rc<[u8]>>,
+        specs: Vec<FmtSpec>,
         args: Vec<Expr>,
     },
     /// A `Write` whose template is a compile-time `string` parameter of a generic
@@ -1618,5 +1620,69 @@ impl Pat {
             PatKind::Or(ps) => ps.iter_mut().for_each(|p| p.for_each_child_mut(f)),
             _ => {}
         }
+    }
+}
+
+/// How a placeholder's text is aligned within its width (§21.6.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FmtAlign {
+    /// Right for numbers, left for everything else.
+    #[default]
+    Auto,
+    Left,
+    Right,
+    Center,
+}
+
+/// How a placeholder writes a number (§21.6.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FmtKind {
+    /// The display rule of the argument's type.
+    #[default]
+    Display,
+    /// Integers in base 16 (`x`, `X`), 8 (`o`) or 2 (`b`).
+    Hex,
+    HexUpper,
+    Oct,
+    Bin,
+    /// Floats in scientific notation (`e`).
+    Exp,
+}
+
+/// The format spec of a template placeholder, `{:[[fill]align][+][#][0][width][.precision][kind]}`
+/// (§21.6.1). The default is the plain `{}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FmtSpec {
+    pub fill: u8,
+    pub align: FmtAlign,
+    /// `+`: write a sign for non-negative numbers too.
+    pub plus: bool,
+    /// `#`: write the base prefix (`0x`, `0o`, `0b`).
+    pub alt: bool,
+    /// `0`: pad a number with zeros after its sign and prefix.
+    pub zero: bool,
+    pub width: u32,
+    pub precision: Option<u32>,
+    pub kind: FmtKind,
+}
+
+impl Default for FmtSpec {
+    fn default() -> Self {
+        FmtSpec {
+            fill: b' ',
+            align: FmtAlign::Auto,
+            plus: false,
+            alt: false,
+            zero: false,
+            width: 0,
+            precision: None,
+            kind: FmtKind::Display,
+        }
+    }
+}
+
+impl FmtSpec {
+    pub fn is_default(&self) -> bool {
+        *self == FmtSpec::default()
     }
 }

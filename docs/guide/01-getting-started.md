@@ -33,6 +33,15 @@ main :: fn() \ {Out} {
 
 The placeholder count is checked at compile time against the arguments. Every type has a fixed, structural display format (integers in decimal, structs as `Name(field: value, ...)`, enums as `.Name`, and so on); see §21.6.1 of the [specification][s21].
 
+A placeholder can carry a format spec after a colon, for tables and numbers: a width and alignment (`{:>8}`, `{:<12}`, `{:^5}`, with a fill character as in `{:*>8}`), a sign or zero padding (`{:+}`, `{:05}`), an integer base (`{:x}`, `{:#X}`, `{:b}`, `{:o}`), and for floats a precision or scientific notation (`{:.2}`, `{:e}`, `{:.3e}`):
+
+```gamma
+print("{:<8}|{:>6}|{:8.2}\n", ("apples", 12, 0.8333))     // apples  |    12|    0.83
+print("{:#06x} {:+} {:b}\n", (255, 5, 5))                  // 0x00ff +5 101
+```
+
+A spec that does not fit the argument (`{:x}` on a float) is a compile error.
+
 ### Returning a status
 
 `main` has three permitted shapes (§3.7 of the [specification][s3]). The effect set may be anything drawn from the ambient effects (`Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`):

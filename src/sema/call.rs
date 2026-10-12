@@ -572,10 +572,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         };
-        let Some((pieces, values, mut stmts)) = self.template_args(&bytes, template.span, args, span) else {
+        let Some((pieces, specs, values, mut stmts)) = self.template_args(&bytes, template.span, args, span) else {
             return error_expr(span);
         };
-        let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, args: values }, span);
+        let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, specs, args: values }, span);
         if stmts.is_empty() {
             return write;
         }
@@ -592,9 +592,12 @@ impl<'a, 's> FnCx<'a, 's> {
         args: Option<&ast::Expr>,
         span: Span,
     ) -> Option<TemplateArgs> {
-        let Some(pieces) = parse_template(template) else {
-            self.error(template_span, "invalid template: use `{}` for an argument and `{{` / `}}` for braces");
-            return None;
+        let (pieces, specs) = match parse_template(template) {
+            Ok(t) => t,
+            Err(msg) => {
+                self.error(template_span, format!("invalid template: {}", msg));
+                return None;
+            }
         };
         let n = pieces.len() - 1;
         let mut stmts = vec![];
@@ -652,7 +655,25 @@ impl<'a, 's> FnCx<'a, 's> {
                 return None;
             }
         };
-        Some((pieces, values, stmts))
+        for (spec, v) in specs.iter().zip(&values) {
+            if spec.is_default() {
+                continue;
+            }
+            // An untyped literal takes the type the spec asks for, or its fallback.
+            let wants_float = spec.kind == tir::FmtKind::Exp || spec.precision.is_some();
+            if wants_float && self.infer.var_kind(v.ty) == Some(VarKind::Int) {
+                let _ = self.infer.unify(v.ty, Ty::f64());
+            }
+            let t = self.infer.settle(v.ty);
+            // A generic argument is checked in each instance (§16.1).
+            if super::generics::has_param(t) {
+                continue;
+            }
+            if let Err(msg) = check_spec(spec, t) {
+                self.error(v.span, msg);
+            }
+        }
+        Some((pieces, specs, values, stmts))
     }
 
     /// `@write(sink, template, args)` (§21.6.1): formatting into a second-class function.
@@ -698,11 +719,17 @@ impl<'a, 's> FnCx<'a, 's> {
 
 /// A template's literal pieces, the values for its placeholders, and statements that
 /// must run before them.
-type TemplateArgs = (Vec<Rc<[u8]>>, Vec<Expr>, Vec<Stmt>);
+type TemplateArgs = (Vec<Rc<[u8]>>, Vec<tir::FmtSpec>, Vec<Expr>, Vec<Stmt>);
 
-/// Splits a `@write` template into the literal pieces around `{}` placeholders.
-pub fn parse_template(t: &[u8]) -> Option<Vec<Rc<[u8]>>> {
+/// A parsed `@write` template: the literal pieces around the placeholders and each
+/// placeholder's format spec (`pieces.len() == specs.len() + 1`).
+pub type Template = (Vec<Rc<[u8]>>, Vec<tir::FmtSpec>);
+
+/// Splits a `@write` template into the literal pieces around its placeholders and their
+/// format specs (§21.6.1), or explains what is wrong with it.
+pub fn parse_template(t: &[u8]) -> Result<Template, String> {
     let mut pieces = vec![];
+    let mut specs = vec![];
     let mut cur = vec![];
     let mut i = 0;
     while i < t.len() {
@@ -713,9 +740,22 @@ pub fn parse_template(t: &[u8]) -> Option<Vec<Rc<[u8]>>> {
             }
             (b'{', Some(b'}')) => {
                 pieces.push(Rc::from(std::mem::take(&mut cur)));
+                specs.push(tir::FmtSpec::default());
                 i += 2;
             }
-            (b'{', _) | (b'}', _) => return None,
+            (b'{', Some(b':')) => {
+                let Some(len) = t[i + 2..].iter().position(|&c| c == b'}') else {
+                    return Err("a `{:` placeholder has no closing `}`".into());
+                };
+                let spec = parse_spec(&t[i + 2..i + 2 + len])?;
+                pieces.push(Rc::from(std::mem::take(&mut cur)));
+                specs.push(spec);
+                i += len + 3;
+            }
+            (b'{', _) => {
+                return Err("use `{}` or `{:spec}` for an argument and `{{` for a literal brace".into());
+            }
+            (b'}', _) => return Err("use `}}` for a literal `}`".into()),
             (c, _) => {
                 cur.push(c);
                 i += 1;
@@ -723,7 +763,118 @@ pub fn parse_template(t: &[u8]) -> Option<Vec<Rc<[u8]>>> {
         }
     }
     pieces.push(Rc::from(cur));
-    Some(pieces)
+    Ok((pieces, specs))
+}
+
+/// Parses a format spec, the text between `{:` and `}`:
+/// `[[fill]align][+][#][0][width][.precision][kind]`.
+fn parse_spec(s: &[u8]) -> Result<tir::FmtSpec, String> {
+    let mut spec = tir::FmtSpec::default();
+    let align_of = |c: u8| match c {
+        b'<' => Some(tir::FmtAlign::Left),
+        b'>' => Some(tir::FmtAlign::Right),
+        b'^' => Some(tir::FmtAlign::Center),
+        _ => None,
+    };
+    let mut i = 0;
+    if s.len() >= 2
+        && let Some(a) = align_of(s[1])
+    {
+        if s[0] == b'{' || !s[0].is_ascii() || s[0].is_ascii_control() {
+            return Err("the fill character of a format spec is a printable ASCII character other than a brace".into());
+        }
+        spec.fill = s[0];
+        spec.align = a;
+        i = 2;
+    } else if let Some(a) = s.first().and_then(|&c| align_of(c)) {
+        spec.align = a;
+        i = 1;
+    }
+    if s.get(i) == Some(&b'+') {
+        spec.plus = true;
+        i += 1;
+    }
+    if s.get(i) == Some(&b'#') {
+        spec.alt = true;
+        i += 1;
+    }
+    if s.get(i) == Some(&b'0') {
+        spec.zero = true;
+        i += 1;
+    }
+    let number = |i: &mut usize| -> Result<Option<u32>, String> {
+        let start = *i;
+        while *i < s.len() && s[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        if *i == start {
+            return Ok(None);
+        }
+        std::str::from_utf8(&s[start..*i])
+            .unwrap()
+            .parse::<u32>()
+            .ok()
+            .filter(|&n| n <= 1 << 16)
+            .map(Some)
+            .ok_or_else(|| "a format width or precision is at most 65536".to_string())
+    };
+    spec.width = number(&mut i)?.unwrap_or(0);
+    if s.get(i) == Some(&b'.') {
+        i += 1;
+        match number(&mut i)? {
+            Some(p) => spec.precision = Some(p),
+            None => return Err("a `.` in a format spec is followed by the precision".into()),
+        }
+    }
+    if let Some(&c) = s.get(i) {
+        spec.kind = match c {
+            b'x' => tir::FmtKind::Hex,
+            b'X' => tir::FmtKind::HexUpper,
+            b'o' => tir::FmtKind::Oct,
+            b'b' => tir::FmtKind::Bin,
+            b'e' => tir::FmtKind::Exp,
+            _ => return Err(format!("unknown format spec `{{:{}}}`", String::from_utf8_lossy(s))),
+        };
+        i += 1;
+    }
+    if i != s.len() {
+        return Err(format!(
+            "invalid format spec `{{:{}}}`: expected `[[fill]align][+][#][0][width][.precision][kind]`",
+            String::from_utf8_lossy(s)
+        ));
+    }
+    if spec.zero && spec.align != tir::FmtAlign::Auto {
+        return Err("a format spec has either `0` padding or an alignment, not both".into());
+    }
+    if spec.alt
+        && !matches!(spec.kind, tir::FmtKind::Hex | tir::FmtKind::HexUpper | tir::FmtKind::Oct | tir::FmtKind::Bin)
+    {
+        return Err("`#` (the base prefix) goes with `x`, `X`, `o` or `b`".into());
+    }
+    if spec.precision.is_some() && !matches!(spec.kind, tir::FmtKind::Display | tir::FmtKind::Exp) {
+        return Err("a precision goes with floats, not with an integer base".into());
+    }
+    Ok(spec)
+}
+
+/// Whether a placeholder's spec suits an argument of type `t` (§21.6.1): a base needs an
+/// integer, a precision or `e` a float, and `+` or `0` a number.
+pub fn check_spec(spec: &tir::FmtSpec, t: Ty) -> Result<(), String> {
+    let int = t.is_integer();
+    let float = t.is_float();
+    let want = match spec.kind {
+        tir::FmtKind::Hex | tir::FmtKind::HexUpper | tir::FmtKind::Oct | tir::FmtKind::Bin if !int => {
+            Some("an integer, for a base")
+        }
+        tir::FmtKind::Exp if !float => Some("a float, for `e`"),
+        _ if spec.precision.is_some() && !float => Some("a float, for a precision"),
+        _ if (spec.plus || spec.zero) && !(int || float) => Some("a number, for `+` or `0`"),
+        _ => None,
+    };
+    match want {
+        Some(w) if !matches!(t.kind(), TyKind::Error) => Err(format!("this placeholder needs {}, not `{}`", w, t)),
+        _ => Ok(()),
+    }
 }
 
 fn is_type_syntax(e: &ast::Expr) -> bool {
@@ -818,12 +969,12 @@ mod tests {
 
     #[test]
     fn templates() {
-        let p = parse_template(b"a{}b{{c}}{}").unwrap();
+        let (p, _) = parse_template(b"a{}b{{c}}{}").unwrap();
         assert_eq!(p.len(), 3);
         assert_eq!(&*p[0], b"a");
         assert_eq!(&*p[1], b"b{c}");
         assert_eq!(&*p[2], b"");
-        assert!(parse_template(b"{x}").is_none());
-        assert!(parse_template(b"}").is_none());
+        assert!(parse_template(b"{x}").is_err());
+        assert!(parse_template(b"}").is_err());
     }
 }

@@ -297,7 +297,15 @@ impl<'a> Machine<'a> {
     // --- @write --------------------------------------------------------------------------------------------
 
     #[inline(never)]
-    pub fn eval_write(&mut self, a: Act, e: &Expr, sink: &WriteSink, pieces: &[Rc<[u8]>], args: &[Expr]) -> R {
+    pub fn eval_write(
+        &mut self,
+        a: Act,
+        e: &Expr,
+        sink: &WriteSink,
+        pieces: &[Rc<[u8]>],
+        specs: &[FmtSpec],
+        args: &[Expr],
+    ) -> R {
         let sink_val = match sink {
             WriteSink::Fn(x) => Some((self.eval(a, x)?, x.ty)),
             WriteSink::Perform { .. } => None,
@@ -312,7 +320,10 @@ impl<'a> Machine<'a> {
             }
             if i < args.len() {
                 let mut out = Vec::new();
-                let r = self.format_value(&mut out, args[i].ty, &vals[i], true);
+                let r = match specs.get(i) {
+                    Some(s) if !s.is_default() => self.format_spec(&mut out, args[i].ty, &vals[i], s),
+                    _ => self.format_value(&mut out, args[i].ty, &vals[i], true),
+                };
                 self.tr(args[i].span, r)?;
                 if !out.is_empty() {
                     self.emit(a, e.span, sink, &sink_val, &out)?;

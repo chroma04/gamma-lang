@@ -2546,7 +2546,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 
 `sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` is a placeholder; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
+**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
 
 - *n* = 0: `args` must be `()`.
 - *n* = 1: `args` is the one argument, whatever its type (a tuple prints as a tuple).
@@ -2572,7 +2572,34 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | pointers of every kind (including `cstring`), function pointers | `0x` and the address in hexadecimal; to print a C string, slice it: `s[0..s.cstr_len()]` |
 | `#c_union`, `cont`, `Allocator` internals | `<TypeName>` |
 
-The rules are fixed and not extensible: there is no way for a type to customize its formatting. A type that wants a particular presentation provides a function that produces it (`date.iso(d, &buf)`), and the caller passes the result as a `string`. Other bases, widths and precisions are library functions over buffers (`fmt.hex(n, &buf)`).
+The rules are fixed and not extensible: there is no way for a type to customize its formatting. A type that wants a particular presentation provides a function that produces it (`date.iso(d, &buf)`), and the caller passes the result as a `string`.
+
+**Format specs.** A placeholder `{:spec}` writes its argument by the display rules, changed by the spec:
+
+```
+spec  = [[fill] align] ['+'] ['#'] ['0'] [width] ['.' precision] [kind]
+align = '<' | '>' | '^'          (left, right, centered)
+kind  = 'x' | 'X' | 'o' | 'b' | 'e'
+```
+
+`fill` is one printable ASCII character other than a brace (default a space); `width` and `precision` are decimal numbers up to 65536. `{:}` is `{}`.
+
+| Part | Applies to | Effect |
+| --- | --- | --- |
+| `width` | any type | pads the text to at least `width` Unicode scalar values with `fill`; numbers are aligned right and other values left unless `align` says otherwise |
+| `+` | integers, floats | writes `+` before a non-negative number (not before `nan`) |
+| `0` | integers, floats | pads with zeros between the sign (and base prefix) and the digits instead of `fill`; not combined with `align`; ignored for `inf` and `nan`, which are padded with spaces |
+| `x`, `X`, `o`, `b` | integers | base 16 (lowercase or uppercase digits), 8 or 2: a `-` and the magnitude, never two's complement |
+| `#` | with `x`, `X`, `o`, `b` | writes the prefix `0x`, `0o` or `0b` after the sign |
+| `.precision` | floats | exactly `precision` digits after the point, correctly rounded from the exact value (ties to even): `{:.2}` of `0.125` is `0.12` |
+| `e` | floats | scientific notation, `d.ddde<exponent>`: the shortest digits that read back as the value, or `precision` digits after the point when given (`{:.2e}` of `1234.5` is `1.23e3`) |
+
+A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
+
+```
+print("{:<10}|{:>6}|{:6.2}\n", (name, count, ratio))         // Ada       |    12|  0.83
+print("{:08.3} {:+} {:#06x} {:b}\n", (-3.14159, 5, 255, 5))  // -003.142 +5 0x00ff 101
+```
 
 ```
 print("hello, world\n")

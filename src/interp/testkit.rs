@@ -274,7 +274,8 @@ pub fn with_(label: u32, handlers: Vec<HandlerValue>, body: Expr, ty: Ty) -> Exp
 }
 
 pub fn write_to(sink: WriteSink, pieces: &[&str], args: Vec<Expr>) -> Expr {
-    ex(Ty::unit(), ExprKind::Write { sink, pieces: pieces.iter().map(|p| Rc::from(p.as_bytes())).collect(), args })
+    let pieces = pieces.iter().map(|p| Rc::from(p.as_bytes())).collect();
+    ex(Ty::unit(), ExprKind::Write { sink, pieces, specs: vec![FmtSpec::default(); args.len()], args })
 }
 
 /// Builds one function.

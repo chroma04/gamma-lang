@@ -352,7 +352,21 @@ impl<'s> Sema<'s> {
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
         }
+        // Format specs on generic arguments are checked in each instance.
+        if let tir::ExprKind::Write { specs, args, .. } = &e.kind
+            && !cx.map.is_empty()
+        {
+            self.check_specs(cx, specs, args);
+        }
         e
+    }
+
+    fn check_specs(&mut self, cx: &MonoCx, specs: &[tir::FmtSpec], args: &[Expr]) {
+        for (spec, a) in specs.iter().zip(args) {
+            if let Err(msg) = super::call::check_spec(spec, a.ty) {
+                self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+            }
+        }
     }
 
     /// Splits the template of a `WriteDeferred`, now a string, and its arguments
@@ -364,16 +378,31 @@ impl<'s> Sema<'s> {
             self.error(cx.span, "internal error: a template parameter without a string value");
             return e_unit(span);
         };
-        let Some(pieces) = super::call::parse_template(t) else {
-            self.error(
-                cx.span,
-                "invalid template (in an instantiation used here): use `{}` for an argument and `{{` / `}}` for braces",
-            );
-            return e_unit(span);
+        let (pieces, specs) = match super::call::parse_template(t) {
+            Ok(t) => t,
+            Err(msg) => {
+                self.error(cx.span, format!("invalid template (in an instantiation used here): {}", msg));
+                return e_unit(span);
+            }
         };
         let n = pieces.len() - 1;
         let at = |cx: &MonoCx| cx.span;
-        let write = |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, args }, span };
+        if n > 0
+            && let Some(a) = &args
+        {
+            let tys: Vec<Ty> = match (n, a.ty.kind()) {
+                (1, _) => vec![a.ty],
+                (_, TyKind::Tuple { elems, .. }) if elems.len() == n => elems.to_vec(),
+                _ => vec![],
+            };
+            for (spec, t) in specs.iter().zip(tys) {
+                if let Err(msg) = super::call::check_spec(spec, t) {
+                    self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+                }
+            }
+        }
+        let write =
+            |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, specs, args }, span };
         match (n, args) {
             (0, None) => write(vec![]),
             (0, Some(a)) if a.ty.is_unit() => write(vec![]),
