@@ -27,6 +27,9 @@
   It rejects top-level asm and pointer operands in inline asm; casts via integers lose capability.
 - NEVER `pkill -f`/`pgrep -f` with a pattern that occurs in your own command line: it kills the
   shell running it (exit 144).
-- filcc compile time is superlinear in function size: example2_editor's 15k-line gm_f13 takes
-  ~8.5 min at -O2, ~8 min at -O1, and -O0 ran out of memory. Opt level doesn't help; splitting
-  huge generated functions would (Safe follow-up).
+- filcc compile time is superlinear in function size (example2_editor's main was 7.7k C lines
+  from duplicated defers: 8 min). Fixed by the shared ladder; keep generated functions small.
+- Don't put /opt/fil/bin first on PATH for tests: gcc then picks Fil-C's ld and every native
+  build fails. The Safe lane finds /opt/fil/bin/filcc by itself (GAMMA_TEST_SAFE=1).
+- filcc drops accesses it can prove fail (zmkptr(NULL, n) deref → no trap, exit 0); test Safe
+  traps at -O2, not only -O0.

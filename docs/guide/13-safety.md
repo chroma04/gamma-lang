@@ -190,7 +190,7 @@ The reference tool builds Safe through the C back end with [Fil-C](https://fil-c
 
 **Stacks.** Fibers run on stacks Fil-C allocates, and overflowing a thread or fiber stack traps. Fil-C's frames are bigger, so deep recursion that fits in Checked may overflow in Safe.
 
-**Costs.** Programs run roughly 10 to 45 times slower than Checked builds today, use more memory (the allocator is garbage collected) and compile more slowly. Safe is a tool for testing and for running untrusted inputs through code where memory safety matters more than speed, not a default.
+**Costs.** Programs typically run 2 to 5 times slower than Checked builds, and code that allocates and frees many small objects 15 times or more; they also use more memory (the allocator is garbage collected) and compile more slowly. Safe is a tool for testing and for running untrusted inputs through code where memory safety matters more than speed, not a default.
 
 ## How Gamma avoids the C footguns
 

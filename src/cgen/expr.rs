@@ -4,7 +4,7 @@
 //! expression for its value (usually a temporary). Operands are evaluated into
 //! temporaries in order, so evaluation order is the program's.
 
-use super::func::{FnGen, Scope, Spec, SpecKey};
+use super::func::{FnGen, Spec, SpecKey};
 use super::types::Repr;
 use super::{CResult, conv_attr, unsupported};
 use crate::tir::{
@@ -480,9 +480,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line("for (;;) {");
                 self.indent += 1;
                 self.conds(cond, &brk)?;
-                self.scopes.push(Scope::Loop { label: *label, brk: brk.clone(), cont: cont.clone() });
+                let scope = self.loop_scope(*label, brk.clone(), cont.clone());
+                self.scopes.push(scope);
                 let r = self.block(body);
-                self.scopes.pop();
+                let scope = self.scopes.pop().unwrap();
                 r?;
                 self.label(&cont);
                 if let Some(s) = step {
@@ -490,6 +491,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 self.indent -= 1;
                 self.line("}");
+                // The loop is left only by jumping to `brk`.
+                self.end_scope(scope, false);
                 self.label(&brk);
                 Ok(self.unit())
             }
@@ -1504,17 +1507,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         let saved = std::mem::replace(&mut self.cx, cur);
         let end = format!("we{}", self.fresh());
-        self.scopes.push(Scope::With { label, end: end.clone() });
+        let scope = self.with_scope(label, end.clone());
+        self.scopes.push(scope);
         let saved_spec = self.spec_call.take();
         self.spec_call = self.specializable(handlers, body, nested);
         let v = self.expr(body);
         self.spec_call = saved_spec;
-        self.scopes.pop();
+        let scope = self.scopes.pop().unwrap();
         self.cx = saved;
         let v = v?;
         if !body.ty.is_never() && !e.ty.is_never() {
             self.line(&format!("F.w{} = {};", label.0, v));
         }
+        self.end_scope(scope, true);
         self.label(&end);
         Ok(if e.ty.is_never() { self.zero(e.ty) } else { self.tmp(e.ty, &format!("F.w{}", label.0)) })
     }

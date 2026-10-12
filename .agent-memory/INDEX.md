@@ -1,9 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (session 6, 2026-10-12) — PRs #1–#12 merged; s6 = several parallel Claude Projects threads
-- s6 thread "Fil-C memory safety" (branch claude/project-thread-7tibkj): `--mode=safe` via Fil-C,
-  spec §18.7, Safe conformance lane (GAMMA_TEST_SAFE=1), CI job (decisions/017). Follow-up:
-  Fil-C-friendly codegen (Safe runs 10–45× slower than Checked).
+- s6 thread "Fil-C memory safety" (PR #14, merged): `--mode=safe` via Fil-C, spec §18.7, Safe
+  lane (GAMMA_TEST_SAFE=1), CI job (decisions/017). Thread "Faster Fil-C codegen" (branch
+  claude/filc-faster-codegen-ewo3pj): ladder once per scope, typed GM_LD/GM_ST under Fil-C,
+  to_ptr fix; Safe now ~2–16× Checked (decisions/017 end).
 - s6 thread "C perf" (branch claude/project-thread-8a201g): items 4–6 — nested handler
   specialization, exit-test omission, gm_out results, in-place construction, borrowed params,
   -fno-strict-aliasing (decisions/016, sessions/s06). Other s6 threads: build speed,
@@ -36,8 +37,8 @@
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
-4. Safe mode follow-up (decisions/017): Fil-C-friendly codegen (typed accesses, fewer memcpy
-   blobs); filcc is very slow on huge generated functions.
+4. Safe mode follow-up (decisions/017 end): uncaptured locals as C locals, fewer by-address
+   temporaries (allocation-heavy code still ~16× Checked).
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md;
