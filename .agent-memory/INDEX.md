@@ -28,20 +28,19 @@
   generic names + declaration aliases + re-exported modules, dogfood round 4 (example4_*) and
   its fixes (sessions/s04). Session 5: `gamma test` runs imported same-package modules'
   tests, `--filter=` (sessions/s05).
-- GitHub Actions currently gets no runners (account-level); verify locally (fmt, clippy -D
-  warnings, cargo test, CC=clang conformance) before pushing.
+- GitHub Actions has runners again (2026-10-12), incl. the Safe (Fil-C) job; still verify locally
+  (fmt, clippy -D warnings, cargo test, CC=clang conformance) before pushing.
 - Open bugs/usability list: roadmap/bugs-open.md; open design items: spec-notes/open-issues.md.
 - Build modes: `--mode=debug|checked|safe|fast` (Safe needs Fil-C in /opt/fil). Core modules (is_prelude) may use @heap_*, prelude
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive the s6 PRs green; C back end plan items 1–7 done; leftover: uncaptured locals as C
-   locals (c-backend-plan.md end).
-   Check CI on main once GitHub Actions gets runners again.
+1. Drive the s6 PRs green; C back end plan items 1–7 done (uncaptured locals as C locals:
+   thread "Uncaptured locals", branch claude/project-thread-oemqrj).
 2. bugs-open.md leftovers (#23–#38); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
-4. Safe mode follow-up (decisions/017 end): uncaptured locals as C locals, fewer by-address
-   temporaries (allocation-heavy code still ~16× Checked).
+4. Safe mode follow-up (decisions/017 end): fewer by-address temporaries (by-value small
+   aggregates; allocation-heavy code still ~16× Checked).
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md;

@@ -120,6 +120,7 @@ fn generate_entries(
         spec_tables: std::collections::HashSet::new(),
         exits: HashMap::new(),
         pure_memo: HashMap::new(),
+        captured: None,
         handler_tables: String::new(),
         libs: std::collections::BTreeSet::new(),
         handler_done: vec![false; prog.handlers.len()],
@@ -208,6 +209,9 @@ pub struct Gen<'a> {
     exits: HashMap<(FnId, Option<func::Spec>), Option<bool>>,
     /// Memo of `is_pure` (`None` while being computed).
     pure_memo: HashMap<FnId, Option<bool>>,
+    /// The locals that function literals or handler clauses reach through their
+    /// environment, by function (computed on first use, see `Gen::frame_locals`).
+    captured: Option<std::collections::HashSet<(FnId, crate::tir::LocalId)>>,
     pub handler_tables: String,
     /// Libraries to link, from foreign blocks.
     pub libs: std::collections::BTreeSet<String>,

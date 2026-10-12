@@ -458,7 +458,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 if let (Some(c), TyKind::Result { err, .. }) = (capture, lhs.ty.kind()) {
                     let off = self.g.ty.offsets(lhs.ty)[1];
                     let ev = self.load(*err, &format!("({} + {})", a, off));
-                    self.line(&format!("F.l{} = {};", c.0, ev));
+                    let lv = self.local_lv(*c);
+                    self.line(&format!("{} = {};", lv, ev));
                 }
                 let v = self.expr(rhs)?;
                 if let Some(r) = &res
@@ -1631,7 +1632,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             PatKind::Wild => {}
             PatKind::Bind(l) => {
                 let v = self.load(t, addr);
-                self.line(&format!("F.l{} = {};", l.0, v));
+                let lv = self.local_lv(*l);
+                self.line(&format!("{} = {};", lv, v));
             }
             PatKind::Const(c) => {
                 let cv = self.expr(c)?;

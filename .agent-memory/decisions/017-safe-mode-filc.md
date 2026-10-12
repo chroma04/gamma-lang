@@ -33,5 +33,6 @@ Design doc for the user: /mnt/project-files/design/safe-mode.md (deliberation + 
      inttoptr(ptrtoint p) → p (capability kept); zmkptr(NULL,n) made filcc -O1+ DROP the
      faulting access (exit 0!) — filcc deletes statically-failing checks.
 - Remaining: trees 16× (new/destroy = GC alloc + by-ref args like the 40-byte location
-  struct escaping), hmap 4.3×, sieve 3.9×. Next: uncaptured locals as C locals; by-value
-  small aggregates instead of &tmp args.
+  struct escaping), hmap 4.3×, sieve 3.9×. Uncaptured locals as C locals: done (few %,
+  c-backend-plan.md end). Next: by-value small aggregates instead of &tmp args (trees'
+  `new` passes &t5, a 40-byte location temp, per call → GC alloc).
