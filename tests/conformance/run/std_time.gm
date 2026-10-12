@@ -1,0 +1,274 @@
+// std/time: calendar arithmetic, Unix time conversion, RFC 3339 text and durations.
+time :: import "std/time"
+
+name :: fn(w: time.Weekday) -> string {
+    return match w {
+        .Monday => "Mon"
+        .Tuesday => "Tue"
+        .Wednesday => "Wed"
+        .Thursday => "Thu"
+        .Friday => "Fri"
+        .Saturday => "Sat"
+        .Sunday => "Sun"
+    }
+}
+
+date :: fn(y: i32, m, d: u8) -> time.Date => time.Date(year: y, month: m, day: d)
+
+show :: fn(d: time.Date) \ {Out} {
+    buf: [16]u8 = ---
+    print("{}", time.format_date(d, buf[..]))
+}
+
+show_dt :: fn(t: time.DateTime) \ {Out} {
+    buf: [time.RFC3339_LEN]u8 = ---
+    print("{}", time.format_rfc3339(t, buf[..]))
+}
+
+show_parse :: fn(s: string) \ {Out} {
+    print("\"{}\" => ", s)
+    t := time.parse_rfc3339(s) else e => {
+        match e {
+            .Syntax(p) => print("syntax error at {}\n", p)
+            .Range(p) => print("range error at {}\n", p)
+        }
+        return
+    }
+    show_dt(t)
+    print("\n")
+}
+
+show_date_parse :: fn(s: string) \ {Out} {
+    print("\"{}\" => ", s)
+    d := time.parse_date(s) else e => {
+        match e {
+            .Syntax(p) => print("syntax error at {}\n", p)
+            .Range(p) => print("range error at {}\n", p)
+        }
+        return
+    }
+    show(d)
+    print("\n")
+}
+
+dur :: fn(ns: u64) \ {Out} {
+    buf: [time.DURATION_LEN]u8 = ---
+    print("{} = {}\n", (ns, time.format_duration(Duration(ns: ns), buf[..])))
+}
+
+main :: fn() \ {Out} {
+    // Leap years and month lengths.
+    print("leap: {} {} {} {} {}\n", (time.is_leap_year(2000), time.is_leap_year(1900), time.is_leap_year(2024), time.is_leap_year(2023), time.is_leap_year(-4)))
+    print("days: {} {} {} {}\n", (time.days_in_month(2024, 2), time.days_in_month(1900, 2), time.days_in_month(2023, 4), time.days_in_month(2023, 12)))
+    print("valid: {} {} {} {} {} {}\n", (time.is_valid(date(2000, 2, 29)), time.is_valid(date(1900, 2, 29)), time.is_valid(date(2023, 13, 1)), time.is_valid(date(2023, 0, 1)), time.is_valid(date(2023, 4, 31)), time.is_valid(date(2023, 4, 0))))
+
+    // Day numbers.
+    print("epoch: {}\n", time.days_from_civil(date(1970, 1, 1)))
+    print("2000-03-01: {}\n", time.days_from_civil(date(2000, 3, 1)))
+    print("1969-12-31: {}\n", time.days_from_civil(date(1969, 12, 31)))
+    print("1600-01-01: {}\n", time.days_from_civil(date(1600, 1, 1)))
+    print("0000-03-01: {}\n", time.days_from_civil(date(0, 3, 1)))
+    show(time.civil_from_days(0))
+    print(" ")
+    show(time.civil_from_days(-1))
+    print(" ")
+    show(time.civil_from_days(-135140))
+    print(" ")
+    show(time.civil_from_days(19000))
+    print("\n")
+
+    // Round trips over a range of day numbers, both directions.
+    ok := true
+    days: i64 = -800_000
+    while days <= 800_000 {
+        d := time.civil_from_days(days)
+        if not time.is_valid(d) or time.days_from_civil(d) is not days { ok = false }
+        days += 7
+    }
+    y: i32 = -400
+    while y <= 2500 {
+        for m in 1..=12 {
+            dd := date(y, m.trunc(u8), 1)
+            if time.civil_from_days(time.days_from_civil(dd)) is not dd { ok = false }
+            last := date(y, m.trunc(u8), time.days_in_month(y, m.trunc(u8)))
+            if time.civil_from_days(time.days_from_civil(last)) is not last { ok = false }
+            if time.days_from_civil(time.add_days(last, 1)) is not time.days_from_civil(last) + 1 { ok = false }
+        }
+        y += 1
+    }
+    print("round trips: {}\n", ok)
+
+    // Weekdays.
+    print("weekdays: {} {} {} {} {}\n", (name(time.weekday(date(1970, 1, 1))), name(time.weekday(date(2000, 1, 1))), name(time.weekday(date(2024, 2, 29))), name(time.weekday(date(1969, 7, 20))), name(time.weekday(date(1600, 1, 1)))))
+    print("weekday sunday: {}\n", name(time.weekday(date(2023, 12, 31))))
+
+    // Adding days and months.
+    show(time.add_days(date(2024, 2, 28), 2))
+    print(" ")
+    show(time.add_days(date(2024, 1, 1), -1))
+    print(" ")
+    show(time.add_days(date(1999, 12, 31), 366))
+    print("\n")
+    show(time.add_months(date(2023, 1, 31), 1))
+    print(" ")
+    show(time.add_months(date(2024, 1, 31), 1))
+    print(" ")
+    show(time.add_months(date(2024, 3, 31), -1))
+    print(" ")
+    show(time.add_months(date(2024, 2, 29), 12))
+    print(" ")
+    show(time.add_months(date(2024, 2, 29), 48))
+    print(" ")
+    show(time.add_months(date(2024, 1, 15), -13))
+    print(" ")
+    show(time.add_months(date(2024, 12, 31), 2))
+    print(" ")
+    show(time.add_months(date(2000, 1, 1), -1))
+    print(" ")
+    show(time.add_months(date(0, 1, 1), 0))
+    print("\n")
+
+    // Unix time.
+    show_dt(time.from_unix(0))
+    print("\n")
+    show_dt(time.from_unix(-1))
+    print("\n")
+    show_dt(time.from_unix(1_700_000_000_000_000_000))
+    print("\n")
+    show_dt(time.from_unix(1_700_000_000_123_000_000))
+    print("\n")
+    show_dt(time.from_unix(1_700_000_000_000_001_000))
+    print("\n")
+    show_dt(time.from_unix(1_700_000_000_000_000_001))
+    print("\n")
+    show_dt(time.from_unix(-86_400_000_000_000))
+    print("\n")
+    show_dt(time.from_unix(-5_364_662_400_000_000_000))
+    print("\n")
+    show_dt(time.from_unix(-9_223_372_036_854_775_807 - 1))
+    print("\n")
+    show_dt(time.from_unix(9_223_372_036_854_775_807))
+    print("\n")
+    rt := true
+    ns: i64 = -9_000_000_000_000_000_000
+    while ns < 9_000_000_000_000_000_000 {
+        if time.to_unix(time.from_unix(ns)) is not ns { rt = false }
+        ns += 123_456_789_012_345_678
+    }
+    for v in [_]i64(-1, 0, 1, -999_999_999, 999_999_999, 86_399_999_999_999, -86_400_000_000_000) {
+        if time.to_unix(time.from_unix(v)) is not v { rt = false }
+    }
+    print("unix round trip: {}\n", rt)
+    print("to_unix: {}\n", time.to_unix(time.DateTime(date: date(2001, 9, 9), hour: 1, minute: 46, second: 40, nanosecond: 500)))
+
+    // Formatting.
+    fmt_buf: [time.RFC3339_LEN]u8 = ---
+    t := time.DateTime(date: date(2024, 5, 7), hour: 9, minute: 3, second: 0, nanosecond: 0)
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    t.nanosecond = 500_000_000
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    t.nanosecond = 120_000
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    t.nanosecond = 999_999_999
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    t.nanosecond = 7
+    print("{} {}\n", (time.format_rfc3339(t, fmt_buf[..]), time.format_rfc3339(t, fmt_buf[..]).len))
+    t.date = date(7, 1, 2)
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    t.date = date(9999, 12, 31)
+    t.hour = 23
+    t.minute = 59
+    t.second = 59
+    print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
+    print("{}\n", time.RFC3339_LEN)
+    print("{} {}\n", (time.format_rfc3339(t, fmt_buf[..]).len, time.format_date(date(0, 1, 1), fmt_buf[..])))
+
+    // Parsing RFC 3339.
+    show_parse("2024-05-07T09:03:00Z")
+    show_parse("2024-05-07t09:03:00z")
+    show_parse("2024-05-07 09:03:00Z")
+    show_parse("2024-05-07T09:03:00.5Z")
+    show_parse("2024-05-07T09:03:00.123456Z")
+    show_parse("2024-05-07T09:03:00.123456789Z")
+    show_parse("2024-05-07T09:03:00.0000000010Z")
+    show_parse("2024-05-07T09:03:00.Z")
+    show_parse("2024-05-07T09:03:00+02:00")
+    show_parse("2024-05-07T09:03:00-05:30")
+    show_parse("2024-01-01T00:30:00+01:00")
+    show_parse("2024-12-31T23:30:00-01:00")
+    show_parse("1970-01-01T00:00:00+00:00")
+    show_parse("2024-02-29T12:00:00Z")
+    show_parse("2024-05-07T09:03:00.25+01:00")
+    show_parse("2024-13-07T09:03:00Z")
+    show_parse("2024-00-07T09:03:00Z")
+    show_parse("2023-02-29T09:03:00Z")
+    show_parse("2024-05-00T09:03:00Z")
+    show_parse("2024-05-07T24:03:00Z")
+    show_parse("2024-05-07T09:60:00Z")
+    show_parse("2024-05-07T09:03:60Z")
+    show_parse("2024-05-07T09:03:00+24:00")
+    show_parse("2024-05-07T09:03:00+01:60")
+    show_parse("")
+    show_parse("2024")
+    show_parse("2024-05")
+    show_parse("2024-05-07")
+    show_parse("2024-05-07T")
+    show_parse("2024-05-07T09:03")
+    show_parse("2024-05-07T09:03:00")
+    show_parse("2024-05-07T09:03:00.")
+    show_parse("2024-05-07T09:03:00.1234567890Z")
+    show_parse("2024-05-07T09:03:00+02")
+    show_parse("2024-05-07T09:03:00+0200")
+    show_parse("2024-05-07T09:03:00Zx")
+    show_parse("2024-05-07T09:03:00Z ")
+    show_parse("2024-05-07X09:03:00Z")
+    show_parse("2024/05/07T09:03:00Z")
+    show_parse("2024-5-07T09:03:00Z")
+    show_parse("20x4-05-07T09:03:00Z")
+    show_parse("2024-05-07T09-03-00Z")
+    show_parse("2024-05-07T09:03:0aZ")
+    show_parse("2024-05-07T09:03:00Q")
+    show_parse("-024-05-07T09:03:00Z")
+
+    // Parsing dates.
+    show_date_parse("2024-02-29")
+    show_date_parse("0001-01-01")
+    show_date_parse("2023-02-29")
+    show_date_parse("2024-13-01")
+    show_date_parse("2024-00-10")
+    show_date_parse("2024-04-31")
+    show_date_parse("2024-04-00")
+    show_date_parse("2024-4-01")
+    show_date_parse("2024-04")
+    show_date_parse("")
+    show_date_parse("2024-04-011")
+    show_date_parse("2024-04-01T00:00:00Z")
+    show_date_parse("2024.04.01")
+    show_date_parse("abcd-04-01")
+
+    // Durations.
+    dur(0)
+    dur(1)
+    dur(250)
+    dur(999)
+    dur(1_000)
+    dur(1_500)
+    dur(1_000_000)
+    dur(1_500_000)
+    dur(20_000_000)
+    dur(999_999_999)
+    dur(1_000_000_000)
+    dur(1_500_000_000)
+    dur(3_250_000_000)
+    dur(59_000_000_001)
+    dur(60_000_000_000)
+    dur(61_000_000_000)
+    dur(3_600_000_000_000)
+    dur(3_723_500_000_000)
+    dur(7_200_000_000_000 + 59_000_000_000)
+    dur(86_400_000_000_000)
+    dur(18_446_744_073_709_551_615)
+    buf: [time.DURATION_LEN]u8 = ---
+    print("{}\n", time.format_duration(secs(90), buf[..]))
+    print("{}\n", time.format_duration(ms(1500).plus(us(250)), buf[..]))
+}

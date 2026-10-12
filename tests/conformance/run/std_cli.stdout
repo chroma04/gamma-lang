@@ -1,0 +1,45 @@
+=>
+[file1] [file2] => pos(file1) pos(file2)
+[--verbose] [--color] => opt0() opt3()
+[--output=out.txt] [--output] [x.txt] [--name=] [--name] [--] => opt2(out.txt) opt2(x.txt) opt5() opt5(--)
+[--output=a=b] => opt2(a=b)
+[--verbose=yes] [--color=] => unexpected0 unexpected3
+[--output] => missing2
+[--colour] [--colour=red] [--verb] [--verbosee] [--] [--verbose] => unknown(--colour) unknown(--colour=red) unknown(--verb) unknown(--verbosee) pos(--verbose)
+[--=x] [--=] => unknown(--=x) unknown(--=)
+[-v] [-q] [-vq] => opt0() opt1() opt0() opt1()
+[-ofile] [-o] [file] [-o] [-v] => opt2(file) opt2(file) opt2(-v)
+[-vofile] [-qvo] [x] [-abn5] [-abn] [7] => opt0() opt2(file) opt1() opt0() opt2(x) opt6() opt7() opt4(5) opt6() opt7() opt4(7)
+[-x] [-vxq] [-xo] [f] => unknown(-x) opt0() unknown(-x) opt1() unknown(-x) opt2(f)
+[-o] => missing2
+[-vo] => opt0() missing2
+[-n] [-o] => opt4(-o)
+[-ofile=x] [-o=y] => opt2(file=x) opt2(=y)
+[-] [a] [-v] [b] [--verbose] [c] => pos(-) pos(a) opt0() pos(b) opt0() pos(c)
+[a] [--] [-v] [--] [--verbose] [-] => pos(a) pos(-v) pos(--) pos(--verbose) pos(-)
+[--] [--] => pos(--)
+[-o] [--] [-v] => opt2(--) opt0()
+[--output] [--verbose] [-v] => opt2(--verbose) opt0()
+[] => pos()
+usage: tool [options] <file>
+
+options:
+  -v, --verbose        print more
+  -q                   be quiet
+  -o, --output <file>  where to write
+      --color          use colors
+  -n <count>
+      --name <text>    a name
+  -a
+  -b
+--
+usage: prog
+
+options:
+  -h
+      --x-long-name <v>
+  -z <n>                 zed
+--
+usage: prog
+
+options:

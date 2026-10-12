@@ -1,0 +1,30 @@
+//! stage: test
+// std/random under the test handlers: the fixed-seed `Rand` makes the helpers repeatable,
+// and a seeded generator installed with `with` overrides it.
+random :: import "std/random"
+
+test "ambient draws differ from each other" {
+    a := random.next_u64()
+    b := random.next_u64()
+    assert(a is not b, "consecutive draws differ")
+    r := random.from_rand()
+    s := random.from_rand()
+    assert(random.next(&r) is not random.next(&s), "seeds differ")
+}
+
+test "an installed generator overrides the ambient one" {
+    r := random.seeded(5)
+    s := random.seeded(5)
+    x := with &r { random.next_u64() }
+    assert(x is random.next(&s), "same as drawing directly")
+}
+
+test "helpers are reproducible under a seed" {
+    r := random.seeded(11)
+    s := random.seeded(11)
+    xs: [16]u32 = ---
+    ys: [16]u32 = ---
+    with &r { for i in 0..16 { xs[i] = random.below(u32, 1000) } }
+    with &s { for i in 0..16 { ys[i] = random.below(u32, 1000) } }
+    assert(xs is ys, "same draws")
+}

@@ -1,0 +1,191 @@
+// std/random: a fast seedable generator, and helpers that draw from `Rand`.
+//
+// The ambient `Rand` effect is the source of randomness: by default it is the operating
+// system, in tests a fixed seed. `Rng` (xoshiro256**) is a handler for `Rand`, so the
+// same code can be made reproducible by installing a seeded generator with `with`.
+//
+//     random :: import "std/random"
+//     r := random.seeded(42)
+//     with &r {
+//         die := random.range(u8, 1, 7)          // 1 to 6, the same on every run
+//         if random.chance(0.5) { … }
+//     }
+//
+// Every helper obtains its bits by calling `fill` once or more, so any handler of `Rand`
+// works. The generator is not suitable for cryptography.
+
+math :: import "std/math"
+
+// ---------------------------------------------------------------------------------
+// The generator
+// ---------------------------------------------------------------------------------
+
+/// The state of a xoshiro256** generator. It is never all zero.
+pub Rng :: struct {
+    s: [4]u64
+}
+
+// One step of splitmix64: advances `state` and returns the next output.
+splitmix :: fn(state: ^u64) -> u64 {
+    state^ +%= 0x9e3779b97f4a7c15
+    z := state^
+    z = (z ~ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ~ (z >> 27)) *% 0x94d049bb133111eb
+    return z ~ (z >> 31)
+}
+
+/// A generator whose state is `seed` expanded with splitmix64. The same seed always
+/// gives the same sequence.
+pub seeded :: fn(seed: u64) -> Rng {
+    st := seed
+    r := Rng(s: [_]u64(0, 0, 0, 0))
+    for i in 0..4 { r.s[i] = splitmix(&st) }
+    return r
+}
+
+/// A generator seeded from the current `Rand` (the operating system by default).
+pub from_rand :: fn() -> Rng \ {Rand} {
+    while true {
+        buf: [32]u8 = ---
+        fill(buf[..])
+        r := Rng(s: [_]u64(0, 0, 0, 0))
+        any: u64 = 0
+        for i in 0..4 {
+            r.s[i] = load_u64(buf[i * 8..i * 8 + 8])
+            any |= r.s[i]
+        }
+        if any is not 0 { return r }
+    }
+}
+
+/// The next output of the generator.
+pub next :: fn(r: ^Rng) -> u64 {
+    result := @rotl(r.s[1] *% 5, 7) *% 9
+    t := r.s[1] <<% 17
+    r.s[2] ~= r.s[0]
+    r.s[3] ~= r.s[1]
+    r.s[1] ~= r.s[2]
+    r.s[0] ~= r.s[3]
+    r.s[2] ~= t
+    r.s[3] = @rotl(r.s[3], 45)
+    return result
+}
+
+// The little-endian value of the first eight bytes of `b`.
+load_u64 :: fn(b: []const u8) -> u64 {
+    v: u64 = 0
+    for i in 0..8 { v |= b[i].trunc(u64) <<% (i * 8).trunc(u32) }
+    return v
+}
+
+// Fills `buf` from the generator: eight bytes (little-endian) per output, the tail from
+// one more output.
+handler Rand for ^Rng {
+    fill(self, buf) => {
+        i: usize = 0
+        while i < buf.len {
+            v := next(self)
+            k: usize = 0
+            while k < 8 and i < buf.len {
+                buf[i] = (v >> (k * 8).trunc(u32)).trunc(u8)
+                i += 1
+                k += 1
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Drawing from `Rand`
+// ---------------------------------------------------------------------------------
+
+/// A uniformly distributed `u64`.
+pub next_u64 :: fn() -> u64 \ {Rand} {
+    buf: [8]u8 = ---
+    fill(buf[..])
+    return load_u64(buf[..])
+}
+
+// A uniform value in [0, n) for `n` > 0 (Lemire's multiply-shift with rejection).
+below64 :: fn(n: u64) -> u64 \ {Rand} {
+    m := u128(next_u64()) * u128(n)
+    l := m.trunc(u64)
+    if l < n {
+        t := (0 -% n) % n
+        while l < t {
+            m = u128(next_u64()) * u128(n)
+            l = m.trunc(u64)
+        }
+    }
+    return (m >> 64).trunc(u64)
+}
+
+/// A uniform integer in [0, n), without modulo bias. `n` must be greater than 0.
+pub below :: fn(T: type, n: T) -> T \ {Rand} where Int(T) {
+    assert(n > 0, "random.below: n must be greater than 0")
+    return below64(n.trunc(u64)).trunc(T)
+}
+
+/// A uniform integer in [lo, hi). `lo` must be less than `hi`; the span may be the whole
+/// range of `T` minus one value.
+pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
+    assert(lo < hi, "random.range: lo must be less than hi")
+    span := (hi -% lo).trunc(u64)
+    bits := @size_of(T) * 8
+    if bits < 64 { span &= (1 << bits.trunc(u32)) - 1 }
+    return lo +% below64(span).trunc(T)
+}
+
+/// A uniform `f64` in [0, 1), made from 53 random bits.
+pub float :: fn() -> f64 \ {Rand} {
+    return (next_u64() >> 11).round(f64) * (1.0 / 9007199254740992.0)
+}
+
+/// `true` with probability `p` (never for `p` <= 0, always for `p` >= 1).
+pub chance :: fn(p: f64) -> bool \ {Rand} => float() < p
+
+/// A normally distributed `f64` with the given mean and standard deviation (Box-Muller).
+pub normal :: fn(mean, stddev: f64) -> f64 \ {Rand} {
+    u1 := 1.0 - float()                 // in (0, 1], so the logarithm is finite
+    u2 := float()
+    z := math.sqrt(-2.0 * math.log(u1)) * math.cos(math.tau * u2)
+    return mean + stddev * z
+}
+
+/// Rearranges `items` into a uniformly random order (Fisher-Yates).
+pub shuffle :: fn(T: type, items: []T) \ {Rand} {
+    i := items.len
+    while i > 1 {
+        j := below(usize, i)
+        i -= 1
+        items.swap(i, j)
+    }
+}
+
+/// A uniformly chosen element of `items`, or `null` if it is empty.
+pub choice :: fn(T: type, items: []const T) -> ?T \ {Rand} {
+    if items.len is 0 { return null }
+    return items[below(usize, items.len)]
+}
+
+/// An index of `weights` chosen with probability proportional to its weight, or `null`
+/// if there are no weights or their sum is not greater than 0. Negative weights count as 0.
+pub weighted :: fn(weights: []const f64) -> ?usize \ {Rand} {
+    sum: f64 = 0.0
+    for w in weights {
+        if w > 0.0 { sum += w }
+    }
+    if not (sum > 0.0) or sum.is_inf() { return null }
+    x := float() * sum
+    last: ?usize = null
+    acc: f64 = 0.0
+    for i in 0..weights.len {
+        w := weights[i]
+        if w > 0.0 {
+            acc += w
+            last = i
+            if x < acc { return i }
+        }
+    }
+    return last
+}
