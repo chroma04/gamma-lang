@@ -41,6 +41,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(e) = self.builtin_method(recv.clone(), name, args, span) {
             return e;
         }
+        // `r.len()` of a range is a function of the core library (§21.3).
+        let name = match self.sema.range_of(rty) {
+            Some((inclusive, _)) if name.name.as_str() == "len" => ast::Ident {
+                name: crate::symbol::Symbol::intern(if inclusive { "range_incl_len" } else { "range_len" }),
+                span: name.span,
+            },
+            _ => name,
+        };
         // 3. A function of the module that declares the receiver's type.
         if let Some(e) = self.module_method(recv, name, args, span) {
             return e;

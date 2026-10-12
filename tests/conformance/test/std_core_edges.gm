@@ -65,6 +65,11 @@ test "a range has a length" {
     expect_eq((5..5).len(), 0)
     expect_eq((9..2).len(), 0)
     expect_eq((i32(-5)..5).len(), 10)
+    expect_eq((2..=5).len(), 4)
+    expect_eq((3..=3).len(), 1)
+    expect_eq((4..=3).len(), 0)
+    expect_eq((i8(-128)..127).len(), 255)
+    expect_eq((i8(-128)..=127).len(), 256)
 }
 
 test "a map full of tombstones is rehashed without growing" {

@@ -576,10 +576,18 @@ pub RangeIncl :: struct(T: type) {
     pub lo, hi: T
 }
 
-/// The number of values in `lo..hi`; 0 when `hi <= lo`.
-pub len :: fn(T: type, r: Range(T)) -> usize where Int(T) {
+// `r.len()` of a range (§21.3): the number of values in `lo..hi`, 0 when `hi <= lo`.
+// The difference is taken modulo 2^128, so that it is right for signed spans wider than
+// the type's positive half.
+range_len :: fn(T: type, r: Range(T)) -> usize where Int(T) {
     if r.hi <= r.lo { return 0 }
-    return (r.hi - r.lo).trunc(usize)
+    return (r.hi.trunc(u128) -% r.lo.trunc(u128)).trunc(usize)
+}
+
+// `r.len()` of an inclusive range: the number of values in `lo..=hi`, 0 when `hi < lo`.
+range_incl_len :: fn(T: type, r: RangeIncl(T)) -> usize where Int(T) {
+    if r.hi < r.lo { return 0 }
+    return (r.hi.trunc(u128) -% r.lo.trunc(u128)).trunc(usize) + 1
 }
 
 /// Where a piece of source code is (§21.7): the result of `@location()`.
