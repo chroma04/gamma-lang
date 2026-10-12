@@ -499,6 +499,7 @@ pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> Al
 /// `n` objects of plain data, uninitialized.
 pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
     if n is 0 { return empty_slice(T) }
+    if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
@@ -509,6 +510,7 @@ pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> 
 /// `align` (a power of two; at least the type's own alignment is used).
 pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
     if n is 0 { return empty_slice(T) }
+    if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, align.max(@align_of(T))) else return !.OutOfMemory
     tag(raw, a, site)
@@ -518,6 +520,7 @@ pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @
 /// `n` copies of `x`.
 pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
     if n is 0 { return empty_slice(T) }
+    if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
@@ -529,6 +532,7 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 /// A copy of `s` in memory from the current allocator, released with `free`.
 pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
     if s.len is 0 { return empty_slice(T) }
+    if @size_of(T) > 0 and s.len > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T) * s.len, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
@@ -570,6 +574,12 @@ pub Range :: struct(T: type) {
 /// The value of `lo..=hi`: from `lo` up to and including `hi` (§5.16).
 pub RangeIncl :: struct(T: type) {
     pub lo, hi: T
+}
+
+/// The number of values in `lo..hi`; 0 when `hi <= lo`.
+pub len :: fn(T: type, r: Range(T)) -> usize where Int(T) {
+    if r.hi <= r.lo { return 0 }
+    return (r.hi - r.lo).trunc(usize)
 }
 
 /// Where a piece of source code is (§21.7): the result of `@location()`.

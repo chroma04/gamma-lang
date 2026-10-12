@@ -218,3 +218,20 @@ test "next_entry reports kinds" {
     }
     expect(dirs is 2)
 }
+
+test "copying a file onto itself keeps it" {
+    try fs.write_all("self.txt", "precious data")
+    try fs.copy("self.txt", "self.txt")
+    d := try fs.read_all("self.txt")
+    defer free(d)
+    expect(string(d) is "precious data", "content")
+}
+
+test "copy replaces a longer file" {
+    try fs.write_all("long.txt", "a much longer old content")
+    try fs.write_all("short.txt", "new")
+    try fs.copy("short.txt", "long.txt")
+    d := try fs.read_all("long.txt")
+    defer free(d)
+    expect(string(d) is "new", "content")
+}

@@ -48,8 +48,11 @@ pub reserve :: fn(T: type, d: ^Deque(T), extra: usize) -> AllocError!() {
     n := d.count
     cap := d.buf.len
     if cap - n >= extra { return () }
-    new_cap := if cap is 0 { 4 } else { cap * 2 }
-    if new_cap - n < extra { new_cap = n + extra }
+    if extra > @max_value(usize) - n { return !.OutOfMemory }
+    new_cap := n + extra
+    if cap <= @max_value(usize) / 2 and cap * 2 > new_cap { new_cap = cap * 2 }
+    if cap is 0 and new_cap < 4 { new_cap = 4 }
+    if @size_of(T) > 0 and new_cap > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     raw := d.alloc.vt.alloc(d.alloc.data, @size_of(T) * new_cap, @align_of(T)) else return !.OutOfMemory
     p := raw.cast([^]T)
     // Unroll the ring: the new block starts with the front element.

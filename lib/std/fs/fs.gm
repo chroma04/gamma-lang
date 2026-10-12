@@ -76,18 +76,24 @@ pub exists :: fn(path: string) -> bool \ {Fs} {
     return true
 }
 
-/// Copies the file at `from` to `to`, replacing `to`.
+/// Copies the file at `from` to `to`, replacing `to`. Copying a file onto itself leaves it
+/// unchanged.
 pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
     src := try open(from, OpenOptions())
     defer close(src)
-    dst := try open(to, OpenOptions(read: false, write: true, create: true, truncate: true))
+    // `to` is cut to the copied length at the end rather than emptied first, so that a file
+    // given as both `from` and `to` is not lost.
+    dst := try open(to, OpenOptions(read: false, write: true, create: true))
     defer close(dst)
     buf: [4096]u8 = ---
+    total: u64 = 0
     while true {
         n := try src.read_from(buf[..])
         if n is 0 { break }
         try write_all_to(dst, buf[0..n])
+        total += u64(n)
     }
+    try truncate(dst, total)
     return ()
 }
 
