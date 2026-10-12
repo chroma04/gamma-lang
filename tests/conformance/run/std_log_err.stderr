@@ -1,0 +1,9 @@
+INFO starting up
+WARN 2 of 3 retries used
+ERROR done
+DEBUG debug hidden by default
+INFO starting up
+WARN 2 of 3 retries used
+ERROR done
+2023-11-14T22:13:20Z WARN 2 of 3 retries used
+2023-11-14T22:13:20Z ERROR done

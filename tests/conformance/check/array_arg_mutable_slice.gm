@@ -1,0 +1,10 @@
+//! stage: check
+// Only read-only slice parameters take an array directly (§7.2).
+fill :: fn(xs: []i64) {}
+sum :: fn(xs: []const i32) {}
+main :: fn() {
+    a := [3]i64(1, 2, 3)
+    fill(a)                           //~ ERROR expected `[]i64`, found `[3]i64`
+    sum(a)                            //~ ERROR expected `[]const i32`
+    fill(a[..])
+}

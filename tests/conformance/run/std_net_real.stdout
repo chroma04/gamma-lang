@@ -1,0 +1,12 @@
+client sees the listener's port: true
+peer ends with the port: true
+server sees a client: true
+peer into a small buffer: .InvalidInput
+got: hello, network
+end of stream: 0
+reply: bye
+recv_exact: .UnexpectedEof
+recv with a timeout: .TimedOut (timed out)
+received: 4
+closed: 0
+shutdown of a closed socket: true

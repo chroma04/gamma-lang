@@ -1,0 +1,13 @@
+test "entries lists a directory with kinds" ... ok
+test "entries yields an open error once" ... ok
+test "entries closes the directory when left early" ... ok
+test "walk visits every entry in pre-order" ... ok
+test "walk with a trailing slash and an empty tree" ... ok
+test "walk reports a missing root once" ... ok
+test "walk frees everything when left early" ... ok
+test "make_dir_all" ... ok
+test "write_atomic replaces the file and leaves no temporary" ... ok
+test "truncate and sync" ... ok
+test "lstat is stat, and cwd is the root" ... ok
+test "next_entry reports kinds" ... ok
+12 passed, 0 failed

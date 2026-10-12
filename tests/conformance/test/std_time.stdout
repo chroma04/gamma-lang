@@ -1,0 +1,3 @@
+test "now follows the fake wall clock" ... ok
+test "formatting the current time" ... ok
+2 passed, 0 failed

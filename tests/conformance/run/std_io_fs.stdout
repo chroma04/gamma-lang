@@ -1,4 +1,5 @@
-stdin: 6 lines, longest 4096
+line 4: .InvalidInput
+stdin: 5 lines, longest 10
 string: 4 lines, longest 20
 [captured 1 and true]
 write error: null

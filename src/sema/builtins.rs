@@ -53,6 +53,7 @@ pub enum BuiltinFn {
     Trap,
     Assert,
     Expect,
+    ExpectEq,
 }
 
 pub fn builtin_fn(name: &str) -> Option<BuiltinFn> {
@@ -62,6 +63,7 @@ pub fn builtin_fn(name: &str) -> Option<BuiltinFn> {
         "trap" => BuiltinFn::Trap,
         "assert" => BuiltinFn::Assert,
         "expect" => BuiltinFn::Expect,
+        "expect_eq" => BuiltinFn::ExpectEq,
         _ => return None,
     })
 }

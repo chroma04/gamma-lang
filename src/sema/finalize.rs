@@ -83,7 +83,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         _ if !numeric(from) || !numeric(to) => &[],
                         (false, false) => &["trunc", "checked", "sat"],
                         (true, false) => &["trunc", "round", "checked", "sat"],
-                        _ => &["round"],
+                        _ => &["to"],
                     };
                     let hint = if methods.is_empty() {
                         " (§6.5)".to_string()

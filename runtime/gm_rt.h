@@ -32,9 +32,13 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sched.h>
+#if defined(__linux__) && !defined(__FILC__)
+#include <sys/syscall.h>
+#endif
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
  * GM_API_VAR: of the declarations of its variables here. */
@@ -299,6 +303,17 @@ struct gm_type {
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
 GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
 
+/* A placeholder's format spec (§21.6.1). align: 0 auto, 1 left, 2 right, 3 center; kind:
+ * 0 display, 1 x, 2 X, 3 o, 4 b, 5 e; precision -1 when absent. */
+typedef struct {
+    uint8_t fill, align, plus, alt, zero, kind;
+    uint32_t width;
+    int32_t precision;
+} gm_spec;
+
+/* Appends the value of type t at address v as a placeholder with the spec s. */
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *v, const gm_spec *s);
+
 /* ---- ambient effects ---------------------------------------------------------- */
 
 GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */
@@ -330,14 +345,18 @@ GM_API int64_t gm_fs_close(int64_t f);
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
 GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
 GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, is_dir, mtime */
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime */
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n);   /* as stat; no final symlink followed */
 GM_API int64_t gm_fs_remove(const void *path, size_t len);
 GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
 GM_API int64_t gm_fs_make_dir(const void *path, size_t len);
 GM_API int64_t gm_fs_remove_dir(const void *path, size_t len);
 GM_API int64_t gm_fs_open_dir(const void *path, size_t len);
-GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);   /* length + kind * 2^32; 0 after the last */
 GM_API int64_t gm_fs_close_dir(int64_t d);
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
+GM_API int64_t gm_fs_sync(int64_t f);
+GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
 /* TCP sockets; handles are file descriptors. Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
@@ -347,6 +366,9 @@ GM_API int64_t gm_net_accept(int64_t h);
 GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n);
 GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n);
 GM_API int64_t gm_net_close(int64_t h);
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2 both */
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
  *
@@ -356,6 +378,11 @@ GM_API_VAR pthread_mutex_t gm_rt_lock;
 GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
 GM_API int64_t gm_thread_join(int64_t h);
 GM_API void gm_thread_yield(void);
+/* Blocks while *addr == expected, until woken or the timeout (ns; negative: none) passes;
+ * 0 or an error code. May return early. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns);
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n);   /* UINT32_MAX: all */
+GM_API uint32_t gm_cpu_count(void);
 /* Writes to standard output (fd 1, buffered like Out) or standard error (fd 2). */
 GM_API void gm_sys_write(int32_t fd, const void *p, size_t n);
 

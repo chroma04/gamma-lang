@@ -1,0 +1,32 @@
+//! stderr
+// std/log: the standard-error handler, with and without timestamps. The clock is fixed
+// so the timestamps are known.
+log :: import "std/log"
+
+Fixed :: struct { secs: i64 }
+
+handler Clock for ^Fixed {
+    now(self) => Instant(ns: 0)
+    wall(self) => self.secs * 1_000_000_000 + 123_456_789
+    sleep(self, d) => {}
+}
+
+work :: fn() \ {log.Log} {
+    log.debug("debug hidden by default")
+    log.info("starting {}", "up")
+    log.warn("{} of {} retries used", (2, 3))
+    log.error("done")
+}
+
+main :: fn() \ {Out, Err, Clock} {
+    plain := log.ErrLog()
+    with &plain { work() }
+
+    loud := log.ErrLog(min: .Debug)
+    with &loud { work() }
+
+    clock := Fixed(secs: 1_700_000_000)
+    stamped := log.ErrLog(min: .Warn, time: true)
+    with &clock, &stamped { work() }
+    print("done\n", ())
+}

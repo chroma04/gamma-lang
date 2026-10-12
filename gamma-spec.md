@@ -112,6 +112,7 @@ Safe builds follow every rule this specification states for Checked builds; wher
 | 19 | Interoperability and low-level facilities |
 | 20 | Attributes and intrinsics |
 | 21 | The core library |
+| 22 | The standard library: scope and admission |
 | A | Grammar |
 | B | Reference tables |
 | C | Design rationale |
@@ -309,6 +310,8 @@ The binding's name is chosen by the importer and has no relation to the path. Th
 
 A module is identified by its resolved directory. Importing the same module twice (under any names) yields the same module.
 
+Since the files of a module share one namespace, each file that uses a module may import it: an import repeated in another file of the module with the same name, the same path and the same visibility declares nothing new. Any other repeated name is an error (§3.4).
+
 The import graph must be acyclic; a cycle is a compile error naming the modules in it.
 
 An imported module's `pub` declarations are accessed as `name.member`. A module binding is not a value: it cannot be passed, stored, or compared. A `pub` module binding is itself a member: if module `top` declares `pub s :: import "./shapes"`, then `top.s.area(c)` and `top.s.Circle` reach `shapes`'s declarations, so a module can gather others under one import.
@@ -381,7 +384,7 @@ test "parse rejects letters" {
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); every later `try` must have that error type or one that lifts into it (§10.6), as in any function returning `E!()`. A test that propagates unrelated errors calls a helper function that declares a common error type; returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` fails, if a trap occurs, or if the test `Alloc` handler detects a leak. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
 
 ---
 
@@ -463,7 +466,7 @@ place = expr          place op= expr
 
 Assignment is a statement, never an expression. The left side must be a mutable place (§7.2), or `_`, which evaluates and discards the right side (§7.14). The right side is converted to the place's type by the implicit coercions of §6.4.
 
-Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists for `+ - * / % << >> & | ~` and the wrapping and saturating forms `+% -% *% <<% +| -| *| <<|`. There is no `+?=` (its result would be an optional).
+Compound assignment `p op= e` is `p = p op e` with `p` evaluated once. It exists for `+ - * / % << >> & | ~` and the wrapping and saturating forms `+% -% *% <<% +| -| *| <<|`. There is no `+?=` (its result would be an optional). For the arithmetic and bitwise operators, `e` may have a numeric type that converts losslessly to the type of `p` (§6.5), and is converted first: `total += x` adds a `u32` to a `u64` total. This is the one place where an operand widens implicitly; it cannot lose information, and the result has the place's type either way.
 
 The order of evaluation is: the place's sub-expressions (left to right), then the right side, then the store.
 
@@ -784,7 +787,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 For `usize` and `isize` the rule is applied against every supported target (pointer width ≥ 32): `usize(x)` is permitted for `x: uN` with N ≤ 32, and so on. Converting between `usize`/`isize` and wider fixed-width types uses the methods of §6.6.
 
-When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.round(f64)`.
+When the type of `x` is still a literal type variable (§6.1), `T(x)` with an integer type `T` fixes the variable to `T`, like a coercion site, and the conversion does nothing. With a float type `T`, only an expression made of literals takes `T` (`f64(1 + 2)` is the `f64` 3.0); a variable keeps its own integer type and is converted from it, so `for i in 0..n { f64(i) }` converts from `usize` and needs `i.to(f64)`.
 
 ### 6.6 Lossy and reinterpreting conversions
 
@@ -796,12 +799,12 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.trunc(T)` | float → integer | round toward zero; **checked**: the result must fit `T` and `x` must not be NaN |
 | `x.round(T)` | float → integer | round to nearest, ties to even (`2.5.round(i32)` is 2); checked as above |
 | `x.floor(T)`, `x.ceil(T)` | float → integer | checked as above |
-| `x.round(T)` | integer → float, float → narrower float | round to nearest-even; overflow gives ±∞ |
+| `x.to(F)` | integer → float, float → float | the nearest value of float type `F` (ties to even); overflow gives ±∞; never traps |
 | `x.checked(T)` | integer → integer | `?T`: `null` if the value doesn't fit |
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
 | `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
-| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P` |
+| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type; calling it is undefined unless the parameters and results have the same representation |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
@@ -825,7 +828,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise a slice `a[…]` of a temporary array, written as an argument for a `[]const T` parameter, slices a temporary that lives for the call: `total([_]i64(1, 2, 3)[..])`.
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
 
 ### 7.3 Operator summary
 
@@ -900,7 +903,7 @@ If `a` and `b` are arrays `[N]T` of a numeric `T`, `a op b` for `op` in `+ - * /
 
 ### 7.5 Comparison
 
-`< <= > >=` apply to two operands of the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all integers, floats, enums, or (recursively) such tuples, arrays and slices.
+`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
 
 Tuples, arrays and slices (including `string`) compare **lexicographically**: find the first index `i` at which element `i` of `a` is not `is`-equal to element `i` of `b`; then `a < b` is element `i` of `a` `<` element `i` of `b`. If there is no such position, the shorter is less (tuples and arrays of one type have equal length, so they are equal). `a <= b` is `a < b or a is b`; `>` and `>=` are the mirror images. Strings therefore compare bytewise. Structs are deliberately **not** ordered: their field order records layout, not priority. To order structs, order a tuple of keys (`sort_by_key`, §21.3).
 
@@ -1973,7 +1976,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | Constraint | Satisfied by | Grants |
 | --- | --- | --- |
 | `Eq(T)` | every type for which `is` is defined (§7.6) | `is`, `is not`, `in` over `T`, literal patterns of `T`, `@hash` (§16.8) |
-| `Ord(T)` | integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
+| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, `.trunc` / `.checked` / `.sat` |
 | `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
@@ -2412,7 +2415,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 
 ## 21. The core library
 
-The core library is the part of the standard library that the language definition depends on. Everything else (file and network APIs, further collections, text processing, …) is outside the scope of this specification.
+The core library is the part of the standard library that the language definition depends on. The contents of the other standard modules (file and network helpers, further collections, text processing, …) are outside the scope of this specification; §22 defines what may be among them.
 
 ### 21.1 The universe scope
 
@@ -2424,7 +2427,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2437,6 +2440,7 @@ make_aligned :: fn(T: type, n: usize, align: usize) -> AllocError![]T \ {Alloc} 
 free         :: fn(T: type, s: []const T) \ {Alloc}
 free_aligned :: fn(T: type, s: []const T, align: usize) \ {Alloc}
 destroy      :: fn(T: type, p: ^const T) \ {Alloc}
+dupe         :: fn(T: type, s: []const T) -> AllocError![]T \ {Alloc}
 ```
 
 `make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
@@ -2449,9 +2453,9 @@ Each of these functions also has a final parameter `site: SourceLocation = @call
 
 Builtin methods are resolved by §7.10 rule 2. `T` is a type argument.
 
-**All integers:** `trunc(T)`, `checked(T)`, `sat(T)`, `bits(T)`, `round(F)` (to float), `min(y)`, `max(y)`, `clamp(lo, hi)`, `abs()` (signed; checked like `-`), `abs_diff(y)` (unsigned result), `pow(n: u32)` (checked), and the overflow-flavored `pow_wrap`, `pow_sat`, `pow_checked`.
+**All integers:** `trunc(T)`, `checked(T)`, `sat(T)`, `bits(T)`, `to(F)` (to float), `min(y)`, `max(y)`, `clamp(lo, hi)`, `abs()` (signed; checked like `-`), `unsigned_abs()` (the magnitude in the unsigned type of the same width; never traps), `abs_diff(y)` (unsigned result), `pow(n: u32)` (checked), and the overflow-flavored `pow_wrap`, `pow_sat`, `pow_checked`.
 
-**All floats:** `trunc(T)`, `round(T)`, `floor(T)`, `ceil(T)`, `checked(T)`, `sat(T)` (to integer); `round(F)` (to narrower float); `bits(T)`; `is_nan()`, `is_inf()`, `is_finite()`, `sign_bit()`; `min(y)`, `max(y)` (IEEE `minimumNumber`/`maximumNumber`); `abs()`, `sqrt()`.
+**All floats:** `trunc(T)`, `round(T)`, `floor(T)`, `ceil(T)`, `checked(T)`, `sat(T)` (to integer); `to(F)` (to any float type); `bits(T)`; `is_nan()`, `is_inf()`, `is_finite()`, `sign_bit()`; `min(y)`, `max(y)` (IEEE `minimumNumber`/`maximumNumber`); `abs()`, `sqrt()`.
 
 **Pointers:** `cast(P)`, `addr()`; on `^S` and `^const S` with `using`, `downcast_unchecked(Outer)`.
 
@@ -2500,6 +2504,9 @@ swap_remove :: fn(T: type, l: ^List(T), i: usize) -> T             // moves the 
 truncate :: fn(T: type, l: ^List(T), n: usize)                      // keeps the first n
 clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
+into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
+collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!()   // appends what `it` yields
+write  :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!()  // @write into the list
 
 // core/map
 HashMap  :: struct(K, V: type,
@@ -2512,15 +2519,20 @@ put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
 get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
 get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
+Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
+entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // as get_or_put, with the stored key
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
+remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
 len      :: fn(m: ^const HashMap(…)) -> usize
 entries  :: fn(m: ^const HashMap(…)) \ {Yield((key: K, value: V))}   // unspecified order
+keys     :: fn(m: ^const HashMap(…)) \ {Yield(K)}                   // in the order of `entries`
+values   :: fn(m: ^const HashMap(…)) \ {Yield(V)}
 clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `get_or_put` are invalidated by the next insertion or removal.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr`, `get_or_put` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2528,6 +2540,7 @@ Signatures are abbreviated: the `HashMap` functions take the map type's paramete
 trap   :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never
 assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation = @caller_location())
 expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location())
+expect_eq :: fn(T: type, actual: T, expected: T)
 print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 ```
@@ -2535,6 +2548,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 - `trap` traps in every build mode (§18.5).
 - `assert` is a checked operation: it traps on `false` in Debug and Checked builds and is removed (its argument not evaluated) in Fast builds.
 - `expect` may be called only in tests; on `false` it fails the current test (reporting the location) and stops it.
+- `expect_eq(actual, expected)` may be called only in tests; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
 - `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
 
 #### 21.6.1 Formatting: `@write`
@@ -2545,7 +2559,7 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 
 `sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` is a placeholder; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
+**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
 
 - *n* = 0: `args` must be `()`.
 - *n* = 1: `args` is the one argument, whatever its type (a tuple prints as a tuple).
@@ -2571,7 +2585,34 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | pointers of every kind (including `cstring`), function pointers | `0x` and the address in hexadecimal; to print a C string, slice it: `s[0..s.cstr_len()]` |
 | `#c_union`, `cont`, `Allocator` internals | `<TypeName>` |
 
-The rules are fixed and not extensible: there is no way for a type to customize its formatting. A type that wants a particular presentation provides a function that produces it (`date.iso(d, &buf)`), and the caller passes the result as a `string`. Other bases, widths and precisions are library functions over buffers (`fmt.hex(n, &buf)`).
+The rules are fixed and not extensible: there is no way for a type to customize its formatting. A type that wants a particular presentation provides a function that produces it (`date.iso(d, &buf)`), and the caller passes the result as a `string`.
+
+**Format specs.** A placeholder `{:spec}` writes its argument by the display rules, changed by the spec:
+
+```
+spec  = [[fill] align] ['+'] ['#'] ['0'] [width] ['.' precision] [kind]
+align = '<' | '>' | '^'          (left, right, centered)
+kind  = 'x' | 'X' | 'o' | 'b' | 'e'
+```
+
+`fill` is one printable ASCII character other than a brace (default a space); `width` and `precision` are decimal numbers up to 65536. `{:}` is `{}`.
+
+| Part | Applies to | Effect |
+| --- | --- | --- |
+| `width` | any type | pads the text to at least `width` Unicode scalar values with `fill`; numbers are aligned right and other values left unless `align` says otherwise |
+| `+` | integers, floats | writes `+` before a non-negative number (not before `nan`) |
+| `0` | integers, floats | pads with zeros between the sign (and base prefix) and the digits instead of `fill`; not combined with `align`; ignored for `inf` and `nan`, which are padded with spaces |
+| `x`, `X`, `o`, `b` | integers | base 16 (lowercase or uppercase digits), 8 or 2: a `-` and the magnitude, never two's complement |
+| `#` | with `x`, `X`, `o`, `b` | writes the prefix `0x`, `0o` or `0b` after the sign |
+| `.precision` | floats | exactly `precision` digits after the point, correctly rounded from the exact value (ties to even): `{:.2}` of `0.125` is `0.12` |
+| `e` | floats | scientific notation, `d.ddde<exponent>`: the shortest digits that read back as the value, or `precision` digits after the point when given (`{:.2e}` of `1234.5` is `1.23e3`) |
+
+A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
+
+```
+print("{:<10}|{:>6}|{:6.2}\n", (name, count, ratio))         // Ada       |    12|  0.83
+print("{:08.3} {:+} {:#06x} {:b}\n", (-3.14159, 5, 255, 5))  // -003.142 +5 0x00ff 101
+```
 
 ```
 print("hello, world\n")
@@ -2585,6 +2626,7 @@ print("{}\n", pos)                                           // Vec2(x: 1.5, y: 
 IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
     BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
+    TimedOut,                                   // a send or receive outlived its timeout
     Other: i32                                  // OS error code
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch
@@ -2611,7 +2653,9 @@ Env   :: effect {
 ```
 File, Dir :: struct { … }                       // handles
 OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
-FileInfo :: struct { pub size: u64; pub is_dir: bool; pub modified: i64 }   // Unix nanoseconds
+FileKind :: union { File, Dir, Symlink, Other }
+FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64 }   // Unix nanoseconds
+DirEntry :: struct { pub len: usize; pub kind: FileKind }                    // a name's length, and what it is
 SeekFrom :: union { Start, Current, End }
 Fs :: effect {
     open: fn(path: string, opts: OpenOptions) -> IoError!File
@@ -2623,8 +2667,12 @@ Fs :: effect {
     remove, make_dir, remove_dir: fn(path: string) -> IoError!()
     rename: fn(from, to: string) -> IoError!()
     open_dir: fn(path: string) -> IoError!Dir
-    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name (never . or ..); 0 after the last
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!?DirEntry     // a name into buf (never . or ..); null after the last
     close_dir: fn(d: Dir)
+    lstat: fn(path: string) -> IoError!FileInfo                 // does not follow a final symlink
+    truncate: fn(f: File, size: u64) -> IoError!()
+    sync: fn(f: File) -> IoError!()                             // flushes the file to the device
+    cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf; InvalidInput if too small
 }
 ```
 
@@ -2632,6 +2680,7 @@ and its `Net` (TCP) is:
 
 ```
 Socket, Listener :: struct { … }               // handles
+Shutdown :: union { Read, Write, Both }
 Net :: effect {
     connect: fn(host: string, port: u16) -> IoError!Socket
     listen: fn(host: string, port: u16) -> IoError!Listener     // port 0: any free port
@@ -2641,10 +2690,65 @@ Net :: effect {
     recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
     close_socket: fn(s: Socket)
     close_listener: fn(l: Listener)
+    shutdown: fn(s: Socket, how: Shutdown) -> IoError!()
+    set_timeouts: fn(s: Socket, recv, send: ?Duration) -> IoError!()   // null: wait forever; a call that times out gives TimedOut
+    peer: fn(s: Socket, buf: []u8) -> IoError!usize                    // "host:port" into buf; InvalidInput if too small
 }
 ```
 
 Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+
+---
+
+## 22. The standard library: scope and admission
+
+The core library (§21) is what the language needs. The rest of the standard library is the set of `std/…` modules shipped with every implementation. This section says what may be in it, so that it stays small enough to be learned, reviewed and maintained by one team, and complete enough that ordinary programs do not each re-implement the same pieces. It is normative for the reference library and for anything proposed to join it; the contents of the modules themselves are documented with the library, not here.
+
+### 22.1 Two tiers
+
+| Tier | Where | Admission |
+| --- | --- | --- |
+| **Core** | the universe scope (§21.1), and builtin methods (§21.3) | Only what the language definition refers to (ambient effects, allocation, `for` sources, `print`, the test runner), and methods of builtin types, which can live nowhere else (§7.10 rule 3). Adding to the core needs a change to this specification. |
+| **Standard** | `std/<area>` modules, imported by path | The rules of §22.2–§22.4. |
+
+Everything else belongs in packages (§3.1). A package can depend on the standard library; the standard library never depends on a package.
+
+### 22.2 What earns a place
+
+A module, or a function or type added to one, must meet **at least one reason** and **every requirement**.
+
+Reasons:
+
+1. **Common need.** Programs in several unrelated domains need it, and each would otherwise write the same code. The evidence is real programs: the same helper written independently in at least two programs from different domains (command-line tools, data processing, systems and network code, applications), not a guess about what might be useful.
+2. **Hard to get right.** A short, natural implementation is subtly wrong: correctly rounded float parsing, unbiased random ranges, calendar arithmetic, UTF-8 and Unicode segmentation, endian codecs, path joining. One tested implementation beats many plausible ones.
+3. **Shared vocabulary.** Independent libraries must agree on the type to interoperate: `Duration`, a date, an error type, a byte reader. Only the type and the operations needed to use it are admitted on this ground.
+4. **The platform boundary.** It reaches the operating system (files, sockets, threads, time, the environment). Such code goes through the ambient effects (§12.9), so programs stay portable and testable with the test handlers; only modules whose purpose is to cross the boundary (`std/thread`, `std/c`) may require `Sys`.
+
+Requirements:
+
+1. **Settled design.** There is one obvious interface, preferably fixed by an external standard (an RFC, ISO 8601, a Unicode annex, a FIPS publication), and it does not impose a policy that reasonable programs would choose differently (an output style, a protocol framework, a configuration format with dialects).
+2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, reflection, macros, overloading); a module that would need one is not admitted until the language has it.
+3. **Not a second way.** It does not duplicate a core facility or another module, and it is not an alias that only saves keystrokes. A function that is a composition of two or three existing calls is admitted only on reason 1 with strong evidence (it appears in most programs of its domain) or on reason 2.
+4. **Bounded size and cost.** A module has one concern and a surface that its reference documentation can describe in a page. Nothing is paid by programs that do not import it: no global state, no initialization at start-up, no effect on the core.
+5. **Quality.** It is written in Gamma (foreign code only behind `std/c`-style boundaries), documented in the library reference, covered by tests that run in the interpreter and through the C back end, and conforms to its external standard where it has one.
+
+### 22.3 Conventions
+
+Modules follow the core library's conventions, so that learning one teaches the rest:
+
+- **Names.** A module is named by its subject as a noun (`std/time`, `std/path`), never `util` or `misc`. Functions are named by what they produce or do; a function and its allocating variant differ by a documented suffix or module, not by overloading.
+- **Text and bytes out.** An operation that produces text or bytes has a form writing into a caller-supplied buffer (returning the used part, trapping only on a documented size precondition) or appending to a `List(u8)` (returning `AllocError!()`); a form that allocates its result performs `Alloc` and returns `AllocError![]u8`, released with `free`.
+- **Text in.** Parsers take a `string` and return `E!T` with an error union whose variants carry the position of the problem.
+- **Containers** capture the current allocator at construction and never perform `Alloc` afterwards, as `List` does (§21.5).
+- **Sequences** are produced by iterators (`Yield`, §13) rather than by returning allocated arrays, unless the caller asks for a collection.
+- **Effects.** A replaceable service (logging, randomness, time) is an effect or a handler of an ambient effect, so callers and tests can substitute it with `with`.
+- **Stability.** A released public name changes only through `#deprecated` (§20.2) for at least one release before removal.
+
+### 22.4 Outside the standard library
+
+These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography (it needs dedicated security maintenance), compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+
+*Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
 
 ---
 

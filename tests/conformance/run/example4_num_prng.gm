@@ -68,7 +68,7 @@ below :: fn(n: u32) -> u32 \ {Rng} {
 
 unit :: fn() -> f64 \ {Rng} {
     bits := next_u64() >> 11
-    return bits.round(f64) * (1.0 / 9007199254740992.0)
+    return bits.to(f64) * (1.0 / 9007199254740992.0)
 }
 
 monte_carlo_pi :: fn(samples: u32) -> f64 \ {Rng} {
@@ -78,7 +78,7 @@ monte_carlo_pi :: fn(samples: u32) -> f64 \ {Rng} {
         y := unit()
         if x * x + y * y < 1.0 { inside += 1 }
     }
-    return 4.0 * inside.round(f64) / samples.round(f64)
+    return 4.0 * inside.to(f64) / samples.to(f64)
 }
 
 roll_two_dice :: fn(counts: ^[13]u32, rolls: u32) \ {Rng} {

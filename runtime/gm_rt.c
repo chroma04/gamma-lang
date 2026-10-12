@@ -1116,6 +1116,193 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     }
 }
 
+/* ---- format specs (spec §21.6.1) ----------------------------------------------- */
+
+/* Writes head and body padded to the spec's width, counted in Unicode scalar values. */
+static void gm_spec_pad(gm_buf *out, const char *head, size_t hn, const uint8_t *body, size_t bn,
+                        const gm_spec *s, bool number) {
+    size_t len = 0;
+    for (size_t i = 0; i < hn; i++) len += ((uint8_t)head[i] & 0xc0) != 0x80;
+    for (size_t i = 0; i < bn; i++) len += (body[i] & 0xc0) != 0x80;
+    size_t gap = s->width > len ? s->width - len : 0, before, after;
+    if (s->zero) {
+        gm_buf_push(out, head, hn);
+        for (size_t i = 0; i < gap; i++) gm_fmt_ch(out, '0');
+        gm_buf_push(out, body, bn);
+        return;
+    }
+    switch (s->align) {
+    case 1: before = 0, after = gap; break;
+    case 2: before = gap, after = 0; break;
+    case 3: before = gap / 2, after = gap - gap / 2; break;
+    default: before = number ? gap : 0, after = number ? 0 : gap; break;
+    }
+    for (size_t i = 0; i < before; i++) gm_fmt_ch(out, (char)s->fill);
+    gm_buf_push(out, head, hn);
+    gm_buf_push(out, body, bn);
+    for (size_t i = 0; i < after; i++) gm_fmt_ch(out, (char)s->fill);
+}
+
+/* The magnitude of an integer in base 2^shift (2, 8 or 16) into body; returns whether it is
+ * negative. */
+static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsigned shift, bool upper) {
+    size_t n = t->size;
+    uint8_t *m = (uint8_t *)malloc(n ? n : 1);
+    if (m == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(m, p, n);
+    unsigned bits = t->bits;
+    /* Clear the bits above the width. */
+    for (size_t i = 0; i < n; i++) {
+        size_t lo = i * 8;
+        if (lo >= bits) m[i] = 0;
+        else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+    }
+    bool neg = t->is_signed && bits > 0 && ((m[(bits - 1) / 8] >> ((bits - 1) % 8)) & 1);
+    if (neg) {
+        unsigned carry = 1;
+        for (size_t i = 0; i < n; i++) {
+            unsigned v = (uint8_t)~m[i] + carry;
+            m[i] = (uint8_t)v;
+            carry = v >> 8;
+        }
+        for (size_t i = 0; i < n; i++) {
+            size_t lo = i * 8;
+            if (lo >= bits) m[i] = 0;
+            else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+        }
+    }
+    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    size_t ndig = (bits + shift - 1) / shift;
+    bool started = false;
+    for (size_t d = ndig; d > 0; d--) {
+        size_t bit = (d - 1) * shift;
+        unsigned v = 0;
+        for (unsigned k = 0; k < shift; k++) {
+            size_t b = bit + k;
+            if (b < (size_t)n * 8) v |= (unsigned)((m[b / 8] >> (b % 8)) & 1) << k;
+        }
+        if (v != 0) started = true;
+        if (started) gm_fmt_ch(body, dig[v]);
+    }
+    if (!started) gm_fmt_ch(body, '0');
+    free(m);
+    return neg;
+}
+
+/* Rewrites printf's exponent ("e+05", "e-07") in the display style ("e5", "e-7"). */
+static void gm_spec_exp(gm_buf *body, const char *s) {
+    const char *e = strchr(s, 'e');
+    gm_buf_push(body, s, (size_t)(e - s));
+    int x = atoi(e + 1);
+    char tmp[16];
+    int k = snprintf(tmp, sizeof tmp, "e%d", x);
+    gm_buf_push(body, tmp, (size_t)k);
+}
+
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const gm_spec *s) {
+    const uint8_t *v = (const uint8_t *)vp;
+    gm_buf body = {0};
+    bool neg = false, finite = true, nan = false, number = true;
+    if (t->kind == GM_K_INT) {
+        if (s->kind >= 1 && s->kind <= 4) {
+            unsigned shift = s->kind <= 2 ? 4 : s->kind == 3 ? 3 : 1;
+            neg = gm_spec_radix(&body, t, v, shift, s->kind == 2);
+        } else {
+            gm_fmt_int(&body, t, v);
+            if (body.len > 0 && body.data[0] == '-') {
+                neg = true;
+                memmove(body.data, body.data + 1, --body.len);
+            }
+        }
+    } else if (t->kind == GM_K_FLOAT) {
+        double x;
+        if (t->bits == 16) {
+            uint16_t h;
+            memcpy(&h, v, 2);
+            x = gm_f16_to_f64(h);
+        } else if (t->bits == 32) {
+            float f;
+            memcpy(&f, v, 4);
+            x = (double)f;
+        } else {
+            memcpy(&x, v, 8);
+        }
+        nan = __builtin_isnan(x);
+        finite = !nan && !__builtin_isinf(x);
+        neg = !nan && __builtin_signbit(x);
+        double a = __builtin_fabs(x);
+        if (nan) {
+            gm_fmt_str(&body, "nan");
+        } else if (!finite) {
+            gm_fmt_str(&body, "inf");
+        } else if (s->kind == 5 && s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*e", s->precision, a);
+            char *tmp = (char *)malloc((size_t)k + 1);
+            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+            snprintf(tmp, (size_t)k + 1, "%.*e", s->precision, a);
+            gm_spec_exp(&body, tmp);
+            free(tmp);
+        } else if (s->kind == 5) {
+            if (a == 0) {
+                gm_fmt_str(&body, "0e0");
+            } else {
+                char digits[24], tmp[16];
+                int e;
+                gm_shortest(a, t->bits, digits, &e);
+                gm_fmt_ch(&body, digits[0]);
+                if (digits[1] != '\0') {
+                    gm_fmt_ch(&body, '.');
+                    gm_fmt_str(&body, digits + 1);
+                }
+                int k = snprintf(tmp, sizeof tmp, "e%d", e);
+                gm_buf_push(&body, tmp, (size_t)k);
+            }
+        } else if (s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*f", s->precision, a);
+            char *tmp = (char *)malloc((size_t)k + 1);
+            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+            snprintf(tmp, (size_t)k + 1, "%.*f", s->precision, a);
+            gm_buf_push(&body, tmp, (size_t)k);
+            free(tmp);
+        } else {
+            uint8_t pos[8];
+            if (t->bits == 16) {
+                uint16_t h = gm_f64_to_f16(a);
+                memcpy(pos, &h, 2);
+            } else if (t->bits == 32) {
+                float f = (float)a;
+                memcpy(pos, &f, 4);
+            } else {
+                memcpy(pos, &a, 8);
+            }
+            gm_fmt_float(&body, t, pos);
+        }
+    } else {
+        number = false;
+        gm_format(&body, t, v, true);
+        gm_spec_pad(out, "", 0, body.data, body.len, s, false);
+        gm_buf_free(&body);
+        return;
+    }
+    char head[4];
+    size_t hn = 0;
+    if (neg) head[hn++] = '-';
+    else if (s->plus && !nan) head[hn++] = '+';
+    if (s->alt) {
+        head[hn++] = '0';
+        head[hn++] = s->kind <= 2 ? 'x' : s->kind == 3 ? 'o' : 'b';
+    }
+    if (s->zero && !finite) {
+        gm_spec s2 = *s;
+        s2.zero = 0;
+        s2.align = 2;
+        gm_spec_pad(out, head, hn, body.data, body.len, &s2, number);
+    } else {
+        gm_spec_pad(out, head, hn, body.data, body.len, s, number);
+    }
+    gm_buf_free(&body);
+}
+
 /* ---- ambient effects ---------------------------------------------------------- */
 
 GM_API void gm_write_out(const uint8_t *p, size_t len) {
@@ -1181,6 +1368,7 @@ GM_API int64_t gm_io_error(int err) {
     case EINVAL: return -8;
     case ENOSPC: return -10;
     case ECONNREFUSED: return -11;
+    case ETIMEDOUT: return -12;
     default: return -1000 - (int64_t)err;
     }
 }
@@ -1281,11 +1469,15 @@ GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
     return r < 0 ? gm_io_error(errno) : (int64_t)r;
 }
 
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+static int64_t gm_mode_kind(mode_t mode) {
+    return S_ISREG(mode) ? 0 : S_ISDIR(mode) ? 1 : S_ISLNK(mode) ? 2 : 3;
+}
+
+static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, bool follow) {
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     struct stat st;
-    int r = stat(s, &st);
+    int r = follow ? stat(s, &st) : lstat(s, &st);
     int err = errno;
     free(s);
     if (r != 0) return gm_io_error(err);
@@ -1294,9 +1486,17 @@ GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
 #else
     int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
 #endif
-    int64_t v[3] = {(int64_t)st.st_size, S_ISDIR(st.st_mode) ? 1 : 0, mtime};
+    int64_t v[3] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime};
     memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
     return 0;
+}
+
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, true);
+}
+
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, false);
 }
 
 /* Calls f on the NUL-terminated copy of a path. */
@@ -1366,8 +1566,21 @@ GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
         size_t len = strlen(e->d_name);
         if (len > n) return gm_io_error(EINVAL);
+        int64_t kind;
+        switch (e->d_type) {
+        case DT_REG: kind = 0; break;
+        case DT_DIR: kind = 1; break;
+        case DT_LNK: kind = 2; break;
+        case DT_UNKNOWN: {
+            struct stat st;
+            if (fstatat(dirfd(dir), e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) return gm_io_error(errno);
+            kind = gm_mode_kind(st.st_mode);
+            break;
+        }
+        default: kind = 3;
+        }
         memcpy(p, e->d_name, len);
-        return (int64_t)len;
+        return (int64_t)len + (kind << 32);
     }
 }
 
@@ -1378,6 +1591,22 @@ GM_API int64_t gm_fs_close_dir(int64_t d) {
     gm_dirs[d - 1] = NULL;
     pthread_mutex_unlock(&gm_rt_lock);
     return GM_RET_ERR(closedir(dir) != 0);
+}
+
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
+    if (size > (uint64_t)INT64_MAX) return gm_io_error(EINVAL);
+    return GM_RET_ERR(ftruncate((int)f, (off_t)size) != 0);
+}
+
+GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(fsync((int)f) != 0); }
+
+GM_API int64_t gm_fs_cwd(void *p, size_t n) {
+    char tmp[4096];
+    if (getcwd(tmp, sizeof tmp) == NULL) return gm_io_error(errno);
+    size_t len = strlen(tmp);
+    if (len > n) return gm_io_error(EINVAL);
+    memcpy(p, tmp, len);
+    return (int64_t)len;
 }
 
 /* Resolves host:port for a stream socket (passive: for listening). */
@@ -1475,6 +1704,11 @@ GM_API int64_t gm_net_accept(int64_t h) {
     }
 }
 
+/* A timed-out blocking call fails with EAGAIN; sockets are never non-blocking. */
+static int64_t gm_net_error(int err) {
+    return err == EAGAIN || err == EWOULDBLOCK ? gm_io_error(ETIMEDOUT) : gm_io_error(err);
+}
+
 GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
 #if defined(MSG_NOSIGNAL)
     int flags = MSG_NOSIGNAL;
@@ -1484,7 +1718,7 @@ GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
     for (;;) {
         ssize_t r = send((int)h, p, n, flags);
         if (r >= 0) return (int64_t)r;
-        if (errno != EINTR) return gm_io_error(errno);
+        if (errno != EINTR) return gm_net_error(errno);
     }
 }
 
@@ -1492,11 +1726,52 @@ GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
     for (;;) {
         ssize_t r = recv((int)h, p, n, 0);
         if (r >= 0) return (int64_t)r;
-        if (errno != EINTR) return gm_io_error(errno);
+        if (errno != EINTR) return gm_net_error(errno);
     }
 }
 
 GM_API int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
+
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) {
+    return GM_RET_ERR(shutdown((int)h, how == 0 ? SHUT_RD : how == 1 ? SHUT_WR : SHUT_RDWR) != 0);
+}
+
+static int gm_set_timeout(int fd, int opt, uint64_t ns) {
+    struct timeval tv;
+    tv.tv_sec = (time_t)(ns / 1000000000u);
+    tv.tv_usec = (suseconds_t)((ns % 1000000000u) / 1000u);
+    if (ns > 0 && tv.tv_sec == 0 && tv.tv_usec == 0) tv.tv_usec = 1;   /* zero would mean no timeout */
+    return setsockopt(fd, SOL_SOCKET, opt, &tv, sizeof tv);
+}
+
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    if (gm_set_timeout((int)h, SO_RCVTIMEO, recv_ns) != 0) return gm_io_error(errno);
+    return GM_RET_ERR(gm_set_timeout((int)h, SO_SNDTIMEO, send_ns) != 0);
+}
+
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
+    struct sockaddr_storage a;
+    socklen_t al = sizeof a;
+    if (getpeername((int)h, (struct sockaddr *)&a, &al) != 0) return gm_io_error(errno);
+    char text[INET6_ADDRSTRLEN + 16];
+    int len;
+    if (a.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&a;
+        char host[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &s->sin_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "%s:%u", host, (unsigned)ntohs(s->sin_port));
+    } else if (a.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&a;
+        char host[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "[%s]:%u", host, (unsigned)ntohs(s->sin6_port));
+    } else {
+        return gm_io_error(EINVAL);
+    }
+    if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
+    memcpy(p, text, (size_t)len);
+    return len;
+}
 
 /* ---- heap ------------------------------------------------------------------------ */
 
@@ -1795,6 +2070,69 @@ GM_API int64_t gm_thread_join(int64_t h) {
 
 GM_API void gm_thread_yield(void) { sched_yield(); }
 
+#if defined(__linux__) && defined(SYS_futex) && !defined(__FILC__)
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    struct timespec ts, *tp = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+        tp = &ts;
+    }
+    /* FUTEX_WAIT_PRIVATE */
+    long r = syscall(SYS_futex, addr, 128, expected, tp, NULL, 0);
+    if (r != 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) return gm_io_error(errno);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* FUTEX_WAKE_PRIVATE */
+    syscall(SYS_futex, addr, 129, n > 0x7fffffffu ? 0x7fffffff : (int)n, NULL, NULL, 0);
+    return 0;
+}
+#elif defined(__APPLE__)
+extern int __ulock_wait(uint32_t op, void *addr, uint64_t value, uint32_t timeout_us);
+extern int __ulock_wake(uint32_t op, void *addr, uint64_t wake_value);
+
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    uint64_t us = timeout_ns < 0 ? 0 : (uint64_t)timeout_ns / 1000 + 1;
+    if (us > 0xffffffffu) us = 0xffffffffu;
+    /* UL_COMPARE_AND_WAIT; a timeout of 0 means forever */
+    __ulock_wait(1, addr, expected, (uint32_t)us);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* UL_COMPARE_AND_WAIT | ULF_WAKE_ALL: one wake-up per call is not offered */
+    (void)n;
+    __ulock_wake(1 | 0x100, addr, 0);
+    return 0;
+}
+#else
+/* No futex: poll the word, sleeping a little between looks. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    int64_t waited = 0;
+    while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) {
+        if (timeout_ns >= 0 && waited >= timeout_ns) break;
+        struct timespec t = {0, 50000};
+        nanosleep(&t, NULL);
+        waited += 50000;
+        if (waited >= 1000000) break; /* wake up spuriously now and then */
+    }
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    (void)addr;
+    (void)n;
+    return 0;
+}
+#endif
+
+GM_API uint32_t gm_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1 : (uint32_t)n;
+}
+
 GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     if (fd == 2) gm_write_err((const uint8_t *)p, n);
     else gm_write_out((const uint8_t *)p, n);
@@ -2001,15 +2339,41 @@ GM_API _Noreturn void gm_stack_overflow(void) {
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
 
 #ifndef GM_NO_FRAME_PROBES
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
+#include <ucontext.h>
+#endif
+/* The stack pointer of the interrupted code, or 0 where it is not known. */
+static uintptr_t gm_fault_sp(void *uc) {
+    ucontext_t *u = uc;
+#if defined(__linux__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext.gregs[REG_RSP];
+#elif defined(__linux__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext.sp;
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__rsp;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__sp;
+#else
+    (void)u;
+    return 0;
+#endif
+}
+
 /* A fault just below a thread's stack limit is an overflow that a function's prologue
- * hit before its stack check ran (compilers probe each page of a large frame): report it
- * as the trap it is. Any other fault gets the default action. */
+ * hit before its stack check ran (compilers probe each page of a large frame), and so is
+ * any fault while the stack pointer is below the limit (a frame so large that it skipped
+ * the guard pages, with the check inlined after the frame was allocated): report it as
+ * the trap it is. Any other fault gets the default action. */
 static void gm_segv(int sig, siginfo_t *si, void *uc) {
-    (void)uc;
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t limit = gm_thread_stack_limit;
+    uintptr_t sp = gm_fault_sp(uc);
     if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
         gm_stack_overflow();
+    /* The running stack may be a fiber's, whose limit is its own. */
+    if (gm_stack_limit != 0 && sp != 0 && sp < gm_stack_limit) gm_stack_overflow();
     signal(sig, SIG_DFL);
 }
 

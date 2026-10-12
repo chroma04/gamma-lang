@@ -90,3 +90,201 @@ pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
     }
     return ()
 }
+
+// ---------------------------------------------------------------------------------
+// Directories
+// ---------------------------------------------------------------------------------
+
+/// One entry of a directory: its name (valid until the next entry is produced) and what it
+/// is.
+pub Entry :: struct {
+    pub name: string
+    pub kind: FileKind
+}
+
+/// The entries of the directory at `path`, in the order the operating system gives them
+/// (never `.` or `..`). It opens the directory and closes it again, also when the loop is
+/// left early. An error (opening the directory, or reading an entry) is yielded as an
+/// error and ends the iteration.
+///
+///     for r in fs.entries("src") {
+///         e := try r
+///         print("{}\n", e.name)
+///     }
+pub entries :: fn(path: string) \ {Yield(IoError!Entry), Fs} {
+    d := open_dir(path) else e => {
+        yield(!e)
+        return
+    }
+    defer close_dir(d)
+    // NAME_MAX is 255 on POSIX systems.
+    buf: [256]u8 = ---
+    while true {
+        next := d.next_entry(buf[..]) else e => {
+            yield(!e)
+            return
+        }
+        ent := next else break
+        yield(Entry(name: buf[0..ent.len], kind: ent.kind))
+    }
+}
+
+/// An entry found by `walk`: its path (the root joined with the names down to it), what it
+/// is, and its depth, which is 0 for the entries directly in the root.
+pub WalkEntry :: struct {
+    pub path: string
+    pub kind: FileKind
+    pub depth: u32
+}
+
+// A directory being walked, and the length of its path.
+Frame :: struct {
+    dir: Dir
+    path_len: usize
+}
+
+close_frames :: fn(frames: ^List(Frame)) \ {Fs} {
+    for f in frames.items { close_dir(f.dir) }
+    frames.deinit()
+}
+
+/// Every entry below the directory `root` (which is not itself yielded), depth first and
+/// in pre-order: a directory comes before what it contains, and the entries of one
+/// directory are in the order the operating system gives them. Symbolic links are not
+/// followed; they are yielded with the kind `.Symlink`. A `path` is valid until the next
+/// entry is produced. A directory that cannot be read yields its error and the walk
+/// goes on with the rest; a failure to list `root` itself, or to allocate, yields an error
+/// and ends the walk. Everything allocated and every directory opened is released when the
+/// walk finishes or the loop is left early.
+///
+///     for r in fs.walk("src") {
+///         e := try r
+///         if e.kind is .File { print("{}\n", e.path) }
+///     }
+pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
+    path := list(u8)
+    defer path.deinit()
+    frames := list(Frame)
+    defer close_frames(&frames)
+    path.extend(root) else {
+        yield(!.NoSpace)
+        return
+    }
+    first := open_dir(path.items) else e => {
+        yield(!e)
+        return
+    }
+    frames.push(Frame(dir: first, path_len: root.len)) else {
+        close_dir(first)
+        yield(!.NoSpace)
+        return
+    }
+    buf: [256]u8 = ---
+    while frames.items.len > 0 {
+        top := frames.items[frames.items.len - 1]
+        next := top.dir.next_entry(buf[..]) else e => {
+            yield(!e)
+            return
+        }
+        ent := next else {
+            close_dir(top.dir)
+            _ = frames.pop()
+            continue
+        }
+        path.truncate(top.path_len)
+        if path.items.len > 0 and path.items[path.items.len - 1] is not '/' {
+            path.push('/') else {
+                yield(!.NoSpace)
+                return
+            }
+        }
+        path.extend(buf[0..ent.len]) else {
+            yield(!.NoSpace)
+            return
+        }
+        yield(WalkEntry(path: path.items, kind: ent.kind, depth: (frames.items.len - 1).trunc(u32)))
+        if ent.kind is .Dir {
+            sub := open_dir(path.items) else e => {
+                yield(!e)
+                continue
+            }
+            frames.push(Frame(dir: sub, path_len: path.items.len)) else {
+                close_dir(sub)
+                yield(!.NoSpace)
+                return
+            }
+        }
+    }
+}
+
+/// Creates the directory `path` and any missing parents, like `mkdir -p`. Directories that
+/// exist already are fine; something else at `path`, or at one of its parents, is an
+/// error.
+pub make_dir_all :: fn(path: string) -> IoError!() \ {Fs} {
+    i: usize = 0
+    while i < path.len {
+        // The next prefix ends before a separator, or at the end of the path.
+        while i < path.len and path[i] is '/' { i += 1 }
+        if i >= path.len { break }
+        while i < path.len and path[i] is not '/' { i += 1 }
+        prefix := path[0..i]
+        make_dir(prefix) else e => {
+            if e is not .AlreadyExists { return !e }
+            info := try stat(prefix)
+            if info.kind is not .Dir { return !e }
+        }
+    }
+    return ()
+}
+
+/// Replaces the contents of the file at `path` with `bytes` so that no reader ever sees a
+/// partial file: the bytes go to a new file next to `path` (named after it with a random
+/// suffix), which is synced and then renamed over `path`. The new file is removed again
+/// if anything fails. `path` may be at most 4000 bytes long (`InvalidInput` otherwise).
+pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Rand} {
+    // `path`, ".tmp-" and eight hex digits.
+    SUFFIX :: 13
+    name: [4096]u8 = ---
+    if path.len > 4000 { return !.InvalidInput }
+    name[0..path.len].copy_from(path)
+    tmp := name[0..path.len + SUFFIX]
+    tmp[path.len..path.len + 5].copy_from(".tmp-")
+    opts := OpenOptions(read: false, write: true, create: true, exclusive: true)
+    tries: u32 = 0
+    f: File = ---
+    while true {
+        r: [4]u8 = ---
+        fill(r[..])
+        for i in 0..4 {
+            tmp[path.len + 5 + 2 * i] = hex_digit(r[i] >> 4)
+            tmp[path.len + 6 + 2 * i] = hex_digit(r[i] & 15)
+        }
+        f = open(tmp, opts) else e => {
+            // A name that is taken: try another.
+            if e is .AlreadyExists and tries < 8 {
+                tries += 1
+                continue
+            }
+            return !e
+        }
+        break
+    }
+    fill_temp(f, bytes) else e => {
+        close(f)
+        _ = remove(tmp)
+        return !e
+    }
+    close(f)
+    rename(tmp, path) else e => {
+        _ = remove(tmp)
+        return !e
+    }
+    return ()
+}
+
+fill_temp :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
+    try write_all_to(f, bytes)
+    return f.sync()
+}
+
+hex_digit :: fn(v: u8) -> u8 => if v < 10 { '0' + v } else { 'a' + v - 10 }

@@ -1,0 +1,250 @@
+// std/path: POSIX path strings, with `/` as the separator.
+//
+// Every function works on the bytes of a `string` and is purely lexical: nothing looks
+// at the file system, nothing performs an effect, and nothing allocates unless it says
+// so. Functions that return a `string` return a slice of their argument (or of the
+// buffer the caller supplied).
+//
+//     path :: import "std/path"
+//     path.base_name("/usr/lib/libc.so.6")        // "libc.so.6"
+//     path.dir_name("/usr/lib/libc.so.6")         // "/usr/lib"
+//     path.extension("libc.so.6")                 // "6"
+//     buf: [64]u8 = ---
+//     path.clean("a//b/./c/../d", buf[..])        // "a/b/d"
+
+/// The path separator.
+pub SEP :: '/'
+
+// Whether the byte `c` is the separator.
+is_sep :: fn(c: u8) -> bool => c is '/'
+
+// The length of `p` without its trailing separators.
+trimmed_len :: fn(p: string) -> usize {
+    n := p.len
+    while n > 0 and is_sep(p[n - 1]) { n -= 1 }
+    return n
+}
+
+// ---------------------------------------------------------------------------------
+// Taking paths apart
+// ---------------------------------------------------------------------------------
+
+/// Whether `p` starts at the root (begins with `/`).
+pub is_absolute :: fn(p: string) -> bool => p.len > 0 and is_sep(p[0])
+
+/// The last component of `p`; trailing slashes are ignored (`a/b/` gives `b`). The base
+/// name of `/` (or of any path of slashes only) is `/`, and of the empty path it is
+/// the empty path.
+pub base_name :: fn(p: string) -> string {
+    if p.len is 0 { return p }
+    end := trimmed_len(p)
+    if end is 0 { return p[0..1] }
+    start := end
+    while start > 0 and not is_sep(p[start - 1]) { start -= 1 }
+    return p[start..end]
+}
+
+/// All but the last component of `p`, as POSIX `dirname` has it: `a/b` gives `a`, `a`
+/// gives `.`, `/a` gives `/`, `/` gives `/`, and `a/b/` gives `a`. The empty path gives
+/// `.`.
+pub dir_name :: fn(p: string) -> string {
+    if p.len is 0 { return "." }
+    end := trimmed_len(p)
+    if end is 0 { return p[0..1] }
+    // Drop the last component, then the separators before it.
+    while end > 0 and not is_sep(p[end - 1]) { end -= 1 }
+    if end is 0 { return "." }
+    while end > 0 and is_sep(p[end - 1]) { end -= 1 }
+    if end is 0 { return p[0..1] }
+    return p[0..end]
+}
+
+// The index of the dot that starts the extension of the base name `b`, or `null`.
+dot_index :: fn(b: string) -> ?usize {
+    i := b.len
+    while i > 0 {
+        i -= 1
+        if b[i] is '.' {
+            // A leading dot names a hidden file, and a trailing dot ends nothing.
+            if i is 0 or i + 1 is b.len { return null }
+            return i
+        }
+    }
+    return null
+}
+
+/// The extension of the base name of `p`, without the dot: `a.tar.gz` gives `gz`. It is
+/// empty when there is none; a leading dot does not start one (`.bashrc`) and neither
+/// does a trailing dot (`a.`).
+pub extension :: fn(p: string) -> string {
+    b := base_name(p)
+    i := dot_index(b) else return b[0..0]
+    return b[i + 1..b.len]
+}
+
+/// The base name of `p` without its extension and the dot before it: `a.tar.gz` gives
+/// `a.tar`.
+pub stem :: fn(p: string) -> string {
+    b := base_name(p)
+    i := dot_index(b) else return b
+    return b[0..i]
+}
+
+/// The non-empty components of `p`, in order. An absolute path yields `/` first. A `.`
+/// component is skipped, except that a relative path made of nothing else yields a
+/// single `.`. `..` is yielded like any other component.
+pub components :: fn(p: string) \ {Yield(string)} {
+    i: usize = 0
+    yielded := false
+    if is_absolute(p) {
+        yield(p[0..1])
+        yielded = true
+    }
+    while i < p.len {
+        while i < p.len and is_sep(p[i]) { i += 1 }
+        start := i
+        while i < p.len and not is_sep(p[i]) { i += 1 }
+        c := p[start..i]
+        if c.len is 0 or (c.len is 1 and c[0] is '.') { continue }
+        yield(c)
+        yielded = true
+    }
+    if not yielded and p.len > 0 { yield(".") }
+}
+
+// ---------------------------------------------------------------------------------
+// Normalising
+// ---------------------------------------------------------------------------------
+
+/// `p` with repeated slashes collapsed, `.` components removed, and `x/..` resolved
+/// lexically; `..` that would rise above the root of an absolute path is dropped, and
+/// leading `..` of a relative path stay. The result is written into `buf` and is the
+/// part of it that was used; an empty result is `.`. Traps unless `buf` holds at least
+/// `p.len` bytes (and one at least). `buf` must not overlap `p`. Trailing slashes are
+/// removed. The result is never longer than `p`, except for the `.` that replaces an
+/// empty path.
+pub clean :: fn(p: string, buf: []u8) -> string {
+    assert(buf.len >= p.len.max(1), "path.clean: buffer too small")
+    rooted := is_absolute(p)
+    n: usize = 0
+    if rooted {
+        buf[0] = '/'
+        n = 1
+    }
+    // The output before `floor` is not removed by a `..` (the root, or earlier `..`).
+    floor := n
+    i: usize = 0
+    while i < p.len {
+        if is_sep(p[i]) {
+            i += 1
+            continue
+        }
+        start := i
+        while i < p.len and not is_sep(p[i]) { i += 1 }
+        c := p[start..i]
+        if c.len is 1 and c[0] is '.' { continue }
+        if c.len is 2 and c[0] is '.' and c[1] is '.' {
+            if n > floor {
+                // Remove the last component.
+                n -= 1
+                while n > floor and not is_sep(buf[n]) { n -= 1 }
+            } else if not rooted {
+                if n > 0 {
+                    buf[n] = '/'
+                    n += 1
+                }
+                buf[n] = '.'
+                buf[n + 1] = '.'
+                n += 2
+                floor = n
+            }
+            continue
+        }
+        if (rooted and n is not 1) or (not rooted and n is not 0) {
+            buf[n] = '/'
+            n += 1
+        }
+        buf[n..n + c.len].copy_from(c)
+        n += c.len
+    }
+    if n is 0 {
+        buf[0] = '.'
+        return buf[0..1]
+    }
+    return buf[0..n]
+}
+
+// ---------------------------------------------------------------------------------
+// Joining and relating
+// ---------------------------------------------------------------------------------
+
+// The pieces `join` writes, in order: each non-empty part (after the first, without
+// its leading slashes), with whether a separator goes before it.
+pieces :: fn(parts: []const string) \ {Yield((sep: bool, text: string))} {
+    last: u8 = 0
+    any := false
+    for i in 0..parts.len {
+        s := parts[i]
+        if any {
+            while s.len > 0 and is_sep(s[0]) { s = s[1..s.len] }
+        }
+        if s.len is 0 { continue }
+        yield((sep: any and not is_sep(last), text: s))
+        any = true
+        last = s[s.len - 1]
+    }
+}
+
+/// Appends `parts` to `out`, separated by single slashes. Empty parts are skipped; a
+/// slash is inserted between two parts unless the text before ends with one already.
+/// A later part that starts with `/` does not restart the path: its leading slashes are
+/// dropped (a part of slashes only is skipped). Nothing else is cleaned (use `clean`).
+pub join :: fn(out: ^List(u8), parts: []const string) -> AllocError!() {
+    for p in pieces(parts) {
+        if p.sep { try out.push('/') }
+        try out.extend(p.text)
+    }
+    return ()
+}
+
+/// `join` into new memory from the current allocator; release it with `free`.
+pub join_alloc :: fn(parts: []const string) -> AllocError![]u8 \ {Alloc} {
+    n: usize = 0
+    for p in pieces(parts) {
+        if p.sep { n += 1 }
+        n += p.text.len
+    }
+    buf := try make(u8, n)
+    at: usize = 0
+    for p in pieces(parts) {
+        if p.sep {
+            buf[at] = '/'
+            at += 1
+        }
+        buf[at..at + p.text.len].copy_from(p.text)
+        at += p.text.len
+    }
+    return buf
+}
+
+/// `p` relative to `base`: what remains of `p` after the prefix `base` and a slash, when
+/// `p` lies inside `base` component by component (`a/bc` is not inside `a/b`); `.` when
+/// the two are equal; `null` otherwise. The comparison is on the text as written, so
+/// neither path is cleaned, and the remainder is a slice of `p` (with its own trailing
+/// slashes). Trailing slashes of `base` are ignored. An empty `base` contains only the
+/// empty path.
+pub relative_to :: fn(p, base: string) -> ?string {
+    if base.len is 0 { return if p.len is 0 { "." } else { null } }
+    bn := trimmed_len(base)
+    // The root contains every absolute path.
+    if bn is 0 and not is_absolute(p) { return null }
+    if bn > p.len { return null }
+    for i in 0..bn {
+        if p[i] is not base[i] { return null }
+    }
+    if bn < p.len and bn > 0 and not is_sep(p[bn]) { return null }
+    start := bn
+    while start < p.len and is_sep(p[start]) { start += 1 }
+    if start is p.len { return "." }
+    return p[start..p.len]
+}

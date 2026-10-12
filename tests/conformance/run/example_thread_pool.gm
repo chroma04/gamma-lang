@@ -31,8 +31,7 @@ is_prime :: fn(n: u32) -> bool {
     return true
 }
 
-worker :: fn(raw: rawptr) \ {Sys} {
-    arg := raw.cast(^JobArg)
+worker :: fn(arg: ^JobArg) \ {Sys} {
     job := arg.job
     while true {
         chunk := @atomic_add(&job.cursor, 1, .Relaxed)
@@ -58,8 +57,7 @@ TransferArg :: struct {
     seed: u32
 }
 
-transfer :: fn(arg: rawptr) \ {Sys} {
-    t := arg.cast(^TransferArg)
+transfer :: fn(t: ^TransferArg) \ {Sys} {
     b := t.bank
     state := t.seed
     for _ in 0..2000 {
@@ -89,7 +87,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NWORKERS]thread.Thread = ---
     for i in 0..NWORKERS {
         args[i] = JobArg(job: &job, id: i.trunc(u32))
-        ts[i] = try thread.spawn(worker, (&args[i]).cast(rawptr))
+        ts[i] = try thread.spawn(JobArg, worker, &args[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
 
@@ -105,7 +103,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     targs := [NWORKERS]TransferArg(fill: TransferArg(bank: &bank, seed: 0))
     for i in 0..NWORKERS {
         targs[i] = TransferArg(bank: &bank, seed: 12345 + i.trunc(u32) * 7919)
-        ts[i] = try thread.spawn(transfer, (&targs[i]).cast(rawptr))
+        ts[i] = try thread.spawn(TransferArg, transfer, &targs[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
     sum: i64 = 0

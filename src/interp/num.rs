@@ -473,7 +473,7 @@ pub fn encode_float(x: f64, ty: FloatTy, little: bool) -> Bytes {
 
 /// Shortest decimal digits and exponent such that `0.d1d2… × 10^(exp+1)`, i.e.
 /// the value is `d1.d2d3… × 10^exp`, reading back as `x` at type `ty`. `x` must be finite and positive.
-fn shortest(x: f64, ty: FloatTy) -> (String, i32) {
+pub fn shortest(x: f64, ty: FloatTy) -> (String, i32) {
     let s = match ty {
         FloatTy::F64 => format!("{:e}", x),
         FloatTy::F32 => format!("{:e}", x as f32),

@@ -26,7 +26,7 @@ rk4_step :: fn(N :: usize, f: fn([N]f64, f64) -> [N]f64, y: [N]f64, t, h: f64) -
 Method :: union { Euler, Rk4 }
 
 integrate :: fn(N :: usize, m: Method, f: fn([N]f64, f64) -> [N]f64, y0: [N]f64, t_end: f64, steps: u32) -> [N]f64 {
-    h := t_end / steps.round(f64)
+    h := t_end / steps.to(f64)
     y := y0
     t := 0.0
     for i in 0..steps {
@@ -34,7 +34,7 @@ integrate :: fn(N :: usize, m: Method, f: fn([N]f64, f64) -> [N]f64, y0: [N]f64,
             .Euler => euler_step(N, f, y, t, h)
             .Rk4   => rk4_step(N, f, y, t, h)
         }
-        t = (i + 1).round(f64) * h
+        t = (i + 1).to(f64) * h
     }
     return y
 }

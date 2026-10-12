@@ -1,0 +1,3 @@
+str :: import "std/str"
+
+shout :: fn(s: string) -> string => str.trim(s)

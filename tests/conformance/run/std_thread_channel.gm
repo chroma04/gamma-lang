@@ -1,0 +1,77 @@
+// std/thread: Channel edge cases, blocking hand-offs and Condvar.wait_timeout.
+thread :: import "std/thread"
+
+Fail :: union { Io: IoError, Mem: AllocError }
+
+// Receives everything until the channel is closed and drained, in order.
+drain :: fn(arg: ^thread.Channel(u32)) \ {Sys} {
+    total: u32 = 0
+    while true {
+        x := arg.recv() else break
+        total = total * 10 + x
+    }
+    _ = @atomic_store(&result, total, .Release)
+}
+
+#global result: u32 = 0
+
+Signal :: struct {
+    m: thread.Mutex
+    cv: thread.Condvar
+    ready: bool
+}
+
+notify :: fn(s: ^Signal) \ {Sys} {
+    thread.yield_now()
+    s.m.lock()
+    s.ready = true
+    s.m.unlock()
+    s.cv.signal()
+}
+
+main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
+    ch := try thread.channel(u32, 2)
+
+    // Empty, full and closed, without blocking.
+    print("try_recv empty: {}\n", ch.try_recv())
+    print("try_send: {} {} {}\n", (ch.try_send(1), ch.try_send(2), ch.try_send(3)))
+    print("try_recv: {} {}\n", (ch.try_recv(), ch.try_recv()))
+    print("try_recv empty again: {}\n", ch.try_recv())
+
+    // The ring wraps around: more values than the capacity pass through in order.
+    for k in 0..5 {
+        _ = ch.try_send(k)
+        print("{} ", ch.try_recv() else 99)
+    }
+    print("\n", ())
+
+    // A receiver blocks on the empty channel; sends wake it; close ends it.
+    r := try thread.spawn(thread.Channel(u32), drain, &ch)
+    for k in 1..8 { _ = ch.send(k) }
+    ch.close()
+    r.join()
+    print("received in order: {}\n", @atomic_load(&result, .Acquire))
+
+    // A closed channel refuses sends and reports empty.
+    print("closed: send {} try_send {} recv {} try_recv {}\n", (ch.send(1), ch.try_send(1), ch.recv(), ch.try_recv()))
+
+    // Values sent before the close are still delivered.
+    ch2 := try thread.channel(u32, 3)
+    _ = ch2.send(5)
+    _ = ch2.send(6)
+    ch2.close()
+    print("after close: {} {} {}\n", (ch2.recv(), ch2.recv(), ch2.recv()))
+
+    // A condition variable wait that is signaled before the timeout.
+    s := Signal(m: thread.mutex(), cv: thread.condvar(), ready: false)
+    t := try thread.spawn(Signal, notify, &s)
+    s.m.lock()
+    ok := true
+    while not s.ready and ok { ok = s.cv.wait_timeout(&s.m, secs(30)) }
+    print("signaled: {} ready: {}\n", (ok, s.ready))
+    s.m.unlock()
+    t.join()
+
+    ch.deinit()
+    ch2.deinit()
+}

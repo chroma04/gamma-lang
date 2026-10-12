@@ -1,0 +1,76 @@
+// std/net and the new `Net` operations over real loopback sockets: send_all, recv_exact,
+// shutdown, set_timeouts and peer.
+net :: import "std/net"
+io :: import "std/io"
+
+main :: fn() -> IoError!() \ {Out, Net} {
+    l := try listen("127.0.0.1", 0)
+    port := try l.local_port()
+    client := try connect("127.0.0.1", port)
+    server := try l.accept()
+
+    // peer: the address of the other end.
+    buf: [64]u8 = ---
+    n := try client.peer(buf[..])
+    print("client sees the listener's port: {}\n", port > 0 and buf[0..n].starts_with("127.0.0.1:"))
+    expected: [32]u8 = ---
+    pre := "127.0.0.1:"
+    expected[0..pre.len].copy_from(pre)
+    print("peer ends with the port: {}\n", buf[0..n].ends_with(fmt_port(port, expected[pre.len..])))
+    m := try server.peer(buf[..])
+    print("server sees a client: {}\n", buf[0..m].starts_with("127.0.0.1:"))
+    small: [4]u8 = ---
+    if !e := server.peer(small[..]) { print("peer into a small buffer: {}\n", e) }
+
+    // send_all and recv_exact across several calls.
+    try net.send_all(client, "hello, ")
+    try net.send_all(client, "network")
+    got: [14]u8 = ---
+    try net.recv_exact(server, got[..])
+    print("got: {}\n", got[..])
+
+    // shutdown of the write side: the peer reads the end of the stream, replies still flow.
+    try client.shutdown(.Write)
+    print("end of stream: {}\n", try server.recv(buf[..]))
+    try net.send_all(server, "bye")
+    three: [3]u8 = ---
+    try net.recv_exact(client, three[..])
+    print("reply: {}\n", three[..])
+
+    // recv_exact when the peer closes early.
+    close_socket(server)
+    big: [8]u8 = ---
+    if !e := net.recv_exact(client, big[..]) { print("recv_exact: {}\n", e) }
+    close_socket(client)
+
+    // Timeouts: nothing arrives, so recv gives up.
+    c2 := try connect("127.0.0.1", port)
+    s2 := try l.accept()
+    try s2.set_timeouts(ms(50), ms(50))
+    if !e := s2.recv(buf[..]) { print("recv with a timeout: {} ({})\n", (e, io.describe(e))) }
+    // Data that arrives in time is received; the timeout can be removed again.
+    try net.send_all(c2, "late")
+    print("received: {}\n", try s2.recv(buf[..]))
+    try s2.set_timeouts(null, null)
+    close_socket(c2)
+    print("closed: {}\n", try s2.recv(buf[..]))
+    close_socket(s2)
+    close_listener(l)
+
+    if !e := client.shutdown(.Both) { print("shutdown of a closed socket: {}\n", e.tag() > 0) }
+}
+
+// The decimal digits of `port` in `out`.
+fmt_port :: fn(port: u16, out: []u8) -> string {
+    digits: [5]u8 = ---
+    count: usize = 0
+    v := port
+    while true {
+        digits[count] = '0' + (v % 10).trunc(u8)
+        count += 1
+        v /= 10
+        if v is 0 { break }
+    }
+    for i in 0..count { out[i] = digits[count - 1 - i] }
+    return out[0..count]
+}

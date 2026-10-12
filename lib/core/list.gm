@@ -109,3 +109,49 @@ pub deinit :: fn(T: type, l: ^List(T)) {
     l.items = empty_slice(T)
     l.cap = 0
 }
+
+/// Hands the list's elements to the caller as one allocation that `free` releases under
+/// the list's allocator, and leaves the list empty.
+pub into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T {
+    n := l.items.len
+    if l.cap is 0 { return empty_slice(T) }
+    if n is 0 {
+        l.deinit()
+        return empty_slice(T)
+    }
+    size := @size_of(T)
+    if n < l.cap {
+        old := l.items.ptr.cast([^]u8)
+        if not l.alloc.vt.resize(l.alloc.data, old, size * l.cap, size * n, @align_of(T)) {
+            raw := l.alloc.vt.alloc(l.alloc.data, size * n, @align_of(T)) else return !.OutOfMemory
+            p := raw.cast([^]T)
+            for i in 0..n { p[i] = l.items[i] }
+            l.alloc.vt.free(l.alloc.data, old, size * l.cap, @align_of(T))
+            l.items = p[0..n]
+        }
+    }
+    s := l.items.ptr[0..n]
+    l.items = empty_slice(T)
+    l.cap = 0
+    return s
+}
+
+/// Appends every value the iterator `it` yields (`l.collect(fn() => m.keys())`).
+pub collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!() {
+    for x in it() { try l.push(x) }
+    return ()
+}
+
+/// Appends formatted text (§21.6.1): `out.write("{}: {}\n", (name, n))`.
+pub write :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!() {
+    failed := false
+    @write(fn(b) {
+        if not failed {
+            l.extend(b) else {
+                failed = true
+            }
+        }
+    }, template, args)
+    if failed { return !.OutOfMemory }
+    return ()
+}

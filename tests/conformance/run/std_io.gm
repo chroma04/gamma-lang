@@ -1,0 +1,85 @@
+// std/io: `read_all`, lines longer than the reader's buffer, `reader_with`, and `ListOut`.
+io :: import "std/io"
+
+// Prints the length of every line `r` gives, or the error.
+walk :: fn(r: ^io.Reader) \ {In, Out} {
+    n: u32 = 1
+    while true {
+        next := r.next_line() else e => {
+            print("  line {}: error {}\n", (n, e))
+            n += 1
+            continue
+        }
+        line := next else break
+        print("  line {}: {} bytes", (n, line.len))
+        if line.len > 0 { print(", starts {}", line[0..1]) }
+        print("\n")
+        n += 1
+    }
+}
+
+main :: fn() -> io.ReadError!() \ {In, Out, Alloc} {
+    // Everything on standard input.
+    data := try io.read_all()
+    defer free(data)
+    print("read_all: {} bytes, ends {}\n", (data.len, data[data.len - 4..data.len]))
+
+    // The same text through readers with different buffers.
+    s := io.StringIn(data: data)
+    print("default reader (4096):\n")
+    with &s {
+        r := io.reader()
+        walk(&r)
+    }
+    s = io.StringIn(data: data)
+    big: [8192]u8 = ---
+    print("reader_with 8192:\n")
+    with &s {
+        r := io.reader_with(big[..])
+        walk(&r)
+    }
+
+    small: [16]u8 = ---
+    t := io.StringIn(data: "abc\n0123456789abcde\n0123456789abcdef\r\nx\n0123456789abcdefg")
+    print("reader_with 16:\n")
+    with &t {
+        r := io.reader_with(small[..])
+        walk(&r)
+    }
+
+    // The error does not repeat for the same line, and the reader goes on afterwards.
+    u := io.StringIn(data: "0123456789abcdefghij\nnext\n")
+    with &u {
+        r := io.reader_with(small[..])
+        first := r.next_line()
+        print("first: {}\n", first)
+        second := try r.next_line()
+        print("second: {}\n", second)
+        third := try r.next_line()
+        print("third: {}\n", third)
+        fourth := try r.next_line()
+        print("fourth: {}\n", fourth)
+    }
+
+    // Empty input.
+    e := io.StringIn(data: "")
+    with &e {
+        nothing := try io.read_all()
+        print("empty: {} bytes\n", nothing.len)
+        free(nothing)
+        r := io.reader()
+        walk(&r)
+    }
+
+    // Printing into a list.
+    text := list(u8)
+    defer text.deinit()
+    lo := io.ListOut(list: &text)
+    with &lo {
+        print("{} + {} = {}\n", (1, 2, 3))
+        eprint("(err) ")
+        for i in 0..3 { print("{} ", i) }
+    }
+    print("list: {} err {}\n", (text.items, lo.err))
+    return ()
+}

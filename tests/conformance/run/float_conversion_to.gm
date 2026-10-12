@@ -1,0 +1,20 @@
+// `x.to(F)` gives the nearest value of a float type; `unsigned_abs()` the magnitude of an
+// integer in the unsigned type of the same width (§6.6, §21.3).
+mean :: fn(T: type, xs: []const T) -> f64 where Int(T) {
+    s: i64 = 0
+    for x in xs { s += x.trunc(i64) }
+    return s.to(f64) / xs.len.to(f64)
+}
+
+main :: fn() \ {Out} {
+    n: usize = 7
+    print("{}\n", n.to(f64) / 2.0)
+    print("{}\n", u64(9007199254740993).to(f64))
+    print("{}\n", i32(-5).to(f32))
+    print("{}\n", 0.1.to(f32))
+    print("{}\n", f32(0.1).to(f64))
+    print("{}\n", 1e300.to(f32))
+    print("{}\n", mean([_]u8(1, 2, 4)))
+    print("{} {} {}\n", (i8(-128).unsigned_abs(), i32(-7).unsigned_abs(), u16(9).unsigned_abs()))
+    print("{}\n", @min_value(i64).unsigned_abs())
+}

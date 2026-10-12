@@ -1,0 +1,15 @@
+alpha 52 digit 10 alnum 62 space 6
+upper 26 lower 26 hex 22 punct 32
+print 95 control 33
+false true true false
+false true true false
+false true true false
+true false true false
+true true true false
+true false true false
+true true false true
+true true false
+97 122 97 64
+65 90 65 123
+196 228
+0 9 10 35 null null

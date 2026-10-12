@@ -31,7 +31,7 @@ QUARTER :: 32
 sine_quarter :: fn() -> [QUARTER + 1]i32 {
     t: [QUARTER + 1]i32 = ---
     for i in 0..QUARTER + 1 {
-        angle := math.pi / 2.0 * i.round(f64) / QUARTER.round(f64)
+        angle := math.pi / 2.0 * i.to(f64) / QUARTER.to(f64)
         t[i] = math.round(math.sin(angle) * 32767.0).trunc(i32)
     }
     return t

@@ -1,0 +1,36 @@
+read_all: 22262 bytes, ends line
+default reader (4096):
+  line 1: 10 bytes, starts f
+  line 2: 6 bytes, starts s
+  line 3: 0 bytes
+  line 4: 3000 bytes, starts a
+  line 5: 4095 bytes, starts b
+  line 6: error .InvalidInput
+  line 7: error .InvalidInput
+  line 8: 20 bytes, starts a
+  line 9: error .InvalidInput
+  line 10: 25 bytes, starts l
+reader_with 8192:
+  line 1: 10 bytes, starts f
+  line 2: 6 bytes, starts s
+  line 3: 0 bytes
+  line 4: 3000 bytes, starts a
+  line 5: 4095 bytes, starts b
+  line 6: 4096 bytes, starts c
+  line 7: 5000 bytes, starts d
+  line 8: 20 bytes, starts a
+  line 9: 6000 bytes, starts e
+  line 10: 25 bytes, starts l
+reader_with 16:
+  line 1: 3 bytes, starts a
+  line 2: 15 bytes, starts 0
+  line 3: error .InvalidInput
+  line 4: 1 bytes, starts x
+  line 5: error .InvalidInput
+first: !.InvalidInput
+second: "next"
+third: null
+fourth: null
+empty: 0 bytes
+list: 1 + 2 = 3
+(err) 0 1 2  err null

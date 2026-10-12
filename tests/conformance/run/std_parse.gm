@@ -1,0 +1,285 @@
+// std/str: parse_radix, and parse_float's syntax, errors, special values and round trips.
+str :: import "std/str"
+fmt :: import "std/fmt"
+
+radix :: fn(T: type, s: string, base: u32) \ {Out} where Int(T) {
+    print("radix({}, {}): {}\n", (s, base, str.parse_radix(T, s, base)))
+}
+
+flt :: fn(s: string) \ {Out} {
+    print("{}: {}\n", (s, str.parse_float(f64, s)))
+}
+
+// Parses `s` as an f64 and prints the number and its bits.
+bits :: fn(s: string) \ {Out} {
+    labelled(s, s)
+}
+
+// The same for a long input, which is named by number and length instead of shown.
+long_bits :: fn(n: u32, s: string) \ {Out} {
+    hb: [48]u8 = ---
+    b := str.builder(hb[..])
+    b.write("long {} ({} bytes)", (n, s.len))
+    labelled(b.str(), s)
+}
+
+labelled :: fn(label, s: string) \ {Out} {
+    hb: [16]u8 = ---
+    r := str.parse_float(f64, s)
+    if x := r {
+        print("{}: {} 0x{}\n", (label, x, fmt.hex(x.bits(u64), hb[..])))
+    } else {
+        print("{}: {}\n", (label, r))
+    }
+}
+
+// A string of `n` copies of `c`, followed by `tail`, in `buf`.
+filled :: fn(buf: []u8, lead: string, c: u8, n: usize, tail: string) -> string {
+    b := str.builder(buf)
+    b.push(lead)
+    for _ in 0..n { b.push_byte(c) }
+    b.push(tail)
+    return b.str()
+}
+
+// Prints x with `print`, parses it back, and reports whether the bits are the same.
+round_trip64 :: fn(x: f64) -> bool {
+    buf: [64]u8 = ---
+    b := str.builder(buf[..])
+    b.write("{}", x)
+    y := str.parse_float(f64, b.str()) else return false
+    return y.bits(u64) is x.bits(u64)
+}
+
+round_trip32 :: fn(x: f32) -> bool {
+    buf: [64]u8 = ---
+    b := str.builder(buf[..])
+    b.write("{}", x)
+    y := str.parse_float(f32, b.str()) else return false
+    return y.bits(u32) is x.bits(u32)
+}
+
+main :: fn() \ {Out} {
+    // parse_radix: bases, digits of either case, signs, separators.
+    radix(u8, "ff", 16)
+    radix(u8, "FF", 16)
+    radix(u32, "zz", 36)
+    radix(u32, "Zz", 36)
+    radix(u32, "101", 2)
+    radix(u32, "777", 8)
+    radix(i32, "-777", 8)
+    radix(i32, "+z", 36)
+    radix(u64, "18446744073709551615", 10)
+    radix(u64, "ffff_ffff_ffff_ffff", 16)
+    radix(i8, "-80", 16)
+    radix(i8, "7f", 16)
+    radix(u32, "1_0", 2)
+    // no prefix, no whitespace, nothing after the digits
+    radix(u8, "0xff", 16)
+    radix(u32, "0b1", 2)
+    radix(u32, "12", 2)
+    radix(u32, "9", 8)
+    radix(u32, "g", 16)
+    radix(u32, " 1", 10)
+    radix(u32, "1 ", 10)
+    // errors
+    radix(u32, "", 10)
+    radix(u32, "-", 10)
+    radix(u32, "+", 10)
+    radix(u32, "_1", 10)
+    radix(u32, "1_", 10)
+    radix(u32, "1__0", 10)
+    radix(u32, "-1", 10)
+    radix(u8, "100", 16)
+    radix(u8, "256", 10)
+    radix(i8, "-81", 16)
+    radix(i8, "80", 16)
+    radix(u64, "10000000000000000", 16)
+    radix(u8, "00000000000ff", 16)
+
+    // parse_float: ordinary values and every form of the syntax.
+    flt("0")
+    flt("-0")
+    flt("+0.0")
+    flt("1")
+    flt("+1")
+    flt("-1.5")
+    flt("123456789")
+    flt("0.5")
+    flt(".5")
+    flt("5.")
+    flt("-.5")
+    flt("1e3")
+    flt("1E3")
+    flt("1e+3")
+    flt("1e-3")
+    flt("1.5e2")
+    flt(".5e1")
+    flt("5.e1")
+    flt("0e100")
+    flt("0.000e-100")
+    flt("1_000")
+    flt("1_000.000_1e1_0")
+    flt("12_3.4_5")
+    flt("00000000000000000000012")
+    flt("0.1")
+    flt("0.2")
+    flt("0.30000000000000004")
+    flt("100")
+    flt("6.02214076e23")
+    flt("6.62607015e-34")
+    flt("3.141592653589793238462643383279")
+    flt("2.718281828459045")
+
+    // special values, in any case
+    flt("inf")
+    flt("INF")
+    flt("Inf")
+    flt("+inf")
+    flt("-inf")
+    flt("infinity")
+    flt("-INFINITY")
+    flt("InFiNiTy")
+    flt("nan")
+    flt("NaN")
+    flt("NAN")
+    flt("-nan")
+
+    // errors, with their positions
+    flt("")
+    flt(" ")
+    flt("+")
+    flt("-")
+    flt(".")
+    flt("+.")
+    flt("-.e1")
+    flt("e5")
+    flt(".e5")
+    flt("1e")
+    flt("1e+")
+    flt("1e-")
+    flt("1e5x")
+    flt("1e5.0")
+    flt("1.2.3")
+    flt("1..2")
+    flt("1.5x")
+    flt("1.5 ")
+    flt(" 1.5")
+    flt("--1")
+    flt("+-1")
+    flt("0x10")
+    flt("1_")
+    flt("_1")
+    flt("1__0")
+    flt("1_.5")
+    flt("1._5")
+    flt("1_e5")
+    flt("1e_5")
+    flt("1e5_")
+    flt("1e5__0")
+    flt("in")
+    flt("infin")
+    flt("infinit")
+    flt("infinityx")
+    flt("na")
+    flt("nano")
+    flt("i")
+    flt("n")
+    flt("inf1")
+    flt("1inf")
+    flt("1,5")
+
+    // correct rounding: the literature's hard cases (bits in hex)
+    bits("0.1")
+    bits("1e23")
+    bits("8.41e21")
+    bits("9007199254740993")
+    bits("9007199254740992")
+    bits("9007199254740995")
+    bits("4503599627370496.5")
+    bits("2.2250738585072011e-308")
+    bits("2.2250738585072014e-308")
+    bits("2.2250738585072009e-308")
+    bits("1.7976931348623157e308")
+    bits("1.7976931348623158e308")
+    bits("1.7976931348623159e308")
+    bits("-1.7976931348623159e308")
+    bits("1e309")
+    bits("1e400")
+    bits("1e100000")
+    bits("1e-400")
+    bits("1e-100000")
+    bits("-1e-400")
+    // subnormals and the smallest value
+    bits("5e-324")
+    bits("4.9406564584124654e-324")
+    bits("2.4703282292062327e-324")
+    bits("2.4703282292062328e-324")
+    bits("2.4703282292062327208e-324")
+    bits("7.4109846876186981626e-324")
+    bits("1e-323")
+    bits("1.0e-310")
+    bits("2.225073858507201e-308")
+    // 17 and more digits
+    bits("0.12345678901234567")
+    bits("0.123456789012345678901234567890")
+    bits("12345678901234567890123456789")
+    bits("1.00000000000000011102230246251565404236316680908203125")
+    bits("1.00000000000000011102230246251565404236316680908203124")
+    bits("1.00000000000000011102230246251565404236316680908203126")
+
+    // very long inputs: digits beyond what is stored still decide a halfway case
+    lb: [3000]u8 = ---
+    long_bits(1, filled(lb[..], "1", '0', 400, ""))
+    long_bits(2, filled(lb[..], "1", '0', 400, "e-400"))
+    long_bits(3, filled(lb[..], "0.", '0', 400, "1e400"))
+    long_bits(4, filled(lb[..], "0.", '9', 900, ""))
+    long_bits(5, filled(lb[..], "1", '0', 1200, "e-1200"))
+    long_bits(6, filled(lb[..], "0.", '0', 1200, "1e1200"))
+    long_bits(7, filled(lb[..], "9007199254740993.", '0', 1000, ""))
+    long_bits(8, filled(lb[..], "9007199254740993.", '0', 1000, "1"))
+    long_bits(9, filled(lb[..], "1.00000000000000011102230246251565404236316680908203125", '0', 1000, ""))
+    long_bits(10, filled(lb[..], "1.00000000000000011102230246251565404236316680908203125", '0', 1000, "1"))
+    long_bits(11, filled(lb[..], "1.00000000000000011102230246251565404236316680908203125", '0', 1000, "e1"))
+
+    // f32
+    f1 := str.parse_float(f32, "3.4028235e38")
+    f2 := str.parse_float(f32, "3.4028236e38")
+    f3 := str.parse_float(f32, "3.4028235677973366e38")
+    f4 := str.parse_float(f32, "1e-45")
+    f5 := str.parse_float(f32, "7e-46")
+    f6 := str.parse_float(f32, "7.006492321624085e-46")
+    f7 := str.parse_float(f32, "16777217")
+    f8 := str.parse_float(f32, "0.1")
+    f9 := str.parse_float(f32, "-inf")
+    print("{} {} {} {} {} {} {} {} {}\n", (f1, f2, f3, f4, f5, f6, f7, f8, f9))
+    print("{} {}\n", (str.parse_float(f32, "1e39"), str.parse_float(f32, "1x")))
+    // f16
+    print("{} {} {} {}\n", (str.parse_float(f16, "65504"), str.parse_float(f16, "65520"), str.parse_float(f16, "6e-8"), str.parse_float(f16, "0.1")))
+
+    // Printed values parse back to the same bits (print gives the shortest round trip).
+    ok64 := true
+    ok32 := true
+    state: u64 = 0x9e3779b97f4a7c15
+    n64: usize = 0
+    n32: usize = 0
+    for _ in 0..600 {
+        // xorshift64
+        state = state ~ (state <<% 13)
+        state = state ~ (state >> 7)
+        state = state ~ (state <<% 17)
+        x := state.bits(f64)
+        if x.is_finite() {
+            n64 += 1
+            if not round_trip64(x) { ok64 = false }
+        }
+        y := state.trunc(u32).bits(f32)
+        if y.is_finite() {
+            n32 += 1
+            if not round_trip32(y) { ok32 = false }
+        }
+    }
+    print("round trips: f64 {} ({}), f32 {} ({})\n", (ok64, n64, ok32, n32))
+    print("{} {} {} {}\n", (round_trip64(0.1), round_trip64(5e-324), round_trip64(1.7976931348623157e308), round_trip64(-0.0)))
+    print("{} {} {}\n", (round_trip32(0.1), round_trip32(1e-45), round_trip32(3.4028235e38)))
+}

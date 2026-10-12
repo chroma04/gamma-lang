@@ -103,13 +103,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::FnBody::Block(b) => {
                 let block = self.block(b, false);
-                if !ret.is_unit()
-                    && !block.ty.is_never()
-                    && !matches!(ret.kind(), TyKind::Result { ok, .. } if ok.is_unit())
-                {
-                    self.missing_return(b, ret);
-                }
-                block
+                self.finish_block_body(block, b)
             }
         };
         let final_ret = self.ret;
@@ -134,14 +128,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 own.push(e.clone());
                 if name.is_some() && !captures {
-                    let n = e.to_string();
-                    self.error(
-                        sp,
-                        format!(
-                            "this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)",
-                            n, n
-                        ),
-                    );
+                    let msg = self.undeclared_effect_message(&e, sp, &effects);
+                    self.error(sp, msg);
                 } else {
                     self.performed.push((e, sp));
                 }

@@ -1,0 +1,18 @@
+// `bool` is ordered, `false` before `true` (§7.5), so it can be a sort key.
+Task :: struct { done: bool, name: string }
+
+main :: fn() \ {Out} {
+    print("{} {} {} {}\n", (false < true, true < false, true >= true, false <= false))
+    print("{}\n", (true, 1) < (false, 2))
+    print("{}\n", [2]bool(false, true) < [2]bool(true, false))
+    tasks := [3]Task(Task(done: true, name: "b"), Task(done: false, name: "c"), Task(done: false, name: "a"))
+    // An insertion sort by (done, name): open tasks first.
+    for i in 1..tasks.len {
+        j := i
+        while j > 0 and (tasks[j].done, tasks[j].name) < (tasks[j - 1].done, tasks[j - 1].name) {
+            tasks.swap(j, j - 1)
+            j -= 1
+        }
+    }
+    for t in tasks { print("{} {}\n", (t.done, t.name)) }
+}

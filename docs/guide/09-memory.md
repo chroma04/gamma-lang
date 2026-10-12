@@ -173,6 +173,29 @@ for w in words {
 if p := counts.get_ptr("ada") { p^ = 0 }
 ```
 
+That map stores the slices it is given. When the words live in a buffer that is reused (a line reader's, for instance), the map must own copies of its keys, or the keys change under it. `entry(k, default)` is `get_or_put` that also says whether the key was found and points at the stored key, so a copy is made only for a new word, and `remove_entry(k)` hands the stored key back for freeing:
+
+```gamma
+e := try counts.entry(word, 0)
+if not e.found { e.key^ = try dupe(word) }    // the map now owns this copy
+e.value^ += 1
+...
+for k in counts.keys() { free(k) }            // release the owned keys before deinit
+```
+
+`keys()` and `values()` iterate like `entries()`. To sort them, collect them into a list: `try names.collect(fn() => counts.keys())`, then `names.items.sort()`.
+
+A `List(u8)` doubles as a growable string. `write` appends formatted text with the same templates as `print`, and `into_slice` hands the bytes over as one allocation, released with `free`:
+
+```gamma
+out := list(u8)
+try out.write("{:<8}{:>6}\n", (name, total))
+report := try out.into_slice()
+defer free(report)
+```
+
+`dupe(s)` copies any slice into a new allocation, and `str.format(template, args)` from `std/str` formats straight into one.
+
 Because maps compare with `is`, a float key never finds a NaN, as `nan is nan` is false. Key such maps by `x.bits(u64)` instead.
 
 ## Nothing allocates behind your back
@@ -190,7 +213,7 @@ test "list of names" {
 }
 ```
 
-Remove the `defer` line and the test fails with a leak report.
+Remove the `defer` line and the test fails with a leak report, which lists each block still allocated; blocks from `new`, `make`, `make_fill` and `dupe` come with the line that allocated them.
 
 ## Alignment and layout
 

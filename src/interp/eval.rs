@@ -368,7 +368,7 @@ impl<'a> Machine<'a> {
                 let s = self.read_str(e.span, &m)?;
                 self.trap(e.span, String::from_utf8_lossy(&s).into_owned())
             }
-            ExprKind::Write { sink, pieces, args } => self.eval_write(a, e, sink, pieces, args),
+            ExprKind::Write { sink, pieces, specs, args } => self.eval_write(a, e, sink, pieces, specs, args),
             #[allow(unreachable_patterns)]
             _ => self.trap(e.span, "internal error: expression kind reached the interpreter"),
         }

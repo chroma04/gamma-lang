@@ -15,7 +15,7 @@ with_s3 :: fn(a: i64, b: i64, c: i64, d: i64, e: i64, s: S3) -> i64 => a + b * 2
 with_p2 :: fn(a: i64, p: P2, b: i64) -> u64 => a.trunc(u64) + p.lo * 10 + p.hi * 100 + b.trunc(u64) * 1000
 
 // F2 is one SSE eightbyte.
-with_f2 :: fn(k: i64, f: F2, d: f64) -> f64 => k.round(f64) + f64(f.a) * 10.0 + f64(f.b) * 100.0 + d * 1000.0
+with_f2 :: fn(k: i64, f: F2, d: f64) -> f64 => k.to(f64) + f64(f.a) * 10.0 + f64(f.b) * 100.0 + d * 1000.0
 
 // V2 is two SSE eightbytes.
 with_v2 :: fn(v: V2, w: V2) -> f64 => v.x + v.y * 10.0 + w.x * 100.0 + w.y * 1000.0

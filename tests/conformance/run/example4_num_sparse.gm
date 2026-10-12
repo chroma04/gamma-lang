@@ -128,7 +128,7 @@ main :: fn() -> AllocError!() \ {Alloc, Out} {
     // Manufactured solution x* = sin-like values, b = A x*.
     xstar := try make(f64, n)
     defer free(xstar)
-    for i in 0..n { xstar[i] = 1.0 + (i % 7).round(f64) * 0.25 - (i % 3).round(f64) * 0.5 }
+    for i in 0..n { xstar[i] = 1.0 + (i % 7).to(f64) * 0.25 - (i % 3).to(f64) * 0.5 }
     b := try make(f64, n)
     defer free(b)
     matvec(&m, xstar, b)

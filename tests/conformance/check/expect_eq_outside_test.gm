@@ -1,0 +1,4 @@
+//! stage: check
+main :: fn() {
+    expect_eq(1, 1)                   //~ ERROR `expect_eq` may be called only in tests
+}

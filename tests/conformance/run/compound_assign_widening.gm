@@ -1,0 +1,30 @@
+// The right side of `op=` may have a narrower numeric type that converts losslessly to
+// the place's type (§4.7).
+Stats :: struct { total: u64 = 0, sum: f64 = 0.0 }
+
+main :: fn() \ {Out} {
+    total: u64 = 0
+    ages := [3]u32(30, 41, 4_000_000_000)
+    for a in ages { total += a }
+    print("{}\n", total)
+    x: i64 = 10
+    small: i8 = -3
+    x *= small
+    x -= u32(7)
+    x |= u8(1)
+    print("{}\n", x)
+    f: f64 = 0.5
+    f += f32(0.25)
+    f *= i32(4)
+    print("{}\n", f)
+    s := Stats()
+    s.total += u16(5)
+    s.sum += u8(2)
+    p := &s
+    p.total += u32(1)
+    print("{}\n", s)
+    w: u128 = 1
+    w <<= 100u8
+    w += u64(3)
+    print("{}\n", w)
+}

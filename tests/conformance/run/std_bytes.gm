@@ -1,0 +1,132 @@
+// std/bytes: integers and floats as bytes in both byte orders, and the Reader cursor.
+bytes :: import "std/bytes"
+
+digit :: fn(d: u8) -> u8 => if d < 10 { '0' + d } else { 'a' + d - 10 }
+
+// Prints `b` as hexadecimal pairs.
+hex :: fn(b: []const u8) \ {Out} {
+    for x in b {
+        pair := [_]u8(digit(x >> 4), digit(x & 15))
+        print("{}", pair[..])
+    }
+}
+
+// Prints `b` as hexadecimal pairs, or `null`.
+hex_opt :: fn(b: ?[]const u8) \ {Out} {
+    if v := b { hex(v) } else { print("null") }
+}
+
+// Writes `x` in both orders, shows the bytes, and reads each back.
+roundtrip :: fn(T: type, x: T) \ {Out} where Int(T) {
+    buf: [16]u8 = ---
+    n := @size_of(T)
+    bytes.write_int(T, buf[0..n], x, .Little)
+    print("{} LE ", x)
+    hex(buf[0..n])
+    print(" {}", bytes.read_int(T, buf[0..n], .Little) is x)
+    bytes.write_int(T, buf[0..n], x, .Big)
+    print("; BE ")
+    hex(buf[0..n])
+    print(" {}\n", bytes.read_int(T, buf[0..n], .Big) is x)
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    roundtrip(u8, 0)
+    roundtrip(u8, 0xAB)
+    roundtrip(u16, 0x1234)
+    roundtrip(u16, 0xFF00)
+    roundtrip(u32, 0x01020304)
+    roundtrip(u32, 0xDEADBEEF)
+    roundtrip(u64, 0x0102030405060708)
+    roundtrip(u64, 0xFFFFFFFFFFFFFFFF)
+    roundtrip(u128, 0x0102030405060708090A0B0C0D0E0F10)
+    roundtrip(i8, -1)
+    roundtrip(i8, -128)
+    roundtrip(i8, 127)
+    roundtrip(i16, -2)
+    roundtrip(i16, -32768)
+    roundtrip(i32, -2)
+    roundtrip(i32, -2147483648)
+    roundtrip(i32, 2147483647)
+    roundtrip(i64, -2)
+    roundtrip(i64, -9223372036854775808)
+    roundtrip(i64, 0x0102030405060708)
+    roundtrip(i128, -3)
+
+    // Reading from the start of a longer slice ignores the rest.
+    data := [_]u8(0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0)
+    print("{} {}\n", (bytes.read_int(u16, data[..], .Big), bytes.read_int(u16, data[..], .Little)))
+    print("{} {}\n", (bytes.read_int(i32, data[4..8], .Big), bytes.read_int(i32, data[4..8], .Little)))
+
+    // Floats.
+    fb: [8]u8 = ---
+    bytes.write_f32(fb[0..4], 1.5, .Big)
+    print("f32 BE ")
+    hex(fb[0..4])
+    bytes.write_f32(fb[0..4], -2.0, .Little)
+    print("\nf32 LE ")
+    hex(fb[0..4])
+    print(" -> {}\n", bytes.read_f32(fb[0..4], .Little))
+    bytes.write_f64(fb[0..8], 1.5, .Big)
+    print("f64 BE ")
+    hex(fb[0..8])
+    bytes.write_f64(fb[0..8], 0.1, .Little)
+    print("\nf64 LE ")
+    hex(fb[0..8])
+    print(" -> {}\n", bytes.read_f64(fb[0..8], .Little))
+    bytes.write_f64(fb[0..8], -1234.5e10, .Big)
+    print("f64 roundtrip {}\n", bytes.read_f64(fb[0..8], .Big))
+    bytes.write_f32(fb[0..4], 3.4028235e38, .Big)
+    print("f32 max {}\n", bytes.read_f32(fb[0..4], .Big))
+
+    // Appending to a list.
+    out := list(u8)
+    defer out.deinit()
+    try bytes.append_int(u8, &out, 7, .Big)
+    try bytes.append_int(u16, &out, 0x0102, .Big)
+    try bytes.append_int(u16, &out, 0x0102, .Little)
+    try bytes.append_int(i32, &out, -1, .Little)
+    try bytes.append_int(u64, &out, 1, .Big)
+    print("appended {} bytes: ", out.items.len)
+    hex(out.items)
+    print("\n")
+
+    // Reader over what was appended.
+    r := bytes.Reader(data: out.items)
+    print("pos {} rest {}\n", (r.pos, r.rest().len))
+    print("byte {}\n", r.byte())
+    print("u16 BE {}\n", r.int(u16, .Big))
+    print("u16 LE {}\n", r.int(u16, .Little))
+    print("i32 {}\n", r.int(i32, .Little))
+    print("pos {} rest ", r.pos)
+    hex(r.rest())
+    print("\n")
+    print("skip 5 {} pos {}\n", (r.skip(5), r.pos))
+    print("u64 short {} pos {}\n", (r.int(u64, .Little) is null, r.pos))
+    print("skip 4 {} pos {}\n", (r.skip(4), r.pos))
+    print("take 4 ")
+    hex_opt(r.take(4))
+    print(" pos {}\n", r.pos)
+    print("take 0 {}\n", r.take(0))
+    print("take 1 ")
+    hex_opt(r.take(1))
+    print(" pos {}\n", r.pos)
+    print("take 2 ")
+    hex_opt(r.take(2))
+    print(" pos {}\n", r.pos)
+    print("exhausted: byte {} u8 {} skip {} pos {}\n", (r.byte() is null, r.int(u8, .Big) is null, r.skip(1), r.pos))
+
+    // A partial value at the end leaves the cursor in place.
+    short := [_]u8(1, 2, 3)
+    r2 := bytes.Reader(data: short[..])
+    print("u32 {} pos {}\n", (r2.int(u32, .Big) is null, r2.pos))
+    print("u16 {} pos {}\n", (r2.int(u16, .Big), r2.pos))
+    print("u16 {} pos {}\n", (r2.int(u16, .Big) is null, r2.pos))
+    print("byte {} pos {}\n", (r2.byte(), r2.pos))
+    print("skip {} take {}\n", (r2.skip(1), r2.take(1) is null))
+
+    // The empty reader.
+    r3 := bytes.Reader(data: short[0..0])
+    print("empty: {} {} {} {}\n", (r3.byte() is null, r3.take(0) is not null, r3.skip(0), r3.rest().len))
+    return ()
+}

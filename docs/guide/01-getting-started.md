@@ -33,6 +33,15 @@ main :: fn() \ {Out} {
 
 The placeholder count is checked at compile time against the arguments. Every type has a fixed, structural display format (integers in decimal, structs as `Name(field: value, ...)`, enums as `.Name`, and so on); see §21.6.1 of the [specification][s21].
 
+A placeholder can carry a format spec after a colon, for tables and numbers: a width and alignment (`{:>8}`, `{:<12}`, `{:^5}`, with a fill character as in `{:*>8}`), a sign or zero padding (`{:+}`, `{:05}`), an integer base (`{:x}`, `{:#X}`, `{:b}`, `{:o}`), and for floats a precision or scientific notation (`{:.2}`, `{:e}`, `{:.3e}`):
+
+```gamma
+print("{:<8}|{:>6}|{:8.2}\n", ("apples", 12, 0.8333))     // apples  |    12|    0.83
+print("{:#06x} {:+} {:b}\n", (255, 5, 5))                  // 0x00ff +5 101
+```
+
+A spec that does not fit the argument (`{:x}` on a float) is a compile error.
+
 ### Returning a status
 
 `main` has three permitted shapes (§3.7 of the [specification][s3]). The effect set may be anything drawn from the ambient effects (`Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`):
@@ -75,9 +84,11 @@ gamma version              print the compiler version
 
 A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short` chooses how diagnostics are printed; they go to standard error, and the tool exits with status 1 if there were errors. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
+`gamma run` interprets the program, which starts at once and gives the most precise diagnostics, but runs it roughly 10 to 100 times slower than compiled code. For programs that do real work (megabytes of input, long loops, benchmarks), use `gamma run --backend=c`: the first run pays for a C compilation (around a second), and later runs of the same program reuse the executable, which is kept in the cache directory described below. The two back ends give the same output.
+
 ### Build modes
 
-The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized), and an optional fourth, **Safe** (all checks, and every memory access checked; the reference tool builds it with Fil-C). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|safe|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked. The C back end optimizes Checked and Fast builds fully; Debug builds are optimized lightly so that they compile quickly (and not at all with debug information, below). Debug builds also reuse a precompiled copy of the runtime, kept in `~/.cache/gamma` (set `GAMMA_CACHE_DIR` to use another directory, or to an empty value to turn the cache off).
+The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized), and an optional fourth, **Safe** (all checks, and every memory access checked; the reference tool builds it with Fil-C). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|safe|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked. The C back end optimizes Checked and Fast builds fully; Debug builds are optimized lightly so that they compile quickly (and not at all with debug information, below). Debug builds also reuse a precompiled copy of the runtime, and `gamma run --backend=c` reuses the executables of programs it has built, both kept in `~/.cache/gamma` (set `GAMMA_CACHE_DIR` to use another directory, or to an empty value to turn the cache off).
 
 ### Debugging native code
 
@@ -187,10 +198,11 @@ A top-level `test` declaration is compiled only when building tests. Its body ca
 ```gamma
 test "squares" {
     expect(square(7) is 49)
+    expect_eq(square(-3), 9)          // on failure, shows both values
 }
 ```
 
-A test passes if it finishes, and fails if `expect` fails, a trap occurs, or the test allocator detects a leak. Returning an error also fails the test, so `try` works inside tests. More on tests in [chapter 13](13-safety.md).
+A test passes if it finishes, and fails if `expect` or `expect_eq` fails, a trap occurs, or the test allocator detects a leak (the report lists each leaked block and, for `new`, `make` and `dupe`, the line that allocated it). `try` works inside tests on any error type: an error fails the test and is reported. More on tests in [chapter 13](13-safety.md).
 
 `gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`, and of every module of the same package that it imports, directly or indirectly. The tests of the standard library and of dependency packages are not run. Each test runs on its own; its output is captured and shown only if it fails:
 

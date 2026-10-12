@@ -84,7 +84,7 @@ impl<'s> Sema<'s> {
     /// inside a directory (§3.1).
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
         if root.is_dir() {
-            let m = self.load_dir_module(root, Span::DUMMY)?;
+            let m = self.load_dir_module(root, Span::DUMMY, None)?;
             return (!self.sess.diags.has_errors()).then_some(m);
         }
         let file = self.sess.load(root)?;
@@ -94,7 +94,7 @@ impl<'s> Sema<'s> {
         }
         let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
         let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-        let package = self.package_of(&canon);
+        let package = self.package_of(&canon, None);
         let name = root.file_stem().map_or("main".to_string(), |s| s.to_string_lossy().into_owned());
         let m = self.add_module(Symbol::intern(&name), vec![ast], false);
         self.modules[m.0 as usize].dir = Some(dir);
@@ -171,6 +171,13 @@ impl<'s> Sema<'s> {
                     self.error(name.span, format!("`{}` is a reserved type name and cannot be redeclared", name.name));
                     return;
                 }
+                // Files of one module may each import the same module under the same name
+                // (§3.2): the repeated import is the same declaration.
+                if let Some(&prev) = scope.get(&name.name)
+                    && self.same_import(prev, &item)
+                {
+                    return;
+                }
                 if self.check_duplicate(scope, name) {
                     return;
                 }
@@ -201,6 +208,22 @@ impl<'s> Sema<'s> {
             }
             ItemKind::Intrinsic(_) => self.static_asserts.push((module, item.clone())),
         }
+    }
+
+    /// Whether `item` is an import identical to declaration `prev`: the same path, the
+    /// same visibility, and no attributes or type annotation.
+    fn same_import(&self, prev: DeclId, item: &ast::Item) -> bool {
+        let import_of = |it: &ast::Item| match &it.kind {
+            ItemKind::Binding(b) if b.ty.is_none() && it.attrs.is_empty() => match &b.init.kind {
+                ast::ExprKind::Import(path) => Some(path.bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let d = &self.decls[prev.0 as usize];
+        d.op_of.is_none()
+            && d.item.is_pub == item.is_pub
+            && import_of(&d.item).is_some_and(|p| Some(p) == import_of(item))
     }
 
     /// Reports a duplicate top-level name; returns true if `name` is already declared.

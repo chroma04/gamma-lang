@@ -1,0 +1,216 @@
+// std/encoding/base64: Base64 as in RFC 4648, with the standard alphabet (section 4)
+// or the URL and filename safe one (section 5), with or without `=` padding.
+//
+//     base64 :: import "std/encoding/base64"
+//     buf: [64]u8 = ---
+//     text := base64.encode("foobar", buf[..], base64.Options())      // "Zm9vYmFy"
+//     raw: [48]u8 = ---
+//     data := try base64.decode(text, raw[..], base64.Options())      // "foobar"
+//
+// Encoding and decoding write into a buffer you supply and return the part of it that was
+// written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
+// effects. `encoded_len` and `decoded_len_max` give the buffer sizes that always suffice.
+
+/// Which 64 characters stand for the values: the standard alphabet uses `+` and `/` for
+/// 62 and 63, the URL alphabet uses `-` and `_`.
+pub Alphabet :: union {
+    Standard
+    Url
+}
+
+/// How to encode and decode. By default: the standard alphabet, with padding.
+pub Options :: struct {
+    pub alphabet: Alphabet = .Standard
+    /// Whether encoding ends with `=` to make the length a multiple of 4. When decoding,
+    /// `true` requires that padding and `false` also accepts input that has it.
+    pub pad: bool = true
+}
+
+/// Why decoding failed. Positions are byte offsets into the input.
+pub DecodeError :: union {
+    /// A byte that is not in the alphabet.
+    InvalidByte: usize
+    /// The number of characters cannot come from encoding any data: a single character
+    /// left over, or missing padding when `pad` is set.
+    InvalidLength
+    /// A `=` in the wrong place or too many of them (the position of the first
+    /// offending one), or, with the position of the last data character, trailing bits
+    /// that are not zero (which no encoder produces).
+    InvalidPadding: usize
+}
+
+/// The error of the `_append` functions: the input was invalid, or the list could not
+/// grow.
+pub AppendError :: union {
+    Decode: DecodeError
+    Alloc: AllocError
+}
+
+// ---------------------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------------------
+
+STANDARD :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+URL :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+table :: fn(a: Alphabet) -> string => if a is .Url { URL } else { STANDARD }
+
+/// The length of the encoding of `n` bytes.
+pub encoded_len :: fn(n: usize, o: Options) -> usize {
+    if o.pad { return (n + 2) / 3 * 4 }
+    r := n % 3
+    return n / 3 * 4 + (if r is 0 { 0 } else { r + 1 })
+}
+
+// Encodes the up to three bytes of `src` from index `i` into `out` (at least 4 bytes) and
+// returns how many characters that took, `=` padding included when `o.pad` is set.
+encode_group :: fn(src: []const u8, i: usize, t: string, o: Options, out: []u8) -> usize {
+    left := src.len - i
+    b0 := src[i].trunc(u32)
+    b1: u32 = if left > 1 { src[i + 1].trunc(u32) } else { 0 }
+    b2: u32 = if left > 2 { src[i + 2].trunc(u32) } else { 0 }
+    v := (b0 << 16) | (b1 << 8) | b2
+    out[0] = t[(v >> 18).trunc(usize)]
+    out[1] = t[((v >> 12) & 63).trunc(usize)]
+    if left is 1 {
+        if not o.pad { return 2 }
+        out[2] = '='
+        out[3] = '='
+        return 4
+    }
+    out[2] = t[((v >> 6) & 63).trunc(usize)]
+    if left is 2 {
+        if not o.pad { return 3 }
+        out[3] = '='
+        return 4
+    }
+    out[3] = t[(v & 63).trunc(usize)]
+    return 4
+}
+
+/// Encodes `src` into `dst`, which must hold `encoded_len(src.len, o)` bytes (a trap
+/// otherwise), and returns the part of `dst` written.
+pub encode :: fn(src: []const u8, dst: []u8, o: Options) -> string {
+    n := encoded_len(src.len, o)
+    assert(dst.len >= n, "base64.encode: buffer too small")
+    t := table(o.alphabet)
+    at: usize = 0
+    i: usize = 0
+    while i < src.len {
+        at += encode_group(src, i, t, o, dst[at..dst.len])
+        i += 3
+    }
+    return dst[0..at]
+}
+
+/// Appends the encoding of `src` to `out`.
+pub encode_append :: fn(out: ^List(u8), src: []const u8, o: Options) -> AllocError!() {
+    try out.reserve(encoded_len(src.len, o))
+    t := table(o.alphabet)
+    group: [4]u8 = ---
+    i: usize = 0
+    while i < src.len {
+        n := encode_group(src, i, t, o, group[..])
+        try out.extend(group[0..n])
+        i += 3
+    }
+    return ()
+}
+
+// ---------------------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------------------
+
+/// The size of a buffer that always holds the decoding of `n` characters.
+pub decoded_len_max :: fn(n: usize) -> usize => (n + 3) / 4 * 3
+
+// The value of the character `c` in the alphabet, or 255.
+value :: fn(c: u8, a: Alphabet) -> u8 {
+    if c >= 'A' and c <= 'Z' { return c - 'A' }
+    if c >= 'a' and c <= 'z' { return c - 'a' + 26 }
+    if c >= '0' and c <= '9' { return c - '0' + 52 }
+    if a is .Url {
+        if c is '-' { return 62 }
+        if c is '_' { return 63 }
+    } else {
+        if c is '+' { return 62 }
+        if c is '/' { return 63 }
+    }
+    return 255
+}
+
+// Checks `src` and returns the number of data characters in it (those before the
+// padding). All the rules of `DecodeError` are applied here, so decoding the checked
+// input cannot fail.
+check :: fn(src: string, o: Options) -> DecodeError!usize {
+    n := src.len
+    pads: usize = 0
+    while pads < n and src[n - 1 - pads] is '=' { pads += 1 }
+    data := n - pads
+    for i in 0..data {
+        c := src[i]
+        if c is '=' { return !.InvalidPadding(i) }
+        if value(c, o.alphabet) is 255 { return !.InvalidByte(i) }
+    }
+    r := data % 4
+    if r is 1 { return !.InvalidLength }
+    needed: usize = if r is 0 { 0 } else { 4 - r }
+    if pads > needed { return !.InvalidPadding(data + needed) }
+    if pads < needed and (o.pad or pads > 0) { return !.InvalidLength }
+    if r is 2 and (value(src[data - 1], o.alphabet) & 15) is not 0 { return !.InvalidPadding(data - 1) }
+    if r is 3 and (value(src[data - 1], o.alphabet) & 3) is not 0 { return !.InvalidPadding(data - 1) }
+    return data
+}
+
+// Decodes the characters of the checked data `src[0..data]` from index `i` (a multiple
+// of 4): a whole group of four, or the final shorter one. Writes up to three bytes to
+// `out` and returns how many.
+decode_group :: fn(src: string, data: usize, i: usize, a: Alphabet, out: []u8) -> usize {
+    left := data - i
+    v0 := value(src[i], a).trunc(u32)
+    v1 := value(src[i + 1], a).trunc(u32)
+    v2: u32 = if left > 2 { value(src[i + 2], a).trunc(u32) } else { 0 }
+    v3: u32 = if left > 3 { value(src[i + 3], a).trunc(u32) } else { 0 }
+    v := (v0 << 18) | (v1 << 12) | (v2 << 6) | v3
+    out[0] = (v >> 16).trunc(u8)
+    if left is 2 { return 1 }
+    out[1] = (v >> 8).trunc(u8)
+    if left is 3 { return 2 }
+    out[2] = v.trunc(u8)
+    return 3
+}
+
+/// Decodes `src` into `dst`, which must hold `decoded_len_max(src.len)` bytes (a trap
+/// otherwise), and returns the part of `dst` written.
+///
+/// With `o.pad` set the input must end with the padding that makes its length a multiple
+/// of 4, and without it padding is optional. Padding that is partly there, too long or
+/// not at the end is an error. Only the canonical encoding is accepted: the unused bits
+/// of the last character must be zero. The input is checked as a whole before anything is
+/// written, and the first problem, in the order bytes, length, padding, is reported.
+pub decode :: fn(src: string, dst: []u8, o: Options) -> DecodeError![]u8 {
+    assert(dst.len >= decoded_len_max(src.len), "base64.decode: buffer too small")
+    data := try check(src, o)
+    at: usize = 0
+    i: usize = 0
+    while i < data {
+        at += decode_group(src, data, i, o.alphabet, dst[at..dst.len])
+        i += 4
+    }
+    return dst[0..at]
+}
+
+/// Appends the decoding of `src` to `out`, with the rules of `decode`. If `src` is
+/// invalid nothing is appended.
+pub decode_append :: fn(out: ^List(u8), src: string, o: Options) -> AppendError!() {
+    data := try check(src, o)
+    try out.reserve(decoded_len_max(data))
+    group: [3]u8 = ---
+    i: usize = 0
+    while i < data {
+        n := decode_group(src, data, i, o.alphabet, group[..])
+        try out.extend(group[0..n])
+        i += 4
+    }
+    return ()
+}

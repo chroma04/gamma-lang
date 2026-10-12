@@ -1,0 +1,17 @@
+//! stage: check
+// `op=` widens its right side only losslessly (§4.7).
+main :: fn() {
+    a: u32 = 0
+    b: u64 = 1
+    a += b                            //~ ERROR
+    c: i32 = 0
+    d: u32 = 1
+    c += d                            //~ ERROR
+    e: f32 = 0.0
+    g: f64 = 1.0
+    e += g                            //~ ERROR
+    h: u64 = 0
+    h += i8(1)                        //~ ERROR
+    k: u64 = 0
+    k += u32(1)
+}

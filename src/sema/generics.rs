@@ -102,7 +102,12 @@ impl<'s> Sema<'s> {
 
     pub fn has_ord(&self, t: Ty) -> bool {
         match t.kind() {
-            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) | TyKind::ManyPtr { .. } => true,
+            TyKind::Bool
+            | TyKind::Int(_)
+            | TyKind::Usize
+            | TyKind::Isize
+            | TyKind::Float(_)
+            | TyKind::ManyPtr { .. } => true,
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_ord(*e)),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => {
                 self.has_ord(*elem)
@@ -115,23 +120,37 @@ impl<'s> Sema<'s> {
 
     /// The types `is` is defined for (§7.6).
     pub fn has_eq(&self, t: Ty) -> bool {
+        self.has_eq_in(t, &mut Vec::new())
+    }
+
+    /// `has_eq` with the ADTs being examined: a type that reaches itself again is assumed to have
+    /// equality (the other parts decide), so self-recursive types terminate.
+    fn has_eq_in(&self, t: Ty, seen: &mut Vec<Ty>) -> bool {
         match t.kind() {
             TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Cont(_) | TyKind::Type => false,
             TyKind::Param(p) => self.param_has(*p, Constraint::Eq),
-            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq(*e)),
+            TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq_in(*e, seen)),
             TyKind::Array { elem, .. }
             | TyKind::ParamArray { elem, .. }
             | TyKind::Slice { elem, .. }
-            | TyKind::Optional(elem) => self.has_eq(*elem),
-            TyKind::Result { err, ok } => self.has_eq(*err) && self.has_eq(*ok),
-            TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
-                Some(tir::AdtKind::Struct { fields, .. }) => fields.iter().all(|f| self.has_eq(f.ty)),
-                Some(tir::AdtKind::Union { variants, .. }) => {
-                    variants.iter().all(|v| v.payload.is_none_or(|p| self.has_eq(p)))
+            | TyKind::Optional(elem) => self.has_eq_in(*elem, seen),
+            TyKind::Result { err, ok } => self.has_eq_in(*err, seen) && self.has_eq_in(*ok, seen),
+            TyKind::Adt(id, _) => {
+                if seen.contains(&t) {
+                    return true;
                 }
-                Some(tir::AdtKind::CUnion { .. }) => false,
-                None => true,
-            },
+                seen.push(t);
+                let r = match self.prog.adts.get(id).map(|d| &d.kind) {
+                    Some(tir::AdtKind::Struct { fields, .. }) => fields.iter().all(|f| self.has_eq_in(f.ty, seen)),
+                    Some(tir::AdtKind::Union { variants, .. }) => {
+                        variants.iter().all(|v| v.payload.is_none_or(|p| self.has_eq_in(p, seen)))
+                    }
+                    Some(tir::AdtKind::CUnion { .. }) => false,
+                    None => true,
+                };
+                seen.pop();
+                r
+            }
             _ => true,
         }
     }
@@ -338,7 +357,21 @@ impl<'s> Sema<'s> {
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
         }
+        // Format specs on generic arguments are checked in each instance.
+        if let tir::ExprKind::Write { specs, args, .. } = &e.kind
+            && !cx.map.is_empty()
+        {
+            self.check_specs(cx, specs, args);
+        }
         e
+    }
+
+    fn check_specs(&mut self, cx: &MonoCx, specs: &[tir::FmtSpec], args: &[Expr]) {
+        for (spec, a) in specs.iter().zip(args) {
+            if let Err(msg) = super::call::check_spec(spec, a.ty) {
+                self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+            }
+        }
     }
 
     /// Splits the template of a `WriteDeferred`, now a string, and its arguments
@@ -350,16 +383,31 @@ impl<'s> Sema<'s> {
             self.error(cx.span, "internal error: a template parameter without a string value");
             return e_unit(span);
         };
-        let Some(pieces) = super::call::parse_template(t) else {
-            self.error(
-                cx.span,
-                "invalid template (in an instantiation used here): use `{}` for an argument and `{{` / `}}` for braces",
-            );
-            return e_unit(span);
+        let (pieces, specs) = match super::call::parse_template(t) {
+            Ok(t) => t,
+            Err(msg) => {
+                self.error(cx.span, format!("invalid template (in an instantiation used here): {}", msg));
+                return e_unit(span);
+            }
         };
         let n = pieces.len() - 1;
         let at = |cx: &MonoCx| cx.span;
-        let write = |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, args }, span };
+        if n > 0
+            && let Some(a) = &args
+        {
+            let tys: Vec<Ty> = match (n, a.ty.kind()) {
+                (1, _) => vec![a.ty],
+                (_, TyKind::Tuple { elems, .. }) if elems.len() == n => elems.to_vec(),
+                _ => vec![],
+            };
+            for (spec, t) in specs.iter().zip(tys) {
+                if let Err(msg) = super::call::check_spec(spec, t) {
+                    self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+                }
+            }
+        }
+        let write =
+            |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, specs, args }, span };
         match (n, args) {
             (0, None) => write(vec![]),
             (0, Some(a)) if a.ty.is_unit() => write(vec![]),
@@ -459,6 +507,8 @@ impl<'s> Sema<'s> {
         self.nested_owner.insert(new_id, new_id);
         let def = &self.prog.fns[id.index()];
         let (params, locals, body) = (def.params.clone(), def.locals.clone(), def.body.clone());
+        // Including the effects a literal performs where it is written (§11.6).
+        let effects = subst_effects(&def.effects, cx.map);
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(cx, l.ty), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
@@ -468,6 +518,7 @@ impl<'s> Sema<'s> {
         nd.locals = locals;
         nd.body = body;
         nd.parent = parent;
+        nd.effects = effects;
         new_id
     }
 
@@ -765,6 +816,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!has_param(expect) || partial).then_some(expect));
                 self.temp_ref_arg = false;
+                let v = self.array_arg_as_slice(v, p.ty);
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
                 if !fixed.is_empty() && !mentions_free && !has_param(expect) {
@@ -818,6 +870,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (k, v2) in b2 {
                     binds.entry(k).or_insert(v2);
                 }
+            }
+        }
+        // An omitted argument whose default is `()` determines its parameter's type:
+        // `print`'s `args: A = ()` makes `A` the unit type when there are no arguments.
+        for (p, v) in sig.params.iter().zip(&values) {
+            if let (TyKind::Param(pid), None, Some(d)) = (p.ty.kind(), v, &p.default)
+                && matches!(&d.kind, ast::ExprKind::Tuple(elems) if elems.is_empty())
+            {
+                binds.entry(*pid).or_insert(Ty::unit());
             }
         }
         // An argument with an error (already reported) leaves its parameters unbound;

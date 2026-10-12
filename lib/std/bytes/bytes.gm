@@ -1,0 +1,123 @@
+// std/bytes: reading and writing binary data.
+//
+// Integers and floats are converted to and from bytes in the order you choose, so the
+// same code works on every target. The functions here take a byte slice and read or write
+// at its start; `Reader` is a cursor for taking a record apart field by field.
+//
+//     bytes :: import "std/bytes"
+//     n := bytes.read_int(u32, header[0..4], .Big)
+//     r := bytes.Reader(data: packet)
+//     kind := r.byte() else return !.Short
+//     len := r.int(u16, .Little) else return !.Short
+//     body := r.take(usize(len)) else return !.Short
+//
+// Integers are stored in `@size_of(T)` bytes, so `T` should be 8, 16, 32, 64 or 128
+// bits wide (an odd width such as `u24` occupies the next power of two). Nothing here
+// allocates except `append_int`, which grows the list you pass.
+
+/// The order of the bytes of a stored number.
+pub Endian :: union {
+    /// The least significant byte first.
+    Little
+    /// The most significant byte first.
+    Big
+}
+
+// ---------------------------------------------------------------------------------
+// Integers and floats at a position
+// ---------------------------------------------------------------------------------
+
+/// The `T` stored in the first `@size_of(T)` bytes of `b`. Traps if `b` is shorter.
+pub read_int :: fn(T: type, b: []const u8, e: Endian) -> T where Int(T) {
+    n := @size_of(T)
+    if b.len < n { trap("bytes: not enough bytes to read an integer") }
+    x: T = 0
+    for i in 0..n {
+        k := if e is .Big { n - 1 - i } else { i }
+        sh: u32 = (8 * k).trunc(u32)
+        x |= b[i].trunc(T) <<% sh
+    }
+    return x
+}
+
+/// Stores `x` in the first `@size_of(T)` bytes of `b`. Traps if `b` is shorter.
+pub write_int :: fn(T: type, b: []u8, x: T, e: Endian) where Int(T) {
+    n := @size_of(T)
+    if b.len < n { trap("bytes: not enough room to write an integer") }
+    for i in 0..n {
+        k := if e is .Big { n - 1 - i } else { i }
+        sh: u32 = (8 * k).trunc(u32)
+        b[i] = (x >> sh).trunc(u8)
+    }
+}
+
+/// Appends the `@size_of(T)` bytes of `x` to `out`.
+pub append_int :: fn(T: type, out: ^List(u8), x: T, e: Endian) -> AllocError!() where Int(T) {
+    tmp: [16]u8 = ---
+    n := @size_of(T)
+    assert(n <= tmp.len, "bytes: integer wider than 128 bits")
+    write_int(T, tmp[0..n], x, e)
+    try out.extend(tmp[0..n])
+    return ()
+}
+
+/// The `f32` stored in the first 4 bytes of `b` (IEEE 754 binary32). Traps if `b` is
+/// shorter.
+pub read_f32 :: fn(b: []const u8, e: Endian) -> f32 => read_int(u32, b, e).bits(f32)
+
+/// The `f64` stored in the first 8 bytes of `b` (IEEE 754 binary64). Traps if `b` is
+/// shorter.
+pub read_f64 :: fn(b: []const u8, e: Endian) -> f64 => read_int(u64, b, e).bits(f64)
+
+/// Stores `x` in the first 4 bytes of `b`. Traps if `b` is shorter.
+pub write_f32 :: fn(b: []u8, x: f32, e: Endian) {
+    write_int(u32, b, x.bits(u32), e)
+}
+
+/// Stores `x` in the first 8 bytes of `b`. Traps if `b` is shorter.
+pub write_f64 :: fn(b: []u8, x: f64, e: Endian) {
+    write_int(u64, b, x.bits(u64), e)
+}
+
+// ---------------------------------------------------------------------------------
+// Reader
+// ---------------------------------------------------------------------------------
+
+/// A cursor over `data`: `pos` is the number of bytes taken so far. Each function below
+/// returns `null` when fewer bytes remain than it needs, and then leaves `pos` as it was.
+pub Reader :: struct {
+    pub data: []const u8
+    pub pos: usize = 0
+}
+
+/// The next `n` bytes, a slice of `data`.
+pub take :: fn(r: ^Reader, n: usize) -> ?[]const u8 {
+    if n > r.data.len - r.pos { return null }
+    s := r.data[r.pos..r.pos + n]
+    r.pos += n
+    return s
+}
+
+/// The next `@size_of(T)` bytes as a `T`.
+pub int :: fn(T: type, r: ^Reader, e: Endian) -> ?T where Int(T) {
+    s := take(r, @size_of(T)) else return null
+    return read_int(T, s, e)
+}
+
+/// The next byte.
+pub byte :: fn(r: ^Reader) -> ?u8 {
+    if r.pos >= r.data.len { return null }
+    b := r.data[r.pos]
+    r.pos += 1
+    return b
+}
+
+/// The bytes not yet taken (a slice of `data`).
+pub rest :: fn(r: ^const Reader) -> []const u8 => r.data[r.pos..r.data.len]
+
+/// Skips `n` bytes; `false` (and no change) if fewer remain.
+pub skip :: fn(r: ^Reader, n: usize) -> bool {
+    if n > r.data.len - r.pos { return false }
+    r.pos += n
+    return true
+}

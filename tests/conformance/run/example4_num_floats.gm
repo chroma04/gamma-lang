@@ -39,7 +39,7 @@ main :: fn() \ {Out} {
     print("big and small: {} {} {} {}\n", (1.0e21, 1.0e20, 1.5e-7, 0.000001))
     print("f32 limits: {} {} {}\n", (f32(16777216.0) + 1.0, f32(3.4028235e38), f32(1.0e-45)))
     print("f64 limits: {} {}\n", (1.7976931348623157e308, 5.0e-324))
-    print("pi: {} {}\n", (math.pi, math.pi.round(f32)))
+    print("pi: {} {}\n", (math.pi, math.pi.to(f32)))
 
     // Accumulating 0.1 many times: naive summation drifts, Kahan does not.
     print("0.1 x 100000: f32 naive {}, f32 kahan {}, f64 naive {}\n", (naive_f32(100000, 0.1), kahan_f32(100000, 0.1), naive_f64(100000, 0.1)))
@@ -63,7 +63,7 @@ main :: fn() \ {Out} {
     print("from bits: {} {}\n", ((0x4009_21FB_5444_2D18u64).bits(f64), (0x3FC0_0000u32).bits(f32)))
     print("max subnormal f64: {}\n", (0x000F_FFFF_FFFF_FFFFu64).bits(f64))
     print("min normal f32: {}\n", (0x0080_0000u32).bits(f32))
-    print("nan payload kept in f32 bits: {}\n", nan.round(f32).bits(u32) & 0x7FC0_0000)
+    print("nan payload kept in f32 bits: {}\n", nan.to(f32).bits(u32) & 0x7FC0_0000)
 
     // Float to integer conversions.
     vals := [_]f64(2.5, 3.5, -2.5, -0.5, 0.49999999999999994, 1.9999, -1.9999)
@@ -76,17 +76,17 @@ main :: fn() \ {Out} {
 
     // Integer to float: rounds to nearest even when the integer is too wide.
     i53: u64 = 9007199254740993
-    print("2^53+1 -> {}\n", i53.round(f64))
+    print("2^53+1 -> {}\n", i53.to(f64))
     imax: i64 = 9223372036854775807
-    print("i64 max -> {}\n", imax.round(f64))
+    print("i64 max -> {}\n", imax.to(f64))
     i24: i32 = 16777217
-    print("2^24+1 -> f32 {}\n", i24.round(f32))
+    print("2^24+1 -> f32 {}\n", i24.to(f32))
     wide: u128 = 340282366920938463463374607431768211455
-    print("u128 max -> {}\n", wide.round(f64))
+    print("u128 max -> {}\n", wide.to(f64))
 
     // Narrowing between float types.
-    print("narrowing: {} {} {}\n", (f64(1.0e40).round(f32), f64(1.0000000596046448).round(f32), f64(0.1).round(f32)))
-    print("f64 -> f32 -> f64: {}\n", f64(f64(0.1).round(f32)))
+    print("narrowing: {} {} {}\n", (f64(1.0e40).to(f32), f64(1.0000000596046448).to(f32), f64(0.1).to(f32)))
+    print("f64 -> f32 -> f64: {}\n", f64(f64(0.1).to(f32)))
 
     // Half precision.
     h1: f16 = 0.1

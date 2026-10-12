@@ -23,6 +23,24 @@ test "split yields all pieces" {
     assert(n is 4, "pieces")
 }
 
+test "replace_alloc and dupe do not leak" {
+    r := try str.replace_alloc("a-b-c", "-", "<->")
+    defer free(r)
+    assert(r is "a<->b<->c", "replaced")
+    d := try dupe("copy")
+    defer free(d)
+    assert(d is "copy", "copy")
+    assert(d.ptr is not "copy".ptr, "a new block")
+}
+
+test "replace and repeat append to a list" {
+    out := list(u8)
+    defer out.deinit()
+    try str.replace(&out, "x.y.z", ".", "::")
+    try str.repeat(&out, "!", 3)
+    assert(out.items is "x::y::z!!!", "contents")
+}
+
 test "builder formats through @write" {
     store: [32]u8 = ---
     b := str.builder(store[..])

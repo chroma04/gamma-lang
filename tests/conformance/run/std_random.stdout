@@ -1,0 +1,24 @@
+11091344671253066420 13793997310169335082 1900383378846508768 7684712102626143532
+1546998764402558742 6990951692964543102 12544586762248559009
+same seed same sequence: true
+different seed differs: true
+fill layout: true
+below(u8, 1) = 0
+below(u32, 6): in bounds true all faces plausible true
+below bounds on other types: true
+range(i32, -3, 3): in bounds true reaches ends true true
+range of one value: -5
+range(i64) full span: true true true
+range(i8) full span reaches low values: true
+range(u8, 200, 255): true
+float in [0, 1): true mean near 0.5: true
+chance(0.25) plausible: true
+chance(0) false chance(1) true
+normal mean near 10: true variance near 4: true
+shuffle is a permutation: true moved something: true
+shuffle of one: 5
+choice picks members: true
+choice of nothing: true
+weighted never picks a zero weight: true ratio plausible: true
+weighted of nothing: true true
+from_rand differ: true

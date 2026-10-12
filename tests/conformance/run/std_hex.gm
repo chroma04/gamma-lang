@@ -1,0 +1,110 @@
+// std/encoding/hex: encoding in both cases, decoding either, each error, and round trips.
+hex :: import "std/encoding/hex"
+
+show_decode :: fn(label: string, src: string) \ {Out} {
+    buf: [32]u8 = ---
+    print("{}: ", label)
+    data := hex.decode(src, buf[..]) else e => {
+        match e {
+            .InvalidByte(i) => print("invalid byte at {}\n", i)
+            .OddLength => print("odd length\n")
+        }
+        return
+    }
+    if data.len is 0 {
+        print("ok, no bytes\n")
+    } else if data[0] >= 32 and data[0] < 127 and data[data.len - 1] >= 32 and data[data.len - 1] < 127 {
+        print("ok {} bytes: {}\n", (data.len, data))
+    } else {
+        print("ok {} bytes, first {}, last {}\n", (data.len, data[0], data[data.len - 1]))
+    }
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    print("-- RFC 4648 section 10\n")
+    buf: [64]u8 = ---
+    inputs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")
+    for s in inputs {
+        print("[{}] ", hex.encode(s, buf[..], true))
+        print("[{}]\n", hex.encode(s, buf[..], false))
+    }
+
+    print("-- cases\n")
+    raw := [_]u8(0x00, 0x0f, 0xab, 0xcd, 0xef, 0xff, 0x10)
+    print("{}\n", hex.encode(raw[..], buf[..], false))
+    print("{}\n", hex.encode(raw[..], buf[..], true))
+    show_decode("lower", "000fabcdefff10")
+    show_decode("upper", "000FABCDEFFF10")
+    show_decode("mixed", "aBcD")
+    show_decode("empty", "")
+    show_decode("text", "666f6f626172")
+
+    print("-- errors\n")
+    show_decode("odd", "abc")
+    show_decode("odd one", "a")
+    show_decode("bad first", "g0")
+    show_decode("bad middle", "0011zz22")
+    show_decode("bad last", "0011223x")
+    show_decode("space", "00 11")
+    show_decode("prefix", "0x00")
+    show_decode("bad before odd", "abz")
+    show_decode("bad in odd", "a-c")
+    show_decode("high byte", "0\xff")
+
+    print("-- append\n")
+    out := list(u8)
+    defer out.deinit()
+    try hex.encode_append(&out, "H\xab\xcd", false)
+    try out.push(' ')
+    try hex.encode_append(&out, "H\xab\xcd", true)
+    try out.push(' ')
+    try hex.encode_append(&out, "", true)
+    print("[{}]\n", out.items)
+    out.clear()
+    hex.decode_append(&out, "48692a") else e => print("unexpected {}\n", e)
+    hex.decode_append(&out, "21") else e => print("unexpected {}\n", e)
+    print("[{}]\n", out.items)
+    if !e := hex.decode_append(&out, "48x") {
+        match e {
+            .Decode(d) => print("decode error {}\n", d)
+            .Alloc(_) => print("alloc error\n")
+        }
+    }
+    if !e := hex.decode_append(&out, "484") {
+        match e {
+            .Decode(d) => print("decode error {}\n", d)
+            .Alloc(_) => print("alloc error\n")
+        }
+    }
+    print("unchanged [{}]\n", out.items)
+
+    print("-- every byte\n")
+    all: [256]u8 = ---
+    for i in 0..256 { all[i] = i.trunc(u8) }
+    enc: [512]u8 = ---
+    dec: [256]u8 = ---
+    bad := 0
+    for upper in [_]bool(false, true) {
+        for n in 0..257 {
+            text := hex.encode(all[0..n], enc[..], upper)
+            data := hex.decode(text, dec[..]) else {
+                bad += 1
+                continue
+            }
+            if data is not all[0..n] { bad += 1 }
+        }
+    }
+    print("mismatches {}\n", bad)
+    print("{}\n", hex.encode(all[..], enc[..], false))
+    print("{}\n", hex.encode(all[250..256], enc[..], true))
+
+    // Through the list as well.
+    out.clear()
+    try hex.encode_append(&out, all[..], false)
+    big := out.items.len
+    all2 := list(u8)
+    defer all2.deinit()
+    hex.decode_append(&all2, out.items) else e => print("unexpected {}\n", e)
+    print("list round trip {} {} {}\n", (big, all2.items.len, all2.items is all[..]))
+    return ()
+}

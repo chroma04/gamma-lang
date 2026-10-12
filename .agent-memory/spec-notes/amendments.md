@@ -50,3 +50,6 @@
   §3.6 `.Safe`; §6.6 to_ptr grants no access in Safe; §14.1 impl may run fibers on own memory;
   §18.1/18.4/18.5/18.6 adjusted, new §18.7 (Safe semantics per §18.4 item, allocator
   granularity); §19.2 foreign libs built for Safe; §19.5 @asm limits; B.4 row; App. C rule.
+- s7: new §22 (stdlib admission + conventions); §21.6.1 format specs; §3.8 try in tests,
+  expect_eq, leak sites; §4.7 op= widening; §7.2 array args to []const; §3.2 repeated
+  imports; §6.6/§21.3 to(F), unsigned_abs; §7.5 bool ordered; §21.1/21.2 dupe; §21.5 List/map.

@@ -1,0 +1,233 @@
+// std/cli: command-line parsing as an iterator, getopt style.
+//
+// The program describes its options in a table of `Opt` and matches over what `parse`
+// yields. Nothing allocates and nothing is reflected: the yielded strings are slices of
+// the arguments, and `help` appends the usage text to a list you own.
+//
+//     cli :: import "std/cli"
+//     opts := [_]cli.Opt(
+//         cli.Opt(short: 'v', long: "verbose", help: "print more"),
+//         cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),
+//     )
+//     for a in cli.parse(args()[1..], opts[..]) {
+//         match a {
+//             .Opt(o) => …                      // o.index into opts, o.value ("" for flags)
+//             .Pos(p) => …
+//             .Unknown(u) => …
+//             .MissingValue(i) => …
+//             .UnexpectedValue(i) => …
+//         }
+//     }
+//
+// The rules are those of GNU getopt without abbreviations or permutation: options and
+// positional arguments may be mixed, `--` ends the options, and a lone `-` is a
+// positional argument. A long option is `--name`, `--name=value` or `--name value`; short
+// options may be bundled (`-abc`), and one that takes a value takes the rest of its
+// bundle (`-ofile`) or else the next argument (`-o file`).
+
+/// One option of the program.
+pub Opt :: struct {
+    /// The letter of the short form (`-v`), or 0 if there is none.
+    pub short: u8 = 0
+    /// The name of the long form (`--verbose`) without dashes, or "" if there is none.
+    pub long: string = ""
+    /// The name of the option's value in help text. An empty `value` makes the option a
+    /// flag that takes no value.
+    pub value: string = ""
+    /// A description for `help`.
+    pub help: string = ""
+}
+
+/// What `parse` yields for one command-line item.
+pub Arg :: union {
+    /// `opts[index]` was given, with its `value` ("" for a flag).
+    Opt: (index: usize, value: string)
+    /// A positional argument.
+    Pos: string
+    /// An option that is not in the table, as written: `--colour`, or `-q` for a letter
+    /// in a bundle. A long option written `--name=value` is reported whole.
+    Unknown: string
+    /// `opts[index]` takes a value and the arguments ended.
+    MissingValue: usize
+    /// The flag `opts[index]` was written `--flag=value`.
+    UnexpectedValue: usize
+}
+
+// `-` followed by each byte value, two bytes apiece, for reporting an unknown short
+// option without allocating.
+SHORT_FORMS: [512]u8 : short_forms()
+
+short_forms :: fn() -> [512]u8 {
+    t: [512]u8 = ---
+    for i in 0..256 {
+        t[i * 2] = '-'
+        t[i * 2 + 1] = i.trunc(u8)
+    }
+    return t
+}
+
+find_short :: fn(opts: []const Opt, c: u8) -> ?usize {
+    for i in 0..opts.len {
+        if opts[i].short is c and c is not 0 { return i }
+    }
+    return null
+}
+
+find_long :: fn(opts: []const Opt, name: string) -> ?usize {
+    for i in 0..opts.len {
+        if opts[i].long.len > 0 and opts[i].long is name { return i }
+    }
+    return null
+}
+
+/// Parses `args`, which must not include the program name (pass `args()[1..]`), and
+/// yields one `Arg` for each option or positional argument, in order.
+///
+/// - `--` ends the options: everything after it is positional. A lone `-` is positional.
+/// - `--name=value` and `--name value` give a long option its value; long names must
+///   match exactly. Giving a flag a value (`--flag=x`) is `UnexpectedValue`.
+/// - `-abc` is the flags `a`, `b` and `c`; `-ofile` and `-o file` give a short option its
+///   value, also at the end of a bundle (`-vofile`). Anything after a short option that
+///   takes a value belongs to it.
+/// - A value is taken from the next argument whatever it looks like, even `-x` or `--`.
+/// - An option that needs a value at the end of the arguments is `MissingValue`.
+pub parse :: fn(args: []const string, opts: []const Opt) \ {Yield(Arg)} {
+    i: usize = 0
+    while i < args.len {
+        a := args[i]
+        i += 1
+        if a.len < 2 or a[0] is not '-' {
+            yield(Arg.Pos(a))
+            continue
+        }
+        if a[1] is '-' {
+            if a.len is 2 {
+                while i < args.len {
+                    yield(Arg.Pos(args[i]))
+                    i += 1
+                }
+                return
+            }
+            body := a[2..a.len]
+            eq := body.len                          // `body.len` when there is no `=`
+            for k in 0..body.len {
+                if body[k] is '=' {
+                    eq = k
+                    break
+                }
+            }
+            has_value := eq < body.len
+            name := body[0..eq]
+            idx := find_long(opts, name) else {
+                yield(Arg.Unknown(a))
+                continue
+            }
+            if opts[idx].value.len is 0 {
+                if not has_value {
+                    yield(Arg.Opt(index: idx, value: ""))
+                } else {
+                    yield(Arg.UnexpectedValue(idx))
+                }
+            } else if has_value {
+                yield(Arg.Opt(index: idx, value: body[eq + 1..body.len]))
+            } else if i < args.len {
+                yield(Arg.Opt(index: idx, value: args[i]))
+                i += 1
+            } else {
+                yield(Arg.MissingValue(idx))
+            }
+            continue
+        }
+        j: usize = 1
+        while j < a.len {
+            c := a[j]
+            j += 1
+            idx := find_short(opts, c) else {
+                k := c.trunc(usize) * 2
+                yield(Arg.Unknown(SHORT_FORMS[k..k + 2]))
+                continue
+            }
+            if opts[idx].value.len is 0 {
+                yield(Arg.Opt(index: idx, value: ""))
+            } else if j < a.len {
+                yield(Arg.Opt(index: idx, value: a[j..a.len]))
+                break
+            } else if i < args.len {
+                yield(Arg.Opt(index: idx, value: args[i]))
+                i += 1
+            } else {
+                yield(Arg.MissingValue(idx))
+            }
+        }
+    }
+}
+
+// The length of the left column of `o`'s help line: the option as written, with the
+// name of its value.
+left_len :: fn(o: Opt) -> usize {
+    n: usize = 0
+    if o.short is not 0 and o.long.len > 0 {
+        n = 4 + 2 + o.long.len
+    } else if o.short is not 0 {
+        n = 2
+    } else {
+        n = 4 + 2 + o.long.len
+    }
+    if o.value.len > 0 { n += 3 + o.value.len }
+    return n
+}
+
+spaces :: fn(out: ^List(u8), n: usize) -> AllocError!() {
+    for _ in 0..n { try out.push(' ') }
+}
+
+/// Appends help text for `opts` to `out`: `usage: ` and `usage`, a blank line, `options:`
+/// and one line per option, with the descriptions aligned in a column two spaces after
+/// the longest option:
+///
+///     usage: tool [options] <file>
+///
+///     options:
+///       -v, --verbose        print more
+///       -o, --output <file>  where to write
+///           --color          use colors
+///       -h                   show this help
+///
+/// An option without a short form is indented to line up with the long forms; one
+/// without a help text ends its line after the option; one with neither a short nor a
+/// long form is left out.
+pub help :: fn(out: ^List(u8), usage: string, opts: []const Opt) -> AllocError!() {
+    try out.extend("usage: ")
+    try out.extend(usage)
+    try out.extend("\n\noptions:\n")
+    width: usize = 0
+    for o in opts {
+        if o.short is 0 and o.long.len is 0 { continue }
+        width = width.max(left_len(o))
+    }
+    for o in opts {
+        if o.short is 0 and o.long.len is 0 { continue }
+        try out.extend("  ")
+        if o.short is not 0 {
+            try out.push('-')
+            try out.push(o.short)
+            if o.long.len > 0 {
+                try out.extend(", --")
+                try out.extend(o.long)
+            }
+        } else {
+            try out.extend("    --")
+            try out.extend(o.long)
+        }
+        if o.value.len > 0 {
+            try out.extend(" <")
+            try out.extend(o.value)
+            try out.push('>')
+        }
+        if o.help.len > 0 {
+            try spaces(out, width - left_len(o) + 2)
+            try out.extend(o.help)
+        }
+        try out.push('\n')
+    }
+}

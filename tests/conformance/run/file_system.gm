@@ -15,7 +15,7 @@ main :: fn() -> IoError!() \ {Out, Fs, Rand} {
     }
     dir := name[..]
     try make_dir(dir)
-    print("made the directory: {}\n", (try stat(dir)).is_dir)
+    print("made the directory: {}\n", (try stat(dir)).kind is .Dir)
 
     path_buf: [64]u8 = ---
     path := join(path_buf[..], dir, "notes.txt")
@@ -57,9 +57,8 @@ main :: fn() -> IoError!() \ {Out, Fs, Rand} {
     d := try open_dir(dir)
     entry: [64]u8 = ---
     while true {
-        len := try d.next_entry(entry[..])
-        if len is 0 { break }
-        print("entry: {}\n", entry[0..len])
+        e := (try d.next_entry(entry[..])) else break
+        print("entry: {}\n", entry[0..e.len])
     }
     close_dir(d)
     try remove(other)

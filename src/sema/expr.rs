@@ -660,8 +660,23 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("`{}` has no arithmetic: only many-pointers `[^]T` do (§5.5)", t));
                 error_expr(span)
             }
-            B::Add(f) | B::Sub(f) | B::Mul(f) => {
+            B::Add(_) | B::Sub(_) | B::Mul(_) | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
                 let r = self.expr(rhs, Some(lhs.ty));
+                self.arith_op(op, lhs, r, span)
+            }
+            B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
+            B::Range | B::RangeIncl => {
+                self.error(span, "a range cannot be an operand here; put it in parentheses");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// An arithmetic or bitwise operator applied to checked operands.
+    pub fn arith_op(&mut self, op: ast::BinOp, lhs: Expr, r: Expr, span: Span) -> Expr {
+        use ast::BinOp as B;
+        match op {
+            B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
                 let int_only = f != ast::Flavor::Checked;
                 self.obligations.push(Obligation::Numeric { ty, span, op: op.as_str(), int_only, signed_only: false });
@@ -673,8 +688,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let rty = if f == ast::Flavor::Opt { Ty::optional(ty) } else { ty };
                 mk(rty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
             }
-            B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
-                let r = self.expr(rhs, Some(lhs.ty));
+            _ => {
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
                 let st = self.infer.resolve(ty);
                 if op != B::Div
@@ -700,11 +714,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => tir::BinOp::BitXor,
                 };
                 mk(ty, tir::ExprKind::Binary { op: top, lhs: Box::new(lhs), rhs: Box::new(r) }, span)
-            }
-            B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
-            B::Range | B::RangeIncl => {
-                self.error(span, "a range cannot be an operand here; put it in parentheses");
-                error_expr(span)
             }
         }
     }
@@ -810,7 +819,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// Makes two operands of `is` the same type: unify, or coerce one to the other.
-    fn equalize(&mut self, l: Expr, r: Expr, span: Span) -> (Expr, Expr) {
+    pub(super) fn equalize(&mut self, l: Expr, r: Expr, span: Span) -> (Expr, Expr) {
         let (lt, rt) = (self.infer.resolve(l.ty), self.infer.resolve(r.ty));
         if !lt.has_infer() && !lt.is_error() && !self.eq_allowed(lt) {
             self.error(span, format!("`is` is not defined for `{}` (§7.6)", lt));
@@ -1216,13 +1225,14 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (i, (a, t)) in args.iter().zip(params).enumerate() {
                     let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
                     if op == tir::SysOp::ThreadSpawn && i == 0 {
-                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6).
+                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6);
+                        // a typed `^T` argument has the same representation as `rawptr`.
                         let v = self.expr(e, None);
                         let vt = self.infer.resolve(v.ty);
                         let ok = match vt.kind() {
                             TyKind::FnPtr(sig) => {
                                 sig.params.len() == 1
-                                    && matches!(sig.params[0].kind(), TyKind::Rawptr)
+                                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
                                     && sig.ret.is_unit()
                                     && self.sema.within_sys(&sig.effects)
                                     && sig.callconv == CallConv::C
@@ -1451,15 +1461,20 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let v = self.expr(operand, None);
         let vt = self.infer.resolve(v.ty);
-        // The first `try` of a test decides the test's error type (§3.8).
-        if self.infer_test_error
-            && self.outer.is_empty()
-            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), self.ret.kind())
+        let (levels, mut ret) = self.return_target();
+        // The first `try` of a test decides the test's error type (§3.8), also from a loop body
+        // or other clause of the test.
+        let in_test_body = self.infer_test_error && levels as usize == self.outer.len();
+        if in_test_body
+            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), ret.kind())
             && cur.is_error()
         {
-            self.ret = Ty::result(*err, *ok);
+            ret = Ty::result(*err, *ok);
+            match self.outer.first_mut() {
+                Some(f) => f.ret = ret,
+                None => self.ret = ret,
+            }
         }
-        let (levels, ret) = self.return_target();
         self.check_fn_clause_exit(levels, "try", span);
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
@@ -1472,15 +1487,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 } else {
                     match self.lift_variant(*err, *f) {
                         Ok(i) => Some(tir::Lift::Variant(i)),
+                        // In a test, an error that does not lift into the test's error type
+                        // fails the test where it occurs (§3.8).
+                        Err(_) if in_test_body => return self.try_failing_test(v, vt, *err, *ok, span),
                         Err(msg) => {
-                            let mut d = crate::diag::Diagnostic::error(span, msg);
-                            if self.infer_test_error && self.outer.is_empty() {
-                                d = d.with_note(format!(
-                                    "a test's error type is that of its first `try`, here `{}` (§3.8); call a helper that declares a common error type",
-                                    f
-                                ));
-                            }
-                            self.sema.emit(d);
+                            self.error(span, msg);
                             None
                         }
                     }
@@ -1503,6 +1514,47 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// `try v` in a test for an error that the test cannot return: writes `error: ` and the
+    /// error to `Err` and stops the test, as a failed `expect` does (§3.8).
+    fn try_failing_test(&mut self, v: Expr, vt: Ty, err: Ty, ok: Ty, span: Span) -> Expr {
+        let Some(effect) = self.sema.prog.ambient.err else {
+            return error_expr(span);
+        };
+        let eref = crate::types::EffectRef { effect, args: Box::new([]) };
+        self.record_effects(&crate::types::EffectSet::new(vec![eref.clone()]), span);
+        let sym = crate::symbol::Symbol::intern;
+        let x = self.new_local(sym("$ok"), ok, false, span);
+        let e = self.new_local(sym("$err"), err, false, span);
+        let bind = |id, ty| tir::Pat { ty, kind: tir::PatKind::Bind(id), span };
+        let write = mk(
+            Ty::unit(),
+            tir::ExprKind::Write {
+                sink: tir::WriteSink::Perform { effect: eref, op: 0 },
+                pieces: vec![std::rc::Rc::from(&b"error: "[..]), std::rc::Rc::from(&b"\n"[..])],
+                specs: vec![tir::FmtSpec::default()],
+                args: vec![mk(err, tir::ExprKind::Local(e), span)],
+            },
+            span,
+        );
+        let msg = mk(Ty::string(), tir::ExprKind::Str(std::rc::Rc::from(&b"the test failed at this `try`"[..])), span);
+        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
+        let block = tir::Block { stmts: vec![tir::Stmt::Expr(write)], tail: Some(stop), span };
+        let fail = mk(Ty::never(), tir::ExprKind::Block(Box::new(block)), span);
+        let arms = vec![
+            tir::Arm {
+                pat: tir::Pat { ty: vt, kind: tir::PatKind::Ok(Box::new(bind(x, ok))), span },
+                guard: None,
+                body: mk(ok, tir::ExprKind::Local(x), span),
+            },
+            tir::Arm {
+                pat: tir::Pat { ty: vt, kind: tir::PatKind::Err(Box::new(bind(e, err))), span },
+                guard: None,
+                body: fail,
+            },
+        ];
+        mk(ok, tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span)
     }
 
     /// The variant of union `f` whose payload is `e`, for error lifting (§10.6).
