@@ -1,9 +1,7 @@
 # Open implementation bugs (dogfooding, session 2). Delete entries when fixed.
-7. (perf) C big values: s4 passes values >16 bytes by address between Gamma functions
-   (Types::by_ref; plain fns get a C-ABI wrapper gm_fN_c via Gen::needs_wrapper/addr_name),
-   place args passed as the place when later args are pure (no_writes), return of a place
-   copies straight into F.ret. Bench: 57→29 KB (work+fill), callee 12→4 KB. Remaining: call
-   result temp then copy into the local (t1 → F.l0); fill/aggregate construction temps.
+7. (perf) C big values: s6 gm_out results + in-place construction + borrowed params of pure
+   fns (decisions/016). Left: nested aggregate elements still go through a temp; gcc SRA is weak
+   on uint8_t-array blobs (bigcopy bench: gcc 1.9 s vs clang 0.13 s).
 10. Usability: std/str + HashMap.get_ptr/get_or_put done; templates from comptime params done
     (WriteDeferred resolved in mono). Remaining: integer sign/abs helpers; print width specs
     (spec says library functions; Builder.write + fmt cover it).

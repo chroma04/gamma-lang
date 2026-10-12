@@ -1,0 +1,48 @@
+nums(6) done
+squares done
+evens total 20
+add3 3
+add3 7
+add3 19
+nums(5) done
+squares done
+nums(10) done
+squares done
+first over 67
+take 0
+take 1
+take 4
+nums(10) done
+squares done
+pair 3 1
+nums(4) done
+squares done
+pair 7 1
+nums(4) done
+squares done
+pair 19 1
+nums(4) done
+squares done
+pair 39 1
+nums(4) done
+squares done
+nums(4) done
+squares done
+nums(10) done
+squares done
+nums(10) done
+stopped 30
+node 1
+node 2
+node 3
+node 4
+node 5
+node 6
+node 40
+before 5: 1
+before 5: 2
+before 5: 3
+before 5: 4
+deep 55
+countdown 54321
+chain 3

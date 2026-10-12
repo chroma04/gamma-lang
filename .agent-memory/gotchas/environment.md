@@ -18,3 +18,7 @@
   binfmt with `cat /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register`, then
   `CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance` runs natively-built
   tests under qemu. Debug: `qemu-aarch64 -g 12345 exe & gdb-multiarch -ex "target remote :12345"`.
+- Don't edit src/ while a background `cargo test` runs: the CC=clang second run rebuilds
+  with the half-edited sources. Docs/memory edits are fine.
+- To find which gcc pass breaks generated C: compile with -fno-<pass> flags one by one, then
+  bisect functions with `__attribute__((optimize("no-strict-aliasing")))` (s6 found main()).

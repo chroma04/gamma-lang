@@ -17,7 +17,10 @@
   skip the gm_unw check after clauses that cannot exit; transitive specialization.
 - Enabled in all modes (so debug-mode conformance tests exercise it).
 - Bench (scratch, fast mode): iterator 200M yields 0.52s → 0.075s; matmul 300³×5 = C speed.
-## Deferred: 2-level (adapters `for v in inner() { yield(g(v)) }`, recursive walks)
+## s6: nested specialization (implemented; see 016 for details)
+- Spec is an interned id (Gen::spec(SpecKey{handler, effect, outer})); clones gm_fN_sK.
+- Old notes below kept for the reasoning.
+## (was) Deferred: 2-level (adapters `for v in inner() { yield(g(v)) }`, recursive walks)
 - Idea: in a clone with spec S, a `with` of a HandlerRef evaluated at clone top level whose
   clauses perform S.effect gets a table variant whose clauses are clause clones with spec S
   (their `cx` = hctx = the clone's cx = S's node).

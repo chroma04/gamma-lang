@@ -373,10 +373,25 @@ any `with` of the clone calls the clause by name instead of searching the
 context and calling through the table, and the C compiler can inline the loop
 body into the iterator. `ctl` operations and the bodies of `with … on` keep the
 general path. Clones share the frame struct of their function and are generated
-on demand, at most one per function and handler literal. Specialization covers
-one level: a perform inside a nested `for` body of the clone (an iterator built
-on another iterator) still finds its handler at run time, because the loop
-body's clause is shared with the unspecialized function.
+on demand, one per function and specialization.
+
+A specialization passes on through the clone. A direct call that the clone makes
+in its own context to a function performing the same effect (a recursive
+iterator calling itself) calls that function's clone for the same handler. And a
+`for` loop in the clone over another iterator (an adapter such as
+`for v in inner() { yield(f(v)) }`) installs its loop body with a table of clause
+clones specialized for the clone's own handler: the loop body runs with the
+clone's `cx` as its context, so its `yield` calls the outer loop body by name too.
+The iterator it calls is then specialized for that loop body together with the
+outer handler (`SpecKey::outer`), and the chain of loop bodies can inline into
+the innermost iterator. Specializations nest at most three deep (`nested_spec`),
+since a recursive iterator would otherwise nest them without end; deeper levels
+use the single-level clones.
+
+A call of a clause by name is followed by the test for a non-local exit only if
+the clause may return with one (`Gen::clause_may_exit`): a loop body that does
+not `break`, `return` or call anything that could needs no test, which is what
+lets a chain of adapters compile to a plain loop.
 
 **Non-local exits.** An exit whose target is in the same C function runs the
 deferred statements it crosses and jumps there with `goto`; since nothing then
@@ -387,6 +402,11 @@ return. After each call that may exit this way, the caller tests the record and
 runs its *ladder*: the pending deferred statements from the innermost scope
 outwards, with a test at each loop and `with` for whether it is the exit's
 target. A deferred statement run by a ladder sets the exit aside while it runs.
+The test after a call reads the thread-local exit record. Returning the exit as
+a flag next to the result instead (Appendix D.2) was measured on a recursive
+effectful function: about 15% faster with gcc and 25% slower with clang, which
+handles the two-register result less well. The record stays; instead the test is
+left out wherever the callee cannot exit (see above).
 Traps print their message and stop the process (status 134) without unwinding.
 In Debug builds each function also links a small record (`gm_bt`) into a
 per-thread chain on entry, unlinks it on exit, and stores the location of each
@@ -476,7 +496,8 @@ the copies.
 
 **Large values.** Between Gamma functions, a value larger than two words
 (`Types::by_ref`: a blob over 16 bytes) is passed by address and the callee
-copies it into its frame before anything else runs. The C ABI would pass such a
+copies it into its frame before anything else runs, unless it can read it in place
+(below). The C ABI would pass such a
 value through memory anyway, but by value the C compiler made several copies
 per call (a temporary, the conversion union, the argument area, the frame), and
 fiber stacks sized by `@stack_size` must hold them. Because the copy happens on
@@ -488,3 +509,25 @@ slot. A plain function whose own signature differs from the C ABI as a result
 point `gm_fN_c` with the C signature (`Gen::needs_wrapper`, `c_abi_wrapper`); it
 is what function pointers, constants and `#export` refer to (`Gen::addr_name`),
 while direct calls use the internal one.
+
+A large result is returned through a first parameter `gm_out`, the address of
+the caller's destination, and the function returns `void`. The callee writes it
+only when it returns (or, below, as the last thing it does), so the caller passes
+the variable or place being assigned (`x = f(…)`, `x := f(…)`, `a[i] = f(…)`,
+`return f(…)`) instead of a temporary: the assignment still happens after the
+whole call, and an exit out of the call leaves the destination as it was
+(`FnGen::expr_into`). Struct and array constructions are likewise built in their
+destination once every element is evaluated. A function body with no pending
+deferred statement builds its result, or copies a returned local, straight into
+`gm_out`; otherwise the result goes to the frame's result slot first, and the
+deferred statements run before it is copied out.
+
+A large parameter is read in place, without the copy, when no difference can be
+observed (Appendix D.5; `src/cgen/borrow.rs`): the function never stores into
+it, takes its address or slices it, and is *pure*: it has no effects, stores only
+into its own locals, and calls only pure functions, so nothing that could change
+the caller's value runs during the call.
+
+Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
+written and read piecewise with `memcpy`, so type-based alias analysis gains
+nothing, and gcc 13 at `-O2` was seen to drop such writes under it.

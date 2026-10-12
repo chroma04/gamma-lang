@@ -2998,7 +2998,7 @@ There are no unwinding tables and no `setjmp`.
 
 ### D.2 Exits as return flags
 
-`esc` exits must run the `defer`s of every frame they cross. A function that can be crossed — one whose effect set contains an `esc` or `ctl` operation, or which calls a second-class parameter — returns an extra **exit flag** alongside its result. After each such call, the caller tests the flag; if set, it runs its pending defers (and errdefers) and returns with the flag set. The `with` that is the exit's target clears it and continues at the target. Fiber cancellation uses the same protocol on the cancelled fiber's stack.
+`esc` exits must run the `defer`s of every frame they cross. A function that can be crossed — one whose effect set contains an `esc` or `ctl` operation, or which calls a second-class parameter — reports an **exit flag** to its caller, returned alongside its result or held in a per-thread exit record. After each such call, the caller tests the flag, unless it knows the callee cannot exit (a statically specialized loop body that never leaves the loop); if set, it runs its pending defers (and errdefers) and returns with the flag set. The `with` that is the exit's target clears it and continues at the target. Fiber cancellation uses the same protocol on the cancelled fiber's stack.
 
 The cost is visible in types: calls to functions with only `fn` effects never test the flag, and exported functions (empty or `{Sys}` sets) never see it.
 
