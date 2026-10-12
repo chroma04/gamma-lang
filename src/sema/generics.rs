@@ -357,6 +357,22 @@ impl<'s> Sema<'s> {
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
         }
+        // `.bits` between types that mention parameters is size-checked per instance (§6.6).
+        if let tir::ExprKind::Builtin { op: tir::Builtin::Bits, args } = &e.kind
+            && !cx.map.is_empty()
+            && !has_param(e.ty)
+            && !has_param(args[0].ty)
+        {
+            let (src, t) = (args[0].ty, e.ty);
+            let (a, b) = self.with_layouts(|l| (l.size_of(src), l.size_of(t)));
+            if a != b {
+                let msg = format!(
+                    "`.bits` needs equal sizes, but `{}` has {} bytes and `{}` has {} (in an instantiation used here)",
+                    src, a, t, b
+                );
+                self.error(cx.span, msg);
+            }
+        }
         // Format specs on generic arguments are checked in each instance.
         if let tir::ExprKind::Write { specs, args, .. } = &e.kind
             && !cx.map.is_empty()

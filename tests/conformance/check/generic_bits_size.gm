@@ -1,0 +1,7 @@
+//! stage: check
+reinterp :: fn(T: type, U: type, x: T) -> U where Plain(T), Plain(U) {
+    return x.bits(U)
+}
+main :: fn() {
+    _ = reinterp(i64, u32, 5) //~ ERROR `.bits` needs equal sizes, but `i64` has 8 bytes and `u32` has 4
+}

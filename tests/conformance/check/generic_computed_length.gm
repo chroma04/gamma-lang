@@ -1,3 +1,10 @@
 //! stage: check
 Matrix :: struct(T: type, R, C: usize) { d: [R * C]T } //~ ERROR an array length computed from the compile-time parameters `R` and `C`
+Raw :: struct(T: type) { b: [@size_of(T)]u8 } //~ ERROR an array length computed from a type parameter
+
+zeroes :: fn(T: type) -> [@size_of(T)]u8 { //~ ERROR an array length computed from a type parameter
+    b: [@align_of(T) * 2]u8 = --- //~ ERROR an array length computed from a type parameter
+    return b
+}
+
 main :: fn() {}

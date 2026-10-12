@@ -1,4 +1,5 @@
 test "ambient draws differ from each other" ... ok
 test "an installed generator overrides the ambient one" ... ok
 test "helpers are reproducible under a seed" ... ok
-3 passed, 0 failed
+test "wide integer ranges use every bit" ... ok
+4 passed, 0 failed

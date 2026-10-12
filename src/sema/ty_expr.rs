@@ -295,13 +295,25 @@ impl<'s> Sema<'s> {
                 // A length computed from compile-time parameters is not known until
                 // instantiation (§16.5).
                 let mut params = vec![];
+                let mut on_type = false;
                 super::func::visit(&ex, &mut |n| {
-                    if let crate::tir::ExprKind::ValueParam(p) = n.kind
+                    use crate::tir::ExprKind as K;
+                    if let K::ValueParam(p) = n.kind
                         && !params.contains(&p.name().to_string())
                     {
                         params.push(p.name().to_string());
                     }
+                    on_type |= super::generics::has_param(n.ty)
+                        || matches!(n.kind, K::SizeOf { .. } | K::TypeIs { .. } | K::IntLimit { .. });
                 });
+                if params.is_empty() && on_type {
+                    self.error(
+                        e.span,
+                        "an array length computed from a type parameter is not supported in a type; \
+                         use a slice, or make the length a compile-time parameter (§16.5)",
+                    );
+                    return None;
+                }
                 if !params.is_empty() {
                     let list: Vec<String> = params.iter().map(|p| format!("`{}`", p)).collect();
                     self.error(

@@ -393,7 +393,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let src = self.infer.resolve(v.ty);
         if !self.is_plain_data(t) {
             self.error(span, format!("`.bits` can only produce plain-data types, not `{}`", t));
-        } else if !src.has_infer() {
+        } else if !src.has_infer() && !super::generics::has_param(src) && !super::generics::has_param(t) {
             let (a, b) = self.sema.with_layouts(|l| (l.size_of(src), l.size_of(t)));
             if a != b {
                 self.error(
