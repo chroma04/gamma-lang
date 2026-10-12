@@ -1,0 +1,5 @@
+pub one :: fn() -> i32 => 1
+
+test "in deep" {
+    expect(one() is 1)
+}

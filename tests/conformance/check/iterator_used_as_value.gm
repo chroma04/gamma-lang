@@ -1,0 +1,35 @@
+//! stage: check
+// A call of an iterator is a loop source, not a value: the fix is not to declare `Yield`.
+Words :: struct { text: string }
+
+fields :: fn(s: string) \ {Yield(string)} {
+    yield(s)
+}
+
+pieces :: fn(w: Words) \ {Yield(string)} {
+    yield(w.text)
+}
+
+as_value :: fn(s: string) {
+    rest := fields(s)    //~ ERROR `fields` is an iterator: call it as the source of a `for` loop
+}
+
+as_other :: fn(w: Words) {
+    rest := pieces(w)    //~ ERROR `pieces` is an iterator
+}
+
+// A real `yield` in a body keeps the original advice.
+bad_body :: fn(s: string) {
+    yield(s)    //~ ERROR add `\ {Yield(string)}`
+}
+
+// Iterators are fine as `for` sources and in functions that declare `Yield`.
+ok :: fn(s: string) \ {Out} {
+    for x in fields(s) { print("{}\n", x) }
+}
+
+forward :: fn(s: string) \ {Yield(string)} {
+    fields(s)
+}
+
+main :: fn() {}

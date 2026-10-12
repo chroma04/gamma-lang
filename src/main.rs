@@ -519,6 +519,16 @@ fn build(opts: &Options) -> ExitCode {
     }
 }
 
+/// The exit status a shell reports for a finished child: its exit code, or 128 plus the
+/// number of the signal that killed it (a trap aborts with `SIGABRT`, giving 134).
+fn exit_status_code(status: std::process::ExitStatus) -> u8 {
+    #[cfg(unix)]
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return (128 + sig) as u8;
+    }
+    status.code().map_or(134, |c| c as u8)
+}
+
 /// `gamma run --backend=c`: compiles to a temporary executable and runs it.
 fn run_native(
     sess: &Session,
@@ -538,7 +548,7 @@ fn run_native(
             std::os::unix::process::CommandExt::arg0(&mut cmd, path);
             let status = cmd.args(&opts.program_args).status();
             match status {
-                Ok(s) => ExitCode::from(s.code().map_or(134, |c| c as u8)),
+                Ok(s) => ExitCode::from(exit_status_code(s)),
                 Err(e) => {
                     eprintln!("gamma: cannot run {}: {}", exe.display(), e);
                     ExitCode::FAILURE

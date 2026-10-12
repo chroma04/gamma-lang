@@ -134,14 +134,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 own.push(e.clone());
                 if name.is_some() && !captures {
-                    let n = e.to_string();
-                    self.error(
-                        sp,
-                        format!(
-                            "this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)",
-                            n, n
-                        ),
-                    );
+                    let msg = self.undeclared_effect_message(&e, sp, &effects);
+                    self.error(sp, msg);
                 } else {
                     self.performed.push((e, sp));
                 }

@@ -1,0 +1,8 @@
+//! stage: test
+sub :: import "./sub"
+
+main :: fn() \ {Out} { print("{}\n", sub.two()) }
+
+test "root" {
+    expect(sub.two() is 2)
+}
