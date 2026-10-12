@@ -462,28 +462,33 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::FnBody::Block(b) => {
                 let block = self.block(b, false);
-                // A test's error type may have been decided by the body.
-                let ret = self.ret;
-                // Falling off the end of an `E!()` function returns success (§11.1).
-                if let TyKind::Result { ok, .. } = ret.kind()
-                    && ok.is_unit()
-                    && !block.ty.is_never()
-                {
-                    let span = b.span.shrink_to_hi();
-                    let success = self.coerce(unit(span), ret);
-                    let stmts = vec![Stmt::Expr(block)];
-                    return Expr {
-                        ty: ret,
-                        kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(success), span: b.span })),
-                        span: b.span,
-                    };
-                }
-                if !ret.is_unit() && !block.ty.is_never() {
-                    self.missing_return(b, ret);
-                }
-                block
+                self.finish_block_body(block, b)
             }
         }
+    }
+
+    /// A block body that has been checked: falling off the end of an `E!()` function returns
+    /// success (§11.1); other non-unit functions must return a value.
+    pub fn finish_block_body(&mut self, block: Expr, b: &ast::Block) -> Expr {
+        // A test's error type may have been decided by the body.
+        let ret = self.ret;
+        if let TyKind::Result { ok, .. } = ret.kind()
+            && ok.is_unit()
+            && !block.ty.is_never()
+        {
+            let span = b.span.shrink_to_hi();
+            let success = self.coerce(unit(span), ret);
+            let stmts = vec![Stmt::Expr(block)];
+            return Expr {
+                ty: ret,
+                kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(success), span: b.span })),
+                span: b.span,
+            };
+        }
+        if !ret.is_unit() && !block.ty.is_never() {
+            self.missing_return(b, ret);
+        }
+        block
     }
 
     /// Reports that a block body returning `ret` can end without a value. A final

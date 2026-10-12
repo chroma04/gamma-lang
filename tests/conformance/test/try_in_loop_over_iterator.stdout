@@ -1,0 +1,3 @@
+test "try in a loop over an iterator" ... ok
+test "try in a loop over an array" ... ok
+2 passed, 0 failed
