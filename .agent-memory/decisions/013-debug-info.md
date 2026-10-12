@@ -18,5 +18,17 @@ info. `-g` covers line mapping and variable inspection without LLVM.
 - Without -g the output is byte-identical to before. Whole suite passes with -g forced
   (gcc+clang), and conformance is ~40% faster at -O0 (compile time dominates the suite).
 - Tests: tests/debug_info.rs (C text checks; gdb breakpoint + `print F.p` when gdb works).
-- Not done: typed views of tuples/tagged unions/slices in gdb (still byte blobs); params
-  show as a0..; `next` hits a line several times (several is_stmt rows per statement).
+- Views (s5, thread "Better debugger views"): cgen/views.rs. Frame alias = Types::debug_view
+  (not the ABI mirror). Packed structs, members at Gamma offsets, unnamed bit-fields as
+  padding (gdb hides them), alignment 1 → frame layout unchanged; _Static_assert sizeof.
+  Union tag = packed C enum `Type_Variant` (dedup `Type2_…` for generic instances; extra
+  `__size` enumerator forces a wider tag's size; tags > 4 bytes stay ints). Pointer targets
+  are reserved + defined after (pending), or immediately when later needed by value
+  (example2_editor broke without that). View struct tags carry a kind suffix (_slice,
+  _string, _optional, _result, _union) that gdb_printers.py matches; script embedded as
+  inline .debug_gdb_scripts (ELF only) — gdb loads it only under auto-load safe-path.
+  Rejected: enumerators named just `Variant` (collide: Ok/Err across unions); C bitfield
+  enum tags (break layout). lldb: views only, no printers.
+- Verify -g changes with GAMMA_TEST_DEBUG_INFO=1 cargo test --test conformance (gcc+clang).
+- Not done: params show as a0..; `next` hits a line several times; #bits structs show as
+  their integer; lldb summary providers.

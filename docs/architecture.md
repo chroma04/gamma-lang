@@ -394,9 +394,22 @@ sanitizer reports, refer to `.gm` lines; each generated function ends with a
 directive that returns to the C file's own numbering. A directive per C line is
 needed because one numbers the lines after it consecutively, while a statement
 usually takes several C lines. Each frame field is an anonymous union of its `lN`
-name and the Gamma name of the local (typed with the struct mirror where the
-type has one), and mirrors name their fields after the Gamma fields, so a
-debugger prints `F.p.x`. The generated code never refers to these names, but
+name and the Gamma name of the local, typed with the type's *debugger view*
+(`src/cgen/views.rs`), so a debugger prints `F.p.x`. A view is a C type with the
+exact layout of the Gamma value but with named, typed members: struct fields by
+name, tuple elements as `_0`, `_1`…, a tagged union as a `tag` of a C enum
+(`Shape_Circle`) plus an anonymous union with a member per payload, an optional as
+`value` and `present`, a result as `is_err`, `ok` and `err`, a slice as a typed
+`ptr` and `len`, pointers as pointers to views, `bool` as `_Bool`. Views are packed
+structs with members at the Gamma offsets and unnamed bit-fields as padding (which
+debuggers skip), so their size is the value's and their alignment 1: they never
+change the frame's layout, and a `_Static_assert` checks each size. Views reached
+only through a pointer are declared after the view that points at them, so
+recursive types work. On ELF targets the executable also carries gdb pretty
+printers (`src/cgen/gdb_printers.py`) in its `.debug_gdb_scripts` section; they
+recognize views by the suffix of their struct tag (`gm_dv3_union`, `_slice`,
+`_string`, `_optional`, `_result`) and show the active variant only, slice
+elements, string text, `null` and `!error`. The generated code never refers to these names, but
 they may be macros of system headers (`linux`, `st_mtime`), so the declarations
 that contain them suspend such macros with `#pragma push_macro`. Locals that
 share a name, and names that are C keywords or reserved, keep only their `lN`

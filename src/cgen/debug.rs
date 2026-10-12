@@ -55,6 +55,23 @@ pub fn resolve_lines(code: &str, c_file: &str) -> String {
     out
 }
 
+/// The gdb pretty printers for debugger views (`super::views`).
+const GDB_PRINTERS: &str = include_str!("gdb_printers.py");
+
+/// A top-level `asm` statement that embeds the gdb pretty printers in the executable's
+/// `.debug_gdb_scripts` section (an inline Python script), which gdb loads with the
+/// executable where its auto-load safe path allows. ELF targets only.
+pub fn gdb_script_section() -> String {
+    let mut asm = String::from(".pushsection \".debug_gdb_scripts\", \"MS\",%progbits,1\n.byte 4\n");
+    asm.push_str(".ascii \"gdb.inlined-script.gamma\\n\"\n");
+    for line in GDB_PRINTERS.lines() {
+        let escaped = line.replace('\\', "\\\\").replace('"', "\\\"");
+        asm.push_str(&format!(".ascii \"{}\\n\"\n", escaped));
+    }
+    asm.push_str(".byte 0\n.popsection\n");
+    format!("__asm__({});\n", super::types::c_string(asm.as_bytes()))
+}
+
 /// `name` if it can be the name of a struct member in the generated C: an ASCII C
 /// identifier that is neither a keyword nor a name the generated code itself uses.
 pub fn member_name(name: &str) -> Option<&str> {
@@ -139,6 +156,23 @@ pub fn unique_members<'n>(
     names: impl IntoIterator<Item = &'n str>,
     taken: &mut BTreeSet<String>,
 ) -> Vec<Option<String>> {
+    unique_with(names, taken, member_name)
+}
+
+/// [`unique_members`] for the members of a debugger view (`super::views`), where the
+/// names of a frame's own members are free.
+pub fn unique_view_members<'n>(
+    names: impl IntoIterator<Item = &'n str>,
+    taken: &mut BTreeSet<String>,
+) -> Vec<Option<String>> {
+    unique_with(names, taken, |n| if n == "h" || n == "ret" { Some(n) } else { member_name(n) })
+}
+
+fn unique_with<'n>(
+    names: impl IntoIterator<Item = &'n str>,
+    taken: &mut BTreeSet<String>,
+    accept: fn(&str) -> Option<&str>,
+) -> Vec<Option<String>> {
     let names: Vec<&str> = names.into_iter().collect();
     let mut count = std::collections::HashMap::new();
     for n in &names {
@@ -147,7 +181,7 @@ pub fn unique_members<'n>(
     names
         .iter()
         .map(|n| {
-            let m = member_name(n)?;
+            let m = accept(n)?;
             if count[n] > 1 || taken.contains(m) {
                 return None;
             }

@@ -4,7 +4,8 @@
 - s6 thread "Speed up native builds" (branch claude/project-thread-1hib7q): Debug builds link a
   cached runtime object, -O1 (decisions/014). Other s6 threads: CC/CFLAGS cross, C codegen.
 - s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
-  (decisions/013); plan for the rest in roadmap/c-backend-plan.md.
+  (decisions/013); plan for the rest in roadmap/c-backend-plan.md. Thread "Better debugger
+  views" (branch claude/project-thread-scimha): plan item 7, typed views + gdb printers.
 - Parallel s6 threads (2026-10-11): std/text graphemes (branch claude/project-thread-rk2qb5,
   see roadmap/M11), plus others on native build speed, cross-compiling, C perf, debugger.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
@@ -20,7 +21,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. C back end plan items 3–7 (roadmap/c-backend-plan.md); item 2 done in s6.
+1. C back end plan items 3–6 (roadmap/c-backend-plan.md); items 1, 2, 7 done.
    Check CI on main once GitHub Actions gets runners again.
 2. bugs-open.md leftovers (#23–#30); future: interp bytecode VM, symbolic array lengths.
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).

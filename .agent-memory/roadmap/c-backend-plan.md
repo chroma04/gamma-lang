@@ -1,5 +1,5 @@
 # C back end strengthening plan (from the Oct 9 LLVM evaluation; prioritized in session 5)
-Status: 1 done (s5), 2 done (s6). Order = value / cost. Keep every item differential-tested on both back ends.
+Status: 1, 7 done (s5), 2 done (s6). Order = value / cost. Keep every item differential-tested on both back ends.
 1. DONE Source-level debugging: `-g` (decisions/013).
 2. DONE Faster native builds (decisions/014): cached runtime object + -O1 for Debug.
 3. Toolchain/cross: `CC` with arguments (`zig cc -target …`, `clang --target=…`) — today
@@ -11,4 +11,4 @@ Status: 1 done (s5), 2 done (s6). Order = value / cost. Keep every item differen
 5. Handler specialization beyond one level (decisions/012 "Deferred"): adapters/recursive
    iterators; skip gm_unw check after clauses that cannot exit.
 6. Remaining big-value copies (bugs-open #7): call result temp → local, aggregate temps.
-7. Debug views for tuples/tagged unions/slices (gdb pretty printers or typed mirrors).
+7. DONE Debug views for tuples/tagged unions/slices (decisions/013, "Views").
