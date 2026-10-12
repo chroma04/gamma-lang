@@ -902,16 +902,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
                 Some(t) => targs.push(*t),
-                // A parameter of type `A` left out, whose default is `()`, makes `A` the
-                // unit type (`args: A = ()`, as for `print`).
-                None if sig.params.iter().zip(&values).any(|(p, v)| {
-                    v.is_none()
-                        && matches!(p.ty.kind(), TyKind::Param(q) if q == pid)
-                        && matches!(p.default.as_deref(), Some(ast::Expr { kind: ast::ExprKind::Tuple(es), .. }) if es.is_empty())
-                }) =>
-                {
-                    targs.push(Ty::unit())
-                }
                 None if self.sema.value_params.contains_key(pid) => {
                     let p = sig.params.iter().find(|p| p.generic == Some(*pid)).unwrap();
                     match p.default.clone() {
