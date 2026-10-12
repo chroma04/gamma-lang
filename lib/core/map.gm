@@ -76,11 +76,12 @@ insert_new :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :
     m.count += 1
 }
 
-/// Doubles the table (or creates it) and drops tombstones.
+/// Doubles the table (or creates it) and drops tombstones; a table at most half full of live
+/// entries is rehashed at the same size instead, so memory follows the live entries.
 grow :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
            m: ^HashMap(K, V, hash, eq)) -> AllocError!() {
     old := m.slots
-    n := if old.len is 0 { 8 } else { old.len * 2 }
+    n := if old.len is 0 { 8 } else if m.count * 2 <= old.len { old.len } else { old.len * 2 }
     size := @size_of(Slot(K, V))
     align := @align_of(Slot(K, V))
     raw := m.alloc.vt.alloc(m.alloc.data, size * n, align) else return !.OutOfMemory

@@ -1,0 +1,17 @@
+//! exit: 134
+// union_with traps when the other set has a member beyond the receiver's capacity, also when
+// both capacities lie in the same 64-bit word.
+bs :: import "std/collections/bitset"
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    a := try bs.bitset(10)
+    defer a.deinit()
+    b := try bs.bitset(60)
+    defer b.deinit()
+    b.insert(5)
+    a.union_with(&b)
+    print("count={}\n", a.count())
+    b.insert(50)
+    a.union_with(&b)
+    print("not reached\n")
+    return ()
+}

@@ -79,12 +79,11 @@ pub clear :: fn(b: ^BitSet) {
 /// Adds every member of `other` to `b`. Traps if `other` has a member that `b`'s
 /// capacity cannot hold.
 pub union_with :: fn(b: ^BitSet, other: ^const BitSet) {
+    if other.cap > b.cap and other.next_member(b.cap) is not null {
+        trap("bitset union_with: the other set has members beyond the capacity")
+    }
     for i in 0..other.words.len {
-        if i < b.words.len {
-            b.words[i] |= other.words[i]
-        } else if other.words[i] is not 0 {
-            trap("bitset union_with: the other set has members beyond the capacity")
-        }
+        if i < b.words.len { b.words[i] |= other.words[i] }
     }
 }
 

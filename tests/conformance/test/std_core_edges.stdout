@@ -1,0 +1,7 @@
+test "extend with the list's own items after growth" ... ok
+test "extend with a part of the list's own bytes" ... ok
+test "allocation sizes that overflow are out of memory" ... ok
+test "a range has a length" ... ok
+test "a map full of tombstones is rehashed without growing" ... ok
+test "resizing a block of an older arena chunk" ... ok
+6 passed, 0 failed
