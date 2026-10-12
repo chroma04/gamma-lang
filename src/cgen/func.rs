@@ -282,7 +282,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         fg.line("goto gm_fprop;");
     }
     // Debug builds fill a dead frame with 0xDD (§18.3).
-    let kill = if fg.g.opts.debug { format!("{pop}memset(&F, 0xDD, sizeof F); ") } else { String::new() };
+    let kill = if fg.g.opts.debug { format!("{pop}gm_poison(&F, 0xDD, sizeof F); ") } else { String::new() };
     if out_ret {
         // `gm_fdone`: a `return` that wrote its value to `gm_out` itself.
         let _ = write!(

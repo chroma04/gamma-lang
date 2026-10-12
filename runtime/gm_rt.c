@@ -10,6 +10,7 @@
 GM_API _Thread_local gm_bt *gm_bt_top;
 GM_API pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
 GM_API int gm_debug = 1;
+GM_API void *(*volatile gm_poison)(void *, int, size_t) = memset;
 GM_API _Thread_local gm_unwind gm_unw;
 GM_API _Thread_local gm_fiber *gm_cur_fiber;
 GM_API _Thread_local uintptr_t gm_stack_limit;
