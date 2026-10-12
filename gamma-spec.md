@@ -804,7 +804,7 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
 | `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
-| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P` |
+| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type; calling it is undefined unless the parameters and results have the same representation |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 

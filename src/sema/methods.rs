@@ -255,15 +255,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.arity(args, 0, n, span);
                 Some(b(Builtin::Addr, Ty::usize(), vec![recv]))
             }
-            (TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::Optional(_), "cast") => {
+            (
+                TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) | TyKind::Optional(_),
+                "cast",
+            ) => {
                 let t = self.type_arg(args, 0, span)?;
-                let is_ptr = |t: Ty| {
-                    matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_))
+                // Data pointers convert to data pointers, function pointers to function pointers.
+                let kind = |t: Ty| match t.kind() {
+                    TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr => Some(false),
+                    TyKind::FnPtr(_) => Some(true),
+                    _ => None,
                 };
+                let same = |a: Ty, b: Ty| kind(a).is_some() && kind(a) == kind(b);
                 let ok = match (rty.kind(), t.kind()) {
-                    (TyKind::Optional(a), TyKind::Optional(b)) => is_ptr(*a) && is_ptr(*b),
+                    (TyKind::Optional(a), TyKind::Optional(b)) => same(*a, *b),
                     (TyKind::Optional(_), _) | (_, TyKind::Optional(_)) => false,
-                    _ => is_ptr(t),
+                    _ => same(rty, t),
                 };
                 if !ok {
                     self.error(span, format!("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", rty, t));

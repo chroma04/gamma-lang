@@ -1,5 +1,6 @@
 //! stage: test
 //! exit: 1
+//! safe: skip Debug builds name the test in failure locations
 // In a test, `try` accepts any error type (§3.8): errors of the test's own type are
 // returned, others fail the test where they occur.
 ParseError :: union { Empty, Bad: u8 }

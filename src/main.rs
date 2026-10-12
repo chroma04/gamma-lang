@@ -520,11 +520,14 @@ fn build(opts: &Options) -> ExitCode {
 }
 
 /// The exit status a shell reports for a finished child: its exit code, or 128 plus the
-/// number of the signal that killed it (a trap aborts with `SIGABRT`, giving 134).
+/// number of the signal that killed it. A trap gives 134 (`SIGABRT`), including one
+/// raised by a trap instruction (`SIGTRAP`, `SIGILL`), as Fil-C does on a memory error.
 fn exit_status_code(status: std::process::ExitStatus) -> u8 {
     #[cfg(unix)]
     if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&status) {
-        return (128 + sig) as u8;
+        const SIGILL: i32 = 4;
+        const SIGTRAP: i32 = 5;
+        return if sig == SIGILL || sig == SIGTRAP { 134 } else { (128 + sig) as u8 };
     }
     status.code().map_or(134, |c| c as u8)
 }

@@ -3,15 +3,15 @@ test "fails with both values" ... FAILED
     expected: 5
     actual:   4
     expectation failed: the values differ
-      at tests/conformance/test/expect_eq.gm:11:5 in test "fails with both values"
+      at tests/conformance/test/expect_eq.gm:12:5 in test "fails with both values"
 test "structs" ... FAILED
     expected: Point(x: 1, y: 3)
     actual:   Point(x: 1, y: 2)
     expectation failed: the values differ
-      at tests/conformance/test/expect_eq.gm:14:5 in test "structs"
+      at tests/conformance/test/expect_eq.gm:15:5 in test "structs"
 test "optional" ... FAILED
     expected: 3
     actual:   null
     expectation failed: the values differ
-      at tests/conformance/test/expect_eq.gm:18:5 in test "optional"
+      at tests/conformance/test/expect_eq.gm:19:5 in test "optional"
 1 passed, 3 failed

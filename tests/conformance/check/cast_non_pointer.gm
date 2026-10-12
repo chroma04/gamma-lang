@@ -1,5 +1,7 @@
 //! stage: check
-// `cast` converts between pointer types only (§6.6); `addr` gives an address.
+// `cast` converts between pointer types only (§6.6), function pointers only to
+// function pointers; `addr` gives an address.
+f :: fn(x: ^u32) {}
 main :: fn() {
     x: u32 = 1
     p := &x
@@ -9,4 +11,7 @@ main :: fn() {
     o: ?^u32 = p
     d := o.cast(?^u8)
     e := o.cast(^u8)                  //~ ERROR
+    g := f.cast(^fn(x: rawptr))
+    h := f.cast(rawptr)               //~ ERROR
+    i := p.cast(^fn(x: rawptr))       //~ ERROR
 }
