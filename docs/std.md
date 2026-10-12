@@ -304,3 +304,109 @@ interpreter itself.
 
 C's platform-dependent types (`c_int`, `c_long`, `c_size_t`, …) for declaring
 foreign functions (§19.1).
+
+## `std/random`
+
+Random numbers drawn from the ambient `Rand` effect, and a fast seedable generator that
+is itself a handler for `Rand`. The same code gets OS randomness by default, a fixed seed
+in tests, and a reproducible sequence when the program installs a seeded generator.
+
+```gamma
+random :: import "std/random"
+
+r := random.seeded(42)
+with &r {
+    die := random.range(u8, 1, 7)             // 1 to 6; the same on every run
+    if random.chance(0.5) { print("heads\n") }
+}
+```
+
+- `Rng` is a xoshiro256** generator (not for cryptography). `seeded(seed)` expands a
+  `u64` with splitmix64 (the state is never all zero), `from_rand()` seeds from the
+  current `Rand`, and `next(&r)` gives the next `u64`. `^Rng` handles `Rand`: `fill` writes
+  eight little-endian bytes per output, the tail from one more.
+- `next_u64()` is a uniform `u64`. `below(T, n)` is uniform in [0, n) without modulo
+  bias (`n` must be positive), `range(T, lo, hi)` is uniform in [lo, hi) for any integer
+  type up to 64 bits including signed ones and the full span (`lo < hi`).
+- `float()` is uniform in [0, 1) from the top 53 bits, `chance(p)` is true with
+  probability `p`, `normal(mean, stddev)` is Box-Muller.
+- `shuffle(T, items)` is Fisher-Yates, `choice(T, items)` gives `?T` (`null` if empty),
+  and `weighted(weights)` gives the index `?usize` chosen with probability proportional
+  to its weight (negative weights count as 0; `null` if empty or the sum is not
+  positive).
+
+## `std/time`
+
+Calendar dates and times in the proleptic Gregorian calendar, in UTC only: there are no
+time zones (they need the tz database) and no leap seconds. `Clock`'s `wall()` is Unix
+time in nanoseconds, which `from_unix` turns into a `DateTime`. Text goes into buffers
+the caller supplies.
+
+```gamma
+time :: import "std/time"
+
+t := time.now()                                     // \ {Clock}
+buf: [time.RFC3339_LEN]u8 = ---
+print("{}\n", time.format_rfc3339(t, buf[..]))      // 2024-05-17T09:30:00Z
+d := try time.parse_date("2024-01-31")
+print("{}\n", time.format_date(time.add_months(d, 1), buf[..]))   // 2024-02-29
+```
+
+- Types: `Weekday` (`.Monday` to `.Sunday`), `Date { year: i32, month, day: u8 }`,
+  `DateTime { date, hour, minute, second, nanosecond }`.
+- Calendar: `is_leap_year(year)`, `days_in_month(year, month)`, `is_valid(d)`,
+  `weekday(d)`, `days_from_civil(d)` and `civil_from_days(n)` (days since 1970-01-01,
+  correct before it), `add_days(d, n)`, and `add_months(d, n)`, which clamps the day to
+  the target month (January 31 plus a month is February 28 or 29).
+- Unix time: `from_unix(ns)` (negative values round toward the past: -1 is
+  1969-12-31T23:59:59.999999999), `to_unix(t)`, and `now()`.
+- Formatting: `format_rfc3339(t, buf)` writes `YYYY-MM-DDTHH:MM:SSZ`, with a fraction of
+  3, 6 or 9 digits only when the nanoseconds are not zero (years 0 to 9999);
+  `RFC3339_LEN` (30) always suffices. `format_date(d, buf)` writes `YYYY-MM-DD`.
+  `format_duration(d, buf)` writes a `Duration` like `1h2m3.5s`, `1.5ms`, `250ns` or
+  `0s` (microseconds are `us`); `DURATION_LEN` (32) always suffices.
+- Parsing: `parse_date(s)` and `parse_rfc3339(s)` return `ParseError!T`, where
+  `ParseError` is `Syntax: usize` (byte position of the first byte that does not fit) or
+  `Range: usize` (position of the field that is out of range). `parse_rfc3339` accepts
+  `T`, `t` or a space as separator, 1 to 9 fraction digits and `Z`, `z` or a `+HH:MM`
+  offset, which it applies to give UTC.
+
+## `std/cli`
+
+Command-line parsing as an iterator, in the style of getopt. The program describes its
+options in a table and matches over what `parse` yields; nothing allocates.
+
+```gamma
+cli :: import "std/cli"
+
+main :: fn() \ {Out, Env} {
+    opts := [_]cli.Opt(
+        cli.Opt(short: 'v', long: "verbose", help: "print more"),
+        cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),
+    )
+    for a in cli.parse(args()[1..], opts[..]) {
+        match a {
+            .Opt(o) => print("option {} value {}\n", (opts[o.index].long, o.value))
+            .Pos(p) => print("file {}\n", p)
+            .Unknown(u) => print("unknown option {}\n", u)
+            .MissingValue(i) => print("--{} needs a value\n", opts[i].long)
+            .UnexpectedValue(i) => print("--{} takes no value\n", opts[i].long)
+        }
+    }
+}
+```
+
+- `Opt { short: u8, long: string, value: string, help: string }`: the short letter (0 for
+  none), the long name without dashes ("" for none), the name of the value in help
+  text ("" makes the option a flag), and a description.
+- `parse(args, opts)` yields `Arg`: `Opt: (index, value)` (`value` is "" for flags),
+  `Pos: string`, `Unknown: string` (as written: `--colour`, or `-q` from a bundle),
+  `MissingValue: usize`, and `UnexpectedValue: usize` (`--flag=x`). Pass `args()[1..]`.
+- Rules: `--` ends the options and a lone `-` is positional; long options are
+  `--name=value` or `--name value` and must match exactly (no abbreviations); short
+  options bundle (`-abc`) and take a value as `-ofile` or `-o file`, also at the end of a
+  bundle (`-vofile`); options and positional arguments may be mixed. A value is taken
+  from the next argument whatever it looks like.
+- `help(&out, usage, opts)` appends `usage: …`, a blank line, `options:` and one aligned
+  line per option (`  -o, --output <file>  where to write`) to a `List(u8)`, returning
+  `AllocError!()`.

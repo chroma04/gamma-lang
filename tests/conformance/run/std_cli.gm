@@ -1,0 +1,103 @@
+// std/cli: the argument iterator and the help text.
+cli :: import "std/cli"
+
+opts :: [_]cli.Opt(
+    cli.Opt(short: 'v', long: "verbose", help: "print more"),
+    cli.Opt(short: 'q', help: "be quiet"),
+    cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),
+    cli.Opt(long: "color", help: "use colors"),
+    cli.Opt(short: 'n', value: "count"),
+    cli.Opt(long: "name", value: "text", help: "a name"),
+    cli.Opt(short: 'a'),
+    cli.Opt(short: 'b'),
+)
+
+show :: fn(args: []const string) \ {Out} {
+    for a in args { print("[{}] ", a) }
+    print("=>")
+    table := opts
+    for a in cli.parse(args, table[..]) {
+        match a {
+            .Opt(o) => print(" opt{}({})", (o.index, o.value))
+            .Pos(p) => print(" pos({})", p)
+            .Unknown(u) => print(" unknown({})", u)
+            .MissingValue(i) => print(" missing{}", i)
+            .UnexpectedValue(i) => print(" unexpected{}", i)
+        }
+    }
+    print("\n")
+}
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    none := [_]string()
+    show(none[..])
+    a1 := [_]string("file1", "file2")
+    show(a1[..])
+
+    // Long options.
+    a2 := [_]string("--verbose", "--color")
+    show(a2[..])
+    a3 := [_]string("--output=out.txt", "--output", "x.txt", "--name=", "--name", "--")
+    show(a3[..])
+    a4 := [_]string("--output=a=b")
+    show(a4[..])
+    a5 := [_]string("--verbose=yes", "--color=")
+    show(a5[..])
+    a6 := [_]string("--output")
+    show(a6[..])
+    a7 := [_]string("--colour", "--colour=red", "--verb", "--verbosee", "--", "--verbose")
+    show(a7[..])
+    a8 := [_]string("--=x", "--=")
+    show(a8[..])
+
+    // Short options and bundles.
+    b1 := [_]string("-v", "-q", "-vq")
+    show(b1[..])
+    b2 := [_]string("-ofile", "-o", "file", "-o", "-v")
+    show(b2[..])
+    b3 := [_]string("-vofile", "-qvo", "x", "-abn5", "-abn", "7")
+    show(b3[..])
+    b4 := [_]string("-x", "-vxq", "-xo", "f")
+    show(b4[..])
+    b5 := [_]string("-o")
+    show(b5[..])
+    b6 := [_]string("-vo")
+    show(b6[..])
+    b7 := [_]string("-n", "-o")
+    show(b7[..])
+    b8 := [_]string("-ofile=x", "-o=y")
+    show(b8[..])
+
+    // Positionals, `-` and `--`.
+    c1 := [_]string("-", "a", "-v", "b", "--verbose", "c")
+    show(c1[..])
+    c2 := [_]string("a", "--", "-v", "--", "--verbose", "-")
+    show(c2[..])
+    c3 := [_]string("--", "--")
+    show(c3[..])
+    c4 := [_]string("-o", "--", "-v")
+    show(c4[..])
+    c5 := [_]string("--output", "--verbose", "-v")
+    show(c5[..])
+    c6 := [_]string("")
+    show(c6[..])
+
+    // Help.
+    out := list(u8)
+    defer out.deinit()
+    table := opts
+    try cli.help(&out, "tool [options] <file>", table[..])
+    print("{}", out.items)
+    print("--\n")
+    out.clear()
+    plain := [_]cli.Opt(cli.Opt(short: 'h'), cli.Opt(long: "x-long-name", value: "v"), cli.Opt(), cli.Opt(short: 'z', value: "n", help: "zed"))
+    try cli.help(&out, "prog", plain[..])
+    print("{}", out.items)
+    print("--\n")
+    out.clear()
+    try cli.help(&out, "prog", none_opts())
+    print("{}", out.items)
+    return ()
+}
+
+none_opts :: fn() -> []const cli.Opt => empty_slice(cli.Opt)

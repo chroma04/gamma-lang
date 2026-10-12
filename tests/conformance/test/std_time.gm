@@ -1,0 +1,22 @@
+//! stage: test
+// std/time under the test handlers: `now` reads the fake wall clock, which `sleep` advances.
+time :: import "std/time"
+
+test "now follows the fake wall clock" {
+    a := time.now()
+    sleep(secs(2))
+    b := time.now()
+    assert(a.date.year is 2023 and a.date.month is 11 and a.date.day is 14, "date")
+    assert(a.hour is 22 and a.minute is 13 and a.second is 20, "time of day")
+    assert(b.second is 22, "two seconds later")
+    assert(time.to_unix(b) - time.to_unix(a) is 2_000_000_000, "difference")
+}
+
+test "formatting the current time" {
+    buf: [time.RFC3339_LEN]u8 = ---
+    sleep(ms(250))
+    s := time.format_rfc3339(time.now(), buf[..])
+    assert(s is "2023-11-14T22:13:20.250Z", "text")
+    t := try time.parse_rfc3339(s)
+    assert(t.nanosecond is 250_000_000, "parsed back")
+}
