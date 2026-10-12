@@ -189,3 +189,41 @@ fn run_reports_a_closed_pipe_as_a_signal_status() {
         assert!(!err.contains("trap"), "{backend}: {err}");
     }
 }
+
+/// `gamma run --backend=c` keeps the executable in the cache directory and reuses it while
+/// the program, its options and the compiler stay the same; a changed program is rebuilt.
+#[test]
+fn run_reuses_cached_executables() {
+    if !c_compiler_available() {
+        return;
+    }
+    let (dir, src) = setup("run_cache");
+    let cache = dir.join("cache");
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+            .env("GAMMA_CACHE_DIR", &cache)
+            .args(["run", "--backend=c"])
+            .args(args)
+            .arg(&src)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let programs = || -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(cache.join("run")).unwrap().map(|e| e.unwrap().path()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(run(&[]), "45\n");
+    let first = programs();
+    assert_eq!(first.len(), 1);
+    assert_eq!(run(&[]), "45\n");
+    assert_eq!(programs(), first);
+    // Another build mode is another executable.
+    assert_eq!(run(&["--mode=fast"]), "45\n");
+    assert_eq!(programs().len(), 2);
+    std::fs::write(&src, PROGRAM.replace("0..10", "0..11")).unwrap();
+    assert_eq!(run(&[]), "55\n");
+    assert_eq!(programs().len(), 3);
+}

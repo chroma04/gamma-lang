@@ -75,3 +75,63 @@ fn rename_or_remove(from: &Path, to: &Path) -> Option<()> {
     let _ = std::fs::remove_file(from);
     None
 }
+
+/// How many executables `gamma run --backend=c` keeps; older ones are removed.
+const KEPT_PROGRAMS: usize = 32;
+
+/// A cached executable of `generated` built with `toolchain`, built now if it is not in
+/// the cache; `Ok(None)` if there is no cache. The key covers everything that affects the
+/// executable: the generated code and its options, the libraries, the target, the
+/// compiler and its flags.
+pub fn cached_program(generated: &super::Generated, toolchain: &Toolchain) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = cache_dir().map(|d| d.join("run")) else { return Ok(None) };
+    let Some(version) = toolchain.base_command().arg("--version").output().ok().filter(|o| o.status.success()) else {
+        return Ok(None);
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (env!("CARGO_PKG_VERSION"), super::RT_H, super::RT_C, &generated.code, &generated.libs).hash(&mut h);
+    (format!("{:?}", generated.opts), format!("{:?}", generated.target)).hash(&mut h);
+    (&toolchain.cc, &toolchain.cflags, &toolchain.ldflags, &version.stdout).hash(&mut h);
+    let stem = format!("prog-{:016x}", h.finish());
+    let exe = dir.join(&stem);
+    if exe.is_file() {
+        // Mark it as recently used, so pruning keeps it.
+        let _ = std::fs::File::open(&exe).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok(Some(exe));
+    }
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Ok(None);
+    }
+    let tmp = private_name(&dir, &stem, "exe");
+    let built = super::compile(generated, toolchain, &tmp);
+    let _ = std::fs::remove_file(tmp.with_extension("c"));
+    built?;
+    if rename_or_remove(&tmp, &exe).is_none() {
+        return Ok(None);
+    }
+    prune(&dir);
+    Ok(Some(exe))
+}
+
+/// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing
+/// any used in the last ten minutes (another process may be about to run it).
+fn prune(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut progs: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_string_lossy().starts_with("prog-") && !e.file_name().to_string_lossy().contains(".tmp-")
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if progs.len() <= KEPT_PROGRAMS {
+        return;
+    }
+    progs.sort();
+    let recent = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    for (t, p) in &progs[..progs.len() - KEPT_PROGRAMS] {
+        if *t < recent {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}

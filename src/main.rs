@@ -537,9 +537,30 @@ fn run_native(
     path: &std::path::Path,
     opts: &Options,
 ) -> ExitCode {
-    let Some(dir) = native_dir("run") else { return ExitCode::FAILURE };
-    let exe = dir.join("prog");
-    let result = compile_native(sess, prog, toolchain, &exe);
+    // The executable comes from the cache when the same program was built before.
+    let cached = match cached_native(sess, prog, toolchain) {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::FAILURE;
+        }
+    };
+    let dir = match cached {
+        Some(_) => None,
+        None => match native_dir("run") {
+            Some(d) => Some(d),
+            None => return ExitCode::FAILURE,
+        },
+    };
+    let (exe, result) = match (&cached, &dir) {
+        (Some(exe), _) => (exe.clone(), Ok(())),
+        (None, Some(dir)) => {
+            let exe = dir.join("prog");
+            let r = compile_native(sess, prog, toolchain, &exe);
+            (exe, r)
+        }
+        (None, None) => unreachable!(),
+    };
     let code = match result {
         Ok(()) => {
             let mut cmd = std::process::Command::new(&exe);
@@ -560,8 +581,23 @@ fn run_native(
             ExitCode::FAILURE
         }
     };
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Some(dir) = dir {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     code
+}
+
+/// The program's executable from the build cache (built into it if missing), or `None`
+/// if there is no cache.
+fn cached_native(
+    sess: &Session,
+    prog: &gamma::tir::Program,
+    toolchain: &Result<Toolchain, String>,
+) -> Result<Option<PathBuf>, String> {
+    let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
+    let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
+    let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
+    gamma::cgen::cached_program(&out, toolchain)
 }
 
 /// `gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)`
