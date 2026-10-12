@@ -112,6 +112,7 @@ Safe builds follow every rule this specification states for Checked builds; wher
 | 19 | Interoperability and low-level facilities |
 | 20 | Attributes and intrinsics |
 | 21 | The core library |
+| 22 | The standard library: scope and admission |
 | A | Grammar |
 | B | Reference tables |
 | C | Design rationale |
@@ -2412,7 +2413,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 
 ## 21. The core library
 
-The core library is the part of the standard library that the language definition depends on. Everything else (file and network APIs, further collections, text processing, …) is outside the scope of this specification.
+The core library is the part of the standard library that the language definition depends on. The contents of the other standard modules (file and network helpers, further collections, text processing, …) are outside the scope of this specification; §22 defines what may be among them.
 
 ### 21.1 The universe scope
 
@@ -2645,6 +2646,58 @@ Net :: effect {
 ```
 
 Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+
+---
+
+## 22. The standard library: scope and admission
+
+The core library (§21) is what the language needs. The rest of the standard library is the set of `std/…` modules shipped with every implementation. This section says what may be in it, so that it stays small enough to be learned, reviewed and maintained by one team, and complete enough that ordinary programs do not each re-implement the same pieces. It is normative for the reference library and for anything proposed to join it; the contents of the modules themselves are documented with the library, not here.
+
+### 22.1 Two tiers
+
+| Tier | Where | Admission |
+| --- | --- | --- |
+| **Core** | the universe scope (§21.1), and builtin methods (§21.3) | Only what the language definition refers to (ambient effects, allocation, `for` sources, `print`, the test runner), and methods of builtin types, which can live nowhere else (§7.10 rule 3). Adding to the core needs a change to this specification. |
+| **Standard** | `std/<area>` modules, imported by path | The rules of §22.2–§22.4. |
+
+Everything else belongs in packages (§3.1). A package can depend on the standard library; the standard library never depends on a package.
+
+### 22.2 What earns a place
+
+A module, or a function or type added to one, must meet **at least one reason** and **every requirement**.
+
+Reasons:
+
+1. **Common need.** Programs in several unrelated domains need it, and each would otherwise write the same code. The evidence is real programs: the same helper written independently in at least two programs from different domains (command-line tools, data processing, systems and network code, applications), not a guess about what might be useful.
+2. **Hard to get right.** A short, natural implementation is subtly wrong: correctly rounded float parsing, unbiased random ranges, calendar arithmetic, UTF-8 and Unicode segmentation, endian codecs, path joining. One tested implementation beats many plausible ones.
+3. **Shared vocabulary.** Independent libraries must agree on the type to interoperate: `Duration`, a date, an error type, a byte reader. Only the type and the operations needed to use it are admitted on this ground.
+4. **The platform boundary.** It reaches the operating system (files, sockets, threads, time, the environment). Such code goes through the ambient effects (§12.9), so programs stay portable and testable with the test handlers; only modules whose purpose is to cross the boundary (`std/thread`, `std/c`) may require `Sys`.
+
+Requirements:
+
+1. **Settled design.** There is one obvious interface, preferably fixed by an external standard (an RFC, ISO 8601, a Unicode annex, a FIPS publication), and it does not impose a policy that reasonable programs would choose differently (an output style, a protocol framework, a configuration format with dialects).
+2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, reflection, macros, overloading); a module that would need one is not admitted until the language has it.
+3. **Not a second way.** It does not duplicate a core facility or another module, and it is not an alias that only saves keystrokes. A function that is a composition of two or three existing calls is admitted only on reason 1 with strong evidence (it appears in most programs of its domain) or on reason 2.
+4. **Bounded size and cost.** A module has one concern and a surface that its reference documentation can describe in a page. Nothing is paid by programs that do not import it: no global state, no initialization at start-up, no effect on the core.
+5. **Quality.** It is written in Gamma (foreign code only behind `std/c`-style boundaries), documented in the library reference, covered by tests that run in the interpreter and through the C back end, and conforms to its external standard where it has one.
+
+### 22.3 Conventions
+
+Modules follow the core library's conventions, so that learning one teaches the rest:
+
+- **Names.** A module is named by its subject as a noun (`std/time`, `std/path`), never `util` or `misc`. Functions are named by what they produce or do; a function and its allocating variant differ by a documented suffix or module, not by overloading.
+- **Text and bytes out.** An operation that produces text or bytes has a form writing into a caller-supplied buffer (returning the used part, trapping only on a documented size precondition) or appending to a `List(u8)` (returning `AllocError!()`); a form that allocates its result performs `Alloc` and returns `AllocError![]u8`, released with `free`.
+- **Text in.** Parsers take a `string` and return `E!T` with an error union whose variants carry the position of the problem.
+- **Containers** capture the current allocator at construction and never perform `Alloc` afterwards, as `List` does (§21.5).
+- **Sequences** are produced by iterators (`Yield`, §13) rather than by returning allocated arrays, unless the caller asks for a collection.
+- **Effects.** A replaceable service (logging, randomness, time) is an effect or a handler of an ambient effect, so callers and tests can substitute it with `with`.
+- **Stability.** A released public name changes only through `#deprecated` (§20.2) for at least one release before removal.
+
+### 22.4 Outside the standard library
+
+These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography (it needs dedicated security maintenance), compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+
+*Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
 
 ---
 
