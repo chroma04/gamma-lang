@@ -82,8 +82,9 @@ pub enum SysOp {
     /// `@fs_seek(f: i64, offset: i64, whence: u32) -> i64`: the new position. `whence` is
     /// 0 (from the start), 1 (from the current position) or 2 (from the end).
     FsSeek,
-    /// `@fs_stat(path: string, out: []i64) -> i64`: stores the size, 1 for a directory or
-    /// 0, and the modification time (Unix nanoseconds) in `out[0..3]`.
+    /// `@fs_stat(path: string, out: []i64) -> i64`: stores the size, the kind (0 file, 1
+    /// directory, 2 symbolic link, 3 other) and the modification time (Unix nanoseconds)
+    /// in `out[0..3]`.
     FsStat,
     /// `@fs_remove(path: string) -> i64`: removes a file.
     FsRemove,
@@ -96,11 +97,21 @@ pub enum SysOp {
     /// `@fs_open_dir(path: string) -> i64`: a directory handle.
     FsOpenDir,
     /// `@fs_next_entry(d: i64, buf: []u8) -> i64`: stores the next entry's name (never `.`
-    /// or `..`) in `buf` and returns its length; 0 after the last. A name longer than
-    /// `buf` is an `InvalidInput` error.
+    /// or `..`) in `buf` and returns its length plus its kind (as in `FsStat`) times
+    /// 2^32; 0 after the last. A name longer than `buf` is an `InvalidInput` error.
     FsNextEntry,
     /// `@fs_close_dir(d: i64) -> i64`.
     FsCloseDir,
+    /// `@fs_lstat(path: string, out: []i64) -> i64`: like `FsStat`, but a final symbolic
+    /// link is described, not followed.
+    FsLstat,
+    /// `@fs_truncate(f: i64, size: u64) -> i64`: sets the file's length.
+    FsTruncate,
+    /// `@fs_sync(f: i64) -> i64`: flushes the file to the storage device.
+    FsSync,
+    /// `@fs_cwd(buf: []u8) -> i64`: stores the working directory in `buf` and returns its
+    /// length; `InvalidInput` if it does not fit.
+    FsCwd,
     /// `@net_connect(host: string, port: u16) -> i64`: a TCP connection's handle.
     NetConnect,
     /// `@net_listen(host: string, port: u16) -> i64`: a listening socket's handle (port 0:
@@ -116,6 +127,13 @@ pub enum SysOp {
     NetRecv,
     /// `@net_close(h: i64) -> i64`: closes a connection or a listening socket.
     NetClose,
+    /// `@net_shutdown(h: i64, how: u32) -> i64`: 0 stops reading, 1 stops writing, 2 both.
+    NetShutdown,
+    /// `@net_set_timeouts(h: i64, recv_ns: u64, send_ns: u64) -> i64`: 0 means no timeout.
+    NetSetTimeouts,
+    /// `@net_peer(h: i64, buf: []u8) -> i64`: stores the peer's `host:port` in `buf` and
+    /// returns its length; `InvalidInput` if it does not fit.
+    NetPeer,
     /// `@thread_spawn(f: ^fn(arg: rawptr) \ {Sys}, arg: rawptr) -> i64`: a new thread
     /// running `f(arg)` with no handlers installed (§19.6); its handle.
     ThreadSpawn,
@@ -163,6 +181,14 @@ impl SysOp {
             SysOp::FsOpenDir => ("fs_open_dir", vec![Ty::string()], i64),
             SysOp::FsNextEntry => ("fs_next_entry", vec![i64, buf], i64),
             SysOp::FsCloseDir => ("fs_close_dir", vec![i64], i64),
+            SysOp::FsLstat => (
+                "fs_lstat",
+                vec![Ty::string(), Ty::intern(crate::types::TyKind::Slice { elem: i64, is_const: false })],
+                i64,
+            ),
+            SysOp::FsTruncate => ("fs_truncate", vec![i64, Ty::int(false, 64)], i64),
+            SysOp::FsSync => ("fs_sync", vec![i64], i64),
+            SysOp::FsCwd => ("fs_cwd", vec![buf], i64),
             SysOp::NetConnect => ("net_connect", vec![Ty::string(), Ty::int(false, 16)], i64),
             SysOp::NetListen => ("net_listen", vec![Ty::string(), Ty::int(false, 16)], i64),
             SysOp::NetLocalPort => ("net_local_port", vec![i64], i64),
@@ -170,6 +196,9 @@ impl SysOp {
             SysOp::NetSend => ("net_send", vec![i64, Ty::string()], i64),
             SysOp::NetRecv => ("net_recv", vec![i64, buf], i64),
             SysOp::NetClose => ("net_close", vec![i64], i64),
+            SysOp::NetShutdown => ("net_shutdown", vec![i64, Ty::int(false, 32)], i64),
+            SysOp::NetSetTimeouts => ("net_set_timeouts", vec![i64, Ty::int(false, 64), Ty::int(false, 64)], i64),
+            SysOp::NetPeer => ("net_peer", vec![i64, buf], i64),
             // The function's type is checked separately: any `^fn(arg: rawptr) \ {Sys}`.
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
@@ -178,7 +207,7 @@ impl SysOp {
         }
     }
 
-    pub const ALL: [SysOp; 29] = [
+    pub const ALL: [SysOp; 36] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -197,6 +226,10 @@ impl SysOp {
         SysOp::FsOpenDir,
         SysOp::FsNextEntry,
         SysOp::FsCloseDir,
+        SysOp::FsLstat,
+        SysOp::FsTruncate,
+        SysOp::FsSync,
+        SysOp::FsCwd,
         SysOp::NetConnect,
         SysOp::NetListen,
         SysOp::NetLocalPort,
@@ -204,6 +237,9 @@ impl SysOp {
         SysOp::NetSend,
         SysOp::NetRecv,
         SysOp::NetClose,
+        SysOp::NetShutdown,
+        SysOp::NetSetTimeouts,
+        SysOp::NetPeer,
         SysOp::ThreadSpawn,
         SysOp::ThreadJoin,
         SysOp::ThreadYield,
@@ -234,6 +270,7 @@ pub enum IoErrorKind {
     UnexpectedEof,
     NoSpace,
     ConnectionRefused,
+    TimedOut,
     Other(i32),
 }
 
@@ -251,7 +288,8 @@ impl IoErrorKind {
             IoErrorKind::UnexpectedEof => 8,
             IoErrorKind::NoSpace => 9,
             IoErrorKind::ConnectionRefused => 10,
-            IoErrorKind::Other(_) => 11,
+            IoErrorKind::TimedOut => 11,
+            IoErrorKind::Other(_) => 12,
         }
     }
 }

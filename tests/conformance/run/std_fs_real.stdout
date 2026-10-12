@@ -1,0 +1,22 @@
+made nested directories: true
+over a file: .AlreadyExists
+through a file: .AlreadyExists
+root: 1 files, 2 directories
+entries of a missing directory: .NotFound
+yielded 1 time(s)
+walk: 8 entries, order and kinds ok: true
+walk of a missing root: .NotFound
+lstat file: true 2
+lstat dir: true
+lstat missing: .NotFound
+truncated to 5
+extended to 8
+contents: hello then 3 zero bytes
+truncate read-only: true
+cwd: true true
+cwd too small: .InvalidInput
+atomic: second, longer
+entries in the directory: 1
+atomic failure: .NotFound
+entries in the root: 4
+cleaned up: true

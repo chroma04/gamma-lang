@@ -1,0 +1,188 @@
+// std/fs directory helpers and the new `Fs` operations on the real file system, in a fresh
+// directory under the system temporary directory (which the test removes again).
+fs :: import "std/fs"
+
+hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
+
+// `root/rel` in `buf`.
+at :: fn(buf: []u8, root, rel: string) -> string {
+    buf[0..root.len].copy_from(root)
+    buf[root.len] = '/'
+    buf[root.len + 1..root.len + 1 + rel.len].copy_from(rel)
+    return buf[0..root.len + 1 + rel.len]
+}
+
+put :: fn(root, rel, text: string) -> IoError!() \ {Fs} {
+    buf: [512]u8 = ---
+    try fs.write_all(at(buf[..], root, rel), text)
+}
+
+count :: fn(path: string) -> IoError!u32 \ {Fs} {
+    n: u32 = 0
+    for r in fs.entries(path) {
+        _ = try r
+        n += 1
+    }
+    return n
+}
+
+scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
+    p: [512]u8 = ---
+
+    // make_dir_all: nested, repeated, with odd separators.
+    try fs.make_dir_all(at(p[..], root, "a/b/c"))
+    try fs.make_dir_all(at(p[..], root, "a/b/c"))
+    try fs.make_dir_all(at(p[..], root, "a//b/./c/"))
+    try fs.make_dir_all(at(p[..], root, "empty"))
+    print("made nested directories: {}\n", (try stat(at(p[..], root, "a/b/c"))).kind is .Dir)
+    try put(root, "a/one.txt", "1")
+    try put(root, "a/b/two.txt", "22")
+    try put(root, "a/b/c/three.txt", "333")
+    try put(root, "top.txt", "t")
+    if !e := fs.make_dir_all(at(p[..], root, "top.txt")) { print("over a file: {}\n", e) }
+    if !e := fs.make_dir_all(at(p[..], root, "top.txt/x/y")) { print("through a file: {}\n", e) }
+
+    // entries
+    files: u32 = 0
+    dirs: u32 = 0
+    for r in fs.entries(root) {
+        e := try r
+        match e.kind {
+            .File => { files += 1 }
+            .Dir => { dirs += 1 }
+            _ => print("unexpected kind\n")
+        }
+    }
+    print("root: {} files, {} directories\n", (files, dirs))
+    for r in fs.entries(root) {
+        _ = try r
+        break
+    }
+    n := 0
+    for r in fs.entries(at(p[..], root, "missing")) {
+        n += 1
+        if !e := r { print("entries of a missing directory: {}\n", e) }
+    }
+    print("yielded {} time(s)\n", n)
+
+    // walk
+    order := [_]string("a", "a/one.txt", "a/b", "a/b/two.txt", "a/b/c", "a/b/c/three.txt",
+                       "empty", "top.txt")
+    depths := [_]u32(0, 1, 1, 2, 2, 3, 0, 0)
+    dir_at := [_]bool(true, false, true, false, true, false, true, false)
+    at_index: [8]i32 = [8]i32(fill: -1)
+    seen: i32 = 0
+    ok := true
+    for r in fs.walk(root) {
+        e := try r
+        rel := e.path[root.len + 1..e.path.len]
+        found: i32 = -1
+        for i in 0..order.len {
+            if rel is order[i] { found = i.trunc(i32) }
+        }
+        if found < 0 {
+            print("unexpected path {}\n", rel)
+            ok = false
+            continue
+        }
+        k := found.trunc(usize)
+        at_index[k] = seen
+        seen += 1
+        if e.depth is not depths[k] { ok = false }
+        if (e.kind is .Dir) is not dir_at[k] { ok = false }
+    }
+    // A directory comes before what it contains.
+    if not (at_index[0] < at_index[1] and at_index[0] < at_index[2] and at_index[2] < at_index[3]
+            and at_index[2] < at_index[4] and at_index[4] < at_index[5]) {
+        ok = false
+    }
+    print("walk: {} entries, order and kinds ok: {}\n", (seen, ok))
+    for r in fs.walk(root) {
+        e := try r
+        if e.depth is 1 { break }
+    }
+    for r in fs.walk(at(p[..], root, "empty")) {
+        _ = try r
+        print("not reached\n")
+    }
+    for r in fs.walk(at(p[..], root, "nothing")) {
+        if !e := r { print("walk of a missing root: {}\n", e) }
+    }
+
+    // stat, lstat
+    f := try lstat(at(p[..], root, "a/b/two.txt"))
+    print("lstat file: {} {}\n", (f.kind is .File, f.size))
+    print("lstat dir: {}\n", (try lstat(at(p[..], root, "a"))).kind is .Dir)
+    if !e := lstat(at(p[..], root, "missing")) { print("lstat missing: {}\n", e) }
+
+    // truncate, sync
+    h := try open(at(p[..], root, "top.txt"), OpenOptions(read: true, write: true))
+    _ = try h.write_to("hello world")
+    try h.sync()
+    try h.truncate(5)
+    print("truncated to {}\n", (try stat(at(p[..], root, "top.txt"))).size)
+    try h.truncate(8)
+    print("extended to {}\n", (try stat(at(p[..], root, "top.txt"))).size)
+    _ = try h.seek(0, .Start)
+    buf: [16]u8 = ---
+    got := try h.read_from(buf[..])
+    print("contents: {} then {} zero bytes\n", (buf[0..5], got - 5))
+    close(h)
+    ro := try open(at(p[..], root, "top.txt"), OpenOptions())
+    if !e := ro.truncate(1) { print("truncate read-only: {}\n", e.tag() > 0) }
+    close(ro)
+
+    // cwd
+    cb: [4096]u8 = ---
+    cn := try cwd(cb[..])
+    print("cwd: {} {}\n", (cn > 0, cb[0] is '/'))
+    if !e := cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
+
+    // write_atomic
+    try fs.make_dir_all(at(p[..], root, "atomic"))
+    tb: [512]u8 = ---
+    target := at(tb[..], root, "atomic/config")
+    try fs.write_atomic(target, "first")
+    try fs.write_atomic(target, "second, longer")
+    data := fs.read_all(target) else return !.Other(0)
+    print("atomic: {}\n", data)
+    free(data)
+    print("entries in the directory: {}\n", try count(at(p[..], root, "atomic")))
+    if !e := fs.write_atomic(at(p[..], root, "no/such/dir/file"), "x") { print("atomic failure: {}\n", e) }
+    print("entries in the root: {}\n", try count(root))
+    try remove(target)
+}
+
+cleanup :: fn(root: string) \ {Fs} {
+    p: [512]u8 = ---
+    for rel in [_]string("a/b/c/three.txt", "a/b/two.txt", "a/one.txt", "top.txt") {
+        _ = remove(at(p[..], root, rel))
+    }
+    for rel in [_]string("a/b/c", "a/b", "a", "empty", "atomic") {
+        _ = remove_dir(at(p[..], root, rel))
+    }
+    _ = remove_dir(root)
+}
+
+main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
+    tmp := var("TMPDIR") else "/tmp"
+    r: [6]u8 = ---
+    fill(r[..])
+    name: [12]u8 = ---
+    for i in 0..6 {
+        name[2 * i] = hex(r[i] >> 4)
+        name[2 * i + 1] = hex(r[i] & 15)
+    }
+    root_buf: [512]u8 = ---
+    root := at(root_buf[..], tmp, "gamma-std-fs-")
+    // `at` put a '/' after the directory; the unique part follows the prefix.
+    full: [600]u8 = ---
+    full[0..root.len].copy_from(root)
+    full[root.len..root.len + 12].copy_from(name[..])
+    dir := full[0..root.len + 12]
+    try make_dir(dir)
+    result := scenario(dir)
+    cleanup(dir)
+    print("cleaned up: {}\n", stat(dir) is !.NotFound)
+    return result
+}

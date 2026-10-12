@@ -41,10 +41,16 @@ _ = try f.write_to("hello\n")
 ```
 
 `open(path, options)` returns a `File`; `read_from`, `write_to` and `seek` are called
-as methods on it. `stat(path)` gives a `FileInfo` (`size`, `is_dir`, `modified`);
-`remove`, `rename`, `make_dir` and `remove_dir` change the tree; `open_dir`,
-`next_entry` (a name into your buffer, 0 after the last) and `close_dir` list a
-directory without allocating. Failures are `IoError` values.
+as methods on it. `stat(path)` gives a `FileInfo` (`size`, `kind`, `modified`), where
+`kind` is a `FileKind`: `.File`, `.Dir`, `.Symlink` or `.Other`; `lstat(path)` is the
+same without following a final symbolic link. `remove`, `rename`, `make_dir` and
+`remove_dir` change the tree. `open_dir`, `next_entry` and `close_dir` list a
+directory without allocating: `next_entry(buf)` stores a name in `buf` and returns a
+`DirEntry` (`len` of the name and its `kind`), or `null` after the last entry.
+`f.truncate(size)` sets a file's length, `f.sync()` flushes it to the storage device,
+and `cwd(buf)` stores the working directory in `buf` and returns its length
+(`.InvalidInput` if it does not fit). Failures are `IoError` values; `.TimedOut` is
+what a network call gives when its timeout runs out.
 
 ### The network: `Net`
 
@@ -58,7 +64,17 @@ n := try s.recv(buf[..])                 // 0 once the peer has closed
 ```
 
 `close_socket` and `close_listener` release the handles. Hosts are names or address
-literals; a failed name lookup is `.Other(0)`.
+literals; a failed name lookup is `.Other(0)`. `s.shutdown(how)` closes one direction of
+a connection (`how` is a `Shutdown`: `.Read`, `.Write` or `.Both`); after `.Write` the
+peer's `recv` returns 0 once it has read everything, while the other direction keeps
+working. `s.set_timeouts(recv, send)` bounds how long `recv` and `send` wait (`null`:
+forever); a call that runs out of time fails with `.TimedOut`. `s.peer(buf)` stores the
+other end's address as `host:port` in `buf` (`127.0.0.1:8080`, `[::1]:8080`) and returns
+its length.
+
+The test handlers are in-memory: nothing blocks, so timeouts are accepted and ignored;
+`shutdown` has the same effect on `recv` and `send` as it has on real sockets, and
+`peer` reports `127.0.0.1` with the port of the other end.
 
 ## `std/io`
 
@@ -67,6 +83,9 @@ literals; a failed name lookup is `.Other(0)`.
   which holds 4095 bytes of text by default; a longer line is the error `.InvalidInput`
   (reported once: the next call skips the rest of that line and goes on).
   `io.reader_with(buf)` reads through a buffer you supply instead, for long lines.
+- `io.describe(e)`: a short lower-case message for an `IoError` (`"file or directory not
+  found"`, `"permission denied"`, …; `.Other` is `"operating-system error"`), for
+  programs that print `error: {}` for a failure.
 - `io.read_to_list(&list)`: all of `In` into a `List(u8)`.
 - `io.read_all() -> io.ReadError![]u8`: all of `In`, in memory from the current
   allocator (release it with `free`). `io.ReadError` is `.Io(IoError)` or
@@ -103,6 +122,28 @@ try out.flush()
   allocator (release it with `free`).
 - `fs.write_all(path, bytes)`, `fs.append(path, bytes)`, `fs.copy(from, to)`,
   `fs.exists(path)`, and `fs.write_all_to(file, bytes)`, which retries short writes.
+- `fs.entries(path)` yields the entries of a directory as `IoError!fs.Entry`
+  (`name`, valid until the next entry, and `kind`), in the order the operating system
+  gives them; the directory is closed when the loop ends, also when it is left early.
+  An error opening or reading the directory is yielded and ends the iteration.
+
+  ```gamma
+  for r in fs.entries("src") {
+      e := try r
+      print("{}\n", e.name)
+  }
+  ```
+- `fs.walk(root)` yields every entry below `root` as `IoError!fs.WalkEntry` (`path`,
+  `kind`, `depth`, 0 for the entries directly in `root`), depth first and in pre-order
+  (a directory before its contents). Symbolic links are not followed; they are yielded
+  as `.Symlink`. The `path` is valid until the next entry. A directory that cannot be
+  read yields its error and the walk goes on; everything it allocates is freed when it
+  ends or the loop is left early.
+- `fs.make_dir_all(path)` is `mkdir -p`: missing parents are created and existing
+  directories are fine; a file in the way is `.AlreadyExists`.
+- `fs.write_atomic(path, bytes)` writes a temporary file next to `path` (with a random
+  suffix), syncs it and renames it over `path`, removing the temporary on failure, so
+  readers see the old or the new contents and never a partial file.
 
 ## `std/fmt`
 
@@ -614,3 +655,19 @@ for c in bytes(word) {
   alone.
 - `digit_value(c) -> ?u8` is the value of `c` as a digit in a base up to 36: 0 to 9 for
   `0`-`9`, 10 to 35 for `a`-`z` or `A`-`Z`, and `null` for any other byte.
+
+## `std/net`
+
+Two helpers over the `Net` effect for the loops every TCP program writes.
+
+```gamma
+net :: import "std/net"
+
+try net.send_all(s, "ping\n")
+reply: [5]u8 = ---
+try net.recv_exact(s, reply[..])
+```
+
+- `net.send_all(s, bytes) -> IoError!()` sends all of `bytes`, retrying short sends.
+- `net.recv_exact(s, buf) -> IoError!()` fills `buf` completely; `.UnexpectedEof` if the
+  peer closes the connection first.

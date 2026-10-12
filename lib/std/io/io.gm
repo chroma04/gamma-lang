@@ -284,3 +284,22 @@ handler Out for ^ListOut {
 handler Err for ^ListOut {
     write_err(self, bytes) => write_list_out(self, bytes)
 }
+
+/// A short, lower-case description of `e`, for messages such as `error: {}`.
+pub describe :: fn(e: IoError) -> string {
+    return match e {
+        .NotFound => "file or directory not found"
+        .PermissionDenied => "permission denied"
+        .AlreadyExists => "already exists"
+        .WouldBlock => "operation would block"
+        .Interrupted => "interrupted"
+        .BrokenPipe => "broken pipe"
+        .ConnectionReset => "connection reset by peer"
+        .InvalidInput => "invalid input"
+        .UnexpectedEof => "unexpected end of input"
+        .NoSpace => "no space left"
+        .ConnectionRefused => "connection refused"
+        .TimedOut => "timed out"
+        .Other(_) => "operating-system error"
+    }
+}

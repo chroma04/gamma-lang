@@ -31,7 +31,7 @@ pub Env :: effect {
 /// Why an input or output operation failed (§21.7).
 pub IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
-    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
+    BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused, TimedOut,
     Other: i32                                  // OS error code
 }
 
@@ -74,11 +74,21 @@ pub OpenOptions :: struct {
     pub exclusive: bool = false     // create the file; fail if it exists
 }
 
+/// What a file-system entry is.
+pub FileKind :: union { File, Dir, Symlink, Other }
+
 /// What `stat` reports about a file or directory.
 pub FileInfo :: struct {
     pub size: u64
-    pub is_dir: bool
+    pub kind: FileKind
     pub modified: i64               // Unix time in nanoseconds
+}
+
+/// What `next_entry` reports about a directory entry: the length of its name, which it
+/// stored in the buffer, and what the entry is.
+pub DirEntry :: struct {
+    pub len: usize
+    pub kind: FileKind
 }
 
 /// Where `seek` measures its offset from.
@@ -98,9 +108,16 @@ pub Fs :: effect {
     make_dir: fn(path: string) -> IoError!()
     remove_dir: fn(path: string) -> IoError!()                  // the directory must be empty
     open_dir: fn(path: string) -> IoError!Dir
-    next_entry: fn(d: Dir, buf: []u8) -> IoError!usize         // a name into buf; 0 after the last
+    next_entry: fn(d: Dir, buf: []u8) -> IoError!?DirEntry     // a name into buf; null after the last
     close_dir: fn(d: Dir)
+    lstat: fn(path: string) -> IoError!FileInfo                 // does not follow a final symlink
+    truncate: fn(f: File, size: u64) -> IoError!()
+    sync: fn(f: File) -> IoError!()                             // flushes the file to the device
+    cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf
 }
+
+/// Which direction of a connection `shutdown` closes.
+pub Shutdown :: union { Read, Write, Both }
 
 /// A TCP connection (§21.7).
 pub Socket :: struct { handle: i64 }
@@ -119,6 +136,9 @@ pub Net :: effect {
     recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
     close_socket: fn(s: Socket)
     close_listener: fn(l: Listener)
+    shutdown: fn(s: Socket, how: Shutdown) -> IoError!()
+    set_timeouts: fn(s: Socket, recv, send: ?Duration) -> IoError!()   // null: wait forever
+    peer: fn(s: Socket, buf: []u8) -> IoError!usize                    // `host:port` into buf
 }
 
 /// `n` nanoseconds.
@@ -160,7 +180,8 @@ io_result :: fn(n: i64) -> IoError!usize {
         7 => .InvalidInput
         8 => .UnexpectedEof
         9 => .NoSpace
-        _ => .ConnectionRefused
+        10 => .ConnectionRefused
+        _ => .TimedOut
     }
     return !e
 }
@@ -185,6 +206,22 @@ io_unit :: fn(n: i64) -> IoError!() {
     return ()
 }
 
+/// The kind a system call reports (0 file, 1 directory, 2 symbolic link).
+kind_from :: fn(code: i64) -> FileKind {
+    return match code {
+        0 => .File
+        1 => .Dir
+        2 => .Symlink
+        _ => .Other
+    }
+}
+
+/// A timeout as the system calls take it: nanoseconds, 0 for none.
+timeout_ns :: fn(d: ?Duration) -> u64 {
+    if t := d { return t.ns.max(1) }
+    return 0
+}
+
 handler Fs for SystemIo {
     open(self, path, o) => {
         flags: u32 = 0
@@ -207,7 +244,12 @@ handler Fs for SystemIo {
     stat(self, path) => {
         out: [3]i64 = ---
         _ = try io_result(@fs_stat(path, out[..]))
-        return FileInfo(size: out[0].trunc(u64), is_dir: out[1] is 1, modified: out[2])
+        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2])
+    }
+    lstat(self, path) => {
+        out: [3]i64 = ---
+        _ = try io_result(@fs_lstat(path, out[..]))
+        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2])
     }
     remove(self, path) => io_unit(@fs_remove(path))
     rename(self, from, to) => io_unit(@fs_rename(from, to))
@@ -217,8 +259,15 @@ handler Fs for SystemIo {
         h := try io_result(@fs_open_dir(path))
         return Dir(handle: h.trunc(i64))
     }
-    next_entry(self, d, buf) => io_result(@fs_next_entry(d.handle, buf))
+    next_entry(self, d, buf) => {
+        n := try io_result(@fs_next_entry(d.handle, buf))
+        if n is 0 { return null }
+        return DirEntry(len: n & 0xffff_ffff, kind: kind_from((n >> 32).trunc(i64)))
+    }
     close_dir(self, d) => { _ = @fs_close_dir(d.handle) }
+    truncate(self, f, size) => io_unit(@fs_truncate(f.handle, size))
+    sync(self, f) => io_unit(@fs_sync(f.handle))
+    cwd(self, buf) => io_result(@fs_cwd(buf))
 }
 
 handler Net for SystemIo {
@@ -242,6 +291,9 @@ handler Net for SystemIo {
     recv(self, s, buf) => io_result(@net_recv(s.handle, buf))
     close_socket(self, s) => { _ = @net_close(s.handle) }
     close_listener(self, l) => { _ = @net_close(l.handle) }
+    shutdown(self, s, how) => io_unit(@net_shutdown(s.handle, how.tag().trunc(u32)))
+    set_timeouts(self, s, recv, send) => io_unit(@net_set_timeouts(s.handle, timeout_ns(recv), timeout_ns(send)))
+    peer(self, s, buf) => io_result(@net_peer(s.handle, buf))
 }
 
 /// The default handlers of `In`, `Clock`, `Rand`, `Fs` and `Net`, for code that starts
@@ -900,7 +952,34 @@ mem_seek :: fn(m: ^MemFs, f: File, offset: i64, from: SeekFrom) -> IoError!u64 {
 
 mem_stat :: fn(m: ^MemFs, path: string) -> IoError!FileInfo {
     n := &m.nodes.items[try resolve(m, path)]
-    return FileInfo(size: n.data.items.len.trunc(u64), is_dir: n.is_dir, modified: n.modified)
+    kind: FileKind = if n.is_dir { .Dir } else { .File }
+    return FileInfo(size: n.data.items.len.trunc(u64), kind: kind, modified: n.modified)
+}
+
+mem_truncate :: fn(m: ^MemFs, f: File, size: u64, now: i64) -> IoError!() {
+    p := try get_open(m, f)
+    if not p.can_write { return !.Other(9) }
+    if size > MEM_FILE_MAX.trunc(u64) { return !.NoSpace }
+    n := &m.nodes.items[p.node]
+    want := size.trunc(usize)
+    while n.data.items.len > want { _ = n.data.pop() }
+    while n.data.items.len < want {
+        n.data.push(0) else return !.NoSpace
+    }
+    n.modified = now
+    return ()
+}
+
+mem_sync :: fn(m: ^MemFs, f: File) -> IoError!() {
+    _ = try get_open(m, f)
+    return ()
+}
+
+/// The working directory of the in-memory file system is its root, `/`.
+mem_cwd :: fn(buf: []u8) -> IoError!usize {
+    if buf.len is 0 { return !.InvalidInput }
+    buf[0] = '/'
+    return 1
 }
 
 mem_remove :: fn(m: ^MemFs, path: string, now: i64) -> IoError!() {
@@ -983,9 +1062,9 @@ get_dir :: fn(m: ^MemFs, d: Dir) -> IoError!^MemDir {
     return p
 }
 
-/// The next entry's name, in the order of the node table. A name longer than `buf` is
+/// The next entry, in the order of the node table. A name longer than `buf` is
 /// `InvalidInput`, and a later call with a larger buffer returns it.
-mem_next_entry :: fn(m: ^MemFs, d: Dir, buf: []u8) -> IoError!usize {
+mem_next_entry :: fn(m: ^MemFs, d: Dir, buf: []u8) -> IoError!?DirEntry {
     p := try get_dir(m, d)
     while p.next < m.nodes.items.len {
         n := &m.nodes.items[p.next]
@@ -994,11 +1073,12 @@ mem_next_entry :: fn(m: ^MemFs, d: Dir, buf: []u8) -> IoError!usize {
             if len > buf.len { return !.InvalidInput }
             buf[0..len].copy_from(n.name.items)
             p.next += 1
-            return len
+            kind: FileKind = if n.is_dir { .Dir } else { .File }
+            return DirEntry(len: len, kind: kind)
         }
         p.next += 1
     }
-    return 0
+    return null
 }
 
 mem_close_dir :: fn(m: ^MemFs, d: Dir) {
@@ -1023,6 +1103,10 @@ handler Fs for ^TestIo {
     open_dir(self, path) => mem_open_dir(&self.fs, path)
     next_entry(self, d, buf) => mem_next_entry(&self.fs, d, buf)
     close_dir(self, d) => { mem_close_dir(&self.fs, d) }
+    lstat(self, path) => mem_stat(&self.fs, path)
+    truncate(self, f, size) => mem_truncate(&self.fs, f, size, test_wall(self))
+    sync(self, f) => mem_sync(&self.fs, f)
+    cwd(self, buf) => mem_cwd(buf)
 }
 
 // The test handler of `Net` (§12.9): a loopback fake. Every test starts with an empty
@@ -1047,6 +1131,9 @@ MemSock :: struct {
     peer: usize             // the other end of the connection
     inbox: List(u8)         // bytes the peer has sent; those before `head` have been read
     head: usize
+    read_shut: bool         // `shutdown` stopped reading here: `recv` gives 0
+    write_shut: bool        // `shutdown` stopped writing here: `send` fails, and the peer sees the end
+    peer_port: u16          // the port of the other end, as `peer` reports it
 }
 
 MemListener :: struct {
@@ -1061,15 +1148,17 @@ MemNet :: struct {
     socks: List(MemSock)
     listeners: List(MemListener)
     next_port: u16          // where the search for a free port starts
+    next_client: u16        // the port the next client end reports as its own
 }
 
 MEM_PORT_FIRST :: 49152
+MEM_CLIENT_FIRST :: 32768
 
 /// An empty network.
 mem_net :: fn() -> MemNet {
     a := heap_allocator()
     return with a {
-        MemNet(alloc: a, socks: list(MemSock), listeners: list(MemListener), next_port: MEM_PORT_FIRST)
+        MemNet(alloc: a, socks: list(MemSock), listeners: list(MemListener), next_port: MEM_PORT_FIRST, next_client: MEM_CLIENT_FIRST)
     }
 }
 
@@ -1144,9 +1233,11 @@ mem_connect :: fn(n: ^MemNet, host: string, port: u16) -> IoError!Socket {
     if not is_loopback(host) { return !.Other(0) }
     li := find_listener(n, port) else return !.ConnectionRefused
     client := n.socks.items.len
+    cport := n.next_client
+    n.next_client = if cport is 49151 { MEM_CLIENT_FIRST } else { cport + 1 }
     a := n.alloc
-    c := with a { MemSock(open: true, peer: client + 1, inbox: list(u8), head: 0) }
-    s := with a { MemSock(open: true, peer: client, inbox: list(u8), head: 0) }
+    c := with a { MemSock(open: true, peer: client + 1, inbox: list(u8), head: 0, read_shut: false, write_shut: false, peer_port: port) }
+    s := with a { MemSock(open: true, peer: client, inbox: list(u8), head: 0, read_shut: false, write_shut: false, peer_port: cport) }
     n.socks.push(c) else return !.NoSpace
     if !e := n.socks.push(s) {
         _ = n.socks.pop()
@@ -1175,7 +1266,7 @@ mem_accept :: fn(n: ^MemNet, l: Listener) -> IoError!Socket {
 mem_send :: fn(n: ^MemNet, s: Socket, bytes: []const u8) -> IoError!usize {
     p := try get_sock(n, s)
     peer := &n.socks.items[p.peer]
-    if not peer.open { return !.BrokenPipe }
+    if not peer.open or p.write_shut { return !.BrokenPipe }
     sent: usize = 0
     while sent < bytes.len {
         peer.inbox.push(bytes[sent]) else break
@@ -1187,10 +1278,11 @@ mem_send :: fn(n: ^MemNet, s: Socket, bytes: []const u8) -> IoError!usize {
 
 mem_recv :: fn(n: ^MemNet, s: Socket, buf: []u8) -> IoError!usize {
     p := try get_sock(n, s)
-    if buf.len is 0 { return 0 }
+    if buf.len is 0 or p.read_shut { return 0 }
     avail := p.inbox.items.len - p.head
     if avail is 0 {
-        if n.socks.items[p.peer].open { return !.WouldBlock }
+        peer := &n.socks.items[p.peer]
+        if peer.open and not peer.write_shut { return !.WouldBlock }
         return 0
     }
     count := buf.len.min(avail)
@@ -1215,6 +1307,42 @@ mem_close_socket :: fn(n: ^MemNet, s: Socket) {
     close_end(p)
 }
 
+mem_shutdown :: fn(n: ^MemNet, s: Socket, how: Shutdown) -> IoError!() {
+    p := try get_sock(n, s)
+    match how {
+        .Read => { p.read_shut = true }
+        .Write => { p.write_shut = true }
+        .Both => {
+            p.read_shut = true
+            p.write_shut = true
+        }
+    }
+    return ()
+}
+
+mem_set_timeouts :: fn(n: ^MemNet, s: Socket) -> IoError!() {
+    _ = try get_sock(n, s)
+    return ()
+}
+
+mem_peer :: fn(n: ^MemNet, s: Socket, buf: []u8) -> IoError!usize {
+    p := try get_sock(n, s)
+    prefix := "127.0.0.1:"
+    digits: [5]u8 = ---
+    count: usize = 0
+    v := p.peer_port
+    while true {
+        digits[count] = '0' + (v % 10).trunc(u8)
+        count += 1
+        v /= 10
+        if v is 0 { break }
+    }
+    if prefix.len + count > buf.len { return !.InvalidInput }
+    buf[0..prefix.len].copy_from(prefix)
+    for i in 0..count { buf[prefix.len + i] = digits[count - 1 - i] }
+    return prefix.len + count
+}
+
 mem_close_listener :: fn(n: ^MemNet, l: Listener) {
     p := get_listener(n, l) else return
     for i in p.head..p.backlog.items.len {
@@ -1234,6 +1362,9 @@ handler Net for ^TestIo {
     recv(self, s, buf) => mem_recv(&self.net, s, buf)
     close_socket(self, s) => { mem_close_socket(&self.net, s) }
     close_listener(self, l) => { mem_close_listener(&self.net, l) }
+    shutdown(self, s, how) => mem_shutdown(&self.net, s, how)
+    set_timeouts(self, s, recv, send) => mem_set_timeouts(&self.net, s)
+    peer(self, s, buf) => mem_peer(&self.net, s, buf)
 }
 
 /// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
