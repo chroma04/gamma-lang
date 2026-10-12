@@ -627,7 +627,17 @@ pub fn not_first_class(t: Ty, part: Ty) -> String {
 /// a type is not a valid type argument (§16.1). Function pointers are first-class.
 pub fn second_class_part(t: Ty) -> Option<Ty> {
     match t.kind() {
-        TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Type => Some(t),
+        TyKind::Fn(_) => Some(t),
+        _ => inner_second_class_part(t),
+    }
+}
+
+/// `second_class_part` for the parts of a type, where a `fn(…)` type was already
+/// reported when the type was formed (§11.6).
+fn inner_second_class_part(t: Ty) -> Option<Ty> {
+    match t.kind() {
+        TyKind::Fn(_) => None,
+        TyKind::Handler(_) | TyKind::Type => Some(t),
         TyKind::FnPtr(_) => None,
         TyKind::Ptr { pointee: x, .. }
         | TyKind::ManyPtr { elem: x, .. }
@@ -635,11 +645,11 @@ pub fn second_class_part(t: Ty) -> Option<Ty> {
         | TyKind::Array { elem: x, .. }
         | TyKind::ParamArray { elem: x, .. }
         | TyKind::Optional(x)
-        | TyKind::Cont(x) => second_class_part(*x),
-        TyKind::Result { err, ok } => second_class_part(*err).or_else(|| second_class_part(*ok)),
-        TyKind::Tuple { elems, .. } => elems.iter().find_map(|x| second_class_part(*x)),
+        | TyKind::Cont(x) => inner_second_class_part(*x),
+        TyKind::Result { err, ok } => inner_second_class_part(*err).or_else(|| inner_second_class_part(*ok)),
+        TyKind::Tuple { elems, .. } => elems.iter().find_map(|x| inner_second_class_part(*x)),
         TyKind::Adt(_, args) => args.iter().find_map(|a| match a {
-            crate::types::GenericArg::Type(x) => second_class_part(*x),
+            crate::types::GenericArg::Type(x) => inner_second_class_part(*x),
             _ => None,
         }),
         _ => None,

@@ -1348,9 +1348,9 @@ A function returns one value. Several values are returned as a tuple, and destru
 A function literal that refers to a local binding of an enclosing function **captures** it by reference. Such a literal, and every value of a function type `fn(…)` (as opposed to a function pointer `^fn(…)`), is **second-class**:
 
 - It may be bound with `::` to a local, passed as an argument, and called.
-- It may not be stored in a mutable variable, a struct, tuple, array, union, optional, or result; returned; assigned; or captured by a function pointer or a nested named function. It may be captured by another function literal or handler literal (which is then itself second-class).
+- It may not be stored in a mutable variable, a struct, tuple, array, union, optional, or result; returned (also from a function literal); assigned; pointed to with `&`; or captured by a function pointer or a nested named function. It may be captured by another function literal or handler literal (which is then itself second-class).
 
-These restrictions ensure a second-class function never outlives the frame that created it, so captured locals are always valid while it can be called. Accordingly, a second-class function type `fn(…)` may be written only as the type of a parameter or of an immutable local; it may not be a field, element or type argument (§16.1).
+These restrictions ensure a second-class function never outlives the frame that created it, so captured locals are always valid while it can be called. Accordingly, a second-class function type `fn(…)` may be written only as the type of a parameter or of an immutable local; it may not be part of another type (a field, element, pointee, payload of `?` or `!`) or a type argument (§16.1).
 
 A handler literal's type has no name, so handler literals cannot be passed as arguments; pass a second-class function that installs the handler instead.
 

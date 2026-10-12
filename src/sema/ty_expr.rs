@@ -77,7 +77,7 @@ impl<'s> Sema<'s> {
             ExprKind::Paren(inner) => self.resolve_type(module, inner),
             ExprKind::Tuple(elems) => {
                 let named = elems.first().is_some_and(|el| el.name.is_some());
-                let tys: Vec<Ty> = elems.iter().map(|el| self.resolve_type(module, &el.value)).collect();
+                let tys: Vec<Ty> = elems.iter().map(|el| self.component_type(module, &el.value)).collect();
                 let names = if named {
                     let names: Vec<_> = elems.iter().map(|el| el.name.map(|n| n.name)).collect();
                     if names.iter().any(|n| n.is_none()) {
@@ -97,7 +97,7 @@ impl<'s> Sema<'s> {
                 };
                 Ty::intern(TyKind::Tuple { elems: tys.into_boxed_slice(), names })
             }
-            ExprKind::OptionalType(inner) => Ty::optional(self.resolve_type(module, inner)),
+            ExprKind::OptionalType(inner) => Ty::optional(self.component_type(module, inner)),
             ExprKind::PtrType { is_const, inner } => {
                 if let ExprKind::FnType(sig) = &inner.kind {
                     if *is_const {
@@ -114,12 +114,12 @@ impl<'s> Sema<'s> {
                         None => Ty::error(),
                     };
                 }
-                Ty::ptr(*is_const, self.resolve_type(module, inner))
+                Ty::ptr(*is_const, self.component_type(module, inner))
             }
-            ExprKind::SliceType { is_const, inner } => Ty::slice(*is_const, self.resolve_type(module, inner)),
-            ExprKind::ManyPtrType { is_const, inner } => Ty::many_ptr(*is_const, self.resolve_type(module, inner)),
+            ExprKind::SliceType { is_const, inner } => Ty::slice(*is_const, self.component_type(module, inner)),
+            ExprKind::ManyPtrType { is_const, inner } => Ty::many_ptr(*is_const, self.component_type(module, inner)),
             ExprKind::ArrayType { len, elem } => {
-                let elem = self.resolve_type(module, elem);
+                let elem = self.component_type(module, elem);
                 let Some(len) = len else {
                     self.error(e.span, "`[_]` is allowed only in array constructors");
                     return Ty::error();
@@ -144,8 +144,8 @@ impl<'s> Sema<'s> {
                 }
             }
             ExprKind::ErrorUnionType { err, ok } | ExprKind::Bang { lhs: err, rhs: ok } => {
-                let err = self.resolve_type(module, err);
-                let ok = self.resolve_type(module, ok);
+                let err = self.component_type(module, err);
+                let ok = self.component_type(module, ok);
                 Ty::result(err, ok)
             }
             ExprKind::FnType(sig) => match self.resolve_fn_sig(module, sig, false, &[]) {
@@ -254,6 +254,22 @@ impl<'s> Sema<'s> {
                 Ty::error()
             }
         }
+    }
+
+    /// Resolves a type that is part of a larger type (an element, a pointee, a payload):
+    /// a second-class `fn(…)` type cannot be one (§11.6).
+    fn component_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
+        let t = self.resolve_type(module, e);
+        if matches!(t.kind(), TyKind::Fn(_)) {
+            self.error(
+                e.span,
+                format!(
+                    "the second-class type `{}` cannot be part of another type; use a function pointer `^{}` (§11.6)",
+                    t, t
+                ),
+            );
+        }
+        t
     }
 
     /// The declaration that `callee` of a type instantiation `G(args)` names: `G` or

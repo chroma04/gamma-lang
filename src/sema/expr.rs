@@ -374,6 +374,19 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// Reports a second-class function value used as `what`, which would let it outlive
+    /// its captures (§11.6). True if it was reported.
+    fn reject_second_class(&mut self, v: &Expr, what: &str) -> bool {
+        if !matches!(self.infer.resolve(v.ty).kind(), TyKind::Fn(_)) {
+            return false;
+        }
+        self.error(
+            v.span,
+            format!("a second-class function cannot be {}; use a function pointer `^fn(…)` (§11.6)", what),
+        );
+        true
+    }
+
     fn tuple(&mut self, elems: &[ast::TupleElem], expect: Option<Ty>, span: Span) -> Expr {
         // The expected tuple type, also through optionals and results that would wrap it.
         let mut want = expect.map(|t| self.infer.shallow(t));
@@ -403,6 +416,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     v = self.coerce(v, exp);
                 }
             }
+            self.reject_second_class(&v, "a tuple element");
             vals.push(v);
         }
         let names = if named {
@@ -484,6 +498,9 @@ impl<'a, 's> FnCx<'a, 's> {
             ast::UnOp::AddrOf => {
                 let temp_ok = std::mem::take(&mut self.temp_ref_arg);
                 let v = self.expr(operand, None);
+                if self.reject_second_class(&v, "the target of `&`") {
+                    return error_expr(span);
+                }
                 match self.place_mutability(&v) {
                     Some(m) => {
                         let ty = Ty::ptr(!m, v.ty);
