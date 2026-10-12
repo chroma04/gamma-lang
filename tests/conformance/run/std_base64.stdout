@@ -1,0 +1,58 @@
+-- RFC 4648 section 10
+[] [] (0 -> 0)
+[Zg==] [Zg] (1 -> 4)
+[Zm8=] [Zm8] (2 -> 4)
+[Zm9v] [Zm9v] (3 -> 4)
+[Zm9vYg==] [Zm9vYg] (4 -> 8)
+[Zm9vYmE=] [Zm9vYmE] (5 -> 8)
+[Zm9vYmFy] [Zm9vYmFy] (6 -> 8)
+-- alphabets
++/+/Pj/+
+-_-_Pj_-
++/8=
+-_8=
+-_8
+-w
+6 bytes, same as the original: true
+-- decoding accepts
+padded: ok [foob]
+unpadded with pad: false: ok [foob]
+padded with pad: false: ok [foob]
+one pad with pad: false: ok [fooba]
+empty: ok []
+empty raw: ok []
+url chars: ok 2 bytes, first 251, last 255
+std chars: ok 2 bytes, first 251, last 255
+-- decoding errors
+space: invalid byte at 4
+bad first: invalid byte at 0
+url char in std: invalid byte at 0
+std char in url: invalid byte at 0
+high byte: invalid byte at 3
+missing padding: invalid length
+missing padding 1: invalid length
+short padding: invalid length
+short padding raw: invalid length
+one char left: invalid length
+one char left padded: invalid length
+too much padding: invalid padding at 4
+too much padding 2: invalid padding at 8
+extra padding: invalid padding at 8
+padding in the middle: invalid padding at 2
+padding before data: invalid padding at 2
+only padding: invalid padding at 0
+leading padding: invalid padding at 0
+trailing bits 2: invalid padding at 1
+trailing bits 3: invalid padding at 6
+trailing bits raw: invalid padding at 5
+canonical raw: ok [fooba]
+error order: invalid byte at 1
+-- append
+[Zm9vYg== Zm9vYg ]
+[foobfoobar]
+decode error .InvalidByte(4)
+unchanged [foobfoobar]
+-- every byte
+mismatches 0
+AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==
+max len 0 3 3 258

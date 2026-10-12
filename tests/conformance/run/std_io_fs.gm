@@ -3,11 +3,18 @@
 io :: import "std/io"
 fs :: import "std/fs"
 
-count :: fn() -> IoError!(lines: u32, longest: usize) \ {In} {
+// Counts the lines; a line that is too long for the reader is reported and skipped.
+count :: fn() -> IoError!(lines: u32, longest: usize) \ {In, Out} {
     r := io.reader()
     lines: u32 = 0
     longest: usize = 0
-    while line := try r.next_line() {
+    while true {
+        next := r.next_line() else e => {
+            print("line {}: {}\n", (lines + 1, e))
+            lines += 1
+            continue
+        }
+        line := next else break
         lines += 1
         longest = longest.max(line.len)
     }
@@ -50,10 +57,11 @@ main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
 
     // `print` into a file, then read it back as `In`.
     f := try open(path, OpenOptions(read: false, write: true, create: true))
-    out := io.FileOut(f: f)
+    out := io.file_out(f)
     with &out {
         for i in 1..4 { print("line {}\n", i) }
     }
+    try out.flush()
     close(f)
     print("write error: {}\n", out.err)
     try fs.append(path, "appended\n")

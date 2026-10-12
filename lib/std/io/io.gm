@@ -2,49 +2,90 @@
 // and strings, so code written against the ambient effects works on any of them.
 //
 //     with io.FileIn(f: file) { count_words() }      // `In` reads the file
-//     with &io.FileOut(f: out) { report() }           // `print` writes to the file
+//     out := io.file_out(file)                        // `print` writes to the file, buffered
+//     with &out { report() }
+//     try out.flush()                                  // ... so flush before closing the file
 //     with &io.StringIn(data: "a\nb\n") { … }         // `In` reads a string
+//     lo := io.ListOut(list: &text)                    // `print` appends to a list
+//     with &lo { report() }
 
-/// Reads from `In` through a buffer, a line at a time.
+/// Reads from `In` through a buffer, a line at a time. `reader` reads through a buffer
+/// of 4096 bytes kept inside the `Reader`; `reader_with` reads through a buffer you supply.
 pub Reader :: struct {
-    buf: [4096]u8
+    store: [4096]u8
+    buf: []u8
     start: usize
     end: usize
     eof: bool
+    skipping: bool
 }
 
-/// A reader with an empty buffer.
-pub reader :: fn() -> Reader => Reader(buf: [4096]u8(fill: 0), start: 0, end: 0, eof: false)
+/// A reader with an empty 4096-byte buffer of its own.
+pub reader :: fn() -> Reader {
+    return Reader(store: [4096]u8(fill: 0), buf: empty_slice(u8), start: 0, end: 0, eof: false, skipping: false)
+}
+
+/// A reader that reads through `buf`, which sets the longest line it can return (see
+/// `next_line`). Use it for input with long lines. `buf` must not be empty and must stay
+/// valid while the reader is used.
+pub reader_with :: fn(buf: []u8) -> Reader {
+    assert(buf.len > 0, "io.reader_with: empty buffer")
+    r := reader()
+    r.buf = buf
+    return r
+}
 
 /// The next line, without its `\n` (or `\r\n`), or `null` at the end of the input. The
-/// line is valid until the next call. A line longer than the buffer (4096 bytes) is
-/// returned in pieces of the buffer's size.
+/// line is valid until the next call.
+///
+/// A line has to fit the reader's buffer together with its `\n`: with the default buffer
+/// the longest line is 4095 bytes. A longer line is reported as `.InvalidInput`; the call
+/// after that skips the rest of that line and goes on with the next one, so a caller that
+/// only wants to report the problem can simply continue. Use `reader_with` to read
+/// longer lines.
 pub next_line :: fn(r: ^Reader) -> IoError!?string \ {In} {
+    buf := if r.buf.len > 0 { r.buf } else { r.store[..] }
     while true {
-        // A complete line in the buffer?
-        if i := r.buf[r.start..r.end].index_of('\n') {
-            line_end := r.start + i
-            line := r.buf[r.start..line_end]
-            r.start = line_end + 1
-            return trim_cr(line)
-        }
-        if r.eof {
-            if r.start is r.end { return null }
-            line := r.buf[r.start..r.end]
-            r.start = r.end
-            return trim_cr(line)
-        }
-        // Make room: move the partial line to the front, or give up on a full buffer.
-        if r.start > 0 {
-            n := r.end - r.start
-            r.buf[0..n].copy_from(r.buf[r.start..r.end])
+        if r.skipping {
+            // Drop the rest of a line that was too long.
+            if i := buf[r.start..r.end].index_of('\n') {
+                r.start += i + 1
+                r.skipping = false
+                continue
+            }
             r.start = 0
-            r.end = n
-        } else if r.end is r.buf.len {
-            r.start = r.end
-            return r.buf[0..r.end]
+            r.end = 0
+            if r.eof {
+                r.skipping = false
+                return null
+            }
+        } else {
+            // A complete line in the buffer?
+            if i := buf[r.start..r.end].index_of('\n') {
+                line_end := r.start + i
+                line := buf[r.start..line_end]
+                r.start = line_end + 1
+                return trim_cr(line)
+            }
+            if r.eof {
+                if r.start is r.end { return null }
+                line := buf[r.start..r.end]
+                r.start = r.end
+                return trim_cr(line)
+            }
+            // Make room: move the partial line to the front, or give up on a full buffer.
+            if r.start > 0 {
+                n := r.end - r.start
+                buf[0..n].copy_from(buf[r.start..r.end])
+                r.start = 0
+                r.end = n
+            } else if r.end is buf.len {
+                r.skipping = true
+                r.end = 0
+                return !.InvalidInput
+            }
         }
-        n := try read(r.buf[r.end..r.buf.len])
+        n := try read(buf[r.end..buf.len])
         if n is 0 { r.eof = true }
         r.end += n
     }
@@ -67,6 +108,46 @@ pub read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In} {
     }
 }
 
+/// Why `read_all` failed.
+pub ReadError :: union {
+    Io: IoError
+    Alloc: AllocError
+}
+
+/// All of `In`, in memory from the current allocator; release it with `free(data)`.
+pub read_all :: fn() -> ReadError![]u8 \ {In, Alloc} {
+    cap: usize = 4096
+    data := try make(u8, cap)
+    len: usize = 0
+    while true {
+        if len is cap {
+            bigger := make(u8, cap * 2) else e => {
+                free(data)
+                return !.Alloc(e)
+            }
+            bigger[0..len].copy_from(data)
+            free(data)
+            data = bigger
+            cap *= 2
+        }
+        n := read(data[len..cap]) else e => {
+            free(data)
+            return !.Io(e)
+        }
+        if n is 0 { break }
+        len += n
+    }
+    if len is cap { return data }
+    // Return exactly `len` bytes: copy into storage of the right size.
+    exact := make(u8, len) else e => {
+        free(data)
+        return !.Alloc(e)
+    }
+    exact.copy_from(data[0..len])
+    free(data)
+    return exact
+}
+
 /// A handler for `In` that reads the file `f`.
 pub FileIn :: struct { pub f: File }
 
@@ -74,15 +155,29 @@ handler In for FileIn \ {Fs} {
     read(self, buf) => self.f.read_from(buf)
 }
 
-/// A handler for `Out` (and `Err`) that writes to the file `f`. `Out` cannot fail, so
-/// the first error is kept in `err` and later output is dropped.
+/// A handler for `Out` (and `Err`) that writes to the file `f`, through a buffer of 4096
+/// bytes: the file is written to only when the buffer is full (or when a single piece of
+/// output is larger than the buffer), so most output is not written until `flush`. Call
+/// `flush` after the `with` block and before the file is closed, or output is lost.
+///
+/// `Out` cannot fail, so the first error is kept in `err` and later output is dropped;
+/// `flush` reports it. Create one with `file_out` and install it by address:
+///
+///     out := io.file_out(f)
+///     with &out { report() }
+///     try out.flush()
 pub FileOut :: struct {
     pub f: File
     pub err: ?IoError = null
+    buf: [4096]u8 = [4096]u8(fill: 0)
+    len: usize = 0
 }
 
-write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
-    if o.err is not null { return }
+/// A buffered output handler for the file `f`, with nothing buffered yet.
+pub file_out :: fn(f: File) -> FileOut => FileOut(f: f)
+
+// Writes all of `bytes` to the file, keeping the first error.
+write_through :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
     done: usize = 0
     while done < bytes.len {
         n := o.f.write_to(bytes[done..bytes.len]) else e => {
@@ -95,6 +190,35 @@ write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
         }
         done += n
     }
+}
+
+// Writes out what is buffered. Once there is an error the buffered output is dropped.
+flush_buffer :: fn(o: ^FileOut) \ {Fs} {
+    if o.err is null { write_through(o, o.buf[0..o.len]) }
+    o.len = 0
+}
+
+/// Writes out the buffered output. Returns the first error that has happened on the file,
+/// in this call or earlier; it stays in `err`.
+pub flush :: fn(o: ^FileOut) -> IoError!() \ {Fs} {
+    flush_buffer(o)
+    if e := o.err { return !e }
+    return ()
+}
+
+write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
+    if o.err is not null { return }
+    if bytes.len > o.buf.len - o.len {
+        flush_buffer(o)
+        if o.err is not null { return }
+        // Too big to buffer at all: write it directly.
+        if bytes.len > o.buf.len {
+            write_through(o, bytes)
+            return
+        }
+    }
+    o.buf[o.len..o.len + bytes.len].copy_from(bytes)
+    o.len += bytes.len
 }
 
 handler Out for ^FileOut \ {Fs} {
@@ -137,3 +261,26 @@ handler Out for ^Capture {
 
 /// What was written to the capture so far.
 pub text :: fn(c: ^const Capture) -> string => c.buf[0..c.len]
+
+/// A handler for `Out` (and `Err`) that appends to the list `list`, so any code that
+/// prints can build a growable string. The first allocation failure is kept in `err` and
+/// later output is dropped.
+pub ListOut :: struct {
+    pub list: ^List(u8)
+    pub err: ?AllocError = null
+}
+
+write_list_out :: fn(o: ^ListOut, bytes: []const u8) {
+    if o.err is not null { return }
+    o.list.extend(bytes) else e => {
+        o.err = e
+    }
+}
+
+handler Out for ^ListOut {
+    write_out(self, bytes) => write_list_out(self, bytes)
+}
+
+handler Err for ^ListOut {
+    write_err(self, bytes) => write_list_out(self, bytes)
+}
