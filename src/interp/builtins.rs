@@ -280,6 +280,17 @@ impl<'a> Machine<'a> {
                 let Some((signed, bits)) = ti.int else {
                     return self.trap(span, "rotation of a non-integer");
                 };
+                if let (Some(si), Some(ai)) = (ti.small, self.ti(arg_tys[1]).small) {
+                    // Integers of at most 64 bits rotate in a machine word, as below.
+                    let n = bits as u128;
+                    let mask = (1u128 << n) - 1;
+                    let x = self.decode_small(si, &v[0]) as u128 & mask;
+                    let amount = self.decode_small(ai, &v[1]);
+                    let k = if amount < 0 { 0 } else { amount as u128 % n };
+                    let k = if op == Builtin::Rotl { k } else { (n - k) % n };
+                    let r = ((x << k) | (x >> (n - k))) & mask;
+                    return Ok(self.encode_small(si, si.value(r as u64)));
+                }
                 let x = num::wrap(&self.decode_int_ty(ti, &v[0]), false, bits).to_big();
                 let amount = self.decode_int_ty(self.ti(arg_tys[1]), &v[1]).to_big();
                 let n = bits as u64;

@@ -64,6 +64,10 @@ pub enum Slot {
     Empty,
     /// A first-class local: its own allocation at this address.
     Mem(u64),
+    /// A first-class local of at most [`super::machine::REG_MAX`] bytes whose address
+    /// nothing has needed yet: its bytes (then zeros). It moves to an allocation of its
+    /// own (`Mem`) when its address is first needed.
+    Reg([u8; super::machine::REG_MAX]),
     /// A second-class local (function or handler value).
     Val(Box<Value>),
 }

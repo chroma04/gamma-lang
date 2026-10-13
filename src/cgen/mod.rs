@@ -854,7 +854,8 @@ const BASE_CFLAGS: [&str; 6] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-alia
 /// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:
 /// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
 /// there in the debugger) and linked with a runtime object compiled once and cached (see
-/// [`rtcache`]); without a usable cache they fall back to one translation unit.
+/// [`rtcache`]); without a usable cache they fall back to one translation unit. Safe builds
+/// (Fil-C, which compiles slowly) are compiled at `-O2` but link the cached runtime too.
 pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
@@ -863,8 +864,8 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
         (true, false) => "-O1",
         (false, _) => "-O2",
     };
-    let runtime =
-        if opts.debug { rtcache::runtime_object(toolchain, &rt_flags(opts, &generated.target)) } else { None };
+    let separate = opts.debug || generated.target.filc;
+    let runtime = if separate { rtcache::runtime_object(toolchain, &rt_flags(opts, &generated.target)) } else { None };
     let mut code = String::new();
     if runtime.is_some() {
         code.push_str("#define GM_RT_SEPARATE 1\n");

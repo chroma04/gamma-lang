@@ -246,6 +246,12 @@ target layout and pointers are plain addresses, so pointer arithmetic, casts and
 reused and freed or dead allocations are remembered, accesses through dangling,
 out-of-bounds, misaligned or null pointers are detected and reported as traps
 (at compile time, as the undefined behavior §17.1 requires to be diagnosed).
+A local of up to 16 bytes (a number, a pointer, a slice) starts out in its
+frame's slot instead, since most locals never have their address taken; the
+first time something needs its address, it moves to an allocation of its own
+with its current value. Reads and assignments of such a local touch only the
+slot, which saves an allocation per local and call and an address lookup per
+access.
 
 **Control flow.** Evaluation returns either a value or a *flow*: `break`,
 `continue`, `return`, an exit to a `with`, or a trap. Loops, `with` expressions
@@ -324,6 +330,12 @@ How the runtime is linked depends on the build mode:
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
   build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
   into Cargo's target directory.
+- Safe builds are compiled at `-O2` like Checked builds but link the cached
+  runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
+  compiles slowly, and the runtime code a program reaches was half the time of
+  building a small program (2.5 s for hello world, 1.3 s with the cached
+  object), while the programs ran at most 10% slower without the runtime
+  inlined into them.
 
 The generated `main` runs the program's entry function on a thread with a 64 MiB
 stack (`gm_run_main`), so recursion depth does not depend on the host's default

@@ -114,6 +114,10 @@ impl<'a> Machine<'a> {
             }
             Stmt::Assign { place, value } if value.ty == place.ty => {
                 if let Some(si) = self.small_of(place.ty) {
+                    if let ExprKind::Local(id) = place.kind {
+                        let v = self.eval_small(a, value, si)?;
+                        return self.set_local_small(place.span, a.fr, id, si, v);
+                    }
                     let p = self.eval_place(a, place)?;
                     let v = self.eval_small(a, value, si)?;
                     return self.write_place_small(place.span, p, place.ty, si, v);
@@ -125,8 +129,7 @@ impl<'a> Machine<'a> {
                     && self.local_ty(a.fr, *local).is_none_or(|t| t == e.ty)
                 {
                     let v = self.eval_small(a, e, si)?;
-                    let addr = self.local_addr(e.span, a.fr, *local, si.size, si.align)?;
-                    return self.store_small(e.span, addr, v, si, 1);
+                    return self.set_local_small(e.span, a.fr, *local, si, v);
                 }
                 self.exec_stmt_slow(a, s)
             }
@@ -147,7 +150,11 @@ impl<'a> Machine<'a> {
                     None => {
                         if let Some(ty) = self.local_ty(a.fr, *local) {
                             let ti = self.ti(ty);
-                            self.local_addr(crate::source::Span::DUMMY, a.fr, *local, ti.size, ti.align)?;
+                            if ti.size <= REG_MAX {
+                                self.set_local(crate::source::Span::DUMMY, a.fr, *local, &[], 1)?;
+                            } else {
+                                self.local_addr(crate::source::Span::DUMMY, a.fr, *local, ti.size, ti.align)?;
+                            }
                         }
                     }
                 }
@@ -165,6 +172,12 @@ impl<'a> Machine<'a> {
                 Ok(())
             }
             Stmt::Assign { place, value } => {
+                if let ExprKind::Local(id) = place.kind
+                    && self.ti(place.ty).size <= REG_MAX
+                {
+                    let b = self.eval_bytes(a, value)?;
+                    return self.set_local(place.span, a.fr, id, &b, self.ti(place.ty).align);
+                }
                 let p = self.eval_place(a, place)?;
                 let v = self.eval(a, value)?;
                 match v {

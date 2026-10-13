@@ -478,7 +478,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let al = pointee_align(self, t);
                 if al > 1 && self.checks() {
                     self.line(&format!(
-                        "if ((uintptr_t){v} % {al} != 0) {{ char m[128]; snprintf(m, sizeof m, \"misaligned pointer cast: address 0x%llx is not aligned to {al} bytes\", (unsigned long long)(uintptr_t){v}); gm_trap(m, {loc}); }}",
+                        "if ((uintptr_t){v} % {al} != 0) gm_trap_misaligned((uintptr_t){v}, {al}, {loc});",
                         v = vals[0]
                     ));
                 }

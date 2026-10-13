@@ -51,6 +51,9 @@
 //! compared there, since Fil-C reports memory errors in its own words.
 //! `GAMMA_TEST_SAFE=0` turns Safe tests off.
 //!
+//! Tests run in parallel, those that took longest in the previous run first (the
+//! times are kept in Cargo's temporary directory for integration tests).
+//!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
 //! `GAMMA_TEST_DEBUG_INFO=1` to build the C back end's programs with `-g`.
@@ -537,6 +540,17 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The run times in milliseconds, by test, recorded in `file` by an earlier run.
+fn previous_times(file: &Path) -> BTreeMap<String, u64> {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let (ms, name) = l.split_once(' ')?;
+            Some((name.to_string(), ms.parse().ok()?))
+        })
+        .collect()
+}
+
 #[test]
 fn conformance() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/conformance");
@@ -552,9 +566,16 @@ fn conformance() {
         .filter(|rel| filter.as_ref().is_none_or(|flt| rel.to_string_lossy().contains(flt.as_str())))
         .collect();
     let count = selected.len();
-    // Each test runs `gamma` in processes of its own, so tests run in parallel.
+    // Each test runs `gamma` in processes of its own, so tests run in parallel. The tests
+    // that took longest last time start first, so that none of them is left running alone
+    // at the end; tests without a time (new ones) start before all others.
+    let times_file = Path::new(env!("CARGO_TARGET_TMPDIR")).join("conformance-times.txt");
+    let mut times = previous_times(&times_file);
+    let mut selected = selected;
+    selected.sort_by_key(|rel| std::cmp::Reverse(times.get(&rel.display().to_string()).copied().unwrap_or(u64::MAX)));
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failures = std::sync::Mutex::new(BTreeMap::new());
+    let new_times = std::sync::Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -562,13 +583,18 @@ fn conformance() {
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(rel) = selected.get(i) else { break };
+                    let start = std::time::Instant::now();
                     if let Err(msg) = run_one(rel, bless) {
                         failures.lock().unwrap().insert(rel.display().to_string(), msg);
                     }
+                    let ms = start.elapsed().as_millis() as u64;
+                    new_times.lock().unwrap().push((rel.display().to_string(), ms));
                 }
             });
         }
     });
+    times.extend(new_times.into_inner().unwrap());
+    let _ = fs::write(&times_file, times.iter().map(|(name, ms)| format!("{ms} {name}\n")).collect::<String>());
     let failures = failures.into_inner().unwrap();
     for (name, msg) in &failures {
         eprintln!("FAIL {}\n{}\n", name, msg);

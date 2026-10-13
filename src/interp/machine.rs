@@ -19,8 +19,10 @@ use std::rc::Rc;
 pub const CODE_BASE: u64 = 0x1000;
 
 /// Cached facts about a type.
-pub struct TyInfo {
+pub struct TyInfo<'a> {
     pub kind: &'static TyKind,
+    /// The definition of a struct or union type.
+    pub adt: Option<&'a AdtDef>,
     pub size: usize,
     pub align: u64,
     pub offsets: Vec<u64>,
@@ -43,13 +45,13 @@ pub struct SmallInt {
 /// The per-type facts, filled in on first use. Entries are never replaced or
 /// removed, so a reference handed out stays valid as long as the table lives.
 #[derive(Default)]
-struct TyTable {
-    slots: UnsafeCell<Vec<*mut TyInfo>>,
+struct TyTable<'a> {
+    slots: UnsafeCell<Vec<*mut TyInfo<'a>>>,
 }
 
-impl TyTable {
+impl<'a> TyTable<'a> {
     #[inline(always)]
-    fn get(&self, idx: usize) -> Option<&TyInfo> {
+    fn get(&self, idx: usize) -> Option<&TyInfo<'a>> {
         // SAFETY: the table is only touched by the one thread running the machine; a slot
         // is written once, with a leaked box that lives until the table is dropped.
         unsafe {
@@ -61,7 +63,7 @@ impl TyTable {
         }
     }
 
-    fn insert(&self, idx: usize, info: TyInfo) -> &TyInfo {
+    fn insert(&self, idx: usize, info: TyInfo<'a>) -> &TyInfo<'a> {
         let p = Box::into_raw(Box::new(info));
         // SAFETY: as in `get`; growing the vector moves the pointers, not the infos they point to.
         unsafe {
@@ -75,7 +77,7 @@ impl TyTable {
     }
 }
 
-impl Drop for TyTable {
+impl Drop for TyTable<'_> {
     fn drop(&mut self) {
         for &p in self.slots.get_mut().iter() {
             if !p.is_null() {
@@ -121,7 +123,7 @@ pub struct Machine<'a> {
     pub mode: Mode,
     pub budget: Option<u64>,
     layouts: Layouts<'a>,
-    tyinfo: TyTable,
+    tyinfo: TyTable<'a>,
     pub mem: Memory,
     pub steps: u64,
     pub depth: u32,
@@ -163,6 +165,12 @@ pub struct Machine<'a> {
 }
 
 pub const MAX_DEPTH: u32 = 200_000;
+
+/// The largest local, in bytes, kept in its frame's slot rather than in an allocation
+/// until its address is needed (`Slot::Reg`). Most locals are numbers, booleans,
+/// pointers and slices whose address is never taken; keeping them out of [`Memory`]
+/// saves an allocation per local and call, and an address lookup per access.
+pub const REG_MAX: usize = 16;
 
 impl<'a> Machine<'a> {
     pub fn new(
@@ -220,7 +228,7 @@ impl<'a> Machine<'a> {
     // --- types -------------------------------------------------------------
 
     #[inline(always)]
-    pub fn ti(&self, ty: Ty) -> &TyInfo {
+    pub fn ti(&self, ty: Ty) -> &TyInfo<'a> {
         match self.tyinfo.get(ty.index()) {
             Some(i) => i,
             None => self.ti_slow(ty),
@@ -228,7 +236,7 @@ impl<'a> Machine<'a> {
     }
 
     #[inline(never)]
-    fn ti_slow(&self, ty: Ty) -> &TyInfo {
+    fn ti_slow(&self, ty: Ty) -> &TyInfo<'a> {
         let l = self.layouts.layout(ty);
         let int = layout::int_bits(ty, &self.target);
         let size = l.size as usize;
@@ -236,17 +244,23 @@ impl<'a> Machine<'a> {
             Some((signed, bits)) if bits <= 64 && size <= 8 => Some(SmallInt { signed, bits, size, align: l.align }),
             _ => None,
         };
-        self.tyinfo.insert(ty.index(), TyInfo { kind: ty.kind(), size, align: l.align, offsets: l.offsets, int, small })
+        let prog = self.prog;
+        let adt = match ty.kind() {
+            TyKind::Adt(id, _) => prog.adts.get(id),
+            _ => None,
+        };
+        let info = TyInfo { kind: ty.kind(), adt, size, align: l.align, offsets: l.offsets, int, small };
+        self.tyinfo.insert(ty.index(), info)
     }
 
     pub fn size_of(&self, ty: Ty) -> usize {
         self.ti(ty).size
     }
 
+    #[inline]
     pub fn adt(&self, ty: Ty) -> Option<&'a AdtDef> {
-        let prog = self.prog;
         match ty.kind() {
-            TyKind::Adt(id, _) => prog.adts.get(id),
+            TyKind::Adt(..) => self.ti(ty).adt,
             _ => None,
         }
     }
@@ -728,6 +742,13 @@ impl<'a> Machine<'a> {
         for a in fr.allocs.borrow().iter() {
             self.mem.kill(*a);
         }
+        // The locals die with the frame, in slots too: something that still refers to
+        // the frame finds them gone rather than reading stale values.
+        for s in fr.locals.borrow_mut().iter_mut() {
+            if let Slot::Reg(_) = s {
+                *s = Slot::Empty;
+            }
+        }
     }
 
     /// Takes back a finished frame: if nothing else refers to it, its buffers are kept for the next call.
@@ -752,23 +773,50 @@ impl<'a> Machine<'a> {
         Some(cur)
     }
 
-    /// The address of a first-class local's storage, allocating it on first use.
+    /// The address of a first-class local's storage, allocating it on first use (a local
+    /// kept in its slot moves to the allocation with its value).
     pub fn local_addr(&mut self, span: Span, fr: &Rc<Frame>, id: LocalId, size: usize, align: u64) -> R<u64> {
         let i = id.index();
-        {
-            let locals = fr.locals.borrow();
-            if let Some(Slot::Mem(a)) = locals.get(i) {
-                return Ok(*a);
-            }
-        }
+        let word = match fr.locals.borrow().get(i) {
+            Some(Slot::Mem(a)) => return Ok(*a),
+            Some(Slot::Reg(r)) => Some(*r),
+            _ => None,
+        };
         let addr = self.alloc_mem(span, size, align, AllocKind::Stack, true)?;
         fr.allocs.borrow_mut().push(addr);
+        if let Some(r) = word {
+            let r = self.mem.write(addr, &r[..size.min(REG_MAX)], 1);
+            self.mem_err(span, r)?;
+        }
         let mut locals = fr.locals.borrow_mut();
         if locals.len() <= i {
             locals.resize(i + 1, Slot::Empty);
         }
         locals[i] = Slot::Mem(addr);
         Ok(addr)
+    }
+
+    /// Stores `data`, the value of a local of at most [`REG_MAX`] bytes: in its slot
+    /// unless it has an allocation already.
+    #[inline]
+    pub fn set_local(&mut self, span: Span, fr: &Frame, id: LocalId, data: &[u8], align: u64) -> R<()> {
+        let i = id.index();
+        let mut locals = fr.locals.borrow_mut();
+        if locals.len() <= i {
+            locals.resize(i + 1, Slot::Empty);
+        }
+        match locals[i] {
+            Slot::Mem(addr) => {
+                drop(locals);
+                self.store(span, addr, data, align)
+            }
+            _ => {
+                let mut r = [0; REG_MAX];
+                r[..data.len()].copy_from_slice(data);
+                locals[i] = Slot::Reg(r);
+                Ok(())
+            }
+        }
     }
 
     /// Binds a value to a local: first-class data is stored in the local's own allocation.
@@ -782,6 +830,9 @@ impl<'a> Machine<'a> {
                     }
                     None => (b.len(), 16),
                 };
+                if size <= REG_MAX {
+                    return self.set_local(span, fr, id, &b, 1);
+                }
                 let addr = self.local_addr(span, fr, id, size, align)?;
                 self.store(span, addr, &b, 1)
             }

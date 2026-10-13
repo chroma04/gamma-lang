@@ -76,13 +76,20 @@ fn small_binop_matches_general() {
         ops.extend([BinOp::Add(fl), BinOp::Sub(fl), BinOp::Mul(fl), BinOp::Shl(fl)]);
     }
     let prog = Program::default();
-    for target in targets() {
-        for mode in [Mode::Debug, Mode::Checked, Mode::Fast] {
+    let bool_ty = Ty::bool();
+    for (ti, target) in targets().into_iter().enumerate() {
+        // Debug builds check arithmetic exactly as Checked builds do.
+        for mode in [Mode::Checked, Mode::Fast] {
             let cfg = RunConfig { target: target.clone(), mode, step_budget: None };
             let lookup = |id: AdtId| prog.adts.get(&id);
             let m = Machine::new(&prog, &cfg, &lookup, 0);
             for ty in int_tys() {
                 let si = m.small_of(ty).unwrap();
+                // One-byte types, tried exhaustively, do not depend on the pointer size or
+                // the byte order: the first target covers them.
+                if ti > 0 && si.size == 1 {
+                    continue;
+                }
                 let vals = samples(si);
                 // The shift amount has its own type.
                 let rtys = [ty, Ty::u32(), Ty::i32(), Ty::u8()];
@@ -102,7 +109,7 @@ fn small_binop_matches_general() {
                             for &b in &rvals {
                                 let (ab, bb) = (m.encode_small(si, a), m.encode_small(ri, b));
                                 let res_ty = if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
-                                    Ty::bool()
+                                    bool_ty
                                 } else {
                                     ty
                                 };
@@ -113,7 +120,7 @@ fn small_binop_matches_general() {
                                 };
                                 match (general, fast) {
                                     (Ok(g), Ok(f)) => {
-                                        let enc = if res_ty == Ty::bool() {
+                                        let enc = if res_ty == bool_ty {
                                             m.bool_bytes(f != 0)
                                         } else {
                                             m.encode_small(si, f)

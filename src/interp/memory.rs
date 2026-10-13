@@ -65,7 +65,7 @@ impl Alloc {
 }
 
 /// Entries of the direct-mapped cache from address to allocation index.
-const CACHE: usize = 256;
+const CACHE: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MemError {

@@ -172,6 +172,8 @@ GM_API_VAR _Thread_local gm_bt *gm_bt_top;
 GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col);
 /* As gm_trap, with a message given as bytes (not NUL-terminated). */
 GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
+/* The trap of a pointer cast to a type of alignment `align` that `addr` lacks. */
+GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col);
 
 /* ---- growable byte buffer --------------------------------------------------- */
 
