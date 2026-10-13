@@ -288,11 +288,6 @@ impl<'a, 's> FnCx<'a, 's> {
             crate::types::ConstKey::Str(s) => tir::ExprKind::Str(Rc::from(&s[..])),
             crate::types::ConstKey::Bytes(_, b) if ty.is_bool() => tir::ExprKind::Bool(b.first() == Some(&1)),
             crate::types::ConstKey::Bytes(_, b) => {
-                let little = self.sema.target.little_endian;
-                let mut b = b.to_vec();
-                if !little {
-                    b.reverse();
-                }
                 let v = if ty.is_signed_integer() {
                     BigInt::from_signed_bytes_le(&b)
                 } else {

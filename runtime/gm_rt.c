@@ -131,7 +131,10 @@ static void gm_wfix(uint8_t *r, uint32_t bits, bool sgn) {
     gm_wput(r, n - 1, gm_wget(r, n - 1, n, bits, sgn));
 }
 
-static bool gm_wbit(const uint8_t *a, uint32_t i) { return ((a[i / 8] >> (i % 8)) & 1) != 0; }
+/* Byte k (counting from the least significant) of a wider-than-128-bit integer. */
+#define gm_wbp(p, k) gm_ibp((p), 24, (k))
+
+static bool gm_wbit(const uint8_t *a, uint32_t i) { return ((*gm_wbp(a, i / 8) >> (i % 8)) & 1) != 0; }
 
 static bool gm_wisneg(const uint8_t *a, uint32_t bits, bool sgn) { return sgn && gm_wbit(a, bits - 1); }
 
@@ -360,7 +363,7 @@ GM_API bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, boo
     uint64_t *buf = gm_wscratch(stack, 2 * GM_WSTACK, 2 * (sz / 8));
     uint8_t *res = (uint8_t *)buf, *base = (uint8_t *)buf + sz;
     memset(res, 0, sz);
-    res[0] = 1;
+    gm_wput(res, 0, 1);
     memcpy(base, a, sz);
     gm_wfix(base, bits, sgn);
     bool ovf = false;
@@ -431,7 +434,19 @@ GM_API void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bo
     gm_wfix(r, bits, sgn);
 }
 
+static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p);
+
+/* The storage size of an integer of at most 128 bits. */
+static size_t gm_isize(uint32_t bits) { return bits <= 8 ? 1 : bits <= 16 ? 2 : bits <= 32 ? 4 : bits <= 64 ? 8 : 16; }
+
+/* The amounts the shift routines are given are unsigned integers of any width: those of at
+ * most 128 bits are ordinary integers, the others wider-than-128-bit ones. */
 GM_API uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits) {
+    if (abits <= 128) {
+        unsigned __int128 v = gm_load_u128(amt, gm_isize(abits));
+        if (abits < 128) v &= ((unsigned __int128)1 << abits) - 1;
+        return v > UINT64_MAX ? UINT64_MAX : (uint64_t)v;
+    }
     size_t n = GM_WORDS(abits);
     for (size_t i = 1; i < n; i++) {
         if (gm_wget(amt, i, n, abits, false) != 0) return UINT64_MAX;
@@ -443,7 +458,13 @@ GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const ch
                                     uint32_t line, uint32_t col) {
     gm_buf m = {0};
     gm_buf_push(&m, "shift amount ", 13);
-    gm_wfmt(&m, amt, abits, false);
+    if (abits <= 128) {
+        gm_type t = {0};
+        t.kind = GM_K_INT, t.bits = abits, t.size = (uint32_t)gm_isize(abits);
+        gm_fmt_int(&m, &t, amt);
+    } else {
+        gm_wfmt(&m, amt, abits, false);
+    }
     gm_buf_push(&m, " too large for ", 15);
     gm_buf_push(&m, ty, strlen(ty));
     gm_trap_bytes(m.data, m.len, file, line, col);
@@ -467,22 +488,23 @@ GM_API int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn) {
 
 GM_API void gm_wmin(uint8_t *r, uint32_t bits, bool sgn) {
     memset(r, 0, GM_WBYTES(bits));
-    if (sgn) r[(bits - 1) / 8] |= (uint8_t)(1u << ((bits - 1) % 8));
+    if (sgn) *gm_wbp(r, (bits - 1) / 8) |= (uint8_t)(1u << ((bits - 1) % 8));
     gm_wfix(r, bits, sgn);
 }
 
 GM_API void gm_wmax(uint8_t *r, uint32_t bits, bool sgn) {
     memset(r, 0xff, GM_WBYTES(bits));
-    if (sgn) r[(bits - 1) / 8] &= (uint8_t)~(1u << ((bits - 1) % 8));
+    if (sgn) *gm_wbp(r, (bits - 1) / 8) &= (uint8_t)~(1u << ((bits - 1) % 8));
     gm_wfix(r, bits, sgn);
 }
 
-/* Byte i of the infinite sign or zero extension of the `bits`-bit integer a. */
-static uint8_t gm_wbyte(const uint8_t *a, uint32_t bits, bool neg, size_t i) {
+/* Byte i (from the least significant) of the infinite sign or zero extension of the
+ * `bits`-bit integer a of `size` bytes. */
+static uint8_t gm_wbyte(const uint8_t *a, size_t size, uint32_t bits, bool neg, size_t i) {
     uint8_t fill = neg ? 0xff : 0;
     size_t lo = i * 8;
     if (lo >= bits) return fill;
-    uint8_t v = a[i];
+    uint8_t v = *gm_ibp(a, size, i);
     if (lo + 8 > bits) {
         unsigned k = (unsigned)(bits - lo);
         uint8_t mask = (uint8_t)((1u << k) - 1);
@@ -493,17 +515,18 @@ static uint8_t gm_wbyte(const uint8_t *a, uint32_t bits, bool neg, size_t i) {
 
 GM_API int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
                     uint32_t abits, bool asgn) {
-    bool neg = asgn && gm_wbit(a, abits - 1);
-    for (size_t i = 0; i < rsize; i++) r[i] = gm_wbyte(a, abits, neg, i);
+    bool neg = asgn && ((*gm_ibp(a, asize, (abits - 1) / 8) >> ((abits - 1) % 8)) & 1);
+    for (size_t i = 0; i < rsize; i++) *gm_ibp(r, rsize, i) = gm_wbyte(a, asize, abits, neg, i);
     /* Wrap: the bits at and above rbits repeat the sign (or are zero). */
-    bool rneg = rsgn && gm_wbit(r, rbits - 1);
+    bool rneg = rsgn && ((*gm_ibp(r, rsize, (rbits - 1) / 8) >> ((rbits - 1) % 8)) & 1);
     for (size_t i = rbits / 8; i < rsize; i++) {
         size_t lo = i * 8;
+        uint8_t *rb = gm_ibp(r, rsize, i);
         if (lo >= rbits) {
-            r[i] = rneg ? 0xff : 0;
+            *rb = rneg ? 0xff : 0;
         } else if (lo + 8 > rbits) {
             uint8_t mask = (uint8_t)((1u << (rbits - lo)) - 1);
-            r[i] = (uint8_t)((r[i] & mask) | (rneg ? (uint8_t)~mask : 0));
+            *rb = (uint8_t)((*rb & mask) | (rneg ? (uint8_t)~mask : 0));
         }
     }
     /* Fits: every bit of the value from rbits (unsigned) or rbits - 1 (signed) up is the sign. */
@@ -513,7 +536,7 @@ GM_API int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const u
     uint8_t want = rsgn && neg ? 0xff : 0;
     for (size_t i = lo / 8; i < total && fits; i++) {
         uint8_t mask = i == lo / 8 ? (uint8_t)(0xffu << (lo % 8)) : 0xff;
-        if ((gm_wbyte(a, abits, neg, i) & mask) != (want & mask)) fits = false;
+        if ((gm_wbyte(a, asize, abits, neg, i) & mask) != (want & mask)) fits = false;
     }
     return (fits ? 1 : 0) | (neg ? 2 : 0);
 }
@@ -571,7 +594,7 @@ GM_API int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x) {
     for (int t = 0; t < 53; t++) {
         if (((m >> t) & 1) == 0) continue;
         int pos = shift + t;
-        if (pos >= 0 && (size_t)pos < sz * 8) r[pos / 8] |= (uint8_t)(1u << (pos % 8));
+        if (pos >= 0 && (size_t)pos < sz * 8) *gm_wbp(r, (size_t)pos / 8) |= (uint8_t)(1u << (pos % 8));
     }
     if (neg) {
         uint64_t stack[GM_WSTACK];
@@ -606,9 +629,9 @@ GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits) {
 GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits) {
     size_t sz = GM_WBYTES(bits);
     for (size_t i = 0; i < sz / 2; i++) {
-        uint8_t x = a[i], y = a[sz - 1 - i];
-        r[i] = y;
-        r[sz - 1 - i] = x;
+        uint8_t x = *gm_wbp(a, i), y = *gm_wbp(a, sz - 1 - i);
+        *gm_wbp(r, i) = y;
+        *gm_wbp(r, sz - 1 - i) = x;
     }
 }
 
@@ -619,7 +642,7 @@ GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn
     uint8_t *tb = (uint8_t *)t;
     memset(tb, 0, sz);
     for (uint32_t i = 0; i < bits; i++) {
-        if (gm_wbit(a, i)) tb[(bits - 1 - i) / 8] |= (uint8_t)(1u << ((bits - 1 - i) % 8));
+        if (gm_wbit(a, i)) *gm_wbp(tb, (bits - 1 - i) / 8) |= (uint8_t)(1u << ((bits - 1 - i) % 8));
     }
     memcpy(r, tb, sz);
     gm_wfix(r, bits, sgn);
@@ -635,7 +658,7 @@ GM_API void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint
     k %= bits;
     for (uint32_t i = 0; i < bits; i++) {
         uint32_t j = (uint32_t)((i + k) % bits);
-        if (gm_wbit(a, i)) tb[j / 8] |= (uint8_t)(1u << (j % 8));
+        if (gm_wbit(a, i)) *gm_wbp(tb, j / 8) |= (uint8_t)(1u << (j % 8));
     }
     memcpy(r, tb, sz);
     gm_wfix(r, bits, sgn);
@@ -713,15 +736,13 @@ static size_t gm_u128_dec(char *buf, unsigned __int128 v) {
     return n;
 }
 
-/* The value of a `bits`-bit integer stored in `size` little-endian bytes at p. */
+/* The value of a `bits`-bit integer stored in `size` bytes at p. */
 static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
     if (t->bits > 128) {
         gm_wfmt(out, p, t->bits, t->is_signed);
         return;
     }
-    unsigned __int128 raw = 0;
-    uint32_t size = t->size;
-    for (uint32_t i = size; i > 0; i--) raw = (raw << 8) | p[i - 1];
+    unsigned __int128 raw = gm_load_u128(p, t->size);
     unsigned bits = t->bits;
     unsigned __int128 mask = bits >= 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
     raw &= mask;
@@ -949,13 +970,8 @@ static void gm_quote_bytes(gm_buf *out, const uint8_t *s, size_t n) {
     gm_fmt_ch(out, '"');
 }
 
-/* Reads an unsigned little-endian integer of n (at most 8) bytes. */
-static uint64_t gm_load_uint(const uint8_t *p, uint32_t n) {
-    uint64_t v = 0;
-    if (n > 8) n = 8;
-    for (uint32_t i = n; i > 0; i--) v = (v << 8) | p[i - 1];
-    return v;
-}
+/* Reads an unsigned integer of n (at most 8) bytes. */
+static uint64_t gm_load_uint(const uint8_t *p, uint32_t n) { return (uint64_t)gm_load_u128(p, n > 8 ? 8 : n); }
 
 static uint64_t gm_load_ptr(const uint8_t *p) {
     uintptr_t v;
@@ -1088,8 +1104,7 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     }
     case GM_K_OPAQUE: gm_fmt_str(out, t->name); break;
     case GM_K_BITS: {
-        unsigned __int128 whole = 0;
-        for (uint32_t i = t->size; i > 0; i--) whole = (whole << 8) | v[i - 1];
+        unsigned __int128 whole = gm_load_u128(v, t->size);
         gm_fmt_str(out, t->name);
         gm_fmt_ch(out, '(');
         bool first = true;
@@ -1107,16 +1122,14 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
             /* Sign-extend signed integers and signed tags from the field's width. */
             bool sign = (ft->kind == GM_K_INT && ft->is_signed) || (ft->kind == GM_K_UNION && ft->tag_signed);
             if (sign && w > 0 && w < 128 && ((raw >> (w - 1)) & 1)) raw |= ~(unsigned __int128)0 << w;
-            uint8_t tmp[16];
-            for (unsigned k = 0; k < sizeof tmp; k++) tmp[k] = (uint8_t)(raw >> (8 * k));
+            uint8_t tmp[16] = {0};
             if (ft->kind == GM_K_UNION) {
                 /* An enum's value is its tag at the tag offset. */
-                uint8_t e[16] = {0};
-                memcpy(e + ft->tag_offset, tmp, ft->tag_size);
-                gm_format(out, ft, e, false);
+                gm_store_u128(tmp + ft->tag_offset, ft->tag_size, raw);
             } else {
-                gm_format(out, ft, tmp, false);
+                gm_store_u128(tmp, ft->size, raw);
             }
+            gm_format(out, ft, tmp, false);
         }
         gm_fmt_ch(out, ')');
         break;
@@ -1157,7 +1170,8 @@ static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsi
     size_t n = t->size;
     uint8_t *m = (uint8_t *)malloc(n ? n : 1);
     if (m == NULL) gm_trap("out of memory", NULL, 0, 0);
-    memcpy(m, p, n);
+    /* Work on the little-endian bytes of the value. */
+    for (size_t i = 0; i < n; i++) m[i] = *gm_ibp(p, n, i);
     unsigned bits = t->bits;
     /* Clear the bits above the width. */
     for (size_t i = 0; i < n; i++) {
@@ -2320,6 +2334,57 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
     sp[11] = (void *)gm_rt_fiber_tramp; /* x30 */
     return sp;
 }
+#elif defined(__s390x__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+/* The saved context is 144 bytes: r6-r14 at 0, f8-f15 at 72. */
+__asm__(
+    ".text\n"
+    ".align 8\n"
+    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    aghi %r15, -144\n"
+    "    stmg %r6, %r14, 0(%r15)\n"
+    "    std %f8, 72(%r15)\n"
+    "    std %f9, 80(%r15)\n"
+    "    std %f10, 88(%r15)\n"
+    "    std %f11, 96(%r15)\n"
+    "    std %f12, 104(%r15)\n"
+    "    std %f13, 112(%r15)\n"
+    "    std %f14, 120(%r15)\n"
+    "    std %f15, 128(%r15)\n"
+    "    stg %r15, 0(%r2)\n"
+    "    lgr %r15, %r3\n"
+    "    lmg %r6, %r14, 0(%r15)\n"
+    "    ld %f8, 72(%r15)\n"
+    "    ld %f9, 80(%r15)\n"
+    "    ld %f10, 88(%r15)\n"
+    "    ld %f11, 96(%r15)\n"
+    "    ld %f12, 104(%r15)\n"
+    "    ld %f13, 112(%r15)\n"
+    "    ld %f14, 120(%r15)\n"
+    "    ld %f15, 128(%r15)\n"
+    "    aghi %r15, 144\n"
+    "    lgr %r2, %r4\n"
+    "    br %r14\n"
+    ".align 8\n"
+    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    lgr %r2, %r6\n"
+    "    basr %r14, %r7\n"
+    "    .short 0\n");
+
+/* The initial context of a fiber whose stack ends at `top`: the 144 saved bytes, and above
+ * them the 160-byte register save area the entry function's frame sits on. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
+    void **sp = (void **)(top - 144 - 160);
+    memset(sp, 0, 144);
+    sp[0] = fb;                         /* r6 */
+    sp[1] = (void *)gm_fiber_entry;     /* r7 */
+    sp[8] = (void *)gm_rt_fiber_tramp;  /* r14 */
+    return sp;
+}
 #else
 static void *gm_rt_switch(void **save, void *to, void *arg) {
     (void)save; (void)to; (void)arg;
@@ -2359,6 +2424,8 @@ static uintptr_t gm_fault_sp(void *uc) {
     return (uintptr_t)u->uc_mcontext.gregs[REG_RSP];
 #elif defined(__linux__) && defined(__aarch64__)
     return (uintptr_t)u->uc_mcontext.sp;
+#elif defined(__linux__) && defined(__s390x__)
+    return (uintptr_t)u->uc_mcontext.gregs[15];
 #elif defined(__APPLE__) && defined(__x86_64__)
     return (uintptr_t)u->uc_mcontext->__ss.__rsp;
 #elif defined(__APPLE__) && defined(__aarch64__)

@@ -12,6 +12,10 @@
 //! whitespace inside one word, and a backslash takes the next character
 //! literally.
 //!
+//! `--target=<triple>` (see [`Toolchain::for_target`]) picks a cross compiler for a
+//! target triple, and `GAMMA_RUNNER` ([`runner_from_env`]) names the emulator that
+//! runs the executables such a compiler builds.
+//!
 //! When any of them is set, the target is asked of the compiler itself
 //! ([`Toolchain::target`]), so a cross compiler yields layouts for the machine
 //! it compiles for rather than the one `gamma` runs on.
@@ -60,6 +64,75 @@ impl Toolchain {
             t.ldflags = split_words(f).map_err(|e| format!("cannot read LDFLAGS: {}", e))?;
         }
         Ok(t)
+    }
+
+    /// The toolchain for building for the target triple `triple`
+    /// (`--target=s390x-linux-gnu`), from the environment.
+    pub fn for_target(triple: &str) -> Result<Toolchain, String> {
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let on_path = |prog: &str| {
+            std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
+        };
+        Toolchain::for_triple(
+            triple,
+            var("CC").as_deref(),
+            var("CFLAGS").as_deref(),
+            var("LDFLAGS").as_deref(),
+            &on_path,
+        )
+    }
+
+    /// The toolchain for `triple` given the values of `CC`, `CFLAGS` and `LDFLAGS`
+    /// and a test for whether a program is on `PATH`:
+    ///
+    /// - With `CC` unset, the compiler is `<triple>-gcc` if that is on `PATH`, and
+    ///   otherwise `clang --target=<triple>` if `clang` is.
+    /// - With `CC` set, it is used as written, except that `--target=<triple>` is
+    ///   added when it is clang (`-target <triple>` for `zig cc`) and names no target
+    ///   itself. A gcc must already be the cross compiler for the triple.
+    ///
+    /// Whether the resulting compiler really produces code for `triple` is checked
+    /// by [`Toolchain::target_for`].
+    pub fn for_triple(
+        triple: &str,
+        cc: Option<&str>,
+        cflags: Option<&str>,
+        ldflags: Option<&str>,
+        on_path: &dyn Fn(&str) -> bool,
+    ) -> Result<Toolchain, String> {
+        if triple.is_empty() || triple.contains(char::is_whitespace) {
+            return Err(format!("`{}` is not a target triple (such as `aarch64-linux-gnu`)", triple));
+        }
+        match cc {
+            Some(cc) => {
+                let mut t = Toolchain::from_vars(Some(cc), cflags, ldflags)?;
+                let prog =
+                    std::path::Path::new(&t.cc[0]).file_name().map_or(String::new(), |n| n.to_string_lossy().into());
+                let names_target = t.cc.iter().any(|w| w == "-target" || w.starts_with("--target"));
+                if !names_target {
+                    if prog.contains("clang") {
+                        t.cc.push(format!("--target={}", triple));
+                    } else if prog == "zig" && t.cc.get(1).is_some_and(|w| w == "cc" || w == "c++") {
+                        t.cc.extend(["-target".to_string(), triple.to_string()]);
+                    }
+                }
+                Ok(t)
+            }
+            None => {
+                let mut t = Toolchain::from_vars(None, cflags, ldflags)?;
+                let gcc = format!("{}-gcc", triple);
+                if on_path(&gcc) {
+                    t.cc = vec![gcc];
+                } else if on_path("clang") {
+                    t.cc = vec!["clang".into(), format!("--target={}", triple)];
+                } else {
+                    return Err(format!(
+                        "no C compiler for the target `{triple}`: `{triple}-gcc` and `clang` are not on PATH; install a cross compiler or set CC"
+                    ));
+                }
+                Ok(t)
+            }
+        }
     }
 
     /// The toolchain of a Safe build (§18.7), which compiles with Fil-C: as
@@ -113,6 +186,21 @@ impl Toolchain {
         if self.is_default() {
             return Ok(Target::host());
         }
+        let macros = self.macros()?;
+        target_from_macros(&macros).map_err(|e| format!("the C compiler `{}` {}", self.display(), e))
+    }
+
+    /// As [`Toolchain::target`], and checks that the compiler produces code for the
+    /// target triple `triple` (its architecture, operating system and byte order).
+    pub fn target_for(&self, triple: &str) -> Result<Target, String> {
+        let macros = self.macros()?;
+        let target = target_from_macros(&macros).map_err(|e| format!("the C compiler `{}` {}", self.display(), e))?;
+        check_triple(triple, &macros).map_err(|e| format!("the C compiler `{}` {}", self.display(), e))?;
+        Ok(target)
+    }
+
+    /// The compiler's predefined macros (`cc -dM -E`).
+    fn macros(&self) -> Result<String, String> {
         let out = self
             .command::<&str>(&[])
             .args(["-dM", "-E", "-x", "c", "-"])
@@ -126,9 +214,72 @@ impl Toolchain {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        target_from_macros(&String::from_utf8_lossy(&out.stdout))
-            .map_err(|e| format!("the C compiler `{}` {}", self.display(), e))
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// The command prefix from `GAMMA_RUNNER` that runs executables built for another
+/// machine (`qemu-s390x -L /usr/s390x-linux-gnu`), empty when it is unset.
+pub fn runner_from_env() -> Result<Vec<String>, String> {
+    match std::env::var("GAMMA_RUNNER") {
+        Ok(v) => split_words(&v).map_err(|e| format!("cannot read GAMMA_RUNNER: {}", e)),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+/// Checks that the compiler whose predefined macros are `macros` produces code for
+/// the target triple `triple`. The error completes the sentence "the C compiler … ".
+pub fn check_triple(triple: &str, macros: &str) -> Result<(), String> {
+    let mut parts = triple.split('-');
+    let arch = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
+    // The architecture's own macros, and whether it is big-endian.
+    let (arch_macro, big): (&[&str], bool) = match arch {
+        "x86_64" | "amd64" | "x86_64h" => (&["__x86_64__"], false),
+        "aarch64" | "arm64" | "arm64e" => (&["__aarch64__"], false),
+        "aarch64_be" | "arm64_be" => (&["__aarch64__"], true),
+        "riscv64" => (&["__riscv"], false),
+        "s390x" => (&["__s390x__"], true),
+        "powerpc64" | "ppc64" => (&["__powerpc64__", "__PPC64__"], true),
+        "powerpc64le" | "ppc64le" => (&["__powerpc64__", "__PPC64__"], false),
+        "mips64" => (&["__mips64", "__mips64__"], true),
+        "mips64el" => (&["__mips64", "__mips64__"], false),
+        "sparc64" => (&["__sparc__"], true),
+        "wasm32" => (&["__wasm32__"], false),
+        "loongarch64" => (&["__loongarch64"], false),
+        _ => return Err(format!("cannot be checked against `{}`: unknown architecture `{}`", triple, arch)),
+    };
+    let defined =
+        |m: &str| macros.lines().any(|l| l.strip_prefix("#define ").and_then(|l| l.split(' ').next()) == Some(m));
+    if !arch_macro.iter().any(|m| defined(m)) {
+        return Err(format!("does not target the architecture of `{}` (it does not define {})", triple, arch_macro[0]));
+    }
+    let target = target_from_macros(macros)?;
+    if big == target.little_endian {
+        return Err(format!(
+            "targets a {}-endian machine, but `{}` is {}-endian",
+            if target.little_endian { "little" } else { "big" },
+            triple,
+            if big { "big" } else { "little" }
+        ));
+    }
+    let os_macro = if rest.iter().any(|c| c.starts_with("linux")) {
+        Some(("linux", "__linux__"))
+    } else if rest.iter().any(|c| c.starts_with("darwin") || *c == "apple") {
+        Some(("darwin", "__APPLE__"))
+    } else if rest.iter().any(|c| c.starts_with("freebsd")) {
+        Some(("freebsd", "__FreeBSD__"))
+    } else if rest.iter().any(|c| c.starts_with("windows") || *c == "mingw32") {
+        Some(("windows", "_WIN32"))
+    } else {
+        None
+    };
+    if let Some((os, m)) = os_macro
+        && !defined(m)
+    {
+        return Err(format!("does not target {}, which `{}` names", os, triple));
+    }
+    Ok(())
 }
 
 /// The target described by a C compiler's predefined macros (the output of
@@ -162,6 +313,8 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
         "Aarch64"
     } else if has("__riscv") && num("__riscv_xlen") == Some(64) {
         "Riscv64"
+    } else if has("__s390x__") {
+        "S390x"
     } else if has("__wasm32__") {
         "Wasm32"
     } else {
@@ -180,7 +333,15 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
     };
     // `__int128` is 16-byte aligned everywhere it exists except on s390x.
     let int128_align = if has("__s390x__") { 8 } else { 16 };
-    Ok(Target { ptr_bytes, little_endian, int128_align, os, arch, filc: has("__FILC__") })
+    Ok(Target {
+        ptr_bytes,
+        little_endian,
+        int128_align,
+        os,
+        arch,
+        filc: has("__FILC__"),
+        f16: has("__FLT16_MANT_DIG__"),
+    })
 }
 
 /// Splits `s` into words as a shell would, without expansions: at unquoted
@@ -273,13 +434,29 @@ mod tests {
             .unwrap();
         assert_eq!(
             a,
-            Target { ptr_bytes: 8, little_endian: true, int128_align: 16, os: "MacOS", arch: "Aarch64", filc: false }
+            Target {
+                ptr_bytes: 8,
+                little_endian: true,
+                int128_align: 16,
+                os: "MacOS",
+                arch: "Aarch64",
+                filc: false,
+                f16: false
+            }
         );
         let s =
             t(&["__SIZEOF_POINTER__ 8", "__BYTE_ORDER__ __ORDER_BIG_ENDIAN__", "__s390x__ 1", "__linux__ 1"]).unwrap();
         assert_eq!(
             s,
-            Target { ptr_bytes: 8, little_endian: false, int128_align: 8, os: "Linux", arch: "Other", filc: false }
+            Target {
+                ptr_bytes: 8,
+                little_endian: false,
+                int128_align: 8,
+                os: "Linux",
+                arch: "S390x",
+                filc: false,
+                f16: false
+            }
         );
         let r = t(&["__SIZEOF_POINTER__ 8", "__riscv 1", "__riscv_xlen 64", "__linux__ 1"]).unwrap();
         assert_eq!((r.arch, r.os), ("Riscv64", "Linux"));
@@ -287,6 +464,51 @@ mod tests {
         assert_eq!((w.ptr_bytes, w.arch, w.os), (4, "Wasm32", "Freestanding"));
         assert!(target_from_macros(&defs(&["__SIZEOF_POINTER__ 4", "__i386__ 1"])).unwrap_err().contains("__int128"));
         assert!(target_from_macros(&defs(&["__x86_64__ 1"])).is_err());
+    }
+
+    #[test]
+    fn selects_a_compiler_for_a_triple() {
+        let t = "s390x-linux-gnu";
+        let sel = |cc: Option<&str>, path: &[&str]| {
+            Toolchain::for_triple(t, cc, Some("-O1"), Some("-static"), &|p| path.contains(&p))
+        };
+        // CC unset: the cross gcc, then clang.
+        assert_eq!(sel(None, &["s390x-linux-gnu-gcc", "clang"]).unwrap().cc, ["s390x-linux-gnu-gcc"]);
+        let c = sel(None, &["clang"]).unwrap();
+        assert_eq!(c.cc, ["clang", "--target=s390x-linux-gnu"]);
+        assert_eq!((c.cflags, c.ldflags), (vec!["-O1".to_string()], vec!["-static".to_string()]));
+        assert!(sel(None, &["gcc"]).unwrap_err().contains("s390x-linux-gnu-gcc"));
+        // CC set: --target is added to clang only, and only if it names none.
+        assert_eq!(sel(Some("clang-18"), &[]).unwrap().cc, ["clang-18", "--target=s390x-linux-gnu"]);
+        assert_eq!(
+            sel(Some("/usr/bin/clang -fPIC"), &[]).unwrap().cc,
+            ["/usr/bin/clang", "-fPIC", "--target=s390x-linux-gnu"]
+        );
+        assert_eq!(
+            sel(Some("clang --target=aarch64-linux-gnu"), &[]).unwrap().cc,
+            ["clang", "--target=aarch64-linux-gnu"]
+        );
+        assert_eq!(sel(Some("zig cc"), &[]).unwrap().cc, ["zig", "cc", "-target", "s390x-linux-gnu"]);
+        assert_eq!(sel(Some("s390x-linux-gnu-gcc"), &[]).unwrap().cc, ["s390x-linux-gnu-gcc"]);
+        assert_eq!(sel(Some("gcc"), &[]).unwrap().cc, ["gcc"]);
+        assert!(Toolchain::for_triple("", None, None, None, &|_| true).is_err());
+    }
+
+    #[test]
+    fn checks_the_compiler_against_a_triple() {
+        let m = |extra: &[&str]| {
+            defs(&[&["__SIZEOF_INT128__ 16", "__SIZEOF_POINTER__ 8", "__ORDER_BIG_ENDIAN__ 4321"][..], extra].concat())
+        };
+        let s390x = m(&["__BYTE_ORDER__ 4321", "__s390x__ 1", "__linux__ 1"]);
+        assert!(check_triple("s390x-linux-gnu", &s390x).is_ok());
+        assert!(check_triple("s390x-unknown-linux-gnu", &s390x).is_ok());
+        assert!(check_triple("aarch64-linux-gnu", &s390x).unwrap_err().contains("__aarch64__"));
+        assert!(check_triple("s390x-apple-darwin", &s390x).unwrap_err().contains("darwin"));
+        assert!(check_triple("s390x-linux-gnu", &m(&["__BYTE_ORDER__ 1234", "__s390x__ 1", "__linux__ 1"])).is_err());
+        let a64 = m(&["__BYTE_ORDER__ 1234", "__aarch64__ 1", "__linux__ 1"]);
+        assert!(check_triple("aarch64-linux-gnu", &a64).is_ok());
+        assert!(check_triple("aarch64_be-linux-gnu", &a64).unwrap_err().contains("little-endian"));
+        assert!(check_triple("vax-linux", &a64).unwrap_err().contains("unknown architecture"));
     }
 
     /// The host compiler, asked through a non-default toolchain, reports the host.

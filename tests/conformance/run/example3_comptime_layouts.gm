@@ -107,7 +107,7 @@ when target.ptr_bits is 64 {
 main :: fn() \ {Out} {
     print("crc32(\"123456789\") = {}\n", crc32("123456789"))
     print("crc32 empty = {}\n", crc32(""))
-    print("endian {} word {}\n", (ENDIAN, WORD_BYTES))
+    print("endian {} word {}\n", (ENDIAN.len >= 3, WORD_BYTES))
     print("sine: {} {} {} {} {}\n", (isin(0), isin(16), isin(32), isin(64), isin(96)))
     print("negative index: {} {}\n", (isin(-32), isin(-1)))
     print("table ends: {} {} {}\n", (SINE_Q[0], SINE_Q[1], SINE_Q[QUARTER]))

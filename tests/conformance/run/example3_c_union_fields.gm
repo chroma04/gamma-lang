@@ -21,6 +21,13 @@ PMsg :: #packed struct {
     tail: u8
 }
 
+// The most significant byte of `h[1]` in memory.
+when target.endian is .Little {
+    HI :: 7
+} else {
+    HI :: 4
+}
+
 OFF :: @offset_of(Msg, tail)
 Buf :: struct { raw: [OFF]u8 }
 
@@ -29,7 +36,7 @@ main :: fn() \ {Out} {
     print("{}\n", m.payload.i is 0x3FF0000000000000)
     m.payload.v = Vec2(x: 1.0, y: 2.0)
     print("{} {}\n", (m.payload.h[0], m.payload.h[1]))
-    m.payload.b[7] = 0x40
+    m.payload.b[HI] = 0x40
     print("{}\n", m.payload.h[1])
     p := PMsg(kind: 1, payload: Value(i: -1), tail: 2)
     print("{} {} {}\n", (@size_of(Msg), @size_of(PMsg), @size_of(Buf)))

@@ -55,6 +55,37 @@
 /* The assembler name of C symbol `s` (macOS prefixes an underscore). */
 #define GM_SYM(s) GM_XSTR(__USER_LABEL_PREFIX__) s
 
+/* ---- byte order ------------------------------------------------------------
+ *
+ * Integers of up to 128 bits are stored as one number in the target's byte order; wider
+ * ones as 64-bit words, least significant first, each in the target's byte order. Code
+ * that addresses the bytes of an integer goes through gm_ibp, which names the i-th least
+ * significant byte, so it does not depend on the order. */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define GM_BIG_ENDIAN 1
+#else
+#define GM_BIG_ENDIAN 0
+#endif
+
+/* The i-th least significant byte of the integer of `size` bytes at p. */
+static inline uint8_t *gm_ibp(const void *p, size_t size, size_t i) {
+    uint8_t *b = (uint8_t *)p;
+    if (!GM_BIG_ENDIAN) return b + i;
+    return size <= 16 ? b + (size - 1 - i) : b + (i & ~(size_t)7) + 7 - (i & 7);
+}
+
+/* The unsigned integer of `size` (at most 16) bytes at p. */
+static inline unsigned __int128 gm_load_u128(const void *p, size_t size) {
+    unsigned __int128 v = 0;
+    for (size_t i = size; i > 0; i--) v = (v << 8) | *gm_ibp(p, size, i - 1);
+    return v;
+}
+
+/* Stores the low `size` (at most 16) bytes of v at p. */
+static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
+    for (size_t i = 0; i < size; i++) *gm_ibp(p, size, i) = (uint8_t)(v >> (8 * i));
+}
+
 /* ---- memory helpers ------------------------------------------------------ */
 
 /* GM_LD loads a value of C type T from address p (any alignment); GM_ST stores the value
@@ -184,8 +215,8 @@ GM_API void gm_buf_free(gm_buf *b);
 /* ---- integers wider than 128 bits ------------------------------------------------
  *
  * An integer of `bits` bits (any width of at least 1 bit works) occupies
- * GM_WBYTES(bits) bytes: little-endian two's complement in whole 64-bit words, as the
- * Gamma layout has it. The bits above `bits` are padding. Operands are read as if the
+ * GM_WBYTES(bits) bytes: two's complement in whole 64-bit words, least significant first,
+ * each in the target's byte order, as the Gamma layout has it. The bits above `bits` are padding. Operands are read as if the
  * padding were the sign extension (`sgn`) or zero, and results are written that way, so
  * the routines accept any padding and always leave it normalized.
  *
@@ -245,7 +276,7 @@ GM_API void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn);
 /* ---- type descriptors (for formatting, spec §21.6.1) -------------------------- */
 
 typedef enum {
-    GM_K_INT,      /* bits, is_signed; storage `size` bytes, little endian */
+    GM_K_INT,      /* bits, is_signed; storage `size` bytes, target byte order */
     GM_K_FLOAT,    /* bits: 16, 32 or 64 */
     GM_K_BOOL,
     GM_K_PTR,      /* any pointer or function pointer: printed as 0x<hex> */

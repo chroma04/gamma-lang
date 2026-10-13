@@ -91,11 +91,8 @@ fn generate_entries(
     opts: &Options,
 ) -> CResult<Generated> {
     let target = prog.target.clone();
-    // The runtime and the generated code read integers as little-endian bytes.
-    if !target.little_endian {
-        return unsupported(Span::DUMMY, "big-endian targets");
-    }
     let lookup = |id: AdtId| prog.adts.get(&id);
+    let has_f16 = target.f16;
     let layouts = Layouts::new(target, &lookup);
     let mut ty = Types::new(prog, &layouts);
     ty.debug_names = opts.debug_info;
@@ -161,6 +158,12 @@ fn generate_entries(
     out.push_str(&consts);
     out.push_str(&g.helpers.bodies);
     out.push_str(&g.bodies);
+    if !has_f16 && out.contains("_Float16") {
+        return unsupported(
+            Span::DUMMY,
+            "`f16` needs a C compiler with `_Float16`, which this target's compiler lacks",
+        );
+    }
     // An exported symbol must not be a name the generated program uses itself.
     if !prog.exports.is_empty() {
         let whole = format!("{}\n{}\n{}", RT_H, RT_C, out);

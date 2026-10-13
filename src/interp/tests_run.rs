@@ -646,6 +646,7 @@ fn big_endian_32_bit_target() {
         os: "Linux",
         arch: "Other",
         filc: false,
+        f16: true,
     };
     let c = RunConfig { target, mode: Mode::Checked, step_budget: None };
     let prog = Program::default();

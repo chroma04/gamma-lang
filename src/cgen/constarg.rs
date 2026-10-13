@@ -36,24 +36,32 @@ impl Gen<'_> {
     /// Writes the value of `e` at `off` in `v`; false if `e` is not built from literals.
     fn const_into(&mut self, e: &Expr, off: usize, v: &mut ConstValue) -> bool {
         let size = self.ty.size(e.ty) as usize;
+        let little = self.ty.lay.target.little_endian;
         match &e.kind {
             ExprKind::Int(n) => {
                 let fill = if n.sign() == num_bigint::Sign::Minus { 0xFF } else { 0 };
                 let mut b = n.to_signed_bytes_le();
                 b.resize(size.max(b.len()), fill);
-                v.bytes[off..off + size].copy_from_slice(&b[..size]);
+                v.bytes[off..off + size].copy_from_slice(&crate::layout::int_bytes_swap_order(&b[..size], little));
             }
             ExprKind::Bool(b) => v.bytes[off] = *b as u8,
             ExprKind::Float(x) => match e.ty.kind() {
-                TyKind::Float(FloatTy::F32) => v.bytes[off..off + 4].copy_from_slice(&(*x as f32).to_le_bytes()),
-                TyKind::Float(FloatTy::F64) => v.bytes[off..off + 8].copy_from_slice(&x.to_le_bytes()),
+                TyKind::Float(FloatTy::F32) => {
+                    let b = if little { (*x as f32).to_le_bytes() } else { (*x as f32).to_be_bytes() };
+                    v.bytes[off..off + 4].copy_from_slice(&b)
+                }
+                TyKind::Float(FloatTy::F64) => {
+                    let b = if little { x.to_le_bytes() } else { x.to_be_bytes() };
+                    v.bytes[off..off + 8].copy_from_slice(&b)
+                }
                 _ => return false,
             },
             ExprKind::ConstBytes(b) if b.len() == size => v.bytes[off..off + size].copy_from_slice(b),
             ExprKind::Str(s) => {
                 let p = self.ty.lay.target.ptr_bytes as usize;
                 v.relocs.push(Reloc { offset: off as u64, target: StaticData::Bytes(s.clone()), addend: 0 });
-                v.bytes[off + p..off + 2 * p].copy_from_slice(&(s.len() as u64).to_le_bytes()[..p]);
+                let len = crate::layout::int_bytes_swap_order(&(s.len() as u64).to_le_bytes()[..p], little);
+                v.bytes[off + p..off + 2 * p].copy_from_slice(&len);
             }
             ExprKind::CStr(s) => {
                 v.relocs.push(Reloc { offset: off as u64, target: StaticData::Bytes(s.clone()), addend: 0 });

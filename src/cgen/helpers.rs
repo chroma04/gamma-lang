@@ -234,11 +234,11 @@ impl Helpers {
                     b,
                     "    double x = (double)GM_LD({c}, v); if (x == 0) x = 0; uint64_t bits; memcpy(&bits, &x, 8);"
                 );
-                b.push_str("    return gm_mix(h, &bits, 8);\n");
+                b.push_str("    return gm_mix64(h, bits);\n");
             }
             Repr::Bool => b.push_str("    uint8_t x = v[0] != 0; return gm_mix(h, &x, 1);\n"),
             Repr::Ptr => {
-                b.push_str("    uint64_t x = (uint64_t)(uintptr_t)GM_LD(void *, v); return gm_mix(h, &x, 8);\n");
+                b.push_str("    uint64_t x = (uint64_t)(uintptr_t)GM_LD(void *, v); return gm_mix64(h, x);\n");
             }
             _ => match t.kind() {
                 TyKind::Tuple { elems, .. } => {
@@ -262,7 +262,7 @@ impl Helpers {
                     let esz = ty.size(*elem);
                     let _ =
                         writeln!(b, "    uint64_t n = GM_LD(uintptr_t, v + {p}); const uint8_t *d = GM_LD(void *, v);");
-                    b.push_str("    h = gm_mix(h, &n, 8);\n");
+                    b.push_str("    h = gm_mix64(h, n);\n");
                     let _ =
                         writeln!(b, "    for (uint64_t i = 0; i < n; i++) h = {f}(d + i * {esz}, h);\n    return h;");
                 }
@@ -299,7 +299,7 @@ impl Helpers {
                         let _ = writeln!(b, "    {tc} tg = GM_LD({tc}, v + {});", offs[0]);
                         for (i, var) in variants.iter().enumerate() {
                             let _ = writeln!(b, "    if (tg == ({tc}){}) {{", var.tag);
-                            let _ = writeln!(b, "        uint64_t k = {i}; h = gm_mix(h, &k, 8);");
+                            let _ = writeln!(b, "        uint64_t k = {i}; h = gm_mix64(h, k);");
                             if let Some(pt) = var.payload {
                                 let f = self.hash_fn(ty, pt);
                                 let _ = writeln!(b, "        h = {f}(v + {}, h);", offs[1]);
@@ -323,6 +323,11 @@ pub const SUPPORT: &str = r#"
 static uint64_t gm_mix(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p;
     for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+/* Mixes the eight little-endian bytes of x, whatever the byte order of the machine. */
+static uint64_t gm_mix64(uint64_t h, uint64_t x) {
+    for (int i = 0; i < 8; i++) { h ^= (uint8_t)(x >> (8 * i)); h *= 0x100000001b3ULL; }
     return h;
 }
 /* Mixes the minimal two's-complement little-endian bytes of v (as BigInt::to_signed_bytes_le). */

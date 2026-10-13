@@ -360,7 +360,7 @@ when target.os is .Linux {
 - `when` may appear at top level, among the fields of a `struct` body or the variants of a `union` body, and as a statement (§8.9).
 - A `when` condition may not depend on a type parameter of an enclosing generic (§16.7).
 
-The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, …), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.Wasm32`, …), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
+The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, …), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, …), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
 
 ### 3.7 The entry point
 
@@ -500,7 +500,7 @@ Types are compile-time values of type `type`. A type expression may appear where
 
 `uN` holds the integers 0 … 2ᴺ−1, `iN` holds −2ᴺ⁻¹ … 2ᴺ⁻¹−1, for 1 ≤ N ≤ 65535. Signed integers are two's complement. `usize` and `isize` have the target's pointer width.
 
-**Storage.** An integer of width N occupies the smallest of 1, 2, 4, 8, 16 bytes that holds N bits; above 128 bits it occupies ⌈N/64⌉ × 8 bytes. Alignment equals the size up to 8 bytes; 16-byte integers have the alignment the target C ABI gives `__int128` (or 16 if none); wider integers have alignment 8. Byte order is the target's. The bits above N in the storage are **padding**: they have unspecified content, and loads ignore them. There is no implicit bit-packing of integers in arrays or ordinary structs; use `#bits` structs (§5.10.5) for that.
+**Storage.** An integer of width N occupies the smallest of 1, 2, 4, 8, 16 bytes that holds N bits; above 128 bits it occupies ⌈N/64⌉ × 8 bytes. Alignment equals the size up to 8 bytes; 16-byte integers have the alignment the target C ABI gives `__int128` (or 16 if none); wider integers have alignment 8. Byte order is the target's: an integer of up to 128 bits is stored as one number in that order, and a wider one as a sequence of 64-bit words, least significant word first, each word in that order. The bits above N in the storage are **padding**: they have unspecified content, and loads ignore them. There is no implicit bit-packing of integers in arrays or ordinary structs; use `#bits` structs (§5.10.5) for that.
 
 ### 5.3 Floating-point types
 

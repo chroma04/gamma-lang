@@ -31,6 +31,23 @@ pub struct Target {
     /// pointer travels as an integer: the C back end keeps pointers as C pointers, and
     /// Safe builds (§18.7) require it.
     pub filc: bool,
+    /// The C compiler has the `_Float16` type, which the C back end uses for `f16`
+    /// (GCC lacks it on s390x and some other targets).
+    pub f16: bool,
+}
+
+/// Converts the bytes of an integer between the target's byte order and little-endian
+/// (the conversion is its own inverse). An integer of up to 128 bits is stored as one
+/// number in the target's byte order; a wider one as 64-bit words, least significant
+/// first, each in the target's byte order (§5.1).
+pub fn int_bytes_swap_order(bytes: &[u8], little: bool) -> Vec<u8> {
+    if little {
+        bytes.to_vec()
+    } else if bytes.len() <= 16 {
+        bytes.iter().rev().copied().collect()
+    } else {
+        bytes.chunks(8).flat_map(|w| w.iter().rev().copied().collect::<Vec<u8>>()).collect()
+    }
 }
 
 impl Default for Target {
@@ -63,12 +80,15 @@ impl Target {
                 "Aarch64"
             } else if cfg!(target_arch = "riscv64") {
                 "Riscv64"
+            } else if cfg!(target_arch = "s390x") {
+                "S390x"
             } else if cfg!(target_arch = "wasm32") {
                 "Wasm32"
             } else {
                 "Other"
             },
             filc: false,
+            f16: true,
         }
     }
 

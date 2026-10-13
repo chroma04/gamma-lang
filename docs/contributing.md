@@ -64,7 +64,9 @@ main :: fn() {
 | --- | --- |
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
-| `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, …) |
+| `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, `s390x`, …) |
+| `//! endian: little` | run the test only on targets of that byte order (`big`), for tests that show the layout of values in memory |
+| `//! needs: f16` | leave the test out of the C lanes where the target's C compiler has no `_Float16` |
 | `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`; `safe` tests need Fil-C and are skipped without it) |
 | `//! safe: skip <reason>` | leave the test out of the Safe lane (below), because its behavior differs in Safe builds by design |
 | `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
@@ -141,6 +143,18 @@ The suite also runs with a cross compiler, when the machine can run its output
 ```sh
 CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance --test runtime
 ```
+
+Without binfmt, `GAMMA_RUNNER` names the emulator that starts the executables, and
+a big-endian target works the same way (CI runs it on s390x):
+
+```sh
+sudo apt-get install gcc-s390x-linux-gnu qemu-user
+GAMMA_RUNNER="qemu-s390x -L /usr/s390x-linux-gnu" CC=s390x-linux-gnu-gcc CFLAGS=-static \
+    cargo test --release --test conformance --test runtime
+```
+
+Write tests so that they print the same on both byte orders: use `target.endian`
+in a `when` where a program inspects its own memory, or mark the test `//! endian:`.
 
 `tests/cross.rs` checks the toolchain variables and target detection; most of it
 needs `clang`.

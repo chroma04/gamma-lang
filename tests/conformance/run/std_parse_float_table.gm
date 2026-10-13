@@ -1,3 +1,4 @@
+//! needs: f16
 // std/str: parse_float is correctly rounded. Every row is a decimal string and the bits
 // of the float nearest to it (ties to even) in f64, f32 and f16; the rows cover the
 // literature's hard cases, exact halfway points between neighbouring floats of each
