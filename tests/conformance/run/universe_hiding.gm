@@ -11,7 +11,9 @@ shadow_locals :: fn() -> u32 {
     now := 10u32
     write_out := 20u32
     exit := 30u32
-    return now + write_out + exit
+    // A local may reuse a reserved type name, hiding the type for its scope.
+    u1 := 4u32
+    return now + write_out + exit + u1
 }
 
 main :: fn() \ {Out, Alloc} {

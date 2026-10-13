@@ -454,7 +454,7 @@ The statement means `if P := e { rest of the block } else { d }`. A pattern bind
 Scopes nest: the universe scope (predeclared names, §21.1) contains each module's top-level scope, which contains function bodies, which contain blocks.
 
 - A local binding is in scope from the end of its declaration to the end of the enclosing block. A binding's own initializer cannot refer to it.
-- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse names declared at top level, imported module names, and predeclared names other than the reserved type names (§21.1); the local hides them for its scope. A name that hides a predeclared one hides it completely: the effect operations of §21.1 (`current`, `write_out`, `yield`, …) are ordinary predeclared function names, so a program may declare its own `current` or bind a local `now` (the operation stays reachable as `Alloc.current`, `Clock.now`).
+- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse names declared at top level, imported module names and predeclared names, the reserved type names of §21.1 included (`u1 := rand()` is a local named `u1`); the local hides them for its scope, so inside it the name no longer denotes the type. A name that hides a predeclared one hides it completely: the effect operations of §21.1 (`current`, `write_out`, `yield`, …) are ordinary predeclared function names, so a program may declare its own `current` or bind a local `now` (the operation stays reachable as `Alloc.current`, `Clock.now`).
 - Function literals and handler literals are part of their enclosing function for this rule.
 - Top-level names in one module must be distinct, across all files of the module.
 - `_` never introduces a binding and may be used any number of times.
@@ -2422,7 +2422,7 @@ The core library is the part of the standard library that the language definitio
 
 ### 21.1 The universe scope
 
-These names are predeclared in every module, without import. The type names in the first row are reserved and may not be redeclared anywhere. Every other name, including the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
+These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may still reuse them (a random sample named `u1`), hiding the type for their scope (§4.6). Every other name, including the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
 
 | Category | Names |
 | --- | --- |
