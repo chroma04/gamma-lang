@@ -367,6 +367,42 @@ pub reversed :: fn(T: type, xs: []const T) \ {Yield(T)} {
     }
 }
 
+/// Pairs of the elements of `xs` and `ys` at the same index, up to the shorter length.
+pub zip :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))} {
+    n := if xs.len < ys.len { xs.len } else { ys.len }
+    i: usize = 0
+    while i < n {
+        yield((xs[i], ys[i]))
+        i += 1
+    }
+}
+
+/// The values the iterator `it` yields, in a new list: `words := try collect(str.fields(line))`.
+pub collect :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc} {
+    l := list(T)
+    errdefer l.deinit()
+    for x in it() { try l.push(x) }
+    return l
+}
+
+/// The number of values the iterator `it` yields.
+pub count :: fn(T: type, it: fn() \ {Yield(T)}) -> usize {
+    n: usize = 0
+    for _ in it() { n += 1 }
+    return n
+}
+
+/// The value the iterator `it` yields at index `n` (counting from 0), or `null` if it
+/// yields fewer; the iterator is stopped there.
+pub nth :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T {
+    i: usize = 0
+    for x in it() {
+        if i is n { return x }
+        i += 1
+    }
+    return null
+}
+
 /// The bytes of a string.
 pub bytes :: fn(s: string) \ {Yield(u8)} {
     for b in s { yield(b) }

@@ -1693,7 +1693,20 @@ while x := ca.next() {
 
 A general iterator can be turned into a pull-style generator by running it on a fiber (§14); a library type such as `Generator(T)` can package this (it is not part of the core library).
 
-### 13.5 Performance
+### 13.5 Iterators as arguments
+
+A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() \ {Yield(T)}` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) is passed as the function literal `fn() => f(a1, …, an)`: the callee calls it to run the iterator, and the call and its arguments are evaluated each time it does. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
+
+```
+words := try collect(str.fields(line))       // a List(string)
+third := nth(str.split(csv, ","), 2)         // ?string
+n := count(runes(text))
+names.collect(m.keys())                      // List.collect appends
+```
+
+`collect`, `count` and `nth` (§21.4) take iterator parameters; a function of the program can too. Lockstep iteration over two slices is `zip` (§21.4); over two iterators it needs cursors or fibers (§13.4).
+
+### 13.6 Performance
 
 *Implementation note (non-normative):* when the iterator's body is visible to the compiler, `for` compiles to the same loop as hand-written index code, because the handler is known statically and the `yield` clause is inlined. The standard iterators are `#inline`. See Appendix D.
 
@@ -2482,9 +2495,14 @@ enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))}
 reversed   :: fn(T: type, xs: []const T) \ {Yield(T)}
 bytes      :: fn(s: string) \ {Yield(u8)}
 runes      :: fn(s: string) \ {Yield(rune)}
+zip        :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))}
+
+collect    :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc}
+count      :: fn(T: type, it: fn() \ {Yield(T)}) -> usize
+nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 ```
 
-`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. All are `#inline`.
+`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
 ### 21.5 Containers (summary)
 
