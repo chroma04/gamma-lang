@@ -708,6 +708,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
 - a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type). If the target is `?T` or `E!T` (possibly nested), the variable becomes `T`, the type that the wrapping coercion starts from;
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
+- a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
 Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
@@ -1490,6 +1491,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 - A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::` to a local, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame. A handler literal cannot be a top-level declaration; a handler that needs no frame is a handler declaration (§12.6).
 - Effects performed by a clause body are handled by the handlers in scope **where the literal is written**. They count as effects performed by the enclosing function at that point.
 - `break`, `continue` and `return` in clause bodies are described in §12.7.
+- The values of a clause's `break`s give the installing `with` its value (§12.7.1), so they are checked against the `with`'s type: for a literal bound with `::`, that of the first `with` that installs it (names and handlers are still those where the literal is written). Every later `with` that installs it must have the same type.
 
 ### 12.6 Handler declarations
 

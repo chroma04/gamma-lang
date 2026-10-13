@@ -101,6 +101,9 @@ pub struct FnCx<'a, 's> {
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
     pub failed_coercions: Vec<Span>,
+    /// `match`es whose scrutinee had literal types not yet known when they were checked:
+    /// the span of each and of its arms. Their exhaustiveness is checked in `finalize`.
+    pub deferred_matches: Vec<(Span, Vec<Span>)>,
     /// The function whose body is being checked (absent for constant expressions).
     pub fn_id: Option<FnId>,
     /// Whether the current function body refers to locals of enclosing functions.
@@ -127,6 +130,28 @@ pub struct FnCx<'a, 's> {
     /// type and span of the value given (`()` for loops). Taken out when the labeled
     /// construct is finished: a `with` checks the values.
     pub label_breaks: std::collections::HashMap<(usize, LabelId), Vec<(Ty, Span)>>,
+    /// Handler literals bound with `::` whose clauses are not checked yet: they are
+    /// checked at the first `with` that installs them, which gives their `break`s an
+    /// expected type, or else at the end of their scope.
+    pub pending_handlers: Vec<PendingHandler>,
+    /// Effects performed by the clauses of a handler literal checked at a later `with`
+    /// (see `pending_handlers`), with the number of handlers in scope where the literal
+    /// was written: `with`s that began after that point must not handle them (§12.5).
+    pub shielded_performs: std::collections::HashMap<Span, usize>,
+}
+
+/// A handler literal bound with `::` whose clauses are checked later, in the scope
+/// where it was written.
+pub struct PendingHandler {
+    pub hid: tir::HandlerId,
+    pub lit: ast::HandlerLit,
+    pub span: Span,
+    /// The frame depth where it was written.
+    pub depth: usize,
+    /// The length of each scope there.
+    pub scope_lens: Vec<usize>,
+    pub labels: usize,
+    pub handled: usize,
 }
 
 /// What kind of handler clause the current frame is.
@@ -275,6 +300,9 @@ impl<'a, 's> FnCx<'a, 's> {
             temp_ref_arg: false,
             defer_label_base: 0,
             failed_coercions: vec![],
+            deferred_matches: vec![],
+            pending_handlers: vec![],
+            shielded_performs: std::collections::HashMap::new(),
             fn_id: None,
             captures: false,
             outer: vec![],
@@ -341,6 +369,85 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         self.outer.push(saved);
         self.push_scope();
+    }
+
+    /// Puts `f`'s state in place of the current function's, which it returns.
+    fn swap_frame(&mut self, f: SavedFrame) -> SavedFrame {
+        SavedFrame {
+            locals: std::mem::replace(&mut self.locals, f.locals),
+            ret: std::mem::replace(&mut self.ret, f.ret),
+            declared: std::mem::replace(&mut self.declared, f.declared),
+            performed: std::mem::replace(&mut self.performed, f.performed),
+            labels: std::mem::replace(&mut self.labels, f.labels),
+            next_label: std::mem::replace(&mut self.next_label, f.next_label),
+            in_defer: std::mem::replace(&mut self.in_defer, f.in_defer),
+            defer_label_base: std::mem::replace(&mut self.defer_label_base, f.defer_label_base),
+            fn_id: std::mem::replace(&mut self.fn_id, f.fn_id),
+            captures: std::mem::replace(&mut self.captures, f.captures),
+            clause: std::mem::replace(&mut self.clause, f.clause),
+            handled: std::mem::replace(&mut self.handled, f.handled),
+        }
+    }
+
+    /// Binds `name :: handler E { … }`: the clauses are checked later (`check_pending_handler`).
+    pub fn pending_handler_literal(&mut self, lit: &ast::HandlerLit, span: Span) -> Expr {
+        let Some(hid) = self.new_handler_literal(lit) else { return error_expr(span) };
+        self.pending_handlers.push(PendingHandler {
+            hid,
+            lit: lit.clone(),
+            span,
+            depth: self.outer.len(),
+            scope_lens: self.scopes.iter().map(|s| s.len()).collect(),
+            labels: self.labels.len(),
+            handled: self.handled.len(),
+        });
+        Expr { ty: Ty::intern(TyKind::Handler(hid.0)), kind: tir::ExprKind::HandlerRef(hid), span }
+    }
+
+    /// Checks the clauses of the pending handler literal `hid`, if it is one, as if at the
+    /// place where it was written, with `with_expect` as the type its `break`s give.
+    pub fn check_pending_handler(&mut self, hid: tir::HandlerId, with_expect: Option<Ty>) {
+        let Some(i) = self.pending_handlers.iter().position(|p| p.hid == hid) else { return };
+        let p = self.pending_handlers.remove(i);
+        // Return to the frame, scopes, labels and handlers of the literal's position.
+        let mut frames = vec![];
+        while self.outer.len() > p.depth {
+            let f = self.outer.pop().expect("frame");
+            frames.push(self.swap_frame(f));
+        }
+        let hidden_scopes = self.scopes.split_off(p.scope_lens.len());
+        let hidden_depths = self.scope_depths.split_off(p.scope_lens.len());
+        let mut hidden_tails = vec![];
+        for (scope, &len) in self.scopes.iter_mut().zip(&p.scope_lens) {
+            hidden_tails.push(scope.split_off(len.min(scope.len())));
+        }
+        let hidden_labels = self.labels.split_off(p.labels.min(self.labels.len()));
+        let hidden_handled = self.handled.split_off(p.handled.min(self.handled.len()));
+        let performed = self.performed.len();
+        self.handler_clauses(hid, &p.lit, with_expect, p.span);
+        for (_, at) in &self.performed[performed..] {
+            self.shielded_performs.insert(*at, p.handled);
+        }
+        self.handled.extend(hidden_handled);
+        self.labels.extend(hidden_labels);
+        for (scope, tail) in self.scopes.iter_mut().zip(hidden_tails) {
+            scope.extend(tail);
+        }
+        self.scopes.extend(hidden_scopes);
+        self.scope_depths.extend(hidden_depths);
+        while let Some(f) = frames.pop() {
+            let outer = self.swap_frame(f);
+            self.outer.push(outer);
+        }
+    }
+
+    /// Checks the pending handler literals written in the scope that is ending.
+    pub fn check_pending_handlers_of_scope(&mut self) {
+        let (depth, scopes) = (self.outer.len(), self.scopes.len());
+        while let Some(p) = self.pending_handlers.iter().find(|p| p.depth == depth && p.scope_lens.len() >= scopes) {
+            let hid = p.hid;
+            self.check_pending_handler(hid, None);
+        }
     }
 
     /// Ends a nested function body, restoring the enclosing function's state.
@@ -628,6 +735,9 @@ impl<'a, 's> FnCx<'a, 's> {
             diverges = stmt_diverges(&st);
             stmts.push(st);
         }
+        if !self.pending_handlers.is_empty() {
+            self.check_pending_handlers_of_scope();
+        }
         self.pop_scope();
         let ty = match &tail {
             Some(t) => t.ty,
@@ -844,7 +954,17 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let mutable = b.kind == ast::BindingKind::Var;
         let errors_before = self.sema.sess.diags.error_count();
-        let init = if let ExprKind::Uninit = b.init.kind {
+        let mut handler_init = &b.init;
+        while let ExprKind::Paren(e) = &handler_init.kind {
+            handler_init = e;
+        }
+        let init = if let ExprKind::Handler(lit) = &handler_init.kind
+            && b.kind == ast::BindingKind::Const
+            && annot.is_none()
+            && !self.in_defer
+        {
+            self.pending_handler_literal(lit, b.init.span)
+        } else if let ExprKind::Uninit = b.init.kind {
             if !mutable {
                 self.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)");
             }

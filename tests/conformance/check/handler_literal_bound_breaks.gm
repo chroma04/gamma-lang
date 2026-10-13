@@ -1,0 +1,21 @@
+//! stage: check
+// A handler literal bound with `::` is checked where it is written: names declared later
+// are not visible to its clauses, and without a `with` its `break`s have no expected
+// type (§12.5).
+Fail :: effect { fail: esc(why: string) -> never }
+step :: fn(n: i32) -> u8 \ {Fail} {
+    if n > 2 { fail("too big") }
+    return 7
+}
+main :: fn() {
+    unused :: handler Fail { fail(why) => break null }      //~ ERROR cannot infer the type of `null`
+    h :: handler Fail { fail(why) => break later }          //~ ERROR unknown name `later`
+    later := 3
+    x: u8 = with h { step(5) }
+    k :: handler Fail { fail(why) => break 300 }            //~ ERROR does not fit in `u8`
+    y: u8 = with k { step(5) }
+    // The first `with` decides the type of the `break` values.
+    m :: handler Fail { fail(why) => break 1 }              //~ ERROR this `break` gives the `with` a `u8`, but its value is `i64`
+    a: u8 = with m { step(5) }
+    b: i64 = with m { 1 }
+}
