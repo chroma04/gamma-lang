@@ -722,6 +722,21 @@ impl<'a> Machine<'a> {
     ) -> Rc<Frame> {
         let id = self.next_frame;
         self.next_frame += 1;
+        self.new_frame_with_id(id, ret_ty, func, parent_env, nlocals, installing, is_clause_lit)
+    }
+
+    /// A frame with an id taken earlier.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_frame_with_id(
+        &mut self,
+        id: u64,
+        ret_ty: Ty,
+        func: Option<FnId>,
+        parent_env: Option<Rc<Frame>>,
+        nlocals: usize,
+        installing: Option<(u64, LabelId)>,
+        is_clause_lit: bool,
+    ) -> Rc<Frame> {
         if let Some(mut rc) = self.frame_pool.pop() {
             let f = Rc::get_mut(&mut rc).expect("pooled frames are unshared");
             f.id = id;

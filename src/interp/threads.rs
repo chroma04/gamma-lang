@@ -69,10 +69,16 @@ pub struct Threads {
 
 impl<'a> Machine<'a> {
     /// Called at each call and loop iteration: now and then, lets the other threads run.
+    #[inline(always)]
     pub fn tick(&mut self) -> R<()> {
         if self.threads.gil.is_none() {
             return Ok(());
         }
+        self.tick_threaded()
+    }
+
+    #[inline(never)]
+    fn tick_threaded(&mut self) -> R<()> {
         self.threads.since_yield += 1;
         if self.threads.since_yield < SLICE {
             return Ok(());

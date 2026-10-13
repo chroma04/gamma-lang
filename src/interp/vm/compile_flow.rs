@@ -984,7 +984,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
     }
 
     /// Resolves jumps and drops the `Nop`s left by statements that make no temporaries.
-    pub fn finish(mut self) -> Code<'a> {
+    pub fn finish(mut self) -> C<Code<'a>> {
         let n = self.code.ops.len();
         let mut map = Vec::with_capacity(n + 1);
         let mut j = 0u32;
@@ -1032,6 +1032,18 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 spans.push(*sp);
             }
         }
+        // A loop's jump back to a test that leaves the loop becomes one instruction.
+        for i in 0..ops.len() {
+            if let Op::JmpTick { t } = ops[i]
+                && let Op::BrI { cmp, a, b, k, t: exit } = ops[t as usize]
+            {
+                ops[i] = Op::TickBr { cmp, a, b, k, exit, body: t + 1 };
+            }
+        }
+        // Running past the end of the code is a bug in the compiler; this catches it.
+        self.code.msgs.push("internal error: ran past the end of a function's code".to_string());
+        ops.push(Op::TrapConst { msg: self.code.msgs.len() as u32 - 1 });
+        spans.push(spans.last().copied().unwrap_or(Span::DUMMY));
         self.code.ops = ops;
         self.code.spans = spans;
         self.code.nregs = self.high;
@@ -1043,7 +1055,10 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
         self.code.init = init;
         self.code.nvals = self.vhigh;
-        self.code
+        if !self.code.valid() {
+            return Err(unsupported!());
+        }
+        Ok(self.code)
     }
 }
 

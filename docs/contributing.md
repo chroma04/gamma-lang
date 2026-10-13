@@ -116,7 +116,9 @@ When the two disagree, these help:
 - `GAMMA_VM_DUMP=name` (or `*`) prints the bytecode of each function of that name
   as it is compiled, or why it runs on the tree-walker instead.
 - `cargo build --release --features vm-profile` builds a `gamma` that, with
-  `GAMMA_VM_PROFILE=1`, prints how often each opcode ran when `gamma run` exits.
+  `GAMMA_VM_PROFILE=1`, prints how often each opcode ran when `gamma run` exits;
+  with `GAMMA_VM_PAIRS=1` as well it lists the most frequent pairs of consecutive
+  opcodes, which is where to look for instructions worth fusing.
 
 **Safe lane.** Tests marked `//! mode: safe` (in `tests/conformance/safe/`) build
 with Fil-C and run when it is found. To install it, download a release from

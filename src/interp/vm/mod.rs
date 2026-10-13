@@ -99,6 +99,9 @@ impl Arg {
     pub const UNIT: Arg = Arg::Data { reg: 0, size: 0 };
 }
 
+/// The length of an indexing operation that is not bounds checked.
+pub const NO_LEN: u32 = u32::MAX;
+
 /// The words a value of `size` bytes occupies.
 #[inline(always)]
 pub fn words(size: u32) -> u32 {
@@ -130,6 +133,8 @@ pub struct BinInfo {
     pub res: Ty,
     pub lsize: u32,
     pub rsize: u32,
+    /// The kind of the right operand of a small-integer operator.
+    pub rk: IntK,
 }
 
 /// A slicing operation `base[lo..hi]` once the base is evaluated.
@@ -176,6 +181,15 @@ pub struct GetInfo {
     pub res: Ty,
 }
 
+/// A call of a builtin function.
+#[derive(Clone, Copy, Debug)]
+pub struct BuiltinInfo {
+    pub op: Builtin,
+    pub args: u32,
+    pub res: Ty,
+    pub out: Arg,
+}
+
 /// A string literal and, once materialized, its address.
 #[derive(Debug)]
 pub struct StrLit {
@@ -207,18 +221,6 @@ pub enum Cmp {
 }
 
 impl Cmp {
-    #[inline(always)]
-    pub fn eval(self, l: i128, r: i128) -> bool {
-        match self {
-            Cmp::Lt => l < r,
-            Cmp::Le => l <= r,
-            Cmp::Gt => l > r,
-            Cmp::Ge => l >= r,
-            Cmp::Eq => l == r,
-            Cmp::Ne => l != r,
-        }
-    }
-
     pub fn of(op: BinOp) -> Option<Cmp> {
         Some(match op {
             BinOp::Lt => Cmp::Lt,
@@ -366,14 +368,14 @@ pub enum Op {
         src: Reg,
         imm: u64,
     },
-    /// `base + i * esz` after checking `i < len` (unchecked and wrapping if `len` is `u64::MAX`).
+    /// `base + i * esz` after checking `i < len` (unchecked and wrapping if `len` is [`NO_LEN`]).
     IndexAddr {
         dst: Reg,
         base: Reg,
         idx: Reg,
         ik: IntK,
         esz: u32,
-        len: u64,
+        len: u32,
     },
     /// The address of element `i` of the slice in `slice`, bounds checked.
     SliceIndexAddr {
@@ -390,7 +392,7 @@ pub enum Op {
         idx: Reg,
         ik: IntK,
         esz: u32,
-        len: u64,
+        len: u32,
     },
     MakeSlice {
         dst: Reg,
@@ -426,14 +428,52 @@ pub enum Op {
         g: GlobalId,
     },
     // --- small integers ---
+    /// Division, remainder and shifts of small integers (`info` describes the operands).
     BinI {
         op: BinOp,
         dst: Reg,
         a: Reg,
         b: Reg,
         k: IntK,
-        rk: IntK,
-        ty: Ty,
+        info: u32,
+    },
+    /// `+`, `-` and `*` of small integers of kind `k`; the flavor decides what an overflow does.
+    AddI {
+        fl: Flavor,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+    },
+    SubI {
+        fl: Flavor,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+    },
+    MulI {
+        fl: Flavor,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+    },
+    /// Bitwise operators on values of at most 8 bytes, whatever their type.
+    AndW {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    OrW {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    XorW {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
     },
     CmpI {
         cmp: Cmp,
@@ -522,13 +562,13 @@ pub enum Op {
     CoerceG {
         dst: Reg,
         src: Reg,
-        kind: Coercion,
+        kind: u32,
         from: Ty,
         to: Ty,
     },
     FnToPtr {
-        dst: Arg,
-        src: Arg,
+        dst: u32,
+        src: u32,
         to: Ty,
     },
     /// Field `idx` of the `#bits` struct value in `src`.
@@ -604,6 +644,16 @@ pub enum Op {
     JmpTick {
         t: u32,
     },
+    /// A `JmpTick` to a `BrI`, fused: lets other threads run, then jumps to `exit` if the
+    /// comparison holds and to `body` otherwise.
+    TickBr {
+        cmp: Cmp,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+        exit: u32,
+        body: u32,
+    },
     /// Jumps in Fast builds (over the checks of `assert`).
     JmpFast {
         t: u32,
@@ -625,22 +675,19 @@ pub enum Op {
         out: Arg,
     },
     CallInd {
-        callee: Arg,
+        callee: u32,
         cty: Ty,
         args: u32,
-        out: Arg,
+        out: u32,
     },
     Perform {
         eff: u32,
         op: u32,
         args: u32,
-        out: Arg,
+        out: u32,
     },
     Builtin {
-        op: Builtin,
-        args: u32,
-        res: Ty,
-        out: Arg,
+        info: u32,
     },
     Write {
         info: u32,
@@ -741,8 +788,12 @@ pub struct Code<'a> {
     pub strs: Vec<StrLit>,
     pub msgs: Vec<String>,
     pub args: Vec<Box<[Arg]>>,
+    /// Single operands of the instructions that have too many to hold them.
+    pub operands: Vec<Arg>,
     pub arg_tys: Vec<Box<[Ty]>>,
     pub bins: Vec<BinInfo>,
+    pub builtins: Vec<BuiltinInfo>,
+    pub coercions: Vec<Coercion>,
     pub slices: Vec<SliceInfo>,
     pub tags: Vec<TagTest>,
     pub gets: Vec<GetInfo>,
@@ -811,6 +862,55 @@ impl<'a> Machine<'a> {
 }
 
 impl Code<'_> {
+    /// Checks what the dispatch loop relies on without checking again: every jump lands on
+    /// an instruction, and the registers that the instructions with unchecked register
+    /// access name exist.
+    pub fn valid(&self) -> bool {
+        let n = self.ops.len() as u32;
+        let nregs = self.nregs;
+        // The last instruction stops the activation, so there is no running off the end.
+        if !matches!(self.ops.last(), Some(Op::TrapConst { .. })) {
+            return false;
+        }
+        for op in &self.ops {
+            let ok = match *op {
+                Op::Jmp { t }
+                | Op::JmpIf { t, .. }
+                | Op::JmpIfNot { t, .. }
+                | Op::JmpNZ { t, .. }
+                | Op::JmpZ { t, .. }
+                | Op::JmpByte { t, .. }
+                | Op::JmpTag { t, .. }
+                | Op::JmpFast { t }
+                | Op::JmpTick { t } => t < n,
+                Op::BrI { a, b, t, .. } => t < n && a < nregs && b < nregs,
+                Op::TickBr { a, b, exit, body, .. } => exit < n && body < n && a < nregs && b < nregs,
+                Op::Mov1 { dst, src } | Op::AddImm { dst, src, .. } => dst < nregs && src < nregs,
+                Op::Imm { dst, .. } => dst < nregs,
+                Op::AddI { dst, a, b, .. }
+                | Op::SubI { dst, a, b, .. }
+                | Op::MulI { dst, a, b, .. }
+                | Op::CmpI { dst, a, b, .. }
+                | Op::AndW { dst, a, b }
+                | Op::OrW { dst, a, b }
+                | Op::XorW { dst, a, b } => dst < nregs && a < nregs && b < nregs,
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        self.scopes.iter().all(|s| {
+            s.lo <= s.hi
+                && s.hi <= n
+                && match s.kind {
+                    ScopeKind::Label { brk, cont, .. } => brk < n && cont < n,
+                    ScopeKind::Defer { seg, .. } => seg < n,
+                    ScopeKind::Guard { .. } => true,
+                }
+        })
+    }
+
     /// A listing of the code, for debugging the compiler (`GAMMA_VM_DUMP=name`).
     pub fn dump(&self, name: &str) -> String {
         let mut s = format!("== {} ({} regs, {} vals, params {:?})\n", name, self.nregs, self.nvals, self.params);
@@ -823,3 +923,5 @@ impl Code<'_> {
         s
     }
 }
+/// Instructions are copied and fetched all the time; keep large operands in side tables.
+const _: () = assert!(std::mem::size_of::<Op>() <= 24);

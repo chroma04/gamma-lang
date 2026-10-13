@@ -156,9 +156,14 @@ pub fn compile<'a>(m: &Machine<'a>, f: FnId) -> Result<Code<'a>, Unsupported> {
             }
             (Err(u), _) => return Err(u),
             (Ok(()), _) if c.too_big => return Err(unsupported!()),
-            (Ok(()), _) => return Ok(c.finish()),
+            (Ok(()), _) => return c.finish(),
         }
     }
+}
+
+/// An array length as an instruction field; arrays too long for it are left to the tree-walker.
+fn len32(len: u64) -> C<u32> {
+    if len < NO_LEN as u64 { Ok(len as u32) } else { Err(unsupported!()) }
 }
 
 /// True if `ty` is a second-class type, whose values are not bytes.
@@ -308,8 +313,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 strs: Vec::new(),
                 msgs: Vec::new(),
                 args: Vec::new(),
+                operands: Vec::new(),
                 arg_tys: Vec::new(),
                 bins: Vec::new(),
+                builtins: Vec::new(),
+                coercions: Vec::new(),
                 slices: Vec::new(),
                 tags: Vec::new(),
                 gets: Vec::new(),
@@ -545,6 +553,17 @@ impl<'m, 'a> Compiler<'m, 'a> {
         self.code.args.push(list.into());
         self.code.arg_tys.push(tys.into());
         self.code.args.len() as u32 - 1
+    }
+
+    pub fn coercion(&mut self, c: Coercion) -> u32 {
+        self.code.coercions.push(c);
+        self.code.coercions.len() as u32 - 1
+    }
+
+    /// Adds a single operand to the pool.
+    pub fn operand(&mut self, a: Arg) -> u32 {
+        self.code.operands.push(a);
+        self.code.operands.len() as u32 - 1
     }
 
     pub fn pc(&self) -> u32 {
@@ -810,7 +829,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     let (Arg::Data { reg: src, .. }, Arg::Data { reg, size }) = (b, dst) else {
                         return Err(unsupported!());
                     };
-                    self.emit(Op::IndexVal { dst: reg, src, idx, ik, esz: size, len: *len }, span);
+                    let len = len32(*len)?;
+                    self.emit(Op::IndexVal { dst: reg, src, idx, ik, esz: size, len }, span);
                     return Ok(dst);
                 }
                 self.place_value(e, want)
@@ -1236,7 +1256,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         };
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
-                        self.emit(Op::IndexAddr { dst, base: addr, idx, ik, esz, len: *len }, span);
+                        let len = len32(*len)?;
+                        self.emit(Op::IndexAddr { dst, base: addr, idx, ik, esz, len }, span);
                         Ok(PlaceC::Mem { addr: dst, packed })
                     }
                     TyKind::Slice { .. } => {
@@ -1254,7 +1275,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let p = self.addr_of_arg(pv, span);
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
-                        self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len: u64::MAX }, span);
+                        self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len: NO_LEN }, span);
                         Ok(PlaceC::Mem { addr: dst, packed: false })
                     }
                     TyKind::Ptr { pointee, .. } if matches!(pointee.kind(), TyKind::Array { .. }) => {
@@ -1264,7 +1285,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let p = self.addr_of_arg(pv, span);
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
-                        self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len: *len }, span);
+                        let len = len32(*len)?;
+                        self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len }, span);
                         Ok(PlaceC::Mem { addr: dst, packed: false })
                     }
                     _ => Err(unsupported!()),
@@ -1439,12 +1461,23 @@ impl<'m, 'a> Compiler<'m, 'a> {
             return Err(unsupported!());
         };
         if let Some((k, rk)) = self.small_binary(op, lhs, rhs, e.ty) {
-            match Cmp::of(op) {
-                Some(cmp) => self.emit(Op::CmpI { cmp, dst: reg, a, b, k }, span),
-                None => self.emit(Op::BinI { op, dst: reg, a, b, k, rk, ty: lhs.ty }, span),
+            match (Cmp::of(op), op) {
+                (Some(cmp), _) => self.emit(Op::CmpI { cmp, dst: reg, a, b, k }, span),
+                (_, BinOp::Add(fl)) => self.emit(Op::AddI { fl, dst: reg, a, b, k }, span),
+                (_, BinOp::Sub(fl)) => self.emit(Op::SubI { fl, dst: reg, a, b, k }, span),
+                (_, BinOp::Mul(fl)) => self.emit(Op::MulI { fl, dst: reg, a, b, k }, span),
+                (_, BinOp::BitAnd) => self.emit(Op::AndW { dst: reg, a, b }, span),
+                (_, BinOp::BitOr) => self.emit(Op::OrW { dst: reg, a, b }, span),
+                (_, BinOp::BitXor) => self.emit(Op::XorW { dst: reg, a, b }, span),
+                _ => {
+                    self.code.bins.push(BinInfo { op, lty: lhs.ty, rty: rhs.ty, res: e.ty, lsize, rsize, rk });
+                    let info = self.code.bins.len() as u32 - 1;
+                    self.emit(Op::BinI { op, dst: reg, a, b, k, info }, span)
+                }
             };
         } else {
-            self.code.bins.push(BinInfo { op, lty: lhs.ty, rty: rhs.ty, res: e.ty, lsize, rsize });
+            let rk = IntK::U64;
+            self.code.bins.push(BinInfo { op, lty: lhs.ty, rty: rhs.ty, res: e.ty, lsize, rsize, rk });
             let info = self.code.bins.len() as u32 - 1;
             self.emit(Op::BinG { dst: reg, a, b, info }, span);
         }
@@ -1508,7 +1541,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 match (v, dst) {
                     (Arg::Val(_), Arg::Val(_)) | (Arg::Data { .. }, Arg::Data { .. }) => self.mov(dst, v, span),
                     _ => {
-                        self.emit(Op::FnToPtr { dst, src: v, to: e.ty }, span);
+                        let (dst, src) = (self.operand(dst), self.operand(v));
+                        self.emit(Op::FnToPtr { dst, src, to: e.ty }, span);
                     }
                 }
                 Ok(dst)
@@ -1522,6 +1556,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         self.emit(Op::Widen { dst: reg, src, from, to }, span);
                     }
                     _ => {
+                        let kind = self.coercion(kind);
                         self.emit(Op::CoerceG { dst: reg, src, kind, from: inner.ty, to: e.ty }, span);
                     }
                 }
@@ -1546,6 +1581,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let v = self.expr(inner)?;
                 let dst = self.dst(e, want);
                 let (Arg::Data { reg: src, .. }, Arg::Data { reg, .. }) = (v, dst) else { return Err(unsupported!()) };
+                let kind = self.coercion(kind);
                 self.emit(Op::CoerceG { dst: reg, src, kind, from: inner.ty, to: e.ty }, span);
                 Ok(dst)
             }
@@ -1759,7 +1795,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let tys: Vec<Ty> = args.iter().map(|a| a.ty).collect();
                 let a = self.arg_list(list, tys);
                 let dst = self.dst(e, want);
-                self.emit(Op::Builtin { op, args: a, res: e.ty, out: dst }, span);
+                self.code.builtins.push(BuiltinInfo { op, args: a, res: e.ty, out: dst });
+                let info = self.code.builtins.len() as u32 - 1;
+                self.emit(Op::Builtin { info }, span);
                 Ok(dst)
             }
         }
@@ -1785,11 +1823,13 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 self.emit(Op::Call { f: *f, args: a, out }, span);
             }
             Callee::Indirect(c) => {
-                self.emit(Op::CallInd { callee: cv.unwrap(), cty: c.ty, args: a, out }, span);
+                let (callee, out) = (self.operand(cv.unwrap()), self.operand(out));
+                self.emit(Op::CallInd { callee, cty: c.ty, args: a, out }, span);
             }
             Callee::Perform { effect, op } => {
                 self.code.effects.push(effect.clone());
                 let eff = self.code.effects.len() as u32 - 1;
+                let out = self.operand(out);
                 self.emit(Op::Perform { eff, op: *op, args: a, out }, span);
             }
         }

@@ -10,10 +10,24 @@ pub struct St<'a> {
     code: Rc<Code<'a>>,
     regs: Vec<u64>,
     vals: Vec<Value>,
-    fr: Rc<Frame>,
+    /// The frame of the activation, made when something first needs it (most functions
+    /// keep everything in registers and never do).
+    fr: Option<Rc<Frame>>,
+    /// The id the frame has (or will have).
+    id: u64,
+    spec: FrameSpec,
     /// The handler context, and the contexts outside the `with`s being run.
     cx: Ctx,
     cx_stack: Vec<Ctx>,
+}
+
+/// What a frame is made from.
+struct FrameSpec {
+    ret_ty: Ty,
+    func: FnId,
+    env: Option<Rc<Frame>>,
+    installing: Option<(u64, LabelId)>,
+    is_clause_lit: bool,
 }
 
 /// How running code stops.
@@ -169,6 +183,64 @@ fn index<const LE: bool>(k: IntK, w: u64) -> u64 {
     if v < 0 { 0 } else { v as u64 }
 }
 
+/// The value of a small integer of kind `k` whose bytes are the word `w`, as a 64-bit
+/// pattern: sign-extended if the type is signed, zero-extended if not.
+#[inline(always)]
+fn nval<const LE: bool>(k: IntK, w: u64) -> u64 {
+    let w = if LE { w } else { w.swap_bytes() >> (64 - 8 * k.size as u32) };
+    let sh = 64 - k.bits as u32;
+    if k.signed { (((w << sh) as i64) >> sh) as u64 } else { (w << sh) >> sh }
+}
+
+/// The word holding the integer whose 64-bit pattern is `v` (which fits the type).
+#[inline(always)]
+fn nput<const LE: bool>(k: IntK, v: u64) -> u64 {
+    let sh = 64 - 8 * k.size as u32;
+    if LE { v & (u64::MAX >> sh) } else { (v << sh).swap_bytes() }
+}
+
+/// Whether the pattern `v` is a value of the type: unsigned values have no bits above
+/// the type's, signed ones are the sign extension of their low bits.
+#[inline(always)]
+fn nfits(k: IntK, v: u64) -> bool {
+    let sh = 64 - k.bits as u32;
+    if k.signed { (((v << sh) as i64) >> sh) as u64 == v } else { (v << sh) >> sh == v }
+}
+
+#[inline(always)]
+fn n_add(k: IntK, l: u64, r: u64) -> Option<u64> {
+    let v = if k.signed { (l as i64).checked_add(r as i64)? as u64 } else { l.checked_add(r)? };
+    nfits(k, v).then_some(v)
+}
+
+#[inline(always)]
+fn n_sub(k: IntK, l: u64, r: u64) -> Option<u64> {
+    let v = if k.signed { (l as i64).checked_sub(r as i64)? as u64 } else { l.checked_sub(r)? };
+    nfits(k, v).then_some(v)
+}
+
+#[inline(always)]
+fn n_mul(k: IntK, l: u64, r: u64) -> Option<u64> {
+    let v = if k.signed { (l as i64).checked_mul(r as i64)? as u64 } else { l.checked_mul(r)? };
+    nfits(k, v).then_some(v)
+}
+
+/// A comparison of two small integers of kind `k` given as words.
+#[inline(always)]
+fn n_cmp<const LE: bool>(cmp: Cmp, k: IntK, x: u64, y: u64) -> bool {
+    // Flipping the top bit of signed patterns makes unsigned order the order of values.
+    let bias = (k.signed as u64) << 63;
+    let (x, y) = (nval::<LE>(k, x) ^ bias, nval::<LE>(k, y) ^ bias);
+    match cmp {
+        Cmp::Lt => x < y,
+        Cmp::Le => x <= y,
+        Cmp::Gt => x > y,
+        Cmp::Ge => x >= y,
+        Cmp::Eq => x == y,
+        Cmp::Ne => x != y,
+    }
+}
+
 impl St<'_> {
     fn value_of(&self, a: Arg) -> Value {
         match a {
@@ -266,26 +338,56 @@ impl<'a> Machine<'a> {
         installing: Option<(u64, LabelId)>,
         is_clause_lit: bool,
     ) -> St<'a> {
-        let f = &self.prog.fns[fid.index()];
-        let fr = self.new_frame(f.ret, Some(fid), env, code.nslots as usize, installing, is_clause_lit);
+        let ret_ty = self.prog.fns[fid.index()].ret;
+        let id = self.next_frame;
+        self.next_frame += 1;
         let mut regs = self.vm_regs.pop().unwrap_or_default();
         regs.clear();
         regs.extend_from_slice(&code.init);
         regs.resize(code.nregs as usize, 0);
-        let mut vals = self.vm_vals.pop().unwrap_or_default();
-        vals.resize(code.nvals as usize, Value::unit());
-        St { code, regs, vals, fr, cx, cx_stack: Vec::new() }
+        let vals = if code.nvals == 0 {
+            Vec::new()
+        } else {
+            let mut vals = self.vm_vals.pop().unwrap_or_default();
+            vals.resize(code.nvals as usize, Value::unit());
+            vals
+        };
+        let spec = FrameSpec { ret_ty, func: fid, env, installing, is_clause_lit };
+        St { code, regs, vals, fr: None, id, spec, cx, cx_stack: Vec::new() }
+    }
+
+    /// The frame of activation `st`, made on first use.
+    fn vm_frame(&mut self, st: &mut St<'a>) -> Rc<Frame> {
+        if let Some(fr) = &st.fr {
+            return fr.clone();
+        }
+        let sp = &mut st.spec;
+        let fr = self.new_frame_with_id(
+            st.id,
+            sp.ret_ty,
+            Some(sp.func),
+            sp.env.take(),
+            st.code.nslots as usize,
+            sp.installing,
+            sp.is_clause_lit,
+        );
+        st.fr = Some(fr.clone());
+        fr
     }
 
     /// Takes back the buffers and frame of a finished activation.
     fn vm_finish(&mut self, st: St<'a>) {
         let St { mut regs, mut vals, fr, .. } = st;
-        vals.clear();
         regs.clear();
-        self.recycle_frame(fr);
+        if let Some(fr) = fr {
+            self.recycle_frame(fr);
+        }
         if self.vm_regs.len() < 256 {
             self.vm_regs.push(regs);
-            self.vm_vals.push(vals);
+            if vals.capacity() > 0 {
+                vals.clear();
+                self.vm_vals.push(vals);
+            }
         }
     }
 
@@ -300,7 +402,9 @@ impl<'a> Machine<'a> {
             self.fiber_stack += cost;
         }
         self.kill_temps(mark);
-        self.kill_frame(&st.fr);
+        if let Some(fr) = &st.fr {
+            self.kill_frame(fr);
+        }
         match r {
             Ok(x) => Ok(x),
             Err(mut flow) => {
@@ -360,8 +464,14 @@ impl<'a> Machine<'a> {
     fn vm_bind(&mut self, st: &mut St<'a>, p: ParamLoc, v: Value, span: Span) -> R<()> {
         match p {
             ParamLoc::Reg { reg, size } => write_value(st, Arg::Data { reg, size }, v, span),
-            ParamLoc::Frame { local, ty } => self.bind_local(span, &st.fr, local, Some(ty), v),
-            ParamLoc::Val { local } => self.bind_local(span, &st.fr, local, None, v),
+            ParamLoc::Frame { local, ty } => {
+                let fr = self.vm_frame(st);
+                self.bind_local(span, &fr, local, Some(ty), v)
+            }
+            ParamLoc::Val { local } => {
+                let fr = self.vm_frame(st);
+                self.bind_local(span, &fr, local, None, v)
+            }
         }
     }
 
@@ -453,8 +563,14 @@ impl<'a> Machine<'a> {
                     }
                 }
                 ScopeKind::Defer { is_err, seg, depth } => {
-                    if matches!(*flow, Flow::Trap(_)) || (*is_err && !self.errdefers_run(&st.fr, &flow)) {
+                    if matches!(*flow, Flow::Trap(_)) {
                         continue;
+                    }
+                    if *is_err {
+                        let fr = self.vm_frame(st);
+                        if !self.errdefers_run(&fr, &flow) {
+                            continue;
+                        }
                     }
                     st.restore_ctx(*depth);
                     let mark = self.temps.len();
@@ -465,7 +581,7 @@ impl<'a> Machine<'a> {
                     }
                 }
                 ScopeKind::Label { label, brk, cont, depth, result, temps } => {
-                    let id = st.fr.id;
+                    let id = st.id;
                     match &*flow {
                         Flow::Break { frame, label: l, .. } if *frame == id && l == label => {
                             let Flow::Break { value, .. } = *flow else { unreachable!() };
@@ -486,7 +602,7 @@ impl<'a> Machine<'a> {
             }
         }
         if let Flow::Return { frame, .. } = &*flow
-            && *frame == st.fr.id
+            && *frame == st.id
         {
             let Flow::Return { value, .. } = *flow else { unreachable!() };
             return Ok(Land::Exit(Exit::Value(value)));
@@ -507,17 +623,56 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Runs the code of activation `st` from instruction `pc`.
-    fn vm_run<const LE: bool, const COUNT: bool>(&mut self, st: &mut St<'a>, mut pc: u32) -> R<Exit> {
+    /// Runs the code of activation `st` from instruction `start`.
+    fn vm_run<const LE: bool, const COUNT: bool>(&mut self, st: &mut St<'a>, start: u32) -> R<Exit> {
         let code = st.code.clone();
-        let ops: &[Op] = &code.ops;
+        // The instruction pointer and the registers are raw so that dispatch costs little.
+        // `Code::valid` has checked every jump target and, for the instructions that use
+        // `r!` and `w!`, every register against the activation's `nregs` registers, which
+        // `vm_state` allocates and nothing resizes while the code runs.
+        let base: *const Op = code.ops.as_ptr();
+        // SAFETY: `start` is the entry or a segment of the code, both checked.
+        let mut ip: *const Op = unsafe { base.add(start as usize) };
+        debug_assert_eq!(st.regs.len(), code.nregs as usize);
+        let rp: *mut u64 = st.regs.as_mut_ptr();
+        macro_rules! jump {
+            ($t:expr) => {
+                // SAFETY: targets are checked by `Code::valid`.
+                {
+                    let t = $t as usize;
+                    ip = unsafe { base.add(t) }
+                }
+            };
+        }
+        // The index of the running instruction.
+        macro_rules! at {
+            () => {
+                // SAFETY: `ip` is inside the code, one past the running instruction.
+                (unsafe { ip.offset_from(base) } as u32 - 1)
+            };
+        }
+        macro_rules! r {
+            ($i:expr) => {
+                // SAFETY: checked by `Code::valid` for the instructions that use it.
+                unsafe { *rp.add($i as usize) }
+            };
+        }
+        macro_rules! w {
+            ($i:expr, $v:expr) => {
+                // SAFETY: as for `r!`.
+                {
+                    let v = $v;
+                    unsafe { *rp.add($i as usize) = v }
+                }
+            };
+        }
         macro_rules! tri {
             ($at:expr, $e:expr) => {
                 match $e {
                     Ok(v) => v,
                     Err(f) => match self.vm_unwind(st, $at, f) {
                         Ok(Land::Pc(p)) => {
-                            pc = p;
+                            jump!(p);
                             continue;
                         }
                         Ok(Land::Exit(x)) => return Ok(x),
@@ -527,9 +682,9 @@ impl<'a> Machine<'a> {
             };
         }
         loop {
-            let at = pc;
-            let op = &ops[pc as usize];
-            pc += 1;
+            // SAFETY: the code ends with an instruction that does not continue.
+            let op = unsafe { &*ip };
+            ip = unsafe { ip.add(1) };
             if COUNT {
                 self.steps += 1;
             }
@@ -541,8 +696,8 @@ impl<'a> Machine<'a> {
                 Op::Mov { dst, src, words } => {
                     regs.copy_within(src as usize..(src + words) as usize, dst as usize);
                 }
-                Op::Mov1 { dst, src } => regs[dst as usize] = regs[src as usize],
-                Op::Imm { dst, w } => regs[dst as usize] = w,
+                Op::Mov1 { dst, src } => w!(dst, r!(src)),
+                Op::Imm { dst, w } => w!(dst, w),
                 Op::Zero { dst, words } => regs[dst as usize..(dst + words) as usize].fill(0),
                 Op::Extract { dst, src, off, size } => extract(regs, dst, src, off, size),
                 Op::Insert { dst, off, src, size } => insert(regs, dst, off, src, size),
@@ -554,15 +709,15 @@ impl<'a> Machine<'a> {
                             Some(w) => regs[dst as usize] = w,
                             None => {
                                 let w = tri!(
-                                    at,
-                                    self.mem.read_word(a, s, align as u64).map_err(|e| self.mem_trap(&code, at, e))
+                                    at!(),
+                                    self.mem.read_word(a, s, align as u64).map_err(|e| self.mem_trap(&code, at!(), e))
                                 );
                                 st.regs[dst as usize] = w;
                             }
                         }
                     } else if size > 0 {
                         let r = self.mem.read(a, size as u64, align as u64).map(Bytes::from_slice);
-                        let b = tri!(at, r.map_err(|e| self.mem_trap(&code, at, e)));
+                        let b = tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
                         put_bytes(&mut st.regs, dst, size, &b);
                     }
                 }
@@ -573,24 +728,24 @@ impl<'a> Machine<'a> {
                         let w = regs[src as usize];
                         if !self.mem.try_write_word(a, w, s, align as u64) {
                             let r = self.mem.write_word(a, w, s, align as u64);
-                            tri!(at, r.map_err(|e| self.mem_trap(&code, at, e)));
+                            tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
                         }
                     } else if size > 0 {
                         let b = get_bytes(regs, src, size);
                         let r = self.mem.write(a, &b, align as u64);
-                        tri!(at, r.map_err(|e| self.mem_trap(&code, at, e)));
+                        tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
                     }
                 }
-                Op::AddImm { dst, src, imm } => regs[dst as usize] = regs[src as usize].wrapping_add(imm),
+                Op::AddImm { dst, src, imm } => w!(dst, r!(src).wrapping_add(imm)),
                 Op::IndexAddr { dst, base, idx, ik, esz, len } => {
                     let i = index::<LE>(ik, regs[idx as usize]);
                     let b = regs[base as usize];
-                    if len == u64::MAX {
+                    if len == NO_LEN {
                         regs[dst as usize] = b.wrapping_add(i.wrapping_mul(esz as u64));
-                    } else if i < len {
+                    } else if i < len as u64 {
                         regs[dst as usize] = b.wrapping_add(i * esz as u64);
                     } else {
-                        tri!(at, Err(self.oob(&code, at, i, len)));
+                        tri!(at!(), Err(self.oob(&code, at!(), i, len as u64)));
                     }
                 }
                 Op::SliceIndexAddr { dst, slice, idx, ik, esz } => {
@@ -599,35 +754,63 @@ impl<'a> Machine<'a> {
                     if i < n {
                         regs[dst as usize] = p.wrapping_add(i * esz as u64);
                     } else {
-                        tri!(at, Err(self.oob(&code, at, i, n)));
+                        tri!(at!(), Err(self.oob(&code, at!(), i, n)));
                     }
                 }
-                Op::BinI { op, dst, a, b, k, rk, ty } => {
+                Op::AddI { fl, dst, a, b, k } => {
+                    let (l, r) = (nval::<LE>(k, r!(a)), nval::<LE>(k, r!(b)));
+                    match n_add(k, l, r) {
+                        Some(v) => w!(dst, nput::<LE>(k, v)),
+                        None => {
+                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Add(fl), k, l, r));
+                            w!(dst, v);
+                        }
+                    }
+                }
+                Op::SubI { fl, dst, a, b, k } => {
+                    let (l, r) = (nval::<LE>(k, r!(a)), nval::<LE>(k, r!(b)));
+                    match n_sub(k, l, r) {
+                        Some(v) => w!(dst, nput::<LE>(k, v)),
+                        None => {
+                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Sub(fl), k, l, r));
+                            w!(dst, v);
+                        }
+                    }
+                }
+                Op::MulI { fl, dst, a, b, k } => {
+                    let (l, r) = (nval::<LE>(k, r!(a)), nval::<LE>(k, r!(b)));
+                    match n_mul(k, l, r) {
+                        Some(v) => w!(dst, nput::<LE>(k, v)),
+                        None => {
+                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Mul(fl), k, l, r));
+                            w!(dst, v);
+                        }
+                    }
+                }
+                Op::AndW { dst, a, b } => w!(dst, r!(a) & r!(b)),
+                Op::OrW { dst, a, b } => w!(dst, r!(a) | r!(b)),
+                Op::XorW { dst, a, b } => w!(dst, r!(a) ^ r!(b)),
+                Op::BinI { op, dst, a, b, k, info } => {
+                    let bi = &code.bins[info as usize];
                     let l = ival::<LE>(k, regs[a as usize]);
-                    let r = ival::<LE>(rk, regs[b as usize]);
-                    let si = k.si();
-                    let v = match op {
-                        BinOp::Add(_) if si.fits(l + r) => l + r,
-                        BinOp::Sub(_) if si.fits(l - r) => l - r,
-                        BinOp::Mul(_) if k.signed && si.fits(l * r) => l * r,
-                        BinOp::BitAnd => l & r,
-                        BinOp::BitOr => l | r,
-                        BinOp::BitXor => l ^ r,
-                        _ => tri!(at, self.small_binop(code.spans[at as usize], op, si, ty, l, r)),
-                    };
+                    let r = ival::<LE>(bi.rk, regs[b as usize]);
+                    let v = tri!(at!(), self.small_binop(code.spans[at!() as usize], op, k.si(), bi.lty, l, r));
                     st.regs[dst as usize] = iput::<LE>(k, v);
                 }
                 Op::CmpI { cmp, dst, a, b, k } => {
-                    let l = ival::<LE>(k, regs[a as usize]);
-                    let r = ival::<LE>(k, regs[b as usize]);
-                    regs[dst as usize] = cmp.eval(l, r) as u64;
+                    w!(dst, n_cmp::<LE>(cmp, k, r!(a), r!(b)) as u64);
                 }
                 Op::BrI { cmp, a, b, k, t } => {
-                    let l = ival::<LE>(k, regs[a as usize]);
-                    let r = ival::<LE>(k, regs[b as usize]);
-                    if cmp.eval(l, r) {
-                        pc = t;
+                    if n_cmp::<LE>(cmp, k, r!(a), r!(b)) {
+                        jump!(t);
                     }
+                }
+                Op::TickBr { cmp, a, b, k, exit, body } => {
+                    tri!(at!(), self.tick());
+                    if COUNT {
+                        tri!(at!(), self.check_budget(code.spans[at!() as usize]));
+                    }
+                    jump!(if n_cmp::<LE>(cmp, k, r!(a), r!(b)) { exit } else { body });
                 }
                 Op::Widen { dst, src, from, to } => {
                     regs[dst as usize] = iput::<LE>(to, ival::<LE>(from, regs[src as usize]));
@@ -644,30 +827,30 @@ impl<'a> Machine<'a> {
                     let y = regs[b as usize] & 0xff != 0;
                     regs[dst as usize] = ((x == y) != neg) as u64;
                 }
-                Op::Jmp { t } => pc = t,
+                Op::Jmp { t } => jump!(t),
                 Op::JmpIf { c, t } => {
                     if regs[c as usize] & 0xff != 0 {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpIfNot { c, t } => {
                     if regs[c as usize] & 0xff == 0 {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpNZ { c, t } => {
                     if regs[c as usize] != 0 {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpZ { c, t } => {
                     if regs[c as usize] == 0 {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpByte { c, off, t, when } => {
                     if (byte_at(regs, c, off) != 0) == when {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpTag { src, test, t, when } => {
@@ -682,23 +865,23 @@ impl<'a> Machine<'a> {
                     let v = ival::<LE>(tt.k, w & mask(tt.k.size as u32));
                     if v != tt.want && tt.valid.binary_search(&v).is_err() {
                         let msg = format!("invalid tag value {:?} for union {}", Int::S(v), tt.ty);
-                        tri!(at, Err(trap_flow(code.spans[at as usize], msg)));
+                        tri!(at!(), Err(trap_flow(code.spans[at!() as usize], msg)));
                     }
                     if (v == tt.want) == when {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpFast { t } => {
                     if self.fast() {
-                        pc = t;
+                        jump!(t);
                     }
                 }
                 Op::JmpTick { t } => {
-                    pc = t;
-                    tri!(at, self.tick());
+                    tri!(at!(), self.tick());
                     if COUNT {
-                        tri!(at, self.check_budget(code.spans[at as usize]));
+                        tri!(at!(), self.check_budget(code.spans[at!() as usize]));
                     }
+                    jump!(t);
                 }
                 Op::MarkTemps { dst } => regs[dst as usize] = self.temps.len() as u64,
                 Op::KillTemps { src } => {
@@ -706,7 +889,7 @@ impl<'a> Machine<'a> {
                     self.kill_temps(m);
                 }
                 Op::Call { f, args, out } => {
-                    let span = code.spans[at as usize];
+                    let span = code.spans[at!() as usize];
                     let list = &code.args[args as usize];
                     let r = match self.code_of(f) {
                         Some(c2) => self.vm_call_regs(span, f, c2, st, list, out),
@@ -717,13 +900,24 @@ impl<'a> Machine<'a> {
                                 .and_then(|v| write_value(st, out, v, span))
                         }
                     };
-                    tri!(at, r);
+                    tri!(at!(), r);
                 }
                 Op::Ret { src } => return Ok(Exit::Ret(src)),
                 Op::EndSeg => return Ok(Exit::Seg),
-                _ => tri!(at, self.vm_slow::<LE>(st, &code, *op, at)),
+                _ => tri!(at!(), self.vm_slow::<LE>(st, &code, *op, at!())),
             }
         }
+    }
+
+    /// The result of an addition, subtraction or multiplication whose exact value does not
+    /// fit the type (the operands are given as 64-bit patterns), as its flavor defines it.
+    #[cold]
+    #[inline(never)]
+    fn arith_overflow<const LE: bool>(&self, code: &Code, at: u32, op: BinOp, k: IntK, l: u64, r: u64) -> R<u64> {
+        let wide = |v: u64| if k.signed { v as i64 as i128 } else { v as i128 };
+        // The operand type is only used to report a bad shift amount.
+        let v = self.small_binop(code.spans[at as usize], op, k.si(), Ty::bool(), wide(l), wide(r))?;
+        Ok(iput::<LE>(k, v))
     }
 
     #[cold]
@@ -770,7 +964,8 @@ impl<'a> Machine<'a> {
             Op::LdLocal { dst, local, ty } => {
                 let ti = self.ti(ty);
                 let (size, align) = (ti.size, ti.align);
-                let slot = match st.fr.locals.borrow().get(local.index()) {
+                let fr = self.vm_frame(st);
+                let slot = match fr.locals.borrow().get(local.index()) {
                     Some(Slot::Mem(a)) => Ok(*a),
                     Some(Slot::Reg(r)) => {
                         put_bytes(&mut st.regs, dst, size as u32, &r[..size.min(r.len())]);
@@ -791,32 +986,37 @@ impl<'a> Machine<'a> {
             Op::StLocal { local, src, ty } => {
                 let size = self.ti(ty).size as u32;
                 let b = get_bytes(&st.regs, src, size);
-                self.bind_local(span, &st.fr, local, Some(ty), Value::Bytes(b))?;
+                let fr = self.vm_frame(st);
+                self.bind_local(span, &fr, local, Some(ty), Value::Bytes(b))?;
             }
             Op::InitLocal { local, ty } => {
                 let ti = self.ti(ty);
                 let (size, align) = (ti.size, ti.align);
+                let fr = self.vm_frame(st);
                 if size <= REG_MAX {
-                    self.set_local(span, &st.fr, local, &[], 1)?;
+                    self.set_local(span, &fr, local, &[], 1)?;
                 } else {
-                    self.local_addr(span, &st.fr, local, size, align)?;
+                    self.local_addr(span, &fr, local, size, align)?;
                 }
             }
             Op::AddrLocal { dst, local, ty } => {
-                let fr = st.fr.clone();
+                let fr = self.vm_frame(st);
                 st.regs[dst as usize] = self.vm_local_addr(span, &fr, local, ty)?;
             }
             Op::LdUpvar { dst, levels, local, ty } => {
-                let fr = self.vm_up(span, &st.fr, levels)?;
+                let fr = self.vm_frame(st);
+                let fr = self.vm_up(span, &fr, levels)?;
                 let v = self.read_local(span, &fr, local, ty)?;
                 write_value(st, Arg::Data { reg: dst, size: self.ti(ty).size as u32 }, v, span)?;
             }
             Op::AddrUpvar { dst, levels, local, ty } => {
-                let fr = self.vm_up(span, &st.fr, levels)?;
+                let fr = self.vm_frame(st);
+                let fr = self.vm_up(span, &fr, levels)?;
                 st.regs[dst as usize] = self.vm_local_addr(span, &fr, local, ty)?;
             }
             Op::LdLocalVal { dst, local } => {
-                let v = match st.fr.locals.borrow().get(local.index()) {
+                let fr = self.vm_frame(st);
+                let v = match fr.locals.borrow().get(local.index()) {
                     Some(Slot::Val(v)) => Some((**v).clone()),
                     _ => None,
                 };
@@ -827,10 +1027,12 @@ impl<'a> Machine<'a> {
             }
             Op::StLocalVal { local, src } => {
                 let v = st.vals[src as usize].clone();
-                self.bind_local(span, &st.fr, local, None, v)?;
+                let fr = self.vm_frame(st);
+                self.bind_local(span, &fr, local, None, v)?;
             }
             Op::LdUpvarVal { dst, levels, local } => {
-                let fr = self.vm_up(span, &st.fr, levels)?;
+                let fr = self.vm_frame(st);
+                let fr = self.vm_up(span, &fr, levels)?;
                 let v = match fr.locals.borrow().get(local.index()) {
                     Some(Slot::Val(v)) => Some((**v).clone()),
                     _ => None,
@@ -860,7 +1062,7 @@ impl<'a> Machine<'a> {
             }
             Op::IndexVal { dst, src, idx, ik, esz, len } => {
                 let i = index::<LE>(ik, st.regs[idx as usize]);
-                if i >= len {
+                if i >= len as u64 {
                     return self.trap(span, format!("index {} out of bounds for length {}", i, len));
                 }
                 extract(&mut st.regs, dst, src, i as u32 * esz, esz);
@@ -964,14 +1166,15 @@ impl<'a> Machine<'a> {
                 st.regs[dst as usize] = (v != neg) as u64;
             }
             Op::CoerceG { dst, src, kind, from, to } => {
+                let kind = code.coercions[kind as usize];
                 let b = get_bytes(&st.regs, src, self.ti(from).size as u32);
                 let v = self.coerce_bytes(span, kind, from, to, b)?;
                 put_bytes(&mut st.regs, dst, self.ti(to).size as u32, &v);
             }
             Op::FnToPtr { dst, src, to } => {
-                let v = st.value_of(src);
+                let v = st.value_of(code.operands[src as usize]);
                 let v = self.fn_to_ptr(&st.cx, span, to, v)?;
-                write_value(st, dst, v, span)?;
+                write_value(st, code.operands[dst as usize], v, span)?;
             }
             Op::BitsField { dst, src, ty, idx } => {
                 let b = get_bytes(&st.regs, src, self.ti(ty).size as u32);
@@ -1079,19 +1282,20 @@ impl<'a> Machine<'a> {
                 return self.trap(span, msg);
             }
             Op::CallInd { callee, cty, args, out } => {
-                let cv = st.value_of(callee);
+                let cv = st.value_of(code.operands[callee as usize]);
                 let vals = st.values(&code.args[args as usize]);
                 let cx = st.cx.clone();
                 let v = self.call_value(&cx, span, cv, cty, vals)?;
-                write_value(st, out, v, span)?;
+                write_value(st, code.operands[out as usize], v, span)?;
             }
             Op::Perform { eff, op, args, out } => {
                 let vals = st.values(&code.args[args as usize]);
                 let cx = st.cx.clone();
                 let v = self.perform(&cx, span, &code.effects[eff as usize], op, vals)?;
-                write_value(st, out, v, span)?;
+                write_value(st, code.operands[out as usize], v, span)?;
             }
-            Op::Builtin { op, args, res, out } => {
+            Op::Builtin { info } => {
+                let BuiltinInfo { op, args, res, out } = code.builtins[info as usize];
                 let list = &code.args[args as usize];
                 let tys = &code.arg_tys[args as usize];
                 let v = if list.len() <= 4 {
@@ -1123,34 +1327,38 @@ impl<'a> Machine<'a> {
             }
             Op::EvalTree { expr, out } => {
                 let e = code.trees[expr as usize];
-                let fr = st.fr.clone();
+                let fr = self.vm_frame(st);
                 let cx = st.cx.clone();
                 let v = self.eval(Act { fr: &fr, cx: &cx }, e)?;
                 write_value(st, out, v, span)?;
             }
             Op::TreeStmt { stmt } => {
-                let fr = st.fr.clone();
+                let fr = self.vm_frame(st);
                 let cx = st.cx.clone();
                 self.exec_stmt(Act { fr: &fr, cx: &cx }, code.stmts[stmt as usize])?;
             }
             Op::ThrowBreak { levels, label, v } => {
-                let target = self.vm_up(span, &st.fr, levels)?;
+                let fr = self.vm_frame(st);
+                let target = self.vm_up(span, &fr, levels)?;
                 let value = st.value_of(v);
                 return Err(Box::new(Flow::Break { frame: target.id, label, value }));
             }
             Op::ThrowBreakInst { v } => {
-                let Some((frame, label)) = st.fr.installing else {
+                let fr = self.vm_frame(st);
+                let Some((frame, label)) = fr.installing else {
                     return self.trap(span, "internal error: no installing `with` for this break");
                 };
                 let value = st.value_of(v);
                 return Err(Box::new(Flow::Break { frame, label, value }));
             }
             Op::ThrowContinue { levels, label } => {
-                let target = self.vm_up(span, &st.fr, levels)?;
+                let fr = self.vm_frame(st);
+                let target = self.vm_up(span, &fr, levels)?;
                 return Err(Box::new(Flow::Continue { frame: target.id, label }));
             }
             Op::ThrowReturn { levels, v } => {
-                let Some(target) = self.up_frame(&st.fr, levels) else {
+                let fr = self.vm_frame(st);
+                let Some(target) = self.up_frame(&fr, levels) else {
                     return self.trap(span, "internal error: return from a missing frame");
                 };
                 let value = st.value_of(v);
@@ -1170,7 +1378,7 @@ impl<'a> Machine<'a> {
                 };
                 let hv = hv.clone();
                 let eff = self.prog.handlers[hv.id.index()].effect.clone();
-                st.cx = st.cx.push(eff, Installed::Lit(hv), st.fr.id, label);
+                st.cx = st.cx.push(eff, Installed::Lit(hv), st.id, label);
             }
             Op::InstallDecl { info, src, size, label } => {
                 let b = get_bytes(&st.regs, src, size);
@@ -1178,15 +1386,15 @@ impl<'a> Machine<'a> {
                 for d in code.decls[info as usize].iter() {
                     let eff = self.prog.handler_decls[d.index()].effect.clone();
                     let inst = Installed::Decl { decl: *d, value: b.clone(), outer: outer.clone() };
-                    st.cx = st.cx.push(eff, inst, st.fr.id, label);
+                    st.cx = st.cx.push(eff, inst, st.id, label);
                 }
             }
             Op::MkClosure { dst, f, env } => {
-                let env = if env { Some(st.fr.clone()) } else { None };
+                let env = if env { Some(self.vm_frame(st)) } else { None };
                 st.vals[dst as usize] = Value::Closure(Closure { func: f, env, ctx: st.cx.clone() });
             }
             Op::MkHandler { dst, h } => {
-                let hv = HandlerVal { id: h, env: Some(st.fr.clone()), ctx: st.cx.clone() };
+                let hv = HandlerVal { id: h, env: Some(self.vm_frame(st)), ctx: st.cx.clone() };
                 st.vals[dst as usize] = Value::Handler(Rc::new(hv));
             }
             _ => return self.trap(span, format!("internal error: instruction {:?} out of place", op)),
@@ -1228,8 +1436,17 @@ pub mod profile {
     use std::sync::Mutex;
 
     static COUNTS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+    static PAIRS: std::sync::LazyLock<Mutex<(String, std::collections::HashMap<String, u64>)>> =
+        std::sync::LazyLock::new(|| Mutex::new((String::new(), std::collections::HashMap::new())));
 
     pub fn count(op: &Op) {
+        {
+            let name = format!("{:?}", op).split(' ').next().unwrap_or("").to_string();
+            let mut p = PAIRS.lock().unwrap();
+            let key = format!("{} {}", p.0, name);
+            *p.1.entry(key).or_insert(0) += 1;
+            p.0 = name;
+        }
         // SAFETY: reads the discriminant byte of the enum, for statistics only.
         let d = unsafe { *(op as *const Op as *const u8) } as usize;
         let mut c = COUNTS.lock().unwrap();
@@ -1249,8 +1466,92 @@ pub mod profile {
         let mut c = COUNTS.lock().unwrap().clone();
         c.sort_by_key(|x| std::cmp::Reverse(x.0));
         let total: u64 = c.iter().map(|x| x.0).sum();
+        if std::env::var_os("GAMMA_VM_PAIRS").is_some() {
+            let mut v: Vec<_> = PAIRS.lock().unwrap().1.iter().map(|(k, n)| (*n, k.clone())).collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.0));
+            for (n, k) in v.iter().take(25) {
+                eprintln!("{:12} {:5.1}% {}", n, 100.0 * *n as f64 / total as f64, k);
+            }
+        }
         for (n, name) in c.iter().filter(|x| x.0 > 0) {
             eprintln!("{:12} {:5.1}% {}", n, 100.0 * *n as f64 / total as f64, name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds() -> Vec<IntK> {
+        let mut v = Vec::new();
+        for bits in [1u8, 2, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 48, 63, 64] {
+            for signed in [false, true] {
+                if signed && bits < 2 {
+                    continue;
+                }
+                let size = (bits as usize).div_ceil(8).next_power_of_two().min(8) as u8;
+                v.push(IntK { signed, bits, size });
+                let tight = bits.div_ceil(8);
+                if tight != size {
+                    v.push(IntK { signed, bits, size: tight });
+                }
+            }
+        }
+        v
+    }
+
+    fn samples(k: IntK) -> Vec<i128> {
+        let si = k.si();
+        let (lo, hi) = (si.min(), si.max());
+        let mut v =
+            vec![0, 1, 2, 3, -1, -2, 7, 100, lo, lo + 1, lo + 2, hi, hi - 1, hi - 2, hi / 2, hi / 2 + 1, lo / 2];
+        v.retain(|x| si.fits(*x));
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    fn check<const LE: bool>() {
+        for k in kinds() {
+            let si = k.si();
+            for &a in &samples(k) {
+                // Round trip through the word format.
+                let wa = iput::<LE>(k, a);
+                assert_eq!(nput::<LE>(k, a as u64), wa, "{k:?} {a}");
+                assert_eq!(nval::<LE>(k, wa), a as u64, "{k:?} {a}");
+                assert_eq!(ival::<LE>(k, wa), a, "{k:?} {a}");
+                assert!(nfits(k, a as u64));
+                for &b in &samples(k) {
+                    let (wb, la, lb) = (iput::<LE>(k, b), a as u64, b as u64);
+                    for (name, got, exact) in
+                        [("+", n_add(k, la, lb), a + b), ("-", n_sub(k, la, lb), a - b), ("*", n_mul(k, la, lb), a * b)]
+                    {
+                        // An overflow in the 64-bit domain is reported as one too.
+                        assert_eq!(got.is_some(), si.fits(exact), "{k:?} {a} {name} {b}");
+                        if let Some(v) = got {
+                            assert_eq!(v, exact as u64, "{k:?} {a} {name} {b}");
+                        }
+                    }
+                    for cmp in [Cmp::Lt, Cmp::Le, Cmp::Gt, Cmp::Ge, Cmp::Eq, Cmp::Ne] {
+                        let want = match cmp {
+                            Cmp::Lt => a < b,
+                            Cmp::Le => a <= b,
+                            Cmp::Gt => a > b,
+                            Cmp::Ge => a >= b,
+                            Cmp::Eq => a == b,
+                            Cmp::Ne => a != b,
+                        };
+                        assert_eq!(n_cmp::<LE>(cmp, k, wa, wb), want, "{k:?} {a} {cmp:?} {b}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn integer_kernels_match_exact_arithmetic() {
+        check::<true>();
+        check::<false>();
     }
 }
