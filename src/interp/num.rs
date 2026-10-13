@@ -471,33 +471,73 @@ pub fn encode_float(x: f64, ty: FloatTy, little: bool) -> Bytes {
     out
 }
 
-/// Shortest decimal digits and exponent such that `0.d1d2… × 10^(exp+1)`, i.e.
-/// the value is `d1.d2d3… × 10^exp`, reading back as `x` at type `ty`. `x` must be finite and positive.
+/// Shortest decimal digits and exponent such that the value is `d1.d2d3… × 10^exp`, reading
+/// back as `x` at type `ty`. Among the shortest digit strings that read back, the one nearest
+/// the exact value of `x` is chosen, and on an exact tie the one with an even last digit.
+/// `x` must be finite and positive and exactly representable at `ty`.
 pub fn shortest(x: f64, ty: FloatTy) -> (String, i32) {
-    let s = match ty {
-        FloatTy::F64 => format!("{:e}", x),
-        FloatTy::F32 => format!("{:e}", x as f32),
-        FloatTy::F16 => {
-            let target = f64_to_f16(x);
-            let mut found = None;
-            for d in 1..=6 {
-                let s = format!("{:.*e}", d - 1, x);
-                let back: f64 = s.parse().unwrap();
-                if f64_to_f16(back) == target {
-                    found = Some(s);
-                    break;
-                }
-            }
-            let s = found.unwrap_or_else(|| format!("{:e}", x));
-            // Trim trailing zeros of the mantissa.
-            let (m, e) = s.split_once('e').unwrap();
-            let m = if m.contains('.') { m.trim_end_matches('0').trim_end_matches('.') } else { m };
-            format!("{}e{}", m, e)
+    let reads_back = |digits: &str, exp: i32| -> bool {
+        let s = format!("{}.{}e{}", &digits[..1], &digits[1..], exp);
+        match ty {
+            FloatTy::F64 => s.parse::<f64>().ok() == Some(x),
+            FloatTy::F32 => s.parse::<f32>().ok() == Some(x as f32),
+            FloatTy::F16 => f64_to_f16(s.parse::<f64>().unwrap()) == f64_to_f16(x),
         }
     };
-    let (m, e) = s.split_once('e').unwrap();
-    let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
-    (digits, e.parse().unwrap())
+    // An f64 has at most 767 significant digits, so this expansion is exact.
+    let exact = format!("{:.800e}", x);
+    let (m, e) = exact.split_once('e').unwrap();
+    let all: Vec<u8> = m.bytes().filter(|c| c.is_ascii_digit()).collect();
+    let exp: i32 = e.parse().unwrap();
+    let max = match ty {
+        FloatTy::F16 => 6,
+        FloatTy::F32 => 9,
+        FloatTy::F64 => 17,
+    };
+    for d in 1..=max {
+        let floor = String::from_utf8(all[..d].to_vec()).unwrap();
+        let rest = &all[d..];
+        let first_nonzero = rest.iter().position(|&c| c != b'0');
+        let ceil = first_nonzero.map(|_| {
+            let mut v = all[..d].to_vec();
+            let mut i = d;
+            loop {
+                if i == 0 {
+                    v.insert(0, b'1');
+                    v.truncate(d);
+                    break (String::from_utf8(v).unwrap(), exp + 1);
+                }
+                i -= 1;
+                if v[i] == b'9' {
+                    v[i] = b'0';
+                } else {
+                    v[i] += 1;
+                    break (String::from_utf8(v).unwrap(), exp);
+                }
+            }
+        });
+        let down_ok = reads_back(&floor, exp);
+        let up_ok = ceil.as_ref().is_some_and(|(c, ce)| reads_back(c, *ce));
+        let pick_up = match (down_ok, up_ok) {
+            (false, false) => continue,
+            (true, false) => false,
+            (false, true) => true,
+            (true, true) => match rest[0].cmp(&b'5') {
+                Ordering::Less => false,
+                Ordering::Greater => true,
+                Ordering::Equal => {
+                    if rest[1..].iter().any(|&c| c != b'0') {
+                        true
+                    } else {
+                        (floor.as_bytes()[d - 1] - b'0') % 2 == 1
+                    }
+                }
+            },
+        };
+        let (digits, e) = if pick_up { ceil.unwrap() } else { (floor, exp) };
+        return (digits.trim_end_matches('0').to_string(), e);
+    }
+    unreachable!("a float reads back from its full-precision digits")
 }
 
 /// Formats a float per the `@write` display rule (§21.6.1).
@@ -548,6 +588,21 @@ pub fn format_float(x: f64, ty: FloatTy) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortest_ties() {
+        // Nearest to the exact value; an exact tie goes to the even last digit.
+        let f = |x: f64, ty| format_float(x, ty);
+        assert_eq!(f((-12227261.0f32 / 4.0) as f64, FloatTy::F32), "-3056815.2");
+        assert_eq!(f((487257.0f32 / 16.0) as f64, FloatTy::F32), "30453.562");
+        assert_eq!(f(0.1, FloatTy::F64), "0.1");
+        assert_eq!(f(5e-324, FloatTy::F64), "5e-324");
+        assert_eq!(f(9007199254740993.0, FloatTy::F64), "9007199254740992");
+        assert_eq!(f(f64::MAX, FloatTy::F64), "1.7976931348623157e308");
+        assert_eq!(f(1e23, FloatTy::F64), "1e23");
+        assert_eq!(f(f32::MAX as f64, FloatTy::F32), "3.4028235e38");
+        assert_eq!(f(65504.0, FloatTy::F16), "65500");
+    }
 
     #[test]
     fn wrap_and_fit() {

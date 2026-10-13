@@ -157,9 +157,9 @@ static void test_floats(void) {
     F(3.4028235e38f, "3.4028235e38");
     F(16777216.0f, "16777216");
     F(1e-10f, "1e-10");
-    /* Exact ties between two shortest candidates go to the larger digit. */
-    F(-3056815.25f, "-3056815.3");
-    F(30453.5625f, "30453.563");
+    /* Exact ties between two shortest candidates go to the even digit. */
+    F(-3056815.25f, "-3056815.2");
+    F(30453.5625f, "30453.562");
     F(__builtin_nanf(""), "nan");
     F(-__builtin_inff(), "-inf");
 #undef F

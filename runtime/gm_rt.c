@@ -768,69 +768,73 @@ static size_t gm_split_digits(const char *s, char *digits, int *exp10) {
     return n;
 }
 
-/* printf rounds an exact tie (x lies halfway between two n-digit decimals) to even, but the
- * display rule picks the larger one when it reads back as x as well. Detects the tie by
- * checking that its exact expansion is the (n+1)-digit one ending in 5, then bumps the last digit. */
-static void gm_round_tie_up(double x, unsigned bits, size_t n, char *digits, int *exp10) {
-    char buf[64], longer[24];
-    int e2;
-    snprintf(buf, sizeof buf, "%.*e", (int)n, x);
-    size_t m = gm_split_digits(buf, longer, &e2);
-    if (m != n + 1 || longer[n] != '5' || strtod(buf, NULL) != x) return;
-    /* The (n+1)-digit rendering reads back as x, but only an exact expansion is a tie. A double
-     * has at most 767 significant digits. */
-    char exact[800];
-    snprintf(exact, sizeof exact, "%.770e", x);
-    for (const char *q = exact + 2 + n + 1; *q != 'e' && *q != '\0'; q++) {
-        if (*q != '0') return;
-    }
-    char up[24];
-    memcpy(up, longer, n);
-    size_t i = n;
-    while (i > 0 && up[i - 1] == '9') up[--i] = '0';
-    if (i == 0) {
-        /* 99...9 rounds up to 100...0 one decade higher. */
-        memset(up, '0', n);
-        up[0] = '1';
-        e2 += 1;
-    } else {
-        up[i - 1]++;
-    }
-    up[n] = '\0';
-    snprintf(buf, sizeof buf, "%c.%se%d", up[0], up + 1, e2);
-    if (bits == 32 ? strtof(buf, NULL) == (float)x : strtod(buf, NULL) == x) {
-        memcpy(digits, up, n + 1);
-        *exp10 = e2;
-    }
+/* Whether the decimal d[0].d[1..]e<exp> reads back as x at the given width. */
+static int gm_reads_back(const char *d, size_t n, int exp, double x, unsigned bits) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "%c.%.*se%d", d[0], (int)(n - 1), d + 1, exp);
+    if (bits == 16) return gm_f64_to_f16(strtod(buf, NULL)) == gm_f64_to_f16(x);
+    if (bits == 32) return strtof(buf, NULL) == (float)x;
+    return strtod(buf, NULL) == x;
 }
 
 /* The shortest decimal digits (no trailing zeros, at least one) that read back as the
- * same value at the given width, and the decimal exponent of the first digit. x is positive
- * and finite, and exactly representable at that width. */
+ * same value at the given width, and the decimal exponent of the first digit. Among the
+ * shortest digit strings that read back, the one nearest the exact value of x wins, and an
+ * exact tie goes to the even last digit. x is positive and finite, and exactly representable
+ * at that width. */
 static void gm_shortest(double x, unsigned bits, char *digits, int *exp10) {
-    char buf[64];
-    int found = 0;
-    if (bits == 16) {
-        uint16_t target = gm_f64_to_f16(x);
-        for (int d = 1; d <= 6 && !found; d++) {
-            snprintf(buf, sizeof buf, "%.*e", d - 1, x);
-            found = gm_f64_to_f16(strtod(buf, NULL)) == target;
+    /* A double has at most 767 significant digits, so this expansion is exact. */
+    char exact[820], all[820];
+    snprintf(exact, sizeof exact, "%.800e", x);
+    size_t total = gm_split_digits(exact, all, exp10);
+    int exp = *exp10;
+    size_t max = bits == 16 ? 6 : bits == 32 ? 9 : 17;
+    for (size_t d = 1; d <= max; d++) {
+        char down[24], up[24];
+        memcpy(down, all, d);
+        down[d] = '\0';
+        size_t nz = d;
+        while (nz < total && all[nz] == '0') nz++;
+        int has_rest = nz < total;
+        int up_exp = exp;
+        if (has_rest) {
+            memcpy(up, all, d);
+            up[d] = '\0';
+            size_t i = d;
+            while (i > 0 && up[i - 1] == '9') up[--i] = '0';
+            if (i == 0) {
+                memset(up, '0', d);
+                up[0] = '1';
+                up_exp += 1;
+            } else {
+                up[i - 1]++;
+            }
         }
-    } else if (bits == 32) {
-        float f = (float)x;
-        for (int d = 1; d <= 9 && !found; d++) {
-            snprintf(buf, sizeof buf, "%.*e", d - 1, (double)f);
-            found = strtof(buf, NULL) == f;
+        int down_ok = gm_reads_back(down, d, exp, x, bits);
+        int up_ok = has_rest && gm_reads_back(up, d, up_exp, x, bits);
+        if (!down_ok && !up_ok) continue;
+        int pick_up;
+        if (down_ok != up_ok) {
+            pick_up = up_ok;
+        } else if (all[d] != '5') {
+            pick_up = all[d] > '5';
+        } else {
+            size_t k = d + 1;
+            while (k < total && all[k] == '0') k++;
+            pick_up = k < total ? 1 : ((down[d - 1] - '0') & 1);
         }
+        if (pick_up) {
+            memcpy(digits, up, d + 1);
+            *exp10 = up_exp;
+        } else {
+            memcpy(digits, down, d + 1);
+        }
+        size_t n = d;
+        while (n > 1 && digits[n - 1] == '0') digits[--n] = '\0';
+        return;
     }
-    for (int d = 1; d <= 17 && !found; d++) {
-        snprintf(buf, sizeof buf, "%.*e", d - 1, x);
-        found = strtod(buf, NULL) == x;
-    }
-    size_t n = gm_split_digits(buf, digits, exp10);
-    if (bits != 16 && n >= 2) gm_round_tie_up(x, bits, n, digits, exp10);
-    n = strlen(digits);
-    while (n > 1 && digits[n - 1] == '0') digits[--n] = '\0';
+    memcpy(digits, all, 17);
+    digits[17] = '\0';
 }
 
 /* The display form of a float (§21.6.1): "nan", "inf", "-inf", "0", "-0", else the shortest
