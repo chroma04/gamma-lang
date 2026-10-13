@@ -462,6 +462,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
+    /// Whether `l` is a parameter read in place from the caller's value (`local_addr`).
+    pub fn is_borrowed(&self, l: crate::tir::LocalId) -> bool {
+        self.def.params.iter().position(|p| *p == l).is_some_and(|i| self.borrowed[i])
+    }
+
     /// The C lvalue of local `l`: a frame field, or a C local of its own.
     pub fn local_lv(&self, l: crate::tir::LocalId) -> String {
         if self.in_frame[l.index()] { format!("F.l{}", l.0) } else { format!("gm_l{}", l.0) }
@@ -892,6 +897,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let p = self.place_addr(place)?;
                 let c = self.g.ty.cty(place.ty);
                 self.expr_into(value, &format!("(*({} *){})", c, p))?;
+            }
+            // A local assigned a value of its own type is assigned as a C lvalue.
+            Stmt::Assign { place: Expr { kind: ExprKind::Local(l), ty, .. }, value }
+                if value.ty == *ty && self.def.locals[l.index()].ty == *ty && !self.is_borrowed(*l) =>
+            {
+                let v = self.expr(value)?;
+                let lv = self.local_lv(*l);
+                self.line(&format!("{lv} = {v};"));
             }
             Stmt::Assign { place, value } => {
                 let p = self.place_addr(place)?;

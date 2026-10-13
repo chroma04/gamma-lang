@@ -57,6 +57,13 @@ GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, 
     gm_trap_bytes((const uint8_t *)msg, strlen(msg), file, line, col);
 }
 
+GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "misaligned pointer cast: address 0x%llx is not aligned to %u bytes",
+             (unsigned long long)addr, align);
+    gm_trap(m, file, line, col);
+}
+
 /* ---- growable byte buffer --------------------------------------------------- */
 
 GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {

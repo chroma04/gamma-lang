@@ -404,7 +404,7 @@ impl<'a> Machine<'a> {
                 drop(locals);
                 Ok(Value::Bytes(self.load_ty(span, addr, ty)?))
             }
-            Some(Slot::Word(w)) => Ok(Value::Bytes(Bytes::from_word(*w, self.ti(ty).size))),
+            Some(Slot::Reg(r)) => Ok(Value::Bytes(Bytes::from_slice(&r[..self.ti(ty).size]))),
             Some(Slot::Val(v)) => Ok((**v).clone()),
             _ => self.local_uninit(span),
         }

@@ -151,7 +151,7 @@ impl<'a> Machine<'a> {
                         if let Some(ty) = self.local_ty(a.fr, *local) {
                             let ti = self.ti(ty);
                             if ti.size <= REG_MAX {
-                                self.set_local_word(crate::source::Span::DUMMY, a.fr, *local, 0, ti.size, 1)?;
+                                self.set_local(crate::source::Span::DUMMY, a.fr, *local, &[], 1)?;
                             } else {
                                 self.local_addr(crate::source::Span::DUMMY, a.fr, *local, ti.size, ti.align)?;
                             }
@@ -176,8 +176,7 @@ impl<'a> Machine<'a> {
                     && self.ti(place.ty).size <= REG_MAX
                 {
                     let b = self.eval_bytes(a, value)?;
-                    let w = super::fast::word_of(&b, b.len(), true);
-                    return self.set_local_word(place.span, a.fr, id, w, b.len(), self.ti(place.ty).align);
+                    return self.set_local(place.span, a.fr, id, &b, self.ti(place.ty).align);
                 }
                 let p = self.eval_place(a, place)?;
                 let v = self.eval(a, value)?;

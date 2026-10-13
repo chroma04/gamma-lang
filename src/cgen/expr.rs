@@ -206,6 +206,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let raw = self.tmp(Ty::int(false, 128), &raw);
                 Ok(self.bits_value(fty, &raw))
             }
+            // A local read as its own type is its C lvalue: no load through its address.
+            ExprKind::Local(l) if !self.is_borrowed(*l) && self.def.locals[l.index()].ty == t => {
+                let lv = self.local_lv(*l);
+                Ok(self.tmp(t, &lv))
+            }
             ExprKind::Local(_)
             | ExprKind::Upvar { .. }
             | ExprKind::Deref(_)

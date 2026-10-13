@@ -167,10 +167,10 @@ pub struct Machine<'a> {
 pub const MAX_DEPTH: u32 = 200_000;
 
 /// The largest local, in bytes, kept in its frame's slot rather than in an allocation
-/// until its address is needed (`Slot::Word`). Most locals are numbers, booleans and
-/// pointers whose address is never taken; keeping them out of [`Memory`] saves an
-/// allocation per local and call, and an address lookup per access.
-pub const REG_MAX: usize = 8;
+/// until its address is needed (`Slot::Reg`). Most locals are numbers, booleans,
+/// pointers and slices whose address is never taken; keeping them out of [`Memory`]
+/// saves an allocation per local and call, and an address lookup per access.
+pub const REG_MAX: usize = 16;
 
 impl<'a> Machine<'a> {
     pub fn new(
@@ -745,7 +745,7 @@ impl<'a> Machine<'a> {
         // The locals die with the frame, in slots too: something that still refers to
         // the frame finds them gone rather than reading stale values.
         for s in fr.locals.borrow_mut().iter_mut() {
-            if let Slot::Word(_) = s {
+            if let Slot::Reg(_) = s {
                 *s = Slot::Empty;
             }
         }
@@ -779,14 +779,13 @@ impl<'a> Machine<'a> {
         let i = id.index();
         let word = match fr.locals.borrow().get(i) {
             Some(Slot::Mem(a)) => return Ok(*a),
-            Some(Slot::Word(w)) => Some(*w),
+            Some(Slot::Reg(r)) => Some(*r),
             _ => None,
         };
         let addr = self.alloc_mem(span, size, align, AllocKind::Stack, true)?;
         fr.allocs.borrow_mut().push(addr);
-        if let Some(w) = word {
-            let n = size.min(REG_MAX);
-            let r = self.mem.write(addr, &w.to_le_bytes()[..n], 1);
+        if let Some(r) = word {
+            let r = self.mem.write(addr, &r[..size.min(REG_MAX)], 1);
             self.mem_err(span, r)?;
         }
         let mut locals = fr.locals.borrow_mut();
@@ -797,10 +796,10 @@ impl<'a> Machine<'a> {
         Ok(addr)
     }
 
-    /// Stores the value `w` (its bytes, the first one least significant) of a local of
-    /// `size` bytes, at most [`REG_MAX`]: in its slot unless it has an allocation already.
+    /// Stores `data`, the value of a local of at most [`REG_MAX`] bytes: in its slot
+    /// unless it has an allocation already.
     #[inline]
-    pub fn set_local_word(&mut self, span: Span, fr: &Frame, id: LocalId, w: u64, size: usize, align: u64) -> R<()> {
+    pub fn set_local(&mut self, span: Span, fr: &Frame, id: LocalId, data: &[u8], align: u64) -> R<()> {
         let i = id.index();
         let mut locals = fr.locals.borrow_mut();
         if locals.len() <= i {
@@ -809,19 +808,12 @@ impl<'a> Machine<'a> {
         match locals[i] {
             Slot::Mem(addr) => {
                 drop(locals);
-                if size == 0 {
-                    return Ok(());
-                }
-                if self.mem.try_write_word(addr, w, size, align) {
-                    return Ok(());
-                }
-                match self.mem.write_word(addr, w, size, align) {
-                    Ok(()) => Ok(()),
-                    Err(e) => Err(trap_flow(span, e.message())),
-                }
+                self.store(span, addr, data, align)
             }
             _ => {
-                locals[i] = Slot::Word(w);
+                let mut r = [0; REG_MAX];
+                r[..data.len()].copy_from_slice(data);
+                locals[i] = Slot::Reg(r);
                 Ok(())
             }
         }
@@ -839,8 +831,7 @@ impl<'a> Machine<'a> {
                     None => (b.len(), 16),
                 };
                 if size <= REG_MAX {
-                    let w = super::fast::word_of(&b, b.len(), true);
-                    return self.set_local_word(span, fr, id, w, b.len(), 1);
+                    return self.set_local(span, fr, id, &b, 1);
                 }
                 let addr = self.local_addr(span, fr, id, size, align)?;
                 self.store(span, addr, &b, 1)
