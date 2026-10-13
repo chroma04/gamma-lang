@@ -2162,7 +2162,7 @@ In addition to performing all checks, a Debug build must:
 - tag each allocation with its allocator and trap when it is freed through a different one, reporting both sites;
 - place guard pages (or equivalent probes) on fiber stacks;
 - use the leak-checking allocator for tests;
-- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library and shorten long reports.
+- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library. A report of more than 20 calls consists of its first 10 and its last 10 calls, with the line `  ... more calls` between them, which does not state how many calls were left out; so a stack overflow, whose depth differs between implementations, reports identically.
 
 Debug builds may skip optimizations, including handler specialization; this never changes meaning.
 

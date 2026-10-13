@@ -19,7 +19,8 @@ GM_API _Thread_local uintptr_t gm_thread_stack_limit;
 /* ---- traps ---------------------------------------------------------------- */
 
 /* Prints the callers in the backtrace chain; past GM_BT_MAX of them, only the first and
- * last GM_BT_MAX / 2. */
+ * last GM_BT_MAX / 2, with a line that does not count the calls in between (the depth that
+ * a stack overflow reaches differs between back ends). */
 #define GM_BT_MAX 20
 static void gm_backtrace(void) {
     size_t n = 0;
@@ -32,7 +33,7 @@ static void gm_backtrace(void) {
         if (n <= GM_BT_MAX || i < GM_BT_MAX / 2 || i >= n - GM_BT_MAX / 2)
             fprintf(stderr, "  called from %s:%u:%u in %s\n", b->file, (unsigned)b->line, (unsigned)b->col, b->fn);
         else if (i == GM_BT_MAX / 2)
-            fprintf(stderr, "  ... %llu more calls\n", (unsigned long long)(n - GM_BT_MAX));
+            fputs("  ... more calls\n", stderr);
         i++;
     }
 }
