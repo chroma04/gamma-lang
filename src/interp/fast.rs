@@ -197,11 +197,19 @@ impl<'a> Machine<'a> {
             let locals = fr.locals.borrow();
             match locals.get(id.index()) {
                 Some(Slot::Mem(addr)) => *addr,
+                Some(Slot::Word(w)) => return Ok(si.value(self.raw_to_word(*w, si.size))),
                 Some(Slot::Val(_)) => return self.local_not_data(span),
                 _ => return self.local_uninit(span),
             }
         };
         self.load_small(span, addr, si, si.align)
+    }
+
+    /// Assigns the value `v` to a local of small integer type.
+    #[inline(always)]
+    pub fn set_local_small(&mut self, span: Span, fr: &Frame, id: LocalId, si: SmallInt, v: i128) -> R<()> {
+        let raw = self.word_to_raw(v as u64, si.size);
+        self.set_local_word(span, fr, id, raw, si.size, si.align)
     }
 
     #[cold]

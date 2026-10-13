@@ -11,6 +11,7 @@
 use crate::symbol::Symbol;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -225,7 +226,8 @@ pub enum TyKind {
 }
 
 struct Interner {
-    kinds: Vec<&'static TyKind>,
+    /// The number of kinds interned; the kinds themselves are in [`KINDS`].
+    len: usize,
     map: HashMap<&'static TyKind, Ty>,
     adt_names: Vec<Symbol>,
     effect_names: Vec<Symbol>,
@@ -234,11 +236,39 @@ struct Interner {
     adt_templates: HashMap<AdtId, AdtId>,
 }
 
+/// The interned kinds by `Ty` index, readable without the interner's lock: `Ty::kind` is
+/// among the most frequent calls of every phase. Chunk `c` holds `FIRST_CHUNK << c`
+/// slots; chunks are allocated (under the interner's write lock) and never freed.
+static KINDS: [AtomicPtr<AtomicPtr<TyKind>>; 32] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 32];
+const FIRST_CHUNK: usize = 1024;
+
+/// The chunk and the offset in it of slot `idx` of [`KINDS`].
+#[inline(always)]
+fn kind_slot(idx: usize) -> (usize, usize) {
+    let v = idx / FIRST_CHUNK + 1;
+    let chunk = (usize::BITS - 1 - v.leading_zeros()) as usize;
+    (chunk, idx - FIRST_CHUNK * ((1 << chunk) - 1))
+}
+
+/// Stores the kind of the type with index `idx`; called with the interner's write lock held.
+fn kinds_publish(idx: usize, kind: &'static TyKind) {
+    let (chunk, off) = kind_slot(idx);
+    let mut base = KINDS[chunk].load(Ordering::Acquire);
+    if base.is_null() {
+        let slots: Box<[AtomicPtr<TyKind>]> =
+            (0..FIRST_CHUNK << chunk).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect();
+        base = Box::leak(slots).as_mut_ptr();
+        KINDS[chunk].store(base, Ordering::Release);
+    }
+    // SAFETY: `off` is within the chunk, which lives forever.
+    unsafe { (*base.add(off)).store(kind as *const TyKind as *mut TyKind, Ordering::Release) };
+}
+
 fn interner() -> &'static RwLock<Interner> {
     static I: OnceLock<RwLock<Interner>> = OnceLock::new();
     I.get_or_init(|| {
         RwLock::new(Interner {
-            kinds: vec![],
+            len: 0,
             map: HashMap::new(),
             adt_names: vec![],
             effect_names: vec![],
@@ -258,8 +288,9 @@ impl Ty {
             return t;
         }
         let leaked: &'static TyKind = Box::leak(Box::new(kind));
-        let t = Ty(i.kinds.len() as u32);
-        i.kinds.push(leaked);
+        let t = Ty(i.len as u32);
+        kinds_publish(i.len, leaked);
+        i.len += 1;
         i.map.insert(leaked, t);
         t
     }
@@ -269,8 +300,15 @@ impl Ty {
         self.0 as usize
     }
 
+    #[inline]
     pub fn kind(self) -> &'static TyKind {
-        interner().read().unwrap().kinds[self.0 as usize]
+        let (chunk, off) = kind_slot(self.0 as usize);
+        let base = KINDS[chunk].load(Ordering::Acquire);
+        debug_assert!(!base.is_null(), "type {} was never interned", self.0);
+        // SAFETY: a `Ty` exists only after `Ty::intern` published its kind (and the chunk
+        // holding it) with release stores; chunks are never freed or moved.
+        let p = unsafe { (*base.add(off)).load(Ordering::Acquire) };
+        unsafe { &*p }
     }
 
     // --- constructors for common types ---
@@ -732,5 +770,18 @@ mod tests {
         let a = AdtId::fresh(Symbol::intern("S"));
         let b = AdtId::fresh(Symbol::intern("S"));
         assert_ne!(Ty::intern(TyKind::Adt(a, Box::new([]))), Ty::intern(TyKind::Adt(b, Box::new([]))));
+    }
+
+    #[test]
+    fn kind_slots_tile_the_index_space() {
+        let mut next = (0, 0);
+        for idx in 0..20 * FIRST_CHUNK {
+            let slot = kind_slot(idx);
+            if slot != next {
+                assert_eq!((slot.0, slot.1), (next.0 + 1, 0), "index {idx}");
+                assert_eq!(next.1, FIRST_CHUNK << next.0, "chunk {} not full", next.0);
+            }
+            next = (slot.0, slot.1 + 1);
+        }
     }
 }

@@ -404,6 +404,7 @@ impl<'a> Machine<'a> {
                 drop(locals);
                 Ok(Value::Bytes(self.load_ty(span, addr, ty)?))
             }
+            Some(Slot::Word(w)) => Ok(Value::Bytes(Bytes::from_word(*w, self.ti(ty).size))),
             Some(Slot::Val(v)) => Ok((**v).clone()),
             _ => self.local_uninit(span),
         }
@@ -617,8 +618,8 @@ impl<'a> Machine<'a> {
         if inclusive {
             hi_v = hi_v.saturating_add(1);
         }
-        let n = len.map_or("?".to_string(), |n| n.to_string());
         if lo_v > hi_v || len.is_some_and(|n| hi_v > n) {
+            let n = len.map_or("?".to_string(), |n| n.to_string());
             return self.trap(e.span, format!("slice bounds {}..{} invalid for length {}", lo_v, hi_v, n));
         }
         Ok(Value::Bytes(self.make_slice(ptr.wrapping_add(lo_v * esz), hi_v - lo_v)))
