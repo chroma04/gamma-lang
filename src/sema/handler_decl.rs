@@ -254,8 +254,9 @@ impl<'s> Sema<'s> {
     fn handler_params(&mut self, module: ModuleId, params: &[ast::Param]) -> Vec<ScopeParam> {
         let mut out = vec![];
         for p in params {
-            let is_type =
-                p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
+            let is_effects = p.ty.as_ref().is_some_and(super::decls::is_effects_kind);
+            let is_type = is_effects
+                || p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
             let value_ty = match &p.ty {
                 Some(_) if is_type => None,
                 Some(t) => Some(self.resolve_type(module, t)),
@@ -268,6 +269,9 @@ impl<'s> Sema<'s> {
                 let pid = ParamId::fresh(n.name);
                 if let Some(t) = value_ty {
                     self.value_params.insert(pid, t);
+                }
+                if is_effects {
+                    self.effect_params.insert(pid);
                 }
                 out.push(ScopeParam { name: n.name, pid, value_ty });
             }

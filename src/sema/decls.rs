@@ -479,8 +479,10 @@ impl<'s> Sema<'s> {
                 ok = false;
                 continue;
             };
-            // `T: type` declares a type parameter, visible in the rest of the signature (§16.1).
-            if matches!(&ty_expr.kind, ExprKind::Ident(i) if i.name.as_str() == "type") {
+            // `T: type` declares a type parameter, visible in the rest of the signature (§16.1);
+            // `E: effects` an effect-set parameter (§16.6).
+            let is_effects = is_effects_kind(ty_expr);
+            if is_effects || matches!(&ty_expr.kind, ExprKind::Ident(i) if i.name.as_str() == "type") {
                 if !literal {
                     self.error(ty_expr.span, "a function type cannot have type parameters");
                     ok = false;
@@ -489,6 +491,9 @@ impl<'s> Sema<'s> {
                 for n in &p.names {
                     let pid = crate::types::ParamId::fresh(n.name);
                     generics.push(pid);
+                    if is_effects {
+                        self.effect_params.insert(pid);
+                    }
                     self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
                     params.push(ParamInfo {
                         name: n.name,
@@ -577,17 +582,43 @@ impl<'s> Sema<'s> {
     }
 
     pub fn resolve_effect_ref(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectRef> {
+        // `..E`: the effects of an effect-set parameter (§16.6).
+        if let ExprKind::EffectSplice(inner) = &e.kind {
+            return match self.effect_param_named(inner) {
+                Some(p) => Some(EffectRef::splice(p)),
+                None => {
+                    self.error(
+                        inner.span,
+                        "only an effect-set parameter (`E: effects`) can be spliced with `..` (§16.6)",
+                    );
+                    None
+                }
+            };
+        }
+        if let Some(p) = self.effect_param_named(e) {
+            self.error(e.span, format!("`{}` is an effect set; splice it into the set as `..{}` (§16.6)", p, p));
+            return None;
+        }
         // `E(T1, …)`: an instantiation of a generic effect.
         if let ExprKind::Call { callee, args, .. } = &e.kind {
             let base = self.resolve_effect_ref(module, callee)?;
-            let n = self.effects[&base.effect].params.len();
-            if args.len() != n {
-                self.error(e.span, format!("`{}` takes {} type argument(s)", base.effect.name(), n));
+            let params = self.effects[&base.effect].params.clone();
+            // Effect-set parameters may be left out at the end; they are then empty.
+            let required = params.iter().rposition(|p| !self.effect_params.contains(p)).map_or(0, |i| i + 1);
+            if args.len() > params.len() || args.len() < required {
+                self.error(e.span, format!("`{}` takes {} argument(s)", base.effect.name(), params.len()));
                 return None;
             }
             let mut targs = vec![];
-            for a in args {
+            for (i, p) in params.iter().enumerate() {
+                let Some(a) = args.get(i) else {
+                    targs.push(crate::types::GenericArg::Type(Ty::intern(TyKind::Effects(EffectSet::empty()))));
+                    continue;
+                };
                 match &a.kind {
+                    ast::ArgKind::Positional(t) if self.effect_params.contains(p) => {
+                        targs.push(crate::types::GenericArg::Type(self.resolve_effect_arg(module, t)))
+                    }
                     ast::ArgKind::Positional(t) => {
                         targs.push(crate::types::GenericArg::Type(self.resolve_type(module, t)))
                     }
@@ -602,7 +633,7 @@ impl<'s> Sema<'s> {
         if let ExprKind::Ident(id) = &e.kind {
             if let Some(d) = self.lookup_module_name(module, id.name) {
                 return match self.resolve_decl(d) {
-                    DeclValue::Effect(eff) => Some(EffectRef { effect: eff, args: Box::new([]) }),
+                    DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
                     DeclValue::Error => None,
                     _ => {
                         self.error(e.span, format!("`{}` is not an effect", id.name));
@@ -619,7 +650,7 @@ impl<'s> Sema<'s> {
         {
             let d = self.module_member(m, *name)?;
             return match self.resolve_decl(d) {
-                DeclValue::Effect(eff) => Some(EffectRef { effect: eff, args: Box::new([]) }),
+                DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
                 DeclValue::Error => None,
                 _ => {
                     self.error(e.span, format!("`{}` is not an effect", name.name));
@@ -636,6 +667,43 @@ impl<'s> Sema<'s> {
         None
     }
 
+    /// An effect named without arguments. An effect whose parameters are all effect
+    /// sets gets empty ones (`Sched` is `Sched(\ {})`); otherwise `args` stay empty.
+    fn bare_effect_ref(&self, eff: crate::types::EffectId) -> EffectRef {
+        let params = self.effects.get(&eff).map(|i| i.params.clone()).unwrap_or_default();
+        if params.is_empty() || !params.iter().all(|p| self.effect_params.contains(p)) {
+            return EffectRef { effect: eff, args: Box::new([]) };
+        }
+        let empty = crate::types::GenericArg::Type(Ty::intern(TyKind::Effects(EffectSet::empty())));
+        EffectRef { effect: eff, args: params.iter().map(|_| empty.clone()).collect() }
+    }
+
+    /// The effect-set parameter that `e` names, as a `Param` type.
+    fn effect_param_named(&self, e: &ast::Expr) -> Option<Ty> {
+        let ExprKind::Ident(id) = &e.kind else { return None };
+        let &(_, t) = self.type_params.iter().rev().find(|(n, _)| *n == id.name)?;
+        match t.kind() {
+            TyKind::Param(p) if self.effect_params.contains(p) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The argument of an effect-set parameter (§16.6): `\ {E1, E2}`, a single effect
+    /// `Out`, or another effect-set parameter `E`. An `Effects` type, or a `Param`.
+    pub fn resolve_effect_arg(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
+        if let Some(p) = self.effect_param_named(e) {
+            return p;
+        }
+        if let ExprKind::EffectSet(list) = &e.kind {
+            let set = self.resolve_effect_set(module, list);
+            return Ty::intern(TyKind::Effects(set));
+        }
+        match self.resolve_effect_ref(module, e) {
+            Some(r) => Ty::intern(TyKind::Effects(EffectSet::new(vec![r]))),
+            None => Ty::error(),
+        }
+    }
+
     fn declare_effect(&mut self, module: ModuleId, decl: DeclId, name: ast::Ident, lit: &ast::EffectLit) -> DeclValue {
         let eff = EffectId::fresh(name.name);
         // Type parameters (`effect(T: type)`), visible in the operation signatures.
@@ -643,11 +711,18 @@ impl<'s> Sema<'s> {
         for p in lit.params.iter().flatten() {
             let is_type =
                 p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
-            if !is_type {
-                self.error(p.span, "effect parameters are types: `effect(T: type)` (§12.1)");
+            let is_effects = p.ty.as_ref().is_some_and(is_effects_kind);
+            if !is_type && !is_effects {
+                self.error(
+                    p.span,
+                    "effect parameters are types or effect sets: `effect(T: type)`, `effect(E: effects)` (§12.1)",
+                );
             }
             for n in &p.names {
                 let pid = crate::types::ParamId::fresh(n.name);
+                if is_effects {
+                    self.effect_params.insert(pid);
+                }
                 params.push(pid);
                 self.type_params.push((n.name, Ty::intern(TyKind::Param(pid))));
             }
@@ -803,4 +878,9 @@ fn provably_distinct(a: Ty, b: Ty) -> bool {
         }
         (x, y) => std::mem::discriminant(x) != std::mem::discriminant(y),
     }
+}
+
+/// Whether a parameter's annotation is `effects`: an effect-set parameter (§16.6).
+pub fn is_effects_kind(t: &ast::Expr) -> bool {
+    matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "effects")
 }

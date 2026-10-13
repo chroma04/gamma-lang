@@ -241,6 +241,20 @@ bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
 }
 ```
 
+### Effect-set parameters
+
+A parameter declared `E: effects` stands for a whole set of effects. Inside an effect set it is spliced with `..E`, so a function can pass on whatever its callback performs:
+
+```gamma
+apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
+    return f(x)
+}
+```
+
+`E` is usually inferred from the argument, and an explicit argument is an effect set literal such as `\ {Out, Alloc}` or a single effect. Left out entirely, `E` is empty. Effects and handlers take such parameters too: `std/fiber`'s `Sched(E)` lets fiber tasks perform the effects `E`, handled outside the scheduler.
+
+The same once-checked rule applies: `..E` performed inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type, so it cannot appear outside an effect set.
+
 ## Restrictions
 
 - A `when` condition may not depend on a type parameter or compile-time value parameter of an enclosing generic function ([chapter 11](11-compile-time.md)). Use separate functions.

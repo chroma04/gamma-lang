@@ -218,6 +218,8 @@ pub struct Sema<'s> {
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
     pub value_params: HashMap<crate::types::ParamId, Ty>,
+    /// The effect-set parameters (`E: effects`, §16.6); their names are in `type_params`.
+    pub effect_params: std::collections::HashSet<crate::types::ParamId>,
     /// The predeclared `Yield` effect (§13.1).
     pub yield_effect: Option<EffectId>,
     /// Types and locations of clause-level `break`s of each handler literal,
@@ -350,6 +352,7 @@ impl<'s> Sema<'s> {
             local_fns: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
+            effect_params: Default::default(),
             yield_effect: None,
             handler_breaks: HashMap::new(),
             decl_clause_breaks: HashMap::new(),

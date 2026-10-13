@@ -702,7 +702,7 @@ pub fn subst_eref(e: &EffectRef, map: &[(ParamId, Ty)]) -> EffectRef {
 }
 
 pub fn subst_effects(s: &EffectSet, map: &[(ParamId, Ty)]) -> EffectSet {
-    EffectSet::new(s.effects.iter().map(|e| subst_eref(e, map)).collect())
+    EffectSet::new(s.effects.iter().map(|e| subst_eref(e, map)).collect()).flatten()
 }
 
 impl<'a, 's> FnCx<'a, 's> {
@@ -840,7 +840,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let n = non_inferable.len();
         let omit = positional.len() >= r && positional.len() <= n;
         // Which parameter each positional argument binds to.
-        let targets: Vec<usize> = if inst_only {
+        let candidates: Vec<usize> = if inst_only {
             (0..sig.params.len())
                 .filter(|&i| sig.params[i].generic.is_some() && !named.contains(&sig.params[i].name))
                 .collect()
@@ -851,6 +851,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 .filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index && !sig.params[i].is_site())
                 .collect()
         };
+        // An effect-set parameter takes a positional argument only if one that denotes
+        // effects is written there; otherwise it is inferred or empty (§16.6).
+        let mut targets = vec![];
+        for i in candidates {
+            let is_effects = sig.params[i].generic.is_some_and(|p| self.sema.effect_params.contains(&p));
+            if is_effects && !positional.get(targets.len()).is_some_and(|e| self.denotes_effects(e)) {
+                continue;
+            }
+            targets.push(i);
+        }
         if positional.len() > targets.len() {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));
             return error_expr(span);
@@ -908,7 +918,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     None => return error_expr(span),
                 }
             } else if let Some(pid) = p.generic {
-                let t = self.resolve_type(e);
+                let t = if self.sema.effect_params.contains(&pid) {
+                    let module = self.module;
+                    self.sema.resolve_effect_arg(module, e)
+                } else {
+                    self.resolve_type(e)
+                };
                 binds.insert(pid, t);
             } else {
                 let bound: Vec<(ParamId, Ty)> = binds.iter().map(|(k, v)| (*k, *v)).collect();
@@ -1032,6 +1047,10 @@ impl<'a, 's> FnCx<'a, 's> {
                             return error_expr(span);
                         }
                     }
+                }
+                // An effect-set parameter that nothing determines is empty (§16.6).
+                None if self.sema.effect_params.contains(pid) => {
+                    targs.push(Ty::intern(TyKind::Effects(crate::types::EffectSet::empty())))
                 }
                 None => {
                     // An array where a slice is expected says nothing about the slice's
@@ -1223,6 +1242,36 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let inst = self.sema.instantiate(f, targs, span);
         Some(self.fn_ref(inst, span))
+    }
+
+    /// Whether `e` is written as effects: `\ {…}`, an effect, or an effect-set parameter.
+    fn denotes_effects(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::EffectSet(_) => true,
+            ast::ExprKind::Call { callee, .. } => self.denotes_effects(callee),
+            ast::ExprKind::Ident(id) if self.lookup_local(id.name).is_some() => false,
+            ast::ExprKind::Ident(id) => {
+                if let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    return matches!(t.kind(), TyKind::Param(p) if self.sema.effect_params.contains(p));
+                }
+                let module = self.module;
+                match self.sema.lookup_module_name(module, id.name) {
+                    Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                    None => false,
+                }
+            }
+            ast::ExprKind::Field { base, name } => {
+                let module = self.module;
+                match self.sema.module_named(module, base) {
+                    Some(m) => match self.sema.module_member(m, *name) {
+                        Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                        None => false,
+                    },
+                    None => false,
+                }
+            }
+            _ => false,
+        }
     }
 
     /// True if `e` cannot denote a type: a literal or a local variable.

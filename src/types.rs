@@ -124,6 +124,50 @@ impl EffectSet {
     pub fn is_subset_of(&self, other: &EffectSet) -> bool {
         self.effects.iter().all(|e| other.contains(e))
     }
+
+    /// Whether the set mentions an effect-set parameter, as `..E` (§16.6).
+    pub fn has_splice(&self) -> bool {
+        self.effects.iter().any(|e| e.is_splice())
+    }
+
+    /// Replaces each `..E` whose argument has become an effect set (by substitution)
+    /// with that set's effects.
+    pub fn flatten(self) -> EffectSet {
+        if !self.effects.iter().any(|e| e.splice_set().is_some()) {
+            return self;
+        }
+        let mut v = vec![];
+        for e in self.effects.into_vec() {
+            match e.splice_set() {
+                Some(s) => v.extend(s.effects.iter().cloned()),
+                None => v.push(e),
+            }
+        }
+        EffectSet::new(v)
+    }
+}
+
+impl EffectRef {
+    /// `..p`: the effects of the effect-set parameter `p` (a `Param` type), spliced
+    /// into a set (§16.6).
+    pub fn splice(p: Ty) -> EffectRef {
+        EffectRef { effect: EffectId::splice(), args: Box::new([GenericArg::Type(p)]) }
+    }
+
+    pub fn is_splice(&self) -> bool {
+        self.effect == EffectId::splice()
+    }
+
+    /// For `..E` after `E` was substituted by an effect set: that set.
+    fn splice_set(&self) -> Option<&EffectSet> {
+        match (self.is_splice(), self.args.first()) {
+            (true, Some(GenericArg::Type(t))) => match t.kind() {
+                TyKind::Effects(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 /// A calling convention (§19.2). `#callconv(.SysV)` is the same as `.C` on every
@@ -218,6 +262,10 @@ pub enum TyKind {
     Value(ConstKey),
     /// An unresolved literal type variable.
     Infer(InferVar),
+    /// A compile-time effect set used as a generic argument: the argument of an
+    /// effect-set parameter (§16.6), such as the `\ {Out}` of `Sched(\ {Out})`.
+    /// Never the type of an expression.
+    Effects(EffectSet),
     /// The anonymous second-class type of a handler literal (§5.15), identified
     /// by the literal.
     Handler(u32),
@@ -468,6 +516,15 @@ impl Ty {
                     }
                 }
             }
+            TyKind::Effects(set) => {
+                for e in set.effects.iter() {
+                    for a in e.args.iter() {
+                        if let GenericArg::Type(t) = a {
+                            t.walk(f);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -494,6 +551,7 @@ impl Ty {
             }
             TyKind::Optional(t) => TyKind::Optional(t.map(f)),
             TyKind::Cont(t) => TyKind::Cont(t.map(f)),
+            TyKind::Effects(set) => TyKind::Effects(map_effects(set, f)),
             TyKind::Result { err, ok } => TyKind::Result { err: err.map(f), ok: ok.map(f) },
             TyKind::Tuple { elems, names } => {
                 TyKind::Tuple { elems: elems.iter().map(|t| t.map(f)).collect(), names: names.clone() }
@@ -519,10 +577,34 @@ fn map_sig(sig: &FnTy, f: &mut impl FnMut(Ty) -> Option<Ty>) -> FnTy {
     FnTy {
         params: sig.params.iter().map(|t| t.map(f)).collect(),
         ret: sig.ret.map(f),
-        effects: sig.effects.clone(),
+        effects: map_effects(&sig.effects, f),
         variadic: sig.variadic,
         callconv: sig.callconv,
     }
+}
+
+/// Maps the type arguments of every effect in `set`, splicing in the effect sets
+/// that `..E` entries become.
+pub fn map_effects(set: &EffectSet, f: &mut impl FnMut(Ty) -> Option<Ty>) -> EffectSet {
+    if !set.effects.iter().any(|e| !e.args.is_empty()) {
+        return set.clone();
+    }
+    let effects = set
+        .effects
+        .iter()
+        .map(|e| EffectRef {
+            effect: e.effect,
+            args: e
+                .args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(t.map(f)),
+                    v => v.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    EffectSet::new(effects).flatten()
 }
 
 impl AdtId {
@@ -553,6 +635,12 @@ impl EffectId {
         let mut i = interner().write().unwrap();
         i.effect_names.push(name);
         EffectId(i.effect_names.len() as u32 - 1)
+    }
+
+    /// The pseudo-effect of [`EffectRef::splice`].
+    pub fn splice() -> EffectId {
+        static SPLICE: OnceLock<EffectId> = OnceLock::new();
+        *SPLICE.get_or_init(|| EffectId::fresh(Symbol::intern("..")))
     }
 
     pub fn name(self) -> Symbol {
@@ -635,6 +723,16 @@ impl fmt::Display for Ty {
             TyKind::Param(p) => write!(f, "{}", p.name()),
             TyKind::ParamArray { len, elem } => write!(f, "[{}]{}", len, elem),
             TyKind::Value(k) => write!(f, "{}", k),
+            TyKind::Effects(set) => {
+                f.write_str("\\ {")?;
+                for (i, e) in set.effects.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", e)?;
+                }
+                f.write_str("}")
+            }
             TyKind::Handler(_) => f.write_str("handler"),
             TyKind::Infer(_) => f.write_str("{integer}"),
             TyKind::Error => f.write_str("{error}"),
@@ -675,6 +773,9 @@ fn fmt_sig(f: &mut fmt::Formatter<'_>, head: &str, sig: &FnTy) -> fmt::Result {
 
 impl fmt::Display for EffectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let (true, Some(GenericArg::Type(t))) = (self.is_splice(), self.args.first()) {
+            return write!(f, "..{}", t);
+        }
         f.write_str(self.effect.name().as_str())?;
         if !self.args.is_empty() {
             f.write_str("(")?;
