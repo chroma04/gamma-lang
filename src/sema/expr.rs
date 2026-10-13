@@ -1420,6 +1420,64 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
+            "variants" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if matches!(t.kind(), TyKind::Param(_)) {
+                    self.error(
+                        span,
+                        format!("`@variants` needs a concrete union type, not the type parameter `{}`", t),
+                    );
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
+                    return error_expr(span);
+                };
+                if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+                    self.error(
+                        span,
+                        format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
+                    );
+                    return error_expr(span);
+                }
+                let elems = (0..variants.len() as u32)
+                    .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
+                    .collect::<Vec<_>>();
+                mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
+            }
+            "variant_name" => {
+                let x = match args {
+                    [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
+                    _ => {
+                        self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
+                        return error_expr(span);
+                    }
+                };
+                let t = self.infer.resolve(x.ty);
+                if t.is_error() {
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(
+                        span,
+                        format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why),
+                    );
+                    return error_expr(span);
+                };
+                let pat = |kind| tir::Pat { ty: t, kind, span };
+                let arms = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| tir::Arm {
+                        pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
+                        guard: None,
+                        body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
+                    })
+                    .collect();
+                mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
+            }
             other => {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", other));
                 error_expr(span)

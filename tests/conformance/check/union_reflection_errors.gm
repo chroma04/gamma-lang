@@ -1,0 +1,24 @@
+//! stage: check
+Color :: union { Red, Green }
+Shape :: union {
+    Circle: f32
+    Empty
+}
+Raw :: #c_union union { i: i32, f: f32 }
+Point :: struct { x, y: i32 }
+
+generic :: fn(T: type) -> usize => @variants(T).len //~ ERROR type parameter
+
+main :: fn() {
+    a := @variants(Shape) //~ ERROR variant `Circle` has one
+    b := @variants(i32) //~ ERROR takes a tagged union type
+    c := @variants(Point) //~ ERROR takes a tagged union type
+    d := @variants(Raw) //~ ERROR #c_union
+    e := @variants(3) //~ ERROR
+    f := @variant_name(3) //~ ERROR takes a value of a tagged union type
+    g := @variant_name(Point(x: 1, y: 2)) //~ ERROR takes a value of a tagged union type
+    r := Raw(i: 1)
+    h := @variant_name(r) //~ ERROR #c_union
+    i := @variant_name(Color) //~ ERROR
+    j := @variant_name() //~ ERROR takes one union value
+}
