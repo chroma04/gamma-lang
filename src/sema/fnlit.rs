@@ -71,8 +71,22 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             None => expected.as_ref().map(|s| s.effects.clone()).unwrap_or_default(),
         };
+        // Expected effects that mention type parameters still to be inferred (a generic
+        // call's `Yield(T)`) are taken from what the body performs.
+        let open: Vec<crate::types::EffectId> = if lit.sig.effects.is_none() {
+            effects.effects.iter().filter(|e| has_param_args(e)).map(|e| e.effect).collect()
+        } else {
+            vec![]
+        };
+        let mut effects = if open.is_empty() {
+            effects
+        } else {
+            EffectSet::new(effects.effects.iter().filter(|e| !has_param_args(e)).cloned().collect())
+        };
+        // The literal passed for an iterator argument (§13.5), checked for being one below.
+        let iterator_arg = self.iterator_args.contains(&lit.span);
         // The return type of an `=>` literal without one comes from its body.
-        let infer_ret = ret_known.is_none() && matches!(lit.body, ast::FnBody::Expr(_));
+        let infer_ret = (ret_known.is_none() || iterator_arg) && matches!(lit.body, ast::FnBody::Expr(_));
         let ret = ret_known.unwrap_or(Ty::unit());
         let module = self.module;
         let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone(), generics: vec![] };
@@ -119,6 +133,44 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         }
         let (locals, performed, captures) = self.exit_fn();
+        if iterator_arg && !performed.iter().any(|(e, _)| Some(e.effect) == self.sema.yield_effect) {
+            let ty = self.infer.resolve(final_ret);
+            if !ty.is_error() {
+                self.error(
+                    span,
+                    format!("this call is not an iterator (it returns `{}` and yields nothing), but the parameter takes an iterator (§13.5)", ty),
+                );
+            }
+            return error_expr(span);
+        }
+        for id in &open {
+            let mut found: Vec<EffectRef> = vec![];
+            for (e, _) in &performed {
+                if e.effect == *id && !found.contains(e) {
+                    found.push(e.clone());
+                }
+            }
+            if found.len() > 1 {
+                let list: Vec<String> = found.iter().map(|e| format!("`{}`", e)).collect();
+                self.error(
+                    span,
+                    format!(
+                        "this performs {}, so the type it is passed at cannot be inferred; write the type argument",
+                        list.join(" and ")
+                    ),
+                );
+                return error_expr(span);
+            }
+            if let Some(e) = found.pop() {
+                let mut all = effects.effects.to_vec();
+                all.push(e);
+                effects = EffectSet::new(all);
+                self.sema.prog.fns[fn_id.index()].effects = effects.clone();
+                if let Some(s) = self.sema.sigs.get_mut(&fn_id) {
+                    s.effects = effects.clone();
+                }
+            }
+        }
         if infer_ret {
             let s = self.sema.sigs.get_mut(&fn_id).unwrap();
             s.ret = final_ret;
@@ -282,4 +334,9 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         tir::Stmt::Expr(super::func::unit(span))
     }
+}
+
+/// Whether an effect's arguments mention a type parameter.
+fn has_param_args(e: &EffectRef) -> bool {
+    e.args.iter().any(|a| matches!(a, crate::types::GenericArg::Type(t) if has_param(*t)))
 }

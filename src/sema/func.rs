@@ -97,6 +97,8 @@ pub struct FnCx<'a, 's> {
     /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
     /// temporary, which lives until the call returns (§7.10).
     pub temp_ref_arg: bool,
+    /// The spans of the function literals made for iterator arguments (§13.5).
+    pub iterator_args: Vec<Span>,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
@@ -298,6 +300,7 @@ impl<'a, 's> FnCx<'a, 's> {
             in_defer: false,
             fn_performs: vec![],
             temp_ref_arg: false,
+            iterator_args: vec![],
             defer_label_base: 0,
             failed_coercions: vec![],
             deferred_matches: vec![],
@@ -586,7 +589,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let callee = text.split('(').next().unwrap_or(text);
             let callee = callee.rsplit('.').next().unwrap_or(callee).trim();
             return format!(
-                "`{callee}` is an iterator: call it as the source of a `for` loop (`for x in {callee}(…)`); it cannot be used as a value"
+                "`{callee}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {callee}(…)`) or pass it to a function that runs it, such as `collect({callee}(…))` (§13.5)"
             );
         }
         format!("this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)", name, name)

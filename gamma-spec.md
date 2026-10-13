@@ -640,6 +640,12 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Construction.** `.Name(payload)` or `.Name` when the union type is known from context; `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly as arguments: `.Rect(w: 2, h: 3)`.
 - **Inspection.** `match` (§8.6), `if pattern := e` (§8.2) and `is` (§7.6). `u.tag()` returns the tag value as the tag type.
 - **From a raw tag.** For an enum, `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of one of its variants. It is the only way to turn an integer into an enum; there is no unchecked form. A union with payloads has no `from_tag`, since a tag alone cannot give a payload.
+- **Reflection.** `@variants(T)` is a compile-time constant of type `[N]T` holding every variant of the enum `T` in declaration order, so `for d in @variants(Dir)` visits each variant and `@variants(Dir).len` counts them. `T` must be a tagged union none of whose variants has a payload, and a concrete type (not a type parameter). `@variant_name(x)` gives the name of the active variant of any tagged union value `x` as a `string`, as written in the declaration and without the dot: `@variant_name(Dir.E)` is `"E"`. It evaluates `x` once. Neither applies to a `#c_union`.
+
+```
+for d in @variants(Dir) { print(@variant_name(d)) }    // N E S W
+```
+
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
 
 #### 5.11.1 Untagged unions
@@ -1695,7 +1701,20 @@ while x := ca.next() {
 
 A general iterator can be turned into a pull-style generator by running it on a fiber (§14); a library type such as `Generator(T)` can package this (it is not part of the core library).
 
-### 13.5 Performance
+### 13.5 Iterators as arguments
+
+A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() \ {Yield(T)}` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) is passed as the function literal `fn() => f(a1, …, an)`: the callee calls it to run the iterator, and the call and its arguments are evaluated each time it does. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
+
+```
+words := try collect(str.fields(line))       // a List(string)
+third := nth(str.split(csv, ","), 2)         // ?string
+n := count(runes(text))
+names.collect(m.keys())                      // List.collect appends
+```
+
+`collect`, `count` and `nth` (§21.4) take iterator parameters; a function of the program can too. Lockstep iteration over two slices is `zip` (§21.4); over two iterators it needs cursors or fibers (§13.4).
+
+### 13.6 Performance
 
 *Implementation note (non-normative):* when the iterator's body is visible to the compiler, `for` compiles to the same loop as hand-written index code, because the handler is known statically and the `yield` clause is inlined. The standard iterators are `#inline`. See Appendix D.
 
@@ -2394,6 +2413,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@offset_of(S, field)` | `usize` | yes | 5.10.4 |
 | `@type_of(e)` | `type` (`e` is not evaluated) | yes | — |
 | `@type_name(T)` | `string` | yes | — |
+| `@variants(T)` | `[N]T`; every variant of the enum `T` in declaration order | yes | 5.11 |
+| `@variant_name(x)` | `string`; the name of the active variant of the tagged union value `x` | yes, if `x` is | 5.11 |
 | `@location()` | `SourceLocation` (file, line, column, function) of the call | yes | — |
 | `@caller_location()` | as above, of the caller (only as a parameter default) | yes | — |
 | `@static_assert(c, msg)` | `()` | yes | 17.7 |
@@ -2484,9 +2505,14 @@ enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))}
 reversed   :: fn(T: type, xs: []const T) \ {Yield(T)}
 bytes      :: fn(s: string) \ {Yield(u8)}
 runes      :: fn(s: string) \ {Yield(rune)}
+zip        :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))}
+
+collect    :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc}
+count      :: fn(T: type, it: fn() \ {Yield(T)}) -> usize
+nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 ```
 
-`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. All are `#inline`.
+`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
 ### 21.5 Containers (summary)
 

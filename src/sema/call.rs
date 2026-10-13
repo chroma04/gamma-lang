@@ -412,7 +412,31 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span)
     }
 
+    /// For an argument written as a call where the parameter is an iterator parameter
+    /// (§13.5), the function literal `fn() => call` that is passed instead.
+    pub(super) fn iterator_arg(&mut self, e: &ast::Expr, ty: Ty) -> Option<ast::Expr> {
+        let TyKind::Fn(sig) = ty.kind() else { return None };
+        let yield_eff = self.sema.yield_effect?;
+        if !sig.params.is_empty() || !sig.effects.effects.iter().any(|x| x.effect == yield_eff) {
+            return None;
+        }
+        let mut inner = e;
+        while let ExprKind::Paren(x) = &inner.kind {
+            inner = x;
+        }
+        if !matches!(inner.kind, ExprKind::Call { .. }) {
+            return None;
+        }
+        let sig = ast::FnSig { params: vec![], variadic: false, ret: None, effects: None, span: e.span };
+        let lit = ast::FnLit { sig, where_: vec![], body: ast::FnBody::Expr(inner.clone()), span: e.span };
+        self.iterator_args.push(e.span);
+        Some(ast::Expr { id: e.id, kind: ExprKind::Fn(Box::new(lit)), span: e.span })
+    }
+
     pub(super) fn arg_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
+        if let Some(lit) = self.iterator_arg(e, ty) {
+            return self.arg_value(&lit, ty);
+        }
         if let ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {
                 self.error(e.span, format!("`---` requires a plain-data type, but `{}` is not (§4.4)", ty));

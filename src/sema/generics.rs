@@ -923,6 +923,8 @@ impl<'a, 's> FnCx<'a, 's> {
                     values[*i] = Some(self.arg_value(e, expect));
                     continue;
                 }
+                let lit = self.iterator_arg(e, expect);
+                let e = lit.as_ref().unwrap_or(e);
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!unbound || partial).then_some(expect));
                 self.temp_ref_arg = false;

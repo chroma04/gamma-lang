@@ -82,6 +82,20 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
                 match_params(*a, *b, binds);
             }
             match_params(f.ret, g.ret, binds);
+            // `fn() \ {Yield(T)}` against `fn() \ {Yield(string)}`: an effect with one
+            // instantiation on each side.
+            for e in f.effects.effects.iter() {
+                let mut same = g.effects.effects.iter().filter(|x| x.effect == e.effect);
+                if let (Some(x), None) = (same.next(), same.next())
+                    && x.args.len() == e.args.len()
+                {
+                    for (p, q) in e.args.iter().zip(x.args.iter()) {
+                        if let (GenericArg::Type(p), GenericArg::Type(q)) = (p, q) {
+                            match_params(*p, *q, binds);
+                        }
+                    }
+                }
+            }
         }
         _ => {}
     }
