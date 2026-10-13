@@ -20,6 +20,9 @@
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for
 //!   that architecture (the host's, or the one a cross compiler in `CC` targets),
 //!   for tests of features that exist on some targets only.
+//! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
+//!   tests of what the interpreter cannot do (such as calls through function pointers
+//!   re-typed to another signature).
 //! - `//! filter: text` runs a `test` test with `gamma test --filter=text`.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
@@ -86,6 +89,8 @@ struct Expectations {
     arch: Option<String>,
     /// Leave the test out of the Safe lane.
     safe_skip: bool,
+    /// Run the test only through the C back end.
+    native: bool,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -100,6 +105,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         exit: 0,
         arch: None,
         safe_skip: false,
+        native: false,
         diags: vec![],
     };
     for path in files {
@@ -138,6 +144,8 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
                 }
                 e.safe_skip = true;
+            } else if directive.starts_with("native:") {
+                e.native = true;
             } else if let Some(code) = directive.strip_prefix("exit:") {
                 e.exit = code.trim().parse().map_err(|_| format!("{}: bad exit code", path.display()))?;
             } else {
@@ -380,6 +388,12 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if let (Some(f), Stage::Test) = (&exp.filter, exp.stage) {
         cmd.arg(format!("--filter={}", f));
     }
+    if exp.native && matches!(exp.stage, Stage::Run | Stage::Test) {
+        if !c_backend_available() {
+            return Ok(());
+        }
+        cmd.arg("--backend=c");
+    }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
@@ -474,6 +488,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let golden = path.with_extension("stdout");
     if compiled
         && problems.is_empty()
+        && !exp.native
         && c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {

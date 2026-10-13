@@ -219,7 +219,7 @@ A test outside the root module is reported with its module's directory, relative
 
 `--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
 
-Tests run in the interpreter by default. A module that calls C functions or contains `@asm` cannot run there, so its tests are compiled with the C back end instead, and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
+Tests run in the interpreter by default. A module that calls C functions or contains `@asm` has its tests compiled with the C back end instead (so that C's output is captured with the test's), and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
 
 ## Where to go next
 

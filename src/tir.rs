@@ -410,15 +410,9 @@ pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
 }
 
 impl Program {
-    /// Whether the program contains code only a native build can run: calls of
-    /// foreign functions or inline assembly.
-    pub fn needs_native(&self) -> bool {
-        fn asm(e: &Expr) -> bool {
-            let mut found = matches!(e.kind, ExprKind::Builtin { op: Builtin::Asm { .. }, .. });
-            e.for_each_child(&mut |c| found = found || asm(c));
-            found
-        }
-        self.fns.iter().any(|f| matches!(f.kind, FnKind::Foreign { .. }) || f.body.as_ref().is_some_and(asm))
+    /// Whether the program declares foreign functions (§19.2).
+    pub fn has_foreign(&self) -> bool {
+        self.fns.iter().any(|f| matches!(f.kind, FnKind::Foreign { .. }))
     }
 }
 

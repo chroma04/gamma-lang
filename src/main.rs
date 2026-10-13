@@ -249,12 +249,13 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    // The interpreter cannot call C or run assembly, so such programs run natively.
-    let uses_c = prog.needs_native();
-    if opts.c_backend || uses_c {
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    // The interpreter calls C itself where it can (§19.2); it cannot run assembly, or foreign
+    // code it cannot find or describe to libffi, so such programs run natively.
+    if opts.c_backend || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
         return run_native(&sess, &prog, &toolchain, path, opts);
     }
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    gamma::interp::set_owns_process(true);
     let mut args = vec![path.display().to_string()];
     args.extend(opts.program_args.iter().cloned());
     let mut stdout = std::io::stdout();
@@ -369,17 +370,18 @@ fn test(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    // The interpreter cannot call C or run assembly, so such programs test natively.
+    // Tests of modules that call C or run assembly are compiled natively, so that C's output
+    // is captured with the test's.
     let selected: Vec<usize> =
         (0..prog.tests.len()).filter(|&i| test_selected(&prog.tests[i], opts.filter.as_deref())).collect();
     let mut report = TestReport {
         filtered_out: opts.filter.as_ref().map(|_| prog.tests.len() - selected.len()),
         ..TestReport::default()
     };
-    if opts.c_backend || prog.needs_native() {
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    if opts.c_backend || prog.has_foreign() || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
         return test_native(&sess, &prog, &toolchain, &selected, report);
     }
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
     for &i in &selected {
         let t = &prog.tests[i];
         let (mut out, mut err) = (Vec::new(), Vec::new());
