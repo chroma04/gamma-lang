@@ -1,4 +1,6 @@
-//! The interpreter: a tree-walking evaluator over the typed IR.
+//! The interpreter: a tree-walking evaluator over the typed IR, and a bytecode
+//! VM ([`vm`]) that compiles functions to register code on first call and falls
+//! back to the tree-walker for what it does not compile.
 //!
 //! It serves both compile-time evaluation ([`eval_const`], spec §17) and
 //! running programs ([`run_main`]).
@@ -38,6 +40,7 @@ mod stmt;
 mod sys;
 mod threads;
 mod value;
+mod vm;
 
 #[cfg(test)]
 mod testkit;
@@ -196,6 +199,8 @@ fn run_main_inner(
             _ => Outcome::Trap(Trap::new("internal error: control flow escaped `main`", Span::DUMMY)),
         },
     };
+    #[cfg(feature = "vm-profile")]
+    vm::profile_report();
     if let Some(w) = m.out.as_mut() {
         let _ = w.flush();
     }

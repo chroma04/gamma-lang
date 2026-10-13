@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-13) — PRs #1–#18 merged; s6–s9 = parallel Claude Projects threads
+- Thread "bytecode VM" (branch claude/project-thread-rh6kp0): `gamma run` interpreter compiles
+  functions to register bytecode (src/interp/vm/, decisions/020); bench 34.1 s → 10.0 s; tree-walker
+  kept for fallbacks and `GAMMA_INTERP=tree` (CI lane on ubuntu).
 - s9 thread "performance round" (branch claude/perf-refactor-tzdpsa): interpreter ~35% faster
   (locals in frame slots, lock-free Ty::kind), smaller Debug C, Safe builds link the cached
   runtime, faster test suite; measurements + leftover ideas in decisions/019. Profiling with
@@ -44,7 +47,8 @@
 ## Next steps
 1. Drive the s6 PRs green; C back end plan items 1–7 done (uncaptured locals as C locals:
    thread "Uncaptured locals", branch claude/project-thread-oemqrj).
-2. bugs-open.md leftovers (#23–#40); future: interp bytecode VM, symbolic array lengths.
+2. bugs-open.md leftovers (#23–#40); future: symbolic array lengths; VM
+   follow-ups in decisions/020 (superinstructions, smaller Op, cheaper calls).
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 4. Safe mode follow-up (decisions/017 end): constant large args static (done, PR #17);
    left: `&key` escapes in std maps, `new`'s GC alloc (allocation-heavy code ~13× Checked).
@@ -64,6 +68,7 @@
                   · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
                   · 018 stdlib policy §22 + s7 language changes (fmt specs, op=, .to)
                   · 019 perf round s9 (where time goes, what was measured/kept/dropped)
+                  · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)

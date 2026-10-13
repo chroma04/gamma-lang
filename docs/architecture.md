@@ -232,10 +232,12 @@ error message.
 
 ## The interpreter
 
-The interpreter (`src/interp/`) walks TIR directly. It runs programs for
-`gamma run` and evaluates constants at compile time, so it implements the
-language exactly as the target would: target integer sizes, layouts and float
-semantics, with every checked operation checked.
+The interpreter (`src/interp/`) runs programs for `gamma run` and evaluates
+constants at compile time, so it implements the language exactly as the target
+would: target integer sizes, layouts and float semantics, with every checked
+operation checked. It has two engines over the same machine (memory, frames,
+handler contexts): a tree-walker that evaluates TIR directly, and a bytecode VM
+(`src/interp/vm/`) that runs most functions. Both are described below.
 
 **Memory.** The interpreter models a flat address space. Every allocation (a
 local variable, a temporary whose address is taken, a string literal, a
@@ -290,6 +292,36 @@ programs never take it. `@futex_wait` and `@futex_wake` are emulated with one gl
 wake-up counter and condition variable: a wake-up wakes every waiter, which is allowed
 because a futex wait may return early, and the waiter reads the counter before it gives
 up the lock, so no wake-up is lost. Compiled programs use the kernel's futex.
+
+**The bytecode VM.** Walking the tree costs a Rust call, a match and a boxed
+value per node, so a function is compiled to register bytecode the first time it
+is called (`code_of` in `src/interp/vm/mod.rs`) and run by a dispatch loop
+(`src/interp/vm/exec.rs`). Calls from compiled code to compiled code pass
+registers directly; calls to and from tree-walked code go through `Value`s.
+
+- *Registers* are 64-bit words holding values in target layout: an `n`-byte value
+  takes `⌈n/8⌉` words, its last word zero-padded, and pointers are addresses. A
+  local of up to 64 bytes lives in registers unless something needs its address
+  (a closure capturing it, `&x`, an assignment through a place the VM cannot
+  resolve), in which case it lives in the frame as in the tree-walker. Small
+  literal constants get registers that are filled when the activation starts.
+- *Control flow* that stays in a function (`break`, `continue`, `return`, `try`,
+  a clause's `break` to a `with` in the same function) compiles to jumps, with the
+  `defer` and `errdefer` statements it crosses copied inline. Flows from
+  elsewhere (an effect clause unwinding several calls, a trap) arrive as Rust
+  values and are matched against a table of scopes, innermost first: a deferred
+  statement's code, a loop or `with` landing, or a guard that turns a flow
+  escaping a deferred statement into a trap.
+- *Fallbacks.* A few constructs run on the tree-walker from inside compiled
+  code: `with … on`, `resume`, `discard`, `@fiber`, system calls, and a
+  statement whose value is too large for registers (over 64 KiB). Locals they
+  mention live in the frame, where both engines see them. A function the
+  compiler cannot handle at all runs on the tree-walker as a whole.
+
+The dispatch loop is instantiated per byte order and per whether a step budget
+(compile-time evaluation) is being counted, so the common case pays for neither.
+`GAMMA_INTERP=tree` turns the VM off; see `docs/contributing.md` for the
+debugging switches.
 
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so

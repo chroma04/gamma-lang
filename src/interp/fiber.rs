@@ -82,14 +82,13 @@ struct WithRec {
     suspended: Vec<u64>,
     /// The context of the body, for fibers made by `@fiber`.
     body_cx: Ctx,
-    frame: Rc<Frame>,
     /// The fibers this `with` created.
     owned: Vec<u64>,
 }
 
 enum Start {
     Body { fr: *const Rc<Frame>, cx: *const Ctx, body: *const Expr },
-    Call { f: Value, fty: Ty, arg: Value, fr: Rc<Frame>, cx: Ctx, span: Span },
+    Call { f: Value, fty: Ty, arg: Value, cx: Ctx, span: Span },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -196,8 +195,7 @@ impl<'a> Machine<'a> {
         self.check_stack(span, stack)?;
         let key = (a.fr.id, label);
         let (tx, rx) = channel();
-        let rec =
-            WithRec { tx, rx: Rc::new(rx), suspended: vec![], body_cx: cx.clone(), frame: a.fr.clone(), owned: vec![] };
+        let rec = WithRec { tx, rx: Rc::new(rx), suspended: vec![], body_cx: cx.clone(), owned: vec![] };
         if self.fib.withs.insert(key, rec).is_some() {
             return self.trap(span, "internal error: a `with … on` is active twice");
         }
@@ -403,9 +401,7 @@ impl<'a> Machine<'a> {
         match start {
             // SAFETY: the pointers refer to the driver's frame, which outlives the fiber.
             Some(Start::Body { fr, cx, body }) => unsafe { self.eval(Act { fr: &*fr, cx: &*cx }, &*body) },
-            Some(Start::Call { f, fty, arg, fr, cx, span }) => {
-                self.call_value(Act { fr: &fr, cx: &cx }, span, f, fty, vec![arg])
-            }
+            Some(Start::Call { f, fty, arg, cx, span }) => self.call_value(&cx, span, f, fty, vec![arg]),
             None => Err(trap_flow(Span::DUMMY, "internal error: a fiber started twice")),
         }
     }
@@ -492,7 +488,7 @@ impl<'a> Machine<'a> {
         let Some(w) = self.fib.withs.get(&key) else {
             return self.trap(span, "internal error: `@fiber` in a clause of a `with` without `on`");
         };
-        let start = Start::Call { f, fty: args[0].ty, arg, fr: w.frame.clone(), cx: w.body_cx.clone(), span };
+        let start = Start::Call { f, fty: args[0].ty, arg, cx: w.body_cx.clone(), span };
         let id = self.new_fiber(key, start, State::Suspended(key), &stack);
         self.fib.withs.get_mut(&key).unwrap().suspended.push(id);
         Ok(self.cont_bytes(id, 1))

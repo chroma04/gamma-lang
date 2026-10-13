@@ -10,7 +10,7 @@ use crate::types::*;
 use std::rc::Rc;
 
 /// The largest frame the interpreter runs: far above any real thread's stack.
-const MAX_FRAME: u64 = 1 << 30;
+pub(super) const MAX_FRAME: u64 = 1 << 30;
 
 impl<'a> Machine<'a> {
     pub fn eval_args(&mut self, a: Act, args: &[Expr]) -> R<Vec<Value>> {
@@ -30,24 +30,24 @@ impl<'a> Machine<'a> {
             Callee::Indirect(c) => {
                 let cv = self.eval(a, c)?;
                 let vals = self.eval_args(a, args)?;
-                self.call_value(a, e.span, cv, c.ty, vals)
+                self.call_value(a.cx, e.span, cv, c.ty, vals)
             }
             Callee::Perform { effect, op } => {
                 let vals = self.eval_args(a, args)?;
-                self.perform(a, e.span, effect, *op, vals)
+                self.perform(a.cx, e.span, effect, *op, vals)
             }
         }
     }
 
-    /// Calls a function value (second-class closure or function pointer) from the context `a.cx`.
-    pub fn call_value(&mut self, a: Act, span: Span, callee: Value, callee_ty: Ty, args: Vec<Value>) -> R {
+    /// Calls a function value (second-class closure or function pointer) from the context `cx`.
+    pub fn call_value(&mut self, cx: &Ctx, span: Span, callee: Value, callee_ty: Ty, args: Vec<Value>) -> R {
         match callee {
             Value::Closure(c) => {
                 let mut ctx = c.ctx.clone();
                 // Effects listed in the function type are handled where it is called (§11.6).
                 if let TyKind::Fn(sig) = callee_ty.kind() {
                     for eff in sig.effects.effects.iter() {
-                        if let Some(n) = a.cx.find(eff) {
+                        if let Some(n) = cx.find(eff) {
                             ctx = ctx.push(n.effect.clone(), n.installed.clone(), n.with_frame, n.with_label);
                         }
                     }
@@ -60,7 +60,7 @@ impl<'a> Machine<'a> {
                     return self.trap(span, "call through a null function pointer");
                 }
                 match self.fn_from_addr(addr) {
-                    Some(f) => self.call_function(span, f, args, None, a.cx.clone(), None, false),
+                    Some(f) => self.call_function(span, f, args, None, cx.clone(), None, false),
                     None => self.trap(span, format!("call through an invalid function pointer {:#x}", addr)),
                 }
             }
@@ -86,6 +86,9 @@ impl<'a> Machine<'a> {
             return self
                 .trap(span, format!("not supported by the interpreter yet: call to foreign function `{}`", f.name));
         };
+        if let Some(code) = self.code_of(fid) {
+            return self.vm_call_values(span, fid, code, args, env, ctx, installing, is_clause_lit);
+        }
         if self.depth >= MAX_DEPTH {
             return self.trap(span, "stack overflow");
         }
@@ -159,8 +162,8 @@ impl<'a> Machine<'a> {
 
     // --- effects ------------------------------------------------------------------------------------
 
-    pub fn perform(&mut self, a: Act, span: Span, effect: &EffectRef, op: u32, args: Vec<Value>) -> R {
-        let Some(node) = a.cx.find(effect).cloned() else {
+    pub fn perform(&mut self, cx: &Ctx, span: Span, effect: &EffectRef, op: u32, args: Vec<Value>) -> R {
+        let Some(node) = cx.find(effect).cloned() else {
             return self.trap(span, format!("no handler installed for effect `{}`", effect.effect.name()));
         };
         if self.prog.ctl_ops.contains(&(effect.effect, op)) {
@@ -314,9 +317,27 @@ impl<'a> Machine<'a> {
         for x in args {
             vals.push(self.eval_bytes(a, x)?);
         }
+        self.write_pieces(a.cx, e.span, sink, sink_val.as_ref(), pieces, specs, args, &vals)?;
+        Ok(Value::unit())
+    }
+
+    /// `@write` once the sink and the arguments are evaluated: passes the pieces of the
+    /// template and the formatted arguments `vals` (of the types of `args`) to the sink.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_pieces(
+        &mut self,
+        cx: &Ctx,
+        span: Span,
+        sink: &WriteSink,
+        sink_val: Option<&(Value, Ty)>,
+        pieces: &[Rc<[u8]>],
+        specs: &[FmtSpec],
+        args: &[Expr],
+        vals: &[Bytes],
+    ) -> R<()> {
         for i in 0..pieces.len() {
             if !pieces[i].is_empty() {
-                self.emit(a, e.span, sink, &sink_val, &pieces[i])?;
+                self.emit(cx, span, sink, sink_val, &pieces[i])?;
             }
             if i < args.len() {
                 let mut out = Vec::new();
@@ -326,24 +347,24 @@ impl<'a> Machine<'a> {
                 };
                 self.tr(args[i].span, r)?;
                 if !out.is_empty() {
-                    self.emit(a, e.span, sink, &sink_val, &out)?;
+                    self.emit(cx, span, sink, sink_val, &out)?;
                 }
             }
         }
-        Ok(Value::unit())
+        Ok(())
     }
 
-    fn emit(&mut self, a: Act, span: Span, sink: &WriteSink, sv: &Option<(Value, Ty)>, data: &[u8]) -> R<()> {
+    fn emit(&mut self, cx: &Ctx, span: Span, sink: &WriteSink, sv: Option<&(Value, Ty)>, data: &[u8]) -> R<()> {
         let addr = self.alloc_mem(span, data.len(), 1, AllocKind::Temp, true)?;
         let r = self.mem.init(addr, data);
         self.mem_err(span, r)?;
         let slice = Value::Bytes(self.make_slice(addr, data.len() as u64));
         let r = match sink {
             WriteSink::Fn(_) => {
-                let (cv, cty) = sv.as_ref().unwrap();
-                self.call_value(a, span, cv.clone(), *cty, vec![slice])
+                let (cv, cty) = sv.unwrap();
+                self.call_value(cx, span, cv.clone(), *cty, vec![slice])
             }
-            WriteSink::Perform { effect, op } => self.perform(a, span, effect, *op, vec![slice]),
+            WriteSink::Perform { effect, op } => self.perform(cx, span, effect, *op, vec![slice]),
         };
         self.mem.kill(addr);
         r.map(|_| ())

@@ -1,0 +1,71 @@
+// Programs that mix what the interpreter runs as compiled code with what it
+// hands to the tree-walker, and control flow that leaves through defers from
+// far away: an effect clause's `break` unwinding several calls, `try` inside a
+// clause, a value too large for registers, integer conversions at every width.
+E :: union { Bad: i32 }
+Stop :: effect { stop: esc(code: i32) -> never }
+
+deep :: fn(n: i32) \ {Stop, Out} {
+    defer print("leave deep {}\n", n)
+    errdefer print("unwind deep {}\n", n)
+    if n is 0 { stop(42) }
+    deep(n - 1)
+}
+
+parse :: fn(x: i32) -> E!i32 {
+    if x < 0 { return !.Bad(x) }
+    return x + 1
+}
+
+in_clause :: fn(x: i32) -> E!i32 \ {Out} {
+    defer print("in_clause {} done\n", x)
+    errdefer print("in_clause {} failed\n", x)
+    r := with (handler Stop { stop(c) => break try parse(c * x) }) {
+        defer print("body left\n")
+        deep(1)
+        0
+    }
+    return r
+}
+
+big :: fn(k: usize) -> u64 \ {Out} {
+    buf: [100000]u64 = ---
+    for i in 0..buf.len { buf[i] = i.trunc(u64) * 3 }
+    s: u64 = 0
+    for i in 0..buf.len { if i % k is 0 { s += buf[i] } }
+    return s
+}
+
+counter :: fn() -> i32 {
+    total := 0
+    bump :: fn(by: i32) { total += by }
+    for i in 0..5 { bump(i) }
+    p := &total
+    p^ += 100
+    return total
+}
+
+convert :: fn() \ {Out} {
+    a: i8 = -1
+    print("{} {} {}\n", (a.trunc(u32), a.trunc(u8), a.trunc(i64)))
+    b: u32 = 0x1_2345
+    print("{} {} {}\n", (b.trunc(u8), b.trunc(i16), u64(b)))
+    c: i16 = -300
+    print("{} {}\n", (i64(c), c.trunc(u16)))
+    d: u64 = 0xFFFF_FFFF_FFFF_FFFF
+    print("{} {}\n", (d.trunc(i64), d.trunc(u8)))
+}
+
+fib :: fn(n: u32) -> u64 {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+main :: fn() \ {Out} {
+    print("{}\n", in_clause(2))
+    print("{}\n", in_clause(-1))
+    print("{}\n", big(1000))
+    print("{}\n", counter())
+    convert()
+    print("{}\n", fib(20))
+}

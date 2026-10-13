@@ -1,0 +1,22 @@
+unwind deep 0
+leave deep 0
+unwind deep 1
+leave deep 1
+body left
+in_clause 2 done
+85
+unwind deep 0
+leave deep 0
+unwind deep 1
+leave deep 1
+body left
+in_clause -1 failed
+in_clause -1 done
+!.Bad(-42)
+14850000
+110
+4294967295 255 -1
+69 9029 74565
+-300 65236
+-1 255
+6765
