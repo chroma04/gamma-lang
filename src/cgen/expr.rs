@@ -4,7 +4,7 @@
 //! expression for its value (usually a temporary). Operands are evaluated into
 //! temporaries in order, so evaluation order is the program's.
 
-use super::func::{FnGen, Spec, SpecKey};
+use super::func::{FnGen, Observed, Spec, SpecKey};
 use super::types::Repr;
 use super::{CResult, conv_attr, unsupported};
 use crate::tir::{
@@ -320,6 +320,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!("GM_ST({uc}, (uint8_t *)&{b}, ({uc}){acc});"));
                 Ok(b)
             }
+            ExprKind::Aggregate(_) | ExprKind::Array(_) if self.g.ty.by_ref(t) => {
+                // Built in place in a temporary, with nested aggregates built in theirs.
+                let b = self.tmp_uninit(t);
+                self.expr_into(e, &b, Observed::Fresh)?;
+                Ok(b)
+            }
             ExprKind::Aggregate(elems) => {
                 let mut vals = vec![];
                 for x in elems {
@@ -552,12 +558,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 // destination when no deferred statement can run after it.
                 let ct = self.g.ty.cty(value.ty);
                 if *levels == 0 && !self.outlined && self.no_defers() && self.g.ty.by_ref(self.def.ret) {
-                    self.expr_into(value, &format!("(*({} *)gm_out)", ct))?;
+                    self.expr_into(value, &format!("(*({} *)gm_out)", ct), Observed::Out)?;
                     self.line("goto gm_fdone;");
                     return Ok(self.zero(t));
                 }
                 let slot = self.frame_field(*levels, "ret");
-                self.expr_into(value, &slot)?;
+                self.expr_into(value, &slot, Observed::Fresh)?;
                 let target_ret = self.target_ret(*levels);
                 let is_err = if matches!(target_ret.kind(), TyKind::Result { .. }) {
                     let a = format!("((uint8_t *)&{})", slot);
@@ -962,14 +968,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // --- calls and effects -----------------------------------------------------------------------
 
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr]) -> CResult<String> {
-        let dest = match self.dest_call.take() {
-            Some((c, d)) if std::ptr::eq(c, e) => Some(d),
+        let (dest, obs) = match self.dest_call.take() {
+            Some((c, d, o)) if std::ptr::eq(c, e) => (Some(d), o),
             other => {
                 self.dest_call = other;
-                None
+                (None, Observed::Fresh)
             }
         };
-        let r = self.call_inner(e, callee, args, dest);
+        let r = self.call_inner(e, callee, args, dest, obs);
         self.call_dest = None;
         r
     }
@@ -980,6 +986,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         callee: &'a Callee,
         args: &'a [Expr],
         dest: Option<String>,
+        obs: Observed,
     ) -> CResult<String> {
         // The callee is evaluated before the arguments (§7.1).
         let cv = match callee {
@@ -992,6 +999,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
             // A large argument read from a place is passed as the place itself when
             // nothing evaluated before the call can change it (see `Types::by_ref`).
             let later_pure = || args[i + 1..].iter().all(no_writes);
+            // A callee may build its result in the destination while reading a parameter in
+            // place, so the destination must not overlap a place passed in place.
+            let borrows = dest.is_some() && callee_borrows(self, callee, i);
+            let overlaps = self.arg_may_overlap(a, obs, borrows);
             // A large constant is passed from static storage (see `constarg`).
             let k = if self.g.ty.by_ref(a.ty) { self.g.const_arg(a) } else { None };
             let v = if let Some(k) = k {
@@ -999,6 +1010,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             } else if self.g.ty.by_ref(a.ty)
                 && matches!(a.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
                 && later_pure()
+                && !overlaps
             {
                 let addr = self.place_addr(a)?;
                 format!("(*({} *){})", self.g.ty.cty(a.ty), addr)
@@ -1030,6 +1042,23 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             Callee::Perform { effect, op } => self.perform(e, effect, *op, &vals, &tys, e.ty),
+        }
+    }
+
+    /// Whether argument `a`, passed in place, may overlap the destination of the call
+    /// (see `Observed`) and so must be copied first. `borrows`: the callee may read it
+    /// in place without copying it.
+    fn arg_may_overlap(&self, a: &Expr, obs: Observed, borrows: bool) -> bool {
+        if !borrows {
+            return false;
+        }
+        match obs {
+            Observed::Fresh => false,
+            Observed::Out => !matches!(a.kind, ExprKind::Local(_)),
+            Observed::Any(root) => match a.kind {
+                ExprKind::Local(l) => root.is_none_or(|r| r == l),
+                _ => true,
+            },
         }
     }
 
@@ -1991,4 +2020,14 @@ fn spec_literal(s: &crate::tir::FmtSpec) -> String {
         s.width,
         s.precision.map_or(-1, |p| p as i64)
     )
+}
+
+/// Whether parameter `i` of `callee` may be read in place while the result is built (see
+/// `Gen::read_during_build`): a function called indirectly may be any, so it is assumed to.
+fn callee_borrows(fg: &mut FnGen, callee: &Callee, i: usize) -> bool {
+    match callee {
+        Callee::Fn(f) => fg.g.read_during_build(*f).get(i).copied().unwrap_or(false),
+        Callee::Indirect(_) => true,
+        Callee::Perform { .. } => false,
+    }
 }

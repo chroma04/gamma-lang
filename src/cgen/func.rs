@@ -21,10 +21,23 @@
 //! code with many calls and `defer`s small (C compilers, Fil-C's especially, are
 //! slow on huge functions).
 
+use super::types::Repr;
 use super::{CResult, Gen, conv_attr, unsupported};
 use crate::tir::{Block, Expr, ExprKind, FnDef, FnId, FnKind, LabelId, Stmt};
 use crate::types::Ty;
 use std::fmt::Write;
+
+/// Who can observe the destination of `FnGen::expr_into` while the value is evaluated.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Observed {
+    /// Nothing: a new variable, or a result slot of this function.
+    Fresh,
+    /// The caller's destination (`gm_out`): only code that reads memory other than this
+    /// function's own frame can see it.
+    Out,
+    /// Any code: an assignment to a place, which is part of this local if it is known to be.
+    Any(Option<crate::tir::LocalId>),
+}
 
 pub enum Scope<'a> {
     /// A block: its `defer`s registered so far, `(is_errdefer, body)`, and how many
@@ -69,7 +82,7 @@ pub struct FnGen<'g, 'a> {
     pub spec_call: Option<(*const Expr, Spec)>,
     /// The call expression whose large result goes straight into a destination, and
     /// that destination (a C lvalue); see `expr_into`.
-    pub dest_call: Option<(*const Expr, String)>,
+    pub dest_call: Option<(*const Expr, String, Observed)>,
     /// The destination of the call being emitted, from `dest_call`.
     pub call_dest: Option<String>,
     pub def: &'a FnDef,
@@ -268,10 +281,10 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     if out_ret && fg.builds_in_place(body) {
         // Built straight in the caller's destination: the body has no `defer`.
         let ct = fg.g.ty.cty(def.ret);
-        fg.expr_into(body, &format!("(*({} *)gm_out)", ct))?;
+        fg.expr_into(body, &format!("(*({} *)gm_out)", ct), Observed::Out)?;
         fg.line("goto gm_fdone;");
     } else if !body.ty.is_never() {
-        fg.expr_into(body, "F.ret")?;
+        fg.expr_into(body, "F.ret", Observed::Fresh)?;
     } else {
         fg.expr(body)?;
     }
@@ -722,7 +735,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// writes its result there and an aggregate stores its elements there. Either way
     /// `dest` is written only once everything in `e` has been evaluated, as an
     /// assignment would, so `e` may read what `dest` holds.
-    pub fn expr_into(&mut self, e: &'a Expr, dest: &str) -> CResult<()> {
+    ///
+    /// The exception is an element that is itself an aggregate (or a call, where `obs`
+    /// is `Fresh`): it is built directly in its place in `dest`, so `dest` is then written
+    /// before the elements after it are evaluated. That is done only when nothing
+    /// evaluated meanwhile can read `dest`, as `obs` says.
+    pub fn expr_into(&mut self, e: &'a Expr, dest: &str, obs: Observed) -> CResult<()> {
         if !self.builds_in_place(e) {
             let v = self.expr(e)?;
             if !e.ty.is_never() {
@@ -732,7 +750,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         match &e.kind {
             ExprKind::Call { .. } => {
-                self.dest_call = Some((e as *const Expr, dest.to_string()));
+                self.dest_call = Some((e as *const Expr, dest.to_string(), obs));
                 let v = self.expr(e);
                 self.dest_call = None;
                 let v = v?;
@@ -741,22 +759,64 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             ExprKind::Aggregate(elems) | ExprKind::Array(elems) => {
-                let mut vals = vec![];
-                for x in elems {
-                    vals.push(self.expr(x)?);
+                let nested = elems.iter().any(|x| self.nests_in_place(x, obs));
+                if nested && matches!(obs, Observed::Any(_)) {
+                    // Built in a temporary of its own, so `dest` is written once at the end.
+                    let t = self.tmp_uninit(e.ty);
+                    self.expr_into(e, &t, Observed::Fresh)?;
+                    let c = self.g.ty.cty(e.ty);
+                    self.line(&format!("GM_ST({}, (uint8_t *)&{}, {});", c, dest, t));
+                    return Ok(());
                 }
+                let eager = match obs {
+                    Observed::Fresh => true,
+                    Observed::Out => self.frame_pure(e),
+                    Observed::Any(_) => false,
+                };
                 let offs: Vec<u64> = match &e.kind {
                     ExprKind::Aggregate(_) => self.g.ty.offsets(e.ty),
                     _ => elems.iter().enumerate().map(|(i, x)| i as u64 * self.g.ty.size(x.ty)).collect(),
                 };
                 // Padding is zero, as in the interpreter.
-                let filled: u64 = elems.iter().map(|x| self.g.ty.size(x.ty)).sum();
-                if filled < self.g.ty.size(e.ty) {
-                    self.line(&format!("memset(&{}, 0, sizeof {});", dest, dest));
+                let mut cursor = 0;
+                for (x, &off) in elems.iter().zip(&offs) {
+                    let sz = self.g.ty.size(x.ty);
+                    if sz > 0 {
+                        if off > cursor {
+                            self.line(&format!("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, off - cursor));
+                        }
+                        cursor = off + sz;
+                    }
                 }
-                for (i, (x, v)) in elems.iter().zip(&vals).enumerate() {
-                    let c = self.g.ty.cty(x.ty);
-                    self.line(&format!("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, offs[i], v));
+                let total = self.g.ty.size(e.ty);
+                if total > cursor {
+                    self.line(&format!("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, total - cursor));
+                }
+                if eager {
+                    for (x, &off) in elems.iter().zip(&offs) {
+                        let c = self.g.ty.cty(x.ty);
+                        if self.nests_in_place(x, obs) {
+                            let sub = format!("(*({} *)((uint8_t *)&{} + {}))", c, dest, off);
+                            self.expr_into(x, &sub, obs)?;
+                        } else if self.g.ty.by_ref(x.ty) && self.reads_place(x) {
+                            // Copied from where it is, not through a temporary.
+                            let a = self.place_addr(x)?;
+                            let sz = self.g.ty.size(x.ty);
+                            self.line(&format!("memcpy((uint8_t *)&{} + {}, {}, {});", dest, off, a, sz));
+                        } else {
+                            let v = self.expr(x)?;
+                            self.line(&format!("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, off, v));
+                        }
+                    }
+                } else {
+                    let mut vals = vec![];
+                    for x in elems {
+                        vals.push(self.expr(x)?);
+                    }
+                    for (i, (x, v)) in elems.iter().zip(&vals).enumerate() {
+                        let c = self.g.ty.cty(x.ty);
+                        self.line(&format!("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, offs[i], v));
+                    }
                 }
             }
             ExprKind::Block(b) => {
@@ -765,7 +825,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let r = self.stmts(b).and_then(|_| {
                     let t = b.tail.as_ref().unwrap();
                     self.src_line(t.span);
-                    self.expr_into(t, dest)
+                    self.expr_into(t, dest, obs)
                 });
                 let scope = self.scopes.pop().unwrap();
                 r?;
@@ -774,6 +834,61 @@ impl<'g, 'a> FnGen<'g, 'a> {
             _ => unreachable!(),
         }
         Ok(())
+    }
+
+    /// True if element `x` of an aggregate is built straight in its place in the
+    /// aggregate rather than in a temporary: a large aggregate or array, or where
+    /// the destination is `Fresh` a large value that is the result of a call.
+    fn nests_in_place(&mut self, x: &Expr, obs: Observed) -> bool {
+        self.builds_in_place(x)
+            && match x.kind {
+                ExprKind::Aggregate(_) | ExprKind::Array(_) => true,
+                ExprKind::Call { .. } => obs == Observed::Fresh,
+                _ => false,
+            }
+    }
+
+    /// True if `e` reads the value of a place that `place_addr` gives the address of.
+    fn reads_place(&mut self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_) | ExprKind::Global(_) => true,
+            ExprKind::Field { base, .. } => self.g.ty.bits_layout(base.ty).is_none(),
+            ExprKind::Index { .. } | ExprKind::VariantPayload { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// True if evaluating `e` only reads constants, this function's own locals and
+    /// parameters, and has no effect but a failed check. A callee's result destination
+    /// does not overlap a parameter read in place (see `arg_may_overlap`), so nothing in
+    /// `e` can read a destination `Observed::Out`.
+    fn frame_pure(&self, e: &Expr) -> bool {
+        use crate::types::TyKind;
+        match &e.kind {
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::Str(_)
+            | ExprKind::CStr(_)
+            | ExprKind::ConstBytes(_)
+            | ExprKind::Uninit
+            | ExprKind::Const(_) => true,
+            ExprKind::Local(_) => true,
+            ExprKind::Field { base, .. } => self.frame_pure(base),
+            ExprKind::Index { base, index, .. } => {
+                matches!(base.ty.kind(), TyKind::Array { .. }) && self.frame_pure(base) && self.frame_pure(index)
+            }
+            ExprKind::Unary { operand, .. } => !matches!(self.g.ty.repr(e.ty), Repr::Blob) && self.frame_pure(operand),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                !matches!(self.g.ty.repr(e.ty), Repr::Blob)
+                    && !matches!(self.g.ty.repr(lhs.ty), Repr::Blob)
+                    && self.frame_pure(lhs)
+                    && self.frame_pure(rhs)
+            }
+            ExprKind::Aggregate(elems) | ExprKind::Array(elems) => elems.iter().all(|x| self.frame_pure(x)),
+            _ => false,
+        }
     }
 
     /// A block. Temporaries have unique names, so no C braces are needed and the
@@ -847,7 +962,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Stmt::Let { local, init } => {
                 if let Some(init) = init {
                     let lv = self.local_lv(*local);
-                    self.expr_into(init, &lv)?;
+                    self.expr_into(init, &lv, Observed::Fresh)?;
                 }
             }
             Stmt::LetTuple { locals, init } => {
@@ -896,7 +1011,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Stmt::Assign { place, value } if self.builds_in_place(value) => {
                 let p = self.place_addr(place)?;
                 let c = self.g.ty.cty(place.ty);
-                self.expr_into(value, &format!("(*({} *){})", c, p))?;
+                let root = super::borrow::root_local(place);
+                self.expr_into(value, &format!("(*({} *){})", c, p), Observed::Any(root))?;
             }
             // A local assigned a value of its own type is assigned as a C lvalue.
             Stmt::Assign { place: Expr { kind: ExprKind::Local(l), ty, .. }, value }
