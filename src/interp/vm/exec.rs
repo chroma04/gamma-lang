@@ -15,16 +15,16 @@ pub struct St<'a> {
     fr: Option<Rc<Frame>>,
     /// The id the frame has (or will have).
     id: u64,
-    spec: FrameSpec,
+    func: FnId,
+    /// What the frame is made with, for the activations that are not plain calls.
+    extra: Option<Box<FrameExtra>>,
     /// The handler context, and the contexts outside the `with`s being run.
     cx: Ctx,
     cx_stack: Vec<Ctx>,
 }
 
-/// What a frame is made from.
-struct FrameSpec {
-    ret_ty: Ty,
-    func: FnId,
+/// What the frame of a closure or clause call is made with besides the function.
+struct FrameExtra {
     env: Option<Rc<Frame>>,
     installing: Option<(u64, LabelId)>,
     is_clause_lit: bool,
@@ -65,6 +65,18 @@ fn get_bytes(regs: &[u64], r: Reg, size: u32) -> Bytes {
         }
         v.truncate(n);
         Bytes::Heap(v)
+    }
+}
+
+/// Copies `n` words; most values are one or two.
+#[inline(always)]
+fn copy_words(dst: &mut [u64], d: usize, src: &[u64], s: usize, n: usize) {
+    if n <= 4 {
+        for i in 0..n {
+            dst[d + i] = src[s + i];
+        }
+    } else {
+        dst[d..d + n].copy_from_slice(&src[s..s + n]);
     }
 }
 
@@ -291,32 +303,41 @@ impl<'a> Machine<'a> {
 
     /// The checks of a call of compiled function `fid` with `nargs` arguments; returns
     /// the stack it is charged on a fiber.
-    fn vm_prologue(&mut self, span: Span, fid: FnId, nargs: usize) -> R<u64> {
-        let f = &self.prog.fns[fid.index()];
-        if self.depth >= MAX_DEPTH {
-            return self.trap(span, "stack overflow");
-        }
+    #[inline(always)]
+    fn vm_prologue(&mut self, span: Span, fid: FnId, code: &Code<'a>, nargs: usize) -> R<u64> {
         let marker = 0u8;
-        if (&marker as *const u8 as usize) < self.stack_floor {
+        if self.depth >= MAX_DEPTH || (&marker as *const u8 as usize) < self.stack_floor {
             return self.trap(span, "stack overflow");
         }
         self.tick()?;
         self.check_budget(span)?;
-        if nargs != f.params.len() {
-            return self.trap(
-                span,
-                format!("internal error: `{}` called with {} arguments, expected {}", f.name, nargs, f.params.len()),
-            );
+        if nargs != code.params.len() {
+            return self.bad_arg_count(span, fid, nargs);
         }
         let cost = self.frame_cost(fid);
         if cost > crate::interp::calls::MAX_FRAME {
-            return self.trap(span, format!("stack overflow: `{}` needs a frame of {} bytes", f.name, cost));
+            return self.trap(
+                span,
+                format!("stack overflow: `{}` needs a frame of {} bytes", self.prog.fns[fid.index()].name, cost),
+            );
         }
-        let cost = if self.fiber_stack == u64::MAX { 0 } else { cost };
+        if self.fiber_stack == u64::MAX {
+            return Ok(0);
+        }
         if cost > self.fiber_stack && !self.fast() {
             return self.trap(span, "stack overflow on a fiber stack");
         }
         Ok(cost)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bad_arg_count(&self, span: Span, fid: FnId, nargs: usize) -> R<u64> {
+        let f = &self.prog.fns[fid.index()];
+        self.trap(
+            span,
+            format!("internal error: `{}` called with {} arguments, expected {}", f.name, nargs, f.params.len()),
+        )
     }
 
     #[inline(always)]
@@ -329,22 +350,26 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn vm_state(
-        &mut self,
-        code: Rc<Code<'a>>,
-        fid: FnId,
-        env: Option<Rc<Frame>>,
-        cx: Ctx,
-        installing: Option<(u64, LabelId)>,
-        is_clause_lit: bool,
-    ) -> St<'a> {
-        let ret_ty = self.prog.fns[fid.index()].ret;
+    #[inline(always)]
+    fn vm_state(&mut self, code: Rc<Code<'a>>, fid: FnId, extra: Option<Box<FrameExtra>>, cx: Ctx) -> St<'a> {
         let id = self.next_frame;
         self.next_frame += 1;
         let mut regs = self.vm_regs.pop().unwrap_or_default();
+        let n = code.nregs as usize;
         regs.clear();
-        regs.extend_from_slice(&code.init);
-        regs.resize(code.nregs as usize, 0);
+        regs.reserve(n);
+        let init = &code.init[..code.init.len().min(n)];
+        // SAFETY: the buffer has room for `n` words, and each of them is written below.
+        unsafe {
+            let p = regs.as_mut_ptr();
+            for (i, w) in init.iter().enumerate() {
+                p.add(i).write(*w);
+            }
+            for i in init.len()..n {
+                p.add(i).write(0);
+            }
+            regs.set_len(n);
+        }
         let vals = if code.nvals == 0 {
             Vec::new()
         } else {
@@ -352,8 +377,7 @@ impl<'a> Machine<'a> {
             vals.resize(code.nvals as usize, Value::unit());
             vals
         };
-        let spec = FrameSpec { ret_ty, func: fid, env, installing, is_clause_lit };
-        St { code, regs, vals, fr: None, id, spec, cx, cx_stack: Vec::new() }
+        St { code, regs, vals, fr: None, id, func: fid, extra, cx, cx_stack: Vec::new() }
     }
 
     /// The frame of activation `st`, made on first use.
@@ -361,21 +385,26 @@ impl<'a> Machine<'a> {
         if let Some(fr) = &st.fr {
             return fr.clone();
         }
-        let sp = &mut st.spec;
+        let ret_ty = self.prog.fns[st.func.index()].ret;
+        let (env, installing, is_clause_lit) = match st.extra.take() {
+            Some(x) => (x.env, x.installing, x.is_clause_lit),
+            None => (None, None, false),
+        };
         let fr = self.new_frame_with_id(
             st.id,
-            sp.ret_ty,
-            Some(sp.func),
-            sp.env.take(),
+            ret_ty,
+            Some(st.func),
+            env,
             st.code.nslots as usize,
-            sp.installing,
-            sp.is_clause_lit,
+            installing,
+            is_clause_lit,
         );
         st.fr = Some(fr.clone());
         fr
     }
 
     /// Takes back the buffers and frame of a finished activation.
+    #[inline(always)]
     fn vm_finish(&mut self, st: St<'a>) {
         let St { mut regs, mut vals, fr, .. } = st;
         regs.clear();
@@ -392,8 +421,11 @@ impl<'a> Machine<'a> {
     }
 
     /// Runs the body of an activation whose parameters are bound.
+    #[inline(always)]
     fn vm_body(&mut self, st: &mut St<'a>, fid: FnId, span: Span, cost: u64) -> R<Exit> {
-        self.fiber_stack = self.fiber_stack.saturating_sub(cost);
+        if cost != 0 {
+            self.fiber_stack = self.fiber_stack.saturating_sub(cost);
+        }
         self.depth += 1;
         let mark = self.temps.len();
         let r = self.vm_run_from(st, 0);
@@ -407,15 +439,19 @@ impl<'a> Machine<'a> {
         }
         match r {
             Ok(x) => Ok(x),
-            Err(mut flow) => {
-                if let Flow::Trap(t) = &mut *flow
-                    && (self.mode == crate::interp::Mode::Debug || self.const_mode)
-                {
-                    t.trace.push((fid, span));
-                }
-                Err(flow)
-            }
+            Err(flow) => Err(self.vm_trace(flow, fid, span)),
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn vm_trace(&mut self, mut flow: Box<Flow>, fid: FnId, span: Span) -> Box<Flow> {
+        if let Flow::Trap(t) = &mut *flow
+            && (self.mode == crate::interp::Mode::Debug || self.const_mode)
+        {
+            t.trace.push((fid, span));
+        }
+        flow
     }
 
     /// Calls compiled function `fid` with argument values (from the tree-walker or the runtime).
@@ -431,8 +467,13 @@ impl<'a> Machine<'a> {
         installing: Option<(u64, LabelId)>,
         is_clause_lit: bool,
     ) -> R {
-        let cost = self.vm_prologue(span, fid, args.len())?;
-        let mut st = self.vm_state(code, fid, env, cx, installing, is_clause_lit);
+        let cost = self.vm_prologue(span, fid, &code, args.len())?;
+        let extra = if env.is_some() || installing.is_some() || is_clause_lit {
+            Some(Box::new(FrameExtra { env, installing, is_clause_lit }))
+        } else {
+            None
+        };
+        let mut st = self.vm_state(code, fid, extra, cx);
         let mut bound = Ok(());
         let code = st.code.clone();
         for (p, v) in code.params.iter().zip(args.drain(..)) {
@@ -486,17 +527,16 @@ impl<'a> Machine<'a> {
         list: &[Arg],
         out: Arg,
     ) -> R<()> {
-        let cost = self.vm_prologue(span, fid, list.len())?;
-        let mut st = self.vm_state(code, fid, None, cs.cx.clone(), None, false);
-        let code = st.code.clone();
+        let cost = self.vm_prologue(span, fid, &code, list.len())?;
+        let mut st = self.vm_state(code, fid, None, cs.cx.clone());
+        // SAFETY: `st.code` keeps the code alive for the whole activation and is never replaced.
+        let code: &Code<'a> = unsafe { &*Rc::as_ptr(&st.code) };
         let mut bound = Ok(());
         for (p, a) in code.params.iter().zip(list) {
             match (*p, *a) {
                 (ParamLoc::Reg { reg, size }, Arg::Data { reg: src, size: ss }) => {
                     if ss == size {
-                        let w = words(size) as usize;
-                        st.regs[reg as usize..reg as usize + w]
-                            .copy_from_slice(&cs.regs[src as usize..src as usize + w]);
+                        copy_words(&mut st.regs, reg as usize, &cs.regs, src as usize, words(size) as usize);
                     } else {
                         let b = get_bytes(&cs.regs, src, ss);
                         put_bytes(&mut st.regs, reg, size, &b);
@@ -518,9 +558,7 @@ impl<'a> Machine<'a> {
             Ok(Exit::Ret(a)) => match (a, out) {
                 (Arg::Data { reg: src, size: ss }, Arg::Data { reg, size }) => {
                     if ss == size {
-                        let w = words(size) as usize;
-                        cs.regs[reg as usize..reg as usize + w]
-                            .copy_from_slice(&st.regs[src as usize..src as usize + w]);
+                        copy_words(&mut cs.regs, reg as usize, &st.regs, src as usize, words(size) as usize);
                     } else {
                         let b = get_bytes(&st.regs, src, ss);
                         put_bytes(&mut cs.regs, reg, size, &b);
@@ -625,7 +663,8 @@ impl<'a> Machine<'a> {
 
     /// Runs the code of activation `st` from instruction `start`.
     fn vm_run<const LE: bool, const COUNT: bool>(&mut self, st: &mut St<'a>, start: u32) -> R<Exit> {
-        let code = st.code.clone();
+        // SAFETY: `st.code` keeps the code alive for the whole activation and is never replaced.
+        let code: &Code<'a> = unsafe { &*Rc::as_ptr(&st.code) };
         // The instruction pointer and the registers are raw so that dispatch costs little.
         // `Code::valid` has checked every jump target and, for the instructions that use
         // `r!` and `w!`, every register against the activation's `nregs` registers, which
