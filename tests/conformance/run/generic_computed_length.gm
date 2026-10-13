@@ -1,0 +1,61 @@
+// Array lengths computed from compile-time parameters (§16.5).
+Matrix :: struct(T: type, R, C: usize) {
+    d: [R * C]T
+}
+
+at :: fn(T: type, R, C :: usize, m: ^Matrix(T, R, C), r: usize, c: usize) -> T => m.d[r * C + c]
+
+transpose :: fn(T: type, R, C :: usize, m: ^Matrix(T, R, C)) -> Matrix(T, C, R) where Plain(T) {
+    out := Matrix(T, C, R)(d: ---)
+    for r in 0..R {
+        for c in 0..C {
+            out.d[c * R + r] = at(m, r, c)
+        }
+    }
+    return out
+}
+
+concat :: fn(A, B :: usize, x: [A]u8, y: [B]u8) -> [A + B]u8 {
+    out: [A + B]u8 = ---
+    for i in 0..A {
+        out[i] = x[i]
+    }
+    for i in 0..B {
+        out[A + i] = y[i]
+    }
+    return out
+}
+
+sum :: fn(N :: usize, xs: [N]u8) -> usize {
+    s: usize = 0
+    for x in xs {
+        s += x
+    }
+    return s
+}
+
+// `[A + B]` and `[B + A]` are the same type; `sum` infers `N` from a computed length.
+swapped :: fn(A, B :: usize, x: [A]u8, y: [B]u8) -> usize {
+    t: [B + A]u8 = concat(x, y)
+    return sum(t)
+}
+
+halves :: fn(N :: usize, xs: [N]i32) -> [N / 2 + N % 2]i32 {
+    out := [N / 2 + N % 2]i32(fill: 0)
+    for i in 0..out.len {
+        out[i] = xs[2 * i]
+    }
+    return out
+}
+
+bits :: fn(K :: usize) -> [1 << K]bool => [1 << K]bool(fill: false)
+
+main :: fn() \ {Out} {
+    m := Matrix(i32, 2, 3)(d: [6]i32(1, 2, 3, 4, 5, 6))
+    t := transpose(&m)
+    print("{} {} {}\n", (at(&m, 1, 2), t.d, t.d.len))
+    print("{}\n", concat([2]u8(1, 2), [3]u8(3, 4, 5)))
+    print("{}\n", swapped([2]u8(1, 2), [1]u8(3)))
+    print("{} {}\n", (halves([5]i32(10, 20, 30, 40, 50)), halves([4]i32(1, 2, 3, 4))))
+    print("{}\n", bits(3).len)
+}

@@ -267,6 +267,7 @@ impl<'s> Sema<'s> {
         let locals = g.locals.clone();
         let hints = g.hints;
         let outer_depth = std::mem::replace(&mut self.mono_depth, req.depth);
+        self.check_len_exprs(&map, Some(req.span));
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
         let locals: Vec<tir::LocalDecl> =
@@ -815,13 +816,17 @@ impl<'a, 's> FnCx<'a, 's> {
             })
             .collect();
         // A compile-time value parameter is inferable only if another parameter's
-        // type mentions it (§16.2).
+        // type mentions it other than inside a computed array length (§16.2).
         let inferable = |i: usize| match sig.params[i].generic {
             None => false,
             Some(pid) if self.sema.value_params.contains_key(&pid) => sig.params.iter().any(|q| {
-                let mut found = false;
-                q.ty.walk(&mut |t| found |= matches!(t.kind(), TyKind::Param(x) if *x == pid));
-                found
+                let is_pid = |t: Ty| matches!(t.kind(), TyKind::Param(x) if *x == pid);
+                let (mut all, mut computed) = (0, 0);
+                q.ty.walk(&mut |t| match t.kind() {
+                    TyKind::LenExpr { lhs, rhs, .. } => computed += is_pid(*lhs) as u32 + is_pid(*rhs) as u32,
+                    _ => all += is_pid(t) as u32,
+                });
+                all > computed
             }),
             Some(_) => true,
         };
@@ -1164,6 +1169,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let k = match v.kind() {
             TyKind::Value(k) => k,
             TyKind::Param(p) if self.sema.value_params.contains_key(p) => return Some(v),
+            // A computed length `[A + B]T` (§16.5) is a `usize`.
+            TyKind::LenExpr { .. } if ty == Ty::usize() => return Some(v),
+            TyKind::LenExpr { .. } => {
+                self.error(span, format!("`{}` = {} is a `usize`, but `{}` has type `{}`", name, v, name, ty));
+                return None;
+            }
             _ => {
                 self.error(span, format!("`{}` is a compile-time value parameter, but a type was given", name));
                 return None;
