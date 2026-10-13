@@ -250,6 +250,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(ty, tir::ExprKind::Upvar { levels: self.depth() - depth, local: id }, span)
                 }
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
+                LocalBinding::NestedFn(f) if self.open_fns.contains(&f) => {
+                    self.recursive_without_ret(name, span);
+                    error_expr(span)
+                }
                 LocalBinding::NestedFn(f) => self.named_fn_value(f, name, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
@@ -1799,6 +1803,9 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let (levels, ret) = self.return_target();
         self.check_fn_clause_exit(levels, "return", span);
+        if let Some(open) = self.open_ret_at(levels) {
+            return self.open_return(v, levels, open, span);
+        }
         let value = match v {
             Some(v) => {
                 let ex = self.expr(v, Some(ret));
@@ -1812,6 +1819,52 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(value) }, span)
+    }
+
+    fn open_ret_at(&self, levels: u32) -> Option<Option<Ty>> {
+        match levels {
+            0 => self.open_ret,
+            n => self.outer[self.outer.len() - n as usize].open_ret,
+        }
+    }
+
+    /// A `return` in a literal whose return type comes from its `return`s: the first one
+    /// with a value fixes the type, the others convert to it.
+    fn open_return(&mut self, v: Option<&ast::Expr>, levels: u32, fixed: Option<Ty>, span: Span) -> Expr {
+        let value = match (v, fixed) {
+            (Some(v), None) => {
+                let ex = self.expr(v, None);
+                if !ex.ty.is_never() && !ex.ty.is_error() {
+                    self.set_open_ret(levels, ex.ty);
+                }
+                ex
+            }
+            (Some(v), Some(t)) => {
+                let ex = self.expr(v, Some(t));
+                self.coerce(ex, t)
+            }
+            (None, fixed) => {
+                match fixed {
+                    Some(t) if !self.infer.resolve(t).is_unit() && !t.is_error() => {
+                        self.error(span, format!("`return` needs a value of type `{}`", t));
+                    }
+                    Some(_) => {}
+                    None => self.set_open_ret(levels, Ty::unit()),
+                }
+                unit(span)
+            }
+        };
+        mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(value) }, span)
+    }
+
+    fn set_open_ret(&mut self, levels: u32, t: Ty) {
+        match levels {
+            0 => self.open_ret = Some(Some(t)),
+            n => {
+                let i = self.outer.len() - n as usize;
+                self.outer[i].open_ret = Some(Some(t));
+            }
+        }
     }
 
     /// Resolves the target of `break` / `continue` (§8.5, §12.7.1).
