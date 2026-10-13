@@ -804,7 +804,7 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
 | `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
-| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type; calling it is undefined unless the parameters and results have the same representation |
+| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type with the same calling convention and number of parameters, whose parameters and result are each the same type as before or both pointers (to any pointee, including `rawptr`; `?` on both or neither); the effect sets may differ. Other signatures are a compile error. Calling the result is undefined if the pointee types make the callee misuse its arguments (so a `^fn(arg: ^T)` called as `^fn(arg: rawptr)` must be called with a `^T`) |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
@@ -1383,7 +1383,7 @@ A named function passed for a second-class parameter behaves the same way as a l
 
 ### 11.7 Function pointers
 
-`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
+`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, an instantiation of a generic function (§16.7), or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
 
 Function pointers may be stored anywhere, compared with `is`, and passed to C when their signature is C-compatible and their effect set is empty or `{Sys}` (§19.2).
 
@@ -2041,7 +2041,7 @@ Effects may have parameters (`Yield(T)`). An effect set may mention type paramet
 ### 16.7 Restrictions
 
 - `when` conditions may not depend on type parameters or compile-time value parameters of an enclosing generic function or type (that would make "checked once" impossible). Use separate functions.
-- A generic function does not convert to a function pointer, and there is no partial application of type arguments; write a non-generic wrapper (`max_i32 :: fn(xs: []const i32) -> ?i32 => max(xs)`).
+- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)`. An argument for a type parameter must be a type, which tells `f(u8)` from a call such as `id(x)`; a function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
 - Recursion between generic instantiations must terminate: an instantiation that (transitively) requires an instantiation with a strictly larger type argument is a compile error after an implementation-defined depth (at least 64).
 
 ### 16.8 Structural hashing

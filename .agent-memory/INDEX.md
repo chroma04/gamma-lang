@@ -69,6 +69,7 @@
                   · 018 stdlib policy §22 + s7 language changes (fmt specs, op=, .to)
                   · 019 perf round s9 (where time goes, what was measured/kept/dropped)
                   · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
+                  · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
