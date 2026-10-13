@@ -1156,7 +1156,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if let Some(e) = self.for_each_loop(f) {
                 return e;
             }
-            self.error(f.iter.span, "`for` iterates over a range, an array or slice, or a call to an iterator");
+            self.error(f.iter.span, "`for` iterates over a range, an array, slice or tuple, or a call to an iterator");
             return error_expr(span);
         };
         let inclusive = *op == ast::BinOp::RangeIncl;

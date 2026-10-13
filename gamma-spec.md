@@ -1052,7 +1052,7 @@ for_stmt = [ label ':' ] 'for' pattern { ',' pattern } 'in' expr block   // also
 
 ```
 for i in 0..n { … }                  // half-open; 0..=n is inclusive
-for x in xs { … }                    // xs: an array place or a slice
+for x in xs { … }                    // xs: an array place, a slice or a tuple of one element type
 for i, x in enumerate(xs) { … }      // tuple pattern without parentheses
 ```
 
@@ -1616,6 +1616,7 @@ is defined as follows.
    - a range `lo..hi` or `lo..=hi` of an integer type, or a value of type `Range(T)` or `RangeIncl(T)` with an integer `T` (§5.16), meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
    - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order;
    - any other expression of array type, such as an array constructor or a call that returns an array (and has no `Yield` effect): the array is evaluated into a hidden variable that lives as long as the loop, which is then iterated as an array place.
+   - a tuple expression or value with at least one element, all of one type (after literal inference): `for x in (1, 2, 3)`. It means the same as iterating over the array of its elements, `[_]T(t.0, t.1, …)`, evaluated once before the loop. A tuple whose elements differ in type is a compile error. (Not to be confused with `x in (1, 2, 3)`, the membership test of §7.7.)
    Any other form is a compile error. `T` is the type of the yielded values.
 
 2. **Evaluation.** The callee and arguments `a1 … an` are evaluated first, left to right, **in the context outside the loop**. Then the call is made in a context where `Yield(T)` is handled by the loop's handler and every other effect is handled as outside the loop. Second-class arguments therefore keep their own (outer) context (§11.6).
