@@ -378,7 +378,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     }
                     let n = vs.min(size);
                     if n > 0 {
-                        self.emit(Op::Insert { dst: reg, off: 0, src, size: n }, span);
+                        self.insert(reg, 0, src, n, span);
                     }
                 }
             }

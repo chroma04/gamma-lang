@@ -71,12 +71,15 @@ fn get_bytes(regs: &[u64], r: Reg, size: u32) -> Bytes {
 /// Copies `n` words; most values are one or two.
 #[inline(always)]
 fn copy_words(dst: &mut [u64], d: usize, src: &[u64], s: usize, n: usize) {
-    if n <= 4 {
-        for i in 0..n {
-            dst[d + i] = src[s + i];
+    let dst = &mut dst[d..d + n];
+    let src = &src[s..s + n];
+    match n {
+        1 => dst[0] = src[0],
+        2 => {
+            dst[0] = src[0];
+            dst[1] = src[1];
         }
-    } else {
-        dst[d..d + n].copy_from_slice(&src[s..s + n]);
+        _ => dst.copy_from_slice(src),
     }
 }
 

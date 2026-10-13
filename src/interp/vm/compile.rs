@@ -161,6 +161,22 @@ pub fn compile<'a>(m: &Machine<'a>, f: FnId) -> Result<Code<'a>, Unsupported> {
     }
 }
 
+/// True if the parts `(offset, size)` are whole words that follow one another from byte 0 to byte `size`.
+fn tiles(parts: &mut [(u32, u32)], size: u32) -> bool {
+    parts.sort_unstable();
+    let mut at = 0;
+    for &(off, n) in parts.iter() {
+        if n == 0 {
+            continue;
+        }
+        if off != at || !off.is_multiple_of(8) || !n.is_multiple_of(8) {
+            return false;
+        }
+        at += n;
+    }
+    at == size
+}
+
 /// An array length as an instruction field; arrays too long for it are left to the tree-walker.
 fn len32(len: u64) -> C<u32> {
     if len < NO_LEN as u64 { Ok(len as u32) } else { Err(unsupported!()) }
@@ -659,7 +675,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
         let t = self.alloc(b.len() as u32);
         self.const_bytes(t, b, span);
-        self.emit(Op::Insert { dst, off, src: t, size: b.len() as u32 }, span);
+        self.insert(dst, off, t, b.len() as u32, span);
     }
 
     // --- the function ----------------------------------------------------------------------------
@@ -908,6 +924,16 @@ impl<'m, 'a> Compiler<'m, 'a> {
             ExprKind::Call { callee, args } => self.call(e, callee, args, want),
             ExprKind::Aggregate(items) => self.aggregate(e, items, want),
             ExprKind::Array(items) => {
+                let esz = items.first().map_or(0, |i| self.size(i.ty));
+                if want.is_none()
+                    && esz > 0
+                    && esz.is_multiple_of(8)
+                    && self.size(e.ty) == esz * items.len() as u32
+                    && !items.iter().any(|i| second_class(i.ty))
+                {
+                    let offs = (0..items.len() as u32).map(|i| i * esz).collect();
+                    return self.aggregate_in_place(items, offs, e.ty, span);
+                }
                 let dst = self.dst(e, want);
                 let Arg::Data { reg, size } = dst else { return Err(unsupported!()) };
                 let esz = items.first().map_or(0, |i| self.size(i.ty));
@@ -917,14 +943,14 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     let v = self.stable(v, &items[i + 1..].iter().collect::<Vec<_>>(), span);
                     vals.push(v);
                 }
-                if size > 0 {
+                if size > 0 && !(esz > 0 && esz.is_multiple_of(8) && size == esz * vals.len() as u32) {
                     self.emit(Op::Zero { dst: reg, words: words(size) }, span);
                 }
                 for (i, v) in vals.into_iter().enumerate() {
                     if let Arg::Data { reg: src, .. } = v
                         && esz > 0
                     {
-                        self.emit(Op::Insert { dst: reg, off: i as u32 * esz, src, size: esz }, span);
+                        self.insert(reg, i as u32 * esz, src, esz, span);
                     }
                 }
                 Ok(dst)
@@ -1172,7 +1198,23 @@ impl<'m, 'a> Compiler<'m, 'a> {
         if off == 0 && dst == src {
             return;
         }
-        self.emit(Op::Extract { dst, src, off, size }, span);
+        if off.is_multiple_of(8) && size.is_multiple_of(8) {
+            self.mov(Arg::Data { reg: dst, size }, Arg::Data { reg: src + off / 8, size }, span);
+        } else {
+            self.emit(Op::Extract { dst, src, off, size }, span);
+        }
+    }
+
+    /// Copies the `size` bytes of the value at `src` to byte `off` of the value at `dst`.
+    pub fn insert(&mut self, dst: Reg, off: u32, src: Reg, size: u32, span: Span) {
+        if size == 0 {
+            return;
+        }
+        if off.is_multiple_of(8) && size.is_multiple_of(8) {
+            self.mov(Arg::Data { reg: dst + off / 8, size }, Arg::Data { reg: src, size }, span);
+        } else {
+            self.emit(Op::Insert { dst, off, src, size }, span);
+        }
     }
 
     // --- places ------------------------------------------------------------------------------------
@@ -1602,7 +1644,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 self.mov(Arg::Data { reg: dst, size }, Arg::Data { reg: src, size: n }, span);
             } else {
                 self.emit(Op::Zero { dst, words: words(size) }, span);
-                self.emit(Op::Insert { dst, off: 0, src, size: n }, span);
+                self.insert(dst, 0, src, n, span);
             }
             return;
         }
@@ -1612,7 +1654,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let t = if dst == src && n > 0 { self.copy_tmp(src, n, span) } else { src };
         self.emit(Op::Zero { dst, words: words(size) }, span);
         if n > 0 {
-            self.emit(Op::Insert { dst, off: off0, src: t, size: n }, span);
+            self.insert(dst, off0, t, n, span);
         }
         self.insert_imm(dst, off1, &[1], span);
     }
@@ -1638,7 +1680,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             self.insert_imm(dst, off0, &[1], span);
         }
         if n > 0 {
-            self.emit(Op::Insert { dst, off: off1, src: t, size: n }, span);
+            self.insert(dst, off1, t, n, span);
         }
     }
 
@@ -1662,7 +1704,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
         self.insert_imm(dst, 0, &tag_bytes, span);
         if let Some((t, off, n)) = p {
-            self.emit(Op::Insert { dst, off, src: t, size: n }, span);
+            self.insert(dst, off, t, n, span);
         }
         Ok(())
     }
@@ -1836,8 +1878,49 @@ impl<'m, 'a> Compiler<'m, 'a> {
         Ok(out)
     }
 
+    /// The offsets of the items of an aggregate that fills whole words one after the other,
+    /// so that each can be computed where it belongs.
+    fn tiled_offsets(&self, e: &Expr, items: &[Expr]) -> Option<Vec<u32>> {
+        if self.m.bits_struct_ty(e.ty).is_some()
+            || matches!(self.m.adt(e.ty), Some(AdtDef { kind: AdtKind::CUnion { .. }, .. }))
+            || items.iter().any(|i| second_class(i.ty))
+        {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(items.len());
+        for (i, it) in items.iter().enumerate() {
+            let (_, off) = self.m.field_layout(e.ty, i).ok()?;
+            parts.push((off as u32, self.size(it.ty)));
+        }
+        let offs = parts.iter().map(|p| p.0).collect();
+        let size = self.size(e.ty);
+        (size > 0 && tiles(&mut parts, size)).then_some(offs)
+    }
+
+    /// Builds a value of `items` that are each computed straight into their place in a new value.
+    fn aggregate_in_place(&mut self, items: &'a [Expr], offs: Vec<u32>, ty: Ty, span: Span) -> C<Arg> {
+        let dst = self.fresh(ty);
+        let Arg::Data { reg, .. } = dst else { return Err(unsupported!()) };
+        for (it, off) in items.iter().zip(offs) {
+            let n = self.size(it.ty);
+            if n == 0 {
+                self.expr(it)?;
+                continue;
+            }
+            let slot = Arg::Data { reg: reg + off / 8, size: n };
+            let v = self.expr_in(it, Some(slot))?;
+            self.mov(slot, v, span);
+        }
+        Ok(dst)
+    }
+
     fn aggregate(&mut self, e: &'a Expr, items: &'a [Expr], want: Option<Arg>) -> C<Arg> {
         let span = e.span;
+        if want.is_none()
+            && let Some(offs) = self.tiled_offsets(e, items)
+        {
+            return self.aggregate_in_place(items, offs, e.ty, span);
+        }
         let refs: Vec<&'a Expr> = items.iter().collect();
         let vals = self.operands(&refs, span)?;
         let dst = self.dst(e, want);
@@ -1849,14 +1932,25 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
         // The items may be in `dst`'s registers already only if `dst` is fresh, which it is
         // when it was allocated after them; otherwise they are elsewhere.
-        if size > 0 {
+        let is_union = matches!(self.m.adt(e.ty), Some(AdtDef { kind: AdtKind::CUnion { .. }, .. }));
+        let mut parts = Vec::new();
+        if !is_union {
+            for (i, v) in vals.iter().enumerate() {
+                let (_, off) = self.m.field_layout(e.ty, i).map_err(|_| unsupported!())?;
+                if let Arg::Data { size: n, .. } = *v {
+                    parts.push((off as u32, n));
+                }
+            }
+        }
+        // Items that fill whole words, one after the other, leave nothing to clear.
+        if size > 0 && !(!is_union && tiles(&mut parts, size)) {
             self.emit(Op::Zero { dst: reg, words: words(size) }, span);
         }
-        if let Some(AdtDef { kind: AdtKind::CUnion { .. }, .. }) = self.m.adt(e.ty) {
+        if is_union {
             if let Some(Arg::Data { reg: src, size: n }) = vals.first().copied()
                 && n > 0
             {
-                self.emit(Op::Insert { dst: reg, off: 0, src, size: n }, span);
+                self.insert(reg, 0, src, n, span);
             }
             return Ok(dst);
         }
@@ -1865,7 +1959,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             if let Arg::Data { reg: src, size: n } = v
                 && n > 0
             {
-                self.emit(Op::Insert { dst: reg, off: off as u32, src, size: n }, span);
+                self.insert(reg, off as u32, src, n, span);
             }
         }
         Ok(dst)
