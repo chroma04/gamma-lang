@@ -771,7 +771,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Replaces each `AddrOfTemp(v)` in `e` (outside nested calls) by the address of a
     /// local initialized with `v` by a statement added to `pre`.
-    fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
+    pub(super) fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
         if matches!(e.kind, tir::ExprKind::Call { .. } | tir::ExprKind::Closure(_)) {
             return;
         }
