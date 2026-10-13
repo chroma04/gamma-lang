@@ -799,6 +799,8 @@ pub struct Code<'a> {
     pub gets: Vec<GetInfo>,
     pub ranges: Vec<(num_bigint::BigInt, num_bigint::BigInt, bool)>,
     pub effects: Vec<EffectRef>,
+    /// For each of `effects`, whether the operation is a `ctl` one.
+    pub effect_ctl: Vec<bool>,
     pub decls: Vec<Box<[HandlerDeclId]>>,
     pub trees: Vec<&'a Expr>,
     pub stmts: Vec<&'a Stmt>,

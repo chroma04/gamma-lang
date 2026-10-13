@@ -339,6 +339,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 gets: Vec::new(),
                 ranges: Vec::new(),
                 effects: Vec::new(),
+                effect_ctl: Vec::new(),
                 decls: Vec::new(),
                 trees: Vec::new(),
                 stmts: Vec::new(),
@@ -1870,6 +1871,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             }
             Callee::Perform { effect, op } => {
                 self.code.effects.push(effect.clone());
+                self.code.effect_ctl.push(self.m.prog.ctl_ops.contains(&(effect.effect, *op)));
                 let eff = self.code.effects.len() as u32 - 1;
                 let out = self.operand(out);
                 self.emit(Op::Perform { eff, op: *op, args: a, out }, span);

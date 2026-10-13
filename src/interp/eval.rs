@@ -870,6 +870,12 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// `file:line:column` of an allocation site.
+    fn site_text(&mut self, span: Span, site: &AllocSite) -> R<String> {
+        let file = String::from_utf8_lossy(&self.read_str(span, &site.0)?).into_owned();
+        Ok(format!("{}:{}:{}", file, site.1, site.2))
+    }
+
     /// Applies a builtin whose arguments are all evaluated first (not `assert`, `expect`,
     /// `@fiber`, the `Sys` operations or `get`/`get_ptr`/`first`/`last`) to the argument
     /// values `v` of types `tys`.
@@ -894,15 +900,15 @@ impl<'a> Machine<'a> {
                     return Ok(Value::unit());
                 }
                 let (p, owner, vt) = (self.ptr_of(&v[0]), self.ptr_of(&v[1]), self.ptr_of(&v[2]));
-                let file = String::from_utf8_lossy(&self.read_str(span, &v[3])?).into_owned();
                 let line = self.int_of(tys[4], &v[4]).to_u64_sat();
                 let col = self.int_of(tys[5], &v[5]).to_u64_sat();
-                let site = format!("{}:{}:{}", file, line, col);
+                let site = (v[3].clone(), line, col);
                 if op == Builtin::AllocTag {
                     self.alloc_tags.insert(p, (owner, vt, site));
                 } else if let Some((o, t, from)) = self.alloc_tags.remove(&p)
                     && (o, t) != (owner, vt)
                 {
+                    let (from, site) = (self.site_text(span, &from)?, self.site_text(span, &site)?);
                     return self.trap(
                         span,
                         format!("memory allocated at {} is freed at {} through a different allocator", from, site),

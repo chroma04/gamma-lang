@@ -17,7 +17,7 @@ pub struct St<'a> {
     id: u64,
     func: FnId,
     /// What the frame is made with, for the activations that are not plain calls.
-    extra: Option<Box<FrameExtra>>,
+    extra: Option<FrameExtra>,
     /// The handler context, and the contexts outside the `with`s being run.
     cx: Ctx,
     cx_stack: Vec<Ctx>,
@@ -354,7 +354,7 @@ impl<'a> Machine<'a> {
     }
 
     #[inline(always)]
-    fn vm_state(&mut self, code: Rc<Code<'a>>, fid: FnId, extra: Option<Box<FrameExtra>>, cx: Ctx) -> St<'a> {
+    fn vm_state(&mut self, code: Rc<Code<'a>>, fid: FnId, extra: Option<FrameExtra>, cx: Ctx) -> St<'a> {
         let id = self.next_frame;
         self.next_frame += 1;
         let mut regs = self.vm_regs.pop().unwrap_or_default();
@@ -472,7 +472,7 @@ impl<'a> Machine<'a> {
     ) -> R {
         let cost = self.vm_prologue(span, fid, &code, args.len())?;
         let extra = if env.is_some() || installing.is_some() || is_clause_lit {
-            Some(Box::new(FrameExtra { env, installing, is_clause_lit }))
+            Some(FrameExtra { env, installing, is_clause_lit })
         } else {
             None
         };
@@ -521,6 +521,7 @@ impl<'a> Machine<'a> {
 
     /// Calls compiled function `fid` from compiled code, with the operands `list` of the
     /// caller `cs`, and writes the result to `out`.
+    #[inline(always)]
     fn vm_call_regs(
         &mut self,
         span: Span,
@@ -530,12 +531,38 @@ impl<'a> Machine<'a> {
         list: &[Arg],
         out: Arg,
     ) -> R<()> {
-        let cost = self.vm_prologue(span, fid, &code, list.len())?;
-        let mut st = self.vm_state(code, fid, None, cs.cx.clone());
+        let cx = cs.cx.clone();
+        self.vm_call_list(span, fid, code, cs, list, out, None, cx, None)
+    }
+
+    /// Like [`Self::vm_call_regs`] for an activation that has a handler context of its own
+    /// and, perhaps, a frame description and a first argument that is not in a register of
+    /// the caller (the value of a handler declaration).
+    #[allow(clippy::too_many_arguments)]
+    fn vm_call_list(
+        &mut self,
+        span: Span,
+        fid: FnId,
+        code: Rc<Code<'a>>,
+        cs: &mut St<'a>,
+        list: &[Arg],
+        out: Arg,
+        extra: Option<FrameExtra>,
+        cx: Ctx,
+        first: Option<&Bytes>,
+    ) -> R<()> {
+        let cost = self.vm_prologue(span, fid, &code, list.len() + first.is_some() as usize)?;
+        let mut st = self.vm_state(code, fid, extra, cx);
         // SAFETY: `st.code` keeps the code alive for the whole activation and is never replaced.
         let code: &Code<'a> = unsafe { &*Rc::as_ptr(&st.code) };
         let mut bound = Ok(());
-        for (p, a) in code.params.iter().zip(list) {
+        let mut params = code.params.iter();
+        if let Some(b) = first
+            && let Some(p) = params.next()
+        {
+            bound = self.vm_bind(&mut st, *p, Value::Bytes(b.clone()), span);
+        }
+        for (p, a) in params.zip(list) {
             match (*p, *a) {
                 (ParamLoc::Reg { reg, size }, Arg::Data { reg: src, size: ss }) => {
                     if ss == size {
@@ -752,14 +779,14 @@ impl<'a> Machine<'a> {
                             None => {
                                 let w = tri!(
                                     at!(),
-                                    self.mem.read_word(a, s, align as u64).map_err(|e| self.mem_trap(&code, at!(), e))
+                                    self.mem.read_word(a, s, align as u64).map_err(|e| self.mem_trap(code, at!(), e))
                                 );
                                 st.regs[dst as usize] = w;
                             }
                         }
                     } else if size > 0 {
                         let r = self.mem.read(a, size as u64, align as u64).map(Bytes::from_slice);
-                        let b = tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
+                        let b = tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
                         put_bytes(&mut st.regs, dst, size, &b);
                     }
                 }
@@ -770,12 +797,12 @@ impl<'a> Machine<'a> {
                         let w = regs[src as usize];
                         if !self.mem.try_write_word(a, w, s, align as u64) {
                             let r = self.mem.write_word(a, w, s, align as u64);
-                            tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
+                            tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
                         }
                     } else if size > 0 {
                         let b = get_bytes(regs, src, size);
                         let r = self.mem.write(a, &b, align as u64);
-                        tri!(at!(), r.map_err(|e| self.mem_trap(&code, at!(), e)));
+                        tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
                     }
                 }
                 Op::AddImm { dst, src, imm } => w!(dst, r!(src).wrapping_add(imm)),
@@ -787,7 +814,7 @@ impl<'a> Machine<'a> {
                     } else if i < len as u64 {
                         regs[dst as usize] = b.wrapping_add(i * esz as u64);
                     } else {
-                        tri!(at!(), Err(self.oob(&code, at!(), i, len as u64)));
+                        tri!(at!(), Err(self.oob(code, at!(), i, len as u64)));
                     }
                 }
                 Op::SliceIndexAddr { dst, slice, idx, ik, esz } => {
@@ -796,7 +823,7 @@ impl<'a> Machine<'a> {
                     if i < n {
                         regs[dst as usize] = p.wrapping_add(i * esz as u64);
                     } else {
-                        tri!(at!(), Err(self.oob(&code, at!(), i, n)));
+                        tri!(at!(), Err(self.oob(code, at!(), i, n)));
                     }
                 }
                 Op::AddI { fl, dst, a, b, k } => {
@@ -804,7 +831,7 @@ impl<'a> Machine<'a> {
                     match n_add(k, l, r) {
                         Some(v) => w!(dst, nput::<LE>(k, v)),
                         None => {
-                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Add(fl), k, l, r));
+                            let v = tri!(at!(), self.arith_overflow::<LE>(code, at!(), BinOp::Add(fl), k, l, r));
                             w!(dst, v);
                         }
                     }
@@ -814,7 +841,7 @@ impl<'a> Machine<'a> {
                     match n_sub(k, l, r) {
                         Some(v) => w!(dst, nput::<LE>(k, v)),
                         None => {
-                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Sub(fl), k, l, r));
+                            let v = tri!(at!(), self.arith_overflow::<LE>(code, at!(), BinOp::Sub(fl), k, l, r));
                             w!(dst, v);
                         }
                     }
@@ -824,7 +851,7 @@ impl<'a> Machine<'a> {
                     match n_mul(k, l, r) {
                         Some(v) => w!(dst, nput::<LE>(k, v)),
                         None => {
-                            let v = tri!(at!(), self.arith_overflow::<LE>(&code, at!(), BinOp::Mul(fl), k, l, r));
+                            let v = tri!(at!(), self.arith_overflow::<LE>(code, at!(), BinOp::Mul(fl), k, l, r));
                             w!(dst, v);
                         }
                     }
@@ -944,9 +971,15 @@ impl<'a> Machine<'a> {
                     };
                     tri!(at!(), r);
                 }
+                Op::CallInd { callee, cty, args, out } => {
+                    tri!(at!(), self.vm_call_ind(st, code, at!(), callee, cty, args, out));
+                }
+                Op::Perform { eff, op, args, out } => {
+                    tri!(at!(), self.vm_perform(st, code, at!(), eff, op, args, out));
+                }
                 Op::Ret { src } => return Ok(Exit::Ret(src)),
                 Op::EndSeg => return Ok(Exit::Seg),
-                _ => tri!(at!(), self.vm_slow::<LE>(st, &code, *op, at!())),
+                _ => tri!(at!(), self.vm_slow::<LE>(st, code, *op, at!())),
             }
         }
     }
@@ -960,6 +993,121 @@ impl<'a> Machine<'a> {
         // The operand type is only used to report a bad shift amount.
         let v = self.small_binop(code.spans[at as usize], op, k.si(), Ty::bool(), wide(l), wide(r))?;
         Ok(iput::<LE>(k, v))
+    }
+
+    /// Calls a function pointer or closure: compiled functions are called straight from the
+    /// registers, others through values.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn vm_call_ind(
+        &mut self,
+        st: &mut St<'a>,
+        code: &Code<'a>,
+        at: u32,
+        callee: u32,
+        cty: Ty,
+        args: u32,
+        out: u32,
+    ) -> R<()> {
+        let span = code.spans[at as usize];
+        let list = &code.args[args as usize];
+        let (callee, out) = (code.operands[callee as usize], code.operands[out as usize]);
+        match callee {
+            Arg::Data { reg, size } => {
+                let ptr = get_bytes(&st.regs, reg, size);
+                let addr = self.ptr_of(&ptr);
+                if addr == 0 {
+                    return self.trap(span, "call through a null function pointer");
+                }
+                if let Some(f) = self.fn_from_addr(addr)
+                    && let Some(c2) = self.code_of(f)
+                {
+                    let cx = st.cx.clone();
+                    return self.vm_call_list(span, f, c2, st, list, out, None, cx, None);
+                }
+            }
+            Arg::Val(r) => {
+                if let Value::Closure(c) = &st.vals[r as usize]
+                    && let Some(c2) = self.code_of(c.func)
+                {
+                    let c = c.clone();
+                    let mut ctx = c.ctx.clone();
+                    // Effects listed in the function type are handled where it is called (§11.6).
+                    if let TyKind::Fn(sig) = cty.kind() {
+                        for eff in sig.effects.effects.iter() {
+                            if let Some(n) = st.cx.find(eff) {
+                                ctx = ctx.push(n.effect.clone(), n.installed.clone(), n.with_frame, n.with_label);
+                            }
+                        }
+                    }
+                    let extra = c.env.map(|env| FrameExtra { env: Some(env), installing: None, is_clause_lit: false });
+                    return self.vm_call_list(span, c.func, c2, st, list, out, extra, ctx, None);
+                }
+            }
+        }
+        let cv = st.value_of(callee);
+        let vals = st.values(list);
+        let cx = st.cx.clone();
+        let v = self.call_value(&cx, span, cv, cty, vals)?;
+        write_value(st, out, v, span)
+    }
+
+    /// Performs an operation: the clause of the handler is called straight from the
+    /// registers when it is compiled, and through values otherwise.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn vm_perform(
+        &mut self,
+        st: &mut St<'a>,
+        code: &Code<'a>,
+        at: u32,
+        eff: u32,
+        op: u32,
+        args: u32,
+        out: u32,
+    ) -> R<()> {
+        let span = code.spans[at as usize];
+        let effect = &code.effects[eff as usize];
+        let list = &code.args[args as usize];
+        let out = code.operands[out as usize];
+        if !code.effect_ctl[eff as usize]
+            && let Some(node) = st.cx.find(effect)
+        {
+            let node = node.clone();
+            let installing = Some((node.with_frame, node.with_label));
+            let prog = self.prog;
+            match &node.installed {
+                Installed::Lit(hv) => {
+                    let clause = prog.handlers[hv.id.index()].clauses[op as usize];
+                    if let Some(c2) = self.code_of(clause) {
+                        let extra = FrameExtra { env: hv.env.clone(), installing, is_clause_lit: true };
+                        return self.vm_call_list(span, clause, c2, st, list, out, Some(extra), hv.ctx.clone(), None);
+                    }
+                }
+                Installed::Decl { decl, value, outer } => {
+                    let clause = prog.handler_decls[decl.index()].clauses[op as usize];
+                    if let Some(c2) = self.code_of(clause) {
+                        let extra = FrameExtra { env: None, installing, is_clause_lit: false };
+                        return self.vm_call_list(
+                            span,
+                            clause,
+                            c2,
+                            st,
+                            list,
+                            out,
+                            Some(extra),
+                            outer.clone(),
+                            Some(value),
+                        );
+                    }
+                }
+                Installed::Native(_) => {}
+            }
+        }
+        let vals = st.values(list);
+        let cx = st.cx.clone();
+        let v = self.perform(&cx, span, effect, op, vals)?;
+        write_value(st, out, v, span)
     }
 
     #[cold]
@@ -1322,19 +1470,6 @@ impl<'a> Machine<'a> {
                     TrapKind::Expect => format!("expectation failed: {}", s),
                 };
                 return self.trap(span, msg);
-            }
-            Op::CallInd { callee, cty, args, out } => {
-                let cv = st.value_of(code.operands[callee as usize]);
-                let vals = st.values(&code.args[args as usize]);
-                let cx = st.cx.clone();
-                let v = self.call_value(&cx, span, cv, cty, vals)?;
-                write_value(st, code.operands[out as usize], v, span)?;
-            }
-            Op::Perform { eff, op, args, out } => {
-                let vals = st.values(&code.args[args as usize]);
-                let cx = st.cx.clone();
-                let v = self.perform(&cx, span, &code.effects[eff as usize], op, vals)?;
-                write_value(st, code.operands[out as usize], v, span)?;
             }
             Op::Builtin { info } => {
                 let BuiltinInfo { op, args, res, out } = code.builtins[info as usize];

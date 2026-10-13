@@ -32,6 +32,10 @@ pub struct TyInfo<'a> {
     pub small: Option<SmallInt>,
 }
 
+/// Where an allocation was made, as the arguments of the check that tagged it: the file name
+/// (a string value), the line and the column. Only a report of a mismatch needs it as text.
+pub type AllocSite = (Bytes, u64, u64);
+
 /// An integer type of at most 64 bits.
 #[derive(Clone, Copy, Debug)]
 pub struct SmallInt {
@@ -157,7 +161,7 @@ pub struct Machine<'a> {
     /// Emptied argument vectors, kept to reuse their buffers.
     pub arg_pool: Vec<Vec<Value>>,
     /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
-    pub alloc_tags: HashMap<u64, (u64, u64, String)>,
+    pub alloc_tags: HashMap<u64, (u64, u64, AllocSite)>,
     /// Open files and directories of the file-system services.
     pub sys: super::sys::SysState,
     /// The program's threads (§19.6).
