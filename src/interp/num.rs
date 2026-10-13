@@ -9,6 +9,7 @@ use crate::types::FloatTy;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
+use std::sync::OnceLock;
 
 /// An exact integer: small values use `i128`, larger ones `BigInt`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -475,69 +476,104 @@ pub fn encode_float(x: f64, ty: FloatTy, little: bool) -> Bytes {
 /// back as `x` at type `ty`. Among the shortest digit strings that read back, the one nearest
 /// the exact value of `x` is chosen, and on an exact tie the one with an even last digit.
 /// `x` must be finite and positive and exactly representable at `ty`.
+///
+/// This is the Schubfach algorithm (R. Giulietti, "The Schubfach way to render doubles"), as
+/// in the C runtime. The standard library's shortest formatting is not used because it rounds
+/// an exact tie up rather than to the even digit.
 pub fn shortest(x: f64, ty: FloatTy) -> (String, i32) {
-    let reads_back = |digits: &str, exp: i32| -> bool {
-        let s = format!("{}.{}e{}", &digits[..1], &digits[1..], exp);
-        match ty {
-            FloatTy::F64 => s.parse::<f64>().ok() == Some(x),
-            FloatTy::F32 => s.parse::<f32>().ok() == Some(x as f32),
-            FloatTy::F16 => f64_to_f16(s.parse::<f64>().unwrap()) == f64_to_f16(x),
+    // x = c * 2^q; cmin is the smallest normal significand and qmin the exponent of the
+    // subnormals.
+    let (c, q, cmin, qmin): (u64, i32, u64, i32) = match ty {
+        FloatTy::F64 => {
+            let u = x.to_bits();
+            let be = ((u >> 52) & 0x7ff) as i32;
+            let c = (u & ((1 << 52) - 1)) | if be != 0 { 1 << 52 } else { 0 };
+            (c, if be != 0 { be - 1075 } else { -1074 }, 1 << 52, -1074)
+        }
+        FloatTy::F32 => {
+            let u = (x as f32).to_bits();
+            let be = ((u >> 23) & 0xff) as i32;
+            let c = (u & ((1 << 23) - 1)) as u64 | if be != 0 { 1 << 23 } else { 0 };
+            (c, if be != 0 { be - 150 } else { -149 }, 1 << 23, -149)
+        }
+        FloatTy::F16 => {
+            let u = f64_to_f16(x);
+            let be = ((u >> 10) & 0x1f) as i32;
+            let c = (u & 0x3ff) as u64 | if be != 0 { 1 << 10 } else { 0 };
+            (c, if be != 0 { be - 25 } else { -24 }, 1 << 10, -24)
         }
     };
-    // An f64 has at most 767 significant digits, so this expansion is exact.
-    let exact = format!("{:.800e}", x);
-    let (m, e) = exact.split_once('e').unwrap();
-    let all: Vec<u8> = m.bytes().filter(|c| c.is_ascii_digit()).collect();
-    let exp: i32 = e.parse().unwrap();
-    let max = match ty {
-        FloatTy::F16 => 6,
-        FloatTy::F32 => 9,
-        FloatTy::F64 => 17,
+    let out = c & 1; // the interval ends belong to it iff c is even
+    let (cb, cbr) = (c << 2, (c << 2) + 2);
+    let (cbl, mut k) = if c != cmin || q == qmin {
+        // floor(log10(2^q))
+        (cb - 2, ((q as i64 * 661_971_961_083) >> 41) as i32)
+    } else {
+        // The interval below is half as wide: floor(log10(3/4 * 2^q)).
+        (cb - 1, ((q as i64 * 661_971_961_083 - 274_743_187_321) >> 41) as i32)
     };
-    for d in 1..=max {
-        let floor = String::from_utf8(all[..d].to_vec()).unwrap();
-        let rest = &all[d..];
-        let first_nonzero = rest.iter().position(|&c| c != b'0');
-        let ceil = first_nonzero.map(|_| {
-            let mut v = all[..d].to_vec();
-            let mut i = d;
-            loop {
-                if i == 0 {
-                    v.insert(0, b'1');
-                    v.truncate(d);
-                    break (String::from_utf8(v).unwrap(), exp + 1);
-                }
-                i -= 1;
-                if v[i] == b'9' {
-                    v[i] = b'0';
+    let h = q + (((-k) as i64 * 913_124_641_741) >> 38) as i32 + 2; // floor(-k * log2(10))
+    let g = pow10_table()[(k - G10_KMIN) as usize];
+    let (vb, vbl, vbr) = (rop(g, cb << h), rop(g, cbl << h), rop(g, cbr << h));
+    let (s, t) = (vb >> 2, (vb >> 2) + 1);
+    // A candidate with one digit fewer is a multiple of ten around s; the interval is
+    // narrower than ten units, so at most one of them lies in it.
+    let (sp10, tp10) = (s / 10 * 10, s / 10 * 10 + 10);
+    let (upin, wpin) = (vbl + out <= sp10 << 2, (tp10 << 2) + out <= vbr);
+    let r = if upin != wpin {
+        if upin { sp10 } else { tp10 }
+    } else {
+        let (uin, win) = (vbl + out <= s << 2, (t << 2) + out <= vbr);
+        if uin != win {
+            if uin { s } else { t }
+        } else {
+            let cmp = vb.wrapping_sub((s + t) << 1) as i64;
+            if cmp < 0 || (cmp == 0 && s & 1 == 0) { s } else { t }
+        }
+    };
+    // The digits of r * 10^k, without trailing zeros.
+    let all = r.to_string();
+    let digits = all.trim_end_matches('0');
+    k += (all.len() - digits.len()) as i32;
+    (digits.to_string(), k + digits.len() as i32 - 1)
+}
+
+/// The smallest decimal exponent k of `pow10_table`, which covers k = -324..=292.
+const G10_KMIN: i32 = -324;
+
+/// For each k, g(k) = floor(10^-k * 2^r) + 1 with 2^125 <= g < 2^126, as { g >> 63, g & (2^63 - 1) }.
+fn pow10_table() -> &'static [[u64; 2]] {
+    static TABLE: OnceLock<Vec<[u64; 2]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        (G10_KMIN..=292)
+            .map(|k| {
+                let p = BigUint::from(10u32).pow(k.unsigned_abs());
+                let len = p.bits() as i32;
+                let g = if k <= 0 {
+                    // 10^-k scaled so that its top bit is bit 125.
+                    let r = 126 - len;
+                    if r >= 0 { p << r as usize } else { p >> (-r) as usize }
                 } else {
-                    v[i] += 1;
-                    break (String::from_utf8(v).unwrap(), exp);
-                }
-            }
-        });
-        let down_ok = reads_back(&floor, exp);
-        let up_ok = ceil.as_ref().is_some_and(|(c, ce)| reads_back(c, *ce));
-        let pick_up = match (down_ok, up_ok) {
-            (false, false) => continue,
-            (true, false) => false,
-            (false, true) => true,
-            (true, true) => match rest[0].cmp(&b'5') {
-                Ordering::Less => false,
-                Ordering::Greater => true,
-                Ordering::Equal => {
-                    if rest[1..].iter().any(|&c| c != b'0') {
-                        true
-                    } else {
-                        (floor.as_bytes()[d - 1] - b'0') % 2 == 1
-                    }
-                }
-            },
-        };
-        let (digits, e) = if pick_up { ceil.unwrap() } else { (floor, exp) };
-        return (digits.trim_end_matches('0').to_string(), e);
-    }
-    unreachable!("a float reads back from its full-precision digits")
+                    (BigUint::one() << (len + 125) as usize) / p
+                };
+                let g = g.to_u128().unwrap() + 1;
+                [(g >> 63) as u64, (g & ((1 << 63) - 1)) as u64]
+            })
+            .collect()
+    })
+}
+
+/// g * cp scaled down by 2^125, rounded to odd so that comparisons with the scaled interval
+/// ends stay exact.
+fn rop(g: [u64; 2], cp: u64) -> u64 {
+    const M63: u64 = (1 << 63) - 1;
+    let mulhi = |a: u64, b: u64| ((a as u128 * b as u128) >> 64) as u64;
+    let x1 = mulhi(g[1], cp);
+    let y0 = g[0].wrapping_mul(cp);
+    let y1 = mulhi(g[0], cp);
+    let z = (y0 >> 1) + x1;
+    let vbp = y1 + (z >> 63);
+    vbp | (((z & M63) + M63) >> 63)
 }
 
 /// Formats a float per the `@write` display rule (§21.6.1).
@@ -602,6 +638,148 @@ mod tests {
         assert_eq!(f(1e23, FloatTy::F64), "1e23");
         assert_eq!(f(f32::MAX as f64, FloatTy::F32), "3.4028235e38");
         assert_eq!(f(65504.0, FloatTy::F16), "65500");
+    }
+
+    /// `shortest` by searching the digits of the exact decimal expansion of `x`.
+    fn shortest_by_expansion(x: f64, ty: FloatTy) -> (String, i32) {
+        let reads_back = |digits: &str, exp: i32| -> bool {
+            let s = format!("{}.{}e{}", &digits[..1], &digits[1..], exp);
+            match ty {
+                FloatTy::F64 => s.parse::<f64>().ok() == Some(x),
+                FloatTy::F32 => s.parse::<f32>().ok() == Some(x as f32),
+                FloatTy::F16 => f64_to_f16(s.parse::<f64>().unwrap()) == f64_to_f16(x),
+            }
+        };
+        // An f64 has at most 767 significant digits, so this expansion is exact.
+        let exact = format!("{:.800e}", x);
+        let (m, e) = exact.split_once('e').unwrap();
+        let all: Vec<u8> = m.bytes().filter(|c| c.is_ascii_digit()).collect();
+        let exp: i32 = e.parse().unwrap();
+        let max = match ty {
+            FloatTy::F16 => 6,
+            FloatTy::F32 => 9,
+            FloatTy::F64 => 17,
+        };
+        for d in 1..=max {
+            let floor = String::from_utf8(all[..d].to_vec()).unwrap();
+            let rest = &all[d..];
+            let first_nonzero = rest.iter().position(|&c| c != b'0');
+            let ceil = first_nonzero.map(|_| {
+                let mut v = all[..d].to_vec();
+                let mut i = d;
+                loop {
+                    if i == 0 {
+                        v.insert(0, b'1');
+                        v.truncate(d);
+                        break (String::from_utf8(v).unwrap(), exp + 1);
+                    }
+                    i -= 1;
+                    if v[i] == b'9' {
+                        v[i] = b'0';
+                    } else {
+                        v[i] += 1;
+                        break (String::from_utf8(v).unwrap(), exp);
+                    }
+                }
+            });
+            let down_ok = reads_back(&floor, exp);
+            let up_ok = ceil.as_ref().is_some_and(|(c, ce)| reads_back(c, *ce));
+            let pick_up = match (down_ok, up_ok) {
+                (false, false) => continue,
+                (true, false) => false,
+                (false, true) => true,
+                (true, true) => match rest[0].cmp(&b'5') {
+                    Ordering::Less => false,
+                    Ordering::Greater => true,
+                    Ordering::Equal => {
+                        if rest[1..].iter().any(|&c| c != b'0') {
+                            true
+                        } else {
+                            (floor.as_bytes()[d - 1] - b'0') % 2 == 1
+                        }
+                    }
+                },
+            };
+            let (digits, e) = if pick_up { ceil.unwrap() } else { (floor, exp) };
+            return (digits.trim_end_matches('0').to_string(), e);
+        }
+        unreachable!("a float reads back from its full-precision digits")
+    }
+
+    /// The fast `shortest` against the exact search, on edge cases and a pseudo-random sample
+    /// (`GAMMA_FLOAT_SAMPLES` sets its size per type; the default keeps the test quick).
+    #[test]
+    fn shortest_matches_exact_search() {
+        let check64 = |x: f64| {
+            if x.is_finite() && x > 0.0 {
+                assert_eq!(shortest(x, FloatTy::F64), shortest_by_expansion(x, FloatTy::F64), "f64 {:e}", x);
+            }
+        };
+        let check32 = |x: f32| {
+            if x.is_finite() && x > 0.0 {
+                let (a, b) = (shortest(x as f64, FloatTy::F32), shortest_by_expansion(x as f64, FloatTy::F32));
+                assert_eq!(a, b, "f32 {:e}", x);
+            }
+        };
+        for m in 1..2000u64 {
+            check64(f64::from_bits(m));
+            check32(f32::from_bits(m as u32));
+        }
+        for e in 0..2047u64 {
+            for d in 0..4u64 {
+                check64(f64::from_bits((e << 52) + d));
+                check64(f64::from_bits(((e + 1) << 52) - 1 - d));
+            }
+        }
+        for e in 0..255u32 {
+            for d in 0..4u32 {
+                check32(f32::from_bits((e << 23) + d));
+                check32(f32::from_bits(((e + 1) << 23) - 1 - d));
+            }
+        }
+        for p in -324..=308 {
+            let x: f64 = format!("1e{}", p).parse().unwrap();
+            for d in [-1i64, 0, 1] {
+                check64(f64::from_bits((x.to_bits() as i64 + d) as u64));
+            }
+        }
+        for p in -45..=38 {
+            let x: f32 = format!("1e{}", p).parse().unwrap();
+            for d in [-1i32, 0, 1] {
+                check32(f32::from_bits((x.to_bits() as i32 + d) as u32));
+            }
+        }
+        for x in [
+            6474206544261693.0 / 4.0,
+            7362033134866219.0 / 4.0,
+            8625083667684517.0 / 4.0,
+            2500985162256915.0 / 4.0,
+            166929767991651.0 / 16.0,
+        ] {
+            check64(x);
+        }
+        check32(12227261.0f32 / 4.0);
+        check32(487257.0f32 / 16.0);
+        for h in 1..0x7c00u16 {
+            let x = f16_to_f64(h);
+            assert_eq!(shortest(x, FloatTy::F16), shortest_by_expansion(x, FloatTy::F16));
+        }
+        let n: u64 = std::env::var("GAMMA_FLOAT_SAMPLES").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000);
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..n {
+            check64(f64::from_bits(next() & !(1 << 63)));
+            check32(f32::from_bits(next() as u32 & !(1 << 31)));
+            // Short decimals and dyadic fractions, where exact ties arise.
+            let r = next();
+            check64((r % 100_000_000) as f64 / (1u64 << (next() % 30)) as f64);
+            check32((r % 100_000_000) as f32 / (1u32 << (next() % 20)) as f32);
+        }
     }
 
     #[test]
