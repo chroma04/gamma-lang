@@ -773,7 +773,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 ### 6.5 Lossless conversion: `T(x)`
 
-`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
+`T(x)` with a single positional argument is a **conversion** when `T` is not a tuple or array type; for those, `T(…)` is always construction (§7.11), with one value per element, so a tuple is never converted to another tuple type: `(i64, i64)(..p)` builds one from `p: (i32, i32)`, coercing each element. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
 
 | `x: S` | `T(x)` permitted when |
 | --- | --- |
@@ -978,7 +978,7 @@ Methods cannot be added to types declared in other modules; write a free functio
 - A struct type: construction (§5.10.1). Struct construction takes **named** arguments and spreads only; positional arguments are not allowed, so reordering fields can never silently change meaning, and `S(x)` with one positional argument is always a conversion.
 - A union variant `.V(args)` / `U.V(args)`: construction with the payload.
 - An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements.
-- A tuple type: construction from positional/named arguments.
+- A tuple type: construction from positional/named arguments and spreads, one value per element; each value coerces to its element's type (§6.4). It is never a conversion, even with one argument (§6.5).
 - An optional type `?T(x)`: an optional holding `x` (coerced to `T`), or with `null`, the absent value of `?T`. This is how inner levels of nested optionals are written: `??i32` holds `?i32(null)`.
 - Any other type with exactly one argument: conversion (§6.5).
 
