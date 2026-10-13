@@ -1,7 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-12) — PRs #1–#17 merged; s6/s7/s8 = parallel Claude Projects threads
-- s8 thread "bug-hunting round" (PR #18, branch claude/project-thread-25bz3o): ~40 compiler,
+## State (2026-10-13) — PRs #1–#18 merged; s6–s9 = parallel Claude Projects threads
+- s9 thread "performance round" (branch claude/perf-refactor-tzdpsa): interpreter ~35% faster
+  (locals in frame slots, lock-free Ty::kind), smaller Debug C, Safe builds link the cached
+  runtime, faster test suite; measurements + leftover ideas in decisions/019. Profiling with
+  perf: see decisions/019 end.
+- s8 thread "bug-hunting round" (PR #18, merged): ~40 compiler,
   runtime and stdlib fixes found by hunter subagents (sessions/s08-2026-10-12-bughunt.md);
   leftovers bugs-open.md #39–40.
 - s7 thread "Dogfooding" (branch claude/dogfooding-wnnaie): spec §22 stdlib policy (apply it
@@ -59,6 +63,7 @@
                   · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
                   · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
                   · 018 stdlib policy §22 + s7 language changes (fmt specs, op=, .to)
+                  · 019 perf round s9 (where time goes, what was measured/kept/dropped)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
