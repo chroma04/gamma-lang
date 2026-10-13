@@ -56,6 +56,12 @@ use std::rc::Rc;
 
 pub use compile::compile;
 
+/// Prints the counts of instructions run (`--features vm-profile`, `GAMMA_VM_PROFILE=1`).
+#[cfg(feature = "vm-profile")]
+pub fn profile_report() {
+    exec::profile::report()
+}
+
 /// A register: an index into an activation's words, or (for second-class values) into
 /// its values.
 pub type Reg = u32;
@@ -453,6 +459,13 @@ pub enum Op {
         a: Reg,
         k: IntK,
     },
+    /// The low bits of a small integer as one of another type.
+    Trunc {
+        dst: Reg,
+        src: Reg,
+        from: IntK,
+        to: IntK,
+    },
     Widen {
         dst: Reg,
         src: Reg,
@@ -587,12 +600,14 @@ pub enum Op {
         t: u32,
         when: bool,
     },
+    /// Jumps back to the head of a loop, letting other threads run.
+    JmpTick {
+        t: u32,
+    },
     /// Jumps in Fast builds (over the checks of `assert`).
     JmpFast {
         t: u32,
     },
-    /// The head of a loop iteration: lets other threads run.
-    Tick,
     TrapConst {
         msg: u32,
     },
@@ -715,6 +730,10 @@ pub struct Code<'a> {
     pub ops: Vec<Op>,
     pub spans: Vec<Span>,
     pub nregs: u32,
+    /// The frame slots an activation needs (for the locals not in registers).
+    pub nslots: u32,
+    /// The first registers of an activation: locals (zero) and constants.
+    pub init: Vec<u64>,
     pub nvals: u32,
     pub params: Vec<ParamLoc>,
     pub scopes: Vec<Scope>,

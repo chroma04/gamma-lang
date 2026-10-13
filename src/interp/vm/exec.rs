@@ -94,11 +94,11 @@ fn set_byte(regs: &mut [u64], r: Reg, i: u32, b: u8) {
 /// Copies `size` bytes at byte `off` of the value at `src` to the value at `dst` (whole).
 #[inline]
 fn extract(regs: &mut [u64], dst: Reg, src: Reg, off: u32, size: u32) {
-    if off % 8 == 0 {
+    if off.is_multiple_of(8) {
         let s = (src + off / 8) as usize;
         let w = words(size) as usize;
         regs.copy_within(s..s + w, dst as usize);
-        if size % 8 != 0 {
+        if !size.is_multiple_of(8) {
             regs[dst as usize + w - 1] &= mask(size % 8);
         }
     } else if off % 8 + size <= 8 {
@@ -123,11 +123,11 @@ fn extract(regs: &mut [u64], dst: Reg, src: Reg, off: u32, size: u32) {
 /// Copies the `size` bytes of the value at `src` to byte `off` of the value at `dst`.
 #[inline]
 fn insert(regs: &mut [u64], dst: Reg, off: u32, src: Reg, size: u32) {
-    if off % 8 == 0 {
+    if off.is_multiple_of(8) {
         let d = (dst + off / 8) as usize;
         let full = (size / 8) as usize;
         regs.copy_within(src as usize..src as usize + full, d);
-        if size % 8 != 0 {
+        if !size.is_multiple_of(8) {
             let m = mask(size % 8);
             let v = regs[src as usize + full] & m;
             let w = &mut regs[d + full];
@@ -267,9 +267,10 @@ impl<'a> Machine<'a> {
         is_clause_lit: bool,
     ) -> St<'a> {
         let f = &self.prog.fns[fid.index()];
-        let fr = self.new_frame(f.ret, Some(fid), env, f.locals.len(), installing, is_clause_lit);
+        let fr = self.new_frame(f.ret, Some(fid), env, code.nslots as usize, installing, is_clause_lit);
         let mut regs = self.vm_regs.pop().unwrap_or_default();
         regs.clear();
+        regs.extend_from_slice(&code.init);
         regs.resize(code.nregs as usize, 0);
         let mut vals = self.vm_vals.pop().unwrap_or_default();
         vals.resize(code.nvals as usize, Value::unit());
@@ -293,7 +294,7 @@ impl<'a> Machine<'a> {
         self.fiber_stack = self.fiber_stack.saturating_sub(cost);
         self.depth += 1;
         let mark = self.temps.len();
-        let r = if self.little() { self.vm_run::<true>(st, 0) } else { self.vm_run::<false>(st, 0) };
+        let r = self.vm_run_from(st, 0);
         self.depth -= 1;
         if self.fiber_stack != u64::MAX {
             self.fiber_stack += cost;
@@ -457,7 +458,7 @@ impl<'a> Machine<'a> {
                     }
                     st.restore_ctx(*depth);
                     let mark = self.temps.len();
-                    let r = if self.little() { self.vm_run::<true>(st, *seg) } else { self.vm_run::<false>(st, *seg) };
+                    let r = self.vm_run_from(st, *seg);
                     self.kill_temps(mark);
                     if let Err(f) = r {
                         flow = f;
@@ -495,8 +496,19 @@ impl<'a> Machine<'a> {
 
     // --- the dispatch loop ------------------------------------------------------------------------------
 
+    /// Runs activation `st` from instruction `pc`, with the loop made for the target's byte
+    /// order and for whether steps are counted (only with a step budget).
+    fn vm_run_from(&mut self, st: &mut St<'a>, pc: u32) -> R<Exit> {
+        match (self.little(), self.budget.is_some()) {
+            (true, false) => self.vm_run::<true, false>(st, pc),
+            (true, true) => self.vm_run::<true, true>(st, pc),
+            (false, false) => self.vm_run::<false, false>(st, pc),
+            (false, true) => self.vm_run::<false, true>(st, pc),
+        }
+    }
+
     /// Runs the code of activation `st` from instruction `pc`.
-    fn vm_run<const LE: bool>(&mut self, st: &mut St<'a>, mut pc: u32) -> R<Exit> {
+    fn vm_run<const LE: bool, const COUNT: bool>(&mut self, st: &mut St<'a>, mut pc: u32) -> R<Exit> {
         let code = st.code.clone();
         let ops: &[Op] = &code.ops;
         macro_rules! tri {
@@ -516,11 +528,15 @@ impl<'a> Machine<'a> {
         }
         loop {
             let at = pc;
-            let op = ops[pc as usize];
+            let op = &ops[pc as usize];
             pc += 1;
-            self.steps += 1;
+            if COUNT {
+                self.steps += 1;
+            }
+            #[cfg(feature = "vm-profile")]
+            profile::count(op);
             let regs = &mut st.regs;
-            match op {
+            match *op {
                 Op::Nop => {}
                 Op::Mov { dst, src, words } => {
                     regs.copy_within(src as usize..(src + words) as usize, dst as usize);
@@ -545,7 +561,7 @@ impl<'a> Machine<'a> {
                             }
                         }
                     } else if size > 0 {
-                        let r = self.mem.read(a, size as u64, align as u64).map(|s| Bytes::from_slice(s));
+                        let r = self.mem.read(a, size as u64, align as u64).map(Bytes::from_slice);
                         let b = tri!(at, r.map_err(|e| self.mem_trap(&code, at, e)));
                         put_bytes(&mut st.regs, dst, size, &b);
                     }
@@ -616,6 +632,10 @@ impl<'a> Machine<'a> {
                 Op::Widen { dst, src, from, to } => {
                     regs[dst as usize] = iput::<LE>(to, ival::<LE>(from, regs[src as usize]));
                 }
+                Op::Trunc { dst, src, from, to } => {
+                    let v = ival::<LE>(from, regs[src as usize]);
+                    regs[dst as usize] = iput::<LE>(to, to.si().value(v as u64));
+                }
                 Op::EqW { dst, a, b, neg } => {
                     regs[dst as usize] = ((regs[a as usize] == regs[b as usize]) != neg) as u64
                 }
@@ -673,9 +693,12 @@ impl<'a> Machine<'a> {
                         pc = t;
                     }
                 }
-                Op::Tick => {
+                Op::JmpTick { t } => {
+                    pc = t;
                     tri!(at, self.tick());
-                    tri!(at, self.check_budget(code.spans[at as usize]));
+                    if COUNT {
+                        tri!(at, self.check_budget(code.spans[at as usize]));
+                    }
                 }
                 Op::MarkTemps { dst } => regs[dst as usize] = self.temps.len() as u64,
                 Op::KillTemps { src } => {
@@ -698,7 +721,7 @@ impl<'a> Machine<'a> {
                 }
                 Op::Ret { src } => return Ok(Exit::Ret(src)),
                 Op::EndSeg => return Ok(Exit::Seg),
-                _ => tri!(at, self.vm_slow::<LE>(st, &code, op, at)),
+                _ => tri!(at, self.vm_slow::<LE>(st, &code, *op, at)),
             }
         }
     }
@@ -1069,8 +1092,20 @@ impl<'a> Machine<'a> {
                 write_value(st, out, v, span)?;
             }
             Op::Builtin { op, args, res, out } => {
-                let vals = st.bytes(&code.args[args as usize]);
-                let v = self.builtin_vals(span, op, res, &code.arg_tys[args as usize], &vals)?;
+                let list = &code.args[args as usize];
+                let tys = &code.arg_tys[args as usize];
+                let v = if list.len() <= 4 {
+                    let mut a = [Bytes::empty(), Bytes::empty(), Bytes::empty(), Bytes::empty()];
+                    for (i, x) in list.iter().enumerate() {
+                        if let Arg::Data { reg, size } = x {
+                            a[i] = get_bytes(&st.regs, *reg, *size);
+                        }
+                    }
+                    self.builtin_vals(span, op, res, tys, &a[..list.len()])?
+                } else {
+                    let vals = st.bytes(list);
+                    self.builtin_vals(span, op, res, tys, &vals)?
+                };
                 write_value(st, out, v, span)?;
             }
             Op::Write { info, sink, args } => {
@@ -1181,6 +1216,41 @@ impl<'a> Machine<'a> {
                 let (size, align) = (ti.size, ti.align);
                 self.local_addr(span, fr, local, size, align)
             }
+        }
+    }
+}
+
+/// Counts of the instructions run, by kind (`--features vm-profile`; printed at exit
+/// when `GAMMA_VM_PROFILE` is set).
+#[cfg(feature = "vm-profile")]
+pub mod profile {
+    use super::Op;
+    use std::sync::Mutex;
+
+    static COUNTS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
+    pub fn count(op: &Op) {
+        // SAFETY: reads the discriminant byte of the enum, for statistics only.
+        let d = unsafe { *(op as *const Op as *const u8) } as usize;
+        let mut c = COUNTS.lock().unwrap();
+        if c.len() <= d {
+            c.resize(d + 1, (0, String::new()));
+        }
+        if c[d].0 == 0 {
+            c[d].1 = format!("{:?}", op).split(' ').next().unwrap_or("").to_string();
+        }
+        c[d].0 += 1;
+    }
+
+    pub fn report() {
+        if std::env::var_os("GAMMA_VM_PROFILE").is_none() {
+            return;
+        }
+        let mut c = COUNTS.lock().unwrap().clone();
+        c.sort_by_key(|x| std::cmp::Reverse(x.0));
+        let total: u64 = c.iter().map(|x| x.0).sum();
+        for (n, name) in c.iter().filter(|x| x.0 > 0) {
+            eprintln!("{:12} {:5.1}% {}", n, 100.0 * *n as f64 / total as f64, name);
         }
     }
 }

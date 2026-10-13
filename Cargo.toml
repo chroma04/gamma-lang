@@ -13,3 +13,7 @@ num-traits = "0.2.19"
 # The compile-time evaluator and the test suite run noticeably faster with
 # light optimization; debug info is kept.
 opt-level = 1
+
+[features]
+# Counts the bytecode instructions the interpreter runs (see docs/contributing.md).
+vm-profile = []

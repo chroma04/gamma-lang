@@ -103,6 +103,21 @@ needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
 
+The interpreter has two engines (see `docs/architecture.md`), and the tests use
+the bytecode VM. CI also runs the conformance tests on the tree-walker; to do that
+locally, set `GAMMA_INTERP=tree`:
+
+```sh
+GAMMA_INTERP=tree GAMMA_TEST_C=0 cargo test --test conformance
+```
+
+When the two disagree, these help:
+
+- `GAMMA_VM_DUMP=name` (or `*`) prints the bytecode of each function of that name
+  as it is compiled, or why it runs on the tree-walker instead.
+- `cargo build --release --features vm-profile` builds a `gamma` that, with
+  `GAMMA_VM_PROFILE=1`, prints how often each opcode ran when `gamma run` exits.
+
 **Safe lane.** Tests marked `//! mode: safe` (in `tests/conformance/safe/`) build
 with Fil-C and run when it is found. To install it, download a release from
 <https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball),

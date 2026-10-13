@@ -59,13 +59,21 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let vmark = self.vnext;
         let nop = self.emit(Op::Nop, span) as usize;
         let r = self.alloc(8);
-        self.temps.push((r, false));
+        self.temps.push((r, Vec::new()));
+        let count = self.temp_count;
         let saved = std::mem::replace(&mut self.made_temp, false);
         f(self)?;
-        let (_, used) = self.temps.pop().unwrap();
-        if self.made_temp || used {
+        let (_, kills) = self.temps.pop().unwrap();
+        if self.made_temp {
             self.code.ops[nop] = Op::MarkTemps { dst: r };
             self.emit(Op::KillTemps { src: r }, span);
+        } else if self.temp_count != count && !kills.is_empty() {
+            // Only jumps out of the statement have temporaries to kill.
+            self.code.ops[nop] = Op::MarkTemps { dst: r };
+        } else {
+            for k in kills {
+                self.code.ops[k] = Op::Nop;
+            }
         }
         self.made_temp = saved;
         self.next = mark;
@@ -186,10 +194,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
             self.copy_defer(i)?;
         }
         if kill && self.temps.len() > temps {
-            let (r, used) = &mut self.temps[temps];
-            *used = true;
-            let r = *r;
-            self.emit(Op::KillTemps { src: r }, span);
+            let r = self.temps[temps].0;
+            let k = self.emit(Op::KillTemps { src: r }, span) as usize;
+            self.temps[temps].1.push(k);
         }
         if cur != depth {
             self.emit(Op::RestoreCtx { depth }, span);
@@ -388,7 +395,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     /// The `size` bytes at byte `off` of the value of `total` bytes in `src`, as a register.
     pub fn sub(&mut self, src: Reg, total: u32, off: u32, size: u32, span: Span) -> Reg {
-        if off == 0 && (size % 8 == 0 || size == total) {
+        if off == 0 && (size.is_multiple_of(8) || size == total) {
             return src;
         }
         let t = self.alloc(size);
@@ -648,6 +655,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     /// Writes the value of `lhs else …` when `lhs` (in `v`) has a value: its payload of type
     /// `pty` at byte `off`, as the type of `e` requires.
+    #[allow(clippy::too_many_arguments)]
     fn else_value(&mut self, e: &Expr, lhs: &Expr, v: Reg, pty: Ty, off: u32, dst: Arg, span: Span) {
         let Arg::Data { reg: d, size } = dst else { return };
         let total = self.size(lhs.ty);
@@ -791,11 +799,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
         // The mark lets flows that land here from calls kill the temporaries of the
         // statements they leave; each iteration also kills those of the last one.
         let mreg = self.alloc(8);
-        self.emit(Op::MarkTemps { dst: mreg }, span);
+        let mark_op = self.emit(Op::MarkTemps { dst: mreg }, span) as usize;
+        let count = self.temp_count;
         let head = self.label();
         self.bind(head);
         let kill_nop = self.emit(Op::Nop, span) as usize;
-        self.emit(Op::Tick, span);
         let brk = self.label();
         let cont = self.label();
         let saved = std::mem::replace(&mut self.made_temp, false);
@@ -821,12 +829,18 @@ impl<'m, 'a> Compiler<'m, 'a> {
         if let Some(s) = step {
             self.with_temps(s.span, |c| c.expr(s).map(|_| ()))?;
         }
-        self.emit(Op::Jmp { t: head }, span);
+        // The jump back lets other threads run and checks the step budget.
+        self.emit(Op::JmpTick { t: head }, span);
         self.bind(brk);
         if self.made_temp {
             self.code.ops[kill_nop] = Op::KillTemps { src: mreg };
         }
-        let temps = Some(mreg);
+        let temps = if self.temp_count != count {
+            Some(mreg)
+        } else {
+            self.code.ops[mark_op] = Op::Nop;
+            None
+        };
         self.made_temp |= saved;
         self.code.scopes.push(Scope {
             lo,
@@ -992,6 +1006,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 | Op::JmpByte { t, .. }
                 | Op::JmpTag { t, .. }
                 | Op::JmpFast { t }
+                | Op::JmpTick { t }
                 | Op::BrI { t, .. } => t,
                 _ => continue,
             };
@@ -1020,6 +1035,13 @@ impl<'m, 'a> Compiler<'m, 'a> {
         self.code.ops = ops;
         self.code.spans = spans;
         self.code.nregs = self.high;
+        self.code.nslots =
+            self.locals.iter().rposition(|l| !matches!(l, LocalLoc::Reg { .. })).map_or(0, |i| i as u32 + 1);
+        let mut init = vec![0u64; self.consts_end as usize];
+        for (w, r) in &self.consts {
+            init[*r as usize] = *w;
+        }
+        self.code.init = init;
         self.code.nvals = self.vhigh;
         self.code
     }

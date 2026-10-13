@@ -19,7 +19,7 @@ src/float.rs       exact rational → f16/f32/f64 bits (round half even)
 src/tir.rs         typed IR + for_each_child(_mut) traversals
 src/sema/          semantic analysis (see architecture/sema-notes.md); cont_check.rs = static
                    one-shot check of ctl continuations (§14.2), run after check_escapes
-src/interp/        tree-walking interpreter; run_main / eval_const; fiber.rs = fibers (threads);
+src/interp/        interpreter: tree-walker + vm/ (bytecode: mod, compile, compile_flow, exec); run_main / eval_const; fiber.rs = fibers (threads);
                    locals ≤16 B in frame slots (Slot::Reg) until their address is needed (decisions/019)
 src/cgen/          C back end (decisions/008); rtcache.rs = cached runtime objects (014); fiber.rs = with-on outlining, ctl thunks;
                    values >16 B by address (types.rs by_ref/param_cty, func.rs c_abi_wrapper);

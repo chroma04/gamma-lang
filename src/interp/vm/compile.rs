@@ -110,7 +110,7 @@ pub struct Compiler<'m, 'a> {
     pub defers: Vec<DeferCx<'a>>,
     /// The mark registers of the enclosing statements, and whether a jump out of the
     /// statement needs its mark.
-    pub temps: Vec<(Reg, bool)>,
+    pub temps: Vec<(Reg, Vec<usize>)>,
     /// While compiling a deferred statement: its span, and the labels outside it.
     pub guard: Option<Span>,
     pub guard_labels: usize,
@@ -125,6 +125,12 @@ pub struct Compiler<'m, 'a> {
     pub ptr_size: u32,
     /// A value too large for registers was met.
     pub too_big: bool,
+    /// The number of instructions emitted so far that may make temporaries.
+    pub temp_count: u32,
+    /// Registers below this are locals and constants.
+    pub consts_end: Reg,
+    /// The registers holding constant words, set up when an activation starts.
+    pub consts: std::collections::HashMap<u64, Reg>,
     /// The statements run by the tree-walker, and one to add to them.
     pub tree_stmts: HashSet<*const Stmt>,
     pub retry: Option<*const Stmt>,
@@ -245,9 +251,10 @@ fn stmt_locals(s: &Stmt, f: &mut dyn FnMut(LocalId)) {
         _ => {}
     }
     match s {
-        Stmt::Let { init: Some(e), .. } | Stmt::LetTuple { init: e, .. } | Stmt::Expr(e) | Stmt::Defer { body: e, .. } => {
-            mentioned_locals(e, f)
-        }
+        Stmt::Let { init: Some(e), .. }
+        | Stmt::LetTuple { init: e, .. }
+        | Stmt::Expr(e)
+        | Stmt::Defer { body: e, .. } => mentioned_locals(e, f),
         Stmt::Assign { place, value } => {
             mentioned_locals(place, f);
             mentioned_locals(value, f);
@@ -292,6 +299,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 ops: Vec::new(),
                 spans: Vec::new(),
                 nregs: 0,
+                nslots: 0,
+                init: Vec::new(),
                 nvals: 0,
                 params: Vec::new(),
                 scopes: Vec::new(),
@@ -329,6 +338,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
             raw_ptr: little && ptr_size == 8,
             ptr_size,
             too_big: false,
+            temp_count: 0,
+            consts_end: 0,
+            consts: Default::default(),
             tree_stmts: HashSet::new(),
             retry: None,
         }
@@ -371,9 +383,35 @@ impl<'m, 'a> Compiler<'m, 'a> {
             };
             self.locals.push(loc);
         }
+        self.locals_end = reg;
+        // Registers holding the function's small constants, set when an activation starts.
+        let mut words = Vec::new();
+        self.find_consts(body, &mut words);
+        for w in words {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.consts.entry(w) {
+                e.insert(reg);
+                reg += 1;
+            }
+        }
+        self.consts_end = reg;
         self.next = reg;
         self.high = reg;
-        self.locals_end = reg;
+    }
+
+    /// The words of the literals in `e` of at most 8 bytes.
+    fn find_consts(&self, e: &'a Expr, out: &mut Vec<u64>) {
+        if matches!(
+            e.kind,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::Uninit
+        ) && !second_class(e.ty)
+            && self.m.size_of(e.ty) <= 8
+            && let Ok(b) = self.literal(e)
+        {
+            let mut w = [0u8; 8];
+            w[..b.len()].copy_from_slice(&b);
+            out.push(u64::from_le_bytes(w));
+        }
+        e.for_each_child(&mut |c| self.find_consts(c, out));
     }
 
     /// Records the locals of this function (`depth` levels up from the code in `e`) that
@@ -465,6 +503,12 @@ impl<'m, 'a> Compiler<'m, 'a> {
         r
     }
 
+    /// Notes that the code just emitted may make a temporary.
+    pub fn temp_made(&mut self) {
+        self.made_temp = true;
+        self.temp_count += 1;
+    }
+
     pub fn valloc(&mut self) -> Reg {
         let r = self.vnext;
         self.vnext += 1;
@@ -545,17 +589,15 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     self.emit(Op::Mov { dst: d, src: s, words: w }, span);
                 }
             }
-            (Arg::Val(d), Arg::Val(s)) => {
-                if d != s {
-                    self.emit(Op::MovVal { dst: d, src: s }, span);
-                }
+            (Arg::Val(d), Arg::Val(s)) if d != s => {
+                self.emit(Op::MovVal { dst: d, src: s }, span);
             }
             _ => {}
         }
     }
 
     /// The address in the pointer value at `v` (the same register on little-endian targets).
-    pub fn to_addr(&mut self, v: Arg, span: Span) -> Reg {
+    pub fn addr_of_arg(&mut self, v: Arg, span: Span) -> Reg {
         let Arg::Data { reg, .. } = v else { return 0 };
         if self.raw_ptr {
             return reg;
@@ -566,7 +608,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
     }
 
     /// Writes the pointer to address `addr` into `dst`.
-    pub fn from_addr(&mut self, dst: Reg, addr: Reg, span: Span) {
+    pub fn load_from_addr(&mut self, dst: Reg, addr: Reg, span: Span) {
         if self.raw_ptr {
             if dst != addr {
                 self.emit(Op::Mov1 { dst, src: addr }, span);
@@ -677,6 +719,16 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     self.too_big = true;
                     return Ok(Arg::UNIT);
                 }
+                if want.is_none()
+                    && self.size(e.ty) <= 8
+                    && let Ok(b) = self.literal(e)
+                {
+                    let mut w = [0u8; 8];
+                    w[..b.len()].copy_from_slice(&b);
+                    if let Some(r) = self.consts.get(&u64::from_le_bytes(w)) {
+                        return Ok(Arg::Data { reg: *r, size: self.size(e.ty) });
+                    }
+                }
                 let dst = self.dst(e, want);
                 match self.literal(e) {
                     Ok(b) => {
@@ -728,30 +780,24 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     return self.place_value(e, want);
                 }
                 let v = self.expr(base)?;
-                let dst = self.dst(e, want);
-                let (Arg::Data { reg: src, .. }, Arg::Data { reg, size }) = (v, dst) else {
-                    return Err(unsupported!());
-                };
+                let Arg::Data { reg: src, .. } = v else { return Err(unsupported!()) };
                 if self.m.bits_struct_ty(base.ty).is_some() {
+                    let dst = self.dst(e, want);
+                    let Arg::Data { reg, .. } = dst else { return Err(unsupported!()) };
                     self.emit(Op::BitsField { dst: reg, src, ty: base.ty, idx: *index }, span);
-                } else {
-                    let (_, off) = self.m.field_layout(base.ty, *index as usize).map_err(|_| unsupported!())?;
-                    self.extract(reg, src, off as u32, size, span);
+                    return Ok(dst);
                 }
-                Ok(dst)
+                let (_, off) = self.m.field_layout(base.ty, *index as usize).map_err(|_| unsupported!())?;
+                self.part(e, src, off as u32, want)
             }
             ExprKind::VariantPayload { base, .. } => {
                 if is_place_expr(base) && !self.reg_rooted(base) {
                     return self.place_value(e, want);
                 }
                 let v = self.expr(base)?;
-                let dst = self.dst(e, want);
-                let (Arg::Data { reg: src, .. }, Arg::Data { reg, size }) = (v, dst) else {
-                    return Err(unsupported!());
-                };
+                let Arg::Data { reg: src, .. } = v else { return Err(unsupported!()) };
                 let off = self.m.payload_offset(base.ty) as u32;
-                self.extract(reg, src, off, size, span);
-                Ok(dst)
+                self.part(e, src, off, want)
             }
             ExprKind::Index { base, index, .. } => {
                 if let TyKind::Array { len, .. } = base.ty.kind()
@@ -772,19 +818,15 @@ impl<'m, 'a> Compiler<'m, 'a> {
             ExprKind::Slice { base, lo, hi, inclusive } => self.slice(e, base, lo, hi, *inclusive, want),
             ExprKind::SliceLen(s) | ExprKind::SlicePtr(s) => {
                 let v = self.expr(s)?;
-                let dst = self.dst(e, want);
-                let (Arg::Data { reg: src, .. }, Arg::Data { reg, size }) = (v, dst) else {
-                    return Err(unsupported!());
-                };
+                let Arg::Data { reg: src, .. } = v else { return Err(unsupported!()) };
                 let off = if matches!(e.kind, ExprKind::SliceLen(_)) { self.ptr_size } else { 0 };
-                self.extract(reg, src, off, size, span);
-                Ok(dst)
+                self.part(e, src, off, want)
             }
             ExprKind::AddrOf(inner) => {
                 let p = self.place(inner)?;
                 let dst = self.dst(e, want);
                 match (p, dst) {
-                    (PlaceC::Mem { addr, .. }, Arg::Data { reg, .. }) => self.from_addr(reg, addr, span),
+                    (PlaceC::Mem { addr, .. }, Arg::Data { reg, .. }) => self.load_from_addr(reg, addr, span),
                     (PlaceC::Bits { .. }, _) => self.trap_const(span, "cannot take the address of a #bits field"),
                     _ => return Err(unsupported!()),
                 }
@@ -798,7 +840,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 };
                 let align = self.align(inner.ty);
                 self.emit(Op::AllocTemp { dst: reg, src, size, align }, span);
-                self.made_temp = true;
+                self.temp_made();
                 Ok(dst)
             }
             ExprKind::FnRef(f) => {
@@ -1022,7 +1064,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         self.code.trees.push(e);
         let expr = self.code.trees.len() as u32 - 1;
         self.emit(Op::EvalTree { expr, out: dst }, e.span);
-        self.made_temp = true;
+        self.temp_made();
         Ok(dst)
     }
 
@@ -1090,6 +1132,19 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
     }
 
+    /// The part of type `e.ty` at byte `off` of the value at `src`: the same registers if
+    /// it fills whole words, else a copy.
+    fn part(&mut self, e: &Expr, src: Reg, off: u32, want: Option<Arg>) -> C<Arg> {
+        let size = self.size(e.ty);
+        if want.is_none() && off.is_multiple_of(8) && size.is_multiple_of(8) {
+            return Ok(Arg::Data { reg: src + off / 8, size });
+        }
+        let dst = self.dst(e, want);
+        let Arg::Data { reg, size } = dst else { return Err(unsupported!()) };
+        self.extract(reg, src, off, size, e.span);
+        Ok(dst)
+    }
+
     pub fn extract(&mut self, dst: Reg, src: Reg, off: u32, size: u32, span: Span) {
         if size == 0 {
             return;
@@ -1146,7 +1201,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             }
             ExprKind::Deref(p) => {
                 let v = self.expr(p)?;
-                let addr = self.to_addr(v, span);
+                let addr = self.addr_of_arg(v, span);
                 Ok(PlaceC::Mem { addr, packed: false })
             }
             ExprKind::Field { base, index } => {
@@ -1196,7 +1251,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     TyKind::ManyPtr { .. } => {
                         let pv = self.expr(base)?;
                         let pv = self.stable(pv, &[index], span);
-                        let p = self.to_addr(pv, span);
+                        let p = self.addr_of_arg(pv, span);
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
                         self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len: u64::MAX }, span);
@@ -1206,7 +1261,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let TyKind::Array { len, .. } = pointee.kind() else { unreachable!() };
                         let pv = self.expr(base)?;
                         let pv = self.stable(pv, &[index], span);
-                        let p = self.to_addr(pv, span);
+                        let p = self.addr_of_arg(pv, span);
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
                         self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len: *len }, span);
@@ -1221,8 +1276,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let dst = self.alloc(8);
                 let align = self.align(e.ty);
                 self.emit(Op::AllocTemp { dst, src, size, align }, span);
-                self.made_temp = true;
-                let addr = self.to_addr(Arg::Data { reg: dst, size: self.ptr_size }, span);
+                self.temp_made();
+                let addr = self.addr_of_arg(Arg::Data { reg: dst, size: self.ptr_size }, span);
                 Ok(PlaceC::Mem { addr, packed: false })
             }
         }
@@ -1301,19 +1356,19 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let sv = self.expr(base)?;
                 let sv = self.stable(sv, &later, span);
                 let Arg::Data { reg: s, .. } = sv else { return Err(unsupported!()) };
-                let p = self.to_addr(sv, span);
+                let p = self.addr_of_arg(sv, span);
                 (p, SliceLen::OfSlice(s))
             }
             TyKind::ManyPtr { .. } => {
                 let pv = self.expr(base)?;
                 let pv = self.stable(pv, &later, span);
-                (self.to_addr(pv, span), SliceLen::Unknown)
+                (self.addr_of_arg(pv, span), SliceLen::Unknown)
             }
             TyKind::Ptr { pointee, .. } => match pointee.kind() {
                 TyKind::Array { len, .. } => {
                     let pv = self.expr(base)?;
                     let pv = self.stable(pv, &later, span);
-                    (self.to_addr(pv, span), SliceLen::Static(*len))
+                    (self.addr_of_arg(pv, span), SliceLen::Static(*len))
                 }
                 _ => {
                     self.trap_const(span, "cannot slice this pointer");
@@ -1648,7 +1703,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let sv = self.expr(base)?;
                         let sv = self.stable(sv, &later, span);
                         let Arg::Data { reg: s, .. } = sv else { return Err(unsupported!()) };
-                        (self.to_addr(sv, span), SliceLen::OfSlice(s))
+                        (self.addr_of_arg(sv, span), SliceLen::OfSlice(s))
                     }
                     TyKind::Array { len, .. } => match self.place(base)? {
                         PlaceC::Mem { addr, .. } => (addr, SliceLen::Static(*len)),
@@ -1658,7 +1713,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let TyKind::Array { len, .. } = pointee.kind() else { return Err(unsupported!()) };
                         let pv = self.expr(base)?;
                         let pv = self.stable(pv, &later, span);
-                        (self.to_addr(pv, span), SliceLen::Static(*len))
+                        (self.addr_of_arg(pv, span), SliceLen::Static(*len))
                     }
                     _ => return Err(unsupported!()),
                 };
@@ -1680,6 +1735,22 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 Ok(dst)
             }
             _ => {
+                if matches!(op, Builtin::Convert | Builtin::Trunc)
+                    && args.len() == 1
+                    && let (Some(from), Some(to)) = (self.small(args[0].ty), self.small(e.ty))
+                {
+                    let v = self.expr(&args[0])?;
+                    let dst = self.dst(e, want);
+                    let (Arg::Data { reg: src, .. }, Arg::Data { reg, .. }) = (v, dst) else {
+                        return Err(unsupported!());
+                    };
+                    if op == Builtin::Convert {
+                        self.emit(Op::Widen { dst: reg, src, from, to }, span);
+                    } else {
+                        self.emit(Op::Trunc { dst: reg, src, from, to }, span);
+                    }
+                    return Ok(dst);
+                }
                 let refs: Vec<&'a Expr> = args.iter().collect();
                 let list = self.operands(&refs, span)?;
                 if list.iter().any(|a| matches!(a, Arg::Val(_))) {
