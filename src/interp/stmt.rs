@@ -29,7 +29,7 @@ impl<'a> Machine<'a> {
     }
 
     /// Whether `target` is the function that lexically contains the code running in `fr`.
-    fn lexically_same(&self, fr: &Frame, target: u64) -> bool {
+    pub(super) fn lexically_same(&self, fr: &Frame, target: u64) -> bool {
         let mut cur = fr;
         loop {
             if cur.id == target {
@@ -47,7 +47,7 @@ impl<'a> Machine<'a> {
     }
 
     /// Decides whether `errdefer` statements run when `flow` leaves a block of frame `fr` (§8.8).
-    fn errdefers_run(&self, fr: &Frame, flow: &Flow) -> bool {
+    pub(super) fn errdefers_run(&self, fr: &Frame, flow: &Flow) -> bool {
         match flow {
             Flow::Trap(_) => false,
             Flow::Return { frame, is_err, .. } => {
