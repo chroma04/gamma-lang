@@ -669,6 +669,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     let t = self.infer.resolve(r.ty);
                     self.error(r.span, format!("a shift amount must have an unsigned integer type, not `{}`", t));
                 }
+                if op == B::Shl(ast::Flavor::Opt) && self.has_optional_operand(&lhs, &lhs) {
+                    return self.chained_opt_op(op, lhs, r, span);
+                }
                 self.obligations.push(Obligation::Numeric {
                     ty: lhs.ty,
                     span,
@@ -697,7 +700,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
             B::Add(_) | B::Sub(_) | B::Mul(_) | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
-                let r = self.expr(rhs, Some(lhs.ty));
+                let expect = match op {
+                    B::Add(ast::Flavor::Opt) | B::Sub(ast::Flavor::Opt) | B::Mul(ast::Flavor::Opt) => {
+                        self.infer.resolve(lhs.ty).optional_inner().unwrap_or(lhs.ty)
+                    }
+                    _ => lhs.ty,
+                };
+                let r = self.expr(rhs, Some(expect));
                 self.arith_op(op, lhs, r, span)
             }
             B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
@@ -708,10 +717,68 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    fn has_optional_operand(&mut self, lhs: &Expr, r: &Expr) -> bool {
+        [lhs.ty, r.ty].into_iter().any(|t| self.infer.resolve(t).optional_inner().is_some())
+    }
+
+    /// `a +? b` with an optional operand, as in `a *? b +? c` (§7.4.2): both operands are
+    /// evaluated, and the result is `null` if either is `null`, else the operator applied
+    /// to their values.
+    fn chained_opt_op(&mut self, op: ast::BinOp, lhs: Expr, r: Expr, span: Span) -> Expr {
+        let mut stmts = Vec::new();
+        let mut cond = Vec::new();
+        let mut operands = Vec::new();
+        for e in [lhs, r] {
+            let t = self.infer.resolve(e.ty);
+            let tmp = self.temp(t, e.span);
+            let esp = e.span;
+            stmts.push(tir::Stmt::Let { local: tmp, init: Some(e) });
+            let value = mk(t, tir::ExprKind::Local(tmp), esp);
+            match t.optional_inner() {
+                Some(inner) => {
+                    let x = self.temp(inner, esp);
+                    let bind = tir::Pat { ty: inner, kind: tir::PatKind::Bind(x), span: esp };
+                    let pat = tir::Pat { ty: t, kind: tir::PatKind::Some(Box::new(bind)), span: esp };
+                    cond.push(tir::CondPart::Match { pat, value });
+                    operands.push(mk(inner, tir::ExprKind::Local(x), esp));
+                }
+                None => operands.push(value),
+            }
+        }
+        let r = operands.pop().unwrap();
+        let l = operands.pop().unwrap();
+        let then = if let ast::BinOp::Shl(_) = op {
+            let ty = Ty::optional(l.ty);
+            self.obligations.push(Obligation::Numeric {
+                ty: l.ty,
+                span,
+                op: op.as_str(),
+                int_only: true,
+                signed_only: false,
+            });
+            mk(
+                ty,
+                tir::ExprKind::Binary { op: tir::BinOp::Shl(ast::Flavor::Opt), lhs: Box::new(l), rhs: Box::new(r) },
+                span,
+            )
+        } else {
+            self.arith_op(op, l, r, span)
+        };
+        let ty = then.ty;
+        let null = mk(ty, tir::ExprKind::Null, span);
+        let test = mk(ty, tir::ExprKind::If { cond, then: Box::new(then), else_: Some(Box::new(null)) }, span);
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(test), span })), span)
+    }
+
     /// An arithmetic or bitwise operator applied to checked operands.
     pub fn arith_op(&mut self, op: ast::BinOp, lhs: Expr, r: Expr, span: Span) -> Expr {
         use ast::BinOp as B;
         match op {
+            B::Add(ast::Flavor::Opt) | B::Sub(ast::Flavor::Opt) | B::Mul(ast::Flavor::Opt)
+                if self.has_optional_operand(&lhs, &r) =>
+            {
+                self.chained_opt_op(op, lhs, r, span)
+            }
             B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 let ty = self.unify_operands(lhs.ty, r.ty, span, &format!("the operands of `{}`", op.as_str()));
                 let int_only = f != ast::Flavor::Checked;

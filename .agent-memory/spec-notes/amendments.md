@@ -57,3 +57,7 @@
   second-class fn not part of another type, not `&`, not returned from literals; §12.5 no
   top-level handler literals; §5.11 from_tag enums only; §12.7/§8.8 clause exits + esc/ctl
   performs in defer; App./§16.7 depth limits (mono 256, ADT inst 64).
+- s10 literals/flavors: §2.5.2 `1f32` (decimal int + float suffix is a float; hex keeps `f`
+  as a digit) and `0x1p4` (hex float fraction optional); §7.4.2/§10.7 `?` flavors take `?T`
+  operands (both evaluated, null if either null; lowered in sema to a block + if-let, so
+  no back end changes). bool was already Ord (s7), so that todo half needed nothing.

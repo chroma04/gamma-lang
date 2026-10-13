@@ -1,0 +1,11 @@
+// A float suffix on a decimal integer and a hexadecimal float without a fraction (§2.5.2).
+main :: fn() \ {Out} {
+    a := 1f32
+    b: f64 = 0x1p4
+    c := 0x1p-2f32
+    d := 3f16 / 2
+    print("{} {} {} {}\n", (a, b, c, d))
+    // In a hexadecimal literal `f` is a digit.
+    print("{}\n", 0x1f32)
+    print("{}\n", 0xAp+1 + 0x1.8p1)
+}

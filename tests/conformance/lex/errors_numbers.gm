@@ -9,7 +9,7 @@
 1u01 //~ ERROR invalid integer width
 1u65536 //~ ERROR invalid integer width
 1u //~ ERROR invalid suffix `u`
-1f32 //~ ERROR invalid suffix `f32` for integer literal
+0o7f32 //~ ERROR invalid suffix `f32` for a binary or octal literal
 1.5u8 //~ ERROR invalid suffix `u8` for float literal
 1.5f33 //~ ERROR invalid suffix `f33` for float literal
 0x //~ ERROR expected hexadecimal digits after `0x`

@@ -135,9 +135,11 @@ pi    :: 3.14159
 small :: 1.5e-3
 big   :: 2.5E10
 f32v  :: 1.5f32
+one   :: 1f32              // a float suffix makes a whole number a float
+hexf  :: 0x1p4             // 16.0: hexadecimal floats use a binary exponent `p`
 ```
 
-`1.` and `.5` are not float literals.
+`1.` and `.5` are not float literals. In a hexadecimal literal `f` is a digit, so `0x1f32` is an integer.
 
 ### Strings
 
@@ -247,6 +249,8 @@ overflow_demo :: fn() \ {Out} {
     print("{} {} {} {}\n", (a, b, c, d))
 }
 ```
+
+The `?` flavors chain: an operand of `+?`, `-?` or `*?` may itself be optional, and the result is `null` if any step overflowed, so `x *? 2 +? 1 else 255` checks both steps.
 
 Division and remainder truncate toward zero, and dividing by zero (or computing `MIN / -1`) **always traps, in every build mode**. There are no flavors of `/` or `%`. Float division follows IEEE 754 and does not trap.
 
