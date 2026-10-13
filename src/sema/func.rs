@@ -85,6 +85,9 @@ pub struct FnCx<'a, 's> {
     pub performed: Vec<(EffectRef, Span)>,
     /// The calls of functions whose effects include `Yield`, as opposed to `yield` itself.
     pub iterator_calls: Vec<Span>,
+    /// Calls of an operation that hides a universe operation of the same name, with the
+    /// explanation to add to errors about them.
+    pub hiding_op_calls: Vec<(Span, String)>,
     pub labels: Vec<LabelInfo>,
     pub next_label: u32,
     pub pending: Vec<PendingCoercion>,
@@ -266,6 +269,7 @@ impl<'a, 's> FnCx<'a, 's> {
             declared,
             performed: vec![],
             iterator_calls: vec![],
+            hiding_op_calls: vec![],
             labels: vec![],
             next_label: 0,
             pending: vec![],
@@ -394,8 +398,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut reported = vec![];
         for (e, span) in performed {
             if !self.declared.contains(&e) && !reported.contains(&e) {
-                let msg = self.undeclared_effect_message(&e, span, &self.declared);
-                self.error(span, msg);
+                let declared = self.declared.clone();
+                self.undeclared_effect(&e, span, &declared);
                 reported.push(e);
             }
         }
@@ -483,6 +487,17 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         }
         format!("this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)", name, name)
+    }
+
+    /// Reports an effect performed at `span` that the function, which declares `declared`,
+    /// does not declare.
+    pub fn undeclared_effect(&mut self, e: &EffectRef, span: Span, declared: &EffectSet) {
+        let msg = self.undeclared_effect_message(e, span, declared);
+        let before = self.sema.sess.diags.len();
+        self.error(span, msg);
+        if let Some((_, why)) = self.hiding_op_calls.iter().find(|(s, _)| *s == span) {
+            self.sema.sess.diags.note_since(before, span, why);
+        }
     }
 
     // --- bodies, blocks and statements ---

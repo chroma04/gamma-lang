@@ -28,9 +28,11 @@
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
+//!   One line may carry several annotations (`//~ ERROR a //~ NOTE b`).
 //!   Every reported error or warning must be expected this way. `//~ NOTE text`
-//!   expects a secondary location of some diagnostic on that line (such as a call
-//!   in a compile-time call stack); notes that no annotation names are allowed.
+//!   expects a note of some diagnostic on that line: a secondary location (such as
+//!   a call in a compile-time call stack) or an explanation attached to a diagnostic
+//!   reported there; notes that no annotation names are allowed.
 //!
 //! A directory whose name ends in `.test` is one test of several modules. The
 //! program's root module is its `main/` subdirectory if there is one, and the
@@ -144,11 +146,12 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 return Err(format!("{}:{}: unknown directive `{}`", path.display(), i + 1, directive));
             }
         }
-        if let Some(pos) = line.find("//~") {
+        // A line may carry several annotations: `//~ ERROR a //~ NOTE b`.
+        for ann in line.split("//~").skip(1) {
             // `//~?` expects a diagnostic that has no source location.
-            let (unlocated, rest) = match line[pos + 3..].strip_prefix('?') {
+            let (unlocated, rest) = match ann.strip_prefix('?') {
                 Some(r) => (true, r.trim()),
-                None => (false, line[pos + 3..].trim()),
+                None => (false, ann.trim()),
             };
             let (sev, msg) = rest.split_once(' ').unwrap_or((rest, ""));
             let sev = match sev {

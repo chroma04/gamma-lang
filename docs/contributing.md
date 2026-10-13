@@ -71,9 +71,10 @@ main :: fn() {
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
 | `//~ ERROR text` | an error whose message contains `text` is reported on this line |
 | `//~ WARNING text` | likewise for a warning |
-| `//~ NOTE text` | a secondary location of some diagnostic on this line, such as a call in a compile-time call stack (unannotated notes are allowed) |
+| `//~ NOTE text` | a note of some diagnostic on this line: a secondary location, such as a call in a compile-time call stack, or an explanation attached to a diagnostic reported here (unannotated notes are allowed) |
 | `//~? ERROR text` | an error without a source location (e.g. a missing `main`) |
 
+One line may carry several annotations, such as `//~ ERROR a //~ NOTE b`.
 Every error and warning the compiler reports must be expected by an annotation,
 and every annotation must be matched. The expected standard output of a `run` or
 `test` test is the sibling file `<name>.stdout` (empty if absent), and the sibling

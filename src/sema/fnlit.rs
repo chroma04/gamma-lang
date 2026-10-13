@@ -139,8 +139,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 own.push(e.clone());
                 if name.is_some() && !captures {
-                    let msg = self.undeclared_effect_message(&e, sp, &effects);
-                    self.error(sp, msg);
+                    self.undeclared_effect(&e, sp, &effects);
                 } else {
                     self.performed.push((e, sp));
                 }

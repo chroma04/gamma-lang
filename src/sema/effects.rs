@@ -110,6 +110,18 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Calling an effect operation performs it (§12.1).
     pub fn perform_op(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
+        let hides = self.sema.hidden_universe_op(eff, op);
+        let errors_before = self.sema.sess.diags.len();
+        let call = self.perform_op_inner(eff, op, args, span);
+        if let Some(why) = hides {
+            // Errors about the call itself (its arguments) get the explanation too.
+            self.sema.sess.diags.note_since(errors_before, span, &why);
+            self.hiding_op_calls.push((span, why));
+        }
+        call
+    }
+
+    fn perform_op_inner(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
         let info = &self.sema.effects[&eff];
         let params = info.params.clone();
         let op_info = info.ops[op as usize].clone();
