@@ -36,6 +36,8 @@ pub(super) struct Walker<'a, 's> {
     pub idx: &'a mut IdeIndex,
     pub module: ModuleId,
     pub scopes: Vec<Scope>,
+    /// The labels of the enclosing loops and `with`s.
+    labels: Vec<(Symbol, Span)>,
     /// Declarations whose hover text is registered.
     pub hovered: HashSet<DeclId>,
     pub receivers: HashMap<DeclId, Rc<Vec<Item>>>,
@@ -60,6 +62,7 @@ impl<'a, 's> Walker<'a, 's> {
             hovered: HashSet::new(),
             receivers: HashMap::new(),
             fn_decls,
+            labels: vec![],
         }
     }
 
@@ -288,8 +291,8 @@ impl<'a, 's> Walker<'a, 's> {
             | ExprKind::Null
             | ExprKind::Uninit
             | ExprKind::Underscore
-            | ExprKind::Error
-            | ExprKind::Continue { .. } => {}
+            | ExprKind::Error => {}
+            ExprKind::Continue { label } => self.label_use(*label),
             ExprKind::Ident(id) => self.name_use(*id),
             ExprKind::DotIdent(id) => {
                 self.variant_at(e.span, *id);
@@ -360,7 +363,7 @@ impl<'a, 's> Walker<'a, 's> {
                 if let Some(on) = &w.on {
                     self.expr(on);
                 }
-                self.block(&w.body);
+                self.with_label(w.label, |this| this.block(&w.body));
             }
             ExprKind::For(f) => self.for_expr(f),
             ExprKind::Block(b) => self.block(b),
@@ -369,7 +372,8 @@ impl<'a, 's> Walker<'a, 's> {
                     self.expr(v);
                 }
             }
-            ExprKind::Break { value, .. } => {
+            ExprKind::Break { label, value } => {
+                self.label_use(*label);
                 if let Some(v) = value {
                     self.expr(v);
                 }
@@ -513,10 +517,10 @@ impl<'a, 's> Walker<'a, 's> {
             StmtKind::Expr(e) | StmtKind::Discard(e) => self.expr(e),
             StmtKind::Defer { body, .. } => self.stmt(body),
             StmtKind::When(w) => self.when_stmt(w),
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { label, cond, body } => {
                 self.push_scope(body.span.hi);
                 self.cond(cond);
-                self.block(body);
+                self.with_label(*label, |this| this.block(body));
                 self.pop_scope();
             }
             StmtKind::LetElse { pat, value, fallback } => {
@@ -616,8 +620,29 @@ impl<'a, 's> Walker<'a, 's> {
         for p in &f.pats {
             self.pattern(p, None, p.span.hi);
         }
-        self.block(&f.body);
+        self.with_label(f.label, |this| this.block(&f.body));
         self.pop_scope();
+    }
+
+    /// Runs `body` with `label`, if there is one, in scope.
+    fn with_label(&mut self, label: Option<ast::Ident>, body: impl FnOnce(&mut Self)) {
+        if let Some(l) = label {
+            self.labels.push((l.name, l.span));
+            self.idx.defs.entry(l.span).or_insert(Hover { code: format!("label {}", l.name), doc: None });
+        }
+        body(self);
+        if label.is_some() {
+            self.labels.pop();
+        }
+    }
+
+    /// The label named by a `break` or `continue`.
+    fn label_use(&mut self, label: Option<ast::Ident>) {
+        if let Some(l) = label
+            && let Some((_, def)) = self.labels.iter().rev().find(|(n, _)| *n == l.name).copied()
+        {
+            self.add_ref(l.span, def);
+        }
     }
 
     // --- patterns ---
@@ -732,10 +757,10 @@ fn find_payload_field(members: &[ast::UnionMember], variant: Symbol, field: Symb
     for m in members {
         match m {
             ast::UnionMember::Variant(v) if v.name.name == variant => {
-                if let Some(ast::Expr { kind: ExprKind::Tuple(elems), .. }) = &v.payload {
-                    if let Some(n) = elems.iter().filter_map(|e| e.name).find(|n| n.name == field) {
-                        found.get_or_insert(n.span);
-                    }
+                if let Some(ast::Expr { kind: ExprKind::Tuple(elems), .. }) = &v.payload
+                    && let Some(n) = elems.iter().filter_map(|e| e.name).find(|n| n.name == field)
+                {
+                    found.get_or_insert(n.span);
                 }
             }
             ast::UnionMember::Variant(_) => {}

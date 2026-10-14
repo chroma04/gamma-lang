@@ -80,20 +80,16 @@ impl<'a, 's> Walker<'a, 's> {
             Base::Effect(d) => Some(d),
             _ => None,
         };
-        self.clauses(&h.clauses, effect, None);
+        self.clauses(&h.clauses, effect);
     }
 
-    /// Handler clauses; for a handler declaration, `self` stands for the value of `self_ty`.
-    pub fn clauses(&mut self, clauses: &[ast::Clause], effect: Option<DeclId>, self_ty: Option<Span>) {
+    /// Handler clauses.
+    pub fn clauses(&mut self, clauses: &[ast::Clause], effect: Option<DeclId>) {
         for c in clauses {
             if let Some(d) = effect {
                 self.operation_use(d, c.name);
             }
             self.push_scope(c.span.hi);
-            if let Some(ty) = self_ty {
-                let me = ast::Ident { name: crate::symbol::Symbol::intern("self"), span: ty };
-                self.declare(me, Kind::Parameter, c.name.span.hi);
-            }
             for p in &c.params {
                 self.declare(*p, Kind::Parameter, p.span.hi);
             }
@@ -249,7 +245,7 @@ impl<'a, 's> Walker<'a, 's> {
                     Base::Effect(d) => Some(d),
                     _ => None,
                 };
-                self.clauses(&h.clauses, effect, Some(h.for_ty.span));
+                self.clauses(&h.clauses, effect);
                 self.pop_scope();
                 let head = self.sema.src(it.span);
                 let head = head.split('{').next().unwrap_or("").trim().to_string();

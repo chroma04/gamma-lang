@@ -56,6 +56,8 @@ cycle, reported with every declaration in it (spec §3.4).
 | --- | --- |
 | `src/main.rs` | the `gamma` command-line tool |
 | `src/fmt.rs` | the source formatter behind `gamma fmt` (token based, see `docs/contributing.md`) |
+| `src/lsp/` | the language server behind `gamma lsp` (see [Language server](#language-server)) |
+| `src/ide.rs` | the editor index: references, hover text, scopes and outlines of one module |
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |
@@ -712,6 +714,106 @@ the caller's value runs during the call.
 Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
 written and read piecewise with `memcpy`, so type-based alias analysis gains
 nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
+
+## Language server
+
+`gamma lsp` serves the Language Server Protocol over standard input and output.
+Users are pointed to `docs/lsp.md`; this section is about how it works.
+
+### Structure
+
+| File | Responsibility |
+| --- | --- |
+| `src/lsp/transport.rs` | JSON-RPC messages with `Content-Length` framing |
+| `src/lsp/position.rs` | byte offsets to and from LSP positions (UTF-16 units, or bytes when the client offers UTF-8) |
+| `src/lsp/analysis.rs` | one run of the compiler over a module, and its diagnostics as LSP diagnostics |
+| `src/lsp/features.rs` | hover, definition, references, completion, signature help and symbols, as JSON |
+| `src/lsp/server.rs` | open documents, when to analyze, and request dispatch |
+| `src/ide.rs` | the index that the requests are answered from |
+| `src/sema/ide/` | building the index from the checker's state |
+
+The server is single-threaded. A second thread only reads messages and queues
+them. The main loop handles a message, and checks the open modules when the queue
+is empty, so a burst of edits costs one run. A request that needs a current
+answer checks first. The loop runs on the compiler thread, which has a large
+stack, because the passes recurse over the syntax tree.
+
+### Analysis
+
+A module is a directory (spec §3.1), so each run checks the whole directory that
+contains an open document. `Session::overlays` maps paths to the text of open
+documents; `Session::load` reads those instead of the disk. Importers see unsaved
+buffers of the modules they import. An edit marks stale every analysis that read
+a file of the edited directory; the next idle moment re-checks them.
+
+`sema::analyze_for_ide` runs the same pipeline as `gamma test` (so `main` is not
+required), with `Sema::keep_going` set so that syntax errors do not stop it.
+The diagnostics stay in the session. `Analysis::run` wraps the call in
+`catch_unwind`. If the checker panics, the run is repeated as `gamma test` would
+do it, which stops at syntax errors, and those errors are reported. If that
+fails too, the user sees one "internal compiler error" diagnostic on the first
+open file of the directory.
+
+Diagnostics are published for every open document of the directory and for every
+other file that has diagnostics. Files that had diagnostics before and have none
+now get an empty list. A diagnostic without a location goes to line 0 of the
+first open document. Labels become `relatedInformation`; notes are appended to
+the message.
+
+The type interner never frees memory, and a run allocates fresh ids for every
+struct, union and effect, so a long session would grow without bound. The index
+therefore holds no `Ty`, only text, and the server calls `types::mark` before a
+run and `types::release_since` after it. This is safe only because nothing else
+allocates types, so the library tests never call it.
+
+### The index
+
+`sema/ide/` reads the state of a finished run. It adds no code to the checking
+passes, so ordinary compilation is unaffected.
+
+- `facts.rs` walks the typed IR of every function of the module (not the
+  instances of generics, and not the core library). It records the type of each
+  expression by span, the function each call resolves to, the declared locals,
+  and a reference from each use of a local to its declaration. Where several
+  expressions share a span, the innermost one is the first.
+- `walk.rs` and `items.rs` re-parse the files of the module and walk the syntax
+  tree with their own lexical scopes. They resolve a name to a local, or to a
+  declaration of the module, its imports or the universe scope. A field, method,
+  variant, operation or named argument is resolved through the type of the
+  expression before the `.` or of the call, which comes from the facts. The walk
+  records references, the hover text of each declared name, the locals visible at
+  each offset (name, type and the byte range where it is visible), and the
+  outline of each file.
+- `info.rs` describes declarations: a function signature printed from the checked
+  signature (with effects), the source text of a type, the members that `.` offers
+  for a type (fields, then the functions of the type's module that take it as
+  their first parameter) and for a module (its `pub` names).
+
+Doc comments come from `ast::Item::doc`. References into the core library have no
+file to open, so definition returns nothing for them, while hover still works.
+
+### Completion
+
+Names come from the locals visible at the cursor, the declarations of the module
+and the universe scope. Members after `.` come from the index of the current
+text when it has the receiver. Typing `x.` usually leaves text that does not
+check. The server then takes out the dot and what was typed after it, checks the
+module again with that text, and looks up the receiver by its byte range, which
+the edit did not move.
+
+### Limitations
+
+- References are found within the analyzed module only.
+- A name in a part of the file that is not taken by a top-level `when` is not
+  resolved.
+- Tuple element names and the members of builtin types are not references; the
+  builtin methods of numbers and slices are listed by name only.
+- Completion after `.` re-checks the module when the current text has no receiver
+  for the dot, which is as slow as an edit.
+- Files that are not saved and do not exist on disk are not part of their
+  module's directory listing.
+- Modules with a syntax error in the middle of a function may be checked with
+  poor recovery; then only the syntax errors are reported until they are fixed.
 
 ## Safe builds (Fil-C)
 

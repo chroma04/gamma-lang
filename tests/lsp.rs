@@ -469,6 +469,60 @@ fn completion_of_module_members() {
 }
 
 #[test]
+fn signature_help_marks_the_argument() {
+    let dir = TempDir::new();
+    let text = "\
+Counter :: struct { n: i32 }
+
+/// Adds two numbers.
+add :: fn(a: i32, b: i32) -> i32 => a + b
+
+bump :: fn(c: ^Counter, by: i32 = 1) {
+    c.n += by
+}
+
+main :: fn() {
+    x := add(1, 2)
+    c := Counter(n: 0)
+    c.bump(by: 2)
+    _ = x
+}
+";
+    let path = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, text);
+    assert_eq!(lsp.diagnostics(&path, 1), Vec::<Value>::new());
+    // Between the comma and the second argument of `add(1, 2)`.
+    let r = lsp.result("textDocument/signatureHelp", lsp.at(&path, 10, 16));
+    assert_eq!(r["activeParameter"], 1);
+    let sig = &r["signatures"][0];
+    assert_eq!(sig["label"], "add(a: i32, b: i32) -> i32");
+    assert_eq!(sig["parameters"][1]["label"], "b: i32");
+    assert_eq!(sig["documentation"]["value"], "Adds two numbers.");
+    // A method call: the receiver is not a parameter, and `by:` names the argument.
+    let r = lsp.result("textDocument/signatureHelp", lsp.at(&path, 12, 15));
+    assert_eq!(r["signatures"][0]["label"], "bump(by: i32 = 1)");
+    assert_eq!(r["activeParameter"], 0);
+    // Outside any call.
+    let r = lsp.result("textDocument/signatureHelp", lsp.at(&path, 13, 5));
+    assert_eq!(r, Value::Null);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn only_gamma_files_are_analyzed() {
+    let dir = TempDir::new();
+    let notes = dir.write("notes.md", "# not code\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&notes, "# not code\n");
+    let h = lsp.result("textDocument/hover", lsp.at(&notes, 0, 1));
+    assert_eq!(h, Value::Null);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
 fn formatting_returns_a_whole_document_edit() {
     let dir = TempDir::new();
     let messy = "main :: fn() {\n  x   :=   1\n    _ = x\n}\n";

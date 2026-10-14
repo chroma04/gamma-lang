@@ -211,6 +211,125 @@ pub fn member_context(text: &str, off: usize) -> Option<(usize, usize)> {
     (i < dot).then_some((i, dot))
 }
 
+/// Where the cursor is in a call: the offset just after the callee's name, the index of
+/// the argument, and the name of the parameter if the argument is written `name: value`.
+pub fn call_context(text: &str, off: usize) -> Option<(usize, usize, Option<String>)> {
+    let b = text.as_bytes();
+    let off = off.min(b.len());
+    let (mut depth, mut commas, mut i) = (0usize, 0usize, off);
+    let mut last_comma = None;
+    let open = loop {
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+        match b[i] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' if depth == 0 => break i,
+            b'(' => depth -= 1,
+            b'[' | b'{' if depth == 0 => return None,
+            b'[' | b'{' => depth -= 1,
+            b',' if depth == 0 => {
+                commas += 1;
+                last_comma.get_or_insert(i);
+            }
+            // A string literal ends the search on its line: skip it whole.
+            b'"' => {
+                let mut j = i;
+                while j > 0 && b[j - 1] != b'\n' {
+                    j -= 1;
+                    if b[j] == b'"' && (j == 0 || b[j - 1] != b'\\') {
+                        break;
+                    }
+                }
+                i = j;
+            }
+            _ => {}
+        }
+    };
+    let mut end = open;
+    while end > 0 && b[end - 1].is_ascii_whitespace() && b[end - 1] != b'\n' {
+        end -= 1;
+    }
+    if end == 0 || !(b[end - 1].is_ascii_alphanumeric() || b[end - 1] == b'_') {
+        return None;
+    }
+    // `name: value`: the words before a colon at the start of the argument.
+    let start = last_comma.map_or(open + 1, |c| c + 1);
+    let seg = text.get(start..off).unwrap_or("").trim_start();
+    let named = seg.split_once(':').and_then(|(n, _)| {
+        let n = n.trim();
+        (!n.is_empty() && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')).then(|| n.to_string())
+    });
+    Some((end, commas, named))
+}
+
+/// Splits the parameter list of the signature text `sig` (`fn(a: T, b: U) -> R`) into
+/// its parameters and the text after the closing parenthesis.
+fn split_signature(sig: &str) -> Option<(Vec<String>, String)> {
+    let start = sig.find("fn(")? + 3;
+    let (mut depth, mut cur, mut params) = (0, String::new(), vec![]);
+    for (i, c) in sig[start..].char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => {
+                if !cur.trim().is_empty() {
+                    params.push(cur.trim().to_string());
+                }
+                return Some((params, sig[start + i + 1..].to_string()));
+            }
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                params.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    None
+}
+
+/// Help with the arguments of the call around `off`: the signature of the function
+/// called, with the parameter being written marked.
+pub fn signature_help(cx: &Ctx, file: FileId, off: u32) -> Value {
+    let text = cx.a.text(file);
+    let Some((callee_end, mut active, named)) = call_context(text, off as usize) else { return Value::Null };
+    let Some(h) = cx.a.index.hover_at(file, callee_end as u32 - 1) else { return Value::Null };
+    let code = &h.hover.code;
+    let Some((mut params, tail)) = split_signature(code) else { return Value::Null };
+    let name = code.split(" ::").next().filter(|_| code.contains(" :: ")).unwrap_or_else(|| {
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        let ident_start = text[..callee_end]
+            .rfind(|c: char| !word(c))
+            .map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+        &text[ident_start..callee_end]
+    });
+    // A method call supplies the receiver and the type parameters itself.
+    let before = text[..callee_end].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+    if before.ends_with('.') {
+        params.retain(|p| !(p.ends_with(": type") || p.contains(" :: ")));
+        if !params.is_empty() {
+            params.remove(0);
+        }
+    }
+    if let Some(n) = named
+        && let Some(i) = params.iter().position(|p| p.split(':').next().is_some_and(|x| x.trim() == n))
+    {
+        active = i;
+    }
+    let label = format!("{}({}){}", name, params.join(", "), tail);
+    let mut sig = json!({
+        "label": label,
+        "parameters": params.iter().map(|p| json!({"label": p})).collect::<Vec<_>>(),
+    });
+    if let Some(d) = &h.hover.doc {
+        sig["documentation"] = json!({"kind": "markdown", "value": d});
+    }
+    json!({"signatures": [sig], "activeSignature": 0, "activeParameter": active})
+}
+
 /// The edit that replaces the whole of `old` by `new`.
 pub fn full_edit(old: &str, new: &str, enc: Encoding) -> Value {
     let ix = LineIndex::new(old);
@@ -247,6 +366,35 @@ mod tests {
         assert!(ctx_of("for i in 0..n", "0..").is_none());
         assert!(ctx_of("x := .Red", ".").is_none());
         assert!(ctx_of("plain", "pl").is_none());
+    }
+
+    #[test]
+    fn finds_the_call_around_the_cursor() {
+        let at = |t: &str| {
+            let off = t.find('|').unwrap();
+            call_context(&t.replace('|', ""), off)
+        };
+        assert_eq!(at("f(|)"), Some((1, 0, None)));
+        assert_eq!(at("f(a, |"), Some((1, 1, None)));
+        assert_eq!(at("x := foo (a, g(b, c), |)"), Some((8, 2, None)));
+        assert_eq!(at("f(a, \"x,y\", |"), Some((1, 2, None)));
+        assert_eq!(at("f(a, name: |"), Some((1, 1, Some("name".to_string()))));
+        // Not calls: grouping, indexing, nothing.
+        assert_eq!(at("x := (a + |"), None);
+        assert_eq!(at("a[f(1), |"), None);
+        assert_eq!(at("plain |"), None);
+        // The inner call wins; after it closes the outer one does.
+        assert_eq!(at("f(g(1), |"), Some((1, 1, None)));
+        assert_eq!(at("f(g(1, |"), Some((3, 1, None)));
+    }
+
+    #[test]
+    fn splits_signatures() {
+        let (ps, tail) = split_signature("sum :: fn(p: Point, extra: (i32, u8) = (1, 2)) -> i32 \\ {Out}").unwrap();
+        assert_eq!(ps, vec!["p: Point", "extra: (i32, u8) = (1, 2)"]);
+        assert_eq!(tail, " -> i32 \\ {Out}");
+        assert_eq!(split_signature("greet :: fn()").unwrap().0, Vec::<String>::new());
+        assert!(split_signature("x: i32").is_none());
     }
 
     #[test]

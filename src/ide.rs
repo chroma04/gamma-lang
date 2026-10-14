@@ -149,7 +149,10 @@ impl IdeIndex {
             (Some((range, h)), t) if t.is_none_or(|(s, _)| s.hi - s.lo >= range.hi - range.lo) => {
                 Some(HoverResult { range, hover: h.clone() })
             }
-            (_, Some((s, t))) => Some(HoverResult { range: *s, hover: Hover { code: self.type_texts[t.text as usize].clone(), doc: None } }),
+            (_, Some((s, t))) => Some(HoverResult {
+                range: *s,
+                hover: Hover { code: self.type_texts[t.text as usize].clone(), doc: None },
+            }),
             _ => None,
         }
     }

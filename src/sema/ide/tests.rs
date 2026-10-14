@@ -320,6 +320,122 @@ fn expression_types_show_on_hover() {
     assert_eq!(f.hover(), "i32");
 }
 
+const EFFECTS: &str = r#"Log :: effect {
+    /// Records a line.
+    note: fn(msg: string)
+}
+
+Counting :: struct { lines: i32 }
+
+handler Log for ^Counting {
+    note(self, msg) => { self.lines += 1 }
+}
+
+largest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := xs.first() else return null
+    for x in xs {
+        if x > best { best = x }
+    }
+    return best
+}
+
+work :: fn() \ {Log} {
+    Log.note("a")
+    note("b")
+}
+
+main :: fn() {
+    c := Counting(lines: 0)
+    printer :: handler Log {
+        note(msg) => { c.lines += msg.len.trunc(i32) }
+    }
+    with printer { work() }
+    scores := [3]i32(4, 9, 2)
+    outer: for i in 0..3 {
+        for j in 0..3 {
+            if j is 1 { continue outer }
+            if i is 2 { break outer }
+        }
+    }
+    _ = largest(scores)
+    add :: fn(n: i32) -> i32 => n + c.lines
+    _ = add(1)
+}
+
+test "counts" {
+    c := Counting(lines: 0)
+    with &c { work() }
+    expect(c.lines is 2)
+}
+"#;
+
+#[test]
+fn effects_and_handlers_resolve() {
+    let f = analyze(EFFECTS);
+    assert_eq!(f.errors(), Vec::<String>::new());
+    // A bare operation name, and one named through its effect.
+    let at = |needle: &str, delta: usize| {
+        analyze(&EFFECTS.replacen(needle, &format!("{}${}", &needle[..delta], &needle[delta..]), 1))
+    };
+    let g = at("    note(\"b\")", 8);
+    assert_eq!(g.definition(), Some(("note".to_string(), 3)));
+    assert!(g.hover().starts_with("Log.note :: fn(msg: string)"), "{}", g.hover());
+    assert_eq!(g.doc(), None);
+    let g = at("Log.note(\"a\")", 6);
+    assert_eq!(g.definition(), Some(("note".to_string(), 3)));
+    // A clause names its operation; its parameter is a local.
+    let g = at("        note(msg) => { c.lines", 10);
+    assert_eq!(g.definition(), Some(("note".to_string(), 3)));
+    let g = at("c.lines += msg.len", 14);
+    assert_eq!(g.definition().map(|d| d.0), Some("msg".to_string()));
+    // `self` in a handler declaration is its subject.
+    let g = at("{ self.lines += 1 }", 4);
+    assert_eq!(g.definition().map(|d| d.0), Some("self".to_string()));
+}
+
+#[test]
+fn captured_locals_and_closures_resolve() {
+    let g = analyze(&EFFECTS.replace("n + c.lines", "n + c.$lines"));
+    assert_eq!(g.definition(), Some(("lines".to_string(), 6)));
+    let g = analyze(&EFFECTS.replace("n + c.lines", "n + $c.lines"));
+    assert_eq!(g.definition(), Some(("c".to_string(), 26)));
+    assert_eq!(g.hover(), "c: Counting");
+    let g = analyze(&EFFECTS.replace("n + c.lines", "$n + c.lines"));
+    assert_eq!(g.hover(), "n: i32");
+}
+
+#[test]
+fn generic_parameters_and_loops_resolve() {
+    let g = analyze(&EFFECTS.replace("[]const T) -> ?T", "[]const $T) -> ?T"));
+    assert_eq!(g.definition(), Some(("T".to_string(), 12)));
+    let g = analyze(&EFFECTS.replace("if x > best", "if x > be$st"));
+    assert_eq!(g.hover(), "best: T");
+    let g = analyze(&EFFECTS.replace("_ = largest(scores)", "_ = larg$est(scores)"));
+    assert_eq!(g.hover(), "largest :: fn(T: type, xs: []const T) -> ?T");
+}
+
+#[test]
+fn labels_resolve() {
+    let g = analyze(&EFFECTS.replace("continue outer", "continue ou$ter"));
+    assert_eq!(g.definition(), Some(("outer".to_string(), 32)));
+    let g = analyze(&EFFECTS.replace("break outer", "break ou$ter"));
+    assert_eq!(g.definition(), Some(("outer".to_string(), 32)));
+}
+
+#[test]
+fn tests_and_handlers_appear_in_the_outline() {
+    let f = analyze(EFFECTS);
+    let names: Vec<String> = f.idx.outlines[&f.file].iter().map(|s| s.name.clone()).collect();
+    assert_eq!(
+        names,
+        vec!["Log", "Counting", "handler Log for ^Counting", "largest", "work", "main", "test \"counts\""]
+    );
+    let log = &f.idx.outlines[&f.file][0];
+    assert_eq!(log.kind, Kind::Effect);
+    assert_eq!(log.children[0].name, "note");
+    assert_eq!(log.children[0].kind, Kind::Operation);
+}
+
 #[test]
 #[ignore]
 fn smoke_over_conformance_tests() {

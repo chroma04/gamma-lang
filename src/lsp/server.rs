@@ -7,6 +7,7 @@ use super::transport::write_message;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -17,6 +18,7 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
 
 struct Doc {
     uri: String,
@@ -105,12 +107,22 @@ impl<W: Write> Server<W> {
             return Flow::Continue;
         };
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        match msg.get("id").cloned() {
+        // A bug in a handler must not end the session: answer with an error and go on.
+        let guarded = catch_unwind(AssertUnwindSafe(|| match msg.get("id").cloned() {
             Some(id) => {
                 self.request(id, &method, params);
                 Flow::Continue
             }
             None => self.notification(&method, params),
+        }));
+        match guarded {
+            Ok(flow) => flow,
+            Err(_) => {
+                if let Some(id) = msg.get("id").cloned() {
+                    self.respond_error(id, INTERNAL_ERROR, &format!("internal error handling {}", method));
+                }
+                Flow::Continue
+            }
         }
     }
 
@@ -143,6 +155,7 @@ impl<W: Write> Server<W> {
                 let td = &params["textDocument"];
                 if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str())
                     && let Some(path) = uri_to_path(uri)
+                    && path.extension().is_some_and(|e| e == "gm")
                 {
                     let version = td["version"].as_i64().unwrap_or(0);
                     self.docs.insert(canon(&path), Doc { uri: uri.to_string(), version, text: text.to_string() });
@@ -288,6 +301,7 @@ impl<W: Write> Server<W> {
             | "textDocument/references"
             | "textDocument/completion"
             | "textDocument/documentSymbol"
+            | "textDocument/signatureHelp"
             | "textDocument/formatting" => match self.language_request(method, &params) {
                 Ok(v) => self.respond(id, v),
                 Err((code, msg)) => self.respond_error(id, code, &msg),
@@ -311,6 +325,7 @@ impl<W: Write> Server<W> {
                 "documentSymbolProvider": true,
                 "documentFormattingProvider": true,
                 "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+                "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
             },
             "serverInfo": {"name": "gamma", "version": env!("CARGO_PKG_VERSION")},
         })
@@ -351,6 +366,7 @@ impl<W: Write> Server<W> {
                 features::references(&cx, file, at(&cx), include)
             }
             "textDocument/documentSymbol" => features::document_symbols(&cx, file),
+            "textDocument/signatureHelp" => features::signature_help(&cx, file, at(&cx)),
             "textDocument/completion" => {
                 let off = at(&cx);
                 self.completion(&path, off)
