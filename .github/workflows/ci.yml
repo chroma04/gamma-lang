@@ -96,6 +96,7 @@ jobs:
     # of the standard library and every conformance test the compiler accepts.
     name: Editor grammars
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

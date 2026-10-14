@@ -62,7 +62,6 @@ main :: fn() \ {Out} {
 pub LIMIT :: 10 // note
 // <- keyword.modifier
 //  ^ constant
-//                 ^ comment
 test "adds" {
 // <- keyword.type
 //   ^ string
