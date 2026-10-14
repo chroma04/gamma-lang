@@ -293,6 +293,49 @@ wake-up counter and condition variable: a wake-up wakes every waiter, which is a
 because a futex wait may return early, and the waiter reads the counter before it gives
 up the lock, so no wake-up is lost. Compiled programs use the kernel's futex.
 
+**Foreign calls** (`src/interp/ffi.rs`). A call to a foreign function looks its symbol
+up with `dlsym` (in the process, which has the C library, and in the libraries the
+program names, opened as `lib<name>.so`/`.dylib`, also in the `-L` directories of
+`LDFLAGS`) and calls it through libffi, whose call frame is built from the
+declaration: integers of 8 to 64 bits, floats, pointers, `bool`, structs by value
+(a `#c_union` by value is described to libffi as the struct the C ABI treats
+alike) and variadic calls (`ffi_prep_cif_var`, with the argument types read from
+the call site; the VM leaves such calls to the tree-walker). The `libffi` crate
+builds its own copy of libffi, so no system library is needed.
+
+Interpreter pointers are addresses in the interpreter's address space, not host
+addresses, so memory crosses the boundary by copying. A pointer argument makes
+a *mirror* of the allocation it points into: a host buffer with the allocation's
+bytes, in which the pointers (found from the static type of the pointee) are
+translated the same way. C is given the mirror's address. After the call, the
+bytes C changed (compared with a snapshot taken before) are copied back, and
+pointers C stored or returned that point into mirrors are translated back, so
+`strchr` results and out-pointers (`strtol`'s `end`) are interpreter pointers
+again. A mirror lives as long as its allocation, so the address C saw stays valid
+between calls (`strtok`), and is refreshed at each call that passes a pointer to
+it. Addresses that are in no interpreter allocation (`getenv`'s result, a
+`FILE *`, memory from `malloc`, a mirror seen from a callback) are host memory:
+once a foreign function has been called, `Memory` lets accesses to addresses above
+everything it handed out go to the host directly. Foreign `#global`s are such
+addresses (`dlsym`, and `__errno_location` for `errno`).
+
+A function pointer passed to C becomes a libffi closure (cached per function) that
+calls `call_function`. Pointers it receives are host addresses, usable directly
+by the interpreted callback. Unwinding a trap through C frames is not possible,
+so the trap is kept, later callbacks return at once, and the foreign call
+returns it (with the call site standing for the callback's caller in the
+backtrace) when C returns. `exit` called by C and `atexit` handlers work because
+`gamma run` ends the process with `exit` while the machine is still alive when
+callbacks were registered. A foreign declaration whose symbol is an `#export`ed
+Gamma function calls that function directly.
+
+`ffi::check_program` decides before the run whether the interpreter can do all
+of this for the program: inline assembly, a signature libffi cannot describe
+(`i128`, `#packed` or field-aligned structs by value, `f16`), a calling convention
+other than C, a pointer to a union that holds pointers, a symbol `dlsym` does not
+find, or a target other than the host's send the program to the C back end
+instead. Compile-time evaluation traps on a foreign call.
+
 **The bytecode VM.** Walking the tree costs a Rust call, a match and a boxed
 value per node, so a function is compiled to register bytecode the first time it
 is called (`code_of` in `src/interp/vm/mod.rs`) and run by a dispatch loop
@@ -374,7 +417,7 @@ stack (`gm_run_main`), so recursion depth does not depend on the host's default
 stack size, and roughly matches the interpreter's.
 
 `gamma test` uses the C back end for modules that need it (foreign functions,
-`@asm`) or with `--backend=c`. `cgen::generate_tests` emits one program whose
+`@asm`; their output is then captured with the test's) or with `--backend=c`. `cgen::generate_tests` emits one program whose
 `main` runs the test entry selected by its first argument, exactly as the
 ordinary `main` runs a program's entry; the driver builds it once, from the
 tests `--filter` selects, and runs it per test, passing a test iff the exit status is 0. A trap's message and
@@ -563,9 +606,9 @@ identity so that sema never converts between conventions. The back end turns
 and definition, on foreign declarations and exported wrappers, and in the function
 pointer type that plain indirect calls cast to. Foreign functions are declared
 under private C names bound to their symbols with asm labels, so they never clash
-with the runtime's C headers. The interpreter
-cannot call C, so `gamma run` uses this back end for programs with foreign
-functions.
+with the runtime's C headers. `gamma run` uses this back end for programs the
+interpreter cannot run (inline assembly, and foreign code it cannot call, see
+"Foreign calls" in the interpreter section).
 
 Blobs do not cross the C ABI as C structs do: a struct of two `double`s goes in
 floating-point registers, a 16-byte blob in integer registers. So a struct,
