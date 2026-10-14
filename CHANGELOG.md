@@ -33,15 +33,15 @@ Versions and what each kind of change means are described in
   the timestamped logger is `StampedLog`, which also needs `Clock`.
 - §22.4 says what "cryptography" excludes: fixed, unkeyed digests and checksums are
   admitted to the standard library.
-
-### Changed
-
 - Diagnostics: a keyword used as a name is one error with a hint; a `struct` declared in
   a function body no longer causes follow-up errors; repeated identical diagnostics are
   reported once; "unreachable code" says which construct ends the control flow; a failed
   call no longer also reports its unused result.
 - A panic in the compiler prints a short "internal compiler error" report and exits with
   status 101; the backtrace is printed only with `RUST_BACKTRACE` set.
+- The interpreter runs `new` and `destroy` with the default allocator about 5 times
+  faster, and calls and effect operations about 20–30% faster; `bench/` holds the
+  micro-benchmarks.
 
 ### Fixed
 
