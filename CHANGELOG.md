@@ -47,6 +47,8 @@ Versions and what each kind of change means are described in
 - The interpreter runs `new` and `destroy` with the default allocator about 5 times
   faster, and calls and effect operations about 20–30% faster; `bench/` holds the
   micro-benchmarks.
+- Safe builds run hash map inserts about 2.7 times and list pushes about 2 times faster:
+  slices are read in place instead of copied, which under Fil-C costs a runtime call.
 
 ### Fixed
 
