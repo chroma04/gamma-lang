@@ -24,6 +24,7 @@ mod foreign;
 mod func;
 mod generics;
 mod handler_decl;
+mod ide;
 mod imports;
 mod infer;
 mod matching;
@@ -49,6 +50,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 pub use decls::DeclValue;
+pub use ide::analyze_for_ide;
 pub use untyped::Untyped;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -174,6 +176,8 @@ pub struct Sema<'s> {
     pub variadic_fns: std::collections::HashSet<FnId>,
     /// Whether `test` declarations are compiled (`gamma test`, §3.8).
     pub tests_enabled: bool,
+    /// Keep checking a module that has syntax errors (for editors).
+    pub keep_going: bool,
     /// While a test body is checked (`expect` is allowed).
     pub in_test: bool,
     /// Test declarations of the root module, in source order.
@@ -329,6 +333,7 @@ impl<'s> Sema<'s> {
             allow_variadic: false,
             variadic_fns: std::collections::HashSet::new(),
             tests_enabled: false,
+            keep_going: false,
             in_test: false,
             test_items: vec![],
             static_asserts: vec![],

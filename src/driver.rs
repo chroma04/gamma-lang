@@ -5,8 +5,9 @@ use crate::source::{FileId, SourceMap};
 use crate::syntax::ast::{File, NodeIdGen};
 use crate::syntax::token::{LexOutput, Token, TokenKind};
 use crate::syntax::{ast_dump, lexer, parser};
+use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// State shared by all stages of one compilation.
 pub struct Session {
@@ -19,6 +20,8 @@ pub struct Session {
     pub debug_info: bool,
     /// The compilation target (§3.6): layouts and the `target` module follow it.
     pub target: crate::layout::Target,
+    /// Unsaved editor buffers by canonical path: `load` reads these instead of the disk.
+    pub overlays: HashMap<PathBuf, String>,
 }
 
 impl Default for Session {
@@ -36,11 +39,18 @@ impl Session {
             mode: crate::interp::Mode::Debug,
             debug_info: false,
             target: crate::layout::Target::host(),
+            overlays: HashMap::new(),
         }
     }
 
     /// Loads a file, reporting a location-less error on failure.
     pub fn load(&mut self, path: &Path) -> Option<FileId> {
+        if !self.overlays.is_empty() {
+            let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if let Some(text) = self.overlays.get(&key) {
+                return Some(self.sources.add(path, text.clone()));
+            }
+        }
         match self.sources.load(path) {
             Ok(id) => Some(id),
             Err(msg) => {

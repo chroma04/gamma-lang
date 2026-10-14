@@ -18,6 +18,7 @@ commands:
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
+  lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
 
@@ -162,6 +163,15 @@ fn compiler_main() -> ExitCode {
     default_sigpipe();
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
+    }
+    if std::env::args().nth(1).as_deref() == Some("lsp") {
+        return match gamma::lsp::run_stdio() {
+            Ok(code) => ExitCode::from(code),
+            Err(e) => {
+                eprintln!("gamma lsp: {}", e);
+                ExitCode::FAILURE
+            }
+        };
     }
     let opts = match parse_args() {
         Ok(o) => o,
