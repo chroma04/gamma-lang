@@ -87,6 +87,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let iterator_arg = self.iterator_args.contains(&lit.span);
         // The return type of an `=>` literal without one comes from its body.
         let infer_ret = (ret_known.is_none() || iterator_arg) && matches!(lit.body, ast::FnBody::Expr(_));
+        let infer_block = ret_known.is_none() && matches!(lit.body, ast::FnBody::Block(_));
         let ret = ret_known.unwrap_or(Ty::unit());
         let module = self.module;
         let sig = FnSig { module, params: params.clone(), ret, effects: effects.clone(), generics: vec![] };
@@ -97,6 +98,11 @@ impl<'a, 's> FnCx<'a, 's> {
             self.declare(n, LocalBinding::NestedFn(fn_id), span);
         }
         self.enter_fn(fn_id, ret, effects.clone());
+        if infer_block {
+            self.open_ret = Some(None);
+        }
+        let open_fn = name.filter(|_| infer_ret || infer_block).map(|_| fn_id);
+        self.open_fns.extend(open_fn);
         let mut param_ids = vec![];
         for p in &params {
             let id = self.new_local(p.name, p.ty, false, p.span);
@@ -117,9 +123,16 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::FnBody::Block(b) => {
                 let block = self.block(b, false);
+                // The return type is that of the `return`s: `()` if none has a value.
+                if let Some(open) = self.open_ret.take() {
+                    self.ret = open.unwrap_or(Ty::unit());
+                }
                 self.finish_block_body(block, b)
             }
         };
+        if open_fn.is_some() {
+            self.open_fns.pop();
+        }
         let final_ret = self.ret;
         if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
             let at = match (&lit.sig.ret, &lit.body) {
@@ -171,7 +184,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        if infer_ret {
+        if infer_ret || infer_block {
             let s = self.sema.sigs.get_mut(&fn_id).unwrap();
             s.ret = final_ret;
             self.sema.prog.fns[fn_id.index()].ret = final_ret;
@@ -242,6 +255,13 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             mk(ty, tir::ExprKind::FnRef(fn_id), span)
         }
+    }
+
+    pub fn recursive_without_ret(&mut self, name: Symbol, span: Span) {
+        self.error(
+            span,
+            format!("`{}` refers to itself, so it needs a declared return type: write `-> R` (§11.1)", name),
+        );
     }
 
     /// A capturing function cannot refer to itself (§11.8).

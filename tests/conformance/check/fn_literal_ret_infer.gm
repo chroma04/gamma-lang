@@ -1,0 +1,25 @@
+//! stage: check
+// The return type of a block-bodied literal without `-> R` comes from its `return`s (§11.1).
+main :: fn() {
+    a := fn(x: i32) {
+        if x > 0 { return x }
+    } //~ ERROR can reach the end of its body without returning a value
+    b := fn(x: i32) {
+        if x > 0 { return x }
+        return "no" //~ ERROR
+    }
+    c := fn(x: i32) {
+        if x > 0 { return x }
+        return //~ ERROR `return` needs a value of type `i32`
+    }
+    d :: fn(n: i32) {
+        if n is 0 { return 1 }
+        return n * d(n - 1) //~ ERROR needs a declared return type
+    }
+    e :: fn(n: i32) => if n is 0 { 1 } else { n * e(n - 1) } //~ ERROR needs a declared return type
+    f :: fn(n: i32) -> i32 {
+        if n is 0 { return 1 }
+        return n * f(n - 1)
+    }
+    _ = f(3)
+}

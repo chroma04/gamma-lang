@@ -81,6 +81,11 @@ pub struct FnCx<'a, 's> {
     pub scopes: Vec<Vec<(Symbol, LocalBinding)>>,
     pub infer: InferTable,
     pub ret: Ty,
+    /// While a block-bodied literal without a return type is checked: `Some(None)` until
+    /// its first `return` fixes the type (§11.1).
+    pub open_ret: Option<Option<Ty>>,
+    /// Literals bound with `name ::` whose return type is still being inferred.
+    pub open_fns: Vec<FnId>,
     pub declared: EffectSet,
     pub performed: Vec<(EffectRef, Span)>,
     /// The calls of functions whose effects include `Yield`, as opposed to `yield` itself.
@@ -181,6 +186,7 @@ pub struct ClauseInfo {
 pub struct SavedFrame {
     pub locals: Vec<tir::LocalDecl>,
     pub ret: Ty,
+    pub open_ret: Option<Option<Ty>>,
     pub declared: EffectSet,
     pub performed: Vec<(EffectRef, Span)>,
     pub labels: Vec<LabelInfo>,
@@ -290,6 +296,8 @@ impl<'a, 's> FnCx<'a, 's> {
             scopes: vec![vec![]],
             infer: InferTable::default(),
             ret,
+            open_ret: None,
+            open_fns: vec![],
             declared,
             performed: vec![],
             iterator_calls: vec![],
@@ -339,6 +347,12 @@ impl<'a, 's> FnCx<'a, 's> {
             for l in &mut n.locals {
                 l.ty = self.infer.resolve(l.ty);
             }
+            // An inferred return type may still have been a literal's variable.
+            let ret = self.infer.resolve(self.sema.prog.fns[n.fn_id.index()].ret);
+            self.sema.prog.fns[n.fn_id.index()].ret = ret;
+            if let Some(s) = self.sema.sigs.get_mut(&n.fn_id) {
+                s.ret = ret;
+            }
             let def = &mut self.sema.prog.fns[n.fn_id.index()];
             def.params = n.params;
             def.locals = n.locals;
@@ -359,6 +373,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let saved = SavedFrame {
             locals: std::mem::take(&mut self.locals),
             ret: std::mem::replace(&mut self.ret, ret),
+            open_ret: self.open_ret.take(),
             declared: std::mem::replace(&mut self.declared, declared),
             performed: std::mem::take(&mut self.performed),
             labels: std::mem::take(&mut self.labels),
@@ -379,6 +394,7 @@ impl<'a, 's> FnCx<'a, 's> {
         SavedFrame {
             locals: std::mem::replace(&mut self.locals, f.locals),
             ret: std::mem::replace(&mut self.ret, f.ret),
+            open_ret: std::mem::replace(&mut self.open_ret, f.open_ret),
             declared: std::mem::replace(&mut self.declared, f.declared),
             performed: std::mem::replace(&mut self.performed, f.performed),
             labels: std::mem::replace(&mut self.labels, f.labels),
@@ -460,6 +476,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let saved = self.outer.pop().expect("exit_fn without enter_fn");
         let locals = std::mem::replace(&mut self.locals, saved.locals);
         self.ret = saved.ret;
+        self.open_ret = saved.open_ret;
         self.declared = saved.declared;
         let performed = std::mem::replace(&mut self.performed, saved.performed);
         self.labels = saved.labels;
@@ -1279,7 +1296,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if let Some(e) = self.for_each_loop(f) {
                 return e;
             }
-            self.error(f.iter.span, "`for` iterates over a range, an array or slice, or a call to an iterator");
+            self.error(f.iter.span, "`for` iterates over a range, an array, slice or tuple, or a call to an iterator");
             return error_expr(span);
         };
         let inclusive = *op == ast::BinOp::RangeIncl;

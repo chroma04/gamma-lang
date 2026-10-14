@@ -205,7 +205,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             } else if let Some(LocalBinding::NestedFn(f)) = self.lookup_local(id.name) {
                 // A nested named function is called directly (and may be generic).
-                return Some(CalleeKind::Fn(*f));
+                let f = *f;
+                if self.open_fns.contains(&f) {
+                    self.recursive_without_ret(id.name, id.span);
+                    return None;
+                }
+                return Some(CalleeKind::Fn(f));
             } else if let Some(LocalBinding::Type(t)) = self.lookup_local(id.name) {
                 // A local alias: a conversion or construction, as with the type itself.
                 let t = *t;

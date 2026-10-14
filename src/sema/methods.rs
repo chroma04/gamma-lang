@@ -284,6 +284,17 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.error(span, format!("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", rty, t));
                     return Some(error_expr(span));
                 }
+                // A function pointer converts to one with the same shape (§6.6).
+                let fn_of = |t: Ty| match t.kind() {
+                    TyKind::Optional(i) => i.kind().clone(),
+                    k => k.clone(),
+                };
+                if let (TyKind::FnPtr(a), TyKind::FnPtr(b)) = (fn_of(rty), fn_of(t))
+                    && let Some(why) = fn_cast_mismatch(&a, &b)
+                {
+                    self.error(span, format!("cannot cast `{}` to `{}`: {}", rty, t, why));
+                    return Some(error_expr(span));
+                }
                 Some(b(Builtin::Cast, t, vec![recv]))
             }
             // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.
@@ -579,4 +590,47 @@ fn unsigned_of(t: Ty) -> Ty {
         TyKind::Isize => Ty::usize(),
         _ => t,
     }
+}
+
+/// Why a function pointer type `from` cannot be cast to `to`, if it cannot: the calling
+/// convention and the number of parameters must agree, and each parameter and the result
+/// must be the same type or both be pointers (§6.6). Effect sets may differ.
+fn fn_cast_mismatch(from: &crate::types::FnTy, to: &crate::types::FnTy) -> Option<String> {
+    let pointer = |t: Ty| {
+        let t = t.optional_inner().unwrap_or(t);
+        match t.kind() {
+            TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr => Some(false),
+            TyKind::FnPtr(_) => Some(true),
+            _ => None,
+        }
+    };
+    let same_repr = |a: Ty, b: Ty| {
+        a == b
+            || (pointer(a).is_some()
+                && pointer(a) == pointer(b)
+                && a.optional_inner().is_some() == b.optional_inner().is_some())
+    };
+    if from.callconv != to.callconv {
+        return Some("the calling conventions differ".to_string());
+    }
+    if from.variadic != to.variadic {
+        return Some("only one of them is variadic".to_string());
+    }
+    if from.params.len() != to.params.len() {
+        return Some(format!("they take {} and {} parameters", from.params.len(), to.params.len()));
+    }
+    for (i, (a, b)) in from.params.iter().zip(to.params.iter()).enumerate() {
+        if !same_repr(*a, *b) {
+            return Some(format!(
+                "parameter {} is `{}` in one and `{}` in the other; only pointers convert to pointers",
+                i + 1,
+                a,
+                b
+            ));
+        }
+    }
+    if !same_repr(from.ret, to.ret) {
+        return Some(format!("the results `{}` and `{}` differ and are not both pointers", from.ret, to.ret));
+    }
+    None
 }
