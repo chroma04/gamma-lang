@@ -33,6 +33,7 @@ mod eval;
 mod fast;
 mod ffi;
 mod fiber;
+mod fxmap;
 mod machine;
 pub mod memory;
 pub mod num;

@@ -281,6 +281,66 @@ impl Memory {
         true
     }
 
+    /// Reads `size` (1 to 64) bytes into the words `out` (little-endian; the unused bytes of
+    /// the last word are zero) if that is possible without any lookup beyond the guesses, and
+    /// returns false otherwise (including every failure).
+    #[inline(always)]
+    pub fn try_read_words(&self, addr: u64, size: usize, align: u64, out: &mut [u64]) -> bool {
+        if align > 1 && (align & (align - 1) != 0 || addr & (align - 1) != 0) {
+            return false;
+        }
+        let Some((_, a)) = self.hit(addr) else { return false };
+        let off = (addr - a.base) as usize;
+        if !a.live || off + size > a.size as usize {
+            return false;
+        }
+        let Some(s) = a.data().get(off..off + size) else { return false };
+        let nw = size.div_ceil(8);
+        let Some(out) = out.get_mut(..nw) else { return false };
+        let mut chunks = s.chunks_exact(8);
+        let mut i = 0;
+        for c in &mut chunks {
+            out[i] = u64::from_le_bytes(c.try_into().unwrap());
+            i += 1;
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut b = [0u8; 8];
+            b[..rest.len()].copy_from_slice(rest);
+            out[i] = u64::from_le_bytes(b);
+        }
+        true
+    }
+
+    /// Writes the low `size` (1 to 64) bytes of the words `src` if that is possible without
+    /// any lookup beyond the guesses; returns false otherwise (including every failure).
+    #[inline(always)]
+    pub fn try_write_words(&mut self, addr: u64, src: &[u64], size: usize, align: u64) -> bool {
+        if align > 1 && (align & (align - 1) != 0 || addr & (align - 1) != 0) {
+            return false;
+        }
+        let Some((i, a)) = self.hit(addr) else { return false };
+        let off = (addr - a.base) as usize;
+        if !a.live || !a.mutable || off + size > a.size as usize {
+            return false;
+        }
+        let nw = size.div_ceil(8);
+        let Some(src) = src.get(..nw) else { return false };
+        let Some(d) = self.allocs[i].data_mut().get_mut(off..off + size) else { return false };
+        let mut chunks = d.chunks_exact_mut(8);
+        let mut k = 0;
+        for c in &mut chunks {
+            c.copy_from_slice(&src[k].to_le_bytes());
+            k += 1;
+        }
+        let rest = chunks.into_remainder();
+        if !rest.is_empty() {
+            let n = rest.len();
+            rest.copy_from_slice(&src[k].to_le_bytes()[..n]);
+        }
+        true
+    }
+
     #[inline(never)]
     fn find_slow(&self, addr: u64, len: u64, slot: &Cell<u32>) -> Result<usize, MemError> {
         let idx = self.allocs.partition_point(|a| a.base <= addr);

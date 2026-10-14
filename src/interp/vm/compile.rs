@@ -1869,7 +1869,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let out = self.dst(e, want);
         match callee {
             Callee::Fn(f) => {
-                self.emit(Op::Call { f: *f, args: a, out }, span);
+                if self.m.prog.heap_fns.contains_key(f) {
+                    self.emit(Op::CallHeap { f: *f, args: a, out }, span);
+                } else {
+                    self.emit(Op::Call { f: *f, args: a, out }, span);
+                }
             }
             Callee::Indirect(c) => {
                 let (callee, out) = (self.operand(cv.unwrap()), self.operand(out));

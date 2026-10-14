@@ -1,0 +1,10 @@
+// 100000 pushes onto a List (growth allocates), then a sum.
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    l := list(i64)
+    defer l.deinit()
+    for i in 0..100000 { try l.push(i) }
+    total: i64 = 0
+    for x in each(l.items) { total += x }
+    print("{}\n", total)
+    return ()
+}

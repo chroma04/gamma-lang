@@ -44,6 +44,7 @@
 mod compile;
 mod compile_flow;
 mod exec;
+mod heap;
 
 use super::bytes::Bytes;
 use super::machine::*;
@@ -55,6 +56,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub use compile::compile;
+pub use exec::St;
+pub use heap::{HeapCx, HeapSlot};
 
 /// Prints the counts of instructions run (`--features vm-profile`, `GAMMA_VM_PROFILE=1`).
 #[cfg(feature = "vm-profile")]
@@ -674,6 +677,13 @@ pub enum Op {
         args: u32,
         out: Arg,
     },
+    /// A call of the core library's `new` or `destroy`, which the machine does itself when
+    /// the default heap allocator is current ([`heap`]) and otherwise makes as `Call` does.
+    CallHeap {
+        f: FnId,
+        args: u32,
+        out: Arg,
+    },
     CallInd {
         callee: u32,
         cty: Ty,
@@ -831,6 +841,17 @@ impl<'a> Machine<'a> {
             CodeSlot::Ready(c) => Some(c.clone()),
             CodeSlot::Tree => None,
             CodeSlot::Unknown => self.compile_now(f),
+        }
+    }
+
+    /// Like [`Self::code_of`] without taking a share of the code: compiled code is never
+    /// dropped or replaced while the machine lives.
+    #[inline(always)]
+    pub fn code_ptr(&mut self, f: FnId) -> Option<*const Code<'a>> {
+        match &self.vm_code[f.index()] {
+            CodeSlot::Ready(c) => Some(Rc::as_ptr(c)),
+            CodeSlot::Tree => None,
+            CodeSlot::Unknown => self.compile_now(f).map(|c| Rc::as_ptr(&c)),
         }
     }
 
