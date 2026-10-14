@@ -1701,13 +1701,17 @@ mod tests {
                 assert!(nfits(k, a as u64));
                 for &b in &samples(k) {
                     let (wb, la, lb) = (iput::<LE>(k, b), a as u64, b as u64);
-                    for (name, got, exact) in
-                        [("+", n_add(k, la, lb), a + b), ("-", n_sub(k, la, lb), a - b), ("*", n_mul(k, la, lb), a * b)]
-                    {
+                    for (name, got, exact) in [
+                        ("+", n_add(k, la, lb), a.checked_add(b)),
+                        ("-", n_sub(k, la, lb), a.checked_sub(b)),
+                        // A product of two u64 values can exceed even i128.
+                        ("*", n_mul(k, la, lb), a.checked_mul(b)),
+                    ] {
                         // An overflow in the 64-bit domain is reported as one too.
-                        assert_eq!(got.is_some(), si.fits(exact), "{k:?} {a} {name} {b}");
-                        if let Some(v) = got {
-                            assert_eq!(v, exact as u64, "{k:?} {a} {name} {b}");
+                        let exact = exact.filter(|x| si.fits(*x));
+                        assert_eq!(got.is_some(), exact.is_some(), "{k:?} {a} {name} {b}");
+                        if let (Some(v), Some(x)) = (got, exact) {
+                            assert_eq!(v, x as u64, "{k:?} {a} {name} {b}");
                         }
                     }
                     for cmp in [Cmp::Lt, Cmp::Le, Cmp::Gt, Cmp::Ge, Cmp::Eq, Cmp::Ne] {
