@@ -27,4 +27,3 @@ pub wait :: fn(w: ^WaitGroup) \ {Sys} {
         _ = @futex_wait(&w.count, n, -1)
     }
 }
-
