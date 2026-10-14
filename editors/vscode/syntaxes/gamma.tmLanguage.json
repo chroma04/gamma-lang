@@ -1,0 +1,437 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Gamma",
+  "scopeName": "source.gamma",
+  "fileTypes": ["gm"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#char" },
+    { "include": "#numbers" },
+    { "include": "#attribute" },
+    { "include": "#intrinsic" },
+    { "include": "#declarations" },
+    { "include": "#label" },
+    { "include": "#effect-set" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#variant" },
+    { "include": "#operators" },
+    { "include": "#calls" },
+    { "include": "#field" },
+    { "include": "#constants" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.gamma",
+          "match": "///(?!/).*$"
+        },
+        { "name": "comment.line.double-slash.gamma", "match": "//.*$" },
+        { "include": "#block-comment" }
+      ]
+    },
+    "block-comment": {
+      "name": "comment.block.gamma",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [{ "include": "#block-comment" }]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.c.gamma",
+          "begin": "\\b(c)(\")",
+          "end": "\"|(?=$)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.prefix.gamma" },
+            "2": { "name": "punctuation.definition.string.begin.gamma" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.gamma" } },
+          "patterns": [{ "include": "#string-content" }]
+        },
+        {
+          "name": "string.quoted.double.gamma",
+          "begin": "\"",
+          "end": "\"|(?=$)",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.gamma" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.gamma" } },
+          "patterns": [{ "include": "#string-content" }]
+        },
+        {
+          "name": "string.quoted.other.raw.gamma",
+          "begin": "(`+)",
+          "end": "(?<!`)\\1(?!`)",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.gamma" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.gamma" } },
+          "patterns": [{ "include": "#placeholder" }]
+        }
+      ]
+    },
+    "string-content": {
+      "patterns": [
+        { "include": "#escape" },
+        { "include": "#placeholder" }
+      ]
+    },
+    "escape": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.gamma",
+          "match": "\\\\(?:[nrt0\\\\\"']|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]{1,6}\\})"
+        },
+        { "name": "invalid.illegal.unknown-escape.gamma", "match": "\\\\." }
+      ]
+    },
+    "placeholder": {
+      "patterns": [
+        { "name": "constant.character.escape.brace.gamma", "match": "\\{\\{|\\}\\}" },
+        {
+          "name": "constant.other.placeholder.gamma",
+          "match": "\\{(?::[^{}\"\\\\`]*)?\\}"
+        }
+      ]
+    },
+    "char": {
+      "name": "string.quoted.single.char.gamma",
+      "match": "'(?:\\\\(?:[nrt0\\\\\"']|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]{1,6}\\})|[^'\\\\\\n])'"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.hex.gamma",
+          "match": "\\b0x[0-9a-fA-F_]+(?:\\.[0-9a-fA-F_]+)?p[+-]?[0-9_]+(f16|f32|f64)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        },
+        {
+          "name": "constant.numeric.integer.hex.gamma",
+          "match": "\\b0x[0-9a-fA-F_]+(usize|isize|[ui][1-9][0-9]*)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        },
+        {
+          "name": "constant.numeric.integer.octal.gamma",
+          "match": "\\b0o[0-7_]+(usize|isize|[ui][1-9][0-9]*)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        },
+        {
+          "name": "constant.numeric.integer.binary.gamma",
+          "match": "\\b0b[01_]+(usize|isize|[ui][1-9][0-9]*)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        },
+        {
+          "name": "constant.numeric.float.gamma",
+          "match": "(?<![\\w.])[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?(f16|f32|f64)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        },
+        {
+          "name": "constant.numeric.float.gamma",
+          "match": "(?<![\\w.])[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*(f16|f32|f64)?|(f16|f32|f64))\\b",
+          "captures": {
+            "1": { "name": "storage.type.numeric.suffix.gamma" },
+            "2": { "name": "storage.type.numeric.suffix.gamma" }
+          }
+        },
+        {
+          "name": "constant.numeric.integer.decimal.gamma",
+          "match": "(?<![\\w])[0-9][0-9_]*(usize|isize|[ui][1-9][0-9]*)?\\b",
+          "captures": { "1": { "name": "storage.type.numeric.suffix.gamma" } }
+        }
+      ]
+    },
+    "attribute": {
+      "name": "meta.attribute.gamma",
+      "match": "(#)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.attribute.gamma" },
+        "2": { "name": "entity.other.attribute-name.gamma" }
+      }
+    },
+    "intrinsic": {
+      "name": "meta.intrinsic.gamma",
+      "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.intrinsic.gamma" },
+        "2": { "name": "support.function.intrinsic.gamma" }
+      }
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "name :: fn ...",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*(?=(?:#[A-Za-z_]\\w*(?:\\([^)]*\\))?\\s*)*fn\\b)",
+          "captures": {
+            "1": { "name": "entity.name.function.gamma" },
+            "2": { "name": "keyword.operator.declaration.gamma" }
+          }
+        },
+        {
+          "comment": "Name :: struct / union / effect",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*(?=(?:#[A-Za-z_]\\w*(?:\\([^)]*\\))?\\s*)*(?:struct|union|effect)\\b)",
+          "captures": {
+            "1": { "name": "entity.name.type.gamma" },
+            "2": { "name": "keyword.operator.declaration.gamma" }
+          }
+        },
+        {
+          "comment": "name :: handler / import / foreign",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*(?=(?:handler|import|foreign)\\b)",
+          "captures": {
+            "1": { "name": "entity.name.namespace.gamma" },
+            "2": { "name": "keyword.operator.declaration.gamma" }
+          }
+        },
+        {
+          "comment": "NAME :: expr, a constant",
+          "match": "\\b([A-Z][A-Z0-9_]+)\\s*(::)",
+          "captures": {
+            "1": { "name": "entity.name.constant.gamma" },
+            "2": { "name": "keyword.operator.declaration.gamma" }
+          }
+        },
+        {
+          "comment": "Name :: expr, a type alias",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(::)",
+          "captures": {
+            "1": { "name": "entity.name.type.gamma" },
+            "2": { "name": "keyword.operator.declaration.gamma" }
+          }
+        },
+        {
+          "comment": "handler Effect for Type",
+          "match": "\\b(handler)\\b(?:\\s*\\([^)]*\\))?\\s+((?:[A-Za-z_]\\w*\\s*\\.\\s*)*[A-Za-z_]\\w*)(?:\\([^)]*\\))?\\s+(for)\\b",
+          "captures": {
+            "1": { "name": "storage.type.handler.gamma" },
+            "2": { "name": "entity.name.type.effect.gamma" },
+            "3": { "name": "keyword.control.gamma" }
+          }
+        },
+        {
+          "comment": "test \"name\"",
+          "match": "(?:^|(?<=[{;]))\\s*\\b(test)\\b(?=\\s*\")",
+          "captures": { "1": { "name": "storage.type.test.gamma" } }
+        }
+      ]
+    },
+    "label": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)(?=\\s*(?:for|while|with)\\b)",
+      "captures": {
+        "1": { "name": "entity.name.label.gamma" },
+        "2": { "name": "punctuation.separator.label.gamma" }
+      }
+    },
+    "effect-set": {
+      "name": "meta.effect-set.gamma",
+      "begin": "(\\\\)\\s*(\\{)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.operator.effect.gamma" },
+        "2": { "name": "punctuation.section.braces.begin.gamma" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.section.braces.end.gamma" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#effect-set" },
+        { "match": "\\.\\.(?=[A-Za-z_])", "name": "keyword.operator.spread.gamma" },
+        { "match": "\\b[A-Z][A-Za-z0-9_]*\\b", "name": "entity.name.type.effect.gamma" },
+        { "include": "#types" },
+        { "include": "#field" },
+        { "include": "#operators" },
+        { "include": "#numbers" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.operator.word.gamma",
+          "match": "\\b(?:is\\s+not|not\\s+in)\\b"
+        },
+        {
+          "name": "keyword.control.gamma",
+          "match": "\\b(?:if|else|match|while|for|break|continue|return|defer|errdefer|try|resume|discard|with|when)\\b"
+        },
+        {
+          "name": "keyword.operator.word.gamma",
+          "match": "\\b(?:and|or|not|in|is)\\b"
+        },
+        {
+          "name": "storage.type.function.gamma",
+          "match": "\\bfn\\b"
+        },
+        {
+          "name": "storage.type.gamma",
+          "match": "\\b(?:struct|union|effect|handler|foreign)\\b"
+        },
+        {
+          "name": "storage.modifier.operation.gamma",
+          "match": "\\b(?:ctl|esc)\\b"
+        },
+        {
+          "name": "keyword.other.import.gamma",
+          "match": "\\bimport\\b"
+        },
+        {
+          "name": "storage.modifier.gamma",
+          "match": "\\b(?:pub|using)\\b"
+        },
+        {
+          "match": "(?<=[\\^\\]])\\s*\\b(const)\\b",
+          "captures": { "1": { "name": "storage.modifier.const.gamma" } }
+        },
+        {
+          "match": "(?<=[\\w)\\]])\\s+\\b(on)\\b(?=\\s+[A-Za-z_(.])",
+          "captures": { "1": { "name": "keyword.control.on.gamma" } }
+        },
+        {
+          "match": "(?<=[)\\w}\\]])\\s+\\b(where)\\b(?=\\s+[A-Za-z_])",
+          "captures": { "1": { "name": "keyword.control.where.gamma" } }
+        },
+        {
+          "name": "constant.language.gamma",
+          "match": "\\b(?:true|false|null)\\b"
+        },
+        {
+          "name": "constant.language.uninitialized.gamma",
+          "match": "---"
+        },
+        {
+          "name": "variable.language.discard.gamma",
+          "match": "\\b_\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.gamma",
+          "match": "\\b(?:[ui][1-9][0-9]{0,4}|usize|isize|f16|f32|f64|bool|never|type|rawptr|string|cstring|rune|cont)\\b"
+        },
+        {
+          "name": "support.type.builtin.gamma",
+          "match": "\\b(?:Range|RangeIncl|Allocator|AllocVtable|AllocError|IoError|Instant|Duration|SourceLocation|MemoryOrder|List|HashMap)\\b"
+        },
+        {
+          "name": "support.type.effect.gamma",
+          "match": "\\b(?:Yield|Alloc|Out|Err|In|Clock|Rand|Fs|Net|Env|Sys)\\b"
+        },
+        {
+          "name": "entity.name.type.gamma",
+          "match": "\\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*\\b|\\b[A-Z]\\b"
+        }
+      ]
+    },
+    "variant": {
+      "match": "(?<![\\w)\\]?!^.])\\.(?!\\.)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "constant.other.enum-member.gamma" }
+      }
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "invalid.illegal.operator.gamma",
+          "match": "==|!="
+        },
+        {
+          "name": "keyword.operator.assignment.compound.gamma",
+          "match": "(?:<<[%|]?|>>|[-+*][%|]?|[/%&|~])="
+        },
+        {
+          "name": "keyword.operator.arrow.gamma",
+          "match": "=>|->"
+        },
+        {
+          "name": "keyword.operator.arithmetic.wrapping.gamma",
+          "match": "(?:<<|[-+*])%"
+        },
+        {
+          "name": "keyword.operator.arithmetic.saturating.gamma",
+          "match": "(?:<<|[-+*])\\|"
+        },
+        {
+          "name": "keyword.operator.arithmetic.optional.gamma",
+          "match": "(?:<<|[-+*])\\?"
+        },
+        {
+          "name": "keyword.operator.assignment.gamma",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.declaration.gamma",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.range.gamma",
+          "match": "\\.\\.\\.|\\.\\.=|\\.\\."
+        },
+        {
+          "name": "keyword.operator.comparison.gamma",
+          "match": "<=|>=|<(?!<)|>(?!>)"
+        },
+        {
+          "name": "keyword.operator.shift.gamma",
+          "match": "<<|>>"
+        },
+        {
+          "name": "keyword.operator.assignment.gamma",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.gamma",
+          "match": "[-+*/%]"
+        },
+        {
+          "name": "keyword.operator.bitwise.gamma",
+          "match": "[&|~]"
+        },
+        {
+          "name": "keyword.operator.sigil.gamma",
+          "match": "[?!^]"
+        },
+        {
+          "name": "keyword.operator.effect.gamma",
+          "match": "\\\\"
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "name": "meta.function-call.method.gamma",
+          "match": "(?<=\\.)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.call.gamma" } }
+        },
+        {
+          "name": "meta.function-call.gamma",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.call.gamma" } }
+        }
+      ]
+    },
+    "field": {
+      "match": "(?<=[\\w)\\]?!^])\\s*\\.\\s*([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": { "1": { "name": "variable.other.property.gamma" } }
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.other.caps.gamma",
+          "match": "\\b[A-Z][A-Z0-9_]+\\b"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.separator.comma.gamma", "match": "," },
+        { "name": "punctuation.terminator.statement.gamma", "match": ";" },
+        { "name": "punctuation.separator.colon.gamma", "match": ":" },
+        { "name": "punctuation.accessor.dot.gamma", "match": "\\." },
+        { "name": "punctuation.section.braces.gamma", "match": "[{}]" },
+        { "name": "punctuation.section.parens.gamma", "match": "[()]" },
+        { "name": "punctuation.section.brackets.gamma", "match": "[\\[\\]]" }
+      ]
+    }
+  }
+}
