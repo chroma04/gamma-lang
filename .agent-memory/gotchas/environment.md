@@ -41,3 +41,4 @@
   plus main target (6 GB) plus downloads (wine, llvm-mingw, Fil-C) filled it in s12. Remove
   merged worktrees right away; brief agents to keep one target dir and delete downloads.
 - Workers share the scratchpad: give each its own subdirectory name (they deleted mine once).
+- CI uses the newest stable Rust (1.99 in Oct 2026); local is 1.97. Before pushing run CI's clippy: `RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/stable rustup run stable cargo clippy -q --all-targets` (stable toolchain installed in s12).
