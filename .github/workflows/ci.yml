@@ -66,9 +66,9 @@ jobs:
           gcc -dumpmachine
       - name: Clippy
         run: cargo clippy --all-targets
+      # No `CC` here: cc-rs would pass it to the MSVC build of libffi. Gamma itself takes
+      # the first of cc, gcc and clang on PATH, which is MSYS2's (added first above).
       - name: Test
-        env:
-          CC: gcc
         run: cargo test --all-targets
 
   safe:
