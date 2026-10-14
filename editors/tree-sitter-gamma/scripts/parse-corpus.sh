@@ -4,7 +4,8 @@
 #
 # Only files that the real compiler accepts (`gamma parse`) are counted: the conformance
 # suite also holds deliberately invalid programs, which the grammar need not reject.
-# All files under lib/ must parse; the script exits with status 1 if any of them does not.
+# All files under lib/ must parse; the script exits with status 1 if any of them does not
+# (with STRICT=1, if any file the compiler accepts does not).
 #
 # Usage: scripts/parse-corpus.sh [-v] [directory ...]
 #   -v   also list the files that parse cleanly
@@ -104,5 +105,9 @@ echo "parsed cleanly: $ok of $total files accepted by the compiler ($rejected ot
 awk -v ok="$ok" -v total="$total" 'BEGIN { printf "success rate: %.2f%%\n", 100 * ok / total }'
 
 if [[ "$lib_failed" -gt 0 ]]; then
+  exit 1
+fi
+# With STRICT=1 (as in CI) every file the compiler accepts must parse cleanly.
+if [[ "${STRICT:-0}" -eq 1 && "$failed" -gt 0 ]]; then
   exit 1
 fi

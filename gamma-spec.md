@@ -2816,7 +2816,7 @@ This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `
 ### A.1 Files and declarations
 
 ```
-file          = { NL } { top_decl NL { NL } }
+file          = { NL } [ top_decl { NL { NL } top_decl } { NL } ]   // the last NL may be omitted
 
 top_decl      = { attribute } [ 'pub' ] binding
               | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
@@ -2899,7 +2899,7 @@ import_expr   = 'import' STRING
 
 ```
 block         = '{' { NL } [ stmt { NL { NL } stmt } ] { NL } '}'
-stmt          = binding
+stmt          = { attribute } binding                           // §20.2 rejects attributes that do not apply
               | place_list assign_op expr
               | '_' '=' expr
               | defer_stmt
