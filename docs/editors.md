@@ -10,6 +10,13 @@ Gamma has three kinds of editor support. They are independent, so you can use an
 
 Source files use the extension `.gm`.
 
+The Neovim setup below has been checked with Neovim 0.11.4 (tree-sitter highlighting,
+and diagnostics, hover and go to definition from the language server), and the Helix
+setup with Helix 25.07.1 (`hx --health gamma` finds the server, the parser and the
+highlight queries). The VS Code extension packages with `vsce`; the Zed and Emacs
+instructions have not been tried yet. Reports of what works in other versions are
+welcome.
+
 ## The gamma executable
 
 The language server is part of the compiler. Build it from the repository root:
@@ -27,7 +34,7 @@ The extension lives in `editors/vscode`. It is not on the Marketplace, so instal
 ```sh
 cd editors/vscode
 npm install
-npx @vscode/vsce package --allow-missing-repository --skip-license
+npx @vscode/vsce package --skip-license
 code --install-extension gamma-lang-0.1.0.vsix
 ```
 

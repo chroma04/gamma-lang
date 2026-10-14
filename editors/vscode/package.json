@@ -5,6 +5,14 @@
   "version": "0.1.0",
   "publisher": "gamma-lang",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chroma04/gamma-lang",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/chroma04/gamma-lang/issues"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.82.0"
