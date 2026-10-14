@@ -39,6 +39,8 @@ pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf
     let stem = format!("gm_rt-{:016x}", h.finish());
     let obj = dir.join(format!("{stem}.o"));
     if obj.is_file() {
+        // Mark it as recently used, so the cache cleaner keeps it.
+        let _ = std::fs::File::open(&obj).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         return Some(obj);
     }
     std::fs::create_dir_all(&dir).ok()?;
@@ -62,13 +64,13 @@ pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf
 }
 
 /// A file name in `dir` no other process uses.
-fn private_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+pub(super) fn private_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     dir.join(format!("{stem}.tmp-{}-{nanos:x}.{ext}", std::process::id()))
 }
 
 /// Renames `from` to `to` (replacing it), removing `from` if that fails.
-fn rename_or_remove(from: &Path, to: &Path) -> Option<()> {
+pub(super) fn rename_or_remove(from: &Path, to: &Path) -> Option<()> {
     if std::fs::rename(from, to).is_ok() {
         return Some(());
     }
@@ -82,8 +84,13 @@ const KEPT_PROGRAMS: usize = 32;
 /// A cached executable of `generated` built with `toolchain`, built now if it is not in
 /// the cache; `Ok(None)` if there is no cache. The key covers everything that affects the
 /// executable: the generated code and its options, the libraries, the target, the
-/// compiler and its flags.
-pub fn cached_program(generated: &super::Generated, toolchain: &Toolchain) -> Result<Option<PathBuf>, String> {
+/// compiler and its flags, and what `link` adds (the package's C objects, which are named
+/// by a hash of their preprocessed source and flags, and its libraries).
+pub fn cached_program(
+    generated: &super::Generated,
+    toolchain: &Toolchain,
+    link: &super::Link,
+) -> Result<Option<PathBuf>, String> {
     let Some(dir) = cache_dir().map(|d| d.join("run")) else { return Ok(None) };
     let Some(version) = toolchain.base_command().arg("--version").output().ok().filter(|o| o.status.success()) else {
         return Ok(None);
@@ -92,6 +99,7 @@ pub fn cached_program(generated: &super::Generated, toolchain: &Toolchain) -> Re
     (env!("CARGO_PKG_VERSION"), super::RT_H, super::RT_C, &generated.code, &generated.libs).hash(&mut h);
     (format!("{:?}", generated.opts), format!("{:?}", generated.target)).hash(&mut h);
     (&toolchain.cc, &toolchain.cflags, &toolchain.ldflags, &version.stdout).hash(&mut h);
+    (link.fingerprint(), &link.libs, &link.lib_dirs).hash(&mut h);
     let stem = format!("prog-{:016x}", h.finish());
     let exe = dir.join(&stem);
     if exe.is_file() {
@@ -103,7 +111,7 @@ pub fn cached_program(generated: &super::Generated, toolchain: &Toolchain) -> Re
         return Ok(None);
     }
     let tmp = private_name(&dir, &stem, "exe");
-    let built = super::compile(generated, toolchain, &tmp);
+    let built = super::compile(generated, toolchain, link, &tmp);
     let _ = std::fs::remove_file(tmp.with_extension("c"));
     built?;
     if rename_or_remove(&tmp, &exe).is_none() {

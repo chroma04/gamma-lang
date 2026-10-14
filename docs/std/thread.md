@@ -13,6 +13,9 @@ installed; `defaults` installs the usual ones:
     t := try thread.spawn(State, work, &state)
     t.join()
 
+A thread is either joined (`join`) or detached (`detach`), once. Threads that are still
+running when `main` returns are stopped with the process.
+
 Only function pointers and data cross threads: handlers, second-class functions and
 continuations stay on the thread that made them. Shared memory needs atomics
 (`@atomic_*`) or one of the types below; a data race is undefined behavior.
@@ -54,17 +57,6 @@ Condvar :: struct {
 A condition variable: threads wait on it, holding a `Mutex`, until another thread
 signals that what they wait for may have happened.
 
-### `WaitGroup`
-
-```gamma
-WaitGroup :: struct {
-    // private fields omitted
-}
-```
-
-A counter of outstanding work: `add` before starting it, `done` when it finishes, and
-`wait_all` returns when the count is back at zero.
-
 ### `Channel`
 
 ```gamma
@@ -75,6 +67,27 @@ Channel :: struct(T: type) {
 
 A bounded blocking queue for any number of sending and receiving threads. It keeps the
 allocator it was created with. Once closed, sends fail and receives drain what is left.
+
+## Type aliases
+
+### `WaitGroup`
+
+```gamma
+WaitGroup :: wait_group_module.WaitGroup
+```
+
+A counter of outstanding work: `add` before starting it, `done` when it finishes, and
+`wait` returns when the count is back at zero.
+
+## Constants
+
+### `wait_group`
+
+```gamma
+wait_group :: wait_group_module.wait_group
+```
+
+A wait group with nothing outstanding.
 
 ## Functions
 
@@ -93,6 +106,19 @@ join :: fn(t: Thread) \ {Sys}
 ```
 
 Waits for `t` to finish.
+
+### `detach`
+
+```gamma
+detach :: fn(t: Thread) \ {Sys}
+```
+
+Lets `t` run on its own: it is never joined, and its resources are released when it
+ends. A detached thread cannot be waited for, so tell the rest of the program that it
+is done through shared state (a `WaitGroup`, a `Channel`, an atomic). When `main`
+returns the process exits at once, stopping detached threads that are still running
+wherever they are, without running their `defer`s; a trap in a detached thread stops
+the whole process, as in any thread.
 
 ### `yield_now`
 
@@ -192,38 +218,6 @@ broadcast :: fn(c: ^Condvar)
 ```
 
 Wakes every thread waiting on `c`.
-
-### `wait_group`
-
-```gamma
-wait_group :: fn() -> WaitGroup
-```
-
-A wait group with nothing outstanding.
-
-### `add`
-
-```gamma
-add :: fn(w: ^WaitGroup, n: u32)
-```
-
-Adds `n` to the outstanding work.
-
-### `done`
-
-```gamma
-done :: fn(w: ^WaitGroup)
-```
-
-Marks one piece of work as finished. Calling it more often than `add` is a bug and traps.
-
-### `wait_all`
-
-```gamma
-wait_all :: fn(w: ^WaitGroup) \ {Sys}
-```
-
-Waits until no work is outstanding.
 
 ### `channel`
 

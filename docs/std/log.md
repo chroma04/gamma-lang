@@ -27,13 +27,22 @@ is the message formatted, so a filtered-out record costs next to nothing.
 ```gamma
 ErrLog :: struct {
     pub min: Level = .Info
-    pub time: bool = false
 }
 ```
 
 A handler that prints records of level `min` and above to standard error, one per line:
-`INFO message`, or `2026-10-12T04:38:42Z INFO message` when `time` is true (the current
-UTC time from the `Clock` effect, to the second).
+`INFO message`. It needs only the `Err` effect; use `StampedLog` to add the time.
+
+### `StampedLog`
+
+```gamma
+StampedLog :: struct {
+    pub min: Level = .Info
+}
+```
+
+Like `ErrLog`, but every line starts with the current UTC time from the `Clock` effect,
+to the second: `2026-10-12T04:38:42Z INFO message`.
 
 ### `ListLog`
 
@@ -91,7 +100,13 @@ Where records go. `log` calls `begin`; if that returns `true` it passes the mess
 ### `handler Log for ^ErrLog`
 
 ```gamma
-handler Log for ^ErrLog \ {Err, Clock}
+handler Log for ^ErrLog \ {Err}
+```
+
+### `handler Log for ^StampedLog`
+
+```gamma
+handler Log for ^StampedLog \ {Err, Clock}
 ```
 
 ### `handler Log for ^ListLog`

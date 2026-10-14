@@ -34,7 +34,7 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 | Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
 | Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 24 modules: `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread`, `std/c` |
-| Packages | `gamma.toml` manifests with path and git dependencies, version requirements and a `gamma.lock` lockfile (`gamma new`, `add`, `fetch`, `update`) |
+| Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
 | Editors | a language server (`gamma lsp`), a VS Code extension, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
 
 ### Which back end?

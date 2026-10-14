@@ -1,7 +1,8 @@
-//! The package commands of the `gamma` tool: `fetch`, `update`, `add`, `remove`, `new`
-//! and `init`. They take their own arguments, so `main` hands them over before it
+//! The package commands of the `gamma` tool: `fetch`, `update`, `add`, `remove`, `new`,
+//! `init` and `cache`. They take their own arguments, so `main` hands them over before it
 //! parses the options of the compiler commands.
 
+use super::cache;
 use super::edit::{self, NewDep};
 use super::manifest::{Manifest, is_identifier};
 use super::{Options, Refresh, find_root, resolve, scaffold, sync};
@@ -13,7 +14,7 @@ pub const USAGE: &str = "\
 package commands:
   new     create a package in a new directory: gamma new <dir> [--name=<name>] [--vcs=none]
   init    create a package in an existing directory: gamma init [dir] [--name=<name>] [--vcs=none]
-  fetch   resolve and download the git dependencies, and write gamma.lock:
+  fetch   resolve and download the git and archive dependencies, and write gamma.lock:
           gamma fetch [dir] [--offline] [--locked]
   update  move git dependencies to the newest revisions their requirements allow:
           gamma update [name...] [--dir <dir>]
@@ -21,12 +22,21 @@ package commands:
           gamma add <name> --path <dir> [--dir <dir>]
           gamma add <name> --git <url> [--tag <tag> | --branch <branch> | --rev <rev> | --version <req>]
                     [--subdir <path>] [--dir <dir>]
+          gamma add <name> --url <url.tar.gz> [--sha256 <hex>] [--subdir <path>] [--dir <dir>]
   remove  remove a dependency: gamma remove <name> [--dir <dir>]
+  cache   the cache of fetched packages and native builds:
+          gamma cache dir                     print the cache directory
+          gamma cache clean [--older-than=<days>] [--all] [--dry-run]
+                    remove package checkouts and builds unused for <days> (default 30),
+                    and mirrors no checkout needs; --all removes everything
+
+build settings (`[build]`, `[profile.<name>]`) are described in docs/guide/15-packages.md;
+`--profile=<name>` selects a profile in check, run, build and test.
 ";
 
 /// Whether `command` is one of the package commands.
 pub fn is_package_command(command: &str) -> bool {
-    matches!(command, "fetch" | "update" | "add" | "remove" | "new" | "init")
+    matches!(command, "fetch" | "update" | "add" | "remove" | "new" | "init" | "cache")
 }
 
 struct Parsed {
@@ -84,6 +94,7 @@ pub fn run(command: &str, args: &[String]) -> ExitCode {
         "remove" => remove(args),
         "new" => new_package(args, true),
         "init" => new_package(args, false),
+        "cache" => cache_command(args),
         _ => Err(Failure::Usage(format!("unknown command `{}`", command))),
     };
     match result {
@@ -144,7 +155,8 @@ fn relative_path(from: &Path, target: &Path) -> String {
 }
 
 fn add(args: &[String]) -> Result<(), Failure> {
-    let p = usage(parse(args, &["path", "git", "tag", "branch", "rev", "version", "subdir", "dir"], &[]))?;
+    let p =
+        usage(parse(args, &["path", "git", "url", "sha256", "tag", "branch", "rev", "version", "subdir", "dir"], &[]))?;
     let [name] = p.pos.as_slice() else {
         return Err(Failure::Usage("`add` needs exactly one dependency name".into()));
     };
@@ -157,9 +169,28 @@ fn add(args: &[String]) -> Result<(), Failure> {
     let root = root_of(Path::new(p.values.get("dir").map_or(".", |s| s.as_str())))?;
     let refs: Vec<&str> =
         ["tag", "branch", "rev", "version"].into_iter().filter(|k| p.values.contains_key(*k)).collect();
+    let sources = ["path", "git", "url"].into_iter().filter(|k| p.values.contains_key(*k)).count();
+    if sources > 1 {
+        return Err(Failure::Usage("use only one of `--path`, `--git` and `--url`".into()));
+    }
+    if p.values.contains_key("sha256") && !p.values.contains_key("url") {
+        return Err(Failure::Usage("`--sha256` needs `--url`".into()));
+    }
     let dep = match (p.values.get("path"), p.values.get("git")) {
-        (Some(_), Some(_)) => return Err(Failure::Usage("use either `--path` or `--git`, not both".into())),
-        (None, None) => return Err(Failure::Usage("`add` needs `--path <dir>` or `--git <url>`".into())),
+        _ if p.values.contains_key("url") => {
+            if !refs.is_empty() {
+                return Err(Failure::Usage("`--tag`, `--branch`, `--rev` and `--version` need `--git`".into()));
+            }
+            NewDep::Url {
+                url: p.values["url"].clone(),
+                sha256: p.values.get("sha256").cloned(),
+                subdir: p.values.get("subdir").cloned(),
+            }
+        }
+        (Some(_), Some(_)) => unreachable!(),
+        (None, None) => {
+            return Err(Failure::Usage("`add` needs `--path <dir>`, `--git <url>` or `--url <url>`".into()));
+        }
         (Some(path), None) => {
             if !refs.is_empty() || p.values.contains_key("subdir") {
                 return Err(Failure::Usage(
@@ -242,6 +273,47 @@ fn remove(args: &[String]) -> Result<(), Failure> {
     }
     eprintln!("    Removing {} from dependencies", name);
     Ok(())
+}
+
+/// `gamma cache dir` and `gamma cache clean`.
+fn cache_command(args: &[String]) -> Result<(), Failure> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(Failure::Usage("`cache` needs a subcommand: `dir` or `clean`".into()));
+    };
+    let dir = crate::cgen::cache_dir();
+    match sub.as_str() {
+        "dir" => {
+            usage(parse(rest, &[], &[]))?;
+            let dir = dir.ok_or_else(|| Failure::Error("the cache is disabled (GAMMA_CACHE_DIR is empty)".into()))?;
+            println!("{}", dir.display());
+            Ok(())
+        }
+        "clean" => {
+            let p = usage(parse(rest, &["older-than"], &["all", "dry-run"]))?;
+            if !p.pos.is_empty() {
+                return Err(Failure::Usage("`cache clean` takes no arguments".into()));
+            }
+            let days = match p.values.get("older-than") {
+                None => 30,
+                Some(v) => v
+                    .parse::<u64>()
+                    .map_err(|_| Failure::Usage(format!("`--older-than` needs a number of days, not `{}`", v)))?,
+            };
+            if p.flags.contains("all") && p.values.contains_key("older-than") {
+                return Err(Failure::Usage("`--all` and `--older-than` cannot be combined".into()));
+            }
+            let dir = dir.ok_or_else(|| Failure::Error("the cache is disabled (GAMMA_CACHE_DIR is empty)".into()))?;
+            let policy = cache::Policy {
+                older_than: std::time::Duration::from_secs(days.saturating_mul(86400)),
+                all: p.flags.contains("all"),
+                dry_run: p.flags.contains("dry-run"),
+            };
+            let report = cache::clean(&dir, &policy)?;
+            println!("{} in {}", report.summary(policy.dry_run), dir.display());
+            Ok(())
+        }
+        other => Err(Failure::Usage(format!("unknown `cache` subcommand `{}`: use `dir` or `clean`", other))),
+    }
 }
 
 fn new_package(args: &[String], create: bool) -> Result<(), Failure> {

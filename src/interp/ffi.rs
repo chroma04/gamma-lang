@@ -119,6 +119,47 @@ struct Mirror {
     scanned: bool,
 }
 
+/// Libraries and directories that packages add (`c-sources`, `lib-dirs` in gamma.toml),
+/// set by the driver before the program runs.
+#[derive(Default)]
+struct Extra {
+    /// Directories searched for `foreign "lib"` libraries before the `-L` directories of `LDFLAGS`.
+    dirs: Vec<String>,
+    /// Handles of the shared libraries made from the packages' C sources.
+    handles: Vec<usize>,
+}
+
+static EXTRA: std::sync::Mutex<Extra> = std::sync::Mutex::new(Extra { dirs: Vec::new(), handles: Vec::new() });
+
+fn extra() -> std::sync::MutexGuard<'static, Extra> {
+    EXTRA.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Adds directories that foreign libraries are searched in.
+pub fn add_library_dirs(dirs: Vec<std::path::PathBuf>) {
+    extra().dirs.extend(dirs.iter().map(|d| d.display().to_string()));
+}
+
+/// Loads the shared library at `path`; its symbols are found by foreign declarations of
+/// any library. It stays loaded for the life of the process.
+pub fn load_library(path: &std::path::Path) -> Result<(), String> {
+    let c = CString::new(path.display().to_string()).map_err(|_| "bad library path".to_string())?;
+    // SAFETY: a valid C string; the handle is kept for the life of the process.
+    let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
+    if h.is_null() {
+        // SAFETY: `dlerror` returns a C string or null.
+        let e = unsafe { libc::dlerror() };
+        let msg = if e.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(e) }.to_string_lossy().into_owned()
+        };
+        return Err(format!("cannot load {}: {}", path.display(), msg));
+    }
+    extra().handles.push(h as usize);
+    Ok(())
+}
+
 /// What a callback needs to call the Gamma function.
 struct CbData {
     func: FnId,
@@ -172,7 +213,7 @@ impl Ffi {
         let mut names = Vec::new();
         if lib != "c" {
             let (pre, ext) = if cfg!(target_os = "macos") { ("lib", "dylib") } else { ("lib", "so") };
-            let mut dirs: Vec<String> = Vec::new();
+            let mut dirs: Vec<String> = extra().dirs.clone();
             if let Ok(f) = std::env::var("LDFLAGS") {
                 let mut it = f.split_whitespace();
                 while let Some(w) = it.next() {
@@ -225,6 +266,12 @@ impl Ffi {
             (!p.is_null()).then_some(p as usize)
         };
         for h in self.open_lib(lib) {
+            if let Some(p) = find(h as *mut c_void) {
+                return Some(p);
+            }
+        }
+        let package_libs = extra().handles.clone();
+        for h in package_libs {
             if let Some(p) = find(h as *mut c_void) {
                 return Some(p);
             }
