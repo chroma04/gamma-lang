@@ -34,7 +34,7 @@ fn single_write(e: &Expr) -> bool {
         | ExprKind::Logic { .. }
         | ExprKind::Call { .. }
         | ExprKind::Unwrap { .. } => true,
-        ExprKind::Builtin { op, .. } => !matches!(op, Builtin::Fiber | Builtin::Sys(_)),
+        ExprKind::Builtin { op, .. } => !matches!(op, Builtin::Fiber | Builtin::Sys(_) | Builtin::Cover(_)),
         ExprKind::Coerce { kind, expr } => match kind {
             Coercion::PtrToPtr | Coercion::TupleRename | Coercion::FnPtrWiden => single_write(expr),
             Coercion::IntWiden | Coercion::FloatWiden | Coercion::ArrayPtrToSlice | Coercion::InOptional => true,

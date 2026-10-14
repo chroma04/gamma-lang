@@ -54,7 +54,9 @@ cycle, reported with every declaration in it (spec §3.4).
 
 | Path | Contents |
 | --- | --- |
-| `src/main.rs` | the `gamma` command-line tool |
+| `src/main.rs` | the `gamma` command-line tool: options and dispatch |
+| `src/testing.rs` | `gamma test` and `gamma bench`: selecting, running (interpreter or native, optionally in parallel), reporting, the coverage table |
+| `src/coverage.rs` | statement coverage: inserts `Builtin::Cover` counters into a checked program (the interpreter counts them; `interp/coverage.rs`) |
 | `src/doc/` | the API documentation generator behind `gamma doc` (syntax tree only; Markdown and HTML renderers) |
 | `src/fmt.rs` | the source formatter behind `gamma fmt` (token based, see `docs/contributing.md`) |
 | `src/repl/` | the REPL behind `gamma repl` (see [REPL](#repl)) |
@@ -793,6 +795,14 @@ the caller's value runs during the call.
 Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
 written and read piecewise with `memcpy`, so type-based alias analysis gains
 nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
+
+## Tests and benchmarks
+
+`test "name" { … }` and `bench "name" { … }` are one syntax-tree item (`ItemKind::Test`, with a `bench` flag) and are collected only when `tests_enabled` is set (`gamma test`, `gamma bench`, the language server). `sema/tests_decl.rs` turns each body into a function whose error type is inferred from its first `try`, and wraps it in an entry function that calls a runner of the core prelude: `run_test` / `run_test_unit` (tracking allocator, test handlers, leak check) for a test, `run_bench` / `run_bench_unit` for a benchmark. The entries go to `Program::tests` and `Program::benches`. A benchmark's entry is wrapped like `main` (`entry_point`), so it runs under the system handlers. `run_bench` finds the number of runs per sample by growing batches, takes 20 timed samples with the `Clock` effect, and prints one line, `gamma-bench: <runs> <ns> <ns> …`, that `src/testing.rs` turns into the report (the benchmark's own output precedes it). `@black_box` is `Builtin::BlackBox`: the identity in the interpreter, and in C a round trip through a `volatile` pointer.
+
+`src/testing.rs` selects the cases (`--filter`), runs them and prints the results in order. `pool` runs the jobs on `--jobs` threads and hands the results over in job order. The interpreter's state is not shared between threads, so each thread analyzes the program again (the analysis is deterministic, so test number `i` is the same everywhere); native runs only start processes. `--all` makes `analyze_package_tests` load every directory of the package (`Sema::load_package_modules`).
+
+Coverage (`--coverage`) is a rewrite of the checked program (`src/coverage.rs`): before each statement, and before the value of each block, of the functions of the package that are not tests, it inserts `Builtin::Cover(n)`, where `n` numbers a source line. The tree-walker counts executions in process-wide atomic counters (`interp/coverage.rs`), and the bytecode VM leaves expressions with the builtin to the tree-walker. Nothing is inserted, and nothing slows down, without the option; the C back end does not support the builtin, so coverage needs the interpreter.
 
 ## REPL
 

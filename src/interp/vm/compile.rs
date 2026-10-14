@@ -191,7 +191,7 @@ pub fn second_class(ty: Ty) -> bool {
 pub fn tree_only(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::With { on: Some(_), .. } | ExprKind::Resume { .. } | ExprKind::Discard(_) => true,
-        ExprKind::Builtin { op: Builtin::Fiber | Builtin::Sys(_), .. } => true,
+        ExprKind::Builtin { op: Builtin::Fiber | Builtin::Sys(_) | Builtin::Cover(_), .. } => true,
         ExprKind::Builtin { op: Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last, args } => {
             let base = &args[0];
             match base.ty.kind() {

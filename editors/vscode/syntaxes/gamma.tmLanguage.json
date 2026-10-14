@@ -208,8 +208,8 @@
           }
         },
         {
-          "comment": "test \"name\"",
-          "match": "(?:^|(?<=[{;]))\\s*\\b(test)\\b(?=\\s*\")",
+          "comment": "test \"name\" and bench \"name\"",
+          "match": "(?:^|(?<=[{;]))\\s*\\b(test|bench)\\b(?=\\s*\")",
           "captures": { "1": { "name": "storage.type.test.gamma" } }
         }
       ]

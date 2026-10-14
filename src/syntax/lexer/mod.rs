@@ -573,7 +573,9 @@ impl<'a> Lexer<'a> {
         match kind {
             TokenKind::Attribute(_) => true,
             TokenKind::Keyword(Keyword::Pub | Keyword::Handler) => true,
-            TokenKind::Ident(_) => after.starts_with("::") || (word == "test" && after.starts_with('"')),
+            TokenKind::Ident(_) => {
+                after.starts_with("::") || (matches!(word, "test" | "bench") && after.starts_with('"'))
+            }
             _ => false,
         }
     }

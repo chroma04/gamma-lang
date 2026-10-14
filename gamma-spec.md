@@ -171,7 +171,7 @@ while    with
 | `const` | immediately after `^`, `[^]` or `[]` in a type (§5.5) |
 | `on` | after the handler list of a `with` (§12.7) |
 | `where` | after a function signature or a type's parameter list (§16.3) |
-| `test` | at the start of a top-level declaration (§3.8) |
+| `test`, `bench` | at the start of a top-level declaration, before a string literal (§3.8, §3.9) |
 
 `type` and `cont` are not keywords; they are predeclared, reserved type names (§21.1).
 
@@ -335,6 +335,7 @@ top_decl = [ doc ] { attribute } [ 'pub' ] binding
          | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
          | handler_decl
          | 'test' string_lit block
+         | 'bench' string_lit block
 binding  = ident '::' expr
          | ident ':' type ':' expr
 ```
@@ -388,6 +389,21 @@ test "parse rejects letters" {
 ```
 
 A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value; wherever a test writes an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
+
+The tool runs tests one at a time in the order they are found, or several at a time on request; either way each test has its own handlers and its own leak check, and the results are reported in that order. It can also run the tests of every module of the package, imported or not, and count which source lines the tests ran (a coverage report); these options do not change what a test means.
+
+### 3.9 Benchmarks
+
+```
+bench "push 1000 items" {
+    list := make_list(1000)
+    _ = @black_box(list.len)
+}
+```
+
+A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), without the leak check, so it measures the real system. It fails if its body returns an error or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
+
+A compiler may remove work whose result is unused or compute it at compile time, which makes a benchmark measure nothing. `@black_box(x)` (§20) returns `x` while hiding from the optimizer both that the value is known and that it is used: pass inputs and results through it.
 
 ---
 
@@ -2457,6 +2473,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@volatile_load`, `@volatile_store`, `@asm` | | no | 19.5 |
 | `@atomic_*`, `@fence` | | no | 19.6 |
 | `@unreachable()` | `never`; checked: traps in Debug/Checked, UB in Fast | no | 18 |
+| `@black_box(x)` | `x`'s type; the value of `x`, which the optimizer must assume is read and changed arbitrarily (for benchmarks) | no | 3.9 |
 | `@expect_true(b)`, `@expect_false(b)` | `bool`; branch-probability hint | yes | — |
 | `@prefetch(p)` | `()`; hint | no | — |
 | `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
@@ -3052,7 +3069,7 @@ Assignment (`=` and compound forms) is a statement.
 
 **Reserved (34):** `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
-**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` (top-level). `type` and `cont` are predeclared, reserved type names.
+**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
 ### B.4 Build modes
 

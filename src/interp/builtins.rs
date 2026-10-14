@@ -353,6 +353,7 @@ impl<'a> Machine<'a> {
                 Ok(self.usize_bytes(n))
             }
             Builtin::Unreachable => self.trap(span, "reached `@unreachable()`"),
+            Builtin::BlackBox => Ok(v[0].clone()),
             Builtin::Hash => {
                 let seed = self.int_of(arg_tys[1], &v[1]);
                 let mut h = 0xcbf29ce484222325u64
@@ -369,6 +370,7 @@ impl<'a> Machine<'a> {
             | Builtin::AllocTag
             | Builtin::AllocCheck
             | Builtin::Fiber
+            | Builtin::Cover(_)
             | Builtin::Sys(_)
             | Builtin::HeapFree
             | Builtin::Assert

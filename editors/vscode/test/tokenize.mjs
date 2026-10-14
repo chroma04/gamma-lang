@@ -134,6 +134,7 @@ const expectations = [
   ["Circle", "constant.other.enum-member.gamma", 1],
   ["handler", "storage.type.handler.gamma"],
   ["test", "storage.type.test.gamma"],
+  ["bench", "storage.type.test.gamma"],
   ["print", "entity.name.function.call.gamma"],
   ["expect_eq", "entity.name.function.call.gamma"],
 ];

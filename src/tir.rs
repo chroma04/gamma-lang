@@ -436,6 +436,8 @@ pub struct Program {
     /// The tests of the root module and of the modules of its package that it
     /// imports, when compiled for testing (§3.8).
     pub tests: Vec<TestCase>,
+    /// The `bench` declarations, selected like the tests (§3.9).
+    pub benches: Vec<TestCase>,
     /// Functions exported to C under a symbol (§19.4).
     pub exports: Vec<(Symbol, FnId)>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
@@ -1290,6 +1292,11 @@ pub enum Builtin {
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).
     Unreachable,
+    /// `@black_box(x)`: `x`, opaque to the optimizer (§21.9).
+    BlackBox,
+    /// Counts one execution of a statement, for `gamma test --coverage`: inserted by
+    /// [`crate::coverage`], never by sema. The number indexes the counters.
+    Cover(u32),
     /// `@atomic_load(p, order)` (§19.6). The memory orders are `MemoryOrder` values.
     AtomicLoad,
     /// `@atomic_store(p, v, order)`.

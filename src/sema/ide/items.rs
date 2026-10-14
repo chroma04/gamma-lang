@@ -258,10 +258,14 @@ impl<'a, 's> Walker<'a, 's> {
                     children: vec![],
                 });
             }
-            ItemKind::Test { name, name_span, body } => {
+            ItemKind::Test { name, name_span, body, bench } => {
                 self.block(body);
                 out.push(DocSymbol {
-                    name: format!("test \"{}\"", String::from_utf8_lossy(&name.bytes)),
+                    name: format!(
+                        "{} \"{}\"",
+                        if *bench { "bench" } else { "test" },
+                        String::from_utf8_lossy(&name.bytes)
+                    ),
                     kind: Kind::Test,
                     detail: String::new(),
                     range: it.span,

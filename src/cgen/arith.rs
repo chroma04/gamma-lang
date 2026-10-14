@@ -730,6 +730,18 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!("__atomic_thread_fence(gm_ord[GM_LD(uint8_t, {})]);", a));
                 Ok(self.unit())
             }
+            Builtin::BlackBox => {
+                if t.is_unit() {
+                    return Ok(vals[0].clone());
+                }
+                // The value goes through memory behind a volatile pointer, so the compiler can
+                // assume nothing about what it reads back.
+                let c = self.g.ty.cty(t);
+                let slot = self.tmp(t, &vals[0]);
+                let p = format!("t{}", self.fresh());
+                self.line(&format!("{c} *volatile {p} = &{slot};"));
+                Ok(self.tmp(t, &format!("*{p}")))
+            }
             Builtin::Hash => {
                 let f = self.g.helpers.hash_fn(&mut self.g.ty, at);
                 let a = self.addr_of(at, &vals[0]);

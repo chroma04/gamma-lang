@@ -50,3 +50,7 @@ handler Log for ^Point {
 test "adds" {
     expect_eq(i32, add(1, 2), 3)
 }
+
+bench "adds" {
+    _ = @black_box(add(1, 2))
+}

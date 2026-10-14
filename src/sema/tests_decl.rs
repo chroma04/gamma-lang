@@ -29,20 +29,29 @@ impl<'s> Sema<'s> {
             groups.entry(label).or_default().push((module, item));
         }
         for (label, items) in groups {
-            let mut names: Vec<(String, Span)> = vec![];
+            let mut names: Vec<(bool, String, Span)> = vec![];
             for (module, item) in items {
-                let ItemKind::Test { name, name_span, body } = &item.kind else { continue };
+                let ItemKind::Test { name, name_span, body, bench } = &item.kind else { continue };
+                let bench = *bench;
                 let text = String::from_utf8_lossy(&name.bytes).into_owned();
-                if let Some((_, prev)) = names.iter().find(|(n, _)| *n == text) {
-                    let d =
-                        crate::diag::Diagnostic::error(*name_span, format!("the test \"{}\" is declared twice", text))
-                            .with_label(*prev, "first declared here");
+                if let Some((_, _, prev)) = names.iter().find(|(b, n, _)| *b == bench && *n == text) {
+                    let what = if bench { "benchmark" } else { "test" };
+                    let d = crate::diag::Diagnostic::error(
+                        *name_span,
+                        format!("the {} \"{}\" is declared twice", what, text),
+                    )
+                    .with_label(*prev, "first declared here");
                     self.emit(d);
                     continue;
                 }
-                names.push((text.clone(), *name_span));
-                if let Some(entry) = self.check_test(module, &text, *name_span, body) {
-                    self.prog.tests.push(tir::TestCase { name: text, module: label.clone(), entry, span: *name_span });
+                names.push((bench, text.clone(), *name_span));
+                if let Some(entry) = self.check_test(module, &text, *name_span, body, bench) {
+                    let case = tir::TestCase { name: text, module: label.clone(), entry, span: *name_span };
+                    if bench {
+                        self.prog.benches.push(case);
+                    } else {
+                        self.prog.tests.push(case);
+                    }
                 }
             }
         }
@@ -83,9 +92,9 @@ impl<'s> Sema<'s> {
         EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
     }
 
-    fn check_test(&mut self, module: ModuleId, name: &str, span: Span, body: &ast::Block) -> Option<FnId> {
+    fn check_test(&mut self, module: ModuleId, name: &str, span: Span, body: &ast::Block, bench: bool) -> Option<FnId> {
         let effects = self.test_effects(true);
-        let sym = Symbol::intern(&format!("test \"{}\"", name));
+        let sym = Symbol::intern(&format!("{} \"{}\"", if bench { "bench" } else { "test" }, name));
         let sig = FnSig { module, params: vec![], ret: Ty::unit(), effects: effects.clone(), generics: vec![] };
         let f = self.new_fn(sym, span, sig, tir::FnKind::Named);
         // First pass: the error type comes from the first `try`. A body without
@@ -104,7 +113,7 @@ impl<'s> Sema<'s> {
         def.ret = ret;
         def.locals = locals;
         def.body = Some(body);
-        self.test_entry(f, ret, span)
+        if bench { self.bench_entry(f, ret, span) } else { self.test_entry(f, ret, span) }
     }
 
     fn check_test_body(
@@ -132,7 +141,29 @@ impl<'s> Sema<'s> {
     /// `run_test(E, &test)` or `run_test_unit(&test)` from the core prelude:
     /// installs the leak-checking allocator and reports a failure.
     fn test_entry(&mut self, f: FnId, ret: Ty, span: Span) -> Option<FnId> {
-        let runner = if ret == Ty::unit() { "run_test_unit" } else { "run_test" };
+        let (_, call) = self.runner_call(f, ret, span, if ret == Ty::unit() { "run_test_unit" } else { "run_test" })?;
+        let module = self.sigs[&f].module;
+        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(false), generics: vec![] };
+        let entry = self.new_fn(Symbol::intern("<entry>"), span, sig, tir::FnKind::Named);
+        self.prog.fns[entry.index()].body = Some(call);
+        Some(entry)
+    }
+
+    /// `run_bench(E, &bench)` or `run_bench_unit(&bench)`: times the body. Unlike a test, a
+    /// benchmark runs under the system's handlers, as `main` does, so the entry is wrapped
+    /// like `main`'s.
+    fn bench_entry(&mut self, f: FnId, ret: Ty, span: Span) -> Option<FnId> {
+        let (_, call) =
+            self.runner_call(f, ret, span, if ret == Ty::unit() { "run_bench_unit" } else { "run_bench" })?;
+        let module = self.sigs[&f].module;
+        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(true), generics: vec![] };
+        let inner = self.new_fn(Symbol::intern("<bench>"), span, sig.clone(), tir::FnKind::Named);
+        self.prog.fns[inner.index()].body = Some(call);
+        Some(self.entry_point(inner, &sig))
+    }
+
+    /// The call of the core prelude function `runner` on the function `f` returning `ret`.
+    fn runner_call(&mut self, f: FnId, ret: Ty, span: Span, runner: &str) -> Option<(FnId, tir::Expr)> {
         let d = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern(runner)).copied())?;
         let DeclValue::Fn(g) = self.resolve_decl(d) else { return None };
         let callee = match ret.kind() {
@@ -152,10 +183,6 @@ impl<'s> Sema<'s> {
             kind: tir::ExprKind::Call { callee: tir::Callee::Fn(callee), args: vec![arg] },
             span,
         };
-        let module = self.sigs[&f].module;
-        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(false), generics: vec![] };
-        let entry = self.new_fn(Symbol::intern("<entry>"), span, sig, tir::FnKind::Named);
-        self.prog.fns[entry.index()].body = Some(call);
-        Some(entry)
+        Some((callee, call))
     }
 }

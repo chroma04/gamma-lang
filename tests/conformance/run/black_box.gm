@@ -1,0 +1,22 @@
+// `@black_box(x)` is `x`, hidden from the optimizer, for values of any type.
+Pair :: struct { a: u8, b: u64 }
+
+Shape :: union { Dot, Circle: f64 }
+
+main :: fn() \ {Out} {
+    x := @black_box(41) + 1
+    print("{}\n", x)
+    print("{}\n", @black_box("text"))
+    p := @black_box(Pair(a: 1, b: 2))
+    print("{} {}\n", (p.a, p.b))
+    print("{}\n", @black_box(1.5) * 2.0)
+    arr: [3]i32 = @black_box([3]i32(1, 2, 3))
+    print("{}\n", arr[1])
+    maybe: ?u32 = @black_box(7)
+    print("{}\n", maybe is 7)
+    s := @black_box(Shape.Circle(2.5))
+    print("{}\n", s is .Circle(2.5))
+    @black_box(())
+    q := &x
+    print("{}\n", @black_box(q)^)
+}

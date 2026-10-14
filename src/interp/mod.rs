@@ -28,6 +28,7 @@ mod builtins;
 mod bytes;
 mod calls;
 mod consts;
+mod coverage;
 pub mod display;
 mod eval;
 mod fast;
@@ -65,6 +66,7 @@ use machine::Machine;
 use std::io::Write;
 use value::*;
 
+pub use coverage::{coverage_counts, coverage_init};
 pub use ffi::{add_library_dirs, check_program as foreign_supported, load_library, set_owns_process};
 pub use value::Trap;
 

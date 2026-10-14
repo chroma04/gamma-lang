@@ -292,20 +292,30 @@ pub struct Sema<'s> {
 /// Analyzes the program whose root module is `root` (a `.gm` file or a
 /// directory). Returns the lowered program if there were no errors.
 pub fn analyze(sess: &mut Session, root: &Path) -> Option<Program> {
-    analyze_with(sess, root, false)
+    analyze_with(sess, root, None)
 }
 
 /// Checks the program rooted at `root` for testing: its `test` declarations
 /// are compiled (into [`Program::tests`]) and `main` is not required (§3.8).
 pub fn analyze_tests(sess: &mut Session, root: &Path) -> Option<Program> {
-    analyze_with(sess, root, true)
+    analyze_with(sess, root, Some(false))
 }
 
-fn analyze_with(sess: &mut Session, root: &Path, tests: bool) -> Option<Program> {
+/// Like [`analyze_tests`], and with `all`, also the tests of the modules of the root
+/// module's package that it does not import: every directory of the package that holds
+/// `.gm` files, except hidden ones, `target` and those of other packages.
+pub fn analyze_package_tests(sess: &mut Session, root: &Path, all: bool) -> Option<Program> {
+    analyze_with(sess, root, Some(all))
+}
+
+fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<Program> {
     let mut sema = Sema::new(sess);
-    sema.tests_enabled = tests;
+    sema.tests_enabled = tests.is_some();
     sema.load_prelude();
     let root_mod = sema.load_root(root)?;
+    if tests == Some(true) {
+        sema.load_package_modules(root_mod);
+    }
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
@@ -583,7 +593,7 @@ impl<'s> Sema<'s> {
     /// The function the runtime calls: `main`, wrapped in the core library's default
     /// handlers for the ambient effects it performs that the runtime does not serve
     /// directly: `Alloc` (the system heap) and `In`, `Clock`, `Rand` (§3.7, §12.9).
-    fn entry_point(&mut self, main: FnId, sig: &FnSig) -> FnId {
+    pub(super) fn entry_point(&mut self, main: FnId, sig: &FnSig) -> FnId {
         let a = self.prog.ambient.clone();
         let performs = |e: Option<EffectId>| e.is_some_and(|e| sig.effects.effects.iter().any(|r| r.effect == e));
         let mut providers = vec![];

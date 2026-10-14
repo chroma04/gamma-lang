@@ -252,8 +252,9 @@ bool tree_sitter_gamma_external_scanner_scan(void *payload, TSLexer *lexer, cons
     return true;
   }
 
-  if (c == 't' && valid[TEST_KEYWORD]) {
-    if (!match_word(lexer, "test")) return false;
+  // `bench "name" { … }` has the shape of a test and parses as one.
+  if ((c == 't' || c == 'b') && valid[TEST_KEYWORD]) {
+    if (!match_word(lexer, c == 't' ? "test" : "bench")) return false;
     lexer->mark_end(lexer);
     skip_blanks_advance(lexer);
     if (lexer->lookahead != '"' && lexer->lookahead != '`') return false;

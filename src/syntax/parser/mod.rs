@@ -71,6 +71,7 @@ struct Words {
     on: Symbol,
     where_: Symbol,
     test: Symbol,
+    bench: Symbol,
     cont: Symbol,
     global: Symbol,
 }
@@ -161,6 +162,7 @@ impl<'a> Parser<'a> {
                 on: Symbol::intern("on"),
                 where_: Symbol::intern("where"),
                 test: Symbol::intern("test"),
+                bench: Symbol::intern("bench"),
                 cont: Symbol::intern("cont"),
                 global: Symbol::intern("global"),
             },

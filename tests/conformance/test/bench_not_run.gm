@@ -1,0 +1,10 @@
+//! stage: test
+// `gamma test` checks `bench` declarations but runs only the tests.
+bench "slow" {
+    _ = @black_box(1 + 1)
+    expect(false)
+}
+
+test "runs" {
+    expect(true)
+}

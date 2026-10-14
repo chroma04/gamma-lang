@@ -291,6 +291,36 @@ A test outside the root module is reported with its module's directory, relative
 
 Tests run in the interpreter by default. A module that calls C functions or contains `@asm` has its tests compiled with the C back end instead (so that C's output is captured with the test's), and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
 
+More options of `gamma test`:
+
+- `--all` also runs the tests of the modules of the package that nothing imports: every directory of the package that holds `.gm` files, except hidden ones, `target` and the directories of other packages.
+- `--show-output` also prints what the passing tests wrote.
+- `--time` adds the time each test took and the total. It is off by default so that reports are the same from run to run.
+- `--jobs=n` (or `-j n`) runs `n` tests at a time; `--jobs=0` uses one per processor. The results are still printed in order. With the interpreter every thread analyzes the program itself, so parallelism pays when the tests take longer than that.
+- `--coverage` counts the source lines of the package that the tests run, with the interpreter, and prints the lines run per file. `--coverage=lcov.info` also writes an LCOV file for coverage viewers. Only lines with a statement count; generic functions count through their instances, and one that nothing instantiates is not counted. The bodies of tests are left out.
+
+### Benchmarks
+
+A `bench` declaration looks like a test, but it measures how long its body takes:
+
+```gamma
+bench "sum of squares" {
+    total: u64 = 0
+    for i in 0..1000 { total += @black_box(i) * i }
+    _ = @black_box(total)
+}
+```
+
+`gamma bench file.gm` runs each benchmark in growing batches until a batch is long enough to time, then takes 20 samples and reports the mean time per run and how much the samples varied:
+
+```text
+$ gamma bench squares.gm
+bench "sum of squares" ... 412.31 ns/run (± 1.8%, 20 samples of 24317 runs)
+1 run, 0 failed
+```
+
+Benchmarks are compiled with the C back end in Fast mode by default, because that is what the numbers are for; `--backend=interp` or `--mode=…` changes that. They run under the system's handlers (real clock, real heap), one at a time. An optimizer may delete work whose result nothing uses, or compute it at compile time: pass inputs and results through `@black_box(x)`, which returns `x` while hiding it from the optimizer. `--filter`, `--all` and `--show-output` work as for `gamma test`; `gamma test` type-checks benchmarks but does not run them. The `bench/` directory of the compiler's own repository holds programs of the compiler's own performance work, not `bench` declarations.
+
 ## Where to go next
 
 [Chapter 2](02-basics.md) covers the everyday vocabulary: bindings, literals, numeric types and operators.

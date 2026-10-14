@@ -251,7 +251,9 @@ impl Dumper {
             ItemKind::Binding(b) => self.binding(b),
             ItemKind::When(w) => self.when_items(w),
             ItemKind::Handler(h) => self.handler_decl(h),
-            ItemKind::Test { name, body, .. } => node("test", vec![str_lit(name), self.block(body)]),
+            ItemKind::Test { name, body, bench, .. } => {
+                node(if *bench { "bench" } else { "test" }, vec![str_lit(name), self.block(body)])
+            }
             ItemKind::Intrinsic(e) => node("intrinsic-decl", vec![self.expr(e)]),
         });
         bnode("item", v)

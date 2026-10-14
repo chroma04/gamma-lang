@@ -6,6 +6,8 @@ use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod testing;
+
 const USAGE: &str = "\
 usage: gamma <command> [options] <file>
 
@@ -17,6 +19,8 @@ commands:
   build   compile a program to a native executable (via the system C compiler)
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
+  bench   run the `bench` declarations the same way and report the time per run
+          (compiled via C in Fast mode unless --backend=interp or --mode is given)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
   doc     generate API documentation: gamma doc <module> [--format=markdown|html] [-o <path>] [--all] [--missing]
           (run `gamma help doc` for the options)
@@ -38,8 +42,16 @@ options:
   --diag-format=human|short   how to print diagnostics (default: human)
   --dump                      (parse) print the syntax tree
   --backend=interp|c          (run, test) use the interpreter (default) or compile via C
-  --filter=<text>             (test) run only the tests whose name or module path
+  --filter=<text>             (test, bench) run only the tests whose name or module path
                               contains <text>
+  --all                       (test, bench) also run those of the modules of the package
+                              that nothing imports (every directory with `.gm` files)
+  --show-output               (test, bench) also print the output of the tests that pass
+  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; the output is
+                              still in order)
+  --time                      (test, bench) print how long each test took and the total
+  --coverage[=<file>]         (test) count the lines of the package that the tests run, with
+                              the interpreter; print a table, and with <file> write LCOV
   --target=<triple>           (check, run --backend=c, test, build) compile for the machine
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
@@ -91,6 +103,16 @@ struct Options {
     debug_info: bool,
     /// `--filter=…`: run only the tests that match.
     filter: Option<String>,
+    /// `--all`: also the tests of modules that nothing imports.
+    all: bool,
+    /// `--show-output`: print the output of passing tests too.
+    show_output: bool,
+    /// `--jobs=n`: how many tests run at once.
+    jobs: usize,
+    /// `--time`: report how long tests take.
+    time: bool,
+    /// `--coverage[=file]`: count the lines the tests run; the LCOV file to write, if any.
+    coverage: Option<Option<PathBuf>>,
     /// `--target=…`: the target triple to compile for.
     target: Option<String>,
     /// `--offline`: do not use the network for dependencies.
@@ -109,20 +131,36 @@ struct Options {
     manifest_ldflags: Vec<String>,
 }
 
+/// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
+fn parse_jobs(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(0) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!("`--jobs` needs a number, not `{}`", text)),
+    }
+}
+
 fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| "missing command".to_string())?;
+    let bench = command == "bench";
     let mut opts = Options {
         command,
         file: None,
         program_args: vec![],
         format: DiagFormat::Human,
         dump: false,
-        c_backend: false,
+        // Benchmarks are about speed: compiled, without checks, unless asked otherwise.
+        c_backend: bench,
         output: None,
-        mode: gamma::interp::Mode::Debug,
+        mode: if bench { gamma::interp::Mode::Fast } else { gamma::interp::Mode::Debug },
         debug_info: false,
         filter: None,
+        all: false,
+        show_output: false,
+        jobs: 1,
+        time: false,
+        coverage: None,
         target: None,
         offline: false,
         locked: false,
@@ -144,6 +182,18 @@ fn parse_args() -> Result<Options, String> {
             "--offline" => opts.offline = true,
             "--locked" => opts.locked = true,
             "--quiet" => opts.quiet = true,
+            "--all" => opts.all = true,
+            "--show-output" => opts.show_output = true,
+            "--time" => opts.time = true,
+            "--coverage" => opts.coverage = Some(None),
+            a if a.starts_with("--coverage=") => {
+                opts.coverage = Some(Some(PathBuf::from(&a["--coverage=".len()..])));
+            }
+            "-j" | "--jobs" => {
+                let n = args.next().ok_or_else(|| format!("`{}` needs a number", arg))?;
+                opts.jobs = parse_jobs(&n)?;
+            }
+            a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
@@ -279,7 +329,8 @@ fn compiler_main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
         "run" => run(&opts),
-        "test" => test(&opts),
+        "test" => testing::run(&opts, testing::Kind::Test),
+        "bench" => testing::run(&opts, testing::Kind::Bench),
         "build" => build(&opts),
         "repl" => gamma::repl::run(gamma::repl::Options {
             quiet: opts.quiet,
@@ -297,7 +348,7 @@ fn compiler_main() -> ExitCode {
 /// Applies the build settings of the package that holds the input (gamma.toml's `[build]`
 /// and the selected profile) under the command line: an option given there wins.
 fn apply_build_settings(opts: &mut Options) -> Result<(), String> {
-    if !matches!(opts.command.as_str(), "check" | "run" | "build" | "test") {
+    if !matches!(opts.command.as_str(), "check" | "run" | "build" | "test" | "bench") {
         return Ok(());
     }
     let Some(path) = opts.file.clone() else { return Ok(()) };
@@ -519,145 +570,6 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
         }
     }
     s
-}
-
-/// Counts and prints the results of tests, in the format shared by both back ends.
-#[derive(Default)]
-struct TestReport {
-    passed: usize,
-    failed: usize,
-    /// The number of tests `--filter` left out, if it was given.
-    filtered_out: Option<usize>,
-}
-
-impl TestReport {
-    /// Prints the line for test `t`; `failure` is the detail of a failing test
-    /// (its output and the reason), printed indented below the line.
-    fn record(&mut self, t: &gamma::tir::TestCase, failure: Option<String>) {
-        let name = match &t.module {
-            Some(m) => format!("\"{}\" in {}", t.name, m),
-            None => format!("\"{}\"", t.name),
-        };
-        match failure {
-            None => {
-                self.passed += 1;
-                println!("test {} ... ok", name);
-            }
-            Some(detail) => {
-                self.failed += 1;
-                println!("test {} ... FAILED", name);
-                for line in detail.lines() {
-                    println!("    {}", line);
-                }
-            }
-        }
-    }
-
-    fn finish(&self) -> ExitCode {
-        match self.filtered_out {
-            Some(n) => println!("{} passed, {} failed, {} filtered out", self.passed, self.failed, n),
-            None => println!("{} passed, {} failed", self.passed, self.failed),
-        }
-        if self.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
-    }
-}
-
-/// Whether test `t` is selected by `--filter`: its name or module path contains
-/// the filter text.
-fn test_selected(t: &gamma::tir::TestCase, filter: Option<&str>) -> bool {
-    filter.is_none_or(|f| t.name.contains(f) || t.module.as_deref().is_some_and(|m| m.contains(f)))
-}
-
-/// Runs each test of the root module, and of the modules of its package that it
-/// imports, with captured output (§3.8). A failing test's output and failure
-/// reason are printed after the summary line for it.
-fn test(opts: &Options) -> ExitCode {
-    let Some(path) = &opts.file else {
-        eprintln!("gamma: no input file\n\n{}", USAGE);
-        return ExitCode::from(2);
-    };
-    let (mut sess, toolchain) = new_session(opts);
-    let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
-    let prog = gamma::sema::analyze_tests(&mut sess, path);
-    eprint!("{}", sess.render_diagnostics(opts.format));
-    let Some(prog) = prog else { return ExitCode::FAILURE };
-    // Tests of modules that call C or run assembly are compiled natively, so that C's output
-    // is captured with the test's.
-    let selected: Vec<usize> =
-        (0..prog.tests.len()).filter(|&i| test_selected(&prog.tests[i], opts.filter.as_deref())).collect();
-    let mut report = TestReport {
-        filtered_out: opts.filter.as_ref().map(|_| prog.tests.len() - selected.len()),
-        ..TestReport::default()
-    };
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
-    if opts.c_backend || prog.has_foreign() || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
-        return test_native(&sess, &prog, &toolchain, &extras, &selected, report);
-    }
-    for &i in &selected {
-        let t = &prog.tests[i];
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let outcome = gamma::interp::run_entry(&prog, &cfg, t.entry, &[], &mut out, &mut err);
-        let reason = match outcome {
-            gamma::interp::Outcome::Exit(0) => None,
-            gamma::interp::Outcome::Exit(_) => Some(String::new()),
-            gamma::interp::Outcome::Trap(trap) => Some(trap_report(&sess, &prog, &trap)),
-        };
-        let failure = reason.map(|reason| {
-            let mut detail = String::from_utf8_lossy(&out).into_owned();
-            detail.push_str(&String::from_utf8_lossy(&err));
-            detail.push_str(&reason);
-            detail
-        });
-        report.record(t, failure);
-    }
-    report.finish()
-}
-
-/// `gamma test --backend=c`: compiles the selected tests into one executable, which runs
-/// the test whose index it is given, and runs it once per selected test.
-fn test_native(
-    sess: &Session,
-    prog: &gamma::tir::Program,
-    toolchain: &Result<Toolchain, String>,
-    extras: &gamma::cgen::Extras,
-    selected: &[usize],
-    mut report: TestReport,
-) -> ExitCode {
-    let entries: Vec<_> = selected.iter().map(|&i| prog.tests[i].entry).collect();
-    let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
-    let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
-    let exe = dir.join("tests");
-    let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| {
-        let link = native_link(sess, toolchain, extras)?;
-        let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
-        gamma::cgen::compile(&out, toolchain, &link, &exe).map(|_| ())
-    });
-    let code = match built {
-        Ok(()) => {
-            for (j, &i) in selected.iter().enumerate() {
-                let t = &prog.tests[i];
-                let mut cmd = runner_command(&exe, None);
-                cmd.arg(j.to_string()).stdin(std::process::Stdio::null());
-                let failure = match cmd.output() {
-                    Ok(o) if o.status.code() == Some(0) => None,
-                    Ok(o) => {
-                        let mut detail = String::from_utf8_lossy(&o.stdout).into_owned();
-                        detail.push_str(&native_stderr(&String::from_utf8_lossy(&o.stderr)));
-                        Some(detail)
-                    }
-                    Err(e) => Some(format!("cannot run {}: {}\n", exe.display(), e)),
-                };
-                report.record(t, failure);
-            }
-            report.finish()
-        }
-        Err(msg) => {
-            eprintln!("{}", msg);
-            ExitCode::FAILURE
-        }
-    };
-    let _ = std::fs::remove_dir_all(&dir);
-    code
 }
 
 /// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if

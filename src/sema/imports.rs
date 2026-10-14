@@ -205,6 +205,41 @@ impl<'s> Sema<'s> {
         Some(m)
     }
 
+    /// Loads every module of the package of `root` that is not loaded yet, so that their
+    /// tests are found (`gamma test --all`). The directories of the package are searched in
+    /// path order; hidden ones, `target` and nested packages are skipped.
+    pub(super) fn load_package_modules(&mut self, root: ModuleId) {
+        let Some(package) = self.modules[root.0 as usize].package else { return };
+        let package_root = self.packages[package].root.clone();
+        let mut dirs = vec![package_root];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let mut subdirs: Vec<PathBuf> = vec![];
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().into_owned();
+                if p.is_dir() && !name.starts_with('.') && name != "target" && !p.join("gamma.toml").is_file() {
+                    subdirs.push(p);
+                }
+            }
+            // The first directory searched comes last on the stack.
+            subdirs.sort_by(|a, b| b.cmp(a));
+            dirs.extend(subdirs);
+            let key = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            // A root given as a file stands for its directory.
+            let is_root_dir = self.modules[root.0 as usize]
+                .dir
+                .as_ref()
+                .is_some_and(|d| d.canonicalize().unwrap_or_else(|_| d.clone()) == key);
+            if self.module_by_dir.contains_key(&key) || is_root_dir {
+                continue;
+            }
+            if self.sess.module_files(&dir).is_some_and(|f| !f.is_empty()) {
+                self.load_dir_module(&dir, Span::DUMMY, Some(package), None);
+            }
+        }
+    }
+
     /// Reports each cycle in the import graph (§3.2).
     pub(super) fn check_import_cycles(&mut self) {
         let n = self.modules.len();

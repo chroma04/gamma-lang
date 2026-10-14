@@ -1,6 +1,7 @@
 //! Expression evaluation.
 
 use super::bytes::Bytes;
+use super::coverage::cover_hit;
 use super::machine::*;
 use super::memory::AllocKind;
 use super::num::{self, Int};
@@ -796,6 +797,10 @@ impl<'a> Machine<'a> {
                 let msg = String::from_utf8_lossy(&self.read_str(e.span, &mb)?).into_owned();
                 let msg = if msg == "expectation failed" { msg } else { format!("expectation failed: {}", msg) };
                 self.trap(e.span, msg)
+            }
+            Builtin::Cover(id) => {
+                cover_hit(id);
+                Ok(Value::unit())
             }
             Builtin::Fiber => self.eval_fiber(a, e.span, args),
             Builtin::Sys(op) => self.eval_sys(a, e, op, args),
