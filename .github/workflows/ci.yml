@@ -125,6 +125,32 @@ jobs:
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
 
+  benchmarks:
+    # Runs `gamma bench bench/` with the compiler of the pull request and with the base
+    # branch's, and prints the ratios in the job summary. Informational: timing never fails it.
+    name: Benchmarks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build this branch
+        run: cargo build --release
+      - name: Build the base branch
+        continue-on-error: true
+        run: |
+          git worktree add ../base "origin/${{ github.base_ref }}"
+          cd ../base && CARGO_TARGET_DIR="$PWD/../base-target" cargo build --release
+      - name: Compare
+        run: |
+          base=""
+          if [ -x ../base-target/release/gamma ]; then base=../base-target/release/gamma; fi
+          ./scripts/bench-compare.sh target/release/gamma "$base" bench
+
   editors:
     # The TextMate grammar's scope tests, and the tree-sitter grammar: its generated
     # parser must be up to date, its corpus tests must pass, and it must parse every file

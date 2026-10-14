@@ -1,36 +1,50 @@
 # Benchmarks
 
-Small programs that exercise the interpreter's call, effect and allocation paths.
+Two kinds of benchmark: `benches.gm` holds `bench` declarations that time the same
+operations (`gamma bench bench/`, which CI runs on every pull request and compares with the
+base branch), and `programs/` holds small programs for counting instructions, which exercise the interpreter's call, effect and allocation paths.
 Each prints one number (a checksum), so a run is also a sanity check.
 
 | Program | What it does |
 |---|---|
-| `empty.gm` | Prints a constant: the cost of starting up, to subtract from the others. |
-| `call.gm` | 200,000 calls of a small function: the baseline for `perform.gm`. |
-| `perform.gm` | 200,000 performs of an operation handled by a `with` handler. |
-| `new_destroy.gm` | 20,000 `new` + `destroy` of a two-field struct through the ambient `Alloc`. |
-| `list_push.gm` | 100,000 `push` onto a `List`, then a sum over `each(l.items)`. |
-| `map_insert.gm` | 20,000 inserts into a `HashMap`, then 20,000 lookups. |
+| `programs/empty.gm` | Prints a constant: the cost of starting up, to subtract from the others. |
+| `programs/call.gm` | 200,000 calls of a small function: the baseline for `perform.gm`. |
+| `programs/perform.gm` | 200,000 performs of an operation handled by a `with` handler. |
+| `programs/new_destroy.gm` | 20,000 `new` + `destroy` of a two-field struct through the ambient `Alloc`. |
+| `programs/list_push.gm` | 100,000 `push` onto a `List`, then a sum over `each(l.items)`. |
+| `programs/map_insert.gm` | 20,000 inserts into a `HashMap`, then 20,000 lookups. |
 
-## Running
+## Timing: `gamma bench`
 
 ```sh
 cargo build --release
-target/release/gamma run bench/perform.gm                 # the interpreter
-target/release/gamma run --backend=c bench/perform.gm     # through the C back end
+target/release/gamma bench bench/              # compiled via C in Fast mode
+target/release/gamma bench --filter=perform bench/
+```
+
+Each line is the mean time of one pass of the body with the spread of 20 samples. Wall time
+varies with the load of the machine; CI prints the ratio to the base branch as information
+and never fails on it.
+
+## Running the programs
+
+```sh
+cargo build --release
+target/release/gamma run bench/programs/perform.gm                 # the interpreter
+target/release/gamma run --backend=c bench/programs/perform.gm     # through the C back end
 ```
 
 Compare instruction counts rather than wall time, which varies with the load of the
 machine. With `valgrind` installed:
 
 ```sh
-valgrind --tool=callgrind target/release/gamma run bench/perform.gm 2>&1 | grep refs
+valgrind --tool=callgrind target/release/gamma run bench/programs/perform.gm 2>&1 | grep refs
 ```
 
 or with `perf`:
 
 ```sh
-perf stat -e instructions:u target/release/gamma run bench/perform.gm
+perf stat -e instructions:u target/release/gamma run bench/programs/perform.gm
 ```
 
 The total includes compiling the program and the core library, which `empty.gm` measures

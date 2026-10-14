@@ -134,6 +134,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "bench_declaration"
+        },
+        {
+          "type": "SYMBOL",
           "name": "intrinsic_expression"
         },
         {
@@ -479,6 +483,36 @@
           },
           "named": false,
           "value": "test"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_string"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        }
+      ]
+    },
+    "bench_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_bench_keyword"
+          },
+          "named": false,
+          "value": "bench"
         },
         {
           "type": "FIELD",
@@ -5985,6 +6019,10 @@
     {
       "type": "SYMBOL",
       "name": "_test_keyword"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_bench_keyword"
     },
     {
       "type": "SYMBOL",

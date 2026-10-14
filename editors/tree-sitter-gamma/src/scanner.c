@@ -28,6 +28,7 @@ enum TokenType {
   IS_NOT,
   NOT_IN,
   TEST_KEYWORD,
+  BENCH_KEYWORD,
   ERROR_SENTINEL,
 };
 
@@ -252,13 +253,12 @@ bool tree_sitter_gamma_external_scanner_scan(void *payload, TSLexer *lexer, cons
     return true;
   }
 
-  // `bench "name" { … }` has the shape of a test and parses as one.
-  if ((c == 't' || c == 'b') && valid[TEST_KEYWORD]) {
+  if ((c == 't' && valid[TEST_KEYWORD]) || (c == 'b' && valid[BENCH_KEYWORD])) {
     if (!match_word(lexer, c == 't' ? "test" : "bench")) return false;
     lexer->mark_end(lexer);
     skip_blanks_advance(lexer);
     if (lexer->lookahead != '"' && lexer->lookahead != '`') return false;
-    lexer->result_symbol = TEST_KEYWORD;
+    lexer->result_symbol = c == 't' ? TEST_KEYWORD : BENCH_KEYWORD;
     return true;
   }
 

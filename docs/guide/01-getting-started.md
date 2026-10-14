@@ -332,7 +332,7 @@ bench "sum of squares" ... 412.31 ns/run (± 1.8%, 20 samples of 24317 runs)
 1 run, 0 failed
 ```
 
-Benchmarks are compiled with the C back end in Fast mode by default, because that is what the numbers are for; `--backend=interp` or `--mode=…` changes that. They run under the system's handlers (real clock, real heap), one at a time. An optimizer may delete work whose result nothing uses, or compute it at compile time: pass inputs and results through `@black_box(x)`, which returns `x` while hiding it from the optimizer. `--filter`, `--all` and `--show-output` work as for `gamma test`; `gamma test` type-checks benchmarks but does not run them. The `bench/` directory of the compiler's own repository holds programs of the compiler's own performance work, not `bench` declarations.
+Benchmarks are compiled with the C back end in Fast mode by default, because that is what the numbers are for; `--backend=interp` or `--mode=…` changes that. They run under the system's handlers (real clock, real heap), one at a time. An optimizer may delete work whose result nothing uses, or compute it at compile time: pass inputs and results through `@black_box(x)`, which returns `x` while hiding it from the optimizer. `--filter`, `--all` and `--show-output` work as for `gamma test`; `gamma test` type-checks benchmarks but does not run them. The compiler's own repository keeps its benchmarks in `bench/` (`gamma bench bench/`).
 
 ## Where to go next
 

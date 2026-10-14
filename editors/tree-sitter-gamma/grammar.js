@@ -77,6 +77,7 @@ module.exports = grammar({
     $._is_not,
     $._not_in,
     $._test_keyword,
+    $._bench_keyword,
     $._error_sentinel,
   ],
 
@@ -115,6 +116,7 @@ module.exports = grammar({
       $.when_declaration,
       $.handler_declaration,
       $.test_declaration,
+      $.bench_declaration,
       $.intrinsic_expression,
       seq(
         optional($._attributes),
@@ -156,6 +158,12 @@ module.exports = grammar({
 
     test_declaration: $ => seq(
       alias($._test_keyword, 'test'),
+      field('name', $._string),
+      field('body', $.block),
+    ),
+
+    bench_declaration: $ => seq(
+      alias($._bench_keyword, 'bench'),
       field('name', $._string),
       field('body', $.block),
     ),
