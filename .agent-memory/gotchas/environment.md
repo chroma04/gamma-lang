@@ -37,3 +37,7 @@
   unknown escapes (`\ `) are errors there, gcc only warns. Use cgen::types::assert_message.
 - When merging a stack of PRs, run the CC=clang conformance lane after each cgen/sema pair:
   PRs green alone can clash semantically (e.g. new type syntax × new C emission).
+- Disk: the session allowance is ~40 GB. Six parallel worktree agents (≈3 GB target each)
+  plus main target (6 GB) plus downloads (wine, llvm-mingw, Fil-C) filled it in s12. Remove
+  merged worktrees right away; brief agents to keep one target dir and delete downloads.
+- Workers share the scratchpad: give each its own subdirectory name (they deleted mine once).
