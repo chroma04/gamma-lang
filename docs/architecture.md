@@ -128,8 +128,9 @@ attach types and other facts in side tables instead of mutating the tree.
 
 All stages report problems to a shared `Diagnostics` collector. Messages are
 lowercase and specific. The `--diag-format=short` flag prints one
-`path:line:col: severity: message` line per diagnostic, which is what the test
-suite matches against.
+`path:line:col: severity: message` line per diagnostic, followed by a
+`note` line for each secondary location and each attached explanation; this is
+what the test suite matches against.
 
 ## Semantic analysis
 

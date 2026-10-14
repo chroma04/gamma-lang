@@ -100,6 +100,16 @@ impl Diagnostics {
         self.list.is_empty()
     }
 
+    /// Adds `note` to the diagnostics recorded after the first `from` whose primary
+    /// location lies within `span`.
+    pub fn note_since(&mut self, from: usize, span: Span, note: &str) {
+        for d in self.list.iter_mut().skip(from) {
+            if d.span.file == span.file && d.span.lo >= span.lo && d.span.hi <= span.hi {
+                d.notes.push(note.to_string());
+            }
+        }
+    }
+
     /// Drops diagnostics recorded after the first `len` (used to roll back speculation).
     pub fn truncate(&mut self, len: usize) {
         self.list.truncate(len);
@@ -157,6 +167,13 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
                 let f = sm.file(l.span.file);
                 let (line, col) = f.line_col(l.span.lo);
                 let _ = writeln!(out, "{}:{}:{}: note: {}", f.path.display(), line, col, l.message);
+            }
+            // Plain notes are reported at the primary location.
+            for n in &d.notes {
+                if let Some((f, line, col)) = loc {
+                    let _ = write!(out, "{}:{}:{}: ", f.path.display(), line, col);
+                }
+                let _ = writeln!(out, "note: {}", n);
             }
         }
         DiagFormat::Human => {
