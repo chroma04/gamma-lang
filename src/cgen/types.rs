@@ -289,7 +289,7 @@ impl<'a> Types<'a> {
         for (m, off) in named {
             let _ = write!(self.typed_defs, " && offsetof({}, {}) == {}", name, m, off);
         }
-        let _ = writeln!(self.typed_defs, ", \"layout of `{}`\");", t);
+        let _ = writeln!(self.typed_defs, ", {});", assert_message(&format!("layout of `{}`", t)));
         self.typed_by_shape.insert(shape, name.clone());
         name
     }
@@ -354,7 +354,7 @@ impl<'a> Types<'a> {
         for (i, off) in self.offsets(t).iter().enumerate().take(fields.len()) {
             let _ = write!(self.mirror_defs, " && offsetof({}, {}) == {}", name, names[i], off);
         }
-        let _ = writeln!(self.mirror_defs, ", \"layout of `{}`\");", t);
+        let _ = writeln!(self.mirror_defs, ", {});", assert_message(&format!("layout of `{}`", t)));
         Some(name)
     }
 
@@ -645,6 +645,25 @@ pub fn int_cty(signed: bool, storage: u64) -> &'static str {
 
 pub fn blob_name(size: u64, align: u64) -> String {
     format!("gm_b{}_{}", size, align)
+}
+
+/// A C string literal for a `_Static_assert` message. Such a literal is unevaluated, so
+/// clang rejects numeric escapes in it: only `\\` and `\"` are escaped, and characters
+/// outside printable ASCII are left out.
+fn assert_message(text: &str) -> String {
+    let mut s = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' | '\\' => {
+                s.push('\\');
+                s.push(c);
+            }
+            ' '..='~' => s.push(c),
+            _ => {}
+        }
+    }
+    s.push('"');
+    s
 }
 
 /// A C string literal holding `bytes` (escaped so any byte is safe).
