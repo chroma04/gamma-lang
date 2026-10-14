@@ -381,11 +381,24 @@ tests `--filter` selects, and runs it per test, passing a test iff the exit stat
 location reach the report from standard error.
 
 **Values.** Scalars (integers up to 128 bits, floats, `bool`, pointers) are
-native C values. Every other type is a *blob*, a struct holding its bytes with
-the Gamma layout's size and alignment, whose fields are read and written with
-`memcpy` at the layout's offsets (`src/cgen/types.rs`). Values therefore have
+native C values. Every other type is a struct whose fields are read and written
+with `memcpy` at the layout's offsets (`src/cgen/types.rs`). Values therefore have
 the same bytes in both back ends. Integers narrower than their C storage are
 kept sign- or zero-extended, and arithmetic checks the Gamma type's range.
+
+A struct, tuple, array, optional, result or tagged union is a *typed struct*
+(`Types::typed`): members of the field types (a union's payloads in a C `union`),
+at the Gamma offsets, with every byte of padding an explicit `uint8_t` member so
+that a copy moves exactly the bytes the layout has and a zero-initialized value
+has zero padding. A `_Static_assert` on each checks size, alignment and member
+offsets against the Gamma layout. Typed structs let the C compiler see which
+parts of a value are scalars (gcc's scalar replacement of aggregates gives up on
+byte arrays), and types with the same shape share one definition. Every other
+type (`#packed` and `#bits` structs, zero-size types, integers over 128 bits)
+is a *blob*, a struct holding its bytes with the layout's size and alignment.
+Typed structs are not used under Fil-C, where a value is a blob so that copying
+it keeps the capabilities of the pointers inside, nor on 32-bit targets, where
+C and Gamma align 64-bit members differently.
 
 **Wide integers.** An integer wider than 128 bits is a blob holding its
 little-endian two's-complement value in `⌈bits/64⌉` words (`src/cgen/wide.rs`).
@@ -593,7 +606,16 @@ the variable or place being assigned (`x = f(…)`, `x := f(…)`, `a[i] = f(…
 `return f(…)`) instead of a temporary: the assignment still happens after the
 whole call, and an exit out of the call leaves the destination as it was
 (`FnGen::expr_into`). Struct and array constructions are likewise built in their
-destination once every element is evaluated. A function body with no pending
+destination once every element is evaluated, except that an element which is itself
+a struct or array (or, into a new variable, a call) is built directly in its place
+in the destination, and an element read from a place is copied straight from it.
+That writes the destination before the later elements are evaluated, so it is done
+only when nothing evaluated meanwhile can read the destination (`Observed`): a new
+variable or result slot, or the caller's destination when every element only reads
+constants and the function's own locals and parameters. An assignment to an existing
+place builds the value in a temporary first. A caller does not pass a destination
+that overlaps a parameter the callee reads in place while building its result (it
+copies that argument first; `Gen::read_during_build`). A function body with no pending
 deferred statement builds its result, or copies a returned local, straight into
 `gm_out`; otherwise the result goes to the frame's result slot first, and the
 deferred statements run before it is copied out.
@@ -624,7 +646,7 @@ make Fil-C accept and preserve the program's pointers.
   loses its capability. Pointer arithmetic goes through `GM_PTR_ADD` (Fil-C's
   `zmkptr`, plain arithmetic elsewhere), and the tagging of function pointers
   through `GM_PTR_TAG` and `GM_PTR_UNTAG` (`zorptr`, `zandptr`).
-- **Blobs.** A by-value byte blob that may hold pointers is emitted as a union
+- **Blobs.** Values are blobs here, not typed structs. A by-value byte blob that may hold pointers is emitted as a union
   with `void*` lanes, so copying it keeps the capabilities of the pointers
   inside. This is also why a pointer rebuilt from bytes written as integers
   grants nothing.
