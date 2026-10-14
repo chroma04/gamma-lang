@@ -1,28 +1,28 @@
-// std/collections/ordered_map: a map that keeps its keys in order, as a B-tree.
-//
-//     om :: import "std/collections/ordered_map"
-//
-//     m := om.ordered_map(string, u32)              // keys ordered by `<`
-//     defer m.deinit()
-//     try m.put("pear", 3)
-//     try m.put("apple", 5)
-//     for e in m.entries() { print("{} {}\n", (e.key, e.value)) }     // apple, then pear
-//     for e in m.range("b", null) { … }             // keys from "b" on
-//     print("{}\n", m.first())                      // (key: "apple", value: 5)
-//
-// The order of the keys comes from the key type's `<` (`ordered_map`), or from a comparison
-// function (`ordered_map_by`, like `sort_by` and `heap_by`): `less(a, b)` says that `a`
-// comes before `b`, and must be a strict weak ordering. Two keys are the same key when
-// neither comes before the other. The function is stored in the map, so it is a plain
-// function pointer. A map keeps the allocator it was created with, performs no `Alloc`
-// afterwards, and reports a failed allocation as `AllocError`, leaving the map as it was.
-//
-// Lookups, insertions and removals take O(log n) comparisons. Iteration is in key order.
-// A map must not change during an iteration. Pointers from `get_ptr` are valid until the
-// next insertion or removal.
-//
-// The tree has nodes of up to 15 keys. A node is one allocation, so a map of n entries
-// takes about n / 11 blocks.
+//! A map that keeps its keys in order, as a B-tree.
+//!
+//!     om :: import "std/collections/ordered_map"
+//!
+//!     m := om.ordered_map(string, u32)              // keys ordered by `<`
+//!     defer m.deinit()
+//!     try m.put("pear", 3)
+//!     try m.put("apple", 5)
+//!     for e in m.entries() { print("{} {}\n", (e.key, e.value)) }     // apple, then pear
+//!     for e in m.range("b", null) { … }             // keys from "b" on
+//!     print("{}\n", m.first())                      // (key: "apple", value: 5)
+//!
+//! The order of the keys comes from the key type's `<` (`ordered_map`), or from a comparison
+//! function (`ordered_map_by`, like `sort_by` and `heap_by`): `less(a, b)` says that `a`
+//! comes before `b`, and must be a strict weak ordering. Two keys are the same key when
+//! neither comes before the other. The function is stored in the map, so it is a plain
+//! function pointer. A map keeps the allocator it was created with, performs no `Alloc`
+//! afterwards, and reports a failed allocation as `AllocError`, leaving the map as it was.
+//!
+//! Lookups, insertions and removals take O(log n) comparisons. Iteration is in key order.
+//! A map must not change during an iteration. Pointers from `get_ptr` are valid until the
+//! next insertion or removal.
+//!
+//! The tree has nodes of up to 15 keys. A node is one allocation, so a map of n entries
+//! takes about n / 11 blocks.
 
 // The most keys in a node, and the fewest in a node other than the root. A node with
 // `MAX_KEYS` keys is split on the way down by an insertion; a node with `MIN_KEYS` keys

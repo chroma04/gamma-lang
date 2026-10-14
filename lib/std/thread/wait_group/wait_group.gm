@@ -1,4 +1,4 @@
-// std/thread/wait_group: the wait group of std/thread, which re-exports it.
+//! The wait group of std/thread, which re-exports it.
 
 /// A counter of outstanding work: `add` before starting it, `done` when it finishes, and
 /// `wait` returns when the count is back at zero.

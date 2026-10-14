@@ -2,6 +2,50 @@
 
 [All modules](index.md)
 
+JSON as in RFC 8259 (and ECMA-404): a parser into a value tree, and a writer.
+
+    json :: import "std/json"
+
+    doc := try json.parse("{\"name\": \"gamma\", \"tags\": [1, 2.5]}")
+    defer doc.deinit()
+    name := doc.root.get("name")                      // ?Value; .String("gamma")
+
+    out := list(u8)
+    defer out.deinit()
+    try json.write(&out, doc.root, 2)                 // the tree again, indented
+
+    w := json.writer(&out, 0)                         // or build output directly
+    try w.begin_object()
+    try w.key("id")
+    try w.write_int(7)
+    try w.end_object()                                // {"id":7}
+
+Parsing. `parse` accepts exactly the texts the RFC's grammar describes: any JSON value
+at the top level, surrounded by the four whitespace bytes (space, tab, line feed,
+carriage return) and nothing else. It rejects everything the RFC rejects: trailing
+commas, comments, single quotes, leading zeros and a leading `+` in numbers, `.5` and
+`1.`, `NaN` and `Infinity`, unescaped control characters in strings, and unterminated
+input. Further choices where the RFC leaves room:
+
+  - The text must be valid UTF-8 inside strings (the RFC requires UTF-8); a byte order
+    mark is not skipped.
+  - A `\u` escape that is a lone surrogate, or a surrogate pair that is not a high
+    followed by a low surrogate, is an error (`InvalidSurrogate`), since strings of
+    this library are UTF-8. A correct pair is decoded to one scalar value.
+  - Duplicate keys in an object are all kept, in order. `get` finds the last one, as
+    most JSON implementations do.
+  - Nesting deeper than `max_depth` (default 512) is an error, so hostile input cannot
+    exhaust the stack.
+  - A number keeps its literal text. It is converted on demand, with `to_i64` or
+    `to_f64`, which say whether the conversion lost anything.
+
+A parsed `Document` owns all its memory, taken from the allocator current when `parse`
+was called, and gives it back at once with `deinit`. Strings and slices inside the tree
+are valid until then.
+
+Errors carry the byte offset of the problem; `position` turns an offset into a line and
+column for messages.
+
 ## Structs
 
 ### `Number`

@@ -2,6 +2,25 @@
 
 [All modules](index.md)
 
+Fixed, unkeyed digests and checksums for integrity checks.
+
+    hash :: import "std/hash"
+    hex :: import "std/encoding/hex"
+
+    sum := hash.crc32.checksum("123456789")             // 0xcbf43926
+    d := hash.sha256.sum("abc")                         // a [32]u8
+    buf: [64]u8 = ---
+    text := hex.encode(d[..], buf[..], false)           // "ba7816bf..."
+
+Both algorithms also come as a streaming state (`init`, `update`, `final`) for data that
+arrives in pieces, with the same result however the data is split. Neither allocates or
+performs effects. These are digests for detecting corruption and for identifying
+content; ciphers, keyed MACs, signatures and password hashing are not part of the
+standard library.
+
+Each algorithm is a module of its own (their functions share names), reachable through
+this one or imported directly (`std/hash/sha256`).
+
 ## Imports
 
 ### `crc32`

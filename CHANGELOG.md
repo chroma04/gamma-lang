@@ -13,6 +13,26 @@ Versions and what each kind of change means are described in
   comments and `//!` module comments (§2.2). The standard library reference in
   `docs/std/` is generated with it.
 - `gamma repl`: an interactive read-eval-print loop on the interpreter.
+- Build settings in `gamma.toml`: a `[build]` table and named `[profile.<name>]` tables
+  (`--profile=`) with the build mode, `-g`, C flags, and C sources, include directories
+  and libraries to link, which dependencies may ship too.
+- Packages: archive dependencies (`{ url = "…tar.gz", sha256 = "…" }`, `gamma add --url`);
+  `gamma cache dir` and `gamma cache clean`; checkouts are read-only; symbolic links are
+  covered by the checksum (trees without them keep their checksum).
+- Language server: references and rename across the modules of a package, checking past
+  an unclosed bracket, definitions in the core library, unsaved new files.
+- Standard library: `std/hash` (CRC-32, SHA-256), `std/json` (RFC 8259),
+  `std/collections/ordered_map` (a B-tree), `thread.detach`; a guide chapter touring the
+  library (`docs/guide/16-standard-library.md`).
+
+### Changed
+
+- **Breaking:** `HashMap.get_or_put` is removed; use `entry` (§21.5).
+- **Breaking:** `WaitGroup.wait_all` is renamed `wait`.
+- **Breaking:** `std/log`'s `ErrLog` no longer takes a `time` field and needs only `Err`;
+  the timestamped logger is `StampedLog`, which also needs `Clock`.
+- §22.4 says what "cryptography" excludes: fixed, unkeyed digests and checksums are
+  admitted to the standard library.
 
 ## 0.1.0 (not yet tagged)
 

@@ -2,6 +2,8 @@
 
 [All modules](../index.md)
 
+The wait group of std/thread, which re-exports it.
+
 ## Structs
 
 ### `WaitGroup`

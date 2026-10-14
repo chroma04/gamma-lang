@@ -440,7 +440,8 @@ fn run(opts: &Options) -> ExitCode {
     // code it cannot find or describe to libffi, so such programs run natively. The C sources
     // of the packages are loaded as a shared library, unless the program is not for the host
     // (Safe builds, cross targets), which runs natively with them linked in.
-    let native = opts.c_backend || opts.mode == gamma::interp::Mode::Safe || opts.target.is_some();
+    let native =
+        opts.c_backend || (!extras.is_empty() && (opts.mode == gamma::interp::Mode::Safe || opts.target.is_some()));
     if !native
         && !extras.is_empty()
         && let Ok(t) = &toolchain
