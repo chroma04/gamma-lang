@@ -9,6 +9,10 @@ Versions and what each kind of change means are described in
 ### Added
 
 - `docs/versioning.md`: the versioning and stability policy, and how a release is cut.
+- `gamma doc`: API documentation, as Markdown or HTML, from `pub` declarations, `///` doc
+  comments and `//!` module comments (§2.2). The standard library reference in
+  `docs/std/` is generated with it.
+- `gamma repl`: an interactive read-eval-print loop on the interpreter.
 
 ## 0.1.0 (not yet tagged)
 
