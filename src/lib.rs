@@ -13,6 +13,7 @@ pub mod interp;
 pub mod layout;
 pub mod lsp;
 pub mod pkg;
+pub mod repl;
 pub mod sema;
 pub mod source;
 pub mod symbol;
