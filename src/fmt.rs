@@ -53,6 +53,19 @@ fn first_difference(a_src: &str, a: &[Token], b_src: &str, b: &[Token]) -> Optio
                 _ => text(a_src, x) == text(b_src, y),
             }
     };
+    // The end of the text and a line break right before it are not compared: the output
+    // always ends in a line break, the source may not.
+    let trim = |t: &[Token]| {
+        let mut n = t.len();
+        if n > 0 && t[n - 1].kind == TokenKind::Eof {
+            n -= 1;
+        }
+        if n > 0 && t[n - 1].kind == TokenKind::Newline {
+            n -= 1;
+        }
+        n
+    };
+    let (a, b) = (&a[..trim(a)], &b[..trim(b)]);
     (0..a.len().max(b.len())).find(|&i| match (a.get(i), b.get(i)) {
         (Some(x), Some(y)) => !same(x, y),
         _ => true,

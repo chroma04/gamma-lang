@@ -264,3 +264,10 @@ fn pattern_bindings_starting_with_a_dot_are_statements() {
         "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n",
     );
 }
+
+#[test]
+fn missing_final_newline_is_added() {
+    assert_eq!(format_source("a :: 1").unwrap(), "a :: 1\n");
+    assert_eq!(format_source("f :: fn() {\n    g()\n}").unwrap(), "f :: fn() {\n    g()\n}\n");
+    assert_eq!(format_source("a :: 1 // done").unwrap(), "a :: 1 // done\n");
+}
