@@ -6,7 +6,7 @@ Gamma has three kinds of editor support. They are independent, so you can use an
 | --- | --- | --- |
 | TextMate grammar | Syntax highlighting in VS Code and other editors that read TextMate grammars. | `editors/vscode/syntaxes/gamma.tmLanguage.json` |
 | Tree-sitter grammar | Syntax highlighting, indentation, folding and a syntax tree in Neovim, Helix, Emacs, Zed and others. | `editors/tree-sitter-gamma/` |
-| Language server | Diagnostics, hover, go to definition, completion, document symbols and formatting, for any editor with an LSP client. | `gamma lsp` |
+| Language server | Diagnostics, hover, go to definition, find references, rename, completion, signature help, document symbols and formatting, for any editor with an LSP client. | `gamma lsp` |
 
 Source files use the extension `.gm`.
 

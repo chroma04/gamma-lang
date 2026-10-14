@@ -20,7 +20,7 @@ impl Ctx<'_> {
     }
 
     fn location(&self, span: Span) -> Option<Value> {
-        let path = self.a.real_path(span.file)?;
+        let path = self.a.open_path(span.file)?;
         Some(json!({"uri": (self.uri_of)(&path), "range": self.a.range(span, self.enc)}))
     }
 }

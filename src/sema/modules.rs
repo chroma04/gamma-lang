@@ -83,7 +83,7 @@ impl<'s> Sema<'s> {
     /// Loads the root module: a single `.gm` file, or every `.gm` file directly
     /// inside a directory (§3.1).
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
-        if root.is_dir() {
+        if root.is_dir() || (!root.is_file() && self.sess.module_files(root).is_some()) {
             let m = self.load_dir_module(root, Span::DUMMY, None, None)?;
             return (self.keep_going || !self.sess.diags.has_errors()).then_some(m);
         }

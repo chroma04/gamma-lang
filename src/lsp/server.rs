@@ -3,7 +3,9 @@
 use super::analysis::{Analysis, canon, path_to_uri, uri_to_path};
 use super::features::{self, Ctx};
 use super::position::Encoding;
+use super::refs;
 use super::transport::write_message;
+use super::workspace::Workspace;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -19,6 +21,7 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
+const REQUEST_FAILED: i64 = -32803;
 
 struct Doc {
     uri: String,
@@ -36,6 +39,8 @@ pub struct Server<W: Write> {
     stale: HashSet<PathBuf>,
     /// For each analyzed directory, the files it published diagnostics for.
     published: HashMap<PathBuf, HashSet<PathBuf>>,
+    /// The other modules of the packages of the open documents.
+    workspace: Workspace,
     shutdown: bool,
     /// Free the compiler's types after each analysis (see [`Analysis::run`]).
     pub recycle: bool,
@@ -59,6 +64,7 @@ impl<W: Write> Server<W> {
             analyses: HashMap::new(),
             stale: HashSet::new(),
             published: HashMap::new(),
+            workspace: Workspace::default(),
             shutdown: false,
             recycle: false,
         }
@@ -299,6 +305,8 @@ impl<W: Write> Server<W> {
             "textDocument/hover"
             | "textDocument/definition"
             | "textDocument/references"
+            | "textDocument/prepareRename"
+            | "textDocument/rename"
             | "textDocument/completion"
             | "textDocument/documentSymbol"
             | "textDocument/signatureHelp"
@@ -322,6 +330,7 @@ impl<W: Write> Server<W> {
                 "hoverProvider": true,
                 "definitionProvider": true,
                 "referencesProvider": true,
+                "renameProvider": {"prepareProvider": true},
                 "documentSymbolProvider": true,
                 "documentFormattingProvider": true,
                 "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
@@ -350,6 +359,7 @@ impl<W: Write> Server<W> {
         let dir = dir_of(&path);
         self.ensure(&dir);
         let uris = self.uri_map();
+        let overlays = self.overlays();
         let uri_of = |p: &Path| uris.get(p).cloned().unwrap_or_else(|| path_to_uri(p));
         let Some(a) = self.analyses.get(&dir) else { return Ok(Value::Null) };
         let Some(file) = a.file_id(&path) else { return Ok(Value::Null) };
@@ -361,9 +371,30 @@ impl<W: Write> Server<W> {
         Ok(match method {
             "textDocument/hover" => features::hover(&cx, file, at(&cx)),
             "textDocument/definition" => features::definition(&cx, file, at(&cx)),
-            "textDocument/references" => {
-                let include = params["context"]["includeDeclaration"].as_bool().unwrap_or(true);
-                features::references(&cx, file, at(&cx), include)
+            "textDocument/references" | "textDocument/prepareRename" | "textDocument/rename" => {
+                let off = at(&cx);
+                let mut rq = refs::Request {
+                    a,
+                    ws: &mut self.workspace,
+                    dir: &dir,
+                    overlays: &overlays,
+                    recycle: self.recycle,
+                    enc: self.enc,
+                    uri_of: &uri_of,
+                };
+                match method {
+                    "textDocument/references" => {
+                        let include = params["context"]["includeDeclaration"].as_bool().unwrap_or(true);
+                        refs::references(&mut rq, file, off, include)
+                    }
+                    "textDocument/prepareRename" => {
+                        refs::prepare_rename(&mut rq, file, off).map_err(|m| (REQUEST_FAILED, m))?
+                    }
+                    _ => {
+                        let new = params["newName"].as_str().ok_or((INVALID_PARAMS, "missing newName".to_string()))?;
+                        refs::rename(&mut rq, file, off, new).map_err(|m| (REQUEST_FAILED, m))?
+                    }
+                }
             }
             "textDocument/documentSymbol" => features::document_symbols(&cx, file),
             "textDocument/signatureHelp" => features::signature_help(&cx, file, at(&cx)),
