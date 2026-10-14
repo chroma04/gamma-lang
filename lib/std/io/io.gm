@@ -1,13 +1,13 @@
-// std/io: reading lines from `In`, and handlers that connect `In` and `Out` to files
-// and strings, so code written against the ambient effects works on any of them.
-//
-//     with io.FileIn(f: file) { count_words() }      // `In` reads the file
-//     out := io.file_out(file)                        // `print` writes to the file, buffered
-//     with &out { report() }
-//     try out.flush()                                  // ... so flush before closing the file
-//     with &io.StringIn(data: "a\nb\n") { … }         // `In` reads a string
-//     lo := io.ListOut(list: &text)                    // `print` appends to a list
-//     with &lo { report() }
+//! Reading lines from `In`, and handlers that connect `In` and `Out` to files
+//! and strings, so code written against the ambient effects works on any of them.
+//!
+//!     with io.FileIn(f: file) { count_words() }      // `In` reads the file
+//!     out := io.file_out(file)                        // `print` writes to the file, buffered
+//!     with &out { report() }
+//!     try out.flush()                                  // ... so flush before closing the file
+//!     with &io.StringIn(data: "a\nb\n") { … }         // `In` reads a string
+//!     lo := io.ListOut(list: &text)                    // `print` appends to a list
+//!     with &lo { report() }
 
 /// Reads from `In` through a buffer, a line at a time. `reader` reads through a buffer
 /// of 4096 bytes kept inside the `Reader`; `reader_with` reads through a buffer you supply.

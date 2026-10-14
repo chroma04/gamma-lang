@@ -1,18 +1,18 @@
-// std/time: calendar dates and times, RFC 3339 text, and durations as text.
-//
-// Dates are in the proleptic Gregorian calendar and times are UTC: there are no time
-// zones (they need the tz database), no leap seconds and no daylight saving. `Clock`'s
-// `wall()` is Unix time in nanoseconds, which `from_unix` turns into a `DateTime` and
-// `to_unix` back. Everything is plain arithmetic: nothing allocates, and only `now`
-// performs an effect. Text goes into a buffer the caller supplies and the result is the
-// slice written; each kind of output has a constant giving a size that always suffices.
-//
-//     time :: import "std/time"
-//     t := time.now()                                    // \ {Clock}
-//     buf: [time.RFC3339_LEN]u8 = ---
-//     print("{}\n", time.format_rfc3339(t, buf[..]))     // 2024-05-17T09:30:00Z
-//     d := try time.parse_date("2024-02-29")
-//     next := time.add_months(d, 12)                     // 2025-02-28
+//! Calendar dates and times, RFC 3339 text, and durations as text.
+//!
+//! Dates are in the proleptic Gregorian calendar and times are UTC: there are no time
+//! zones (they need the tz database), no leap seconds and no daylight saving. `Clock`'s
+//! `wall()` is Unix time in nanoseconds, which `from_unix` turns into a `DateTime` and
+//! `to_unix` back. Everything is plain arithmetic: nothing allocates, and only `now`
+//! performs an effect. Text goes into a buffer the caller supplies and the result is the
+//! slice written; each kind of output has a constant giving a size that always suffices.
+//!
+//!     time :: import "std/time"
+//!     t := time.now()                                    // \ {Clock}
+//!     buf: [time.RFC3339_LEN]u8 = ---
+//!     print("{}\n", time.format_rfc3339(t, buf[..]))     // 2024-05-17T09:30:00Z
+//!     d := try time.parse_date("2024-02-29")
+//!     next := time.add_months(d, 12)                     // 2025-02-28
 
 // ---------------------------------------------------------------------------------
 // Calendar

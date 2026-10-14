@@ -1,16 +1,16 @@
-// std/path: POSIX path strings, with `/` as the separator.
-//
-// Every function works on the bytes of a `string` and is purely lexical: nothing looks
-// at the file system, nothing performs an effect, and nothing allocates unless it says
-// so. Functions that return a `string` return a slice of their argument (or of the
-// buffer the caller supplied).
-//
-//     path :: import "std/path"
-//     path.base_name("/usr/lib/libc.so.6")        // "libc.so.6"
-//     path.dir_name("/usr/lib/libc.so.6")         // "/usr/lib"
-//     path.extension("libc.so.6")                 // "6"
-//     buf: [64]u8 = ---
-//     path.clean("a//b/./c/../d", buf[..])        // "a/b/d"
+//! POSIX path strings, with `/` as the separator.
+//!
+//! Every function works on the bytes of a `string` and is purely lexical: nothing looks
+//! at the file system, nothing performs an effect, and nothing allocates unless it says
+//! so. Functions that return a `string` return a slice of their argument (or of the
+//! buffer the caller supplied).
+//!
+//!     path :: import "std/path"
+//!     path.base_name("/usr/lib/libc.so.6")        // "libc.so.6"
+//!     path.dir_name("/usr/lib/libc.so.6")         // "/usr/lib"
+//!     path.extension("libc.so.6")                 // "6"
+//!     buf: [64]u8 = ---
+//!     path.clean("a//b/./c/../d", buf[..])        // "a/b/d"
 
 /// The path separator.
 pub SEP :: '/'

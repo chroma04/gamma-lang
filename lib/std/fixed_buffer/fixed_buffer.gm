@@ -1,8 +1,8 @@
-// std/fixed_buffer: an allocator over a buffer the caller owns (§15.2).
-//
-//     store: [4096]u8 = ---
-//     fb := fixed_buffer.over(store[..])
-//     with fb.allocator() { … }               // allocations come from `store`
+//! An allocator over a buffer the caller owns (§15.2).
+//!
+//!     store: [4096]u8 = ---
+//!     fb := fixed_buffer.over(store[..])
+//!     with fb.allocator() { … }               // allocations come from `store`
 
 /// The address `p` rounded up to a multiple of `align` (a power of two).
 align_up :: fn(p: usize, align: usize) -> usize => (p + (align - 1)) & ~(align - 1)

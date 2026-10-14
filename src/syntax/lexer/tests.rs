@@ -861,3 +861,13 @@ fn c_equality_operators_are_reported() {
     one_err("a == b", "`==` is not an operator; compare with `is`");
     one_err("a != b", "`!=` is not an operator; compare with `is not`");
 }
+
+#[test]
+fn module_doc_comments_are_plain_comments() {
+    let mut diags = Diagnostics::new();
+    let out = lex(FileId(0), "//! module\nfn", &mut diags);
+    assert!(out.docs.is_empty());
+    let kinds: Vec<_> = out.tokens.iter().map(|t| show(&t.kind)).collect();
+    assert_eq!(kinds, ["fn", "EOF"]);
+    assert!(diags.is_empty());
+}

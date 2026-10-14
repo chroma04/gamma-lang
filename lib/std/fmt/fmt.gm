@@ -1,21 +1,21 @@
-// std/fmt: number formatting into caller-provided buffers.
-//
-// `print` writes every value in one fixed way (spec §21.6.1). This module provides the
-// other presentations: other bases, padding, thousands separators, and fixed-point and
-// scientific floats with a chosen number of digits.
-//
-// The integer functions are generic over `Int(T)` and support any width from 8 bits up
-// (narrower types cannot hold the digit constants). Floats are `f64`; an `f32` argument
-// widens exactly.
-//
-// Every function writes into a buffer the caller supplies and returns the `string` it
-// wrote, a slice of that buffer. Nothing allocates and nothing performs effects. A
-// buffer that is too small is a trap, so each kind of output has a constant or function
-// giving the size that always suffices.
-//
-// Floats are converted exactly: the binary value of the `f64` is expanded to its full
-// decimal expansion with fixed-size integer arithmetic and then rounded half to even, so
-// results agree with C's `printf("%.*f")`, `%.*e` and `%.*g` in glibc.
+//! Number formatting into caller-provided buffers.
+//!
+//! `print` writes every value in one fixed way (spec §21.6.1). This module provides the
+//! other presentations: other bases, padding, thousands separators, and fixed-point and
+//! scientific floats with a chosen number of digits.
+//!
+//! The integer functions are generic over `Int(T)` and support any width from 8 bits up
+//! (narrower types cannot hold the digit constants). Floats are `f64`; an `f32` argument
+//! widens exactly.
+//!
+//! Every function writes into a buffer the caller supplies and returns the `string` it
+//! wrote, a slice of that buffer. Nothing allocates and nothing performs effects. A
+//! buffer that is too small is a trap, so each kind of output has a constant or function
+//! giving the size that always suffices.
+//!
+//! Floats are converted exactly: the binary value of the `f64` is expanded to its full
+//! decimal expansion with fixed-size integer arithmetic and then rounded half to even, so
+//! results agree with C's `printf("%.*f")`, `%.*e` and `%.*g` in glibc.
 
 // ---------------------------------------------------------------------------------
 // Integers

@@ -136,6 +136,7 @@ The horizontal tab (U+0009) and space (U+0020) are whitespace. No other Unicode 
 - A line comment starts with `//` and extends to the end of the line.
 - A block comment starts with `/*` and ends with the matching `*/`. Block comments nest: `/* a /* b */ c */` is one comment.
 - A doc comment is a line comment starting with `///`. It attaches to the declaration that follows it. Doc comments have no semantic effect.
+- A module doc comment is a line comment starting with `//!`. The `//!` lines at the top of a file, before its first declaration, document the module; the lines are Markdown, with one leading space removed. Like a doc comment it has no semantic effect, and to the compiler it is an ordinary line comment. Tools such as `gamma doc` use the doc comments of `pub` declarations and the module doc comments to write API documentation.
 
 A comment is equivalent to whitespace, except that a block comment containing a line terminator is equivalent to a line terminator for the purposes of §2.8.
 
