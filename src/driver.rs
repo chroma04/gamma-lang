@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 /// The canonical form of `path`; for a file that does not exist (yet), its directory's
 /// canonical form joined with its name.
 pub fn canonical_path(path: &Path) -> PathBuf {
-    if let Ok(p) = path.canonicalize() {
-        return p;
+    if path.exists() {
+        return crate::source::canonical(path);
     }
     match (path.parent().filter(|d| !d.as_os_str().is_empty()), path.file_name()) {
-        (Some(dir), Some(name)) => dir.canonicalize().map_or_else(|_| path.to_path_buf(), |d| d.join(name)),
+        (Some(dir), Some(name)) if dir.exists() => crate::source::canonical(dir).join(name),
         _ => path.to_path_buf(),
     }
 }

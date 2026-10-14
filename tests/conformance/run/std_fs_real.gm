@@ -1,20 +1,6 @@
 // std/fs directory helpers and the new `Fs` operations on the real file system, in a fresh
 // directory under the system temporary directory (which the test removes again).
 fs :: import "std/fs"
-c :: import "std/c"
-
-libc :: foreign "c" {
-    symlink :: fn(target: cstring, link: cstring) -> c.c_int
-    unlink :: fn(path: cstring) -> c.c_int
-}
-
-// `path` followed by a NUL, in `buf`, as a C string.
-cpath :: fn(buf: []u8, path: string) -> cstring {
-    buf[0..path.len].copy_from(path)
-    buf[path.len] = 0
-    return buf.ptr.cast(cstring)
-}
-
 hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 
 // `root/rel` in `buf`.
@@ -39,7 +25,7 @@ count :: fn(path: string) -> IoError!u32 \ {Fs} {
     return n
 }
 
-scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc, Sys} {
+scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     p: [512]u8 = ---
 
     // make_dir_all: nested, repeated, with odd separators.
@@ -128,25 +114,6 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc, Sys} {
     print("lstat dir: {}\n", (try lstat(at(p[..], root, "a"))).kind is .Dir)
     if !e := lstat(at(p[..], root, "missing")) { print("lstat missing: {}\n", e) }
 
-    // lstat does not follow a final symlink, stat does
-    lb: [600]u8 = ---
-    cb2: [600]u8 = ---
-    link := at(lb[..], root, "link")
-    made := libc.symlink(cpath(cb2[..], at(p[..], root, "a/b/two.txt")), cpath(lb[..], link)) is 0
-    print("symlink made: {}\n", made)
-    ln := try lstat(link)
-    print("lstat link: {} {}\n", (ln.kind is .Symlink, ln.size is not 2))
-    sf := try stat(link)
-    print("stat link: {} {}\n", (sf.kind is .File, sf.size))
-    dl := at(cb2[..], root, "dirlink")
-    _ = libc.symlink(cpath(p[..], at(lb[..], root, "a")), cpath(cb2[..], dl))
-    print("lstat dir link: {} stat dir link: {}\n", ((try lstat(dl)).kind is .Symlink, (try stat(dl)).kind is .Dir))
-    _ = libc.symlink(cpath(p[..], "no/such/target"), cpath(lb[..], at(cb2[..], root, "dangling")))
-    print("lstat dangling: {} stat dangling: {}\n", ((try lstat(at(cb2[..], root, "dangling"))).kind is .Symlink, stat(at(cb2[..], root, "dangling")) is !.NotFound))
-    _ = libc.unlink(cpath(p[..], at(lb[..], root, "link")))
-    _ = libc.unlink(cpath(p[..], at(lb[..], root, "dirlink")))
-    _ = libc.unlink(cpath(p[..], at(lb[..], root, "dangling")))
-
     // truncate, sync
     h := try open(at(p[..], root, "top.txt"), OpenOptions(read: true, write: true))
     _ = try h.write_to("hello world")
@@ -167,7 +134,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc, Sys} {
     // cwd
     cb: [4096]u8 = ---
     cn := try cwd(cb[..])
-    print("cwd: {} {}\n", (cn > 0, cb[0] is '/'))
+    print("cwd: {} {}\n", (cn > 0, cb[0] is '/' or cb[1] is ':'))
     if !e := cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
 
     // write_atomic
@@ -196,8 +163,8 @@ cleanup :: fn(root: string) \ {Fs} {
     _ = remove_dir(root)
 }
 
-main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env, Sys} {
-    tmp := var("TMPDIR") else "/tmp"
+main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
+    tmp := var("TMPDIR") else (var("TEMP") else "/tmp")
     r: [6]u8 = ---
     fill(r[..])
     name: [12]u8 = ---

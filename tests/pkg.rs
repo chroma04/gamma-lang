@@ -404,7 +404,7 @@ fn offline_uses_only_what_is_locked_and_fetched() {
     std::fs::rename(w.path("a"), w.path("a-moved")).unwrap();
     assert_eq!(w.gamma("app", &["test", "--offline", "."]).success().stdout.trim(), "0 passed, 0 failed");
     // ...and an empty cache needs the network.
-    std::fs::remove_dir_all(w.cache()).unwrap();
+    gamma::pkg::git::remove_tree(&w.cache()).unwrap();
     let out = w.gamma("app", &["run", "--offline", "."]).failure();
     assert!(out.stderr.contains("not in the cache"), "{}", out.stderr);
     // Online, the missing repository is reported by git.
@@ -498,6 +498,8 @@ fn two_requirements_on_one_repository_share_a_revision() {
     assert!(!w.path("app/gamma.lock").exists());
 }
 
+// Names one repository two ways with a symbolic link, which creating on Windows needs a privilege.
+#[cfg(unix)]
 #[test]
 fn different_refs_of_one_repository_conflict() {
     need_git!();
@@ -614,12 +616,12 @@ fn a_changed_checkout_fails_its_checksum() {
     w.git("a", &["add", "-A"]);
     w.git("a", &["commit", "-q", "-m", "oops"]);
     w.git("a", &["tag", "-f", "v1.0.0"]);
-    std::fs::remove_dir_all(w.cache().join("git/checkouts")).unwrap();
+    gamma::pkg::git::remove_tree(&w.cache().join("git/checkouts")).unwrap();
     assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
     assert_eq!(w.read("app/gamma.lock"), lock);
 
     // A lock whose checksum differs from the content is refused.
-    std::fs::remove_dir_all(w.cache().join("git/checkouts")).unwrap();
+    gamma::pkg::git::remove_tree(&w.cache().join("git/checkouts")).unwrap();
     w.write("app/gamma.lock", &lock.replace(&sum, &format!("sha256:{}", "0".repeat(64))));
     let out = w.gamma("app", &["run", "."]).failure();
     assert!(out.stderr.contains("checksum mismatch for package a (expected sha256:000"), "{}", out.stderr);
@@ -645,7 +647,7 @@ fn a_changed_checkout_fails_its_checksum() {
     w.git("a", &["tag", "-f", "v1.0.0"]);
     w.git("a", &["reflog", "expire", "--expire=now", "--all"]);
     w.git("a", &["gc", "-q", "--prune=now"]);
-    std::fs::remove_dir_all(w.cache()).unwrap();
+    gamma::pkg::git::remove_tree(&w.cache()).unwrap();
     let out = w.gamma("app", &["run", "."]).failure();
     assert!(out.stderr.contains("no longer available"), "{}", out.stderr);
 }

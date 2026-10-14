@@ -8,6 +8,11 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Windows (x86_64): the interpreter and the C back end (`gamma build`, `--backend=c`,
+  `gamma test`) run on Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is
+  not supported). The runtime has Win32 implementations of fibers, threads, the futex,
+  files, sockets and time; releases include a Windows zip and `tools/install.ps1`.
+  Conformance tests that are inherently POSIX are marked `//! os: unix`.
 - `docs/versioning.md`: the versioning and stability policy, and how a release is cut.
 - `gamma doc`: API documentation, as Markdown or HTML, from `pub` declarations, `///` doc
   comments and `//!` module comments (§2.2). The standard library reference in

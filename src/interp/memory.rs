@@ -297,13 +297,11 @@ impl Memory {
         let Some(s) = a.data().get(off..off + size) else { return false };
         let nw = size.div_ceil(8);
         let Some(out) = out.get_mut(..nw) else { return false };
-        let mut chunks = s.chunks_exact(8);
-        let mut i = 0;
-        for c in &mut chunks {
-            out[i] = u64::from_le_bytes(c.try_into().unwrap());
-            i += 1;
+        let (chunks, rest) = s.as_chunks::<8>();
+        let i = chunks.len();
+        for (o, c) in out.iter_mut().zip(chunks) {
+            *o = u64::from_le_bytes(*c);
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut b = [0u8; 8];
             b[..rest.len()].copy_from_slice(rest);
@@ -327,13 +325,11 @@ impl Memory {
         let nw = size.div_ceil(8);
         let Some(src) = src.get(..nw) else { return false };
         let Some(d) = self.allocs[i].data_mut().get_mut(off..off + size) else { return false };
-        let mut chunks = d.chunks_exact_mut(8);
-        let mut k = 0;
-        for c in &mut chunks {
-            c.copy_from_slice(&src[k].to_le_bytes());
-            k += 1;
+        let (chunks, rest) = d.as_chunks_mut::<8>();
+        let k = chunks.len();
+        for (c, w) in chunks.iter_mut().zip(src) {
+            *c = w.to_le_bytes();
         }
-        let rest = chunks.into_remainder();
         if !rest.is_empty() {
             let n = rest.len();
             rest.copy_from_slice(&src[k].to_le_bytes()[..n]);

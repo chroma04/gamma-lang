@@ -1,4 +1,5 @@
 //! safe: skip calls functions through pointers re-typed to their C ABI split, which Fil-C's calls do not mirror
+//! os: unix
 // C-ABI wrappers of plain functions whose address is taken: called through function pointers re-typed to the scalars the System V ABI splits their big parameters into.
 //! arch: x86_64
 //! native: calls through re-typed function pointers

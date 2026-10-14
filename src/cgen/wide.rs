@@ -372,7 +372,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let Some(w) = self.wide(target) else { return unsupported(e.span, format!("converting from `{src}`")) };
         let x = self.tmp(Ty::f64(), &format!("(double){v}"));
         let rounded = match op {
-            Builtin::Round => format!("__builtin_roundeven({x})"),
+            Builtin::Round => format!("GM_ROUNDEVEN({x})"),
             Builtin::Floor => format!("__builtin_floor({x})"),
             Builtin::Ceil => format!("__builtin_ceil({x})"),
             _ => format!("__builtin_trunc({x})"),

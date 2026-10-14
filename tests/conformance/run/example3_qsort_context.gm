@@ -1,4 +1,5 @@
 // qsort_r with a context pointer (glibc and BSD/macOS order their arguments differently) and a Sys callback touching a #global, cstring buffers, strtol with an out-pointer.
+//! os: unix
 c :: import "std/c"
 when target.os is .Linux {
     sorting :: foreign "c" {

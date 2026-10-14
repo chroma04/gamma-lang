@@ -92,6 +92,17 @@ impl SourceFile {
     }
 }
 
+/// The canonical form of `path` (`path` itself if it does not exist). On Windows the
+/// canonical path of the system has a `\\?\` prefix that no other spelling of the path has
+/// and that would show in diagnostics, so it is left off.
+pub fn canonical(path: &Path) -> PathBuf {
+    let c = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    match c.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC\\") => PathBuf::from(plain),
+        _ => c,
+    }
+}
+
 /// All source files known to one compilation.
 #[derive(Default)]
 pub struct SourceMap {
@@ -106,7 +117,11 @@ impl SourceMap {
     /// Registers in-memory source text under `path` (which need not exist on disk).
     pub fn add(&mut self, path: impl Into<PathBuf>, src: String) -> FileId {
         let id = FileId(self.files.len() as u32);
-        self.files.push(SourceFile::new(path.into(), src));
+        let path = path.into();
+        // File names show as they do everywhere else: with `/` (Windows accepts it too).
+        #[cfg(windows)]
+        let path = PathBuf::from(path.to_string_lossy().replace('\\', "/"));
+        self.files.push(SourceFile::new(path, src));
         id
     }
 

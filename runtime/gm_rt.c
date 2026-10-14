@@ -8,7 +8,15 @@
 
 /* Definitions of the variables declared in gm_rt.h (gm_checks is the generated code's). */
 GM_API _Thread_local gm_bt *gm_bt_top;
-GM_API pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
+#ifdef _WIN32
+static SRWLOCK gm_rt_lock = SRWLOCK_INIT;
+GM_API void gm_rt_acquire(void) { AcquireSRWLockExclusive(&gm_rt_lock); }
+GM_API void gm_rt_release(void) { ReleaseSRWLockExclusive(&gm_rt_lock); }
+#else
+static pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
+GM_API void gm_rt_acquire(void) { pthread_mutex_lock(&gm_rt_lock); }
+GM_API void gm_rt_release(void) { pthread_mutex_unlock(&gm_rt_lock); }
+#endif
 GM_API int gm_debug = 1;
 GM_API void *(*volatile gm_poison)(void *, int, size_t) = memset;
 GM_API _Thread_local gm_unwind gm_unw;
@@ -1991,11 +1999,41 @@ GM_API void gm_write_err(const uint8_t *p, size_t len) {
 GM_API void gm_flush(void) { fflush(stdout); }
 
 typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
+#ifdef _WIN32
+static char *gm_utf8_arg(const wchar_t *w, size_t *len) {
+    int wn = (int)wcslen(w);
+    int n = wn ? WideCharToMultiByte(CP_UTF8, 0, w, wn, NULL, 0, NULL, NULL) : 0;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n) WideCharToMultiByte(CP_UTF8, 0, w, wn, s, n, NULL, NULL);
+    s[n] = 0;
+    *len = (size_t)n;
+    return s;
+}
+#endif
 static gm_rt_str *gm_rt_args;
 static size_t gm_rt_argc;
 
 GM_API void gm_set_args(int argc, char **argv) {
     if (gm_rt_args != NULL || argc <= 0) return;
+#ifdef _WIN32
+    /* The arguments as UTF-8, from the command line (argv is in the ANSI code page). */
+    int wc = 0;
+    wchar_t **wv = CommandLineToArgvW(GetCommandLineW(), &wc);
+    if (wv != NULL && wc > 0) {
+        if (wc > argc) wc = argc;
+        gm_rt_args = (gm_rt_str *)malloc((size_t)wc * sizeof(gm_rt_str));
+        if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
+        for (int i = 0; i < wc; i++) {
+            size_t len;
+            gm_rt_args[i].ptr = (const uint8_t *)gm_utf8_arg(wv[i], &len);
+            gm_rt_args[i].len = len;
+        }
+        gm_rt_argc = (size_t)wc;
+        LocalFree(wv);
+        return;
+    }
+#endif
     gm_rt_args = (gm_rt_str *)malloc((size_t)argc * sizeof(gm_rt_str));
     if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
     for (int i = 0; i < argc; i++) {
@@ -2011,6 +2049,32 @@ GM_API const void *gm_args(size_t *count) {
 }
 
 GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+#ifdef _WIN32
+    if (len > 0x7fffffff || memchr(name, 0, len) != NULL) return false;
+    int wn = len ? MultiByteToWideChar(CP_UTF8, 0, (const char *)name, (int)len, NULL, 0) : 0;
+    wchar_t *wk = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
+    if (wk == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (wn) MultiByteToWideChar(CP_UTF8, 0, (const char *)name, (int)len, wk, wn);
+    wk[wn] = 0;
+    DWORD need = GetEnvironmentVariableW(wk, NULL, 0);
+    if (need == 0) {
+        free(wk);
+        return false;
+    }
+    wchar_t *wv = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (wv == NULL) gm_trap("out of memory", NULL, 0, 0);
+    DWORD got = GetEnvironmentVariableW(wk, wv, need);
+    free(wk);
+    if (got >= need) {
+        free(wv);
+        return false;
+    }
+    size_t vl;
+    *value = (const uint8_t *)gm_utf8_arg(wv, &vl);   /* lives for the rest of the process */
+    *value_len = vl;
+    free(wv);
+    return true;
+#else
     char *key = (char *)malloc(len + 1);
     if (key == NULL) gm_trap("out of memory", NULL, 0, 0);
     if (len > 0) memcpy(key, name, len);
@@ -2021,6 +2085,7 @@ GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
     *value = (const uint8_t *)v;
     *value_len = strlen(v);
     return true;
+#endif
 }
 
 /* ---- system services ---------------------------------------------------------------- */
@@ -2042,6 +2107,7 @@ GM_API int64_t gm_io_error(int err) {
     }
 }
 
+#ifndef _WIN32
 GM_API int64_t gm_sys_read(void *p, size_t n) {
     gm_flush();
     for (;;) {
@@ -2072,9 +2138,9 @@ GM_API void gm_clock_sleep(uint64_t ns) {
 GM_API void gm_rand_fill(void *vp, size_t n) {
     static int fd = -1;
     uint8_t *p = (uint8_t *)vp;
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     if (fd < 0) fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     while (n > 0) {
         ssize_t r = fd < 0 ? -1 : read(fd, p, n);
         if (r <= 0) {
@@ -2203,7 +2269,7 @@ GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
     int err = errno;
     free(s);
     if (d == NULL) return gm_io_error(err);
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     size_t i = 0;
     while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
     if (i == gm_ndirs) {
@@ -2214,14 +2280,14 @@ GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
         gm_ndirs = gm_ndirs * 2 + 4;
     }
     gm_dirs[i] = d;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     return (int64_t)i + 1;
 }
 
 static DIR *gm_dir(int64_t d) {
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     DIR *dir = d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     return dir;
 }
 
@@ -2256,9 +2322,9 @@ GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
 GM_API int64_t gm_fs_close_dir(int64_t d) {
     DIR *dir = gm_dir(d);
     if (dir == NULL) return gm_io_error(EBADF);
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_dirs[d - 1] = NULL;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     return GM_RET_ERR(closedir(dir) != 0);
 }
 
@@ -2441,6 +2507,557 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
     memcpy(p, text, (size_t)len);
     return len;
 }
+#else
+/* Windows: the system services on the Win32 API and Winsock 2. Paths and names cross the
+ * boundary as UTF-8 and are converted to UTF-16 for the wide-character calls. Files are
+ * C runtime descriptors (so a handle is an int, as elsewhere) opened in binary mode;
+ * sockets are SOCKET values. */
+
+/* The error code (see gm_io_error) of the Win32 error `e`. The kinds the interpreter
+ * distinguishes map to the same codes as there; any other error is Other(e). */
+static int64_t gm_win_err(DWORD e) {
+    switch (e) {
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE:
+    case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME:
+        return gm_io_error(ENOENT);
+    case ERROR_ACCESS_DENIED: return gm_io_error(EACCES);
+    case ERROR_ALREADY_EXISTS: case ERROR_FILE_EXISTS: return gm_io_error(EEXIST);
+    case ERROR_INVALID_PARAMETER: return gm_io_error(EINVAL);
+    case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return gm_io_error(ENOSPC);
+    case ERROR_BROKEN_PIPE: return gm_io_error(EPIPE);
+    case ERROR_SEM_TIMEOUT: case WAIT_TIMEOUT: return gm_io_error(ETIMEDOUT);
+    default: return -1000 - (int64_t)e;
+    }
+}
+
+/* The error code of the Winsock error `e`. */
+static int64_t gm_wsa_err(int e) {
+    switch (e) {
+    case WSAEINTR: return gm_io_error(EINTR);
+    case WSAEWOULDBLOCK: return gm_io_error(EAGAIN);
+    case WSAEACCES: return gm_io_error(EACCES);
+    case WSAEINVAL: return gm_io_error(EINVAL);
+    case WSAECONNRESET: case WSAECONNABORTED: return gm_io_error(ECONNRESET);
+    case WSAECONNREFUSED: return gm_io_error(ECONNREFUSED);
+    case WSAETIMEDOUT: return gm_io_error(ETIMEDOUT);
+    case WSAESHUTDOWN: return gm_io_error(EPIPE);
+    default: return -1000 - (int64_t)e;
+    }
+}
+
+/* A NUL-terminated UTF-16 copy of the UTF-8 text at p (freed by the caller), or NULL if it
+ * contains a NUL or is not valid UTF-8. */
+static wchar_t *gm_wide(const void *p, size_t n) {
+    if (memchr(p, 0, n) != NULL || n > 0x7fffffff) return NULL;
+    int wn = n ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)p, (int)n, NULL, 0) : 0;
+    if (n && wn == 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
+    if (w == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (wn) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)p, (int)n, w, wn);
+    w[wn] = 0;
+    return w;
+}
+
+/* The UTF-8 form of the UTF-16 text w (wn units) in a new NUL-terminated buffer; *len is its length. */
+static char *gm_utf8(const wchar_t *w, int wn, size_t *len) {
+    int n = wn ? WideCharToMultiByte(CP_UTF8, 0, w, wn, NULL, 0, NULL, NULL) : 0;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n) WideCharToMultiByte(CP_UTF8, 0, w, wn, s, n, NULL, NULL);
+    s[n] = 0;
+    if (len) *len = (size_t)n;
+    return s;
+}
+
+static char *gm_path(const void *p, size_t n) {
+    if (memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+#define GM_RET_ERR(cond) ((cond) ? gm_io_error(errno) : 0)
+#define GM_CHUNK ((size_t)1 << 30)
+
+GM_API int64_t gm_sys_read(void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        int r = _read(0, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API uint64_t gm_clock_now(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER c;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    uint64_t f = (uint64_t)freq.QuadPart, v = (uint64_t)c.QuadPart;
+    return (v / f) * 1000000000u + (v % f) * 1000000000u / f;
+}
+
+GM_API int64_t gm_clock_wall(void) {
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;   /* 100 ns since 1601 */
+    return ((int64_t)t - 116444736000000000LL) * 100;
+}
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
+#endif
+
+GM_API void gm_clock_sleep(uint64_t ns) {
+    gm_flush();
+    HANDLE t = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (t != NULL) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(int64_t)((ns + 99) / 100);
+        if (due.QuadPart < 0 && SetWaitableTimer(t, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(t, INFINITE);
+            CloseHandle(t);
+            return;
+        }
+        CloseHandle(t);
+    }
+    uint64_t ms = (ns + 999999) / 1000000;
+    while (ms > 0) {
+        DWORD step = ms > 0x7fffffffu ? 0x7fffffffu : (DWORD)ms;
+        Sleep(step);
+        ms -= step;
+    }
+}
+
+GM_API void gm_rand_fill(void *vp, size_t n) {
+    uint8_t *p = (uint8_t *)vp;
+    while (n > 0) {
+        ULONG k = n > 0x10000000u ? 0x10000000u : (ULONG)n;
+        if (BCryptGenRandom(NULL, p, k, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+            gm_trap("cannot read random bytes", NULL, 0, 0);
+        p += k;
+        n -= k;
+    }
+}
+
+/* Opens a file as a C runtime descriptor. All sharing is allowed, including deletion of an
+ * open file, as for the interpreter. */
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    bool rd = (flags & GM_FS_READ) || !(flags & (GM_FS_WRITE | GM_FS_APPEND));
+    bool wr = (flags & GM_FS_WRITE) != 0, ap = (flags & GM_FS_APPEND) != 0;
+    DWORD access = (rd ? GENERIC_READ : 0) | (wr ? GENERIC_WRITE : 0) | (ap && !wr ? FILE_APPEND_DATA : 0);
+    DWORD disp = OPEN_EXISTING;
+    if (flags & GM_FS_EXCLUSIVE) disp = CREATE_NEW;
+    else if ((flags & GM_FS_CREATE) && (flags & GM_FS_TRUNCATE)) disp = CREATE_ALWAYS;
+    else if (flags & GM_FS_CREATE) disp = OPEN_ALWAYS;
+    else if (flags & GM_FS_TRUNCATE) disp = TRUNCATE_EXISTING;
+    HANDLE h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disp,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    int fd = _open_osfhandle((intptr_t)h, _O_BINARY | (ap ? _O_APPEND : 0) | (rd && !wr && !ap ? _O_RDONLY : 0));
+    if (fd < 0) {
+        CloseHandle(h);
+        return gm_io_error(EMFILE);
+    }
+    return (int64_t)fd;
+}
+
+GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(_close((int)f) != 0); }
+
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    for (;;) {
+        int r = _read((int)f, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
+    for (;;) {
+        int r = _write((int)f, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
+    if (whence > 2 || (whence == 0 && offset < 0)) return gm_io_error(EINVAL);
+    __int64 r = _lseeki64((int)f, (__int64)offset, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END);
+    return r < 0 ? gm_io_error(errno) : (int64_t)r;
+}
+
+static int64_t gm_attr_kind(DWORD attrs, DWORD tag) {
+    if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) && (tag == IO_REPARSE_TAG_SYMLINK || tag == IO_REPARSE_TAG_MOUNT_POINT))
+        return 2;
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+
+static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, bool follow) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | (follow ? 0 : FILE_FLAG_OPEN_REPARSE_POINT), NULL);
+    DWORD err = GetLastError();
+    if (h == INVALID_HANDLE_VALUE) {
+        free(w);
+        return gm_win_err(err);
+    }
+    BY_HANDLE_FILE_INFORMATION bi;
+    BOOL ok = GetFileInformationByHandle(h, &bi);
+    err = GetLastError();
+    CloseHandle(h);
+    if (!ok) {
+        free(w);
+        return gm_win_err(err);
+    }
+    DWORD tag = 0;
+    if (!follow && (bi.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        WIN32_FIND_DATAW fd;
+        HANDLE fh = FindFirstFileW(w, &fd);
+        if (fh != INVALID_HANDLE_VALUE) {
+            tag = fd.dwReserved0;
+            FindClose(fh);
+        }
+    }
+    free(w);
+    uint64_t t = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | bi.ftLastWriteTime.dwLowDateTime;
+    int64_t mtime = ((int64_t)t - 116444736000000000LL) * 100;
+    int64_t size = (int64_t)(((uint64_t)bi.nFileSizeHigh << 32) | bi.nFileSizeLow);
+    int64_t v[3] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime};
+    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    return 0;
+}
+
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, true);
+}
+
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, false);
+}
+
+GM_API int64_t gm_fs_remove(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = DeleteFileW(w);
+    DWORD err = GetLastError();
+    if (!ok && err == ERROR_ACCESS_DENIED) {
+        /* A read-only file can be removed on POSIX systems. */
+        DWORD a = GetFileAttributesW(w);
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY) && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+            SetFileAttributesW(w, a & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+            ok = DeleteFileW(w);
+            if (!ok) SetFileAttributesW(w, a);
+            err = GetLastError();
+        }
+    }
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = CreateDirectoryW(w, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = RemoveDirectoryW(w);
+    DWORD err = GetLastError();
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
+    wchar_t *a = gm_wide(from, from_len), *b = gm_wide(to, to_len);
+    BOOL ok = FALSE;
+    DWORD err = ERROR_INVALID_PARAMETER;
+    if (a && b) {
+        ok = MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING);
+        err = GetLastError();
+    }
+    free(a);
+    free(b);
+    return ok ? 0 : gm_win_err(err);
+}
+
+typedef struct { HANDLE h; WIN32_FIND_DATAW fd; bool pending; } gm_wdir;
+static gm_wdir **gm_dirs;
+static size_t gm_ndirs;
+
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    size_t wl = wcslen(w);
+    wchar_t *pat = (wchar_t *)malloc((wl + 3) * sizeof(wchar_t));
+    if (pat == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(pat, w, wl * sizeof(wchar_t));
+    if (wl > 0 && w[wl - 1] != L'\\' && w[wl - 1] != L'/') pat[wl++] = L'\\';
+    pat[wl++] = L'*';
+    pat[wl] = 0;
+    free(w);
+    gm_wdir *d = (gm_wdir *)malloc(sizeof *d);
+    if (d == NULL) gm_trap("out of memory", NULL, 0, 0);
+    d->h = FindFirstFileW(pat, &d->fd);
+    DWORD err = GetLastError();
+    free(pat);
+    if (d->h == INVALID_HANDLE_VALUE) {
+        free(d);
+        return gm_win_err(err);
+    }
+    d->pending = true;
+    gm_rt_acquire();
+    size_t i = 0;
+    while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
+    if (i == gm_ndirs) {
+        gm_wdir **t = (gm_wdir **)realloc(gm_dirs, sizeof(gm_wdir *) * (gm_ndirs * 2 + 4));
+        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memset(t + gm_ndirs, 0, sizeof(gm_wdir *) * (gm_ndirs + 4));
+        gm_dirs = t;
+        gm_ndirs = gm_ndirs * 2 + 4;
+    }
+    gm_dirs[i] = d;
+    gm_rt_release();
+    return (int64_t)i + 1;
+}
+
+static gm_wdir *gm_dir(int64_t d) {
+    gm_rt_acquire();
+    gm_wdir *dir = d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL;
+    gm_rt_release();
+    return dir;
+}
+
+GM_API int64_t gm_fs_next_entry(int64_t di, void *p, size_t n) {
+    gm_wdir *d = gm_dir(di);
+    if (d == NULL) return gm_io_error(EBADF);
+    for (;;) {
+        if (!d->pending) {
+            if (!FindNextFileW(d->h, &d->fd)) {
+                DWORD err = GetLastError();
+                return err == ERROR_NO_MORE_FILES ? 0 : gm_win_err(err);
+            }
+        }
+        d->pending = false;
+        const wchar_t *name = d->fd.cFileName;
+        if (wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0) continue;
+        size_t len;
+        char *u = gm_utf8(name, (int)wcslen(name), &len);
+        if (len > n) {
+            free(u);
+            return gm_io_error(EINVAL);
+        }
+        memcpy(p, u, len);
+        free(u);
+        return (int64_t)len + (gm_attr_kind(d->fd.dwFileAttributes, d->fd.dwReserved0) << 32);
+    }
+}
+
+GM_API int64_t gm_fs_close_dir(int64_t di) {
+    gm_wdir *d = gm_dir(di);
+    if (d == NULL) return gm_io_error(EBADF);
+    gm_rt_acquire();
+    gm_dirs[di - 1] = NULL;
+    gm_rt_release();
+    FindClose(d->h);
+    free(d);
+    return 0;
+}
+
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
+    if (size > (uint64_t)INT64_MAX) return gm_io_error(EINVAL);
+    errno_t e = _chsize_s((int)f, (__int64)size);
+    return e != 0 ? gm_io_error(e) : 0;
+}
+
+GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(_commit((int)f) != 0); }
+
+GM_API int64_t gm_fs_cwd(void *p, size_t n) {
+    wchar_t tmp[32768];
+    DWORD wl = GetCurrentDirectoryW(32768, tmp);
+    if (wl == 0 || wl >= 32768) return gm_win_err(GetLastError());
+    size_t len;
+    char *u = gm_utf8(tmp, (int)wl, &len);
+    if (len > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, len);
+    free(u);
+    return (int64_t)len;
+}
+
+/* Winsock must be started once per process before any socket call. */
+static void gm_net_init(void) {
+    static volatile LONG state;   /* 0 not started, 1 started */
+    if (state) return;
+    gm_rt_acquire();
+    if (!state) {
+        WSADATA d;
+        WSAStartup(MAKEWORD(2, 2), &d);
+        state = 1;
+    }
+    gm_rt_release();
+}
+
+/* Resolves host:port for a stream socket (passive: for listening). */
+static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
+    gm_net_init();
+    char *h = gm_path(host, len);
+    if (h == NULL) {
+        *err = gm_io_error(EINVAL);
+        return NULL;
+    }
+    char service[8];
+    snprintf(service, sizeof service, "%u", (unsigned)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = passive ? AI_PASSIVE : 0;
+    struct addrinfo *res = NULL;
+    int r = getaddrinfo(len ? h : NULL, service, &hints, &res);
+    free(h);
+    if (r != 0) {
+        *err = -1000;
+        return NULL;
+    }
+    return res;
+}
+
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, false, &err);
+    if (res == NULL) return err;
+    SOCKET fd = INVALID_SOCKET;
+    int e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
+        if (connect(fd, a->ai_addr, (int)a->ai_addrlen) == 0) break;
+        e = WSAGetLastError();
+        closesocket(fd);
+        fd = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return fd == INVALID_SOCKET ? gm_wsa_err(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, true, &err);
+    if (res == NULL) return err;
+    SOCKET fd = INVALID_SOCKET;
+    int e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
+        /* No SO_REUSEADDR: on Windows it would let another socket take over a used port. */
+        if (bind(fd, a->ai_addr, (int)a->ai_addrlen) == 0 && listen(fd, 128) == 0) break;
+        e = WSAGetLastError();
+        closesocket(fd);
+        fd = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return fd == INVALID_SOCKET ? gm_wsa_err(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_local_port(int64_t h) {
+    struct sockaddr_storage a;
+    int n = sizeof a;
+    if (getsockname((SOCKET)h, (struct sockaddr *)&a, &n) != 0) return gm_wsa_err(WSAGetLastError());
+    if (a.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&a)->sin_port);
+    if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    return gm_io_error(EINVAL);
+}
+
+GM_API int64_t gm_net_accept(int64_t h) {
+    for (;;) {
+        SOCKET fd = accept((SOCKET)h, NULL, NULL);
+        if (fd != INVALID_SOCKET) return (int64_t)fd;
+        int e = WSAGetLastError();
+        if (e != WSAEINTR) return gm_wsa_err(e);
+    }
+}
+
+/* A timed-out blocking call fails with WSAETIMEDOUT; sockets are never non-blocking. */
+static int64_t gm_net_error(int e) {
+    return e == WSAEWOULDBLOCK ? gm_io_error(ETIMEDOUT) : gm_wsa_err(e);
+}
+
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
+    for (;;) {
+        int r = send((SOCKET)h, (const char *)p, (int)(n < GM_CHUNK ? n : GM_CHUNK), 0);
+        if (r >= 0) return (int64_t)r;
+        int e = WSAGetLastError();
+        if (e != WSAEINTR) return gm_net_error(e);
+    }
+}
+
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    for (;;) {
+        int r = recv((SOCKET)h, (char *)p, (int)(n < GM_CHUNK ? n : GM_CHUNK), 0);
+        if (r >= 0) return (int64_t)r;
+        int e = WSAGetLastError();
+        if (e == WSAECONNRESET) return gm_io_error(ECONNRESET);
+        if (e != WSAEINTR) return gm_net_error(e);
+    }
+}
+
+GM_API int64_t gm_net_close(int64_t h) { return closesocket((SOCKET)h) != 0 ? gm_wsa_err(WSAGetLastError()) : 0; }
+
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) {
+    /* SD_RECEIVE, SD_SEND and SD_BOTH are 0, 1 and 2. */
+    return shutdown((SOCKET)h, how == 0 ? SD_RECEIVE : how == 1 ? SD_SEND : SD_BOTH) != 0
+               ? gm_wsa_err(WSAGetLastError()) : 0;
+}
+
+static int gm_set_timeout(SOCKET fd, int opt, uint64_t ns) {
+    DWORD ms = (DWORD)(ns / 1000000u);
+    if (ns > 0 && ms == 0) ms = 1;   /* zero would mean no timeout */
+    return setsockopt(fd, SOL_SOCKET, opt, (const char *)&ms, sizeof ms);
+}
+
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    if (gm_set_timeout((SOCKET)h, SO_RCVTIMEO, recv_ns) != 0) return gm_wsa_err(WSAGetLastError());
+    return gm_set_timeout((SOCKET)h, SO_SNDTIMEO, send_ns) != 0 ? gm_wsa_err(WSAGetLastError()) : 0;
+}
+
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
+    struct sockaddr_storage a;
+    int al = sizeof a;
+    if (getpeername((SOCKET)h, (struct sockaddr *)&a, &al) != 0) return gm_wsa_err(WSAGetLastError());
+    char text[INET6_ADDRSTRLEN + 16];
+    int len;
+    if (a.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&a;
+        char host[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &s->sin_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "%s:%u", host, (unsigned)ntohs(s->sin_port));
+    } else if (a.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&a;
+        char host[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "[%s]:%u", host, (unsigned)ntohs(s->sin6_port));
+    } else {
+        return gm_io_error(EINVAL);
+    }
+    if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
+    memcpy(p, text, (size_t)len);
+    return len;
+}
+#endif
 
 /* ---- heap ------------------------------------------------------------------------ */
 
@@ -2512,9 +3129,9 @@ GM_API void *gm_heap_alloc(size_t size, size_t align) {
 #endif
     if (gm_debug != 0) {
         memset(p, 0xAA, size);
-        pthread_mutex_lock(&gm_rt_lock);
+        gm_rt_acquire();
         gm_hb_record(a, size);
-        pthread_mutex_unlock(&gm_rt_lock);
+        gm_rt_release();
     }
     return p;
 }
@@ -2577,7 +3194,7 @@ static gm_atag *gm_atag_find(void *p) {
 
 GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
     char *site = gm_site_str(file, flen, line, col);
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_atag *t = gm_atag_find(p);
     if (t == NULL) {
         if (2 * (gm_atag_used + 1) > gm_atag_cap) gm_atag_grow();
@@ -2589,27 +3206,27 @@ GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, si
         free(t->site);
     }
     *t = (gm_atag){p, owner, vt, site};
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
 }
 
 GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
                            const char *tfile, uint32_t tline, uint32_t tcol) {
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_atag *t = gm_atag_find(p);
     if (t == NULL) {
-        pthread_mutex_unlock(&gm_rt_lock);
+        gm_rt_release();
         return;
     }
     if (t->owner != owner || t->vt != vt) {
         char *at = gm_site_str(file, flen, line, col);
         char msg[1024];
         snprintf(msg, sizeof msg, "memory allocated at %s is freed at %s through a different allocator", t->site, at);
-        pthread_mutex_unlock(&gm_rt_lock);
+        gm_rt_release();
         gm_trap(msg, tfile, tline, tcol);
     }
     free(t->site);
     *t = (gm_atag){(void *)1, NULL, NULL, NULL};
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
 }
 
 GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
@@ -2619,7 +3236,7 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
         return;
     }
     char msg[160];
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_hblock *b = gm_hb_find((uintptr_t)p);
     if (b != NULL && b->state == GM_HB_FREED) {
         snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
@@ -2636,11 +3253,12 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
         gm_trap(msg, file, line, col);
     }
     b->state = GM_HB_FREED;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     memset(p, 0xDD, size);
     gm_heap_release(p);
 }
 
+#ifndef _WIN32
 /* ---- threads ---------------------------------------------------------------------------- */
 
 /* `detached` and `finished` are guarded by gm_rt_lock: whichever of the thread's end and
@@ -2705,13 +3323,13 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     t->f = (void (*)(void *))f;
     t->arg = arg;
     t->detached = t->finished = 0;
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     size_t slot = 0;
     while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
     if (slot == gm_nthreads) {
         gm_thread **tab = (gm_thread **)realloc(gm_threads, sizeof(gm_thread *) * (gm_nthreads * 2 + 4));
         if (tab == NULL) {
-            pthread_mutex_unlock(&gm_rt_lock);
+            gm_rt_release();
             free(t);
             return gm_io_error(ENOMEM);
         }
@@ -2720,16 +3338,16 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
         gm_nthreads = gm_nthreads * 2 + 4;
     }
     gm_threads[slot] = t;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GM_THREAD_STACK_SIZE);
     int r = pthread_create(&t->t, &attr, gm_thread_main, t);
     pthread_attr_destroy(&attr);
     if (r != 0) {
-        pthread_mutex_lock(&gm_rt_lock);
+        gm_rt_acquire();
         gm_threads[slot] = NULL;
-        pthread_mutex_unlock(&gm_rt_lock);
+        gm_rt_release();
         free(t);
         return gm_io_error(r);
     }
@@ -2737,13 +3355,13 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
 }
 
 GM_API int64_t gm_thread_join(int64_t h) {
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_thread *t = gm_threads[h - 1];
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     int r = pthread_join(t->t, NULL);
-    pthread_mutex_lock(&gm_rt_lock);
+    gm_rt_acquire();
     gm_threads[h - 1] = NULL;
-    pthread_mutex_unlock(&gm_rt_lock);
+    gm_rt_release();
     free(t);
     return r == 0 ? 0 : gm_io_error(r);
 }
@@ -2825,6 +3443,154 @@ GM_API uint32_t gm_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n < 1 ? 1 : (uint32_t)n;
 }
+#else
+/* Windows: threads from _beginthreadex, the futex from WaitOnAddress. */
+
+/* `detached` and `finished` are guarded by gm_rt_lock, as on other systems. */
+typedef struct { HANDLE t; void (*f)(void *); void *arg; int detached, finished; } gm_thread;
+
+/* The stack size of the threads the runtime starts (address space only: the pages are
+ * committed as the stack grows). */
+#define GM_THREAD_STACK_SIZE ((size_t)8 << 20)
+
+static unsigned __stdcall gm_thread_main(void *p) {
+    gm_thread_stack();
+    gm_thread *t = (gm_thread *)p;
+    t->f(t->arg);
+    gm_rt_acquire();
+    if (t->detached) {
+        gm_rt_release();
+        free(t);
+    } else {
+        t->finished = 1;
+        gm_rt_release();
+    }
+    return 0;
+}
+
+/* The stack of the thread that runs the program's entry function: larger than a
+ * typical process default, so deep recursion behaves alike on every host. */
+#define GM_MAIN_STACK_SIZE ((size_t)64 << 20)
+
+typedef struct { int (*f)(gm_node *); gm_node *cx; int status; } gm_main_call;
+
+static unsigned __stdcall gm_main_thread(void *p) {
+    gm_thread_stack();
+    gm_main_call *c = (gm_main_call *)p;
+    c->status = c->f(c->cx);
+    return 0;
+}
+
+/* Runs entry `f` under context `cx` on a thread of its own and returns its status;
+ * on the calling thread if no such thread can be started. */
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+    /* Standard streams carry bytes: no newline translation, no end-of-file character. */
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    DWORD mode;
+    if (GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode)) SetConsoleOutputCP(CP_UTF8);
+    gm_main_call c = {f, cx, 0};
+    uintptr_t h = _beginthreadex(NULL, (unsigned)GM_MAIN_STACK_SIZE, gm_main_thread, &c,
+                                 STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (h == 0) return f(cx);
+    WaitForSingleObject((HANDLE)h, INFINITE);
+    CloseHandle((HANDLE)h);
+    return c.status;
+}
+
+/* A thread's handle is 1 + its index in this table. A joined thread's slot is reused. */
+static gm_thread **gm_threads;
+static size_t gm_nthreads;
+
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
+    gm_thread *t = (gm_thread *)malloc(sizeof *t);
+    if (t == NULL) return gm_io_error(ENOMEM);
+    t->f = (void (*)(void *))f;
+    t->arg = arg;
+    t->detached = t->finished = 0;
+    gm_rt_acquire();
+    size_t slot = 0;
+    while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
+    if (slot == gm_nthreads) {
+        gm_thread **tab = (gm_thread **)realloc(gm_threads, sizeof(gm_thread *) * (gm_nthreads * 2 + 4));
+        if (tab == NULL) {
+            gm_rt_release();
+            free(t);
+            return gm_io_error(ENOMEM);
+        }
+        for (size_t i = gm_nthreads; i < gm_nthreads * 2 + 4; i++) tab[i] = NULL;
+        gm_threads = tab;
+        gm_nthreads = gm_nthreads * 2 + 4;
+    }
+    gm_threads[slot] = t;
+    gm_rt_release();
+    uintptr_t h = _beginthreadex(NULL, (unsigned)GM_THREAD_STACK_SIZE, gm_thread_main, t,
+                                 STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (h == 0) {
+        int e = errno;
+        gm_rt_acquire();
+        gm_threads[slot] = NULL;
+        gm_rt_release();
+        free(t);
+        return gm_io_error(e);
+    }
+    t->t = (HANDLE)h;
+    return (int64_t)slot + 1;
+}
+
+GM_API int64_t gm_thread_join(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = gm_threads[h - 1];
+    gm_rt_release();
+    WaitForSingleObject(t->t, INFINITE);
+    CloseHandle(t->t);
+    gm_rt_acquire();
+    gm_threads[h - 1] = NULL;
+    gm_rt_release();
+    free(t);
+    return 0;
+}
+
+GM_API int64_t gm_thread_detach(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = gm_threads[h - 1];
+    gm_threads[h - 1] = NULL;
+    int done = t->finished;
+    t->detached = 1;
+    HANDLE th = t->t;
+    gm_rt_release();
+    /* Closing the handle does not stop the thread; it only gives up the right to join it. */
+    CloseHandle(th);
+    if (done) free(t);
+    return 0;
+}
+
+GM_API void gm_thread_yield(void) { SwitchToThread(); }
+
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    DWORD ms = INFINITE;
+    if (timeout_ns >= 0) {
+        int64_t m = timeout_ns / 1000000 + (timeout_ns % 1000000 != 0);
+        ms = m >= (int64_t)INFINITE ? INFINITE - 1 : (DWORD)m;
+    }
+    WaitOnAddress((volatile VOID *)addr, &expected, sizeof expected, ms);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    if (n == 1) WakeByAddressSingle((PVOID)addr);
+    else if (n > 64) WakeByAddressAll((PVOID)addr);
+    else for (uint32_t i = 0; i < n; i++) WakeByAddressSingle((PVOID)addr);
+    return 0;
+}
+
+GM_API uint32_t gm_cpu_count(void) {
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n < 1 ? 1 : (uint32_t)n;
+}
+#endif
 
 GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     if (fd == 2) gm_write_err((const uint8_t *)p, n);
@@ -2909,6 +3675,95 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
     c->uc.uc_link = NULL;
     makecontext(&c->uc, gm_filc_entry, 0);
     return c;
+}
+#elif defined(__x86_64__) && defined(_WIN32)
+/* The Win64 convention: arguments in rcx, rdx, r8; callee-saved are rbx, rbp, rdi, rsi,
+ * r12-r15 and xmm6-xmm15. A context also holds the stack bounds in the thread information
+ * block (StackBase, StackLimit, DeallocationStack at gs:0x08, 0x10, 0x1478), which the
+ * system consults when it dispatches an exception: they describe the running stack. The
+ * saved context is 192 bytes (xmm6-15 at 0, the three bounds at 160) below the eight
+ * saved registers and the return address. */
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    pushq %rbp\n"
+    "    pushq %rbx\n"
+    "    pushq %rdi\n"
+    "    pushq %rsi\n"
+    "    pushq %r12\n"
+    "    pushq %r13\n"
+    "    pushq %r14\n"
+    "    pushq %r15\n"
+    "    subq $192, %rsp\n"
+    "    movups %xmm6, 0(%rsp)\n"
+    "    movups %xmm7, 16(%rsp)\n"
+    "    movups %xmm8, 32(%rsp)\n"
+    "    movups %xmm9, 48(%rsp)\n"
+    "    movups %xmm10, 64(%rsp)\n"
+    "    movups %xmm11, 80(%rsp)\n"
+    "    movups %xmm12, 96(%rsp)\n"
+    "    movups %xmm13, 112(%rsp)\n"
+    "    movups %xmm14, 128(%rsp)\n"
+    "    movups %xmm15, 144(%rsp)\n"
+    "    movq %gs:0x08, %r10\n"
+    "    movq %r10, 160(%rsp)\n"
+    "    movq %gs:0x10, %r10\n"
+    "    movq %r10, 168(%rsp)\n"
+    "    movq %gs:0x1478, %r10\n"
+    "    movq %r10, 176(%rsp)\n"
+    "    movq %rsp, (%rcx)\n"
+    "    movq %rdx, %rsp\n"
+    "    movq 160(%rsp), %r10\n"
+    "    movq %r10, %gs:0x08\n"
+    "    movq 168(%rsp), %r10\n"
+    "    movq %r10, %gs:0x10\n"
+    "    movq 176(%rsp), %r10\n"
+    "    movq %r10, %gs:0x1478\n"
+    "    movups 0(%rsp), %xmm6\n"
+    "    movups 16(%rsp), %xmm7\n"
+    "    movups 32(%rsp), %xmm8\n"
+    "    movups 48(%rsp), %xmm9\n"
+    "    movups 64(%rsp), %xmm10\n"
+    "    movups 80(%rsp), %xmm11\n"
+    "    movups 96(%rsp), %xmm12\n"
+    "    movups 112(%rsp), %xmm13\n"
+    "    movups 128(%rsp), %xmm14\n"
+    "    movups 144(%rsp), %xmm15\n"
+    "    addq $192, %rsp\n"
+    "    popq %r15\n"
+    "    popq %r14\n"
+    "    popq %r13\n"
+    "    popq %r12\n"
+    "    popq %rsi\n"
+    "    popq %rdi\n"
+    "    popq %rbx\n"
+    "    popq %rbp\n"
+    "    movq %r8, %rax\n"
+    "    ret\n"
+    ".p2align 4\n"
+    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    movq %r12, %rcx\n"
+    "    subq $32, %rsp\n"
+    "    callq *%r13\n"
+    "    ud2\n");
+
+/* The initial context of a fiber whose stack ends at `top` (16-byte aligned) and spans
+ * `len` bytes. After the switch "returns" into the trampoline, rsp is 16 bytes below top. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    void **sp = (void **)(top - 280);
+    memset(sp, 0, 264);
+    sp[20] = (void *)top;                 /* StackBase */
+    sp[21] = (void *)(top - len);         /* StackLimit */
+    sp[22] = (void *)(top - len);         /* DeallocationStack */
+    sp[24 + 2] = (void *)gm_fiber_entry;  /* r13 */
+    sp[24 + 3] = fb;                      /* r12 */
+    sp[24 + 8] = (void *)gm_rt_fiber_tramp;
+    return sp;
 }
 #elif defined(__x86_64__)
 extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
@@ -3082,7 +3937,39 @@ GM_API _Noreturn void gm_stack_overflow(void) {
 /* The space kept below a thread's limit for reporting the overflow. */
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
 
-#ifndef GM_NO_FRAME_PROBES
+#if defined(_WIN32) && !defined(GM_NO_FRAME_PROBES)
+/* A fault just below a thread's stack limit, an access violation with the stack pointer
+ * below the running stack's limit, or the system's own stack overflow exception is the
+ * trap this is for; any other exception gets the default action. */
+static LONG CALLBACK gm_veh(PEXCEPTION_POINTERS ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_STACK_OVERFLOW) gm_stack_overflow();
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        uintptr_t a = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        uintptr_t limit = gm_thread_stack_limit;
+        uintptr_t sp = (uintptr_t)ep->ContextRecord->Rsp;
+        if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
+            gm_stack_overflow();
+        if (gm_stack_limit != 0 && sp < gm_stack_limit) gm_stack_overflow();
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static INIT_ONCE gm_veh_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK gm_veh_install(PINIT_ONCE o, PVOID p, PVOID *c) {
+    (void)o; (void)p; (void)c;
+    AddVectoredExceptionHandler(1, gm_veh);
+    return TRUE;
+}
+
+/* Keeps room on the calling thread's stack for gm_veh to report an overflow, and installs
+ * the handler once per process. */
+static void gm_overflow_handler(void) {
+    ULONG guarantee = 64 << 10;
+    SetThreadStackGuarantee(&guarantee);
+    InitOnceExecuteOnce(&gm_veh_once, gm_veh_install, NULL, NULL);
+}
+#elif !defined(GM_NO_FRAME_PROBES)
 #if defined(__APPLE__)
 #include <sys/ucontext.h>
 #else
@@ -3153,6 +4040,11 @@ GM_API void gm_thread_stack(void) {
     pthread_t me = pthread_self();
     size = pthread_get_stacksize_np(me);
     low = (uintptr_t)pthread_get_stackaddr_np(me) - size;
+#elif defined(_WIN32)
+    ULONG_PTR lo, hi;
+    GetCurrentThreadStackLimits(&lo, &hi);
+    low = (uintptr_t)lo;
+    size = (size_t)(hi - lo);
 #elif defined(__linux__)
     pthread_attr_t a;
     void *addr;

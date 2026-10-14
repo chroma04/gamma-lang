@@ -851,7 +851,17 @@ pub struct Build {
 /// type, and values are blobs written and read piecewise with memcpy), so C's type-based
 /// alias analysis does not hold: `-fno-strict-aliasing`. Without it gcc 13 at -O2 drops
 /// some of those writes (a slice length written into a temporary was lost).
-const BASE_CFLAGS: [&str; 6] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread"];
+const BASE_CFLAGS: [&str; 5] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off"];
+
+/// The flags every build uses on `target`: [`BASE_CFLAGS`], and `-pthread` except on Windows,
+/// where the runtime uses the Win32 API and programs need no thread library.
+fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
+    let mut flags = BASE_CFLAGS.to_vec();
+    if target.os != "Windows" {
+        flags.push("-pthread");
+    }
+    flags
+}
 
 /// Compiles generated C to an executable at `exe` with `toolchain` (the source is
 /// written next to it with the extension `.c`). Returns the compiler's error output
@@ -893,7 +903,7 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
     // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come
     // after the source and the runtime object, before the libraries, as for `make`.
-    let mut flags = BASE_CFLAGS.to_vec();
+    let mut flags = base_cflags(&generated.target);
     flags.push(opt);
     flags.extend(opts.debug_info.then_some("-g"));
     flags.extend(f16c_flag(&generated.target));
@@ -907,6 +917,7 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
         .args(&toolchain.ldflags)
         .args(link.library_args(&generated.libs))
         .arg("-lm")
+        .args(windows_libs(&generated.target))
         .output()
         .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
     if !out.status.success() {
@@ -915,10 +926,22 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     Ok(Build { c_file, exe: exe.to_path_buf() })
 }
 
+/// The libraries (and linking mode) a program for Windows needs: Winsock, the synchronization
+/// API behind the futex, `CommandLineToArgvW` and the random number generator. Linking
+/// statically keeps the executable free of the compiler's runtime DLLs (`libwinpthread`,
+/// `libgcc_s`), which would otherwise have to be on `PATH` wherever it runs.
+pub fn windows_libs(target: &crate::layout::Target) -> Vec<&'static str> {
+    if target.os == "Windows" {
+        vec!["-static", "-lws2_32", "-lsynchronization", "-lshell32", "-lbcrypt"]
+    } else {
+        vec![]
+    }
+}
+
 /// The flags the separately compiled runtime object of a build with `opts` is compiled
 /// with. It is optimized whatever the build's optimization: it is compiled only once.
 fn rt_flags(opts: &Options, target: &crate::layout::Target) -> Vec<String> {
-    let mut flags: Vec<String> = BASE_CFLAGS.iter().map(|f| f.to_string()).collect();
+    let mut flags: Vec<String> = base_cflags(target).iter().map(|f| f.to_string()).collect();
     flags.push("-O2".into());
     flags.extend(f16c_flag(target).map(String::from));
     if opts.debug_info {

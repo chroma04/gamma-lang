@@ -17,6 +17,17 @@
 #define _GNU_SOURCE /* pthread_getattr_np */
 #endif
 
+#if defined(_WIN32)
+/* The Windows API level of the runtime (WaitOnAddress, GetCurrentThreadStackLimits), set
+ * before any system header fixes a lower one. */
+#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0A00
+#undef _WIN32_WINNT
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -26,18 +37,37 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+/* Windows (MinGW-w64): the Win32 API and Winsock 2 stand in for the POSIX headers. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <shellapi.h>
+#include <io.h>
+#include <direct.h>
+#include <process.h>
+#include <bcrypt.h>
+#else
 #include <unistd.h>
 #include <dirent.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-#include <signal.h>
 #include <sched.h>
 #if defined(__linux__) && !defined(__FILC__)
 #include <sys/syscall.h>
+#endif
 #endif
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
@@ -102,6 +132,13 @@ static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
 #endif
 /* The value v as C type T of the same size: a blob as its mirror or back. */
 #define GM_CONV(T, v) ({ union { __typeof__(v) s; T d; } gm_cv_u_; gm_cv_u_.s = (v); gm_cv_u_.d; })
+/* Round half to even. The MinGW C library lacks roundeven; rint does it in the default
+ * rounding mode, which programs never change. */
+#ifdef _WIN32
+#define GM_ROUNDEVEN(x) __builtin_rint(x)
+#else
+#define GM_ROUNDEVEN(x) __builtin_roundeven(x)
+#endif
 /* `#fast_math` functions: float contraction and reassociation are permitted (§5.3). */
 #if defined(__clang__)
 #define GM_FAST_MATH_ATTR
@@ -407,7 +444,9 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINV
  *
  * A thread runs a plain function `void f(void *arg)`. Fibers, handler contexts and the exit in
  * progress are per thread; the runtime's own shared tables are guarded by gm_rt_lock. */
-GM_API_VAR pthread_mutex_t gm_rt_lock;
+/* The lock guarding the runtime's shared tables. */
+GM_API void gm_rt_acquire(void);
+GM_API void gm_rt_release(void);
 GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
 GM_API int64_t gm_thread_join(int64_t h);
 GM_API int64_t gm_thread_detach(int64_t h);

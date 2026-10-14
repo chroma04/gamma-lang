@@ -153,6 +153,19 @@ gdb ./hello
 $2 = Shape_Rect = {w = 2, h = 3}
 ```
 
+### Installing and using it on Windows
+
+`gamma` runs on x86_64 Windows 10 and later. The interpreter (`gamma run`, `gamma test`) needs nothing else. Native builds (`gamma build`, `--backend=c`) need a **MinGW-w64** C compiler, gcc or clang, as `cc`, `gcc` or `clang` on `PATH` (that is the order `gamma` tries when `CC` is unset): the generated C is GNU C, which MSVC's `cl.exe` does not accept, so `cl` is not supported. Two easy ways to get one:
+
+```powershell
+winget install MSYS2.MSYS2          # then, in the "MSYS2 UCRT64" shell:
+pacman -S mingw-w64-ucrt-x86_64-gcc  # and add C:\msys64\ucrt64\bin to PATH
+```
+
+or unpack an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) release and add its `bin` directory to `PATH`. Executables are named `<name>.exe`, are linked statically against the compiler's own runtime libraries (so they run anywhere), and use the Win32 API and Winsock 2 for threads, files and sockets; the cache of compiled runtime objects is `%LOCALAPPDATA%\gamma`. File names and arguments are UTF-8 inside Gamma programs. Source file names in diagnostics always use `/`. Paths that programs pass to `std/fs` may use either separator.
+
+Two differences are visible to programs. `target.os` is `.Windows` and `c_long` is 32 bits wide, as in the C library there. And some C functions are missing from the Windows C library (`qsort_r`, `memmem`, `gmtime_r`, …), so a program that declares them in a `foreign` block needs the right ones for the platform with `when target.os is .Windows`.
+
 ### The C compiler and cross-compiling
 
 Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted.
@@ -165,7 +178,7 @@ CC="clang --target=aarch64-linux-gnu --sysroot=/path/to/sysroot" gamma build hel
 CC=aarch64-linux-gnu-gcc LDFLAGS=-static gamma build hello.gm
 ```
 
-`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and POSIX threads. Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
+`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and threads (POSIX threads, or the Win32 API on Windows; `--target=x86_64-w64-mingw32` with a MinGW-w64 cross compiler builds Windows executables from any host). Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
 
 **`--target=<triple>`** (accepted by `check`, `run`, `test` and `build`) names the machine to compile for and picks the compiler for it:
 

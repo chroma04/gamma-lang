@@ -4,7 +4,8 @@
 //!
 //! - `CC` is the compiler command, which may carry arguments
 //!   (`zig cc -target aarch64-linux-gnu`, `clang --target=riscv64-linux-gnu`);
-//!   the default is `cc`.
+//!   the default is `cc` (on Windows the first of `cc`, `gcc` and `clang` on `PATH`; it
+//!   must be a MinGW-w64 compiler, not MSVC's `cl`).
 //! - `CFLAGS` are extra compiler options, given after the back end's own.
 //! - `LDFLAGS` are extra linker options, given after the source file.
 //!
@@ -34,9 +35,33 @@ pub struct Toolchain {
     pub ldflags: Vec<String>,
 }
 
+/// The compiler used when `CC` is unset: `cc`; on Windows, where MinGW-w64 installations
+/// differ in which of these they provide, the first of `cc`, `gcc` and `clang` on `PATH`.
+fn default_cc() -> String {
+    static CC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CC.get_or_init(|| {
+        if cfg!(windows) {
+            for prog in ["cc", "gcc", "clang"] {
+                if program_on_path(prog) {
+                    return prog.to_string();
+                }
+            }
+        }
+        "cc".to_string()
+    })
+    .clone()
+}
+
+/// Whether `prog` (with `.exe` appended, on Windows) is a file in a `PATH` directory.
+fn program_on_path(prog: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| d.join(prog).is_file() || d.join(format!("{prog}.exe")).is_file())
+    })
+}
+
 impl Default for Toolchain {
     fn default() -> Self {
-        Toolchain { cc: vec!["cc".into()], cflags: vec![], ldflags: vec![] }
+        Toolchain { cc: vec![default_cc()], cflags: vec![], ldflags: vec![] }
     }
 }
 
@@ -54,7 +79,7 @@ impl Toolchain {
         if let Some(cc) = cc {
             t.cc = split_words(cc).map_err(|e| format!("cannot read CC: {}", e))?;
             if t.cc.is_empty() {
-                t.cc = vec!["cc".into()];
+                t.cc = vec![default_cc()];
             }
         }
         if let Some(f) = cflags {
@@ -70,15 +95,12 @@ impl Toolchain {
     /// (`--target=s390x-linux-gnu`), from the environment.
     pub fn for_target(triple: &str) -> Result<Toolchain, String> {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        let on_path = |prog: &str| {
-            std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
-        };
         Toolchain::for_triple(
             triple,
             var("CC").as_deref(),
             var("CFLAGS").as_deref(),
             var("LDFLAGS").as_deref(),
-            &on_path,
+            &program_on_path,
         )
     }
 
@@ -418,7 +440,7 @@ mod tests {
         assert_eq!(t.ldflags, ["-static"]);
         assert!(!t.is_default());
         assert!(Toolchain::from_vars(None, None, None).unwrap().is_default());
-        assert!(Toolchain::from_vars(Some("cc"), None, None).unwrap().is_default());
+        assert!(Toolchain::from_vars(Some(&default_cc()), None, None).unwrap().is_default());
     }
 
     fn defs(lines: &[&str]) -> String {

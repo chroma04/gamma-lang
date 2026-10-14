@@ -33,6 +33,7 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 | Semantic analysis | the whole language: effects, handlers and fibers, generics with compile-time and effect-set parameters, compile-time evaluation and `when`, modules, packages, tests, and C interop |
 | Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
 | Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x) |
+| Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 24 modules: `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread`, `std/c` |
 | Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
 | Editors | a language server (`gamma lsp`), a VS Code extension, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
@@ -48,15 +49,25 @@ them is a bug.
 
 ## Installing
 
-Prebuilt binaries for Linux and macOS (x86_64 and arm64) are attached to each
-[release](https://github.com/chroma04/gamma-lang/releases):
+Prebuilt binaries for Linux and macOS (x86_64 and arm64) and Windows (x86_64) are
+attached to each [release](https://github.com/chroma04/gamma-lang/releases):
 
 ```sh
 curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh
 ```
 
-installs `gamma` and its standard library in `~/.gamma` (`GAMMA_INSTALL` changes that).
-Native builds also need a C compiler (`cc`, gcc or clang).
+installs `gamma` and its standard library in `~/.gamma` (`GAMMA_INSTALL` changes that). On
+Windows, run this in PowerShell:
+
+```powershell
+irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex
+```
+
+which installs in `%USERPROFILE%\.gamma` and adds its `bin` directory to your `PATH`.
+Native builds also need a C compiler (`cc`, gcc or clang); on Windows it must be a
+MinGW-w64 compiler on `PATH` (for example gcc from [MSYS2](https://www.msys2.org)'s UCRT64
+environment, or an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang). The
+interpreter (`gamma run`) needs none.
 
 ## Building from source
 

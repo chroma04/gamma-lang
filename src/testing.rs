@@ -3,8 +3,8 @@
 //! timing and coverage when asked for.
 
 use crate::{
-    COMPILER_STACK, Options, USAGE, c_options, cgen_error, native_dir, native_link, native_stderr, new_session,
-    prepare_packages, runner_command, trap_report,
+    COMPILER_STACK, Options, USAGE, c_options, cgen_error, native_dir, native_exe_name, native_link, native_stderr,
+    new_session, prepare_packages, runner_command, trap_report,
 };
 use gamma::driver::Session;
 use gamma::tir::{Program, TestCase};
@@ -429,7 +429,7 @@ fn run_native(
     let entries: Vec<_> = chosen.iter().map(|&i| cases[i].entry).collect();
     let generated = gamma::cgen::generate_tests(&me.prog, &me.sess.sources, &entries, &c_options(&me.sess));
     let Some(dir) = native_dir(if kind == Kind::Test { "test" } else { "bench" }) else { return ExitCode::FAILURE };
-    let exe = dir.join("tests");
+    let exe = dir.join(native_exe_name("tests", toolchain));
     let built = generated.map_err(|u| cgen_error(&me.sess, u)).and_then(|out| {
         let link = native_link(&me.sess, toolchain, extras)?;
         let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;

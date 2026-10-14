@@ -13,7 +13,7 @@ libc :: foreign "c" {
     strlen  :: fn(s: cstring) -> usize \ {}
     snprintf :: fn(buf: [^]u8, n: usize, fmt: cstring, ...) -> c.c_int
     div     :: fn(n, d: c.c_int) -> DivT \ {}
-    #link_name("labs") long_abs :: fn(x: c.c_long) -> c.c_long \ {}
+    #link_name("llabs") long_abs :: fn(x: c.c_longlong) -> c.c_longlong \ {}
     strchr  :: fn(s: cstring, ch: c.c_int) -> ?cstring \ {}
 }
 

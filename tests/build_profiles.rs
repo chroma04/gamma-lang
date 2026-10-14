@@ -48,7 +48,7 @@ impl Out {
 impl World {
     fn new(name: &str) -> World {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("build_profiles").join(name);
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = gamma::pkg::git::remove_tree(&root);
         std::fs::create_dir_all(&root).unwrap();
         World { root: root.canonicalize().unwrap() }
     }

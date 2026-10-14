@@ -6,7 +6,7 @@
 //! the runtime's source, the C compiler (its command with its arguments, `CFLAGS` and its
 //! `--version` output) and the flags. The directory is `$GAMMA_CACHE_DIR` if set (an empty value turns the cache
 //! off), else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and
-//! `~/.cache/gamma` elsewhere.
+//! `~/.cache/gamma` elsewhere; on Windows `%LOCALAPPDATA%\gamma`.
 //!
 //! Concurrent builds may compile the same object at once: each writes a file of its
 //! own and renames it into place, so a reader never sees a partial object.
@@ -22,6 +22,10 @@ pub fn cache_dir() -> Option<PathBuf> {
     }
     if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir).join("gamma"));
+    }
+    if cfg!(windows) {
+        let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("USERPROFILE"));
+        return Some(PathBuf::from(base.filter(|d| !d.is_empty())?).join("gamma"));
     }
     let home = PathBuf::from(std::env::var_os("HOME").filter(|d| !d.is_empty())?);
     Some(if cfg!(target_os = "macos") { home.join("Library/Caches/gamma") } else { home.join(".cache/gamma") })
@@ -101,7 +105,7 @@ pub fn cached_program(
     (&toolchain.cc, &toolchain.cflags, &toolchain.ldflags, &version.stdout).hash(&mut h);
     (link.fingerprint(), &link.libs, &link.lib_dirs).hash(&mut h);
     let stem = format!("prog-{:016x}", h.finish());
-    let exe = dir.join(&stem);
+    let exe = dir.join(if generated.target.os == "Windows" { format!("{stem}.exe") } else { stem.clone() });
     if exe.is_file() {
         // Mark it as recently used, so pruning keeps it.
         let _ = std::fs::File::open(&exe).and_then(|f| f.set_modified(std::time::SystemTime::now()));

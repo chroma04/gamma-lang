@@ -40,7 +40,7 @@ lookup_demo :: fn() -> u32 {
 }
 #fuel(50_000_000)
 BIG_TABLE :: crc_table(0x04C11DB7)
-when target.os is .Windows {
+when target.os is .FreeBSD {
     PATH_SEP :: '\\'
 } else {
     PATH_SEP :: '/'

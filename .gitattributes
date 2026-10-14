@@ -1,0 +1,18 @@
+# Checked-out files keep LF line endings on every platform: tests compare the compiler's
+# output with golden files byte for byte, and the formatter's tests compare sources with
+# their formatted form.
+* text=auto eol=lf
+*.gm text eol=lf
+*.stdout text eol=lf
+*.stderr text eol=lf
+*.stdin text eol=lf
+*.tokens text eol=lf
+*.ast text eol=lf
+*.rs text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.png binary
