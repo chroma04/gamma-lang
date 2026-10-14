@@ -1,5 +1,6 @@
 //! stage: check
-// A call of an iterator is a loop source, not a value: the fix is not to declare `Yield`.
+// A call of an iterator is a loop source or an argument for an iterator parameter, not a
+// value: the fix is not to declare `Yield`.
 Words :: struct { text: string }
 
 fields :: fn(s: string) \ {Yield(string)} {
@@ -11,7 +12,7 @@ pieces :: fn(w: Words) \ {Yield(string)} {
 }
 
 as_value :: fn(s: string) {
-    rest := fields(s)    //~ ERROR `fields` is an iterator: call it as the source of a `for` loop
+    rest := fields(s)    //~ ERROR `fields` is an iterator, not a value: call it as the source of a `for` loop (`for x in fields(…)`) or pass it to a function that runs it, such as `collect(fields(…))`
 }
 
 as_other :: fn(w: Words) {

@@ -1,0 +1,51 @@
+// An iterator call written for an iterator parameter is passed as `fn() => call` (§13.5);
+// `collect`, `count`, `nth` and `zip` (§21.4).
+str :: import "std/str"
+
+evens :: fn(xs: []const i32) \ {Yield(i32)} {
+    for x in xs { if x % 2 is 0 { yield(x) } }
+}
+
+// A function of the program with an iterator parameter; `T` is inferred.
+sum_of :: fn(T: type, it: fn() \ {Yield(T)}) -> T where Num(T) {
+    s: T = 0
+    for x in it() { s += x }
+    return s
+}
+
+numbers :: fn(n: i32, calls: ^u32) \ {Yield(i32)} {
+    calls^ += 1
+    for i in 0..n { yield(i) }
+}
+
+main :: fn() \ {Out, Alloc} {
+    line := "alpha beta  gamma"
+    words := collect(str.fields(line)) else trap()
+    defer words.deinit()
+    print("{} {}\n", (words.items.len, words.items))
+    print("{}\n", count(str.fields(line)))
+    print("{} {}\n", (nth(str.fields(line), 1), nth(str.fields(line), 3)))
+    data := [6]i32(1, 2, 3, 4, 5, 6)
+    print("{}\n", sum_of(evens(data[..])))
+    print("{}\n", sum_of(range(u64(1), 101)))
+    print("{}\n", count((evens(data[..]))))
+    // `nth` stops the iterator at the value it returns.
+    calls: u32 = 0
+    print("{} {}\n", (nth(numbers(1000, &calls), 3), calls))
+    // The call runs each time the callee calls the parameter.
+    _ = count(numbers(2, &calls))
+    print("{}\n", calls)
+    // `List.collect` appends.
+    l := list(u32)
+    defer l.deinit()
+    l.collect(range(u32(1), 4)) else trap()
+    l.collect(range(u32(7), 9)) else trap()
+    print("{}\n", l.items)
+    names := [3]string("ann", "bo", "cy")
+    ages := [2]u8(31, 47)
+    for n, a in zip(names[..], ages[..]) { print("{}: {}\n", (n, a)) }
+    print("{}\n", count(zip(names[..], data[..])))
+    // A local named like a universe function hides it.
+    count := 3
+    print("{}\n", count)
+}

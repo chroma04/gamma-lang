@@ -1,12 +1,21 @@
-// One name for a tuple payload binds the whole tuple (§9.2).
+// One sub-pattern for a tuple payload matches the whole tuple (§9.2).
 Node :: union { Cat: (a: u32, b: u32), Leaf: u32, Pair: (u8, u8) }
 size :: fn(n: Node) -> u32 => match n {
     .Cat(c) => c.a + c.b
     .Leaf(x) => x
     .Pair(p) => u32(p.0) * u32(p.1)
 }
+// The one sub-pattern may itself be a tuple pattern or a wildcard.
+area :: fn(n: Node) -> u32 => match n {
+    .Cat((0, _)) => 0
+    .Cat((a, b)) => a * b
+    .Pair((x, 1)) => u32(x)
+    .Pair(_) => 99
+    .Leaf(x) => x
+}
 main :: fn() \ {Out} {
     print("{} {} {}\n", (size(.Cat(a: 2, b: 3)), size(.Leaf(7)), size(.Pair(4, 5))))
+    print("{} {} {} {}\n", (area(.Cat(a: 0, b: 3)), area(.Cat(a: 2, b: 3)), area(.Pair(4, 1)), area(.Pair(4, 5))))
     n := Node.Cat(a: 1, b: 1)
     if .Cat(c) := n { print("{}\n", c) }
     .Cat(whole) := n else return

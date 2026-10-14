@@ -1,4 +1,5 @@
 //! exit: 134
+//! stderr
 // Running out of a fiber's stack is a checked error (§14.1).
 Gen :: effect {
     emit: ctl(x: i32)

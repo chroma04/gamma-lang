@@ -147,6 +147,7 @@ The core library provides these iterators (§21.4). All are `#inline`.
 | `enumerate(xs)` | `(i: usize, x: T)` pairs |
 | `reversed(xs)` | the elements, last to first |
 | `bytes(s)`, `runes(s)` | `u8` or `rune` from a string |
+| `zip(xs, ys)` | `(x, y)` pairs from two slices, up to the shorter |
 
 ```gamma
 std_demo :: fn(names: []const string, scores: []u32) \ {Out} {
@@ -175,6 +176,25 @@ index_of_word :: fn(text, target: string) -> ?usize {
 }
 ```
 
+## Passing iterators to functions
+
+A call of an iterator is not a value: `parts := str.split(line, ",")` is an error. But a function can take an iterator and run it. Its parameter is a second-class function with `Yield(T)` in its effect set, and a call written as the argument is passed as `fn() => call`:
+
+```gamma
+words := try collect(str.fields(line))     // List(string)
+n := count(runes(text))                    // usize
+third := nth(str.split(row, ","), 2)       // ?string; stops the iterator there
+
+sum_of :: fn(T: type, it: fn() \ {Yield(T)}) -> T where Num(T) {
+    s: T = 0
+    for x in it() { s += x }
+    return s
+}
+total := sum_of(evens(data))               // T inferred from what `evens` yields
+```
+
+`collect`, `count` and `nth` are in the core library; `l.collect(it)` appends to an existing list. The callee runs the iterator each time it calls the parameter, so the call's arguments are evaluated then too.
+
 ## Lockstep iteration: cursors
 
 Internal iteration cannot advance two iterators at once: a `for` loop is in control of one iterator and the other cannot be interleaved without a second stack. For the common case of walking two sequences together, arrays and slices provide a **cursor**, a value with a `next` method that returns `?T` (or `?^T`) and works with `while` binding conditions:
@@ -199,14 +219,15 @@ Cursors are plain values with no effects. For general pull-style iteration over 
 - **One mechanism.** Ranges, arrays and user iterators all go through `for`. There are no iterator objects, adapters or traits to learn.
 - **No allocation.** The iterator's state lives in its own stack frame. `for` allocates nothing.
 - **Early exit is correct.** Leaving a loop runs the iterator's cleanup, because `yield` is an `esc` operation and a `break` is an exit that unwinds.
-- **Fast.** When the compiler can see the iterator's body (and the standard ones are `#inline`), the handler is statically known and its clause is inlined. A `for i in 0..n` or `for x in xs` compiles to the same counted loop you would write by hand, with bounds checks that can be removed (§13.5 and Appendix D of the [specification](../../gamma-spec.md) describe the strategy; it is non-normative).
+- **Fast.** When the compiler can see the iterator's body (and the standard ones are `#inline`), the handler is statically known and its clause is inlined. A `for i in 0..n` or `for x in xs` compiles to the same counted loop you would write by hand, with bounds checks that can be removed (§13.6 and Appendix D of the [specification](../../gamma-spec.md) describe the strategy; it is non-normative).
 
 ## Summary
 
 - An iterator is any function with `Yield(T)` in its effect set; it produces values with `yield(x)`.
 - `for p in e { B }` handles `Yield(T)`; `break`, `continue`, `return` and `try` work through the iterator.
 - A `for` has the iterator's return type as its value, so failing iterators cannot be ignored.
-- Use cursors with `while` to advance two sequences in step.
+- Pass an iterator call to a function with an iterator parameter (`collect`, `count`, `nth`) to use its values as a whole.
+- Use `zip`, or cursors with `while`, to advance two sequences in step.
 
 Next, [chapter 9](09-memory.md) looks at memory and allocation.
 

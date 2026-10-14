@@ -1,0 +1,10 @@
+//! stage: check
+// `for` over a tuple needs elements of one type (§13.2).
+main :: fn() {
+    for x in (1, "a") { }          //~ ERROR must have one type
+    t := (1u8, 2u16)
+    for x in t { }                 //~ ERROR must have one type
+    for x in () { }                //~ ERROR `for` iterates over
+    for x in (1, 2) { x = 3 }      //~ ERROR cannot assign
+    for (a, b) in (1, 2) { }       //~ ERROR a tuple pattern needs
+}

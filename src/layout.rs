@@ -196,6 +196,7 @@ impl<'a> Layouts<'a> {
             | TyKind::Error
             | TyKind::Param(_)
             | TyKind::ParamArray { .. }
+            | TyKind::LenExpr { .. }
             | TyKind::Value(_)
             | TyKind::Infer(_) => Layout { size: 0, align: 1, offsets: vec![] },
             TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::FnPtr(_) => Layout::scalar(p),
