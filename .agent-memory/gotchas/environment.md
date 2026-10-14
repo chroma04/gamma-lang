@@ -33,3 +33,7 @@
   build fails. The Safe lane finds /opt/fil/bin/filcc by itself (GAMMA_TEST_SAFE=1).
 - filcc drops accesses it can prove fail (zmkptr(NULL, n) deref → no trap, exit 0); test Safe
   traps at -O2, not only -O0.
+- clang treats `_Static_assert` messages as unevaluated strings: numeric escapes (`\077`) and
+  unknown escapes (`\ `) are errors there, gcc only warns. Use cgen::types::assert_message.
+- When merging a stack of PRs, run the CC=clang conformance lane after each cgen/sema pair:
+  PRs green alone can clash semantically (e.g. new type syntax × new C emission).

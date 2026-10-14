@@ -1,6 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-13) — PRs #1–#18 merged; s6–s9 = parallel Claude Projects threads
+## State (2026-10-14) — PRs #1–#33 merged; s6–s10 = parallel Claude Projects threads
+- 2026-10-14 merge round: #25–#33 merged in order onto main (papercuts, spec pass, C typed
+  structs, interpreter FFI, effect-set params, literals, op hiding, --target/big-endian, VM
+  speedups). Merge-only fixes: SavedFrame swap_frame needs open_ret; C layout asserts escape
+  type names (effect sets print `\ {..}`); VM kernel test used overflowing i128 product.
 - Thread "bytecode VM" (branch claude/project-thread-rh6kp0): `gamma run` interpreter compiles
   functions to register bytecode (src/interp/vm/, decisions/020); bench 34.1 s → 10.0 s; tree-walker
   kept for fallbacks and `GAMMA_INTERP=tree` (CI lane on ubuntu).
