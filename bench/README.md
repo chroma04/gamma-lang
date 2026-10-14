@@ -11,6 +11,22 @@ Each prints one number (a checksum), so a run is also a sanity check.
 | `new_destroy.gm` | 20,000 `new` + `destroy` of a two-field struct through the ambient `Alloc`. |
 | `list_push.gm` | 100,000 `push` onto a `List`, then a sum over `each(l.items)`. |
 | `map_insert.gm` | 20,000 inserts into a `HashMap`, then 20,000 lookups. |
+| `safe_call.gm`, `safe_new_destroy.gm`, `safe_list_push.gm`, `safe_map_insert.gm` | The same programs with 50 times the iterations, long enough to time a native executable. |
+
+## Safe builds
+
+A Safe build compiles the generated C with Fil-C, which checks every access. To compare the
+cost with a Checked build, build both and time the executables rather than `gamma run`, whose
+time includes compiling:
+
+```sh
+for m in checked safe; do target/release/gamma build --mode=$m -o /tmp/b.$m bench/safe_map_insert.gm; done
+time /tmp/b.checked; time /tmp/b.safe
+```
+
+Under Fil-C a call into its runtime is much dearer than the access it guards, so the code
+generator avoids copying aggregates that hold pointers (a slice is read in place, not copied to
+a temporary first) and avoids taking the address of locals, which Fil-C moves to the heap.
 
 ## Running
 

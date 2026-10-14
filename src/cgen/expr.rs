@@ -228,14 +228,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.slice_expr(e, base, lo.as_deref(), hi.as_deref(), *inclusive)
             }
             ExprKind::SliceLen(x) => {
-                let v = self.expr(x)?;
-                let a = self.addr_of(x.ty, &v);
+                let a = self.place_addr(x)?;
                 let l = self.slice_len(&a);
                 Ok(self.tmp(t, &l))
             }
             ExprKind::SlicePtr(x) => {
-                let v = self.expr(x)?;
-                let a = self.addr_of(x.ty, &v);
+                let a = self.place_addr(x)?;
                 let p = self.slice_ptr(&a);
                 Ok(self.tmp(t, &p))
             }
@@ -789,11 +787,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     }
                     TyKind::Slice { elem, .. } => {
                         let esz = self.g.ty.size(*elem);
-                        let v = match early {
-                            Some(v) => v,
-                            None => self.expr(base)?,
+                        // A slice that is a place is read in place: copying it into a temporary
+                        // first costs a call into the Fil-C runtime for each access.
+                        let a = match early {
+                            Some(v) => self.addr_of(base.ty, &v),
+                            None => self.place_addr(base)?,
                         };
-                        let a = self.addr_of(base.ty, &v);
                         let len = self.slice_len(&a);
                         let len = self.tmp(Ty::usize(), &len);
                         check(self, &len);
@@ -837,8 +836,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 (a, Some(len.to_string()), self.g.ty.size(*elem))
             }
             TyKind::Slice { elem, .. } => {
-                let v = self.expr(base)?;
-                let a = self.addr_of(base.ty, &v);
+                // The slice is read in place when the bounds cannot change it; otherwise it
+                // is copied before they are evaluated.
+                let a = if lo.is_none_or(no_writes) && hi.is_none_or(no_writes) {
+                    self.place_addr(base)?
+                } else {
+                    let v = self.expr(base)?;
+                    self.addr_of(base.ty, &v)
+                };
                 let p = self.slice_ptr(&a);
                 let l = self.slice_len(&a);
                 let l = self.tmp(Ty::usize(), &l);
