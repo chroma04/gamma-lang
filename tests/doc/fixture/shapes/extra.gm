@@ -1,0 +1,18 @@
+//! A second file of the module. Files are read in name order, so this one comes first.
+
+/// The unit square.
+pub unit_square :: fn() -> Shape => .Square(1.0)
+
+/// Options in a table:
+///
+/// | name | meaning |
+/// | --- | --- |
+/// | `a` | first \| left |
+/// | `b` | second |
+///
+/// 1. one
+/// 2. two
+pub Options :: struct {
+    pub a: bool = false
+    pub b: bool = false
+}

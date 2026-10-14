@@ -90,6 +90,8 @@ test "adds" {
 
 test "empty" {}
 
+bench "sum" {}
+
 test :: fn() {}
 
 --------------------------------------------------------------------------------
@@ -108,6 +110,10 @@ test :: fn() {}
             (integer_literal))
           (integer_literal)))))
   (test_declaration
+    (string_literal
+      (string_content))
+    (block))
+  (bench_declaration
     (string_literal
       (string_content))
     (block))

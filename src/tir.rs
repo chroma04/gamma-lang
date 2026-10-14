@@ -139,6 +139,9 @@ pub enum SysOp {
     ThreadSpawn,
     /// `@thread_join(h: i64) -> i64`: waits for the thread to finish.
     ThreadJoin,
+    /// `@thread_detach(h: i64) -> i64`: the thread is never joined; its resources are
+    /// released when it ends.
+    ThreadDetach,
     /// `@thread_yield()`: lets other threads run.
     ThreadYield,
     /// `@futex_wait(addr: ^u32, expected: u32, timeout_ns: i64) -> i64`: blocks while
@@ -211,6 +214,7 @@ impl SysOp {
             // The function's type is checked separately: any `^fn(arg: rawptr) \ {Sys}`.
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
+            SysOp::ThreadDetach => ("thread_detach", vec![i64], i64),
             SysOp::ThreadYield => ("thread_yield", vec![], Ty::unit()),
             SysOp::FutexWait => ("futex_wait", vec![Ty::ptr(false, Ty::u32()), Ty::u32(), i64], i64),
             SysOp::FutexWake => ("futex_wake", vec![Ty::ptr(false, Ty::u32()), Ty::u32()], i64),
@@ -219,7 +223,7 @@ impl SysOp {
         }
     }
 
-    pub const ALL: [SysOp; 39] = [
+    pub const ALL: [SysOp; 40] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -254,6 +258,7 @@ impl SysOp {
         SysOp::NetPeer,
         SysOp::ThreadSpawn,
         SysOp::ThreadJoin,
+        SysOp::ThreadDetach,
         SysOp::ThreadYield,
         SysOp::FutexWait,
         SysOp::FutexWake,
@@ -431,6 +436,8 @@ pub struct Program {
     /// The tests of the root module and of the modules of its package that it
     /// imports, when compiled for testing (§3.8).
     pub tests: Vec<TestCase>,
+    /// The `bench` declarations, selected like the tests (§3.9).
+    pub benches: Vec<TestCase>,
     /// Functions exported to C under a symbol (§19.4).
     pub exports: Vec<(Symbol, FnId)>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
@@ -438,9 +445,21 @@ pub struct Program {
     /// The `ctl` operations (§14), by effect and operation index: performing one
     /// suspends the running fiber.
     pub ctl_ops: std::collections::HashSet<(EffectId, u32)>,
+    /// The instances of the core library's `new` and `destroy`, which the interpreter
+    /// may run directly while the default heap allocator is current.
+    pub heap_fns: HashMap<FnId, HeapFn>,
+    /// The core library's `heap_allocator`, once something instantiates `new` or `destroy`.
+    pub heap_allocator: Option<FnId>,
     /// The target the program was checked for: layouts and `target` constants
     /// depend on it, so back ends use the same one.
     pub target: crate::layout::Target,
+}
+
+/// Which of the allocating functions of the core library an instance is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeapFn {
+    New,
+    Destroy,
 }
 
 /// Ids of the predeclared ambient effects, when the program uses them.
@@ -1273,6 +1292,11 @@ pub enum Builtin {
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).
     Unreachable,
+    /// `@black_box(x)`: `x`, opaque to the optimizer (§21.9).
+    BlackBox,
+    /// Counts one execution of a statement, for `gamma test --coverage`: inserted by
+    /// [`crate::coverage`], never by sema. The number indexes the counters.
+    Cover(u32),
     /// `@atomic_load(p, order)` (§19.6). The memory orders are `MemoryOrder` values.
     AtomicLoad,
     /// `@atomic_store(p, v, order)`.

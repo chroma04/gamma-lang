@@ -27,6 +27,7 @@ use std::rc::Rc;
 /// does, but keeps going after syntax errors, and returns what editors need to know
 /// about it. The diagnostics are left in `sess`.
 pub fn analyze_for_ide(sess: &mut Session, root: &Path) -> IdeIndex {
+    sess.recover_layout = true;
     let mut sema = Sema::new(sess);
     sema.tests_enabled = true;
     sema.keep_going = true;
@@ -69,7 +70,7 @@ fn build(sema: &mut Sema, root: &Path, root_mod: Option<super::ModuleId>) -> Ide
         .files()
         .filter(|(_, f)| {
             let p = f.path.as_path();
-            p == root || (root.is_dir() && p.parent() == Some(root) && p.extension().is_some_and(|e| e == "gm"))
+            p == root || (p.parent() == Some(root) && p.extension().is_some_and(|e| e == "gm"))
         })
         .map(|(id, f)| (id, f.src.clone()))
         .collect();
@@ -80,7 +81,7 @@ fn build(sema: &mut Sema, root: &Path, root_mod: Option<super::ModuleId>) -> Ide
         let mut w = walk::Walker::new(sema, &facts, &mut idx, module);
         for (id, src) in &files {
             let mut diags = Diagnostics::new();
-            let lexed = lexer::lex(*id, src, &mut diags);
+            let lexed = lexer::lex_recovering(*id, src, &mut diags);
             let ast = parser::parse_file(*id, &lexed, &mut ids, &mut diags);
             let mut out = vec![];
             for item in &ast.items {

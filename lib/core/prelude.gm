@@ -1499,5 +1499,92 @@ run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Ne
     return leaked(&t)
 }
 
+// Running benchmarks (§3.9): `gamma bench` calls `run_bench` or `run_bench_unit` for each
+// benchmark. They time batches of runs of the body with the `Clock` effect and print the
+// measurements on one line that `gamma bench` summarizes.
+
+/// How many samples a benchmark takes.
+BENCH_SAMPLES :: 20
+
+/// The length of a sample, in nanoseconds, that the number of runs per sample aims for.
+BENCH_SAMPLE_NS :: 10_000_000
+
+/// The number of runs per sample for a body whose `iters` runs took `elapsed` nanoseconds:
+/// what a sample of `BENCH_SAMPLE_NS` needs, and always more than `iters`.
+bench_next_iters :: fn(iters: u64, elapsed: u64) -> u64 {
+    if elapsed is 0 { return iters * 100 }
+    next := iters * (BENCH_SAMPLE_NS + BENCH_SAMPLE_NS / 5) / elapsed + 1
+    if next <= iters { return iters + 1 }
+    return next
+}
+
+/// Runs a benchmark that can fail with an error: 0 if it completed, 1 if it failed.
+run_bench :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net} {
+    iters: u64 = 1
+    while true {
+        t0 := now()
+        i: u64 = 0
+        while i < iters {
+            r := body()
+            if !e := r {
+                eprint("error: {}\n", e)
+                return 1
+            }
+            i += 1
+        }
+        elapsed := since(now(), t0).ns
+        if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
+        iters = bench_next_iters(iters, elapsed)
+    }
+    print("gamma-bench: {}", iters)
+    s: u64 = 0
+    while s < BENCH_SAMPLES {
+        t0 := now()
+        i: u64 = 0
+        while i < iters {
+            r := body()
+            if !e := r {
+                eprint("error: {}\n", e)
+                return 1
+            }
+            i += 1
+        }
+        print(" {}", since(now(), t0).ns)
+        s += 1
+    }
+    print("\n")
+    return 0
+}
+
+/// Runs a benchmark that cannot fail with an error: 0 if it completed.
+run_bench_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net} {
+    iters: u64 = 1
+    while true {
+        t0 := now()
+        i: u64 = 0
+        while i < iters {
+            body()
+            i += 1
+        }
+        elapsed := since(now(), t0).ns
+        if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
+        iters = bench_next_iters(iters, elapsed)
+    }
+    print("gamma-bench: {}", iters)
+    s: u64 = 0
+    while s < BENCH_SAMPLES {
+        t0 := now()
+        i: u64 = 0
+        while i < iters {
+            body()
+            i += 1
+        }
+        print(" {}", since(now(), t0).ns)
+        s += 1
+    }
+    print("\n")
+    return 0
+}
+
 /// The memory order of an atomic operation (§19.6), as in C11.
 pub MemoryOrder :: union { Relaxed, Acquire, Release, AcqRel, SeqCst }

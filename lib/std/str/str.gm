@@ -1,19 +1,19 @@
-// std/str: byte-oriented string utilities.
-//
-// A `string` is a `[]const u8`, and every function here works on bytes: an index is a
-// byte index and case rules are ASCII only. Functions that return a `string` return a
-// slice of their argument (or of the buffer the caller supplied), so nothing is copied
-// and nothing allocates, with the one exception of `join`.
-//
-// Strings are slices, so these are free functions (`str.trim(s)`), not methods. The
-// builtin methods of slices cover the rest: `s.starts_with(p)`, `s.ends_with(p)`,
-// `s.index_of(byte)`, `s.utf8_valid()`, `s is t` for equality and `<` for ordering, so
-// this module does not repeat them.
-//
-//     str :: import "std/str"
-//     for line in str.lines(text) { … }
-//     n := try str.parse_int(u32, "0xff")
-//     x := try str.parse_float(f64, "6.02e23")
+//! Byte-oriented string utilities.
+//!
+//! A `string` is a `[]const u8`, and every function here works on bytes: an index is a
+//! byte index and case rules are ASCII only. Functions that return a `string` return a
+//! slice of their argument (or of the buffer the caller supplied), so nothing is copied
+//! and nothing allocates, with the one exception of `join`.
+//!
+//! Strings are slices, so these are free functions (`str.trim(s)`), not methods. The
+//! builtin methods of slices cover the rest: `s.starts_with(p)`, `s.ends_with(p)`,
+//! `s.index_of(byte)`, `s.utf8_valid()`, `s is t` for equality and `<` for ordering, so
+//! this module does not repeat them.
+//!
+//!     str :: import "std/str"
+//!     for line in str.lines(text) { … }
+//!     n := try str.parse_int(u32, "0xff")
+//!     x := try str.parse_float(f64, "6.02e23")
 
 ascii :: import "std/ascii"
 

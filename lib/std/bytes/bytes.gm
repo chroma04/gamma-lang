@@ -1,19 +1,19 @@
-// std/bytes: reading and writing binary data.
-//
-// Integers and floats are converted to and from bytes in the order you choose, so the
-// same code works on every target. The functions here take a byte slice and read or write
-// at its start; `Reader` is a cursor for taking a record apart field by field.
-//
-//     bytes :: import "std/bytes"
-//     n := bytes.read_int(u32, header[0..4], .Big)
-//     r := bytes.Reader(data: packet)
-//     kind := r.byte() else return !.Short
-//     len := r.int(u16, .Little) else return !.Short
-//     body := r.take(usize(len)) else return !.Short
-//
-// Integers are stored in `@size_of(T)` bytes, so `T` should be 8, 16, 32, 64 or 128
-// bits wide (an odd width such as `u24` occupies the next power of two). Nothing here
-// allocates except `append_int`, which grows the list you pass.
+//! Reading and writing binary data.
+//!
+//! Integers and floats are converted to and from bytes in the order you choose, so the
+//! same code works on every target. The functions here take a byte slice and read or write
+//! at its start; `Reader` is a cursor for taking a record apart field by field.
+//!
+//!     bytes :: import "std/bytes"
+//!     n := bytes.read_int(u32, header[0..4], .Big)
+//!     r := bytes.Reader(data: packet)
+//!     kind := r.byte() else return !.Short
+//!     len := r.int(u16, .Little) else return !.Short
+//!     body := r.take(usize(len)) else return !.Short
+//!
+//! Integers are stored in `@size_of(T)` bytes, so `T` should be 8, 16, 32, 64 or 128
+//! bits wide (an odd width such as `u24` occupies the next power of two). Nothing here
+//! allocates except `append_int`, which grows the list you pass.
 
 /// The order of the bytes of a stored number.
 pub Endian :: union {

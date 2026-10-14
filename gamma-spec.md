@@ -136,6 +136,7 @@ The horizontal tab (U+0009) and space (U+0020) are whitespace. No other Unicode 
 - A line comment starts with `//` and extends to the end of the line.
 - A block comment starts with `/*` and ends with the matching `*/`. Block comments nest: `/* a /* b */ c */` is one comment.
 - A doc comment is a line comment starting with `///`. It attaches to the declaration that follows it. Doc comments have no semantic effect.
+- A module doc comment is a line comment starting with `//!`. The `//!` lines at the top of a file, before its first declaration, document the module; the lines are Markdown, with one leading space removed. Like a doc comment it has no semantic effect, and to the compiler it is an ordinary line comment. Tools such as `gamma doc` use the doc comments of `pub` declarations and the module doc comments to write API documentation.
 
 A comment is equivalent to whitespace, except that a block comment containing a line terminator is equivalent to a line terminator for the purposes of §2.8.
 
@@ -170,7 +171,7 @@ while    with
 | `const` | immediately after `^`, `[^]` or `[]` in a type (§5.5) |
 | `on` | after the handler list of a `with` (§12.7) |
 | `where` | after a function signature or a type's parameter list (§16.3) |
-| `test` | at the start of a top-level declaration (§3.8) |
+| `test`, `bench` | at the start of a top-level declaration, before a string literal (§3.8, §3.9) |
 
 `type` and `cont` are not keywords; they are predeclared, reserved type names (§21.1).
 
@@ -334,6 +335,7 @@ top_decl = [ doc ] { attribute } [ 'pub' ] binding
          | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
          | handler_decl
          | 'test' string_lit block
+         | 'bench' string_lit block
 binding  = ident '::' expr
          | ident ':' type ':' expr
 ```
@@ -387,6 +389,21 @@ test "parse rejects letters" {
 ```
 
 A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value; wherever a test writes an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
+
+The tool runs tests one at a time in the order they are found, or several at a time on request; either way each test has its own handlers and its own leak check, and the results are reported in that order. It can also run the tests of every module of the package, imported or not, and count which source lines the tests ran (a coverage report); these options do not change what a test means.
+
+### 3.9 Benchmarks
+
+```
+bench "push 1000 items" {
+    list := make_list(1000)
+    _ = @black_box(list.len)
+}
+```
+
+A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), without the leak check, so it measures the real system. It fails if its body returns an error or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
+
+A compiler may remove work whose result is unused or compute it at compile time, which makes a benchmark measure nothing. `@black_box(x)` (§20) returns `x` while hiding from the optimizer both that the value is known and that it is used: pass inputs and results through it.
 
 ---
 
@@ -2456,6 +2473,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@volatile_load`, `@volatile_store`, `@asm` | | no | 19.5 |
 | `@atomic_*`, `@fence` | | no | 19.6 |
 | `@unreachable()` | `never`; checked: traps in Debug/Checked, UB in Fast | no | 18 |
+| `@black_box(x)` | `x`'s type; the value of `x`, which the optimizer must assume is read and changed arbitrarily (for benchmarks) | no | 3.9 |
 | `@expect_true(b)`, `@expect_false(b)` | `bool`; branch-probability hint | yes | — |
 | `@prefetch(p)` | `()`; hint | no | — |
 | `@clz(x)`, `@ctz(x)`, `@popcount(x)` | `u32` (`@clz(0)` and `@ctz(0)` are the bit width) | yes | — |
@@ -2479,7 +2497,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2575,9 +2593,8 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
 get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
-get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
 Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
-entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // as get_or_put, with the stored key
+entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // stores `default` if absent; pointers to the stored key and value
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
 remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
@@ -2589,7 +2606,7 @@ clear    :: fn(m: ^HashMap(…))                                      // keeps t
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr`, `get_or_put` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2803,7 +2820,9 @@ Modules follow the core library's conventions, so that learning one teaches the 
 
 ### 22.4 Outside the standard library
 
-These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography (it needs dedicated security maintenance), compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography, compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+
+*Cryptography* here means whatever needs dedicated security maintenance: ciphers, message authentication codes and other keyed constructions, signatures, key exchange, key derivation and password hashing. Fixed, unkeyed digests and checksums of published standards, used to detect corruption and to identify content (CRC-32, SHA-256), are not excluded: they have one settled definition, no parameters to choose wrongly, and a test-vector suite that leaves nothing to interpretation, so they are admitted on reason 2 (§22.2). A digest in the library carries no promise beyond its standard; whether it suits a security purpose is the caller's decision.
 
 *Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
 
@@ -3050,7 +3069,7 @@ Assignment (`=` and compound forms) is a statement.
 
 **Reserved (34):** `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
-**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` (top-level). `type` and `cont` are predeclared, reserved type names.
+**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
 ### B.4 Build modes
 

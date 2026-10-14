@@ -1,4 +1,4 @@
-// std/fs: whole-file operations over the `Fs` effect (§21.7).
+//! Whole-file operations over the `Fs` effect (§21.7).
 
 /// Why reading a whole file failed.
 pub ReadError :: union {

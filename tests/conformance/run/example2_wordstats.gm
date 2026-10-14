@@ -70,7 +70,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             if str.trim(line).len is 0 { continue }
             nlines += 1
             try for w in words_of(line) {
-                c := try counts.get_or_put(w, 0)
+                c := (try counts.entry(w, 0)).value
                 c^ += 1
                 total += 1
             }

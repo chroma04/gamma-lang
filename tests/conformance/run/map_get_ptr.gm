@@ -1,4 +1,4 @@
-// HashMap.get_ptr and HashMap.get_or_put: in-place access to stored values.
+// HashMap.get_ptr and the value pointer of HashMap.entry: in-place access to stored values.
 
 Point :: struct { x, y: i32 }
 
@@ -20,27 +20,27 @@ main :: fn() \ {Out, Alloc} {
     print("other untouched: {}\n", m.get(2))
     print("missing: {}\n", m.get_ptr(3) is null)
 
-    // Counting with get_or_put.
+    // Counting with entry.
     counts := map(u32, u32)
     defer counts.deinit()
     data := [_]u32(3, 1, 3, 3, 2, 1, 7)
     for x in data {
-        c := counts.get_or_put(x, 0) else return
+        c := (counts.entry(x, 0) else return).value
         c^ += 1
     }
     print("len: {}\n", counts.len())
     print("3: {}, 1: {}, 2: {}, 7: {}\n", (counts.get(3), counts.get(1), counts.get(2), counts.get(7)))
 
     // An existing value is not replaced by the default.
-    q := counts.get_or_put(3, 100) else return
+    q := (counts.entry(3, 100) else return).value
     print("existing: {}\n", q^)
     print("len still: {}\n", counts.len())
 
-    // Growth: many insertions through get_or_put keep every value reachable.
+    // Growth: many insertions through entry keep every value reachable.
     big := map(u32, u32)
     defer big.deinit()
     for i in 0..1000 {
-        v := big.get_or_put(i, i * 2) else return
+        v := (big.entry(i, i * 2) else return).value
         v^ += 1
     }
     ok := true
@@ -50,10 +50,10 @@ main :: fn() \ {Out, Alloc} {
     }
     print("big: {} {}\n", (big.len(), ok))
 
-    // After remove, the key is absent and get_or_put re-adds it.
+    // After remove, the key is absent and entry re-adds it.
     _ = big.remove(5)
     print("removed: {}\n", big.get_ptr(5) is null)
-    w := big.get_or_put(5, 77) else return
+    w := (big.entry(5, 77) else return).value
     print("re-added: {}\n", w^)
 
     // Struct values are updated through the pointer.
@@ -68,10 +68,10 @@ main :: fn() \ {Out, Alloc} {
     // Custom hash and equality.
     sm := map_with(string, i32, hash_len, eq_str)
     defer sm.deinit()
-    sv := sm.get_or_put("abc", 1) else return
+    sv := (sm.entry("abc", 1) else return).value
     sv^ += 1
-    sv2 := sm.get_or_put("abc", 50) else return
+    sv2 := (sm.entry("abc", 50) else return).value
     sv2^ += 1
-    sv3 := sm.get_or_put("xyz", 9) else return
+    sv3 := (sm.entry("xyz", 9) else return).value
     print("custom: {} {} {}\n", (sm.get("abc"), sm.get("xyz"), sv3^))
 }

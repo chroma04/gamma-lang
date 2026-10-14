@@ -1,20 +1,20 @@
-// std/collections/heap: a binary heap, used as a priority queue.
-//
-//     hp :: import "std/collections/heap"
-//
-//     h := hp.heap(u32)                    // smallest first
-//     defer h.deinit()
-//     try h.push(5)
-//     try h.push(2)
-//     print("{}\n", h.pop())               // 2
-//
-// The element that comes first is the one for which no other element is `less`.
-// `heap(T)` orders by `<`; `heap_by` takes the comparison as a function pointer, so a
-// max-heap or a heap of structs needs no wrapper type. The comparison is stored in the
-// heap (it is a plain function pointer: it cannot capture variables, so keep any
-// context in the elements themselves). Like `List`, a heap keeps the allocator it was
-// created with, performs no `Alloc` afterwards, and reports a failed growth as
-// `AllocError`.
+//! A binary heap, used as a priority queue.
+//!
+//!     hp :: import "std/collections/heap"
+//!
+//!     h := hp.heap(u32)                    // smallest first
+//!     defer h.deinit()
+//!     try h.push(5)
+//!     try h.push(2)
+//!     print("{}\n", h.pop())               // 2
+//!
+//! The element that comes first is the one for which no other element is `less`.
+//! `heap(T)` orders by `<`; `heap_by` takes the comparison as a function pointer, so a
+//! max-heap or a heap of structs needs no wrapper type. The comparison is stored in the
+//! heap (it is a plain function pointer: it cannot capture variables, so keep any
+//! context in the elements themselves). Like `List`, a heap keeps the allocator it was
+//! created with, performs no `Alloc` afterwards, and reports a failed growth as
+//! `AllocError`.
 
 /// A priority queue: a binary heap in a growable array.
 pub Heap :: struct(T: type) {

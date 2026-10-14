@@ -1,20 +1,23 @@
-// std/thread: threads and the synchronization built on futexes (§19.6).
-//
-// A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
-// installed; `defaults` installs the usual ones:
-//
-//     work :: fn(arg: ^State) \ {Sys} {
-//         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
-//     }
-//     t := try thread.spawn(State, work, &state)
-//     t.join()
-//
-// Only function pointers and data cross threads: handlers, second-class functions and
-// continuations stay on the thread that made them. Shared memory needs atomics
-// (`@atomic_*`) or one of the types below; a data race is undefined behavior.
-//
-// `Mutex`, `Condvar` and `WaitGroup` are plain structs without allocation, usable as
-// fields; `Channel` is a bounded queue between threads.
+//! Threads and the synchronization built on futexes (§19.6).
+//!
+//! A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
+//! installed; `defaults` installs the usual ones:
+//!
+//!     work :: fn(arg: ^State) \ {Sys} {
+//!         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
+//!     }
+//!     t := try thread.spawn(State, work, &state)
+//!     t.join()
+//!
+//! A thread is either joined (`join`) or detached (`detach`), once. Threads that are still
+//! running when `main` returns are stopped with the process.
+//!
+//! Only function pointers and data cross threads: handlers, second-class functions and
+//! continuations stay on the thread that made them. Shared memory needs atomics
+//! (`@atomic_*`) or one of the types below; a data race is undefined behavior.
+//!
+//! `Mutex`, `Condvar` and `WaitGroup` are plain structs without allocation, usable as
+//! fields; `Channel` is a bounded queue between threads.
 
 /// A running thread, to be joined.
 pub Thread :: struct { handle: i64 }
@@ -29,6 +32,16 @@ pub spawn :: fn(T: type, f: ^fn(arg: ^T) \ {Sys}, arg: ^T) -> IoError!Thread \ {
 /// Waits for `t` to finish.
 pub join :: fn(t: Thread) \ {Sys} {
     _ = @thread_join(t.handle)
+}
+
+/// Lets `t` run on its own: it is never joined, and its resources are released when it
+/// ends. A detached thread cannot be waited for, so tell the rest of the program that it
+/// is done through shared state (a `WaitGroup`, a `Channel`, an atomic). When `main`
+/// returns the process exits at once, stopping detached threads that are still running
+/// wherever they are, without running their `defer`s; a trap in a detached thread stops
+/// the whole process, as in any thread.
+pub detach :: fn(t: Thread) \ {Sys} {
+    _ = @thread_detach(t.handle)
 }
 
 /// Lets other threads run.
@@ -128,33 +141,17 @@ pub broadcast :: fn(c: ^Condvar) {
 // Wait group
 // ---------------------------------------------------------------------------------
 
+// A wait group is declared in its own module because methods resolve in the module that
+// declares a type (§7.10) and a module has one function per name: `Condvar` and `WaitGroup`
+// both have a `wait`.
+wait_group_module :: import "./wait_group"
+
 /// A counter of outstanding work: `add` before starting it, `done` when it finishes, and
-/// `wait_all` returns when the count is back at zero.
-pub WaitGroup :: struct { count: u32 }
+/// `wait` returns when the count is back at zero.
+pub WaitGroup :: wait_group_module.WaitGroup
 
 /// A wait group with nothing outstanding.
-pub wait_group :: fn() -> WaitGroup => WaitGroup(count: 0)
-
-/// Adds `n` to the outstanding work.
-pub add :: fn(w: ^WaitGroup, n: u32) {
-    _ = @atomic_add(&w.count, n, .AcqRel)
-}
-
-/// Marks one piece of work as finished. Calling it more often than `add` is a bug and traps.
-pub done :: fn(w: ^WaitGroup) {
-    old := @atomic_sub(&w.count, 1, .AcqRel)
-    assert(old > 0, "WaitGroup.done called more often than add")
-    if old is 1 { _ = @futex_wake(&w.count, 4294967295) }
-}
-
-/// Waits until no work is outstanding.
-pub wait_all :: fn(w: ^WaitGroup) \ {Sys} {
-    while true {
-        n := @atomic_load(&w.count, .Acquire)
-        if n is 0 { return }
-        _ = @futex_wait(&w.count, n, -1)
-    }
-}
+pub wait_group :: wait_group_module.wait_group
 
 // ---------------------------------------------------------------------------------
 // Channel

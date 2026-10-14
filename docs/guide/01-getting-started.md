@@ -78,6 +78,8 @@ gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
 gamma fmt --check file.gm  list the files that formatting would change, without writing
+gamma doc dir              write API documentation from `///` and `//!` comments (--format=html, -o dir, --all)
+gamma repl                 start an interactive session
 gamma help                 print usage
 gamma version              print the compiler version
 ```
@@ -85,6 +87,53 @@ gamma version              print the compiler version
 A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short` chooses how diagnostics are printed; they go to standard error, and the tool exits with status 1 if there were errors. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
 `gamma run` interprets the program, which starts at once and gives the most precise diagnostics, but runs it roughly 10 to 100 times slower than compiled code. For programs that do real work (megabytes of input, long loops, benchmarks), use `gamma run --backend=c`: the first run pays for a C compilation (around a second), and later runs of the same program reuse the executable, which is kept in the cache directory described below. The two back ends give the same output.
+
+### The REPL
+
+`gamma repl` reads inputs from standard input, one at a time, and runs them with the interpreter. On a terminal it prints a banner and the prompts `>> ` and `.. `; when standard input is a pipe or a file, or with `--quiet`, it prints only what the inputs print, so sessions can be scripted. `gamma repl lib.gm` first loads the declarations of `lib.gm` (see `:load`).
+
+```text
+>> 1 + 2
+3
+>> sq :: fn(n: i32) -> i32 => n * n
+>> x := 12
+>> sq(x)
+144
+>> x = x + 1
+>> sq :: fn(n: i32) -> i32 => n * n * n
+>> sq(x)
+2197
+>> math :: import "std/math"
+>> math.sqrt(2.0)
+1.4142135623730951
+```
+
+An input is one of three things:
+
+- **A definition**: a function, a struct, union or effect, an import, a handler, or a constant such as `N :: 3`. Definitions are visible to everything, including earlier functions. Defining a name again replaces the old definition. `main` is reserved.
+- **A statement**: a variable (`x := 12`, `y :: x + 1`), an assignment, a loop and so on. Variables persist from one input to the next, and can be defined again, even with another type. An input that is a plain `name :: value` is a constant if its value can be computed at compile time and a variable otherwise.
+- **An expression**: its value is printed with the display rules of `print` (§21.6.1). An expression of type `()` prints nothing.
+
+An input continues on the next line while a bracket is open or the input ends where more is expected, and the prompt becomes `.. `. A blank line ends an input that only lacks its end, so the error is shown; `:cancel` discards the input so far. Diagnostics use the normal format, with positions relative to the input (`<repl>:1:6`). An input with an error changes nothing. A trap prints its reason and location, and the session continues. Ambient effects work as in `main`: a statement can print, read files and so on.
+
+Commands start with a colon:
+
+```text
+:help           list the commands
+:quit           leave (end of input also leaves)
+:type <expr>    print the type of an expression, without running it
+:list           print the definitions and variables of the session
+:load <file>    add the declarations of a file (its `main` is ignored)
+:reset          forget everything
+```
+
+Because there is no incremental compiler, each input is checked and run as a whole program made of the session's definitions, a `main` that holds the variables, and the new input. Variables cannot outlive a run of the interpreter, so the statements that define them are run again, with their output hidden, before every input. Three consequences follow:
+
+- Only statements that can be repeated unnoticed are kept: those that need no effect except `Alloc`, and the definitions of variables. A statement that prints, reads or writes files, or uses the clock or random numbers, runs once and is not kept. If a variable is defined from such an expression (`data := load_file(path)`), the REPL says so, and the expression is evaluated again before every later input (its output stays hidden, and the cost is that of running it again). A statement that changes a variable by a call that has effects is not kept either.
+- An expression whose value is printed is kept only if it may change variables: it takes an address or calls a method (`it.next()`). A call like `f(x)` that changes nothing is not.
+- A variable defined again is renamed internally, because locals cannot be shadowed; diagnostics may show a name like `x__3`. Declarations loaded by `:load` and imports with `./` paths are resolved relative to the directory the REPL was started in.
+
+The REPL does not resolve package dependencies, and a program that needs the native back end (inline assembly, foreign code libffi cannot call) is not supported in it.
 
 ### Build modes
 
@@ -104,6 +153,19 @@ gdb ./hello
 $2 = Shape_Rect = {w = 2, h = 3}
 ```
 
+### Installing and using it on Windows
+
+`gamma` runs on x86_64 Windows 10 and later. The interpreter (`gamma run`, `gamma test`) needs nothing else. Native builds (`gamma build`, `--backend=c`) need a **MinGW-w64** C compiler, gcc or clang, as `cc`, `gcc` or `clang` on `PATH` (that is the order `gamma` tries when `CC` is unset): the generated C is GNU C, which MSVC's `cl.exe` does not accept, so `cl` is not supported. Two easy ways to get one:
+
+```powershell
+winget install MSYS2.MSYS2          # then, in the "MSYS2 UCRT64" shell:
+pacman -S mingw-w64-ucrt-x86_64-gcc  # and add C:\msys64\ucrt64\bin to PATH
+```
+
+or unpack an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) release and add its `bin` directory to `PATH`. Executables are named `<name>.exe`, are linked statically against the compiler's own runtime libraries (so they run anywhere), and use the Win32 API and Winsock 2 for threads, files and sockets; the cache of compiled runtime objects is `%LOCALAPPDATA%\gamma`. File names and arguments are UTF-8 inside Gamma programs. Source file names in diagnostics always use `/`. Paths that programs pass to `std/fs` may use either separator.
+
+Two differences are visible to programs. `target.os` is `.Windows` and `c_long` is 32 bits wide, as in the C library there. And some C functions are missing from the Windows C library (`qsort_r`, `memmem`, `gmtime_r`, …), so a program that declares them in a `foreign` block needs the right ones for the platform with `when target.os is .Windows`.
+
 ### The C compiler and cross-compiling
 
 Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted.
@@ -116,7 +178,7 @@ CC="clang --target=aarch64-linux-gnu --sysroot=/path/to/sysroot" gamma build hel
 CC=aarch64-linux-gnu-gcc LDFLAGS=-static gamma build hello.gm
 ```
 
-`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and POSIX threads. Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
+`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and threads (POSIX threads, or the Win32 API on Windows; `--target=x86_64-w64-mingw32` with a MinGW-w64 cross compiler builds Windows executables from any host). Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
 
 **`--target=<triple>`** (accepted by `check`, `run`, `test` and `build`) names the machine to compile for and picks the compiler for it:
 
@@ -241,6 +303,36 @@ A test outside the root module is reported with its module's directory, relative
 `--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
 
 Tests run in the interpreter by default. A module that calls C functions or contains `@asm` has its tests compiled with the C back end instead (so that C's output is captured with the test's), and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
+
+More options of `gamma test`:
+
+- `--all` also runs the tests of the modules of the package that nothing imports: every directory of the package that holds `.gm` files, except hidden ones, `target` and the directories of other packages.
+- `--show-output` also prints what the passing tests wrote.
+- `--time` adds the time each test took and the total. It is off by default so that reports are the same from run to run.
+- `--jobs=n` (or `-j n`) runs `n` tests at a time; `--jobs=0` uses one per processor. The results are still printed in order. With the interpreter every thread analyzes the program itself, so parallelism pays when the tests take longer than that.
+- `--coverage` counts the source lines of the package that the tests run, with the interpreter, and prints the lines run per file. `--coverage=lcov.info` also writes an LCOV file for coverage viewers. Only lines with a statement count; generic functions count through their instances, and one that nothing instantiates is not counted. The bodies of tests are left out.
+
+### Benchmarks
+
+A `bench` declaration looks like a test, but it measures how long its body takes:
+
+```gamma
+bench "sum of squares" {
+    total: u64 = 0
+    for i in 0..1000 { total += @black_box(i) * i }
+    _ = @black_box(total)
+}
+```
+
+`gamma bench file.gm` runs each benchmark in growing batches until a batch is long enough to time, then takes 20 samples and reports the mean time per run and how much the samples varied:
+
+```text
+$ gamma bench squares.gm
+bench "sum of squares" ... 412.31 ns/run (± 1.8%, 20 samples of 24317 runs)
+1 run, 0 failed
+```
+
+Benchmarks are compiled with the C back end in Fast mode by default, because that is what the numbers are for; `--backend=interp` or `--mode=…` changes that. They run under the system's handlers (real clock, real heap), one at a time. An optimizer may delete work whose result nothing uses, or compute it at compile time: pass inputs and results through `@black_box(x)`, which returns `x` while hiding it from the optimizer. `--filter`, `--all` and `--show-output` work as for `gamma test`; `gamma test` type-checks benchmarks but does not run them. The compiler's own repository keeps its benchmarks in `bench/` (`gamma bench bench/`).
 
 ## Where to go next
 

@@ -31,9 +31,9 @@ pub fn main_source(name: &str) -> String {
 }
 
 /// Ignores what `gamma build` writes: the executable is named after the directory given
-/// (`main` for `.`).
+/// (`main` for `.`), with `.exe` on Windows.
 pub fn gitignore(name: &str) -> String {
-    format!("/main\n/{}\n/.gamma/\n", name)
+    format!("/main\n/main.exe\n/{name}\n/{name}.exe\n/.gamma/\n")
 }
 
 /// What a scaffold did.
@@ -110,6 +110,6 @@ mod tests {
     fn templates() {
         assert!(manifest("app").contains("name = \"app\""));
         assert!(main_source("app").contains("hello from app\\n"));
-        assert_eq!(gitignore("app"), "/main\n/app\n/.gamma/\n");
+        assert_eq!(gitignore("app"), "/main\n/main.exe\n/app\n/app.exe\n/.gamma/\n");
     }
 }

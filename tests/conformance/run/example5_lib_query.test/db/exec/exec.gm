@@ -89,7 +89,7 @@ pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Q
     errdefer groups.deinit()
     try for r in rows(t, q) {
         copy := r
-        g := try groups.get_or_put(key(&copy), Group())
+        g := (try groups.entry(key(&copy), Group())).value
         g.n += 1
         g.total += val(&copy)
     }

@@ -1,0 +1,29 @@
+//! The wait group of std/thread, which re-exports it.
+
+/// A counter of outstanding work: `add` before starting it, `done` when it finishes, and
+/// `wait` returns when the count is back at zero.
+pub WaitGroup :: struct { count: u32 }
+
+/// A wait group with nothing outstanding.
+pub wait_group :: fn() -> WaitGroup => WaitGroup(count: 0)
+
+/// Adds `n` to the outstanding work.
+pub add :: fn(w: ^WaitGroup, n: u32) {
+    _ = @atomic_add(&w.count, n, .AcqRel)
+}
+
+/// Marks one piece of work as finished. Calling it more often than `add` is a bug and traps.
+pub done :: fn(w: ^WaitGroup) {
+    old := @atomic_sub(&w.count, 1, .AcqRel)
+    assert(old > 0, "WaitGroup.done called more often than add")
+    if old is 1 { _ = @futex_wake(&w.count, 4294967295) }
+}
+
+/// Waits until no work is outstanding.
+pub wait :: fn(w: ^WaitGroup) \ {Sys} {
+    while true {
+        n := @atomic_load(&w.count, .Acquire)
+        if n is 0 { return }
+        _ = @futex_wait(&w.count, n, -1)
+    }
+}

@@ -1,15 +1,15 @@
-// std/text: Unicode text segmentation and UTF-8 encoding of scalar values.
-//
-// A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
-// each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
-// allocate, and the strings they return are slices of their argument, so ill-formed
-// bytes come back unchanged.
-//
-//     text :: import "std/text"
-//     for g in text.graphemes("e\u{301}🇫🇷") { … }   // "e\u{301}", then "🇫🇷"
-//
-// Grapheme clusters are the extended grapheme clusters of Unicode Standard Annex #29,
-// "Unicode Text Segmentation", for the Unicode version in `UNICODE_VERSION`.
+//! Unicode text segmentation and UTF-8 encoding of scalar values.
+//!
+//! A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
+//! each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
+//! allocate, and the strings they return are slices of their argument, so ill-formed
+//! bytes come back unchanged.
+//!
+//!     text :: import "std/text"
+//!     for g in text.graphemes("e\u{301}🇫🇷") { … }   // "e\u{301}", then "🇫🇷"
+//!
+//! Grapheme clusters are the extended grapheme clusters of Unicode Standard Annex #29,
+//! "Unicode Text Segmentation", for the Unicode version in `UNICODE_VERSION`.
 
 // The grapheme class of a code point (`CLASS_RUNS`, generated in tables.gm). The rules
 // of UAX #29 use the Grapheme_Cluster_Break, Extended_Pictographic and

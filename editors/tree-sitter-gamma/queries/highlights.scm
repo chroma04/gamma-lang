@@ -181,6 +181,7 @@
   "foreign"
   "where"
   "test"
+  "bench"
 ] @keyword.type
 
 "import" @keyword.import

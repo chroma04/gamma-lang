@@ -1,15 +1,15 @@
-// std/encoding/base64: Base64 as in RFC 4648, with the standard alphabet (section 4)
-// or the URL and filename safe one (section 5), with or without `=` padding.
-//
-//     base64 :: import "std/encoding/base64"
-//     buf: [64]u8 = ---
-//     text := base64.encode("foobar", buf[..], base64.Options())      // "Zm9vYmFy"
-//     raw: [48]u8 = ---
-//     data := try base64.decode(text, raw[..], base64.Options())      // "foobar"
-//
-// Encoding and decoding write into a buffer you supply and return the part of it that was
-// written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
-// effects. `encoded_len` and `decoded_len_max` give the buffer sizes that always suffice.
+//! Base64 as in RFC 4648, with the standard alphabet (section 4)
+//! or the URL and filename safe one (section 5), with or without `=` padding.
+//!
+//!     base64 :: import "std/encoding/base64"
+//!     buf: [64]u8 = ---
+//!     text := base64.encode("foobar", buf[..], base64.Options())      // "Zm9vYmFy"
+//!     raw: [48]u8 = ---
+//!     data := try base64.decode(text, raw[..], base64.Options())      // "foobar"
+//!
+//! Encoding and decoding write into a buffer you supply and return the part of it that was
+//! written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
+//! effects. `encoded_len` and `decoded_len_max` give the buffer sizes that always suffice.
 
 /// Which 64 characters stand for the values: the standard alphabet uses `+` and `/` for
 /// 62 and 63, the URL alphabet uses `-` and `_`.

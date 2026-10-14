@@ -229,10 +229,18 @@ impl<'a, 's> FnCx<'a, 's> {
             let t = self.resolve_type(callee);
             return if t.is_error() { None } else { Some(CalleeKind::Type(t)) };
         }
-        if let ExprKind::Call { .. } = &callee.kind
-            && let Some(t) = self.type_of_name(callee)
-        {
-            return Some(CalleeKind::Type(t));
+        if let ExprKind::Call { .. } = &callee.kind {
+            if let Some(t) = self.type_of_name(callee) {
+                return Some(CalleeKind::Type(t));
+            }
+            // `Heap(T, N)(…)` with a wrong type application: the application's error
+            // is the only one.
+            if self.sema.looks_like_type(module, callee) {
+                let t = self.resolve_type(callee);
+                if t.is_error() {
+                    return None;
+                }
+            }
         }
         Some(CalleeKind::Value(self.expr(callee, None)))
     }
@@ -380,7 +388,11 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         None => {
                             if !spread_failed {
-                                self.error(span, format!("missing argument for parameter `{}`", p.name));
+                                if p.name.as_str() == "_" {
+                                    self.error(span, format!("missing argument: the {} takes {}", what, params.len()));
+                                } else {
+                                    self.error(span, format!("missing argument for parameter `{}`", p.name));
+                                }
                             }
                             out.push(error_expr(span));
                         }

@@ -17,7 +17,7 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("gamma-lsp-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         // The server compares canonical paths.
-        TempDir(dir.canonicalize().unwrap())
+        TempDir(gamma::source::canonicalize(&dir).unwrap())
     }
 
     fn write(&self, name: &str, text: &str) -> PathBuf {
@@ -35,7 +35,14 @@ impl Drop for TempDir {
 }
 
 fn uri(p: &Path) -> String {
-    format!("file://{}", p.display())
+    let text = p.display().to_string();
+    if cfg!(windows) { format!("file:///{}", text.replace('\\', "/")) } else { format!("file://{text}") }
+}
+
+/// The path of a `file:` URI, as [`uri`] writes them.
+fn uri_path(u: &str) -> PathBuf {
+    let rest = u.strip_prefix("file://").expect("a file URI");
+    if cfg!(windows) { PathBuf::from(rest.trim_start_matches('/')) } else { PathBuf::from(rest) }
 }
 
 struct Lsp {
@@ -48,8 +55,14 @@ struct Lsp {
 
 impl Lsp {
     fn start() -> Lsp {
+        Lsp::start_with(&[])
+    }
+
+    /// Starts the server with extra environment variables.
+    fn start_with(envs: &[(&str, &Path)]) -> Lsp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
             .arg("lsp")
+            .envs(envs.iter().map(|(k, v)| (*k, *v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -600,5 +613,517 @@ fn requests_on_unopened_documents_return_null() {
     lsp.initialize();
     let h = lsp.result("textDocument/hover", lsp.at(&path, 0, 1));
     assert_eq!(h, Value::Null);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- references across modules ---
+
+/// A package with a library module `util`, its importer `main.gm`, a second importer in
+/// `app`, and a module `lone` that does not import `util`.
+fn package(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    dir.write("gamma.toml", "name = \"pkg\"\nversion = \"0.1.0\"\n");
+    let util = dir.write(
+        "util/util.gm",
+        "\
+pub Shape :: union {
+    Circle: i32
+    Square: i32
+}
+
+pub LIMIT :: 10
+
+pub Point :: struct {
+    pub x: i32
+    pub y: i32
+}
+
+pub double :: fn(n: i32) -> i32 => n * 2
+
+pub area :: fn(s: Shape, scale: i32) -> i32 {
+    big := LIMIT * scale
+    return match s {
+        .Circle(r) => r * big
+        .Square(side) => side * scale
+    }
+}
+",
+    );
+    let main = dir.write(
+        "main.gm",
+        "\
+util :: import \"./util\"
+
+main :: fn() {
+    p := util.Point(x: 1, y: 2)
+    d := util.double(p.x)
+    a := util.area(util.Shape.Circle(3), util.LIMIT)
+    _ = d + a + p.y
+}
+",
+    );
+    let app = dir.write(
+        "app/app.gm",
+        "\
+util :: import \"../util\"
+
+other :: fn() -> i32 {
+    q := util.Point(x: 5, y: 6)
+    return util.double(q.y)
+}
+",
+    );
+    let lone = dir.write("lone/lone.gm", "double :: fn(n: i32) -> i32 => n + n\n\ncall :: fn() -> i32 => double(1)\n");
+    (util, main, app, lone)
+}
+
+fn locations(v: &Value, root: &Path) -> Vec<(String, u64, u64)> {
+    let mut out: Vec<(String, u64, u64)> = v
+        .as_array()
+        .expect("an array of locations")
+        .iter()
+        .map(|l| {
+            let file = l["uri"].as_str().unwrap().strip_prefix(&format!("{}/", uri(root))).unwrap().to_string();
+            (file, l["range"]["start"]["line"].as_u64().unwrap(), l["range"]["start"]["character"].as_u64().unwrap())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn refs_params(lsp: &Lsp, path: &Path, line: u32, character: u32, declaration: bool) -> Value {
+    let mut p = lsp.at(path, line, character);
+    p["context"] = json!({"includeDeclaration": declaration});
+    p
+}
+
+#[test]
+fn references_cross_module_boundaries() {
+    let dir = TempDir::new();
+    let (util, main, app, lone) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    // From a use: the declaration, the uses in this module and in the other importer.
+    // `lone` declares its own `double` and is not listed.
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &main, 4, 15, true));
+    let want =
+        vec![("app/app.gm".to_string(), 4, 16), ("main.gm".to_string(), 4, 14), ("util/util.gm".to_string(), 12, 4)];
+    assert_eq!(locations(&refs, &dir.0), want);
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &main, 4, 15, false));
+    assert_eq!(locations(&refs, &dir.0), want[..2].to_vec());
+
+    // From the declaration, in a module that does not use it itself.
+    lsp.open(&util, &std::fs::read_to_string(&util).unwrap());
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &util, 12, 5, false));
+    assert_eq!(locations(&refs, &dir.0), want[..2].to_vec());
+
+    // The type `Point` and its field `x`.
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &util, 7, 5, true));
+    assert_eq!(
+        locations(&refs, &dir.0),
+        vec![("app/app.gm".into(), 3, 14), ("main.gm".into(), 3, 14), ("util/util.gm".into(), 7, 4)]
+    );
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &util, 8, 9, true));
+    assert_eq!(locations(&refs, &dir.0).len(), 4, "{}", refs);
+
+    // An unsaved edit of the other importer is seen, and so is its removal.
+    lsp.open(&app, "util :: import \"../util\"\n\nother :: fn() -> i32 => 1\n");
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &main, 4, 15, true));
+    assert_eq!(locations(&refs, &dir.0), vec![want[1].clone(), want[2].clone()]);
+    lsp.change(&app, 2, "util :: import \"../util\"\n\nother :: fn() -> i32 => util.double(2)\n");
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &main, 4, 15, false));
+    assert_eq!(locations(&refs, &dir.0), vec![("app/app.gm".into(), 2, 29), want[1].clone()]);
+    // The module that is not an importer is untouched.
+    lsp.open(&lone, &std::fs::read_to_string(&lone).unwrap());
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &lone, 2, 24, true));
+    assert_eq!(locations(&refs, &dir.0), vec![("lone/lone.gm".into(), 0, 0), ("lone/lone.gm".into(), 2, 23)]);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn references_include_path_dependencies() {
+    let dir = TempDir::new();
+    dir.write("dep/gamma.toml", "name = \"dep\"\nversion = \"0.1.0\"\n");
+    let dep = dir.write("dep/dep.gm", "pub triple :: fn(n: i32) -> i32 => n * 3\n");
+    dir.write("app/gamma.toml", "name = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n");
+    let main = dir.write("app/main.gm", "dep :: import \"dep\"\n\nmain :: fn() {\n    _ = dep.triple(2)\n}\n");
+    let other = dir.write("app/sub/sub.gm", "dep :: import \"dep\"\n\nsub :: fn() -> i32 => dep.triple(3)\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &main, 3, 13, true));
+    assert_eq!(
+        locations(&refs, &dir.0),
+        vec![("app/main.gm".into(), 3, 12), ("app/sub/sub.gm".into(), 2, 26), ("dep/dep.gm".into(), 0, 4)],
+        "{}",
+        refs
+    );
+    // A dependency does not know the packages that use it: from there, only its own modules.
+    lsp.open(&dep, &std::fs::read_to_string(&dep).unwrap());
+    let refs = lsp.result("textDocument/references", refs_params(&lsp, &dep, 0, 5, false));
+    assert_eq!(locations(&refs, &dir.0), vec![], "{} {:?}", refs, other);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- checking past syntax errors ---
+
+#[test]
+fn names_after_a_syntax_error_are_still_resolved() {
+    let dir = TempDir::new();
+    // The first function lacks its closing brace; the second is a complete declaration
+    // in the first column.
+    let text = "\
+helper :: fn(n: i32) -> i32 => n + 1
+
+broken :: fn() {
+    x := helper(1)
+    _ = x
+
+later :: fn() -> i32 {
+    y := helper(2)
+    return y
+}
+";
+    let path = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, text);
+    let d = lsp.diagnostics(&path, 1);
+    assert!(d.iter().any(|d| d["message"].as_str().unwrap().contains("unclosed `{`")), "{:?}", d);
+    // Definition and hover work in the function before and in the one after the error.
+    for line in [3, 7] {
+        let def = lsp.result("textDocument/definition", lsp.at(&path, line, 11));
+        assert_eq!(def["range"]["start"], json!({"line": 0, "character": 0}), "line {}", line);
+    }
+    let h = lsp.result("textDocument/hover", lsp.at(&path, 7, 4));
+    assert!(h["contents"]["value"].as_str().unwrap().contains("y: i32"), "{}", h);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn an_unclosed_paren_does_not_hide_later_declarations() {
+    let dir = TempDir::new();
+    let text = "\
+helper :: fn(n: i32) -> i32 => n + 1
+
+broken :: fn() {
+    x := helper(1
+    _ = x
+}
+
+later :: fn() -> i32 => helper(2)
+";
+    let path = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, text);
+    assert!(!lsp.diagnostics(&path, 1).is_empty());
+    let def = lsp.result("textDocument/definition", lsp.at(&path, 7, 28));
+    assert_eq!(def["range"]["start"], json!({"line": 0, "character": 0}));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- the core library ---
+
+const LIST_SRC: &str = include_str!("../lib/core/list.gm");
+
+/// A program that calls `list` (line 1, column 11).
+const CORE_PROGRAM: &str = "main :: fn() \\ {Alloc} {\n    xs := list(i32)\n    _ = xs\n}\n";
+
+#[test]
+fn definition_in_the_core_library_points_into_the_source_tree() {
+    let dir = TempDir::new();
+    let path = dir.write("main.gm", CORE_PROGRAM);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, CORE_PROGRAM);
+    let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
+    let target = d["uri"].as_str().unwrap_or_default();
+    assert!(target.ends_with("/lib/core/list.gm"), "{}", d);
+    assert_eq!(std::fs::read_to_string(uri_path(target)).unwrap(), LIST_SRC);
+    let line = d["range"]["start"]["line"].as_u64().unwrap() as usize;
+    assert!(LIST_SRC.lines().nth(line).unwrap().starts_with("pub list ::"), "{}", d);
+    // Hover shows the documentation of the core declaration.
+    let h = lsp.result("textDocument/hover", lsp.at(&path, 1, 11));
+    let value = h["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("list :: fn(T: type) -> List(T)") && value.contains("An empty list"), "{}", value);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy() {
+    let dir = TempDir::new();
+    let path = dir.write("main.gm", CORE_PROGRAM);
+    // A standard library root without the core sources next to it, and a cache directory.
+    let std = dir.write("nostd/std/placeholder.txt", "");
+    let cache = dir.0.join("cache");
+    let mut lsp = Lsp::start_with(&[("GAMMA_STD", std.parent().unwrap()), ("GAMMA_CACHE_DIR", cache.as_path())]);
+    lsp.initialize();
+    lsp.open(&path, CORE_PROGRAM);
+    let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
+    let target = uri_path(d["uri"].as_str().unwrap());
+    assert!(target.starts_with(cache.join("core")), "{}", d);
+    assert_eq!(target.file_name().unwrap(), "list.gm");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), LIST_SRC);
+    assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
+    let l = d["range"]["start"]["line"].as_u64().unwrap() as usize;
+    assert!(LIST_SRC.lines().nth(l).unwrap().starts_with("pub list ::"), "{}", d);
+    // A second request finds the file in place.
+    let again = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
+    assert_eq!(again, d);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- unsaved files ---
+
+#[test]
+fn a_new_unsaved_file_belongs_to_its_directorys_module() {
+    let dir = TempDir::new();
+    let text = "main :: fn() -> i32 => helper(1)\n";
+    let main = dir.write("main.gm", text);
+    let extra = dir.0.join("extra.gm");
+    assert!(!extra.exists());
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, text);
+    let d = lsp.diagnostics(&main, 1);
+    assert!(d.iter().any(|d| d["message"].as_str().unwrap().contains("unknown name `helper`")), "{:?}", d);
+    // The new buffer is never saved.
+    lsp.open(&extra, "/// Adds one.\nhelper :: fn(n: i32) -> i32 => n + 1\n");
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    let def = lsp.result("textDocument/definition", lsp.at(&main, 0, 26));
+    assert_eq!(def["uri"], uri(&extra));
+    assert_eq!(def["range"]["start"], json!({"line": 1, "character": 0}));
+    let h = lsp.result("textDocument/hover", lsp.at(&main, 0, 26));
+    assert!(h["contents"]["value"].as_str().unwrap().contains("Adds one."), "{}", h);
+    // Closing it removes it from the module again.
+    lsp.notify("textDocument/didClose", json!({"textDocument": {"uri": uri(&extra)}}));
+    let d = lsp.diagnostics(&main, 1);
+    assert!(!d.is_empty());
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn a_file_in_a_new_directory_is_analyzed() {
+    let dir = TempDir::new();
+    let path = dir.0.join("fresh/mod.gm");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, "twice :: fn(n: i32) -> i32 => n * 2\n\nuse_it :: fn() -> i32 => twice(2)\n");
+    assert_eq!(lsp.diagnostics(&path, 1), Vec::<Value>::new());
+    let def = lsp.result("textDocument/definition", lsp.at(&path, 2, 26));
+    assert_eq!(def["uri"], uri(&path));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- rename ---
+
+/// Applies a `WorkspaceEdit` (ASCII files only) to the files on disk, returning the new
+/// text of each changed file by its path relative to `root`.
+fn apply_edit(edit: &Value, root: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (u, edits) in edit["changes"].as_object().expect("changes") {
+        let path = uri_path(u);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+        let offset =
+            |p: &Value| starts[p["line"].as_u64().unwrap() as usize] + p["character"].as_u64().unwrap() as usize;
+        let mut list: Vec<(usize, usize, String)> = edits
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (offset(&e["range"]["start"]), offset(&e["range"]["end"]), e["newText"].as_str().unwrap().to_string())
+            })
+            .collect();
+        list.sort();
+        let mut new = text.clone();
+        for (lo, hi, t) in list.into_iter().rev() {
+            new.replace_range(lo..hi, &t);
+        }
+        out.insert(path.strip_prefix(root).unwrap().display().to_string().replace('\\', "/"), new);
+    }
+    out
+}
+
+fn rename_params(lsp: &Lsp, path: &Path, line: u32, character: u32, new: &str) -> Value {
+    let mut p = lsp.at(path, line, character);
+    p["newName"] = json!(new);
+    p
+}
+
+/// Renames and returns the edited files.
+fn renamed(
+    lsp: &mut Lsp,
+    dir: &TempDir,
+    path: &Path,
+    line: u32,
+    character: u32,
+    new: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let edit = lsp.result("textDocument/rename", rename_params(lsp, path, line, character, new));
+    apply_edit(&edit, &dir.0)
+}
+
+/// The message of the error that a rename fails with.
+fn rename_error(lsp: &mut Lsp, path: &Path, line: u32, character: u32, new: &str) -> String {
+    let r = lsp.request("textDocument/rename", rename_params(lsp, path, line, character, new));
+    r["error"]["message"].as_str().unwrap_or_else(|| panic!("no error: {}", r)).to_string()
+}
+
+#[test]
+fn rename_is_advertised() {
+    let mut lsp = Lsp::start();
+    let caps = lsp.initialize();
+    assert_eq!(caps["capabilities"]["renameProvider"]["prepareProvider"], true);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_a_function_in_every_module_that_uses_it() {
+    let dir = TempDir::new();
+    let (_, main, _, _) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    let p = lsp.result("textDocument/prepareRename", lsp.at(&main, 4, 16));
+    assert_eq!(p["placeholder"], "double");
+    assert_eq!(p["range"], json!({"start": {"line": 4, "character": 14}, "end": {"line": 4, "character": 20}}));
+    let files = renamed(&mut lsp, &dir, &main, 4, 16, "twice");
+    assert_eq!(files.keys().collect::<Vec<_>>(), ["app/app.gm", "main.gm", "util/util.gm"]);
+    assert!(files["main.gm"].contains("d := util.twice(p.x)"));
+    assert!(files["app/app.gm"].contains("return util.twice(q.y)"));
+    assert!(files["util/util.gm"].contains("pub twice :: fn(n: i32)"));
+    assert!(files.values().all(|t| !t.contains("double")));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_types_fields_variants_and_constants() {
+    let dir = TempDir::new();
+    let (util, main, _, _) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&util, &std::fs::read_to_string(&util).unwrap());
+    // A type, from its declaration.
+    let files = renamed(&mut lsp, &dir, &util, 7, 6, "Pt");
+    assert_eq!(files.keys().collect::<Vec<_>>(), ["app/app.gm", "main.gm", "util/util.gm"]);
+    assert!(files["main.gm"].contains("p := util.Pt(x: 1, y: 2)"));
+    assert!(files["util/util.gm"].contains("pub Pt :: struct"));
+    // A field, from a use in another module: its declaration, its labels and its reads.
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    let files = renamed(&mut lsp, &dir, &main, 4, 23, "px");
+    assert!(files["main.gm"].contains("util.Point(px: 1, y: 2)") && files["main.gm"].contains("double(p.px)"));
+    assert!(files["app/app.gm"].contains("util.Point(px: 5, y: 6)"));
+    assert!(files["util/util.gm"].contains("pub px: i32"));
+    // A variant, from its declaration: constructions and patterns.
+    let files = renamed(&mut lsp, &dir, &util, 1, 5, "Disc");
+    assert!(files["util/util.gm"].contains("    Disc: i32") && files["util/util.gm"].contains(".Disc(r) => r * big"));
+    assert!(files["main.gm"].contains("util.Shape.Disc(3)"));
+    // A constant, from a use in another module.
+    let files = renamed(&mut lsp, &dir, &main, 5, 47, "MAX");
+    assert!(files["main.gm"].contains("util.MAX"));
+    assert!(files["util/util.gm"].contains("pub MAX :: 10") && files["util/util.gm"].contains("big := MAX * scale"));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_locals_and_parameters() {
+    let dir = TempDir::new();
+    let (util, main, _, _) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&util, &std::fs::read_to_string(&util).unwrap());
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    // A parameter, from its use.
+    let files = renamed(&mut lsp, &dir, &util, 15, 25, "factor");
+    assert_eq!(files.keys().collect::<Vec<_>>(), ["util/util.gm"]);
+    let t = &files["util/util.gm"];
+    assert!(t.contains("fn(s: Shape, factor: i32)") && t.contains("LIMIT * factor") && t.contains("side * factor"));
+    assert!(!t.contains("scale"));
+    // A local, from its declaration, leaving the other module's `p` alone.
+    let files = renamed(&mut lsp, &dir, &main, 3, 4, "pt");
+    assert_eq!(files.keys().collect::<Vec<_>>(), ["main.gm"]);
+    assert!(files["main.gm"].contains("pt := util.Point") && files["main.gm"].contains("double(pt.x)"));
+    assert!(files["main.gm"].contains("d + a + pt.y"));
+    // A pattern binding.
+    let files = renamed(&mut lsp, &dir, &util, 17, 17, "radius");
+    assert!(files["util/util.gm"].contains(".Circle(radius) => radius * big"));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_rejects_bad_names() {
+    let dir = TempDir::new();
+    let (_, main, _, _) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    assert!(rename_error(&mut lsp, &main, 4, 16, "1abc").contains("not an identifier"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "two words").contains("not an identifier"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "").contains("not an identifier"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "fn").contains("keyword"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "match").contains("keyword"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "i32").contains("builtin type"));
+    assert!(rename_error(&mut lsp, &main, 4, 16, "_").contains("`_`"));
+    // Nothing is renamed where there is no name.
+    let r = lsp.request("textDocument/rename", rename_params(&lsp, &main, 1, 0, "x"));
+    assert!(r.get("error").is_some(), "{}", r);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_rejects_clashes() {
+    let dir = TempDir::new();
+    let (util, main, app, _) = package(&dir);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&util, &std::fs::read_to_string(&util).unwrap());
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    lsp.open(&app, &std::fs::read_to_string(&app).unwrap());
+    // Two functions of a module.
+    assert!(rename_error(&mut lsp, &util, 12, 5, "area").contains("already declared"));
+    // Two fields; two variants.
+    assert!(rename_error(&mut lsp, &util, 8, 9, "y").contains("already declared"));
+    assert!(rename_error(&mut lsp, &util, 1, 5, "Square").contains("already declared"));
+    // Locals and parameters whose scopes overlap.
+    assert!(rename_error(&mut lsp, &util, 15, 5, "scale").contains("already declared"));
+    assert!(rename_error(&mut lsp, &util, 14, 26, "big").contains("already declared"));
+    assert!(rename_error(&mut lsp, &main, 3, 4, "d").contains("already declared"));
+    // A local that would hide a declaration of the module.
+    assert!(rename_error(&mut lsp, &util, 15, 5, "LIMIT").contains("hide"));
+    // A function whose new name is a local where it is used (in another module).
+    assert!(rename_error(&mut lsp, &util, 12, 5, "q").contains("local name"));
+    // Nothing was changed by the failures: a fine name still works.
+    let files = renamed(&mut lsp, &dir, &util, 12, 5, "twice");
+    assert_eq!(files.len(), 3);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn rename_refuses_names_outside_the_package() {
+    let dir = TempDir::new();
+    // The core library.
+    let core = dir.write("core/main.gm", CORE_PROGRAM);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&core, CORE_PROGRAM);
+    assert!(rename_error(&mut lsp, &core, 1, 11, "mine").contains("core library"));
+    let r = lsp.request("textDocument/prepareRename", lsp.at(&core, 1, 11));
+    assert!(r["error"]["message"].as_str().unwrap().contains("core library"), "{}", r);
+    // The standard library.
+    let text = "str :: import \"std/str\"\n\nmain :: fn() {\n    n := str.trim(\" a \")\n    _ = n\n}\n";
+    let user = dir.write("user/main.gm", text);
+    lsp.open(&user, text);
+    assert!(rename_error(&mut lsp, &user, 3, 15, "cut").contains("standard library"));
+    // A dependency on a path outside the package.
+    dir.write("dep/gamma.toml", "name = \"dep\"\nversion = \"0.1.0\"\n");
+    dir.write("dep/dep.gm", "pub triple :: fn(n: i32) -> i32 => n * 3\n");
+    dir.write("app/gamma.toml", "name = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n");
+    let main = dir.write("app/main.gm", "dep :: import \"dep\"\n\nmain :: fn() {\n    _ = dep.triple(2)\n}\n");
+    lsp.open(&main, &std::fs::read_to_string(&main).unwrap());
+    assert!(rename_error(&mut lsp, &main, 3, 14, "thrice").contains("dependency"));
+    let r = lsp.request("textDocument/prepareRename", lsp.at(&main, 3, 14));
+    assert!(r["error"]["message"].as_str().unwrap().contains("dependency"), "{}", r);
     assert_eq!(lsp.shutdown(), 0);
 }

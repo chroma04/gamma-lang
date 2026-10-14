@@ -1,0 +1,83 @@
+// std/hash: CRC-32 and SHA-256 against the published test vectors, at the padding
+// boundaries, and fed in pieces of every awkward size.
+hash :: import "std/hash"
+hex :: import "std/encoding/hex"
+
+crc32 :: hash.crc32
+sha256 :: hash.sha256
+
+// The input of length `n` used for the boundary cases: byte i is (7 i + 3) mod 256.
+pattern :: fn(buf: []u8, n: usize) -> []u8 {
+    for i in 0..n { buf[i] = ((i * 7 + 3) % 256).trunc(u8) }
+    return buf[0..n]
+}
+
+show :: fn(d: sha256.Digest) \ {Out} {
+    buf: [64]u8 = ---
+    print("{}\n", hex.encode(d[..], buf[..], false))
+}
+
+main :: fn() \ {Out} {
+    // CRC-32
+    print("crc32 empty {:08x}\n", crc32.checksum(""))
+    print("crc32 a {:08x}\n", crc32.checksum("a"))
+    print("crc32 abc {:08x}\n", crc32.checksum("abc"))
+    print("crc32 check {:08x}\n", crc32.checksum("123456789"))
+    print("crc32 fox {:08x}\n", crc32.checksum("The quick brown fox jumps over the lazy dog"))
+
+    // The final value can be read in the middle of a stream.
+    c := crc32.init()
+    c.update("12345")
+    print("crc32 partial {:08x}\n", c.final())
+    c.update("6789")
+    print("crc32 whole {:08x}\n", c.final())
+
+    // SHA-256: FIPS 180-4 and NIST examples.
+    show(sha256.sum(""))
+    show(sha256.sum("abc"))
+    show(sha256.sum("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+    show(sha256.sum("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"))
+
+    // The lengths around the padding boundaries.
+    raw: [1000]u8 = ---
+    for n in [_]usize(0, 1, 54, 55, 56, 57, 63, 64, 65, 119, 120, 121, 1000) {
+        data := pattern(raw[..], n)
+        print("{} {:08x} ", (n, crc32.checksum(data)))
+        show(sha256.sum(data))
+    }
+
+    // However the input is cut, the result is the same.
+    whole := sha256.sum(raw[0..1000])
+    wholec := crc32.checksum(raw[0..1000])
+    bad: u32 = 0
+    for step in [_]usize(1, 2, 3, 5, 7, 31, 63, 64, 65, 100, 128, 333, 999, 1000) {
+        s := sha256.init()
+        k := crc32.init()
+        i: usize = 0
+        while i < 1000 {
+            j := if i + step > 1000 { 1000 } else { i + step }
+            s.update(raw[i..j])
+            k.update(raw[i..j])
+            i = j
+        }
+        if s.final() is not whole or k.final() is not wholec { bad += 1 }
+    }
+    print("streaming mismatches: {}\n", bad)
+
+    // Empty updates change nothing, and `final` leaves the state usable.
+    s := sha256.init()
+    s.update("")
+    s.update("ab")
+    s.update("")
+    first := s.final()
+    s.update("c")
+    show(first)
+    show(s.final())
+
+    // A long input in pieces, as a stream of 1000-byte chunks: one million 'a'.
+    chunk: [1000]u8 = ---
+    chunk[..].fill('a')
+    m := sha256.init()
+    for i in 0..1000 { m.update(chunk[..]) }
+    show(m.final())
+}

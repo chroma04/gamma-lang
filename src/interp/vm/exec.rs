@@ -7,7 +7,9 @@ const DEFER_ESCAPE: &str = "internal error: control flow escaped a deferred stat
 
 /// One activation of a compiled function.
 pub struct St<'a> {
-    code: Rc<Code<'a>>,
+    /// The code being run. It lives in `Machine::vm_code`, which never replaces or drops
+    /// compiled code, so it outlives every activation.
+    code: *const Code<'a>,
     regs: Vec<u64>,
     vals: Vec<Value>,
     /// The frame of the activation, made when something first needs it (most functions
@@ -21,6 +23,19 @@ pub struct St<'a> {
     /// The handler context, and the contexts outside the `with`s being run.
     cx: Ctx,
     cx_stack: Vec<Ctx>,
+    /// For an activation started by a dispatch loop (it is on `Machine::vm_stack`): the
+    /// caller, which takes the result and goes on at `call_resume`.
+    call_cs: *mut St<'a>,
+    call_resume: *const Op,
+    /// Where the caller wants the result.
+    call_out: Arg,
+    /// The call site, for backtraces, and the index of the call instruction in the
+    /// caller's code.
+    call_span: Span,
+    call_at: u32,
+    /// The stack charged on a fiber, and the length of `Machine::temps` at the call.
+    call_cost: u64,
+    call_mark: usize,
 }
 
 /// What the frame of a closure or clause call is made with besides the function.
@@ -256,7 +271,13 @@ fn n_cmp<const LE: bool>(cmp: Cmp, k: IntK, x: u64, y: u64) -> bool {
     }
 }
 
-impl St<'_> {
+impl<'a> St<'a> {
+    #[inline(always)]
+    fn code(&self) -> &Code<'a> {
+        // SAFETY: see `St::code`.
+        unsafe { &*self.code }
+    }
+
     fn value_of(&self, a: Arg) -> Value {
         match a {
             Arg::Data { reg, size } => Value::Bytes(get_bytes(&self.regs, reg, size)),
@@ -353,34 +374,69 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
+    /// A new activation of `code`, taken from the pool of finished ones (whose buffers are
+    /// kept, and whose other fields are in their empty state).
     #[inline(always)]
-    fn vm_state(&mut self, code: Rc<Code<'a>>, fid: FnId, extra: Option<FrameExtra>, cx: Ctx) -> St<'a> {
+    fn vm_state(&mut self, code: *const Code<'a>, fid: FnId, extra: Option<FrameExtra>, cx: Ctx) -> Box<St<'a>> {
         let id = self.next_frame;
         self.next_frame += 1;
-        let mut regs = self.vm_regs.pop().unwrap_or_default();
-        let n = code.nregs as usize;
+        let mut st = match self.vm_sts.pop() {
+            Some(st) => st,
+            None => Box::new(St {
+                code,
+                regs: Vec::new(),
+                vals: Vec::new(),
+                fr: None,
+                id,
+                func: fid,
+                extra: None,
+                cx: Ctx::empty(),
+                cx_stack: Vec::new(),
+                call_cs: std::ptr::null_mut(),
+                call_resume: std::ptr::null(),
+                call_out: Arg::UNIT,
+                call_span: Span::DUMMY,
+                call_at: 0,
+                call_cost: 0,
+                call_mark: 0,
+            }),
+        };
+        // SAFETY: see `St::code`.
+        let c: &Code<'a> = unsafe { &*code };
+        st.code = code;
+        st.id = id;
+        st.func = fid;
+        if extra.is_some() {
+            st.extra = extra;
+        }
+        st.cx = cx;
+        let n = c.nregs as usize;
+        let regs = &mut st.regs;
         regs.clear();
         regs.reserve(n);
-        let init = &code.init[..code.init.len().min(n)];
+        let init = &c.init[..c.init.len().min(n)];
         // SAFETY: the buffer has room for `n` words, and each of them is written below.
         unsafe {
             let p = regs.as_mut_ptr();
-            for (i, w) in init.iter().enumerate() {
-                p.add(i).write(*w);
-            }
-            for i in init.len()..n {
-                p.add(i).write(0);
+            if n <= 16 {
+                // Short loops cost less than calls to `memcpy` and `memset`.
+                let k = init.len();
+                for (i, w) in init.iter().enumerate() {
+                    p.add(i).write(*w);
+                }
+                for i in k..n {
+                    p.add(i).write(0);
+                }
+            } else {
+                std::ptr::copy_nonoverlapping(init.as_ptr(), p, init.len());
+                std::ptr::write_bytes(p.add(init.len()), 0, n - init.len());
             }
             regs.set_len(n);
         }
-        let vals = if code.nvals == 0 {
-            Vec::new()
-        } else {
-            let mut vals = self.vm_vals.pop().unwrap_or_default();
-            vals.resize(code.nvals as usize, Value::unit());
-            vals
-        };
-        St { code, regs, vals, fr: None, id, func: fid, extra, cx, cx_stack: Vec::new() }
+        if c.nvals != 0 {
+            st.vals.resize(c.nvals as usize, Value::unit());
+        }
+        st
     }
 
     /// The frame of activation `st`, made on first use.
@@ -398,7 +454,7 @@ impl<'a> Machine<'a> {
             ret_ty,
             Some(st.func),
             env,
-            st.code.nslots as usize,
+            st.code().nslots as usize,
             installing,
             is_clause_lit,
         );
@@ -406,20 +462,25 @@ impl<'a> Machine<'a> {
         fr
     }
 
-    /// Takes back the buffers and frame of a finished activation.
+    /// Takes back a finished activation, and its frame, for reuse.
     #[inline(always)]
-    fn vm_finish(&mut self, st: St<'a>) {
-        let St { mut regs, mut vals, fr, .. } = st;
-        regs.clear();
-        if let Some(fr) = fr {
+    fn vm_finish(&mut self, mut st: Box<St<'a>>) {
+        st.regs.clear();
+        if let Some(fr) = st.fr.take() {
             self.recycle_frame(fr);
         }
-        if self.vm_regs.len() < 256 {
-            self.vm_regs.push(regs);
-            if vals.capacity() > 0 {
-                vals.clear();
-                self.vm_vals.push(vals);
-            }
+        if st.vals.capacity() > 0 {
+            st.vals.clear();
+        }
+        if st.extra.is_some() {
+            st.extra = None;
+        }
+        if !st.cx_stack.is_empty() {
+            st.cx_stack.clear();
+        }
+        st.cx = Ctx::empty();
+        if self.vm_sts.len() < 256 {
+            self.vm_sts.push(st);
         }
     }
 
@@ -476,9 +537,8 @@ impl<'a> Machine<'a> {
         } else {
             None
         };
-        let mut st = self.vm_state(code, fid, extra, cx);
+        let mut st = self.vm_state(Rc::as_ptr(&code), fid, extra, cx);
         let mut bound = Ok(());
-        let code = st.code.clone();
         for (p, v) in code.params.iter().zip(args.drain(..)) {
             bound = self.vm_bind(&mut st, *p, v, span);
             if bound.is_err() {
@@ -519,71 +579,95 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Calls compiled function `fid` from compiled code, with the operands `list` of the
-    /// caller `cs`, and writes the result to `out`.
-    #[inline(always)]
-    fn vm_call_regs(
-        &mut self,
-        span: Span,
-        fid: FnId,
-        code: Rc<Code<'a>>,
-        cs: &mut St<'a>,
-        list: &[Arg],
-        out: Arg,
-    ) -> R<()> {
-        let cx = cs.cx.clone();
-        self.vm_call_list(span, fid, code, cs, list, out, None, cx, None)
-    }
-
-    /// Like [`Self::vm_call_regs`] for an activation that has a handler context of its own
-    /// and, perhaps, a frame description and a first argument that is not in a register of
-    /// the caller (the value of a handler declaration).
+    /// Starts a call of compiled function `fid` from the activation `cs`, with the operands
+    /// `list` of the caller, an activation of its own (`extra`, `cx`) and perhaps a first
+    /// argument that is not in a register of the caller (the value of a handler
+    /// declaration). On success the callee is on top of `vm_stack`; `resume` is where `cs`
+    /// goes on when it returns, and `out` takes the result.
     #[allow(clippy::too_many_arguments)]
-    fn vm_call_list(
+    #[inline(always)]
+    fn vm_enter(
         &mut self,
         span: Span,
         fid: FnId,
-        code: Rc<Code<'a>>,
-        cs: &mut St<'a>,
+        code: *const Code<'a>,
+        cs: &St<'a>,
+        csp: *mut St<'a>,
         list: &[Arg],
-        out: Arg,
         extra: Option<FrameExtra>,
         cx: Ctx,
         first: Option<&Bytes>,
+        out: Arg,
+        at: u32,
+        resume: *const Op,
     ) -> R<()> {
-        let cost = self.vm_prologue(span, fid, &code, list.len() + first.is_some() as usize)?;
+        // SAFETY: see `St::code`.
+        let c: &Code<'a> = unsafe { &*code };
+        let cost = self.vm_prologue(span, fid, c, list.len() + first.is_some() as usize)?;
         let mut st = self.vm_state(code, fid, extra, cx);
-        // SAFETY: `st.code` keeps the code alive for the whole activation and is never replaced.
-        let code: &Code<'a> = unsafe { &*Rc::as_ptr(&st.code) };
-        let mut bound = Ok(());
-        let mut params = code.params.iter();
+        let mut params = c.params.iter();
         if let Some(b) = first
             && let Some(p) = params.next()
         {
-            bound = self.vm_bind(&mut st, *p, Value::Bytes(b.clone()), span);
-        }
-        for (p, a) in params.zip(list) {
-            match (*p, *a) {
-                (ParamLoc::Reg { reg, size }, Arg::Data { reg: src, size: ss }) => {
-                    if ss == size {
-                        copy_words(&mut st.regs, reg as usize, &cs.regs, src as usize, words(size) as usize);
-                    } else {
-                        let b = get_bytes(&cs.regs, src, ss);
-                        put_bytes(&mut st.regs, reg, size, &b);
-                    }
+            let bound = match *p {
+                ParamLoc::Reg { reg, size } => {
+                    put_bytes(&mut st.regs, reg, size, b);
+                    Ok(())
                 }
-                (p, a) => {
-                    bound = self.vm_bind(&mut st, p, cs.value_of(a), span);
-                    if bound.is_err() {
-                        break;
-                    }
-                }
+                p => self.vm_bind(&mut st, p, Value::Bytes(b.clone()), span),
+            };
+            if let Err(f) = bound {
+                self.vm_finish(st);
+                return Err(f);
             }
         }
-        let r = match bound {
-            Ok(()) => self.vm_body(&mut st, fid, span, cost),
-            Err(f) => Err(f),
-        };
+        for (p, a) in params.zip(list) {
+            if let (ParamLoc::Reg { reg, size }, Arg::Data { reg: src, size: ss }) = (p, a)
+                && ss == size
+            {
+                copy_words(&mut st.regs, *reg as usize, &cs.regs, *src as usize, words(*size) as usize);
+            } else if let Err(f) = self.vm_bind_arg(&mut st, cs, *p, *a, span) {
+                self.vm_finish(st);
+                return Err(f);
+            }
+        }
+        if cost != 0 {
+            self.fiber_stack = self.fiber_stack.saturating_sub(cost);
+        }
+        self.depth += 1;
+        st.call_cs = csp;
+        st.call_resume = resume;
+        st.call_out = out;
+        st.call_span = span;
+        st.call_at = at;
+        st.call_cost = cost;
+        st.call_mark = self.temps.len();
+        self.vm_stack.push(st);
+        Ok(())
+    }
+
+    /// The part of ending a call that does not depend on how it ended: gives back the
+    /// stack and the temporaries and frame of the callee `st`.
+    #[inline(always)]
+    fn vm_leave_cleanup(&mut self, st: &St<'a>) {
+        self.depth -= 1;
+        if self.fiber_stack != u64::MAX {
+            self.fiber_stack += st.call_cost;
+        }
+        if self.temps.len() > st.call_mark {
+            self.kill_temps(st.call_mark);
+        }
+        if let Some(fr) = &st.fr {
+            self.kill_frame(fr);
+        }
+    }
+
+    /// Ends the call `st`, which finished with `r`, and gives the result to its caller
+    /// `cs`; returns where the caller goes on.
+    #[inline(never)]
+    fn vm_leave(&mut self, mut st: Box<St<'a>>, r: R<Exit>, cs: &mut St<'a>) -> R<*const Op> {
+        self.vm_leave_cleanup(&st);
+        let (resume, out, span) = (st.call_resume, st.call_out, st.call_span);
         let res = match r {
             Ok(Exit::Ret(a)) => match (a, out) {
                 (Arg::Data { reg: src, size: ss }, Arg::Data { reg, size }) => {
@@ -606,10 +690,22 @@ impl<'a> Machine<'a> {
             },
             Ok(Exit::Value(v)) => write_value(cs, out, v, span),
             Ok(Exit::Seg) => self.trap(span, "internal error: a deferred statement's code ended a function"),
-            Err(f) => Err(f),
+            Err(flow) => Err(self.vm_trace(flow, st.func, span)),
         };
         self.vm_finish(st);
-        res
+        res.map(|()| resume)
+    }
+
+    /// Binds parameter `p` of a new activation to the operand `a` of the caller.
+    #[inline(never)]
+    fn vm_bind_arg(&mut self, st: &mut St<'a>, cs: &St<'a>, p: ParamLoc, a: Arg, span: Span) -> R<()> {
+        if let (ParamLoc::Reg { reg, size }, Arg::Data { reg: src, size: ss }) = (p, a) {
+            let b = get_bytes(&cs.regs, src, ss);
+            put_bytes(&mut st.regs, reg, size, &b);
+            Ok(())
+        } else {
+            self.vm_bind(st, p, cs.value_of(a), span)
+        }
     }
 
     // --- unwinding ----------------------------------------------------------------------------------
@@ -619,7 +715,8 @@ impl<'a> Machine<'a> {
     /// activation if it is this function's `return`.
     #[inline(never)]
     fn vm_unwind(&mut self, st: &mut St<'a>, at: u32, mut flow: Box<Flow>) -> R<Land> {
-        let code = st.code.clone();
+        // SAFETY: see `St::code`; the reference does not borrow `st`.
+        let code: &Code<'a> = unsafe { &*st.code };
         for s in code.scopes.iter() {
             if at < s.lo || at >= s.hi {
                 continue;
@@ -691,66 +788,130 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Runs the code of activation `st` from instruction `start`.
-    fn vm_run<const LE: bool, const COUNT: bool>(&mut self, st: &mut St<'a>, start: u32) -> R<Exit> {
-        // SAFETY: `st.code` keeps the code alive for the whole activation and is never replaced.
-        let code: &Code<'a> = unsafe { &*Rc::as_ptr(&st.code) };
+    /// Runs the code of activation `root` from instruction `start`. Calls of compiled
+    /// functions do not nest Rust calls: the callee becomes the running activation and the
+    /// caller waits on `vm_stack` (see [`CallRec`]); the loop returns when `root` ends.
+    fn vm_run<const LE: bool, const COUNT: bool>(&mut self, root: &mut St<'a>, start: u32) -> R<Exit> {
+        let root: *mut St<'a> = root;
+        // The calls made by this loop are the entries of `vm_stack` from here on.
+        let floor = self.vm_stack.len();
+        let mut stp: *mut St<'a> = root;
+        // SAFETY: see `St::code`.
+        let mut code: &Code<'a> = unsafe { &*(*stp).code };
         // The instruction pointer and the registers are raw so that dispatch costs little.
         // `Code::valid` has checked every jump target and, for the instructions that use
         // `r!` and `w!`, every register against the activation's `nregs` registers, which
         // `vm_state` allocates and nothing resizes while the code runs.
-        let base: *const Op = code.ops.as_ptr();
+        let mut base: *const Op = code.ops.as_ptr();
         // SAFETY: `start` is the entry or a segment of the code, both checked.
         let mut ip: *const Op = unsafe { base.add(start as usize) };
-        debug_assert_eq!(st.regs.len(), code.nregs as usize);
-        let rp: *mut u64 = st.regs.as_mut_ptr();
-        macro_rules! jump {
-            ($t:expr) => {
-                // SAFETY: targets are checked by `Code::valid`.
-                {
-                    let t = $t as usize;
-                    ip = unsafe { base.add(t) }
-                }
-            };
-        }
-        // The index of the running instruction.
-        macro_rules! at {
-            () => {
-                // SAFETY: `ip` is inside the code, one past the running instruction.
-                (unsafe { ip.offset_from(base) } as u32 - 1)
-            };
-        }
-        macro_rules! r {
-            ($i:expr) => {
-                // SAFETY: checked by `Code::valid` for the instructions that use it.
-                unsafe { *rp.add($i as usize) }
-            };
-        }
-        macro_rules! w {
-            ($i:expr, $v:expr) => {
-                // SAFETY: as for `r!`.
-                {
-                    let v = $v;
-                    unsafe { *rp.add($i as usize) = v }
-                }
-            };
-        }
-        macro_rules! tri {
-            ($at:expr, $e:expr) => {
-                match $e {
-                    Ok(v) => v,
-                    Err(f) => match self.vm_unwind(st, $at, f) {
-                        Ok(Land::Pc(p)) => {
-                            jump!(p);
-                            continue;
+        // SAFETY: `root` is the live activation the caller passed.
+        let mut rp: *mut u64 = unsafe { (*stp).regs.as_mut_ptr() };
+        debug_assert_eq!(unsafe { (*stp).regs.len() }, code.nregs as usize);
+        'dispatch: loop {
+            // SAFETY: `stp` is the running activation: `root` or the top of `vm_stack`, and
+            // nothing else refers to it while it runs.
+            let st: &mut St<'a> = unsafe { &mut *stp };
+            macro_rules! jump {
+                ($t:expr) => {
+                    // SAFETY: targets are checked by `Code::valid`.
+                    {
+                        let t = $t as usize;
+                        ip = unsafe { base.add(t) }
+                    }
+                };
+            }
+            // The index of the running instruction.
+            macro_rules! at {
+                () => {
+                    // SAFETY: `ip` is inside the code, one past the running instruction.
+                    (unsafe { ip.offset_from(base) } as u32 - 1)
+                };
+            }
+            macro_rules! r {
+                ($i:expr) => {
+                    // SAFETY: checked by `Code::valid` for the instructions that use it.
+                    unsafe { *rp.add($i as usize) }
+                };
+            }
+            macro_rules! w {
+                ($i:expr, $v:expr) => {
+                    // SAFETY: as for `r!`.
+                    {
+                        let v = $v;
+                        unsafe { *rp.add($i as usize) = v }
+                    }
+                };
+            }
+            // Makes the activation on top of `vm_stack` the running one.
+            macro_rules! switch {
+                () => {{
+                    let top = self.vm_stack.last_mut().expect("a call was pushed");
+                    stp = &mut **top;
+                    // SAFETY: see `St::code`; the activation is boxed, so it does not move.
+                    code = unsafe { &*top.code };
+                    base = code.ops.as_ptr();
+                    ip = base;
+                    rp = top.regs.as_mut_ptr();
+                    continue 'dispatch;
+                }};
+            }
+            // The running activation ends with `$r`: the loop goes on in its caller, or
+            // returns if it is `root`.
+            macro_rules! finish {
+                ($r:expr) => {{
+                    let mut r: R<Exit> = $r;
+                    loop {
+                        if self.vm_stack.len() == floor {
+                            return r;
                         }
-                        Ok(Land::Exit(x)) => return Ok(x),
-                        Err(f) => return Err(f),
-                    },
-                }
-            };
-        }
-        loop {
+                        let callee = self.vm_stack.pop().expect("a call is running");
+                        let (cs, call_at) = (callee.call_cs, callee.call_at);
+                        // SAFETY: the caller's activation is live and not otherwise borrowed.
+                        let csr = unsafe { &mut *cs };
+                        let flow = match self.vm_leave(callee, r, csr) {
+                            Ok(resume) => {
+                                stp = cs;
+                                code = unsafe { &*csr.code };
+                                base = code.ops.as_ptr();
+                                ip = resume;
+                                rp = csr.regs.as_mut_ptr();
+                                continue 'dispatch;
+                            }
+                            Err(flow) => flow,
+                        };
+                        // The call failed in the caller, which handles the flow as for any
+                        // other instruction.
+                        match self.vm_unwind(csr, call_at, flow) {
+                            Ok(Land::Pc(p)) => {
+                                stp = cs;
+                                code = unsafe { &*csr.code };
+                                base = code.ops.as_ptr();
+                                ip = unsafe { base.add(p as usize) };
+                                rp = csr.regs.as_mut_ptr();
+                                continue 'dispatch;
+                            }
+                            Ok(Land::Exit(x)) => r = Ok(x),
+                            Err(f) => r = Err(f),
+                        }
+                    }
+                }};
+            }
+            macro_rules! tri {
+                ($at:expr, $e:expr) => {
+                    match $e {
+                        Ok(v) => v,
+                        Err(f) => match self.vm_unwind(st, $at, f) {
+                            Ok(Land::Pc(p)) => {
+                                jump!(p);
+                                continue 'dispatch;
+                            }
+                            Ok(Land::Exit(x)) => finish!(Ok(x)),
+                            Err(f) => finish!(Err(f)),
+                        },
+                    }
+                };
+            }
             // SAFETY: the code ends with an instruction that does not continue.
             let op = unsafe { &*ip };
             ip = unsafe { ip.add(1) };
@@ -785,9 +946,12 @@ impl<'a> Machine<'a> {
                             }
                         }
                     } else if size > 0 {
-                        let r = self.mem.read(a, size as u64, align as u64).map(Bytes::from_slice);
-                        let b = tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
-                        put_bytes(&mut st.regs, dst, size, &b);
+                        let d = dst as usize;
+                        if !(size <= 64 && self.mem.try_read_words(a, size as usize, align as u64, &mut regs[d..])) {
+                            let r = self.mem.read(a, size as u64, align as u64).map(Bytes::from_slice);
+                            let b = tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
+                            put_bytes(&mut st.regs, dst, size, &b);
+                        }
                     }
                 }
                 Op::Store { addr, src, size, align } => {
@@ -800,9 +964,12 @@ impl<'a> Machine<'a> {
                             tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
                         }
                     } else if size > 0 {
-                        let b = get_bytes(regs, src, size);
-                        let r = self.mem.write(a, &b, align as u64);
-                        tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
+                        let sr = src as usize;
+                        if !(size <= 64 && self.mem.try_write_words(a, &regs[sr..], size as usize, align as u64)) {
+                            let b = get_bytes(regs, src, size);
+                            let r = self.mem.write(a, &b, align as u64);
+                            tri!(at!(), r.map_err(|e| self.mem_trap(code, at!(), e)));
+                        }
                     }
                 }
                 Op::AddImm { dst, src, imm } => w!(dst, r!(src).wrapping_add(imm)),
@@ -960,25 +1127,78 @@ impl<'a> Machine<'a> {
                 Op::Call { f, args, out } => {
                     let span = code.spans[at!() as usize];
                     let list = &code.args[args as usize];
-                    let r = match self.code_of(f) {
-                        Some(c2) => self.vm_call_regs(span, f, c2, st, list, out),
+                    match self.code_ptr(f) {
+                        Some(c2) => {
+                            let cx = st.cx.clone();
+                            tri!(at!(), self.vm_enter(span, f, c2, st, stp, list, None, cx, None, out, at!(), ip));
+                            switch!();
+                        }
                         None => {
                             let vals = st.values(list);
                             let cx = st.cx.clone();
-                            self.call_function(span, f, vals, None, cx, None, false)
-                                .and_then(|v| write_value(st, out, v, span))
+                            let r = self
+                                .call_function(span, f, vals, None, cx, None, false)
+                                .and_then(|v| write_value(st, out, v, span));
+                            tri!(at!(), r);
                         }
-                    };
-                    tri!(at!(), r);
+                    }
+                }
+                Op::CallHeap { f, args, out } => {
+                    let list = &code.args[args as usize];
+                    if !self.vm_heap_call(&mut st.regs, &st.cx, f, list, out) {
+                        let span = code.spans[at!() as usize];
+                        match self.code_ptr(f) {
+                            Some(c2) => {
+                                let cx = st.cx.clone();
+                                tri!(at!(), self.vm_enter(span, f, c2, st, stp, list, None, cx, None, out, at!(), ip));
+                                switch!();
+                            }
+                            None => {
+                                let vals = st.values(list);
+                                let cx = st.cx.clone();
+                                let r = self
+                                    .call_function(span, f, vals, None, cx, None, false)
+                                    .and_then(|v| write_value(st, out, v, span));
+                                tri!(at!(), r);
+                            }
+                        }
+                    }
                 }
                 Op::CallInd { callee, cty, args, out } => {
-                    tri!(at!(), self.vm_call_ind(st, code, at!(), callee, cty, args, out));
+                    if tri!(at!(), self.vm_call_ind(st, code, at!(), ip, callee, cty, args, out)) {
+                        switch!();
+                    }
                 }
                 Op::Perform { eff, op, args, out } => {
-                    tri!(at!(), self.vm_perform(st, code, at!(), eff, op, args, out));
+                    if tri!(at!(), self.vm_perform(st, code, at!(), ip, eff, op, args, out)) {
+                        switch!();
+                    }
                 }
-                Op::Ret { src } => return Ok(Exit::Ret(src)),
-                Op::EndSeg => return Ok(Exit::Seg),
+                Op::Ret { src } => {
+                    // The common case: a call of this loop returns data to its caller's registers.
+                    if self.vm_stack.len() > floor
+                        && let Arg::Data { reg: sreg, size: ss } = src
+                        && let Arg::Data { reg: oreg, size: osz } = st.call_out
+                        && ss == osz
+                    {
+                        let callee = self.vm_stack.pop().expect("a call is running");
+                        self.vm_leave_cleanup(&callee);
+                        let cs = callee.call_cs;
+                        let resume = callee.call_resume;
+                        // SAFETY: the caller's activation is live and not otherwise borrowed.
+                        let csr = unsafe { &mut *cs };
+                        copy_words(&mut csr.regs, oreg as usize, &callee.regs, sreg as usize, words(ss) as usize);
+                        self.vm_finish(callee);
+                        stp = cs;
+                        code = unsafe { &*csr.code };
+                        base = code.ops.as_ptr();
+                        ip = resume;
+                        rp = csr.regs.as_mut_ptr();
+                        continue 'dispatch;
+                    }
+                    finish!(Ok(Exit::Ret(src)))
+                }
+                Op::EndSeg => finish!(Ok(Exit::Seg)),
                 _ => tri!(at!(), self.vm_slow::<LE>(st, code, *op, at!())),
             }
         }
@@ -995,8 +1215,9 @@ impl<'a> Machine<'a> {
         Ok(iput::<LE>(k, v))
     }
 
-    /// Calls a function pointer or closure: compiled functions are called straight from the
-    /// registers, others through values.
+    /// Calls a function pointer or closure: a compiled function becomes a call in progress
+    /// (`Ok(true)`, the caller goes on when it returns), anything else is called through
+    /// values and done (`Ok(false)`) when this returns.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn vm_call_ind(
@@ -1004,31 +1225,38 @@ impl<'a> Machine<'a> {
         st: &mut St<'a>,
         code: &Code<'a>,
         at: u32,
+        resume: *const Op,
         callee: u32,
         cty: Ty,
         args: u32,
         out: u32,
-    ) -> R<()> {
+    ) -> R<bool> {
+        let csp: *mut St<'a> = st;
         let span = code.spans[at as usize];
         let list = &code.args[args as usize];
         let (callee, out) = (code.operands[callee as usize], code.operands[out as usize]);
         match callee {
             Arg::Data { reg, size } => {
-                let ptr = get_bytes(&st.regs, reg, size);
-                let addr = self.ptr_of(&ptr);
+                let addr = if size == 8 && self.little() {
+                    st.regs[reg as usize]
+                } else {
+                    let ptr = get_bytes(&st.regs, reg, size);
+                    self.ptr_of(&ptr)
+                };
                 if addr == 0 {
                     return self.trap(span, "call through a null function pointer");
                 }
                 if let Some(f) = self.fn_from_addr(addr)
-                    && let Some(c2) = self.code_of(f)
+                    && let Some(c2) = self.code_ptr(f)
                 {
                     let cx = st.cx.clone();
-                    return self.vm_call_list(span, f, c2, st, list, out, None, cx, None);
+                    self.vm_enter(span, f, c2, st, csp, list, None, cx, None, out, at, resume)?;
+                    return Ok(true);
                 }
             }
             Arg::Val(r) => {
                 if let Value::Closure(c) = &st.vals[r as usize]
-                    && let Some(c2) = self.code_of(c.func)
+                    && let Some(c2) = self.code_ptr(c.func)
                 {
                     let c = c.clone();
                     let mut ctx = c.ctx.clone();
@@ -1041,7 +1269,8 @@ impl<'a> Machine<'a> {
                         }
                     }
                     let extra = c.env.map(|env| FrameExtra { env: Some(env), installing: None, is_clause_lit: false });
-                    return self.vm_call_list(span, c.func, c2, st, list, out, extra, ctx, None);
+                    self.vm_enter(span, c.func, c2, st, csp, list, extra, ctx, None, out, at, resume)?;
+                    return Ok(true);
                 }
             }
         }
@@ -1049,11 +1278,12 @@ impl<'a> Machine<'a> {
         let vals = st.values(list);
         let cx = st.cx.clone();
         let v = self.call_value(&cx, span, cv, cty, vals)?;
-        write_value(st, out, v, span)
+        write_value(st, out, v, span)?;
+        Ok(false)
     }
 
-    /// Performs an operation: the clause of the handler is called straight from the
-    /// registers when it is compiled, and through values otherwise.
+    /// Performs an operation: the clause of the handler becomes a call in progress
+    /// (`Ok(true)`) when it is compiled, and is called through values otherwise.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn vm_perform(
@@ -1061,11 +1291,13 @@ impl<'a> Machine<'a> {
         st: &mut St<'a>,
         code: &Code<'a>,
         at: u32,
+        resume: *const Op,
         eff: u32,
         op: u32,
         args: u32,
         out: u32,
-    ) -> R<()> {
+    ) -> R<bool> {
+        let csp: *mut St<'a> = st;
         let span = code.spans[at as usize];
         let effect = &code.effects[eff as usize];
         let list = &code.args[args as usize];
@@ -1073,32 +1305,49 @@ impl<'a> Machine<'a> {
         if !code.effect_ctl[eff as usize]
             && let Some(node) = st.cx.find(effect)
         {
-            let node = node.clone();
             let installing = Some((node.with_frame, node.with_label));
             let prog = self.prog;
             match &node.installed {
                 Installed::Lit(hv) => {
                     let clause = prog.handlers[hv.id.index()].clauses[op as usize];
-                    if let Some(c2) = self.code_of(clause) {
+                    if let Some(c2) = self.code_ptr(clause) {
                         let extra = FrameExtra { env: hv.env.clone(), installing, is_clause_lit: true };
-                        return self.vm_call_list(span, clause, c2, st, list, out, Some(extra), hv.ctx.clone(), None);
-                    }
-                }
-                Installed::Decl { decl, value, outer } => {
-                    let clause = prog.handler_decls[decl.index()].clauses[op as usize];
-                    if let Some(c2) = self.code_of(clause) {
-                        let extra = FrameExtra { env: None, installing, is_clause_lit: false };
-                        return self.vm_call_list(
+                        self.vm_enter(
                             span,
                             clause,
                             c2,
                             st,
+                            csp,
                             list,
+                            Some(extra),
+                            hv.ctx.clone(),
+                            None,
                             out,
+                            at,
+                            resume,
+                        )?;
+                        return Ok(true);
+                    }
+                }
+                Installed::Decl { decl, value, outer } => {
+                    let clause = prog.handler_decls[decl.index()].clauses[op as usize];
+                    if let Some(c2) = self.code_ptr(clause) {
+                        let extra = FrameExtra { env: None, installing, is_clause_lit: false };
+                        self.vm_enter(
+                            span,
+                            clause,
+                            c2,
+                            st,
+                            csp,
+                            list,
                             Some(extra),
                             outer.clone(),
                             Some(value),
-                        );
+                            out,
+                            at,
+                            resume,
+                        )?;
+                        return Ok(true);
                     }
                 }
                 Installed::Native(_) => {}
@@ -1107,7 +1356,8 @@ impl<'a> Machine<'a> {
         let vals = st.values(list);
         let cx = st.cx.clone();
         let v = self.perform(&cx, span, effect, op, vals)?;
-        write_value(st, out, v, span)
+        write_value(st, out, v, span)?;
+        Ok(false)
     }
 
     #[cold]

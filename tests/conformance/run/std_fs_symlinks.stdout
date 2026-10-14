@@ -1,0 +1,6 @@
+symlink made: true
+lstat link: true true
+stat link: true 2
+lstat dir link: true stat dir link: true
+lstat dangling: true stat dangling: true
+cleaned up: true

@@ -1,0 +1,12 @@
+// 10000000 plain calls: the baseline for perform.gm.
+bump :: fn(n: i64) -> i64 {
+    return n + 1
+}
+
+main :: fn() \ {Out} {
+    s: i64 = 0
+    for i in 0..10000000 {
+        s = bump(i)
+    }
+    print("{}\n", s)
+}

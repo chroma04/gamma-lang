@@ -8,9 +8,9 @@ Graph :: struct {
 graph :: fn() -> Graph \ {Alloc} => Graph(adj: map(Pt, List(Pt)))
 
 add_edge :: fn(g: ^Graph, a, b: Pt) -> AllocError!() \ {Alloc} {
-    la := try g.adj.get_or_put(a, list(Pt))
+    la := (try g.adj.entry(a, list(Pt))).value
     try la.push(b)
-    lb := try g.adj.get_or_put(b, list(Pt))
+    lb := (try g.adj.entry(b, list(Pt))).value
     try lb.push(a)
 }
 
@@ -77,7 +77,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         names.deinit()
     }
     for w in [_]string("a", "b", "a", "c", "a") {
-        l := try names.get_or_put(w, list(u32))
+        l := (try names.entry(w, list(u32))).value
         try l.push(l.items.len.trunc(u32))
     }
     a := names.get("a")?

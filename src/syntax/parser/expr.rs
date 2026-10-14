@@ -458,6 +458,11 @@ impl Parser<'_> {
                 let span = self.span_from(start);
                 Ok(self.mk_expr(ExprKind::Field { base: Box::new(base), name }, span))
             }
+            TokenKind::Keyword(k) => {
+                let name = self.keyword_as_name(*k);
+                let span = self.span_from(start);
+                Ok(self.mk_expr(ExprKind::Field { base: Box::new(base), name }, span))
+            }
             TokenKind::Int(lit) => {
                 self.bump();
                 let index = match u32::try_from(&lit.value) {
@@ -644,6 +649,10 @@ impl Parser<'_> {
                     self.deny_in_head("a `for` expression")?;
                     self.parse_for(Some(label))
                 }
+            }
+            TokenKind::Keyword(_) if self.at_reported_kw_name() => {
+                let id = self.bump_reported_kw_name();
+                Ok(self.mk_expr(ExprKind::Ident(id), span))
             }
             TokenKind::Ident(name) => {
                 if *name == self.words.cont && self.nth_is(1, Punct::LParen) {

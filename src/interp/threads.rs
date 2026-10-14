@@ -180,4 +180,13 @@ impl<'a> Machine<'a> {
         self.check_fatal()?;
         Ok(0)
     }
+
+    /// `@thread_detach(h)`: the thread is never joined. Dropping its handle lets the OS
+    /// thread release its resources when it ends.
+    pub fn detach_thread(&mut self, h: i64) -> i64 {
+        match self.threads.handles.remove(&h) {
+            Some(_) => 0,
+            None => super::sys::error_code(&std::io::Error::from_raw_os_error(3)), // ESRCH
+        }
+    }
 }

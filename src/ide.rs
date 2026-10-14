@@ -169,9 +169,27 @@ impl IdeIndex {
         r.or_else(|| self.declared_at(file, off))
     }
 
-    /// The span of a declared name that covers `off`.
+    /// The span of a declared name that covers `off`: a name that is used somewhere, or
+    /// that is listed in the outline, in scope as a local, or has hover text.
     pub fn declared_at(&self, file: FileId, off: u32) -> Option<Span> {
-        self.refs.iter().map(|r| r.to).filter(|s| contains(*s, file, off)).min_by_key(|s| s.hi - s.lo)
+        fn outline_names(syms: &[DocSymbol], out: &mut Vec<Span>) {
+            for s in syms {
+                out.push(s.name_span);
+                outline_names(&s.children, out);
+            }
+        }
+        let mut outline = vec![];
+        if let Some(syms) = self.outlines.get(&file) {
+            outline_names(syms, &mut outline);
+        }
+        self.refs
+            .iter()
+            .map(|r| r.to)
+            .chain(self.scopes.iter().map(|s| s.def))
+            .chain(self.defs.keys().copied())
+            .chain(outline)
+            .filter(|s| s.hi > s.lo && contains(*s, file, off))
+            .min_by_key(|s| s.hi - s.lo)
     }
 
     /// All uses of the declaration whose name is at `def`.

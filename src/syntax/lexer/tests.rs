@@ -1,4 +1,4 @@
-use super::lex;
+use super::{lex, lex_recovering};
 use crate::diag::{Diagnostics, Severity};
 use crate::source::{FileId, Span};
 use crate::syntax::token::{Punct, StrKind, Token, TokenKind};
@@ -860,4 +860,56 @@ fn spans_are_in_bounds_and_ordered() {
 fn c_equality_operators_are_reported() {
     one_err("a == b", "`==` is not an operator; compare with `is`");
     one_err("a != b", "`!=` is not an operator; compare with `is not`");
+}
+
+#[test]
+fn module_doc_comments_are_plain_comments() {
+    let mut diags = Diagnostics::new();
+    let out = lex(FileId(0), "//! module\nfn", &mut diags);
+    assert!(out.docs.is_empty());
+    let kinds: Vec<_> = out.tokens.iter().map(|t| show(&t.kind)).collect();
+    assert_eq!(kinds, ["fn", "EOF"]);
+    assert!(diags.is_empty());
+}
+
+/// Lexes `src` with layout recovery: the tokens (as a string) and the error messages.
+fn recovering(src: &str) -> (String, Vec<String>) {
+    let mut diags = Diagnostics::new();
+    let out = lex_recovering(FileId(0), src, &mut diags);
+    let errors = diags.iter().map(|d| d.message.clone()).collect();
+    (out.tokens.iter().map(|t| show(&t.kind)).collect::<Vec<_>>().join(" "), errors)
+}
+
+#[test]
+fn recovery_closes_brackets_at_a_declaration_in_the_first_column() {
+    let (t, e) = recovering("f :: fn() {\n    x := (1\ng :: fn() {}\n");
+    assert_eq!(e, ["unclosed `(`", "unclosed `{`"]);
+    assert_eq!(t, "f :: fn ( ) { x := ( 1 ) } NL g :: fn ( ) { } NL EOF");
+}
+
+#[test]
+fn recovery_leaves_text_without_errors_alone() {
+    // Unindented code is fine as long as the brackets balance.
+    let src = "f :: fn() {\ng :: 1\n_ = g\n}\n";
+    let (t, e) = recovering(src);
+    assert!(e.is_empty());
+    assert_eq!(t, toks(src));
+}
+
+#[test]
+fn recovery_applies_to_pub_test_handler_and_attributes() {
+    for decl in ["pub g :: 1", "test \"t\" {}", "handler Out for T {}", "#inline\ng :: fn() {}"] {
+        let (_, e) = recovering(&format!("f :: fn() {{\n{}\n", decl));
+        assert_eq!(e, ["unclosed `{`"], "{}", decl);
+    }
+    // Indented declarations and other first-column text do not end the function.
+    let (_, e) = recovering("f :: fn() {\n    g :: 1\nx := 1\n");
+    assert_eq!(e.len(), 1);
+    assert!(e[0].contains("unclosed `{`"));
+}
+
+#[test]
+fn without_recovery_a_missing_brace_swallows_the_file() {
+    let e = errs("f :: fn() {\ng :: fn() {}\n");
+    assert_eq!(e, ["unclosed `{`"]);
 }

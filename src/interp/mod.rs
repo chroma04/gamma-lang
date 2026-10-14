@@ -28,11 +28,13 @@ mod builtins;
 mod bytes;
 mod calls;
 mod consts;
+mod coverage;
 pub mod display;
 mod eval;
 mod fast;
 mod ffi;
 mod fiber;
+mod fxmap;
 mod machine;
 pub mod memory;
 pub mod num;
@@ -64,7 +66,8 @@ use machine::Machine;
 use std::io::Write;
 use value::*;
 
-pub use ffi::{check_program as foreign_supported, set_owns_process};
+pub use coverage::{coverage_counts, coverage_init};
+pub use ffi::{add_library_dirs, check_program as foreign_supported, load_library, set_owns_process};
 pub use value::Trap;
 
 #[derive(Clone, Debug)]

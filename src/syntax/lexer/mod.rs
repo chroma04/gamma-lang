@@ -20,6 +20,25 @@ pub fn lex(file: FileId, src: &str, diags: &mut Diagnostics) -> LexOutput {
     Lexer::new(file, src, diags).run()
 }
 
+/// [`lex`] for tools that keep going after errors. If the text has errors, it is lexed
+/// again with a layout heuristic: an open bracket is taken to be unclosed (and closed
+/// for the parser) where a line begins in the first column with a top-level declaration
+/// (`name ::`, `pub`, `handler`, `test "…"` or an attribute). Without it, one missing
+/// `}` or `)` makes the rest of the file part of one declaration.
+pub fn lex_recovering(file: FileId, src: &str, diags: &mut Diagnostics) -> LexOutput {
+    let mut first = Diagnostics::new();
+    let out = Lexer::new(file, src, &mut first).run();
+    if !first.has_errors() {
+        for d in first.into_vec() {
+            diags.push(d);
+        }
+        return out;
+    }
+    let mut lexer = Lexer::new(file, src, diags);
+    lexer.recover = true;
+    lexer.run()
+}
+
 fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
@@ -78,6 +97,8 @@ struct Lexer<'a> {
     /// The span of the first line terminator seen since the last token. Whether
     /// it becomes a `Newline` token is decided when the next token is known.
     pending_newline: Option<Span>,
+    /// Close open brackets where a declaration starts in the first column.
+    recover: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -93,6 +114,7 @@ impl<'a> Lexer<'a> {
             brackets: Vec::new(),
             pending_matches: Vec::new(),
             pending_newline: None,
+            recover: false,
         }
     }
 
@@ -517,6 +539,9 @@ impl<'a> Lexer<'a> {
             self.error(lo, hi, format!("unmatched closing `{}`", p.as_str()));
             return;
         }
+        if self.recover && !self.brackets.is_empty() && self.declaration_starts_at(lo, &kind) {
+            self.close_all_brackets(lo);
+        }
         self.flush_newline(&kind, hi);
         match kind {
             TokenKind::Punct(Punct::LParen) => self.open_bracket(BracketKind::Paren, span),
@@ -533,6 +558,40 @@ impl<'a> Lexer<'a> {
             _ => {}
         }
         self.tokens.push(Token { kind, span });
+    }
+
+    /// Whether the token of `kind` at `lo` begins a line in the first column and looks like
+    /// the start of a top-level declaration.
+    fn declaration_starts_at(&self, lo: usize, kind: &TokenKind) -> bool {
+        if lo != 0 && self.bytes[lo - 1] != b'\n' {
+            return false;
+        }
+        let rest = &self.src[lo..];
+        let word_len = rest.bytes().take_while(|b| is_ident_cont(*b)).count();
+        let (word, after) = rest.split_at(word_len);
+        let after = after.trim_start_matches([' ', '\t']);
+        match kind {
+            TokenKind::Attribute(_) => true,
+            TokenKind::Keyword(Keyword::Pub | Keyword::Handler) => true,
+            TokenKind::Ident(_) => {
+                after.starts_with("::") || (matches!(word, "test" | "bench") && after.starts_with('"'))
+            }
+            _ => false,
+        }
+    }
+
+    /// Closes every open bracket before the declaration at `lo`, reporting each as unclosed.
+    fn close_all_brackets(&mut self, lo: usize) {
+        self.pending_newline = None;
+        let here = self.span(lo, lo);
+        while let Some(b) = self.brackets.pop() {
+            let msg = format!("unclosed `{}`", b.kind.opener().as_str());
+            let note = format!("a declaration starts here, so this `{}` was not closed", b.kind.opener().as_str());
+            self.diags.push(Diagnostic::error(b.span, msg).with_label(here, note));
+            self.tokens.push(Token { kind: TokenKind::Punct(b.kind.closer()), span: here });
+        }
+        self.pending_matches.clear();
+        self.push_newline(here);
     }
 
     fn open_bracket(&mut self, kind: BracketKind, span: Span) {

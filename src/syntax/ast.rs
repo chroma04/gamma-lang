@@ -52,8 +52,8 @@ pub enum ItemKind {
     When(WhenItems),
     /// `handler E for T \ {A} { … }` (§12.6).
     Handler(HandlerDecl),
-    /// `test "name" { … }` (§3.8).
-    Test { name: StrLit, name_span: Span, body: Block },
+    /// `test "name" { … }` (§3.8), or `bench "name" { … }` (§3.9) if `bench`.
+    Test { name: StrLit, name_span: Span, body: Block, bench: bool },
     /// A top-level intrinsic call, i.e. `@static_assert(…)` (§17.7).
     Intrinsic(Expr),
 }

@@ -1,3 +1,4 @@
+//! os: unix
 c :: import "std/c"
 
 LDiv :: struct { quot: c.c_long, rem: c.c_long }

@@ -25,6 +25,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [13. Safety](13-safety.md) | Build modes, checked operations, traps, what is undefined behavior |
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access |
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
+| [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
 
 ## Conventions used in this guide
 
@@ -33,7 +34,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 - Section references such as "§10.6" refer to the [specification](../../gamma-spec.md). Appendix C of the specification explains the design reasoning in more depth.
 - [Editor support](../editors.md) describes syntax highlighting and the language server for common editors.
 - Boxes titled **Common mistake** describe C habits that Gamma turns into compile errors.
-- Where an example needs a helper that the language does not define (for instance a queue type for a scheduler), the text says so and calls it "a function you would write" or similar. The core library is exactly what [§21](../../gamma-spec.md#21-the-core-library) defines; this guide does not use any other library functions.
+- Where an example needs a helper that the language does not define (for instance a queue type for a scheduler), the text says so and calls it "a function you would write" or similar. The core library is exactly what [§21](../../gamma-spec.md#21-the-core-library) defines; the earlier chapters use nothing else from the library (except `std/c` in chapter 14), and [chapter 16](16-standard-library.md) tours the rest.
 
 ## A first taste
 

@@ -544,6 +544,40 @@
     }
   },
   {
+    "type": "bench_declaration",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "c_string_literal",
+            "named": true
+          },
+          {
+            "type": "raw_string_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "binary_expression",
     "named": true,
     "fields": {
@@ -985,6 +1019,10 @@
       "types": [
         {
           "type": "attribute",
+          "named": true
+        },
+        {
+          "type": "bench_declaration",
           "named": true
         },
         {
@@ -2632,6 +2670,10 @@
           "named": true
         },
         {
+          "type": "bench_declaration",
+          "named": true
+        },
+        {
           "type": "const_declaration",
           "named": true
         },
@@ -3553,6 +3595,10 @@
     "named": true
   },
   {
+    "type": "bench",
+    "named": false
+  },
+  {
     "type": "block_comment",
     "named": true,
     "extra": true
@@ -3588,11 +3634,11 @@
   },
   {
     "type": "discard",
-    "named": false
+    "named": true
   },
   {
     "type": "discard",
-    "named": true
+    "named": false
   },
   {
     "type": "doc_comment",

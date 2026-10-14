@@ -29,7 +29,7 @@ Package and install the extension:
 ```sh
 cd editors/vscode
 npm install
-npx @vscode/vsce package --allow-missing-repository --skip-license
+npx @vscode/vsce package --skip-license
 code --install-extension gamma-lang-0.1.0.vsix
 ```
 

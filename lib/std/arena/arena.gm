@@ -1,9 +1,9 @@
-// std/arena: an allocator that takes memory from a parent allocator in growing chunks
-// and gives it all back at once (§15.2).
-//
-//     a := arena.new()                        // chunks from the current allocator
-//     defer a.deinit()                        // releases everything at once
-//     with a.allocator() { … }
+//! An allocator that takes memory from a parent allocator in growing chunks
+//! and gives it all back at once (§15.2).
+//!
+//!     a := arena.new()                        // chunks from the current allocator
+//!     defer a.deinit()                        // releases everything at once
+//!     with a.allocator() { … }
 
 /// The address `p` rounded up to a multiple of `align` (a power of two).
 align_up :: fn(p: usize, align: usize) -> usize => (p + (align - 1)) & ~(align - 1)

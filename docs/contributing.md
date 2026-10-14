@@ -39,6 +39,27 @@ checks that formatting keeps the tokens and is idempotent for every `.gm` file i
 otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
 reformatted, since some pin columns in their expected output.
 
+## API documentation
+
+`gamma doc` (`src/doc/`) writes Markdown or HTML documentation for the `pub`
+declarations of a module from the syntax tree, their `///` comments and the `//!`
+comments at the top of the module's files. It copies signatures from the source text,
+so a module needs to parse but not to type-check. Document the standard library in
+those comments.
+
+The reference in `docs/std/` is generated, not written by hand. After changing a doc
+comment or a public declaration in `lib/std`, regenerate it:
+
+```
+cargo run -- doc lib/std --all -o docs/std
+```
+
+`cargo test --test doc` fails with this command in its message while the checked-in files
+differ from the output. `gamma doc lib/std --all --missing -o /tmp/std` also lists the
+public declarations that have no doc comment. The generator's own tests compare against
+the files in `tests/doc/golden/`, which are rewritten by
+`GAMMA_BLESS=1 cargo test --test doc` after an intended change to the output.
+
 ## Tests
 
 There are two kinds of tests.
@@ -65,6 +86,7 @@ main :: fn() {
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
 | `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, `s390x`, …) |
+| `//! os: unix` | run the test only when compiling for that kind of operating system (`unix`: all but Windows; or `windows`); for tests of what the other kind lacks (POSIX-only C functions, the System V calling convention). Keep these few: a test that is not about the platform should work on both, with `when target.os` where it must differ |
 | `//! endian: little` | run the test only on targets of that byte order (`big`), for tests that show the layout of values in memory |
 | `//! needs: f16` | leave the test out of the C lanes where the target's C compiler has no `_Float16` |
 | `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`; `safe` tests need Fil-C and are skipped without it) |

@@ -58,7 +58,7 @@ find :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn
     if n is 0 { return null }
     i := key_hash(K, hash, k, m.seed).trunc(usize) & (n - 1)
     while true {
-        s := m.slots[i]
+        s := &m.slots[i]
         if s.state is EMPTY { return null }
         if s.state is FULL and key_eq(K, eq, &s.key, k) { return i }
         i = (i + 1) & (n - 1)
@@ -67,12 +67,12 @@ find :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn
 
 /// Stores a key known to be absent; there must be a free slot.
 insert_new :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
-                 m: ^HashMap(K, V, hash, eq), k: K, v: V) {
+                 m: ^HashMap(K, V, hash, eq), k: ^const K, v: ^const V) {
     n := m.slots.len
-    i := key_hash(K, hash, &k, m.seed).trunc(usize) & (n - 1)
+    i := key_hash(K, hash, k, m.seed).trunc(usize) & (n - 1)
     while m.slots[i].state is FULL { i = (i + 1) & (n - 1) }
     if m.slots[i].state is EMPTY { m.used += 1 }
-    m.slots[i] = Slot(K, V)(state: FULL, key: k, value: v)
+    m.slots[i] = Slot(K, V)(state: FULL, key: k^, value: v^)
     m.count += 1
 }
 
@@ -91,7 +91,7 @@ grow :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn
     m.count = 0
     m.used = 0
     for i in 0..old.len {
-        if old[i].state is FULL { m.insert_new(old[i].key, old[i].value) }
+        if old[i].state is FULL { m.insert_new(&old[i].key, &old[i].value) }
     }
     if old.len > 0 {
         m.alloc.vt.free(m.alloc.data, old.ptr.cast([^]u8), size * old.len, align)
@@ -107,7 +107,7 @@ pub put :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?
         return ()
     }
     if (m.used + 1) * 4 > m.slots.len * 3 { try m.grow() }
-    m.insert_new(k, v)
+    m.insert_new(&k, &v)
     return ()
 }
 
@@ -126,17 +126,6 @@ pub get_ptr :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq 
     return &m.slots[i].value
 }
 
-/// A pointer to the value stored for `k`, first storing `default` if `k` is absent. It is
-/// valid until the next insertion or removal.
-pub get_or_put :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
-                     m: ^HashMap(K, V, hash, eq), k: K, default: V) -> AllocError!^V {
-    if i := m.find(&k) { return &m.slots[i].value }
-    if (m.used + 1) * 4 > m.slots.len * 3 { try m.grow() }
-    m.insert_new(k, default)
-    i := m.find(&k) else trap("unreachable: the key was just inserted")
-    return &m.slots[i].value
-}
-
 /// Where `entry` found or stored a key: pointers to the stored key and value, valid until
 /// the next insertion or removal, and whether the key was already present.
 pub Entry :: struct(K, V: type) {
@@ -152,7 +141,7 @@ pub entry :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq ::
                 m: ^HashMap(K, V, hash, eq), k: K, default: V) -> AllocError!Entry(K, V) {
     if i := m.find(&k) { return Entry(K, V)(key: &m.slots[i].key, value: &m.slots[i].value, found: true) }
     if (m.used + 1) * 4 > m.slots.len * 3 { try m.grow() }
-    m.insert_new(k, default)
+    m.insert_new(&k, &default)
     i := m.find(&k) else trap("unreachable: the key was just inserted")
     return Entry(K, V)(key: &m.slots[i].key, value: &m.slots[i].value, found: false)
 }

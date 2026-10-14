@@ -120,9 +120,9 @@ fn debug_information_maps_to_the_source() {
         let exe = build(&mode[7..], &["-g", mode]);
         assert_eq!(run(&exe), "7 45 3\n");
         let c = std::fs::read_to_string(exe.with_extension("c")).unwrap();
-        let src = std::fs::canonicalize(exe.with_file_name("points.gm")).unwrap();
-        // `total += i` is line 9.
-        let directive = format!("#line 9 \"{}\"", src.display());
+        let src = gamma::source::canonicalize(&exe.with_file_name("points.gm")).unwrap();
+        // `total += i` is line 9; source files are named with `/` on every system.
+        let directive = format!("#line 9 \"{}\"", src.display().to_string().replace('\\', "/"));
         assert!(c.contains(&directive), "no `{}` in the generated C", directive);
         assert!(c.contains(" total; };"), "the frame field of `total` has no name");
         assert!(c.contains("#undef linux"), "a Gamma name that is a macro is not suspended");

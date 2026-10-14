@@ -24,13 +24,13 @@ pub struct Package {
 /// `lib/gamma/std` next to the directory of the running executable, as in an installed
 /// release (`<prefix>/bin/gamma`, `<prefix>/lib/gamma/std`); otherwise the `lib/std`
 /// directory of the source tree the compiler was built from.
-fn std_root() -> PathBuf {
+pub fn std_root() -> PathBuf {
     if let Some(p) = std::env::var_os("GAMMA_STD") {
         return PathBuf::from(p);
     }
     static INSTALLED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     let installed = INSTALLED.get_or_init(|| {
-        let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let exe = crate::source::canonical(&std::env::current_exe().ok()?);
         let dir = exe.parent()?.parent()?.join("lib").join("gamma").join("std");
         dir.is_dir().then_some(dir)
     });
@@ -99,8 +99,9 @@ impl<'s> Sema<'s> {
                 Source::Path(p) => {
                     deps.insert(dep.name, root.join(p));
                 }
-                Source::Git(_) => {
-                    let msg = format!("dependency `{}` is a git dependency; run `gamma fetch`", dep.name);
+                Source::Git(_) | Source::Url(_) => {
+                    let kind = if matches!(dep.source, Source::Git(_)) { "git" } else { "url" };
+                    let msg = format!("dependency `{}` is a {} dependency; run `gamma fetch`", dep.name, kind);
                     self.error(Span::DUMMY, format!("{}:{}: {}", path.display(), dep.line, msg));
                 }
             }
@@ -120,8 +121,7 @@ impl<'s> Sema<'s> {
         let dir = if relative {
             let dir = normalize(&from_dir.join(path));
             let root = package.map(|p| self.packages[p].root.clone());
-            let canon = dir
-                .canonicalize()
+            let canon = crate::source::canonicalize(&dir)
                 .unwrap_or_else(|_| normalize(&std::env::current_dir().unwrap_or_default().join(&dir)));
             if root.is_some_and(|r| !canon.starts_with(&r)) {
                 self.error(span, format!("the import path `{}` leaves the package (§3.2)", path));
@@ -169,20 +169,13 @@ impl<'s> Sema<'s> {
         parent: Option<usize>,
         name: Option<&str>,
     ) -> Option<ModuleId> {
-        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let key = crate::source::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         if let Some(&m) = self.module_by_dir.get(&key) {
             return Some(m);
         }
-        let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
-            Ok(rd) => rd
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "gm"))
-                .collect(),
-            Err(_) => {
-                self.error(span, format!("cannot find the module directory {}", dir.display()));
-                return None;
-            }
+        let Some(mut paths) = self.sess.module_files(dir) else {
+            self.error(span, format!("cannot find the module directory {}", dir.display()));
+            return None;
         };
         paths.sort();
         if paths.is_empty() {
@@ -202,13 +195,48 @@ impl<'s> Sema<'s> {
         let m = self.add_module(Symbol::intern(&name), files, false);
         self.modules[m.0 as usize].dir = Some(dir.to_path_buf());
         // Standard library modules may use the system intrinsics, like the core library.
-        let std = std_root().canonicalize().unwrap_or_else(|_| std_root());
+        let std = crate::source::canonicalize(&std_root()).unwrap_or_else(|_| std_root());
         self.modules[m.0 as usize].is_std = key.starts_with(&std);
         self.modules[m.0 as usize].package = Some(package);
         self.module_by_dir.insert(key, m);
         // Its top-level `when`s are processed now that its directory is known.
         self.collect_whens(m);
         Some(m)
+    }
+
+    /// Loads every module of the package of `root` that is not loaded yet, so that their
+    /// tests are found (`gamma test --all`). The directories of the package are searched in
+    /// path order; hidden ones, `target` and nested packages are skipped.
+    pub(super) fn load_package_modules(&mut self, root: ModuleId) {
+        let Some(package) = self.modules[root.0 as usize].package else { return };
+        let package_root = self.packages[package].root.clone();
+        let mut dirs = vec![package_root];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let mut subdirs: Vec<PathBuf> = vec![];
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().into_owned();
+                if p.is_dir() && !name.starts_with('.') && name != "target" && !p.join("gamma.toml").is_file() {
+                    subdirs.push(p);
+                }
+            }
+            // The first directory searched comes last on the stack.
+            subdirs.sort_by(|a, b| b.cmp(a));
+            dirs.extend(subdirs);
+            let key = crate::source::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            // A root given as a file stands for its directory.
+            let is_root_dir = self.modules[root.0 as usize]
+                .dir
+                .as_ref()
+                .is_some_and(|d| crate::source::canonicalize(d).unwrap_or_else(|_| d.clone()) == key);
+            if self.module_by_dir.contains_key(&key) || is_root_dir {
+                continue;
+            }
+            if self.sess.module_files(&dir).is_some_and(|f| !f.is_empty()) {
+                self.load_dir_module(&dir, Span::DUMMY, Some(package), None);
+            }
+        }
     }
 
     /// Reports each cycle in the import graph (§3.2).

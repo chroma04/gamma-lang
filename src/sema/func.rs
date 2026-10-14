@@ -5,6 +5,7 @@
 use super::infer::{Fallback, InferTable, VarKind};
 use super::untyped::Untyped;
 use super::{ModuleId, Sema};
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind, StmtKind};
@@ -710,10 +711,16 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut stmts = vec![];
         let mut tail = None;
         let mut diverges = false;
+        // Why the statements so far end control flow, for the "unreachable code" error.
+        let mut cause: Option<(Span, &'static str)> = None;
         let n = b.stmts.len();
         for (i, s) in b.stmts.iter().enumerate() {
             if diverges {
-                self.error(s.span, "unreachable code");
+                let mut d = Diagnostic::error(s.span, "unreachable code");
+                if let Some((span, why)) = cause {
+                    d = d.with_label(span, why);
+                }
+                self.sema.emit(d);
                 break;
             }
             let last = i + 1 == n;
@@ -768,6 +775,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             let st = self.stmt(s);
             diverges = stmt_diverges(&st);
+            if diverges {
+                cause = stmt_never_cause(&st);
+            }
             stmts.push(st);
         }
         if !self.pending_handlers.is_empty() {
@@ -849,7 +859,16 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::For(f) => self.for_loop(f),
             ExprKind::Match(m) => self.match_expr(m, false, None),
             ExprKind::With(w) => self.with_expr(w, false, None),
-            _ => self.expr(e, None),
+            _ => {
+                let errors = self.sema.sess.diags.error_count();
+                let ex = self.expr(e, None);
+                // A call that was already reported (wrong arguments, say) has a value of
+                // doubtful type: no second error about it being unused.
+                if self.sema.sess.diags.error_count() != errors {
+                    return ex;
+                }
+                ex
+            }
         };
         self.obligations.push(Obligation::UnitStatement { ty: ex.ty, span: e.span });
         ex
@@ -1613,6 +1632,44 @@ fn closed_const(e: &Expr) -> bool {
         e.for_each_child(&mut |c| ok = ok && closed_const(c));
     }
     ok
+}
+
+/// The expression that makes statement `s` diverge, with the reason it never completes.
+fn stmt_never_cause(s: &Stmt) -> Option<(Span, &'static str)> {
+    match s {
+        Stmt::Expr(e) | Stmt::Let { init: Some(e), .. } => never_cause(e),
+        Stmt::Assign { value, .. } => never_cause(value),
+        _ => None,
+    }
+}
+
+/// Why `e`, an expression of type `never`, never completes: the location of the
+/// responsible construct and a sentence about it.
+fn never_cause(e: &Expr) -> Option<(Span, &'static str)> {
+    use tir::ExprKind as K;
+    match &e.kind {
+        K::Loop { .. } => Some((e.span, "this loop never ends: it has no `break`")),
+        K::Return { .. } => Some((e.span, "this `return` leaves the function")),
+        K::Break { .. } => Some((e.span, "this `break` leaves the loop")),
+        K::Continue { .. } => Some((e.span, "this `continue` starts the next iteration of the loop")),
+        K::Trap { .. } => Some((e.span, "this stops the program")),
+        K::Try { .. } => Some((e.span, "this `try` always returns")),
+        K::Resume { .. } => Some((e.span, "this `resume` ends the handler clause")),
+        K::Discard(_) => Some((e.span, "this `discard` ends the handler clause")),
+        K::Call { callee: tir::Callee::Perform { .. }, .. } => {
+            Some((e.span, "this operation never returns to its caller: its result type is `never`"))
+        }
+        K::Call { .. } => Some((e.span, "this call never returns: its result type is `never`")),
+        K::If { .. } => Some((e.span, "this `if` never completes: each of its branches leaves")),
+        K::Match { .. } => Some((e.span, "this `match` never completes: each of its arms leaves")),
+        K::With { .. } => Some((e.span, "the body of this `with` never completes")),
+        K::Block(b) => match (&b.tail, b.stmts.last()) {
+            (Some(t), _) if t.ty.is_never() => never_cause(t),
+            (_, Some(last)) => stmt_never_cause(last),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn stmt_diverges(s: &Stmt) -> bool {

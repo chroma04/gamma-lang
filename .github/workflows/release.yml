@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag `vX.Y.Z` builds the `gamma` binaries for Linux and macOS (x86_64 and
-# arm64), checks that each one runs a program on the interpreter and through C from its
+# arm64) and Windows (x86_64), checks that each one runs a program on the interpreter and through C from its
 # installed layout, and publishes them as a GitHub release. Running the workflow by hand
 # builds and checks the archives without publishing them.
 
@@ -30,6 +30,8 @@ jobs:
             asset: macos-x86_64
           - os: macos-14
             asset: macos-aarch64
+          - os: windows-latest
+            asset: windows-x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,11 +45,52 @@ jobs:
             exit 1
           fi
       - name: Build
+        # Windows builds link the C runtime statically, so gamma.exe needs no Visual C++
+        # redistributable.
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
         run: cargo build --release --locked
       - name: Package
         shell: bash
-        run: tools/package-release.sh "${{ matrix.asset }}" target/release/gamma dist
+        run: |
+          case "${{ matrix.asset }}" in
+            windows-*) bin=target/release/gamma.exe ;;
+            *) bin=target/release/gamma ;;
+          esac
+          tools/package-release.sh "${{ matrix.asset }}" "$bin" dist
+      - name: Install MinGW-w64 gcc (the C back end of Windows builds)
+        if: runner.os == 'Windows'
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Smoke test the installed layout (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          MSYS_LOCATION: ${{ steps.msys.outputs.msys2-location }}
+        run: |
+          export PATH="$(cygpath "$MSYS_LOCATION")/ucrt64/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/smoke"
+          7z x -y -bso0 -o"$RUNNER_TEMP/smoke" "dist/gamma-${{ matrix.asset }}.zip"
+          gamma="$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma.exe)"
+          cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
+          str :: import "std/str"
+
+          main :: fn() \ {Out} {
+              print("{}\n", str.contains("gamma", "mm"))
+          }
+          EOF
+          # Hide the source tree's library, so that only the packaged one can be found.
+          mv lib/std lib/std.hidden
+          cd "$RUNNER_TEMP"
+          test "$("$gamma" run hello.gm | tr -d '\r')" = true
+          test "$("$gamma" run --backend=c hello.gm | tr -d '\r')" = true
+          "$gamma" version
       - name: Smoke test the installed layout
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/smoke"
@@ -93,4 +136,4 @@ jobs:
             --title "Gamma $GITHUB_REF_NAME" \
             --generate-notes \
             --verify-tag \
-            dist/*.tar.gz dist/SHA256SUMS tools/install.sh
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS tools/install.sh tools/install.ps1

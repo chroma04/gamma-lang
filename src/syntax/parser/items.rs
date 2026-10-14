@@ -6,7 +6,7 @@ use crate::syntax::token::{DocComment, Keyword, Punct, TokenKind};
 
 impl Parser<'_> {
     /// One top-level declaration: `[attrs] [pub] binding`, `when`, `handler … for …`,
-    /// `test "name" { … }` or `@static_assert(…)`.
+    /// `test "name" { … }`, `bench "name" { … }` or `@static_assert(…)`.
     pub(super) fn parse_item(&mut self) -> PResult<Item> {
         let start = self.lo();
         let doc = self.doc_before(start);
@@ -19,15 +19,19 @@ impl Parser<'_> {
                 ItemKind::When(self.parse_when_items()?)
             }
             TokenKind::Keyword(Keyword::Handler) => ItemKind::Handler(self.parse_handler_decl()?),
-            TokenKind::Ident(name) if *name == self.words.test && matches!(self.nth(1), TokenKind::Str(_)) => {
-                self.deny_pub(is_pub, pub_span, "a test");
-                self.parse_test()?
+            TokenKind::Ident(name)
+                if (*name == self.words.test || *name == self.words.bench)
+                    && matches!(self.nth(1), TokenKind::Str(_)) =>
+            {
+                let bench = *name == self.words.bench;
+                self.deny_pub(is_pub, pub_span, if bench { "a benchmark" } else { "a test" });
+                self.parse_test(bench)?
             }
             TokenKind::Intrinsic(_) => {
                 self.deny_pub(is_pub, pub_span, "an intrinsic call");
                 ItemKind::Intrinsic(self.parse_expr()?)
             }
-            TokenKind::Ident(_) | TokenKind::Underscore if self.binding_ahead() => {
+            TokenKind::Ident(_) | TokenKind::Underscore | TokenKind::Keyword(_) if self.binding_ahead() => {
                 ItemKind::Binding(self.parse_binding()?)
             }
             _ => return self.expected("a declaration"),
@@ -42,8 +46,8 @@ impl Parser<'_> {
         }
     }
 
-    /// `test "name" { … }`.
-    fn parse_test(&mut self) -> PResult<ItemKind> {
+    /// `test "name" { … }` or `bench "name" { … }`.
+    fn parse_test(&mut self, bench: bool) -> PResult<ItemKind> {
         self.bump();
         let name_span = self.span();
         let name = match self.kind() {
@@ -54,7 +58,7 @@ impl Parser<'_> {
         let saved = std::mem::take(&mut self.labels);
         let body = self.parse_block();
         self.labels = saved;
-        Ok(ItemKind::Test { name, name_span, body: body? })
+        Ok(ItemKind::Test { name, name_span, body: body?, bench })
     }
 
     /// `handler E for T [\ {effects}] { clauses }`.

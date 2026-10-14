@@ -1,0 +1,76 @@
+// The `bench` declarations of the repository: `gamma bench bench/` (compiled via C in
+// Fast mode by default). The same operations as the programs in programs/, which count
+// instructions instead; the numbers here are the time of one pass of the body, so
+// each body does 1,000 of the operation it is about.
+
+plain_bump :: fn(n: i64) -> i64 {
+    return n + 1
+}
+
+Counter :: effect {
+    bump: fn(n: i64) -> i64
+}
+
+Acc :: struct { total: i64 }
+
+handler Counter for ^Acc {
+    bump(self, n) => {
+        n + 1
+    }
+}
+
+work :: fn(n: i64) -> i64 \ {Counter} {
+    s: i64 = 0
+    for i in 0..n {
+        s += bump(@black_box(i))
+    }
+    return s
+}
+
+P :: struct { a: i64, b: i64 }
+
+bench "1000 plain calls" {
+    s: i64 = 0
+    for i in 0..1000 {
+        s += plain_bump(@black_box(i))
+    }
+    _ = @black_box(s)
+}
+
+bench "1000 performs of a handled operation" {
+    acc := Acc(total: 0)
+    r := with &acc { work(@black_box(1000)) }
+    _ = @black_box(r)
+}
+
+bench "1000 new + destroy of a small struct" {
+    s: i64 = 0
+    for i in 0..1000 {
+        p := try new(P, P(a: @black_box(i), b: 1))
+        s += p.a + p.b
+        destroy(P, p)
+    }
+    _ = @black_box(s)
+}
+
+bench "1000 List pushes and a sum" {
+    l := list(i64)
+    defer l.deinit()
+    for i in 0..1000 { try l.push(@black_box(i)) }
+    total: i64 = 0
+    for x in each(l.items) { total += x }
+    _ = @black_box(total)
+}
+
+bench "1000 HashMap inserts and lookups" {
+    m := map(u32, u32)
+    defer m.deinit()
+    for i in 0..1000 {
+        try m.put(i, i * 2)
+    }
+    total: u64 = 0
+    for i in 0..1000 {
+        total += u64(m.get(i)?)
+    }
+    _ = @black_box(total)
+}

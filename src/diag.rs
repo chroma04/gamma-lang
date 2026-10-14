@@ -1,9 +1,10 @@
 //! Compiler diagnostics: construction, collection and rendering.
 
 use crate::source::{SourceMap, Span};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     Note,
     Warning,
@@ -61,6 +62,8 @@ impl Diagnostic {
 #[derive(Default)]
 pub struct Diagnostics {
     list: Vec<Diagnostic>,
+    /// Severity, location and message of every diagnostic in `list` that has a location.
+    seen: HashSet<(Severity, Span, String)>,
     /// While positive, new diagnostics are discarded (used for speculative parsing).
     suppressed: u32,
 }
@@ -70,10 +73,20 @@ impl Diagnostics {
         Diagnostics::default()
     }
 
+    /// Records `d`, unless it repeats a diagnostic with the same severity, location and
+    /// message (generic code is checked once per instantiation, for example), or is an
+    /// error about the error type `{error}`, which only restates an earlier error.
     pub fn push(&mut self, d: Diagnostic) {
-        if self.suppressed == 0 {
-            self.list.push(d);
+        if self.suppressed != 0 {
+            return;
         }
+        if d.severity == Severity::Error && d.message.contains("{error}") {
+            return;
+        }
+        if d.span != Span::DUMMY && !self.seen.insert((d.severity, d.span, d.message.clone())) {
+            return;
+        }
+        self.list.push(d);
     }
 
     pub fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -112,6 +125,9 @@ impl Diagnostics {
 
     /// Drops diagnostics recorded after the first `len` (used to roll back speculation).
     pub fn truncate(&mut self, len: usize) {
+        for d in self.list.iter().skip(len) {
+            self.seen.remove(&(d.severity, d.span, d.message.clone()));
+        }
         self.list.truncate(len);
     }
 

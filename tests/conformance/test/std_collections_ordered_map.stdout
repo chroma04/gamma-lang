@@ -1,0 +1,12 @@
+test "an empty map" ... ok
+test "put, get, replace and remove" ... ok
+test "first, last and iteration are in key order" ... ok
+test "ranges" ... ok
+test "ascending and descending insertion, removal in several orders" ... ok
+test "a custom order" ... ok
+test "keys that compare by a field, and equal keys under the order" ... ok
+test "struct keys and the natural order of tuples" ... ok
+test "random operations agree with a hash map and a sort" ... ok
+test "clear frees every node and the map can be reused" ... ok
+test "running out of memory leaves the map intact" ... ok
+11 passed, 0 failed

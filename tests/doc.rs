@@ -1,0 +1,203 @@
+//! Tests of the documentation generator (`gamma doc`).
+//!
+//! * Golden tests render the fixture module in `tests/doc/fixture/shapes`, which has one
+//!   of every kind of public declaration, and compare with the files in `tests/doc/golden`.
+//!   `GAMMA_BLESS=1 cargo test --test doc` rewrites the goldens after an intended change.
+//! * The command-line tests run the `gamma` binary.
+//! * `std_reference_is_current` fails when the checked-in standard library reference in
+//!   `docs/std/` no longer matches `lib/std`.
+
+use gamma::doc::{self, Format};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn fixture() -> PathBuf {
+    root().join("tests/doc/fixture/shapes")
+}
+
+fn gamma() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_gamma"))
+}
+
+fn check_golden(name: &str, actual: &str) {
+    let path = root().join("tests/doc/golden").join(name);
+    if std::env::var_os("GAMMA_BLESS").is_some() {
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("missing golden file {}; create it with GAMMA_BLESS=1", path.display()));
+    assert!(
+        expected == actual,
+        "{} differs from the generated output; if the change is intended, run `GAMMA_BLESS=1 cargo test --test doc`\n--- expected\n{}\n--- actual\n{}",
+        path.display(),
+        expected,
+        actual
+    );
+}
+
+#[test]
+fn fixture_markdown() {
+    let modules = doc::load_modules(&fixture(), false).unwrap();
+    assert_eq!(modules.len(), 1);
+    check_golden("shapes.md", &doc::render_module(&modules[0], Format::Markdown, None));
+    check_golden("index.md", &doc::render_index("Fixture modules", &modules, Format::Markdown));
+}
+
+#[test]
+fn fixture_html() {
+    let modules = doc::load_modules(&fixture(), false).unwrap();
+    check_golden("shapes.html", &doc::render_module(&modules[0], Format::Html, Some("index.html")));
+    check_golden("index.html", &doc::render_index("Fixture modules", &modules, Format::Html));
+}
+
+#[test]
+fn private_declarations_are_omitted() {
+    let m = &doc::load_modules(&fixture(), false).unwrap()[0];
+    let names: Vec<&str> = m.decls.iter().map(|d| d.name.as_str()).collect();
+    for hidden in ["sides_of", "Hidden", "handler Events for Hidden", "mem"] {
+        assert!(!names.contains(&hidden), "{} should not be documented", hidden);
+    }
+    assert!(names.contains(&"handler Events for ^Counter"));
+}
+
+#[test]
+fn html_is_escaped() {
+    let m = &doc::load_modules(&fixture(), false).unwrap()[0];
+    let html = doc::render_module(m, Format::Html, None);
+    assert!(html.contains("a &lt; b &amp;&amp; c &gt; d"));
+    assert!(!html.contains("a < b"));
+    assert!(!html.contains("<script"));
+}
+
+#[test]
+fn output_is_deterministic() {
+    let a = doc::load_modules(&fixture(), false).unwrap();
+    let b = doc::load_modules(&fixture(), false).unwrap();
+    for f in [Format::Markdown, Format::Html] {
+        assert_eq!(doc::render_module(&a[0], f, None), doc::render_module(&b[0], f, None));
+    }
+}
+
+#[test]
+fn missing_lists_undocumented_items() {
+    let m = &doc::load_modules(&fixture(), false).unwrap()[0];
+    let warnings = m.missing().join("\n");
+    for name in ["NO_DOC", "twice", "undocumented"] {
+        assert!(warnings.contains(&format!("`{}`", name)), "{}", warnings);
+    }
+    assert!(!warnings.contains("`area`"), "{}", warnings);
+    assert!(!warnings.contains("module"), "the fixture has module documentation: {}", warnings);
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("gamma-doc-test-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn cli_prints_one_module_to_stdout() {
+    let out = gamma().arg("doc").arg(fixture()).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text, std::fs::read_to_string(root().join("tests/doc/golden/shapes.md")).unwrap());
+}
+
+#[test]
+fn cli_writes_a_tree_with_an_index() {
+    let dir = temp_dir("tree");
+    let out = gamma()
+        .args(["doc", "--all", "--format=html", "-o"])
+        .arg(&dir)
+        .arg(root().join("tests/doc/fixture"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let index = std::fs::read_to_string(dir.join("index.html")).unwrap();
+    assert!(index.contains("href=\"shapes/shapes.html\"") || index.contains("href=\"shapes.html\""), "{}", index);
+    let found = std::fs::read_dir(&dir).unwrap().count();
+    assert!(found >= 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_writes_a_single_file() {
+    let dir = temp_dir("file");
+    let file = dir.join("shapes.md");
+    let out = gamma().arg("doc").arg(fixture()).arg("-o").arg(&file).output().unwrap();
+    assert!(out.status.success());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("# Module `shapes`"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_missing_warns_on_stderr() {
+    let out = gamma().arg("doc").arg(fixture()).arg("--missing").output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("warning: public function `undocumented` has no doc comment"), "{}", err);
+}
+
+#[test]
+fn cli_rejects_a_module_that_does_not_parse() {
+    let dir = temp_dir("broken");
+    std::fs::write(dir.join("broken.gm"), "pub f :: fn( {\n").unwrap();
+    let out = gamma().arg("doc").arg(&dir).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("broken.gm"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_usage_errors() {
+    let out = gamma().args(["doc", "--format=pdf", "x"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = gamma().args(["doc", "--all"]).arg(root().join("lib/std")).output().unwrap();
+    assert!(!out.status.success(), "--all without -o is refused");
+    let out = gamma().args(["doc", "no/such/dir"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+/// Every file below `dir`, as a path relative to it.
+fn files_below(dir: &Path, rel: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let r = rel.join(e.file_name());
+        if p.is_dir() {
+            files_below(&p, &r, out);
+        } else {
+            out.push(r.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
+#[test]
+fn std_reference_is_current() {
+    const HOW: &str = "The standard library reference in docs/std/ is out of date. Regenerate it with\n\n    cargo run -- doc lib/std --all -o docs/std\n\nand commit the result.";
+    let modules = doc::load_modules(&root().join("lib/std"), true).unwrap();
+    let expected = doc::output_files("std modules", &modules, Format::Markdown);
+    let dir = root().join("docs/std");
+    let mut stale = Vec::new();
+    for (rel, text) in &expected {
+        match std::fs::read_to_string(dir.join(rel)) {
+            Ok(have) if &have == text => {}
+            Ok(_) => stale.push(format!("changed: docs/std/{}", rel)),
+            Err(_) => stale.push(format!("missing: docs/std/{}", rel)),
+        }
+    }
+    let mut present = Vec::new();
+    files_below(&dir, Path::new(""), &mut present);
+    for p in present {
+        if !expected.iter().any(|(rel, _)| *rel == p) {
+            stale.push(format!("obsolete: docs/std/{}", p));
+        }
+    }
+    assert!(stale.is_empty(), "{}\n\n{}", HOW, stale.join("\n"));
+}

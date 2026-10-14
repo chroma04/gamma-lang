@@ -83,7 +83,7 @@ impl<'s> Sema<'s> {
     /// Loads the root module: a single `.gm` file, or every `.gm` file directly
     /// inside a directory (§3.1).
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
-        if root.is_dir() {
+        if root.is_dir() || (!root.is_file() && self.sess.module_files(root).is_some()) {
             let m = self.load_dir_module(root, Span::DUMMY, None, None)?;
             return (self.keep_going || !self.sess.diags.has_errors()).then_some(m);
         }
@@ -93,7 +93,7 @@ impl<'s> Sema<'s> {
             return None;
         }
         let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
-        let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let canon = crate::source::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let package = self.package_of(&canon, None);
         let name = root.file_stem().map_or("main".to_string(), |s| s.to_string_lossy().into_owned());
         let m = self.add_module(Symbol::intern(&name), vec![ast], false);

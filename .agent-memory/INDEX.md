@@ -1,6 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-14) — PRs #1–#33 merged; s6–s10 = parallel Claude Projects threads
+## State (2026-10-14) — PRs #1–#34 merged; s6–s10 = parallel Claude Projects threads
+- s12 (PR #35, branch claude/elegant-gauss-hvjj2r, CI all green incl. first Windows job):
+  gamma doc, repl, LSP follow-ups, std additions, build profiles + pkg follow-ups, interp
+  perf, diagnostics polish, Windows port, test runner/bench/coverage, Safe perf —
+  sessions/s12-2026-10-14-todo-p2.md. Left for the user: tag v0.1.0, publish the VS Code
+  extension (Marketplace/Open VSX tokens).
 - s11 (PR #34, branch claude/inspiring-johnson-094ac5): the user's to-do P1 tooling items —
   package manager + gamma new/init, `gamma lsp`, editors/ (TextMate, tree-sitter, VS Code),
   release pipeline + install.sh, README refresh (decisions/023, sessions/s11). Remaining items
@@ -26,13 +31,13 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive PR #34 green. Next to-do candidates (P2): build profiles in gamma.toml, gamma test
-   --all, gamma doc, REPL, Windows runtime, Safe-mode allocation speed, diagnostics polish.
+1. Drive PR #35 to merge. Next: the to-do list's [nice] items; Safe new/destroy (~4x
+   Checked; borrow.rs `site` copy needs a static-constant-at-all-call-sites analysis);
+   Windows follow-ups (Safe mode, gamma debug, gdb printers Linux-only; ARM64 Windows).
 2. bugs-open.md leftovers (#23–#40); computed array lengths done (decisions/007); VM
    follow-ups in decisions/020 (superinstructions, smaller Op, cheaper calls).
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
-4. Safe mode follow-up (decisions/017 end): constant large args static (done, PR #17);
-   left: `&key` escapes in std maps, `new`'s GC alloc (allocation-heavy code ~13× Checked).
+4. Safe mode: slices read in place (s12) cut map/list cost 2–3x; see s12 note.
 
 ## Map
 - roadmap/        M00..M12, one file per milestone (scope, status, exit criteria); bugs-open.md;
@@ -57,10 +62,13 @@
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
                   · s06-2026-10-12-safe.md (Safe mode) · s07-2026-10-12.md (dogfooding)
                   · s08-2026-10-12-bughunt.md (bug hunt) · s11-2026-10-14-p1-tooling.md
+                  · s12-2026-10-14-todo-p2.md
 - gotchas/        environment.md
 
 ## Conventions
-- Session branch per harness; PR into main; CI = fmt + clippy -D warnings + test (ubuntu+macos).
+- Session branch per harness; PR into main; CI = fmt + clippy -D warnings + test (ubuntu,
+  macos, windows) + Safe + cross + editors + benchmarks. Use source::canonicalize, never
+  Path::canonicalize (Windows \\?\ paths).
 - Work in git worktrees for parallel agents (`isolation: worktree`); merge their branches.
 - Docs for humans in docs/ and README.md; never reference this folder from them.
 - `print` takes one args value: several arguments go in a tuple `print("{} {}", (a, b))`.

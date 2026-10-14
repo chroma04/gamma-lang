@@ -36,6 +36,41 @@ jobs:
           GAMMA_TEST_C: "0"
         run: cargo test --test conformance
 
+  windows:
+    # x86_64 Windows: the compiler is built with the MSVC toolchain; the C back end uses
+    # MinGW-w64 gcc (MSVC's cl.exe is not supported), here from MSYS2.
+    name: Build and test (Windows, MinGW-w64 gcc)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MinGW-w64 gcc
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Put gcc on PATH
+        shell: pwsh
+        run: |
+          "${{ steps.msys.outputs.msys2-location }}\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Check the C compiler
+        shell: pwsh
+        run: |
+          gcc --version
+          gcc -dumpmachine
+      - name: Clippy
+        run: cargo clippy --all-targets
+      # No `CC` here: cc-rs would pass it to the MSVC build of libffi. Gamma itself takes
+      # the first of cc, gcc and clang on PATH, which is MSYS2's (added first above).
+      - name: Test
+        run: cargo test --all-targets --no-fail-fast
+
   safe:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
     name: Safe builds (Fil-C)
@@ -89,6 +124,32 @@ jobs:
           CFLAGS_x86_64_unknown_linux_gnu: ""
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
+
+  benchmarks:
+    # Runs `gamma bench bench/` with the compiler of the pull request and with the base
+    # branch's, and prints the ratios in the job summary. Informational: timing never fails it.
+    name: Benchmarks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build this branch
+        run: cargo build --release
+      - name: Build the base branch
+        continue-on-error: true
+        run: |
+          git worktree add ../base "origin/${{ github.base_ref }}"
+          cd ../base && CARGO_TARGET_DIR="$PWD/../base-target" cargo build --release
+      - name: Compare
+        run: |
+          base=""
+          if [ -x ../base-target/release/gamma ]; then base=../base-target/release/gamma; fi
+          ./scripts/bench-compare.sh target/release/gamma "$base" bench
 
   editors:
     # The TextMate grammar's scope tests, and the tree-sitter grammar: its generated

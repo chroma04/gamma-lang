@@ -1,29 +1,29 @@
-// std/cli: command-line parsing as an iterator, getopt style.
-//
-// The program describes its options in a table of `Opt` and matches over what `parse`
-// yields. Nothing allocates and nothing is reflected: the yielded strings are slices of
-// the arguments, and `help` appends the usage text to a list you own.
-//
-//     cli :: import "std/cli"
-//     opts := [_]cli.Opt(
-//         cli.Opt(short: 'v', long: "verbose", help: "print more"),
-//         cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),
-//     )
-//     for a in cli.parse(args()[1..], opts[..]) {
-//         match a {
-//             .Opt(o) => …                      // o.index into opts, o.value ("" for flags)
-//             .Pos(p) => …
-//             .Unknown(u) => …
-//             .MissingValue(i) => …
-//             .UnexpectedValue(i) => …
-//         }
-//     }
-//
-// The rules are those of GNU getopt without abbreviations or permutation: options and
-// positional arguments may be mixed, `--` ends the options, and a lone `-` is a
-// positional argument. A long option is `--name`, `--name=value` or `--name value`; short
-// options may be bundled (`-abc`), and one that takes a value takes the rest of its
-// bundle (`-ofile`) or else the next argument (`-o file`).
+//! Command-line parsing as an iterator, getopt style.
+//!
+//! The program describes its options in a table of `Opt` and matches over what `parse`
+//! yields. Nothing allocates and nothing is reflected: the yielded strings are slices of
+//! the arguments, and `help` appends the usage text to a list you own.
+//!
+//!     cli :: import "std/cli"
+//!     opts := [_]cli.Opt(
+//!         cli.Opt(short: 'v', long: "verbose", help: "print more"),
+//!         cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),
+//!     )
+//!     for a in cli.parse(args()[1..], opts[..]) {
+//!         match a {
+//!             .Opt(o) => …                      // o.index into opts, o.value ("" for flags)
+//!             .Pos(p) => …
+//!             .Unknown(u) => …
+//!             .MissingValue(i) => …
+//!             .UnexpectedValue(i) => …
+//!         }
+//!     }
+//!
+//! The rules are those of GNU getopt without abbreviations or permutation: options and
+//! positional arguments may be mixed, `--` ends the options, and a lone `-` is a
+//! positional argument. A long option is `--name`, `--name=value` or `--name value`; short
+//! options may be bundled (`-abc`), and one that takes a value takes the rest of its
+//! bundle (`-ofile`) or else the next argument (`-o file`).
 
 /// One option of the program.
 pub Opt :: struct {

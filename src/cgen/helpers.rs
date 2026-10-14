@@ -332,21 +332,21 @@ static uint64_t gm_mix64(uint64_t h, uint64_t x) {
 }
 /* Mixes the minimal two's-complement little-endian bytes of v (as BigInt::to_signed_bytes_le). */
 static uint64_t gm_hash_int(uint64_t h, __int128 v) {
-    uint8_t b[17]; int n = 0;
     for (;;) {
-        uint8_t byte = (uint8_t)v; b[n++] = byte; v >>= 8;
+        uint8_t byte = (uint8_t)v; v >>= 8;
+        h ^= byte; h *= 0x100000001b3ULL;
         if ((v == 0 && !(byte & 0x80)) || (v == -1 && (byte & 0x80))) break;
     }
-    return gm_mix(h, b, n);
+    return h;
 }
 static uint64_t gm_hash_uint(uint64_t h, unsigned __int128 v) {
-    uint8_t b[17]; int n = 0;
     for (;;) {
-        uint8_t byte = (uint8_t)v; b[n++] = byte; v >>= 8;
+        uint8_t byte = (uint8_t)v; v >>= 8;
+        h ^= byte; h *= 0x100000001b3ULL;
         if (v == 0 && !(byte & 0x80)) break;
-        if (v == 0) { b[n++] = 0; break; }
+        if (v == 0) { h *= 0x100000001b3ULL; break; }
     }
-    return gm_mix(h, b, n);
+    return h;
 }
 static double gm_fmin(double x, double y) {
     if (x != x) return y;

@@ -37,3 +37,9 @@
   unknown escapes (`\ `) are errors there, gcc only warns. Use cgen::types::assert_message.
 - When merging a stack of PRs, run the CC=clang conformance lane after each cgen/sema pair:
   PRs green alone can clash semantically (e.g. new type syntax × new C emission).
+- Disk: the session allowance is ~40 GB. Six parallel worktree agents (≈3 GB target each)
+  plus main target (6 GB) plus downloads (wine, llvm-mingw, Fil-C) filled it in s12. Remove
+  merged worktrees right away; brief agents to keep one target dir and delete downloads.
+- Workers share the scratchpad: give each its own subdirectory name (they deleted mine once).
+- CI uses the newest stable Rust (1.99 in Oct 2026); local is 1.97. Before pushing run CI's clippy: `RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/stable rustup run stable cargo clippy -q --all-targets` (stable toolchain installed in s12).
+- Tests run as root here; CI is not root, so permission bugs (read-only checkouts) hide locally. Check such tests with `runuser -u nobody -- env HOME=/tmp/x TMPDIR=/tmp <test binary>` (chmod 1777 target/tmp, o+x on the path).

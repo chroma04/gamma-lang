@@ -103,6 +103,37 @@ fn net_error(e: &std::io::Error) -> i64 {
 }
 
 /// The start of the monotonic clock: the first time it is read.
+/// Fills `buf` with random bytes from the system.
+#[cfg(not(windows))]
+fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf))
+}
+
+/// Fills `buf` with random bytes from the system.
+#[cfg(windows)]
+fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
+    #[link(name = "bcrypt")]
+    unsafe extern "system" {
+        fn BCryptGenRandom(alg: *mut std::ffi::c_void, buf: *mut u8, len: u32, flags: u32) -> i32;
+    }
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
+    for chunk in buf.chunks_mut(u32::MAX as usize) {
+        // SAFETY: `chunk` is writable for its length.
+        let status = unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                chunk.as_mut_ptr(),
+                chunk.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status != 0 {
+            return Err(std::io::Error::other(format!("BCryptGenRandom failed with status {status:#x}")));
+        }
+    }
+    Ok(())
+}
+
 fn epoch() -> Instant {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *START.get_or_init(Instant::now)
@@ -193,6 +224,11 @@ impl<'a> Machine<'a> {
                 let r = self.join_thread(h)?;
                 Ok(int(self, e.ty, r as i128))
             }
+            SysOp::ThreadDetach => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let r = self.detach_thread(h);
+                Ok(int(self, e.ty, r as i128))
+            }
             SysOp::ThreadYield => {
                 self.yield_thread()?;
                 Ok(Value::unit())
@@ -230,7 +266,7 @@ impl<'a> Machine<'a> {
             SysOp::RandFill => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
                 let mut buf = vec![0u8; len as usize];
-                if let Err(err) = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
+                if let Err(err) = random_bytes(&mut buf) {
                     return self.trap(e.span, format!("cannot read random bytes: {}", err));
                 }
                 self.store(e.span, ptr, &buf, 1)?;

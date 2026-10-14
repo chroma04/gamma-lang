@@ -1460,6 +1460,17 @@ impl<'a, 's> FnCx<'a, 's> {
             "atomic_load" | "atomic_store" | "atomic_swap" | "atomic_cas" | "atomic_add" | "atomic_sub"
             | "atomic_and" | "atomic_or" | "atomic_xor" | "atomic_max" | "atomic_min" | "fence" | "volatile_load"
             | "volatile_store" => self.atomic(name.name.as_str(), args, span),
+            "black_box" => match args {
+                [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => {
+                    let x = self.expr(x, None);
+                    let ty = x.ty;
+                    mk(ty, tir::ExprKind::Builtin { op: tir::Builtin::BlackBox, args: vec![x] }, span)
+                }
+                _ => {
+                    self.error(span, "`@black_box` takes one value: `@black_box(x)`");
+                    error_expr(span)
+                }
+            },
             "unreachable" => {
                 mk(Ty::never(), tir::ExprKind::Builtin { op: tir::Builtin::Unreachable, args: vec![] }, span)
             }

@@ -191,7 +191,7 @@ pub fn second_class(ty: Ty) -> bool {
 pub fn tree_only(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::With { on: Some(_), .. } | ExprKind::Resume { .. } | ExprKind::Discard(_) => true,
-        ExprKind::Builtin { op: Builtin::Fiber | Builtin::Sys(_), .. } => true,
+        ExprKind::Builtin { op: Builtin::Fiber | Builtin::Sys(_) | Builtin::Cover(_), .. } => true,
         ExprKind::Builtin { op: Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last, args } => {
             let base = &args[0];
             match base.ty.kind() {
@@ -1869,7 +1869,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let out = self.dst(e, want);
         match callee {
             Callee::Fn(f) => {
-                self.emit(Op::Call { f: *f, args: a, out }, span);
+                if self.m.prog.heap_fns.contains_key(f) {
+                    self.emit(Op::CallHeap { f: *f, args: a, out }, span);
+                } else {
+                    self.emit(Op::Call { f: *f, args: a, out }, span);
+                }
             }
             Callee::Indirect(c) => {
                 let (callee, out) = (self.operand(cv.unwrap()), self.operand(out));

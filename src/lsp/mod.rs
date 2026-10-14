@@ -6,10 +6,13 @@
 //! with the open documents standing in for the files on disk; see `docs/architecture.md`.
 
 mod analysis;
+mod corelib;
 mod features;
 mod position;
+mod refs;
 mod server;
 mod transport;
+mod workspace;
 
 use std::io::{self, BufReader};
 use std::sync::mpsc;

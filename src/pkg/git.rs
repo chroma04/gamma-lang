@@ -6,7 +6,12 @@
 //! ```text
 //! db/<name>-<16 hex of sha256(url)>/                 bare mirror of a repository
 //! checkouts/<name>-<16 hex>/<12-char rev>/           a checked-out revision
+//! checkouts/<name>-<16 hex>/<12-char rev>.used       its last use (the file's mtime)
+//! url/<name>-<16 hex of sha256(url)>/<16 hex>/       an unpacked archive (with a `.used` stamp too)
 //! ```
+//!
+//! Checkouts are read-only once verified. A directory and its `.used` stamp are the
+//! unit the cache cleaner (`pkg::cache`) deletes.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -50,6 +55,17 @@ impl Store {
     /// The bare mirror of the repository with the normalized URL `url`.
     pub fn db(&self, url: &str) -> PathBuf {
         self.base.join("db").join(repo_dir_name(url))
+    }
+
+    /// The directory archives are downloaded into before they are unpacked.
+    pub fn downloads(&self) -> PathBuf {
+        self.base.join("url")
+    }
+
+    /// Where the archive at `url` whose file has the SHA-256 `sha256` (hexadecimal) is
+    /// unpacked.
+    pub fn archive(&self, url: &str, sha256: &str) -> PathBuf {
+        self.base.join("url").join(repo_dir_name(url)).join(&sha256[..sha256.len().min(16)])
     }
 
     /// Where revision `rev` of the repository is checked out.
@@ -184,41 +200,188 @@ pub fn checkout(db: &Path, rev: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_files(root: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
-    for e in std::fs::read_dir(root)? {
-        let e = e?;
+/// What the checksum records for a path of a tree.
+enum Entry {
+    File(PathBuf),
+    /// A symbolic link and where it points.
+    Link(PathBuf),
+}
+
+fn collect_entries(root: &Path, rel: &str, out: &mut Vec<(String, Entry)>) -> Result<(), String> {
+    let read_err = |p: &Path, e: std::io::Error| format!("cannot read {}: {}", p.display(), e);
+    for e in std::fs::read_dir(root).map_err(|e| read_err(root, e))? {
+        let e = e.map_err(|e| read_err(root, e))?;
         let name = e.file_name().to_string_lossy().into_owned();
         if name == ".git" {
             continue;
         }
         let path = e.path();
         let rel = if rel.is_empty() { name } else { format!("{}/{}", rel, name) };
-        let ty = e.file_type()?;
+        let ty = e.file_type().map_err(|e| read_err(&path, e))?;
         if ty.is_dir() {
-            collect_files(&path, &rel, out)?;
+            collect_entries(&path, &rel, out)?;
         } else if ty.is_file() {
-            out.push((rel, path));
+            out.push((rel, Entry::File(path)));
+        } else if ty.is_symlink() {
+            let target = std::fs::read_link(&path).map_err(|e| read_err(&path, e))?;
+            check_link(&rel, &target)?;
+            out.push((rel, Entry::Link(target)));
         }
     }
     Ok(())
 }
 
-/// The content hash of the tree at `root`: SHA-256 over its regular files in sorted
-/// path order (`/` separators, `.git` excluded), each as the path, a NUL byte, the
-/// length as 8 little-endian bytes, and the contents. Written `sha256:<hex>`.
+/// Checks that the symbolic link at `rel` (a path inside the tree) points to a relative
+/// path that stays inside the tree. Absolute links and links that climb out of the
+/// tree would make a package's contents depend on the machine, and a checkout is
+/// shared by everything that uses it.
+fn check_link(rel: &str, target: &Path) -> Result<(), String> {
+    use std::path::Component;
+    let outside = || {
+        format!(
+            "the package contains the symbolic link `{}` -> `{}`, which points outside the package; \
+             links must stay inside the package directory",
+            rel,
+            target.display()
+        )
+    };
+    let mut depth = rel.split('/').count() - 1;
+    for c in target.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => depth = depth.checked_sub(1).ok_or_else(outside)?,
+            Component::RootDir | Component::Prefix(_) => return Err(outside()),
+        }
+    }
+    Ok(())
+}
+
+/// The content hash of the tree at `root`: SHA-256 over its entries in sorted path
+/// order (`/` separators, `.git` excluded). A regular file is the path, a NUL byte, the
+/// length as 8 little-endian bytes, and the contents. A symbolic link is the path, a NUL
+/// byte, eight `0xFF` bytes (a length no file has), the length of the link's target as 8
+/// little-endian bytes, and the target; so a link never has the same record as a file.
+/// Written `sha256:<hex>`. A link that points outside the tree is an error.
 pub fn tree_checksum(root: &Path) -> Result<String, String> {
-    let mut files = vec![];
-    collect_files(root, "", &mut files).map_err(|e| format!("cannot read {}: {}", root.display(), e))?;
-    files.sort();
+    let mut entries = vec![];
+    collect_entries(root, "", &mut entries)?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut h = Sha256::new();
-    for (rel, path) in files {
-        let data = std::fs::read(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    for (rel, entry) in entries {
         h.update(rel.as_bytes());
         h.update([0u8]);
-        h.update((data.len() as u64).to_le_bytes());
-        h.update(&data);
+        match entry {
+            Entry::File(path) => {
+                let data = std::fs::read(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+                h.update((data.len() as u64).to_le_bytes());
+                h.update(&data);
+            }
+            Entry::Link(target) => {
+                let t = target.as_os_str().as_encoded_bytes();
+                h.update([0xFFu8; 8]);
+                h.update((t.len() as u64).to_le_bytes());
+                h.update(t);
+            }
+        }
     }
     Ok(format!("sha256:{}", hex(&h.finalize())))
+}
+
+/// Visits `path` and everything below it (not following symbolic links), calling `f` on
+/// each directory before its entries and on each other entry.
+fn walk_tree(path: &Path, f: &mut dyn FnMut(&Path, bool)) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return };
+    if meta.is_dir() {
+        f(path, true);
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for e in rd.flatten() {
+                walk_tree(&e.path(), f);
+            }
+        }
+    } else if !meta.file_type().is_symlink() {
+        f(path, false);
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, f: impl Fn(u32) -> u32) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        let mode = meta.permissions().mode();
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(f(mode)));
+    }
+}
+
+/// Removes the write permission from the tree at `root`, files and directories alike,
+/// so that editing a package in place fails instead of silently changing what every
+/// build that uses the checkout sees.
+pub fn make_read_only(root: &Path) {
+    // Entries are changed before the directory that holds them.
+    let mut all = vec![];
+    walk_tree(root, &mut |p, _| all.push(p.to_path_buf()));
+    for p in all.iter().rev() {
+        #[cfg(unix)]
+        set_mode(p, |m| m & !0o222);
+        #[cfg(not(unix))]
+        if let Ok(meta) = std::fs::metadata(p) {
+            let mut perm = meta.permissions();
+            perm.set_readonly(true);
+            let _ = std::fs::set_permissions(p, perm);
+        }
+    }
+}
+
+/// Restores the owner's write permission in the tree at `root` (and read and search
+/// permission of directories), as needed to delete it.
+pub fn make_writable(root: &Path) {
+    walk_tree(root, &mut |p, dir| {
+        #[cfg(unix)]
+        set_mode(p, |m| m | if dir { 0o700 } else { 0o200 });
+        #[cfg(not(unix))]
+        if let Ok(meta) = std::fs::metadata(p) {
+            let mut perm = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(p, perm);
+        }
+        let _ = dir;
+    });
+}
+
+/// Normalizes the permissions of an unpacked tree: the owner can read and write
+/// everything, and special bits (setuid, sticky) are dropped.
+pub fn sanitize_modes(root: &Path) {
+    #[cfg(unix)]
+    walk_tree(root, &mut |p, dir| set_mode(p, |m| (m & 0o777) | if dir { 0o700 } else { 0o600 }));
+    #[cfg(not(unix))]
+    let _ = root;
+}
+
+/// Deletes the tree at `path`, which may be read-only.
+pub fn remove_tree(path: &Path) -> std::io::Result<()> {
+    make_writable(path);
+    std::fs::remove_dir_all(path)
+}
+
+/// The file whose modification time is the last use of the checkout `dir`: next to it,
+/// since the checkout itself is read-only.
+pub fn stamp_of(dir: &Path) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".used");
+    dir.with_file_name(name)
+}
+
+/// Records that the checkout `dir` is in use now.
+pub fn mark_used(dir: &Path) {
+    let now = std::time::SystemTime::now();
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(stamp_of(dir)).and_then(|f| f.set_modified(now));
+}
+
+/// The time the checkout `dir` was last used: its stamp's, else its own modification
+/// time.
+pub fn last_used(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(stamp_of(dir)).and_then(|m| m.modified()).or_else(|_| std::fs::metadata(dir)?.modified()).ok()
 }
 
 #[cfg(test)]
@@ -251,6 +414,62 @@ mod tests {
         std::fs::write(d.join("sub/b.gm"), "y").unwrap();
         std::fs::rename(d.join("a.gm"), d.join("c.gm")).unwrap();
         assert_ne!(a, tree_checksum(&d).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_part_of_the_checksum() {
+        let d = tmp("links");
+        std::fs::write(d.join("a"), "x").unwrap();
+        let plain = tree_checksum(&d).unwrap();
+        std::os::unix::fs::symlink("a", d.join("l")).unwrap();
+        let with_link = tree_checksum(&d).unwrap();
+        assert_ne!(plain, with_link);
+        // The target matters.
+        std::fs::remove_file(d.join("l")).unwrap();
+        std::os::unix::fs::symlink("b", d.join("l")).unwrap();
+        assert_ne!(with_link, tree_checksum(&d).unwrap());
+        // A link never has the record of a file: a file `l` whose contents spell what a
+        // link record would hold.
+        std::fs::remove_file(d.join("l")).unwrap();
+        let mut body = vec![0xFFu8; 8];
+        body.extend(1u64.to_le_bytes());
+        body.push(b'b');
+        std::fs::write(d.join("l"), &body).unwrap();
+        let as_file = tree_checksum(&d).unwrap();
+        std::fs::remove_file(d.join("l")).unwrap();
+        std::os::unix::fs::symlink("b", d.join("l")).unwrap();
+        assert_ne!(as_file, tree_checksum(&d).unwrap());
+        // Links that stay inside the tree are fine, even through `..`.
+        std::fs::create_dir_all(d.join("s/t")).unwrap();
+        std::os::unix::fs::symlink("../../a", d.join("s/t/up")).unwrap();
+        tree_checksum(&d).unwrap();
+        // Links that leave it are errors.
+        std::os::unix::fs::symlink("../../../a", d.join("s/t/out")).unwrap();
+        let e = tree_checksum(&d).unwrap_err();
+        assert!(e.contains("s/t/out") && e.contains("outside"), "{}", e);
+        std::fs::remove_file(d.join("s/t/out")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", d.join("abs")).unwrap();
+        assert!(tree_checksum(&d).unwrap_err().contains("outside"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_trees_can_be_removed() {
+        let d = tmp("ro");
+        std::fs::create_dir_all(d.join("t/sub")).unwrap();
+        std::fs::write(d.join("t/sub/f"), "x").unwrap();
+        make_read_only(&d.join("t"));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &str| std::fs::metadata(d.join(p)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("t") & 0o222, 0);
+        assert_eq!(mode("t/sub/f") & 0o222, 0);
+        // The checksum is unaffected.
+        tree_checksum(&d.join("t")).unwrap();
+        remove_tree(&d.join("t")).unwrap();
+        assert!(!d.join("t").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

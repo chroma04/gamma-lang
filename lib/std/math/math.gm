@@ -1,18 +1,18 @@
-// std/math: elementary functions on `f64`, written entirely in Gamma.
-//
-// Nothing here calls foreign code or uses effects, so every function gives
-// bit-identical results in the interpreter, in compiled code and during
-// compile-time evaluation. The algorithms are the classic fdlibm ones (as
-// maintained in FreeBSD's msun): argument reduction into a small interval,
-// a minimax polynomial, and a careful reconstruction. All functions follow
-// C99 Annex F for special values: a domain error gives NaN, an overflow gives
-// an infinity, and the sign of zero is preserved where the result is a zero.
-// Except for `pow`, results are within 1 ulp of the exact value; `pow` is
-// within 2 ulp (in practice below 0.85 ulp).
-//
-// `sin`, `cos` and `tan` reduce their argument modulo pi/2 exactly (with
-// Payne-Hanek style multi-precision arithmetic for large arguments), so they
-// are accurate for every finite argument.
+//! Elementary functions on `f64`, written entirely in Gamma.
+//!
+//! Nothing here calls foreign code or uses effects, so every function gives
+//! bit-identical results in the interpreter, in compiled code and during
+//! compile-time evaluation. The algorithms are the classic fdlibm ones (as
+//! maintained in FreeBSD's msun): argument reduction into a small interval,
+//! a minimax polynomial, and a careful reconstruction. All functions follow
+//! C99 Annex F for special values: a domain error gives NaN, an overflow gives
+//! an infinity, and the sign of zero is preserved where the result is a zero.
+//! Except for `pow`, results are within 1 ulp of the exact value; `pow` is
+//! within 2 ulp (in practice below 0.85 ulp).
+//!
+//! `sin`, `cos` and `tan` reduce their argument modulo pi/2 exactly (with
+//! Payne-Hanek style multi-precision arithmetic for large arguments), so they
+//! are accurate for every finite argument.
 
 SIGN_MASK: u64 : 0x8000_0000_0000_0000
 ABS_MASK: u64 : 0x7fff_ffff_ffff_ffff

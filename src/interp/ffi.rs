@@ -119,6 +119,40 @@ struct Mirror {
     scanned: bool,
 }
 
+/// Libraries and directories that packages add (`c-sources`, `lib-dirs` in gamma.toml),
+/// set by the driver before the program runs.
+#[derive(Default)]
+struct Extra {
+    /// Directories searched for `foreign "lib"` libraries before the `-L` directories of `LDFLAGS`.
+    dirs: Vec<String>,
+    /// Handles of the shared libraries made from the packages' C sources.
+    handles: Vec<usize>,
+}
+
+static EXTRA: std::sync::Mutex<Extra> = std::sync::Mutex::new(Extra { dirs: Vec::new(), handles: Vec::new() });
+
+fn extra() -> std::sync::MutexGuard<'static, Extra> {
+    EXTRA.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Adds directories that foreign libraries are searched in.
+pub fn add_library_dirs(dirs: Vec<std::path::PathBuf>) {
+    extra().dirs.extend(dirs.iter().map(|d| d.display().to_string()));
+}
+
+/// Loads the shared library at `path`; its symbols are found by foreign declarations of
+/// any library. It stays loaded for the life of the process.
+pub fn load_library(path: &std::path::Path) -> Result<(), String> {
+    let c = CString::new(path.display().to_string()).map_err(|_| "bad library path".to_string())?;
+    // SAFETY: a valid C string; the handle is kept for the life of the process.
+    let h = unsafe { dl::open_global(c.as_ptr()) };
+    if h.is_null() {
+        return Err(format!("cannot load {}: {}", path.display(), dl::last_error()));
+    }
+    extra().handles.push(h as usize);
+    Ok(())
+}
+
 /// What a callback needs to call the Gamma function.
 struct CbData {
     func: FnId,
@@ -170,9 +204,18 @@ impl Ffi {
             return h.clone();
         }
         let mut names = Vec::new();
-        if lib != "c" {
-            let (pre, ext) = if cfg!(target_os = "macos") { ("lib", "dylib") } else { ("lib", "so") };
-            let mut dirs: Vec<String> = Vec::new();
+        if cfg!(windows) && (lib == "c" || lib == "m") {
+            // The C library is a DLL of its own; the one MinGW programs and `gamma` use first.
+            names.extend(["ucrtbase.dll".to_string(), "msvcrt.dll".to_string()]);
+        } else if lib != "c" {
+            let (pre, ext) = if cfg!(target_os = "macos") {
+                ("lib", "dylib")
+            } else if cfg!(windows) {
+                ("", "dll")
+            } else {
+                ("lib", "so")
+            };
+            let mut dirs: Vec<String> = extra().dirs.clone();
             if let Ok(f) = std::env::var("LDFLAGS") {
                 let mut it = f.split_whitespace();
                 while let Some(w) = it.next() {
@@ -188,6 +231,9 @@ impl Ffi {
             let file = format!("{}{}.{}", pre, lib, ext);
             names.extend(dirs.iter().map(|d| format!("{}/{}", d, file)));
             names.push(file);
+            if cfg!(windows) {
+                names.push(format!("lib{}.dll", lib));
+            }
             if lib == "m" && cfg!(target_os = "linux") {
                 names.push("libm.so.6".into());
             }
@@ -196,10 +242,13 @@ impl Ffi {
         for n in names {
             let Ok(c) = CString::new(n) else { continue };
             // SAFETY: a valid C string; the handle is kept for the life of the process.
-            let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+            let h = unsafe { dl::open(c.as_ptr()) };
             if !h.is_null() {
                 handles.push(h as usize);
-                break;
+                // On Windows both C libraries are searched (see `flush_c_streams`).
+                if !(cfg!(windows) && (lib == "c" || lib == "m")) {
+                    break;
+                }
             }
         }
         self.libs.insert(lib.to_string(), handles.clone());
@@ -217,11 +266,36 @@ impl Ffi {
         r
     }
 
+    /// The address of the function `getter` anywhere in the process.
+    fn symbol_of(&mut self, getter: &str, c: &CString) -> *mut c_void {
+        let _ = getter;
+        // SAFETY: `c` is a C string.
+        let p = unsafe { dl::sym(dl::DEFAULT, c.as_ptr()) };
+        if !p.is_null() {
+            return p;
+        }
+        for h in self.open_lib("c") {
+            // SAFETY: `h` is a handle from `dl::open`.
+            let p = unsafe { dl::sym(h as *mut c_void, c.as_ptr()) };
+            if !p.is_null() {
+                return p;
+            }
+        }
+        std::ptr::null_mut()
+    }
+
     fn lookup(&mut self, lib: &str, name: &str) -> Option<usize> {
+        // Before any foreign function runs, its C library's streams are set up.
+        #[cfg(windows)]
+        windows_c_libs();
         let c = CString::new(name).ok()?;
+        // On Windows, handlers go to the C library whose `exit` ends the process.
+        if cfg!(windows) && name == "atexit" {
+            return Some(libc::atexit as *const () as usize);
+        }
         let find = |h: *mut c_void| {
             // SAFETY: `h` is a handle from `dlopen` or `RTLD_DEFAULT`, and `c` a C string.
-            let p = unsafe { libc::dlsym(h, c.as_ptr()) };
+            let p = unsafe { dl::sym(h, c.as_ptr()) };
             (!p.is_null()).then_some(p as usize)
         };
         for h in self.open_lib(lib) {
@@ -229,8 +303,23 @@ impl Ffi {
                 return Some(p);
             }
         }
-        if let Some(p) = find(libc::RTLD_DEFAULT) {
+        let package_libs = extra().handles.clone();
+        for h in package_libs {
+            if let Some(p) = find(h as *mut c_void) {
+                return Some(p);
+            }
+        }
+        if let Some(p) = find(dl::DEFAULT) {
             return Some(p);
+        }
+        #[cfg(windows)]
+        for m in ["kernel32.dll", "ucrtbase.dll", "msvcrt.dll"] {
+            let h = unsafe { dl::open(CString::new(m).ok()?.as_ptr()) };
+            if !h.is_null()
+                && let Some(p) = find(h)
+            {
+                return Some(p);
+            }
         }
         // Some systems define `atexit` only in a static part of the C library.
         if name == "atexit" {
@@ -238,10 +327,16 @@ impl Ffi {
         }
         // `errno` is a macro for a thread-local on most systems; its address comes from a function.
         if name == "errno" {
-            let getter = if cfg!(target_os = "macos") { "__error" } else { "__errno_location" };
+            let getter = if cfg!(target_os = "macos") {
+                "__error"
+            } else if cfg!(windows) {
+                "_errno"
+            } else {
+                "__errno_location"
+            };
             let c = CString::new(getter).ok()?;
             // SAFETY: as above.
-            let g = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c.as_ptr()) };
+            let g = self.symbol_of(getter, &c);
             if g.is_null() {
                 return None;
             }
@@ -250,6 +345,109 @@ impl Ffi {
             return Some(f() as usize);
         }
         None
+    }
+}
+
+/// Flushes the C library's output streams. On Windows a program may use two C libraries
+/// (`ucrtbase.dll` and `msvcrt.dll`, each with streams of its own, and UCRT lacks `printf`
+/// and the like), so every one that is loaded is flushed.
+fn flush_c_streams() {
+    // SAFETY: flushing all C streams takes no arguments but null.
+    unsafe { libc::fflush(std::ptr::null_mut()) };
+    #[cfg(windows)]
+    for &f in windows_c_libs() {
+        // SAFETY: `fflush(NULL)` of a C library.
+        let f: extern "C" fn(*mut c_void) -> i32 = unsafe { std::mem::transmute(f) };
+        f(std::ptr::null_mut());
+    }
+}
+
+/// The `fflush` of each C library of the process. The first call also puts their standard
+/// streams in binary mode, as compiled programs have them: no `\r` before each newline.
+#[cfg(windows)]
+fn windows_c_libs() -> &'static [usize] {
+    use std::sync::OnceLock;
+    static LIBS: OnceLock<Vec<usize>> = OnceLock::new();
+    LIBS.get_or_init(|| {
+        let sym = |m: *mut c_void, name: &str| {
+            let n = CString::new(name).ok()?;
+            // SAFETY: a module handle and a C string.
+            let p = unsafe { dl::sym(m, n.as_ptr()) };
+            (!p.is_null()).then_some(p)
+        };
+        ["ucrtbase.dll", "msvcrt.dll"]
+            .iter()
+            .filter_map(|m| {
+                let m = CString::new(*m).ok()?;
+                // SAFETY: a C string; the module stays loaded for the life of the process.
+                let h = unsafe { dl::open(m.as_ptr()) };
+                if h.is_null() {
+                    return None;
+                }
+                if let Some(setmode) = sym(h, "_setmode") {
+                    // SAFETY: `_setmode(int fd, int mode)` of that C library.
+                    let setmode: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(setmode) };
+                    const O_BINARY: i32 = 0x8000;
+                    for fd in 0..3 {
+                        setmode(fd, O_BINARY);
+                    }
+                }
+                sym(h, "fflush").map(|p| p as usize)
+            })
+            .collect()
+    })
+}
+
+/// Dynamic loading: `dlopen`/`dlsym` where they exist, `LoadLibrary`/`GetProcAddress` on Windows.
+#[cfg(unix)]
+mod dl {
+    use std::ffi::{c_char, c_void};
+    pub const DEFAULT: *mut c_void = libc::RTLD_DEFAULT;
+    pub unsafe fn open(name: *const c_char) -> *mut c_void {
+        unsafe { libc::dlopen(name, libc::RTLD_LAZY | libc::RTLD_LOCAL) }
+    }
+    pub unsafe fn sym(h: *mut c_void, name: *const c_char) -> *mut c_void {
+        unsafe { libc::dlsym(h, name) }
+    }
+    /// Opens a library whose symbols later loaded libraries can use too.
+    pub unsafe fn open_global(name: *const c_char) -> *mut c_void {
+        unsafe { libc::dlopen(name, libc::RTLD_LAZY | libc::RTLD_GLOBAL) }
+    }
+    /// The reason the last `open` failed.
+    pub fn last_error() -> String {
+        // SAFETY: `dlerror` returns a C string or null.
+        let e = unsafe { libc::dlerror() };
+        if e.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(e) }.to_string_lossy().into_owned() }
+    }
+}
+
+#[cfg(windows)]
+mod dl {
+    use std::ffi::{c_char, c_void};
+    unsafe extern "system" {
+        fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+        fn GetProcAddress(h: *mut c_void, name: *const c_char) -> *mut c_void;
+        fn GetLastError() -> u32;
+    }
+    /// Windows has no "search everything" handle: the lookup then tries the modules by name.
+    pub const DEFAULT: *mut c_void = std::ptr::null_mut();
+    pub unsafe fn open(name: *const c_char) -> *mut c_void {
+        unsafe { LoadLibraryA(name) }
+    }
+    pub unsafe fn sym(h: *mut c_void, name: *const c_char) -> *mut c_void {
+        if h.is_null() {
+            return std::ptr::null_mut();
+        }
+        unsafe { GetProcAddress(h, name) }
+    }
+    /// Windows libraries are always visible to the libraries loaded after them.
+    pub unsafe fn open_global(name: *const c_char) -> *mut c_void {
+        unsafe { LoadLibraryA(name) }
+    }
+    /// The reason the last `open` failed.
+    pub fn last_error() -> String {
+        // SAFETY: no preconditions.
+        format!("Windows error {}", unsafe { GetLastError() })
     }
 }
 
@@ -887,8 +1085,7 @@ impl<'a> Machine<'a> {
             CURRENT.with(|c| c.set(prev));
         }
         if !pure {
-            // SAFETY: flushing all C streams takes no arguments but null.
-            unsafe { libc::fflush(std::ptr::null_mut()) };
+            flush_c_streams();
         }
 
         let mut rbytes = vec![0u8; ret_size];

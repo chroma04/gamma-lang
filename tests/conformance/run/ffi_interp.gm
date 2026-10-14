@@ -9,7 +9,7 @@ DivT :: struct {
 libc :: foreign "c" {
     strlen :: fn(s: cstring) -> usize \ {}
     abs :: fn(x: c.c_int) -> c.c_int \ {}
-    labs :: fn(x: c.c_long) -> c.c_long \ {}
+    llabs :: fn(x: c.c_longlong) -> c.c_longlong \ {}
     memcpy :: fn(dst: rawptr, src: rawptr, n: usize) -> rawptr \ {}
     memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr \ {}
     memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int \ {}
@@ -48,7 +48,7 @@ cmp_rec :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
 
 main :: fn() \ {Out, Sys} {
     // Scalars and strings.
-    print("{} {} {}\n", (libc.strlen(c"hello"), libc.abs(-12), libc.labs(-5_000_000_000)))
+    print("{} {} {}\n", (libc.strlen(c"hello"), libc.abs(-12), libc.llabs(-5_000_000_000)))
     print("{} {} {} {}\n", (libm.sqrt(2.0), libm.pow(2.0, 10.0), libm.sqrtf(2.25), libm.floor(-1.5)))
     print("{}\n", libc.toupper(c.c_int('q')))
 

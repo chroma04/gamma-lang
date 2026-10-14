@@ -1,0 +1,38 @@
+// `new` and `destroy` under the default heap allocator and, nested inside it, a custom one.
+Big :: struct { a: [20]i64 }
+Unit :: struct {}
+
+Counter :: struct { allocs: u32 }
+
+count_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    data.cast(^Counter).allocs += 1
+    h := heap_allocator()
+    return h.vt.alloc(h.data, size, align)
+}
+
+count_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+count_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    h := heap_allocator()
+    h.vt.free(h.data, p, size, align)
+}
+
+COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_free)
+
+main :: fn() -> AllocError!() \ {Out, Alloc} {
+    b := try new(Big, Big(a: [20]i64(fill: 7)))
+    b.a[19] += 1
+    u := try new(Unit, Unit())
+    c := Counter(allocs: 0)
+    with Allocator(data: &c, vt: &COUNTING) {
+        q := try new(u64, 5)
+        destroy(u64, q)
+    }
+    p := try new(i32, 9)
+    print("{} {} {}\n", (b.a[0], b.a[19], p^))
+    print("custom allocations: {}\n", c.allocs)
+    destroy(i32, p)
+    destroy(Unit, u)
+    destroy(Big, b)
+    return ()
+}

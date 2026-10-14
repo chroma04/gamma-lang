@@ -56,11 +56,64 @@ pub struct GitSource {
     pub subdir: Option<String>,
 }
 
+/// A dependency that is a source archive (`.tar.gz`) at a URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrlSource {
+    pub url: String,
+    /// The expected SHA-256 of the archive file, lowercase hexadecimal.
+    pub sha256: Option<String>,
+    /// The directory of the package inside the archive (after the single top-level
+    /// directory, if any, is stripped), if it is not the root.
+    pub subdir: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// A directory, relative to the package that lists it.
     Path(String),
     Git(GitSource),
+    Url(UrlSource),
+}
+
+/// The keys of a `[build]` table or a `[profile.*]` table. A key that is not written is
+/// `None`; a profile replaces (does not extend) the keys it writes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuildSettings {
+    pub mode: Option<crate::interp::Mode>,
+    pub debug_info: Option<bool>,
+    pub cflags: Option<Vec<String>>,
+    pub ldflags: Option<Vec<String>>,
+    pub c_sources: Option<Vec<String>>,
+    pub include_dirs: Option<Vec<String>>,
+    pub libs: Option<Vec<String>>,
+    pub lib_dirs: Option<Vec<String>>,
+}
+
+impl BuildSettings {
+    /// These settings with every key `over` writes replaced by its value.
+    pub fn overlay(&self, over: &BuildSettings) -> BuildSettings {
+        fn pick<T: Clone>(base: &Option<T>, over: &Option<T>) -> Option<T> {
+            over.clone().or_else(|| base.clone())
+        }
+        BuildSettings {
+            mode: pick(&self.mode, &over.mode),
+            debug_info: pick(&self.debug_info, &over.debug_info),
+            cflags: pick(&self.cflags, &over.cflags),
+            ldflags: pick(&self.ldflags, &over.ldflags),
+            c_sources: pick(&self.c_sources, &over.c_sources),
+            include_dirs: pick(&self.include_dirs, &over.include_dirs),
+            libs: pick(&self.libs, &over.libs),
+            lib_dirs: pick(&self.lib_dirs, &over.lib_dirs),
+        }
+    }
+}
+
+/// A named `[profile.<name>]` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    pub name: String,
+    pub line: usize,
+    pub settings: BuildSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +129,9 @@ pub struct Manifest {
     pub name: Option<String>,
     pub version: Option<String>,
     pub deps: Vec<Dependency>,
+    /// The `[build]` table.
+    pub build: BuildSettings,
+    pub profiles: Vec<Profile>,
 }
 
 /// Whether `s` can name a package: it is the first segment of an import path.
@@ -156,8 +212,119 @@ impl Manifest {
                 m.deps.push(Dependency { name: name.to_string(), line, source });
             }
         }
+        if let Some(b) = doc.get("build") {
+            let Some(t) = b.as_table_like() else {
+                return Err(err(lines.of(b.span()), "`build` must be a table".into()));
+            };
+            m.build = parse_build(t, "[build]", &lines)?;
+        }
+        if let Some(ps) = doc.get("profile") {
+            let Some(t) = ps.as_table_like() else {
+                return Err(err(lines.of(ps.span()), "`profile` must be a table of `[profile.<name>]` tables".into()));
+            };
+            for (name, item) in t.iter() {
+                let line = lines.of(t.get_key_value(name).and_then(|(k, _)| k.span()).or_else(|| item.span()));
+                if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    return Err(err(
+                        line,
+                        format!("invalid profile name `{}`: use letters, digits, `-` and `_`", name),
+                    ));
+                }
+                let Some(pt) = item.as_table_like() else {
+                    return Err(err(line, format!("profile `{}` must be a table", name)));
+                };
+                let settings = parse_build(pt, &format!("[profile.{}]", name), &lines)?;
+                m.profiles.push(Profile { name: name.to_string(), line, settings });
+            }
+        }
         Ok(m)
     }
+
+    /// The build settings for the profile `profile` (`None`: the `[build]` table alone).
+    /// An unknown profile is an error naming the known ones.
+    pub fn build_settings(&self, profile: Option<&str>) -> Result<BuildSettings, String> {
+        let Some(name) = profile else { return Ok(self.build.clone()) };
+        match self.profiles.iter().find(|p| p.name == name) {
+            Some(p) => Ok(self.build.overlay(&p.settings)),
+            None if self.profiles.is_empty() => {
+                Err(format!("unknown profile `{}`: gamma.toml defines no `[profile.<name>]` tables", name))
+            }
+            None => {
+                let known: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
+                Err(format!("unknown profile `{}` (known profiles: {})", name, known.join(", ")))
+            }
+        }
+    }
+}
+
+const BUILD_KEYS: [&str; 8] =
+    ["mode", "debug-info", "cflags", "ldflags", "c-sources", "include-dirs", "libs", "lib-dirs"];
+
+fn parse_build(t: &dyn toml_edit::TableLike, what: &str, lines: &Lines) -> Result<BuildSettings, ManifestError> {
+    let mut b = BuildSettings::default();
+    for (k, v) in t.iter() {
+        let line = lines.of(t.get_key_value(k).and_then(|(k, _)| k.span()).or_else(|| v.span()));
+        if !BUILD_KEYS.contains(&k) {
+            return Err(err(
+                line,
+                format!("{} has an unknown key `{}` (known keys: {})", what, k, BUILD_KEYS.join(", ")),
+            ));
+        }
+        let list = || -> Result<Vec<String>, ManifestError> {
+            let bad = || err(line, format!("`{}` in {} must be an array of strings", k, what));
+            let a = v.as_array().ok_or_else(bad)?;
+            a.iter().map(|e| e.as_str().map(str::to_string).ok_or_else(bad)).collect()
+        };
+        match k {
+            "mode" => {
+                let s = v.as_str().ok_or_else(|| err(line, format!("`mode` in {} must be a string", what)))?;
+                b.mode = Some(match s {
+                    "debug" => crate::interp::Mode::Debug,
+                    "checked" => crate::interp::Mode::Checked,
+                    "safe" => crate::interp::Mode::Safe,
+                    "fast" => crate::interp::Mode::Fast,
+                    _ => {
+                        return Err(err(
+                            line,
+                            format!("invalid mode `{}` in {}: use debug, checked, safe or fast", s, what),
+                        ));
+                    }
+                });
+            }
+            "debug-info" => {
+                b.debug_info = Some(
+                    v.as_bool().ok_or_else(|| err(line, format!("`debug-info` in {} must be true or false", what)))?,
+                );
+            }
+            "cflags" => b.cflags = Some(list()?),
+            "ldflags" => b.ldflags = Some(list()?),
+            "c-sources" | "include-dirs" | "lib-dirs" => {
+                let l = list()?;
+                if l.iter().any(|p| p.is_empty()) {
+                    return Err(err(line, format!("`{}` in {} holds an empty path", k, what)));
+                }
+                match k {
+                    "c-sources" => b.c_sources = Some(l),
+                    "include-dirs" => b.include_dirs = Some(l),
+                    _ => b.lib_dirs = Some(l),
+                }
+            }
+            _ => {
+                let l = list()?;
+                let bad = |n: &&String| {
+                    n.is_empty() || n.starts_with('-') || n.contains(|c: char| c.is_whitespace() || c == '/')
+                };
+                if let Some(n) = l.iter().find(bad) {
+                    return Err(err(
+                        line,
+                        format!("invalid library name `{}` in {}: write `z`, not `-lz` or a path", n, what),
+                    ));
+                }
+                b.libs = Some(l);
+            }
+        }
+    }
+    Ok(b)
 }
 
 fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Result<Source, ManifestError> {
@@ -167,7 +334,7 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
             format!("dependency `{}` must be a table: `{{ path = \"…\" }}` or `{{ git = \"…\" }}`", name),
         ));
     };
-    const KEYS: [&str; 7] = ["path", "git", "version", "tag", "branch", "rev", "subdir"];
+    const KEYS: [&str; 9] = ["path", "git", "url", "sha256", "version", "tag", "branch", "rev", "subdir"];
     for (k, v) in t.iter() {
         if !KEYS.contains(&k) {
             let l = lines.of(t.get_key_value(k).and_then(|(k, _)| k.span()).or_else(|| v.span()));
@@ -183,11 +350,47 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
             },
         }
     };
-    match (string("path")?, string("git")?) {
-        (Some(_), Some(_)) => {
-            Err(err(line, format!("dependency `{}` has both `path` and `git`; use one of them", name)))
+    let sources: Vec<&str> = ["path", "git", "url"].into_iter().filter(|k| t.get(k).is_some()).collect();
+    if sources.len() > 1 {
+        return Err(err(
+            line,
+            format!("dependency `{}` has both `{}` and `{}`; use one of them", name, sources[0], sources[1]),
+        ));
+    }
+    if let Some(url) = string("url")? {
+        for k in ["version", "tag", "branch", "rev"] {
+            if t.get(k).is_some() {
+                return Err(err(line, format!("`{}` of dependency `{}` needs `git`", k, name)));
+            }
         }
-        (None, None) => Err(err(line, format!("dependency `{}` needs a `path = \"…\"` or a `git = \"…\"`", name))),
+        if url.trim().is_empty() {
+            return Err(err(line, format!("the `url` of dependency `{}` is empty", name)));
+        }
+        let sha256 = match string("sha256")? {
+            None => None,
+            Some(h) => {
+                let h = h.trim().strip_prefix("sha256:").unwrap_or(h.trim()).to_ascii_lowercase();
+                if h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(err(
+                        lines.of(t.get("sha256").and_then(Item::span)),
+                        format!("`sha256` of dependency `{}` must be 64 hexadecimal digits", name),
+                    ));
+                }
+                Some(h)
+            }
+        };
+        let subdir = string("subdir")?;
+        check_subdir(name, &subdir, line)?;
+        return Ok(Source::Url(UrlSource { url: url.trim().to_string(), sha256, subdir }));
+    }
+    if t.get("sha256").is_some() {
+        return Err(err(line, format!("`sha256` of dependency `{}` needs `url`", name)));
+    }
+    match (string("path")?, string("git")?) {
+        (Some(_), Some(_)) => unreachable!(),
+        (None, None) => {
+            Err(err(line, format!("dependency `{}` needs a `path = \"…\"`, a `git = \"…\"` or a `url = \"…\"`", name)))
+        }
         (Some(p), None) => {
             for k in ["tag", "branch", "rev", "subdir"] {
                 if t.get(k).is_some() {
@@ -237,20 +440,25 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
                 GitSpec::Default
             };
             let subdir = string("subdir")?;
-            if let Some(s) = &subdir {
-                let ok = !s.is_empty()
-                    && !s.starts_with('/')
-                    && s.split('/').all(|c| !c.is_empty() && c != ".." && c != "." && c != ".git");
-                if !ok {
-                    return Err(err(
-                        line,
-                        format!("`subdir` of dependency `{}` must be a relative path inside the repository", name),
-                    ));
-                }
-            }
+            check_subdir(name, &subdir, line)?;
             Ok(Source::Git(GitSource { url, spec, subdir }))
         }
     }
+}
+
+fn check_subdir(name: &str, subdir: &Option<String>, line: usize) -> Result<(), ManifestError> {
+    if let Some(s) = subdir {
+        let ok = !s.is_empty()
+            && !s.starts_with('/')
+            && s.split('/').all(|c| !c.is_empty() && c != ".." && c != "." && c != ".git");
+        if !ok {
+            return Err(err(
+                line,
+                format!("`subdir` of dependency `{}` must be a relative path inside the repository", name),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -324,6 +532,48 @@ mod tests {
         assert_eq!(fails("[dependencies]\n\"a-b\" = { path = \"b\" }\n").line, 2);
         assert!(fails("[package]\nname = \"1x\"\n").msg.contains("invalid package name"));
         assert!(fails("[package]\nname = \"a\"\nversion = \"x\"\n").msg.contains("invalid package version"));
+    }
+
+    #[test]
+    fn build_tables_and_profiles() {
+        let m = Manifest::parse(
+            "[build]\nmode = \"checked\"\ndebug-info = true\ncflags = [\"-O2\"]\nlibs = [\"z\"]\nc-sources = [\"c/a.c\"]\n\n[profile.release]\nmode = \"fast\"\ncflags = [\"-DX\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.build.mode, Some(crate::interp::Mode::Checked));
+        assert_eq!(m.build.debug_info, Some(true));
+        assert_eq!(m.profiles.len(), 1);
+        assert_eq!((m.profiles[0].name.as_str(), m.profiles[0].line), ("release", 8));
+        // No profile: [build] alone. A profile replaces the keys it writes.
+        assert_eq!(m.build_settings(None).unwrap(), m.build);
+        let r = m.build_settings(Some("release")).unwrap();
+        assert_eq!(r.mode, Some(crate::interp::Mode::Fast));
+        assert_eq!(r.cflags, Some(vec!["-DX".to_string()]));
+        assert_eq!(r.libs, Some(vec!["z".to_string()]));
+        assert_eq!(r.debug_info, Some(true));
+        let e = m.build_settings(Some("nope")).unwrap_err();
+        assert!(e.contains("unknown profile `nope`") && e.contains("release"), "{}", e);
+        assert!(Manifest::default().build_settings(Some("x")).unwrap_err().contains("defines no"));
+        assert_eq!(fails("[build]\nspeed = 1\n").line, 2);
+        assert!(fails("[profile.p]\nmode = \"warp\"\n").msg.contains("invalid mode"));
+    }
+
+    #[test]
+    fn url_dependencies() {
+        let hash = "AB".repeat(32);
+        let src = dep(&format!("u = {{ url = \"https://h/u-1.tar.gz\", sha256 = \"{}\", subdir = \"p\" }}", hash));
+        assert_eq!(
+            src,
+            Source::Url(UrlSource {
+                url: "https://h/u-1.tar.gz".into(),
+                sha256: Some("ab".repeat(32)),
+                subdir: Some("p".into())
+            })
+        );
+        assert!(matches!(dep("u = { url = \"x\" }"), Source::Url(UrlSource { sha256: None, subdir: None, .. })));
+        assert!(fails("[dependencies]\nu = { url = \"x\", sha256 = \"12\" }\n").msg.contains("64 hexadecimal"));
+        assert!(fails("[dependencies]\nu = { url = \"x\", path = \"p\" }\n").msg.contains("both"));
+        assert!(fails("[dependencies]\nu = { sha256 = \"12\", path = \"p\" }\n").msg.contains("needs `url`"));
     }
 
     #[test]

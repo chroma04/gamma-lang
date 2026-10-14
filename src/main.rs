@@ -6,6 +6,8 @@ use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod testing;
+
 const USAGE: &str = "\
 usage: gamma <command> [options] <file>
 
@@ -17,14 +19,21 @@ commands:
   build   compile a program to a native executable (via the system C compiler)
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
+  bench   run the `bench` declarations the same way and report the time per run
+          (compiled via C in Fast mode unless --backend=interp or --mode is given)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
+  doc     generate API documentation: gamma doc <module> [--format=markdown|html] [-o <path>] [--all] [--missing]
+          (run `gamma help doc` for the options)
   new     create a package in a new directory: gamma new <dir>
   init    create a package in an existing directory: gamma init [dir]
-  fetch   download the git dependencies of a package and write gamma.lock
+  fetch   download the git and archive dependencies of a package and write gamma.lock
   update  move git dependencies to newer revisions
-  add     add a dependency to gamma.toml: gamma add <name> (--path <dir> | --git <url> [--tag|--branch|--rev|--version <x>])
+  add     add a dependency to gamma.toml:
+          gamma add <name> (--path <dir> | --git <url> [--tag|--branch|--rev|--version <x>] | --url <url.tar.gz>)
   remove  remove a dependency from gamma.toml
+  cache   gamma cache dir | gamma cache clean [--older-than=<days>] [--all]
           (run `gamma help packages` for the options of the package commands)
+  repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
@@ -33,17 +42,30 @@ options:
   --diag-format=human|short   how to print diagnostics (default: human)
   --dump                      (parse) print the syntax tree
   --backend=interp|c          (run, test) use the interpreter (default) or compile via C
-  --filter=<text>             (test) run only the tests whose name or module path
+  --filter=<text>             (test, bench) run only the tests whose name or module path
                               contains <text>
+  --all                       (test, bench) also run those of the modules of the package
+                              that nothing imports (every directory with `.gm` files)
+  --show-output               (test, bench) also print the output of the tests that pass
+  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; the output is
+                              still in order)
+  --time                      (test, bench) print how long each test took and the total
+  --coverage[=<file>]         (test) count the lines of the package that the tests run, with
+                              the interpreter; print a table, and with <file> write LCOV
   --target=<triple>           (check, run --backend=c, test, build) compile for the machine
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
                               with CC set, CC (given --target if it is clang)
+  --quiet                     (repl) no banner and prompts, even on a terminal
   --offline                   (check, run, build, test) never use the network: git
                               dependencies must be locked and already fetched
   --locked                    (check, run, build, test) fail if gamma.lock is missing or
                               would change
   -o <file>                   (build) the executable to write (default: the input's name)
+  --profile=<name>            (check, run, build, test) use the `[profile.<name>]` table of
+                              gamma.toml over its `[build]` table (mode, debug-info, cflags,
+                              ldflags, c-sources, include-dirs, libs, lib-dirs); options on
+                              the command line win over both
   -g                          (build, and run and test via C) add debug information that maps
                               the executable to the Gamma source, for debuggers; a Debug build
                               is then compiled without optimization
@@ -57,8 +79,8 @@ environment:
   CC        the C compiler for native builds, with any arguments (default: cc, and
             for Safe builds Fil-C's filcc from PATH or /opt/fil/bin); a cross
             compiler (`zig cc -target aarch64-linux-musl`) makes it the target
-  CFLAGS    extra C compiler options
-  LDFLAGS   extra linker options
+  CFLAGS    extra C compiler options (after those of gamma.toml, so they win)
+  LDFLAGS   extra linker options (likewise)
   GAMMA_RUNNER
             a command that runs the executables of `run --backend=c` and `test`
             (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments
@@ -81,31 +103,73 @@ struct Options {
     debug_info: bool,
     /// `--filter=…`: run only the tests that match.
     filter: Option<String>,
+    /// `--all`: also the tests of modules that nothing imports.
+    all: bool,
+    /// `--show-output`: print the output of passing tests too.
+    show_output: bool,
+    /// `--jobs=n`: how many tests run at once.
+    jobs: usize,
+    /// `--time`: report how long tests take.
+    time: bool,
+    /// `--coverage[=file]`: count the lines the tests run; the LCOV file to write, if any.
+    coverage: Option<Option<PathBuf>>,
     /// `--target=…`: the target triple to compile for.
     target: Option<String>,
     /// `--offline`: do not use the network for dependencies.
     offline: bool,
     /// `--locked`: gamma.lock must be up to date.
     locked: bool,
+    /// `--quiet`: the REPL prints no banner or prompts.
+    quiet: bool,
+    /// `--profile=…`: the build profile of gamma.toml.
+    profile: Option<String>,
+    /// Whether `--mode` / `-g` were given (they win over gamma.toml).
+    mode_given: bool,
+    debug_info_given: bool,
+    /// `cflags` / `ldflags` of gamma.toml, before those of the environment.
+    manifest_cflags: Vec<String>,
+    manifest_ldflags: Vec<String>,
+}
+
+/// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
+fn parse_jobs(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(0) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!("`--jobs` needs a number, not `{}`", text)),
+    }
 }
 
 fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| "missing command".to_string())?;
+    let bench = command == "bench";
     let mut opts = Options {
         command,
         file: None,
         program_args: vec![],
         format: DiagFormat::Human,
         dump: false,
-        c_backend: false,
+        // Benchmarks are about speed: compiled, without checks, unless asked otherwise.
+        c_backend: bench,
         output: None,
-        mode: gamma::interp::Mode::Debug,
+        mode: if bench { gamma::interp::Mode::Fast } else { gamma::interp::Mode::Debug },
         debug_info: false,
         filter: None,
+        all: false,
+        show_output: false,
+        jobs: 1,
+        time: false,
+        coverage: None,
         target: None,
         offline: false,
         locked: false,
+        quiet: false,
+        profile: None,
+        mode_given: false,
+        debug_info_given: false,
+        manifest_cflags: vec![],
+        manifest_ldflags: vec![],
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -117,14 +181,42 @@ fn parse_args() -> Result<Options, String> {
             "--dump" => opts.dump = true,
             "--offline" => opts.offline = true,
             "--locked" => opts.locked = true,
+            "--quiet" => opts.quiet = true,
+            "--all" => opts.all = true,
+            "--show-output" => opts.show_output = true,
+            "--time" => opts.time = true,
+            "--coverage" => opts.coverage = Some(None),
+            a if a.starts_with("--coverage=") => {
+                opts.coverage = Some(Some(PathBuf::from(&a["--coverage=".len()..])));
+            }
+            "-j" | "--jobs" => {
+                let n = args.next().ok_or_else(|| format!("`{}` needs a number", arg))?;
+                opts.jobs = parse_jobs(&n)?;
+            }
+            a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
-            "-g" => opts.debug_info = true,
-            "--mode=debug" => opts.mode = gamma::interp::Mode::Debug,
-            "--mode=checked" => opts.mode = gamma::interp::Mode::Checked,
-            "--mode=safe" => opts.mode = gamma::interp::Mode::Safe,
-            "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
+            "-g" => {
+                opts.debug_info = true;
+                opts.debug_info_given = true;
+            }
+            "--mode=debug" | "--mode=checked" | "--mode=safe" | "--mode=fast" => {
+                opts.mode = match arg.as_str() {
+                    "--mode=debug" => gamma::interp::Mode::Debug,
+                    "--mode=checked" => gamma::interp::Mode::Checked,
+                    "--mode=safe" => gamma::interp::Mode::Safe,
+                    _ => gamma::interp::Mode::Fast,
+                };
+                opts.mode_given = true;
+            }
+            a if a.starts_with("--profile=") => {
+                let name = &a["--profile=".len()..];
+                if name.is_empty() {
+                    return Err("`--profile=` needs a profile name".to_string());
+                }
+                opts.profile = Some(name.to_string());
+            }
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
             a if a.starts_with("--target=") => {
@@ -174,14 +266,27 @@ fn main() -> ExitCode {
         .spawn(compiler_main)
         .expect("cannot start the compiler thread")
         .join()
-        .unwrap_or(ExitCode::from(101))
+        .unwrap_or_else(|_| {
+            eprintln!("{}", gamma::ice::take_report());
+            ExitCode::from(101)
+        })
 }
 
 fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
+    // The language server catches panics per request and keeps the default hook's log.
+    if std::env::args().nth(1).as_deref() != Some("lsp") {
+        gamma::ice::install();
+        if std::env::var_os("GAMMA_DEBUG_PANIC").is_some() {
+            panic!("requested by GAMMA_DEBUG_PANIC");
+        }
+    }
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
+    }
+    if std::env::args().nth(1).as_deref() == Some("doc") {
+        return gamma::doc::run(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if let Some(cmd) = std::env::args().nth(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
         return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
@@ -195,18 +300,25 @@ fn compiler_main() -> ExitCode {
             }
         };
     }
-    let opts = match parse_args() {
+    let mut opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {
             eprintln!("gamma: {}\n\n{}", e, USAGE);
             return ExitCode::from(2);
         }
     };
+    if let Err(e) = apply_build_settings(&mut opts) {
+        eprintln!("gamma: {}", e);
+        return ExitCode::FAILURE;
+    }
     match opts.command.as_str() {
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
             if opts.file.as_deref() == Some(std::path::Path::new("packages")) {
                 print!("\n{}", gamma::pkg::cli::USAGE);
+            }
+            if opts.file.as_deref() == Some(std::path::Path::new("doc")) {
+                print!("\n{}", gamma::doc::USAGE);
             }
             ExitCode::SUCCESS
         }
@@ -217,13 +329,46 @@ fn compiler_main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
         "run" => run(&opts),
-        "test" => test(&opts),
+        "test" => testing::run(&opts, testing::Kind::Test),
+        "bench" => testing::run(&opts, testing::Kind::Bench),
         "build" => build(&opts),
+        "repl" => gamma::repl::run(gamma::repl::Options {
+            quiet: opts.quiet,
+            mode: opts.mode,
+            format: opts.format,
+            preload: opts.file.clone().into_iter().collect(),
+        }),
         other => {
             eprintln!("gamma: unknown command `{}`\n\n{}", other, USAGE);
             ExitCode::from(2)
         }
     }
+}
+
+/// Applies the build settings of the package that holds the input (gamma.toml's `[build]`
+/// and the selected profile) under the command line: an option given there wins.
+fn apply_build_settings(opts: &mut Options) -> Result<(), String> {
+    if !matches!(opts.command.as_str(), "check" | "run" | "build" | "test" | "bench") {
+        return Ok(());
+    }
+    let Some(path) = opts.file.clone() else { return Ok(()) };
+    let Some(settings) = gamma::pkg::build::root_settings(&path, opts.profile.as_deref())? else { return Ok(()) };
+    if let (false, Some(m)) = (opts.mode_given, settings.mode) {
+        opts.mode = m;
+    }
+    if let (false, Some(d)) = (opts.debug_info_given, settings.debug_info) {
+        opts.debug_info = d;
+    }
+    opts.manifest_cflags = settings.cflags.unwrap_or_default();
+    opts.manifest_ldflags = settings.ldflags.unwrap_or_default();
+    Ok(())
+}
+
+/// `toolchain` with the flags of gamma.toml placed before those of the environment.
+fn with_manifest_flags(mut toolchain: Toolchain, opts: &Options) -> Toolchain {
+    toolchain.cflags.splice(0..0, opts.manifest_cflags.iter().cloned());
+    toolchain.ldflags.splice(0..0, opts.manifest_ldflags.iter().cloned());
+    toolchain
 }
 
 fn run_front_end(opts: &Options) -> ExitCode {
@@ -263,13 +408,13 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
         if opts.mode == gamma::interp::Mode::Safe {
             Err("`--target` cannot be combined with `--mode=safe`, which builds for the host with Fil-C".to_string())
         } else {
-            Toolchain::for_target(triple).and_then(|t| {
+            Toolchain::for_target(triple).map(|t| with_manifest_flags(t, opts)).and_then(|t| {
                 sess.target = t.target_for(triple)?;
                 Ok(t)
             })
         }
     } else if opts.mode == gamma::interp::Mode::Safe {
-        Toolchain::for_safe_build().and_then(|t| {
+        Toolchain::for_safe_build().map(|t| with_manifest_flags(t, opts)).and_then(|t| {
             let target = t.target()?;
             if !target.filc {
                 return Err(format!(
@@ -281,7 +426,7 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
             Ok(t)
         })
     } else {
-        Toolchain::from_env().and_then(|t| {
+        Toolchain::from_env().map(|t| with_manifest_flags(t, opts)).and_then(|t| {
             sess.target = t.target()?;
             Ok(t)
         })
@@ -295,19 +440,35 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
 }
 
 /// Fetches the git dependencies of the package that contains `input` (see `gamma::pkg`)
-/// and tells the session where they are. Reports the error and returns false on failure.
-fn prepare_packages(opts: &Options, sess: &mut Session, input: &std::path::Path) -> bool {
+/// and tells the session where they are. Returns the C sources and libraries that the
+/// packages add to a native build, or reports the error and returns `None`.
+fn prepare_packages(opts: &Options, sess: &mut Session, input: &std::path::Path) -> Option<gamma::cgen::Extras> {
     let pkg_opts = gamma::pkg::Options { offline: opts.offline, locked: opts.locked };
-    match gamma::pkg::prepare(input, &pkg_opts) {
-        Ok(res) => {
-            sess.packages = res.map(std::sync::Arc::new);
-            true
-        }
+    let extras = gamma::pkg::prepare(input, &pkg_opts).and_then(|res| {
+        sess.packages = res.map(std::sync::Arc::new);
+        gamma::pkg::build::collect(input, sess.packages.as_deref(), opts.profile.as_deref())
+    });
+    match extras {
+        Ok(e) => Some(e),
         Err(e) => {
             eprintln!("gamma: {}", e);
-            false
+            None
         }
     }
+}
+
+/// What a native build links besides the generated program: the packages' C sources,
+/// compiled (or found in the cache), and their libraries.
+fn native_link(
+    sess: &Session,
+    toolchain: &Result<Toolchain, String>,
+    extras: &gamma::cgen::Extras,
+) -> Result<gamma::cgen::Link, String> {
+    if extras.is_empty() {
+        return Ok(gamma::cgen::Link::default());
+    }
+    let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
+    gamma::cgen::link_inputs(extras, &c_options(sess), toolchain)
 }
 
 fn check(opts: &Options) -> ExitCode {
@@ -317,7 +478,7 @@ fn check(opts: &Options) -> ExitCode {
     };
     // Only the target matters to checking.
     let (mut sess, _) = new_session(opts);
-    if !prepare_packages(opts, &mut sess, path) {
+    if prepare_packages(opts, &mut sess, path).is_none() {
         return ExitCode::FAILURE;
     }
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
@@ -331,17 +492,27 @@ fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let (mut sess, toolchain) = new_session(opts);
-    if !prepare_packages(opts, &mut sess, path) {
-        return ExitCode::FAILURE;
-    }
+    let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
     let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
     // The interpreter calls C itself where it can (§19.2); it cannot run assembly, or foreign
-    // code it cannot find or describe to libffi, so such programs run natively.
-    if opts.c_backend || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
-        return run_native(&sess, &prog, &toolchain, path, opts);
+    // code it cannot find or describe to libffi, so such programs run natively. The C sources
+    // of the packages are loaded as a shared library, unless the program is not for the host
+    // (Safe builds, cross targets), which runs natively with them linked in.
+    let native =
+        opts.c_backend || (!extras.is_empty() && (opts.mode == gamma::interp::Mode::Safe || opts.target.is_some()));
+    if !native
+        && !extras.is_empty()
+        && let Ok(t) = &toolchain
+        && let Err(e) = gamma::cgen::load_for_interpreter(&extras, &c_options(&sess), t)
+    {
+        eprintln!("gamma: {}", e);
+        return ExitCode::FAILURE;
+    }
+    if native || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
+        return run_native(&sess, &prog, &toolchain, &extras, path, opts);
     }
     gamma::interp::set_owns_process(true);
     let mut args = vec![path.display().to_string()];
@@ -401,149 +572,17 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
     s
 }
 
-/// Counts and prints the results of tests, in the format shared by both back ends.
-#[derive(Default)]
-struct TestReport {
-    passed: usize,
-    failed: usize,
-    /// The number of tests `--filter` left out, if it was given.
-    filtered_out: Option<usize>,
-}
-
-impl TestReport {
-    /// Prints the line for test `t`; `failure` is the detail of a failing test
-    /// (its output and the reason), printed indented below the line.
-    fn record(&mut self, t: &gamma::tir::TestCase, failure: Option<String>) {
-        let name = match &t.module {
-            Some(m) => format!("\"{}\" in {}", t.name, m),
-            None => format!("\"{}\"", t.name),
-        };
-        match failure {
-            None => {
-                self.passed += 1;
-                println!("test {} ... ok", name);
-            }
-            Some(detail) => {
-                self.failed += 1;
-                println!("test {} ... FAILED", name);
-                for line in detail.lines() {
-                    println!("    {}", line);
-                }
-            }
-        }
-    }
-
-    fn finish(&self) -> ExitCode {
-        match self.filtered_out {
-            Some(n) => println!("{} passed, {} failed, {} filtered out", self.passed, self.failed, n),
-            None => println!("{} passed, {} failed", self.passed, self.failed),
-        }
-        if self.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
-    }
-}
-
-/// Whether test `t` is selected by `--filter`: its name or module path contains
-/// the filter text.
-fn test_selected(t: &gamma::tir::TestCase, filter: Option<&str>) -> bool {
-    filter.is_none_or(|f| t.name.contains(f) || t.module.as_deref().is_some_and(|m| m.contains(f)))
-}
-
-/// Runs each test of the root module, and of the modules of its package that it
-/// imports, with captured output (§3.8). A failing test's output and failure
-/// reason are printed after the summary line for it.
-fn test(opts: &Options) -> ExitCode {
-    let Some(path) = &opts.file else {
-        eprintln!("gamma: no input file\n\n{}", USAGE);
-        return ExitCode::from(2);
-    };
-    let (mut sess, toolchain) = new_session(opts);
-    if !prepare_packages(opts, &mut sess, path) {
-        return ExitCode::FAILURE;
-    }
-    let prog = gamma::sema::analyze_tests(&mut sess, path);
-    eprint!("{}", sess.render_diagnostics(opts.format));
-    let Some(prog) = prog else { return ExitCode::FAILURE };
-    // Tests of modules that call C or run assembly are compiled natively, so that C's output
-    // is captured with the test's.
-    let selected: Vec<usize> =
-        (0..prog.tests.len()).filter(|&i| test_selected(&prog.tests[i], opts.filter.as_deref())).collect();
-    let mut report = TestReport {
-        filtered_out: opts.filter.as_ref().map(|_| prog.tests.len() - selected.len()),
-        ..TestReport::default()
-    };
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
-    if opts.c_backend || prog.has_foreign() || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
-        return test_native(&sess, &prog, &toolchain, &selected, report);
-    }
-    for &i in &selected {
-        let t = &prog.tests[i];
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let outcome = gamma::interp::run_entry(&prog, &cfg, t.entry, &[], &mut out, &mut err);
-        let reason = match outcome {
-            gamma::interp::Outcome::Exit(0) => None,
-            gamma::interp::Outcome::Exit(_) => Some(String::new()),
-            gamma::interp::Outcome::Trap(trap) => Some(trap_report(&sess, &prog, &trap)),
-        };
-        let failure = reason.map(|reason| {
-            let mut detail = String::from_utf8_lossy(&out).into_owned();
-            detail.push_str(&String::from_utf8_lossy(&err));
-            detail.push_str(&reason);
-            detail
-        });
-        report.record(t, failure);
-    }
-    report.finish()
-}
-
-/// `gamma test --backend=c`: compiles the selected tests into one executable, which runs
-/// the test whose index it is given, and runs it once per selected test.
-fn test_native(
-    sess: &Session,
-    prog: &gamma::tir::Program,
-    toolchain: &Result<Toolchain, String>,
-    selected: &[usize],
-    mut report: TestReport,
-) -> ExitCode {
-    let entries: Vec<_> = selected.iter().map(|&i| prog.tests[i].entry).collect();
-    let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
-    let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
-    let exe = dir.join("tests");
-    let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| {
-        let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
-        gamma::cgen::compile(&out, toolchain, &exe).map(|_| ())
-    });
-    let code = match built {
-        Ok(()) => {
-            for (j, &i) in selected.iter().enumerate() {
-                let t = &prog.tests[i];
-                let mut cmd = runner_command(&exe, None);
-                cmd.arg(j.to_string()).stdin(std::process::Stdio::null());
-                let failure = match cmd.output() {
-                    Ok(o) if o.status.code() == Some(0) => None,
-                    Ok(o) => {
-                        let mut detail = String::from_utf8_lossy(&o.stdout).into_owned();
-                        detail.push_str(&native_stderr(&String::from_utf8_lossy(&o.stderr)));
-                        Some(detail)
-                    }
-                    Err(e) => Some(format!("cannot run {}: {}\n", exe.display(), e)),
-                };
-                report.record(t, failure);
-            }
-            report.finish()
-        }
-        Err(msg) => {
-            eprintln!("{}", msg);
-            ExitCode::FAILURE
-        }
-    };
-    let _ = std::fs::remove_dir_all(&dir);
-    code
+/// The file name of an executable called `stem`: it has the extension `.exe` when the
+/// toolchain builds for Windows (which cannot run a program without it).
+fn native_exe_name(stem: &str, toolchain: &Result<Toolchain, String>) -> String {
+    let windows = toolchain.as_ref().ok().and_then(|t| t.target().ok()).is_some_and(|t| t.os == "Windows");
+    if windows { format!("{stem}.exe") } else { stem.to_string() }
 }
 
 /// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if
 /// that is set (a malformed value ends the process), and with `arg0` as the program's
 /// name if given and no runner is in the way.
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(not(unix), allow(unused_variables, unused_mut))]
 fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std::process::Command {
     let runner = gamma::toolchain::runner_from_env().unwrap_or_else(|e| {
         eprintln!("gamma: {}", e);
@@ -600,12 +639,13 @@ fn compile_native(
     sess: &Session,
     prog: &gamma::tir::Program,
     toolchain: &Result<Toolchain, String>,
+    link: &gamma::cgen::Link,
     exe: &std::path::Path,
 ) -> Result<(), String> {
     let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
-    gamma::cgen::compile(&out, toolchain, exe).map(|_| ())
+    gamma::cgen::compile(&out, toolchain, link, exe).map(|_| ())
 }
 
 /// Creates a temporary directory for a native build, reporting a failure.
@@ -638,17 +678,25 @@ fn build(opts: &Options) -> ExitCode {
         eprintln!("gamma: {}", e);
         return ExitCode::FAILURE;
     }
-    if !prepare_packages(opts, &mut sess, path) {
-        return ExitCode::FAILURE;
-    }
+    let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    let exe = opts.output.clone().unwrap_or_else(|| {
-        let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
-        PathBuf::from(stem)
-    });
-    match compile_native(&sess, &prog, &toolchain, &exe) {
+    // An output name without an extension gets `.exe` on Windows, as the C compiler would
+    // add it there anyway.
+    let exe = match &opts.output {
+        Some(o) if o.extension().is_none() && o.file_name().is_some() => {
+            o.with_file_name(native_exe_name(&o.file_name().unwrap().to_string_lossy(), &toolchain))
+        }
+        Some(o) => o.clone(),
+        None => {
+            let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
+            PathBuf::from(native_exe_name(&stem, &toolchain))
+        }
+    };
+    let built =
+        native_link(&sess, &toolchain, &extras).and_then(|link| compile_native(&sess, &prog, &toolchain, &link, &exe));
+    match built {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -667,7 +715,12 @@ fn exit_status_code(status: std::process::ExitStatus) -> u8 {
         const SIGTRAP: i32 = 5;
         return if sig == SIGILL || sig == SIGTRAP { 134 } else { (128 + sig) as u8 };
     }
-    status.code().map_or(134, |c| c as u8)
+    // On Windows a crash is an NT status such as 0xC0000409 (a fast fail) or 0xC0000005.
+    match status.code() {
+        Some(c) if (c as u32) >= 0xC000_0000 => 134,
+        Some(c) => c as u8,
+        None => 134,
+    }
 }
 
 /// `gamma run --backend=c`: compiles to a temporary executable and runs it.
@@ -675,11 +728,19 @@ fn run_native(
     sess: &Session,
     prog: &gamma::tir::Program,
     toolchain: &Result<Toolchain, String>,
+    extras: &gamma::cgen::Extras,
     path: &std::path::Path,
     opts: &Options,
 ) -> ExitCode {
+    let link = match native_link(sess, toolchain, extras) {
+        Ok(l) => l,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::FAILURE;
+        }
+    };
     // The executable comes from the cache when the same program was built before.
-    let cached = match cached_native(sess, prog, toolchain) {
+    let cached = match cached_native(sess, prog, toolchain, &link) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -696,8 +757,8 @@ fn run_native(
     let (exe, result) = match (&cached, &dir) {
         (Some(exe), _) => (exe.clone(), Ok(())),
         (None, Some(dir)) => {
-            let exe = dir.join("prog");
-            let r = compile_native(sess, prog, toolchain, &exe);
+            let exe = dir.join(native_exe_name("prog", toolchain));
+            let r = compile_native(sess, prog, toolchain, &link, &exe);
             (exe, r)
         }
         (None, None) => unreachable!(),
@@ -733,11 +794,12 @@ fn cached_native(
     sess: &Session,
     prog: &gamma::tir::Program,
     toolchain: &Result<Toolchain, String>,
+    link: &gamma::cgen::Link,
 ) -> Result<Option<PathBuf>, String> {
     let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
-    gamma::cgen::cached_program(&out, toolchain)
+    gamma::cgen::cached_program(&out, toolchain, link)
 }
 
 /// `gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)`

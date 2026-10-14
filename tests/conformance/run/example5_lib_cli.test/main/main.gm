@@ -76,7 +76,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
                 continue
             }
             key := if fold_case { try fold(w, &owned) } else { w }
-            slot := try counts.get_or_put(key, 0)
+            slot := (try counts.entry(key, 0)).value
             slot^ += 1
         }
     }
