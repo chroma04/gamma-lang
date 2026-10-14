@@ -2,6 +2,8 @@
 // `&` of a temporary is allowed only as an argument for a ^const T parameter (§7.2).
 Pt :: struct { x, y: i32 }
 bump :: fn(p: ^Pt) { p.x += 1 }
+bump2 :: fn(a: i32, p: ^Pt) { p.x += a }
+keep :: fn(p: ^const Pt) { }
 mk :: fn() -> Pt => Pt(x: 1, y: 2)
 fill :: fn(xs: []i64) { xs[0] = 9 }
 main :: fn() {
@@ -9,4 +11,8 @@ main :: fn() {
     s := [_]i64(1)[..]          //~ ERROR only an array variable
     bump(&mk())                 //~ ERROR `&` needs a place
     q: ^const Pt = &mk()        //~ ERROR `&` needs a place
+    bump2(a: 1, p: &mk())       //~ ERROR `&` needs a place
+    bump2(p: &mk(), a: 1)       //~ ERROR `&` needs a place
+    keep(&mk())                 // allowed as an argument
+    t := (1, &mk())             //~ ERROR `&` needs a place
 }

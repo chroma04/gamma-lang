@@ -811,7 +811,7 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
 | `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
-| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type; calling it is undefined unless the parameters and results have the same representation |
+| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type with the same calling convention and number of parameters, whose parameters and result are each the same type as before or both pointers (to any pointee, including `rawptr`; `?` on both or neither); the effect sets may differ. Other signatures are a compile error. Calling the result is undefined if the pointee types make the callee misuse its arguments (so a `^fn(arg: ^T)` called as `^fn(arg: rawptr)` must be called with a `^T`) |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
@@ -835,7 +835,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
 
 ### 7.3 Operator summary
 
@@ -997,7 +997,7 @@ Argument binding rules are in §11.3.
 
 ### 7.13 Function and handler literals
 
-`fn(params) -> R \ {E} { body }`, `fn(params) -> R => expr`, and `handler Eff { clauses }` are expressions. Their restrictions are in §11.6 and §12.5.
+`fn(params) -> R \ {E} { body }`, `fn(params) -> R => expr`, and `handler Eff { clauses }` are expressions. Their restrictions are in §11.6 and §12.5. A function literal may omit `-> R` when its return type is known from context or can be inferred from its body (§11.1).
 
 ### 7.14 Expression statements
 
@@ -1059,7 +1059,7 @@ for_stmt = [ label ':' ] 'for' pattern { ',' pattern } 'in' expr block   // also
 
 ```
 for i in 0..n { … }                  // half-open; 0..=n is inclusive
-for x in xs { … }                    // xs: an array place or a slice
+for x in xs { … }                    // xs: an array place, a slice or a tuple of one element type
 for i, x in enumerate(xs) { … }      // tuple pattern without parentheses
 ```
 
@@ -1182,7 +1182,7 @@ A pattern is matched against a value of a known type, the **scrutinee type**.
 
 - Literal patterns are permitted for integer, `bool`, and `string` scrutinees (strings compare by content). Float literal patterns are not permitted.
 - Range patterns are permitted for integer scrutinees. Bounds must be constant, `lo <= hi` (for `..`, `lo < hi`).
-- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`. A single name for a payload of two or more elements binds the whole tuple: `.Rect(r)` binds `r: (w: f64, h: f64)`.
+- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`. When the payload is a tuple of any size other than one and the pattern has exactly one positional sub-pattern, that sub-pattern matches the whole payload: `.Rect(r)` binds `r: (w: f64, h: f64)`, and a nested tuple pattern such as `.Pair((x, 0))` and `.Rect(_)` work the same way. With as many sub-patterns as elements the elements are matched one by one, as above.
 - In a struct pattern, the struct's fields must be visible (§3.3).
 - A binding pattern binds an immutable name (a copy of the matched part).
 - **Bare names always bind.** A pattern consisting of a bare identifier is always a binding, never a comparison. To prevent the classic mistake of a binding silently capturing everything, a bare identifier pattern that names a visible constant value (a top-level or local `::` binding of a number, string, `bool` or enum — not a function, type, module or effect) is a compile error: compare with a guard (`x if x is PAGE => …`) or, for a constant of another module, with a qualified pattern (`limits.MAX => …`).
@@ -1310,6 +1310,7 @@ effect_set = '{' [ effect % ',' ] '}'
 
 - `a, b: i32` declares two parameters of one type.
 - `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` or `E!()` (falling off the end returns `()`, which for `E!()` is a success). With an `=>` body, the expression's value is returned.
+- A function literal without `-> R` and without an expected return type (from a parameter type or an annotation, §6.4) takes its return type from its body. With an `=>` body it is the type of the expression. With a block body it is the common type of the values of its `return` statements: the first `return e` gives the type and the others convert to it; a literal-only `return 0` takes the usual fallback (§6.1) unless another `return` constrains it; `return` without a value, or no `return` at all, means `()`. A block that can reach its end while some `return` has a value is the error of an ordinary block body above. This applies to nested functions `name :: fn …` (§11.8) as well, except that one which refers to itself must declare `-> R`, because its own type is not yet known inside its body. A literal with an expected function type or an explicit `-> R` is checked against that type and is not inferred.
 - The effect set lists every effect the function may perform that it does not handle itself (§12.3). Omitted means empty.
 - Parameter types may be omitted only in a literal whose expected type is a known function type (e.g. an argument to a parameter of function type); they are then taken from it. When the expected return type is a type parameter still to be inferred, an `=>` literal without `-> R` has the type of its body expression, which determines that parameter: `people.sort_by_key(fn(p) => (p.last, p.first))` infers the key type.
 
@@ -1389,7 +1390,7 @@ A named function passed for a second-class parameter behaves the same way as a l
 
 ### 11.7 Function pointers
 
-`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
+`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, an instantiation of a generic function (§16.7), or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
 
 Function pointers may be stored anywhere, compared with `is`, and passed to C when their signature is C-compatible and their effect set is empty or `{Sys}` (§19.2).
 
@@ -1624,6 +1625,7 @@ is defined as follows.
    - a range `lo..hi` or `lo..=hi` of an integer type, or a value of type `Range(T)` or `RangeIncl(T)` with an integer `T` (§5.16), meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
    - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order;
    - any other expression of array type, such as an array constructor or a call that returns an array (and has no `Yield` effect): the array is evaluated into a hidden variable that lives as long as the loop, which is then iterated as an array place.
+   - a tuple expression or value with at least one element, all of one type (after literal inference): `for x in (1, 2, 3)`. It means the same as iterating over the array of its elements, `[_]T(t.0, t.1, …)`, evaluated once before the loop. A tuple whose elements differ in type is a compile error. (Not to be confused with `x in (1, 2, 3)`, the membership test of §7.7.)
    Any other form is a compile error. `T` is the type of the yielded values.
 
 2. **Evaluation.** The callee and arguments `a1 … an` are evaluated first, left to right, **in the context outside the loop**. Then the call is made in a context where `Yield(T)` is handled by the loop's handler and every other effect is handled as outside the loop. Second-class arguments therefore keep their own (outer) context (§11.6).
@@ -2060,7 +2062,7 @@ Effects may have parameters (`Yield(T)`). An effect set may mention type paramet
 ### 16.7 Restrictions
 
 - `when` conditions may not depend on type parameters or compile-time value parameters of an enclosing generic function or type (that would make "checked once" impossible). Use separate functions.
-- A generic function does not convert to a function pointer, and there is no partial application of type arguments; write a non-generic wrapper (`max_i32 :: fn(xs: []const i32) -> ?i32 => max(xs)`).
+- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)`. An argument for a type parameter must be a type, which tells `f(u8)` from a call such as `id(x)`; a function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
 - Recursion between generic instantiations must terminate: an instantiation that (transitively) requires an instantiation with a strictly larger type argument is a compile error after an implementation-defined depth (at least 64).
 
 ### 16.8 Structural hashing
