@@ -17,6 +17,8 @@ main :: fn() \ {Out} {
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
+- [`CHANGELOG.md`](CHANGELOG.md) and [`docs/versioning.md`](docs/versioning.md) — what
+  changed in each release, and what stays stable between releases.
 
 ## Status
 
