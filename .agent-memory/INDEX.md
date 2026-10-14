@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-14) — PRs #1–#33 merged; s6–s10 = parallel Claude Projects threads
+## State (2026-10-14) — PRs #1–#34 merged; s6–s10 = parallel Claude Projects threads
+- s12 (PR #35, branch claude/elegant-gauss-hvjj2r): remaining P1/P2 to-do items — see
+  sessions/s12-2026-10-14-todo-p2.md for what is merged / running / planned.
 - s11 (PR #34, branch claude/inspiring-johnson-094ac5): the user's to-do P1 tooling items —
   package manager + gamma new/init, `gamma lsp`, editors/ (TextMate, tree-sitter, VS Code),
   release pipeline + install.sh, README refresh (decisions/023, sessions/s11). Remaining items
