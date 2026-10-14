@@ -49,8 +49,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
+pub use builtins::is_reserved_type_name;
 pub use decls::DeclValue;
 pub use ide::analyze_for_ide;
+pub use imports::std_root;
 pub use untyped::Untyped;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

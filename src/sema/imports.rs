@@ -24,7 +24,7 @@ pub struct Package {
 /// `lib/gamma/std` next to the directory of the running executable, as in an installed
 /// release (`<prefix>/bin/gamma`, `<prefix>/lib/gamma/std`); otherwise the `lib/std`
 /// directory of the source tree the compiler was built from.
-fn std_root() -> PathBuf {
+pub fn std_root() -> PathBuf {
     if let Some(p) = std::env::var_os("GAMMA_STD") {
         return PathBuf::from(p);
     }
@@ -173,16 +173,9 @@ impl<'s> Sema<'s> {
         if let Some(&m) = self.module_by_dir.get(&key) {
             return Some(m);
         }
-        let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
-            Ok(rd) => rd
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "gm"))
-                .collect(),
-            Err(_) => {
-                self.error(span, format!("cannot find the module directory {}", dir.display()));
-                return None;
-            }
+        let Some(mut paths) = self.sess.module_files(dir) else {
+            self.error(span, format!("cannot find the module directory {}", dir.display()));
+            return None;
         };
         paths.sort();
         if paths.is_empty() {

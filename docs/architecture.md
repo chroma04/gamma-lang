@@ -773,7 +773,10 @@ Users are pointed to `docs/lsp.md`; this section is about how it works.
 | `src/lsp/transport.rs` | JSON-RPC messages with `Content-Length` framing |
 | `src/lsp/position.rs` | byte offsets to and from LSP positions (UTF-16 units, or bytes when the client offers UTF-8) |
 | `src/lsp/analysis.rs` | one run of the compiler over a module, and its diagnostics as LSP diagnostics |
-| `src/lsp/features.rs` | hover, definition, references, completion, signature help and symbols, as JSON |
+| `src/lsp/features.rs` | hover, definition, completion, signature help and symbols, as JSON |
+| `src/lsp/refs.rs` | find references and rename across the modules of a package |
+| `src/lsp/workspace.rs` | the modules of a package, and a cache of what was learned from checking each |
+| `src/lsp/corelib.rs` | files for the embedded core library, so that definitions in it can be opened |
 | `src/lsp/server.rs` | open documents, when to analyze, and request dispatch |
 | `src/ide.rs` | the index that the requests are answered from |
 | `src/sema/ide/` | building the index from the checker's state |
@@ -835,8 +838,53 @@ passes, so ordinary compilation is unaffected.
   for a type (fields, then the functions of the type's module that take it as
   their first parameter) and for a module (its `pub` names).
 
-Doc comments come from `ast::Item::doc`. References into the core library have no
-file to open, so definition returns nothing for them, while hover still works.
+Doc comments come from `ast::Item::doc`. The embedded core library is compiled
+from text under the file names `<core>/name.gm`; `lsp/corelib.rs` maps such a name
+to `lib/core/name.gm` next to `lib/std` when that file has the embedded text, and
+otherwise to a read-only copy in the cache directory named after a hash of the
+text, so definition and hover work for it. `print` and the other builtin
+functions are not declared in any source, so they have no location.
+
+A declared name is found at a position through the references that point to it,
+and also through the outline, the local scopes and the hover table, so that a
+declaration that is not used in its own module (the usual case for the `pub`
+names of a library) can still be asked about.
+
+### Syntax errors
+
+The parser recovers at statements, match arms, fields and declarations, so a
+statement that does not parse becomes an error expression and the rest of the
+function is checked. What it cannot do is notice that a block is unclosed: a
+missing `}` or `)` makes every later declaration part of the open construct. In
+the editor path (`Session::recover_layout`, used by `analyze_for_ide` and by the
+index's own parse) a file whose lexing had errors is lexed again with
+`lexer::lex_recovering`, which closes all open brackets, reporting each as
+unclosed, wherever a line starts in the first column with `name ::`, `pub`,
+`handler`, `test "…"` or an attribute. Gamma code is formatted with declarations
+in the first column and nothing else is, and the second pass runs only if the
+text already has errors, so well-formed text, and ordinary compilation, are
+unaffected.
+
+### References and rename
+
+References across modules need the analyses of modules other than the open one.
+`lsp/workspace.rs` finds the module directories under the package root and the
+roots of its path dependencies, and `Workspace::facts` analyzes one, keeping a
+`ModuleFacts`: its references as (file path, offsets) pairs for uses in its own
+files, the text of its files, its local scopes, and for each declared name the
+names declared next to it (the top level of the module, or the fields or variants
+of one type). Nothing in it refers to the compiler's types, so it survives the
+release of an analysis's types. An entry is valid while a hash of the files that
+the analysis read (the list of `.gm` files of each directory and their contents,
+buffers instead of disk) is unchanged. Only directories whose files contain the
+name are analyzed. Locals and parameters are searched in the open module alone.
+
+Rename finds the declaration and its uses this way, then refuses if the target is in
+the core or standard library or outside the package root, if the new name is not
+an identifier, is a keyword or names a builtin type, if a sibling declaration or an
+overlapping local scope has the name, or if a local named so is visible at one of
+the uses. The edits are the exact name ranges, narrowed from the recorded span
+when it covers more than the name (as `a.name` may).
 
 ### Completion
 
@@ -849,17 +897,17 @@ the edit did not move.
 
 ### Limitations
 
-- References are found within the analyzed module only.
 - A name in a part of the file that is not taken by a top-level `when` is not
   resolved.
 - Tuple element names and the members of builtin types are not references; the
   builtin methods of numbers and slices are listed by name only.
 - Completion after `.` re-checks the module when the current text has no receiver
   for the dot, which is as slow as an edit.
-- Files that are not saved and do not exist on disk are not part of their
-  module's directory listing.
-- Modules with a syntax error in the middle of a function may be checked with
-  poor recovery; then only the syntax errors are reported until they are fixed.
+- The layout heuristic of syntax-error recovery assumes declarations start in the
+  first column and nothing else does; an unclosed bracket in a file that is not so
+  formatted still swallows the rest of its construct.
+- Rename does not check for a clash between the new name and a name in an
+  importing module's own scope beyond the locals at the uses.
 
 ## Safe builds (Fil-C)
 

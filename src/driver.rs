@@ -9,6 +9,41 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+/// The canonical form of `path`; for a file that does not exist (yet), its directory's
+/// canonical form joined with its name.
+pub fn canonical_path(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    match (path.parent().filter(|d| !d.as_os_str().is_empty()), path.file_name()) {
+        (Some(dir), Some(name)) => dir.canonicalize().map_or_else(|_| path.to_path_buf(), |d| d.join(name)),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The `.gm` files of module directory `dir`: those on disk plus the unsaved buffers
+/// (`overlays`, by canonical path) that stand in a file of that directory. `None` if the
+/// directory cannot be read and holds no buffer.
+pub fn module_files(dir: &Path, overlays: &HashMap<PathBuf, String>) -> Option<Vec<PathBuf>> {
+    let is_gm = |p: &Path| p.extension().is_some_and(|e| e == "gm");
+    let (mut paths, readable) = match std::fs::read_dir(dir) {
+        Ok(rd) => (rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_gm(p)).collect::<Vec<_>>(), true),
+        Err(_) => (vec![], false),
+    };
+    if !overlays.is_empty() {
+        let key = canonical_path(dir);
+        for buffer in overlays.keys() {
+            if buffer.parent() == Some(key.as_path())
+                && is_gm(buffer)
+                && !paths.iter().any(|p| canonical_path(p) == *buffer)
+            {
+                paths.push(dir.join(buffer.file_name().unwrap_or_default()));
+            }
+        }
+    }
+    (readable || !paths.is_empty()).then_some(paths)
+}
+
 /// State shared by all stages of one compilation.
 pub struct Session {
     pub sources: SourceMap,
@@ -25,6 +60,9 @@ pub struct Session {
     pub packages: Option<std::sync::Arc<crate::pkg::Resolution>>,
     /// Unsaved editor buffers by canonical path: `load` reads these instead of the disk.
     pub overlays: HashMap<PathBuf, String>,
+    /// Recover from unclosed brackets by layout when lexing (see
+    /// [`lexer::lex_recovering`]); for editor analysis.
+    pub recover_layout: bool,
 }
 
 impl Default for Session {
@@ -44,13 +82,20 @@ impl Session {
             target: crate::layout::Target::host(),
             packages: None,
             overlays: HashMap::new(),
+            recover_layout: false,
         }
+    }
+
+    /// The `.gm` files of module directory `dir`, counting the unsaved buffers (see
+    /// [`module_files`]).
+    pub fn module_files(&self, dir: &Path) -> Option<Vec<PathBuf>> {
+        module_files(dir, &self.overlays)
     }
 
     /// Loads a file, reporting a location-less error on failure.
     pub fn load(&mut self, path: &Path) -> Option<FileId> {
         if !self.overlays.is_empty() {
-            let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let key = canonical_path(path);
             if let Some(text) = self.overlays.get(&key) {
                 return Some(self.sources.add(path, text.clone()));
             }
@@ -66,7 +111,11 @@ impl Session {
 
     pub fn lex(&mut self, file: FileId) -> LexOutput {
         let src = self.sources.file(file).src.clone();
-        lexer::lex(file, &src, &mut self.diags)
+        if self.recover_layout {
+            lexer::lex_recovering(file, &src, &mut self.diags)
+        } else {
+            lexer::lex(file, &src, &mut self.diags)
+        }
     }
 
     pub fn parse(&mut self, file: FileId) -> File {

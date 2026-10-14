@@ -11,8 +11,9 @@ server is part of the `gamma` binary and needs no configuration.
 | --- | --- |
 | Diagnostics | Errors and warnings of the compiler, as you type. Secondary locations are attached as related information. |
 | Hover | The type of a name or expression. For a function: its signature with the effect set, for example `greet :: fn(n: i32) \ {Out}`. For a type: its declaration. The doc comment (`///`) follows. |
-| Go to definition | Locals and parameters, functions, types, constants, effects and their operations, struct fields, union variants, methods, module members (`util.double`) and imports. It works across files and into the standard library. |
-| Find references | Uses of a declaration within the module that is open. |
+| Go to definition | Locals and parameters, functions, types, constants, effects and their operations, struct fields, union variants, methods, module members (`util.double`) and imports. It works across files, into the standard library and into the core library (`List`, `list`, `HashMap`, …; see below). `print` and the other builtin functions are part of the language and have no source to open. |
+| Find references | Uses of a declaration in every module of the package (and of its path dependencies) that uses it, not only in the open module. |
+| Rename | Renames a local, parameter, field, variant, function, type, constant or import binding, and all its uses in every module of the package. `prepareRename` shows the name that will change. Renaming is refused, with a message, for names of the core or standard library and of dependencies outside the package, for a new name that is not an identifier or is a keyword or builtin type name, and when the new name is already taken in a scope the declaration or one of its uses is in. |
 | Completion | Locals in scope, the module's declarations, the core library, builtin types and keywords. After a `.`: fields and methods of a value, the `pub` names of a module, the variants of a union type, the operations of an effect. |
 | Signature help | The parameters of the function being called, with the current argument marked. |
 | Document symbols | The outline of a file: declarations, with fields, variants and operations nested in them. |
@@ -37,20 +38,43 @@ pins them, from the package store. The server never uses the network and never
 changes `gamma.lock`: after adding a dependency, run `gamma fetch` once, and the
 server picks it up on the next check.
 
+Find references and rename look beyond the open module. The modules to look at
+are all directories with `.gm` files under the package root (the nearest
+directory with a `gamma.toml`, or the directory of the open file if there is
+none) and under the roots of its path dependencies, minus hidden directories and
+`target`. Of these, only modules whose files mention the name are checked, and
+the result of each check is kept until a file it read (or the list of files of
+its directory) changes. A dependency does not know the packages that use it, so
+from inside a dependency only the dependency's own modules are searched.
+
+Declarations in the embedded core library are served from `lib/core/` next to the
+standard library when that directory exists with the same text as the compiler's
+copy; otherwise the text is written once to a read-only file under the cache
+directory (`$GAMMA_CACHE_DIR`, else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`)
+and the editor opens that.
+
+A `.gm` buffer that has not been saved is part of the module of its directory,
+and a buffer in a directory that does not exist yet is checked as a module of its
+own.
+
 Details are in the "Language server" section of `docs/architecture.md`.
 
 ## Limitations
 
-- Find references does not search other modules.
-- When a function has a syntax error in it, the compiler may not be able to check
-  the module. Then only the syntax errors are shown until they are fixed, and
-  hover and go to definition do not work.
-- Definitions inside the embedded core library (`print`, `List`, and so on) have
-  no file to open. Hover works for them.
+- After a syntax error the server keeps checking: the parser recovers at the next
+  statement, and an unclosed bracket is closed where a declaration starts in the
+  first column (`name ::`, `pub`, `test`, `handler` or an attribute). Names inside
+  a statement that does not parse have no information, and a syntax error in the
+  middle of a declaration header drops that declaration.
+- Rename relies on the references that the server can resolve. Names in parts of a
+  file that the compiler does not take (a branch of a top-level `when` that is not
+  selected) and the members of builtin types are not renamed. Rename stops with an
+  error if it finds a use that is not a plain name.
+- Rename and references in another module are computed from the files of the
+  package as they are on disk and in open buffers; modules in a dependency that
+  is not a path dependency are not searched.
 - Completion after a `.` checks the module again when the text so far has no
   receiver for it. That takes as long as a normal check.
-- A file that is not saved yet, and so is not in the directory, is not part of
-  its module.
 
 ## Setting up an editor
 

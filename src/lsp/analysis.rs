@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// The path as the compiler's overlays and file lookups spell it.
 pub fn canon(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    crate::driver::canonical_path(p)
 }
 
 /// A `file://` URI for `path`.
@@ -59,6 +59,8 @@ pub struct Analysis {
     pub files: HashMap<PathBuf, FileId>,
     /// Where diagnostics without a location go.
     pub primary: PathBuf,
+    /// Files made for the embedded core library, by source file.
+    core_files: std::cell::RefCell<HashMap<FileId, Option<PathBuf>>>,
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -135,7 +137,7 @@ impl Analysis {
             }
         };
         let files = sess.sources.files().map(|(id, f)| (canon(&f.path), id)).collect();
-        Analysis { sess, index, files, primary: primary.to_path_buf() }
+        Analysis { sess, index, files, primary: primary.to_path_buf(), core_files: Default::default() }
     }
 
     pub fn file_id(&self, path: &Path) -> Option<FileId> {
@@ -151,6 +153,20 @@ impl Analysis {
     pub fn real_path(&self, file: FileId) -> Option<PathBuf> {
         let p = &self.sess.sources.file(file).path;
         if p.to_string_lossy().starts_with('<') { None } else { Some(canon(p)) }
+    }
+
+    /// Where an editor can open the file: its path, or for the embedded core library a
+    /// file with its text (see [`super::corelib`]).
+    pub fn open_path(&self, file: FileId) -> Option<PathBuf> {
+        if let Some(p) = self.real_path(file) {
+            return Some(p);
+        }
+        let f = self.sess.sources.file(file);
+        let name = f.path.to_string_lossy();
+        if !super::corelib::is_core(&name) {
+            return None;
+        }
+        self.core_files.borrow_mut().entry(file).or_insert_with(|| super::corelib::path_for(&name, &f.src)).clone()
     }
 
     /// The LSP range of `span`; an empty span is widened to one character so that
