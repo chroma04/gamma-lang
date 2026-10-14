@@ -99,8 +99,9 @@ impl<'s> Sema<'s> {
                 Source::Path(p) => {
                     deps.insert(dep.name, root.join(p));
                 }
-                Source::Git(_) => {
-                    let msg = format!("dependency `{}` is a git dependency; run `gamma fetch`", dep.name);
+                Source::Git(_) | Source::Url(_) => {
+                    let kind = if matches!(dep.source, Source::Git(_)) { "git" } else { "url" };
+                    let msg = format!("dependency `{}` is a {} dependency; run `gamma fetch`", dep.name, kind);
                     self.error(Span::DUMMY, format!("{}:{}: {}", path.display(), dep.line, msg));
                 }
             }

@@ -1,11 +1,15 @@
-//! The package manager: manifests, git dependencies, the lockfile and project
-//! scaffolding. See `docs/guide/15-packages.md` for the user's view.
+//! The package manager: manifests, git and archive dependencies, the lockfile, build
+//! settings and project scaffolding. See `docs/guide/15-packages.md` for the user's view.
 //!
 //! The compiler asks [`prepare`] for a [`Resolution`] before it analyzes a program: the
 //! directory of every dependency of every package in the graph. Path dependencies need
-//! no resolution; git dependencies are fetched into the package store and locked in
+//! no resolution; git and archive (`url = …`) dependencies are fetched into the package
+//! store and locked in
 //! `gamma.lock`, next to the root package's manifest.
 
+pub mod archive;
+pub mod build;
+pub mod cache;
 pub mod cli;
 mod edit;
 pub mod git;
@@ -108,7 +112,7 @@ fn report_changes(old: Option<&Lock>, new: &Lock, refresh: &Refresh) {
     for p in pkgs {
         match old.and_then(|o| o.find(&p.url, p.subdir.as_deref())) {
             None => eprintln!("     Locking {} {}", p.name, p.display_version()),
-            Some(o) if o.rev != p.rev => {
+            Some(o) if o.rev != p.rev || o.archive != p.archive => {
                 if *refresh == Refresh::None {
                     eprintln!("     Locking {} {}", p.name, p.display_version());
                 } else {

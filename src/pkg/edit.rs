@@ -6,6 +6,7 @@ use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 pub enum NewDep {
     Path(String),
     Git { url: String, reference: Option<(&'static str, String)>, subdir: Option<String> },
+    Url { url: String, sha256: Option<String>, subdir: Option<String> },
 }
 
 fn parse(text: &str) -> Result<DocumentMut, String> {
@@ -24,6 +25,15 @@ pub fn add_dependency(text: &str, name: &str, dep: &NewDep) -> Result<String, St
     match dep {
         NewDep::Path(p) => {
             it.insert("path", Value::from(p.as_str()));
+        }
+        NewDep::Url { url, sha256, subdir } => {
+            it.insert("url", Value::from(url.as_str()));
+            if let Some(h) = sha256 {
+                it.insert("sha256", Value::from(h.as_str()));
+            }
+            if let Some(s) = subdir {
+                it.insert("subdir", Value::from(s.as_str()));
+            }
         }
         NewDep::Git { url, reference, subdir } => {
             it.insert("git", Value::from(url.as_str()));

@@ -9,6 +9,8 @@
 mod arith;
 mod borrow;
 mod constarg;
+mod csrc;
+pub use csrc::{CSource, Extras, Link, link_inputs, load_for_interpreter};
 pub mod debug;
 mod elementwise;
 mod expr;
@@ -861,7 +863,7 @@ const BASE_CFLAGS: [&str; 6] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-alia
 /// there in the debugger) and linked with a runtime object compiled once and cached (see
 /// [`rtcache`]); without a usable cache they fall back to one translation unit. Safe builds
 /// (Fil-C, which compiles slowly) are compiled at `-O2` but link the cached runtime too.
-pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Result<Build, String> {
+pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
     let opt = match (opts.debug, opts.debug_info) {
@@ -901,8 +903,9 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, exe: &Path) -> Resu
         .arg(exe)
         .arg(&c_file)
         .args(&runtime)
+        .args(&link.objects)
         .args(&toolchain.ldflags)
-        .args(generated.libs.iter().map(|l| format!("-l{}", l)))
+        .args(link.library_args(&generated.libs))
         .arg("-lm")
         .output()
         .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;

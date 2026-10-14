@@ -71,7 +71,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/layout.rs` | sizes, alignments and field offsets for a target |
 | `src/float.rs` | correctly rounded conversion of exact literals to IEEE formats |
 | `src/tir.rs` | the typed intermediate representation |
-| `src/pkg/` | the package manager: manifest, lockfile, git dependencies, `gamma new` (see below) |
+| `src/pkg/` | the package manager: manifest, build settings, lockfile, git and archive dependencies, the cache, `gamma new` (see below) |
 | `src/sema/` | semantic analysis (see below) |
 | `src/interp/` | the interpreter (see below) |
 | `src/cgen/` | the C back end (see below) |
@@ -88,10 +88,13 @@ cycle, reported with every declaration in it (spec §3.4).
 
 | File | Contents |
 | --- | --- |
-| `manifest.rs` | the one `gamma.toml` parser (`toml_edit`, so errors have lines); validation of dependency tables |
-| `lock.rs` | `gamma.lock`: deterministic rendering and parsing |
-| `git.rs` | the `git` command-line tool, the on-disk store (`<cache>/git/db`, `<cache>/git/checkouts`) and the SHA-256 checksum of a checkout |
-| `resolve.rs` | the resolver: version selection, lock reuse, checkouts, cycle and path-escape checks |
+| `manifest.rs` | the one `gamma.toml` parser (`toml_edit`, so errors have lines); validation of dependency tables and of `[build]` / `[profile.*]` (`BuildSettings`, `Manifest::build_settings`) |
+| `lock.rs` | `gamma.lock`: deterministic rendering and parsing (git entries and archive entries) |
+| `git.rs` | the `git` command-line tool, the on-disk store (`<cache>/git/db`, `<cache>/git/checkouts`, `<cache>/git/url`), the SHA-256 checksum of a tree (symbolic links included), making checkouts read-only and removing them, the `.used` stamps |
+| `archive.rs` | `url = …` dependencies: download with `curl`, unpack `.tar.gz` safely (`flate2` + `tar`), strip a single top-level directory |
+| `resolve.rs` | the resolver: version selection, lock reuse, checkouts and archives, cycle and path-escape checks |
+| `build.rs` | build settings: the root package's settings for a profile (read before a session starts) and the collection of C sources, include and library directories from the whole dependency graph |
+| `cache.rs` | `gamma cache clean`: garbage collection by last use |
 | `edit.rs` | format-preserving manifest edits for `gamma add` and `gamma remove` |
 | `scaffold.rs` | the files of `gamma new` and `gamma init` |
 | `cli.rs` | argument handling of the package commands, which `main.rs` dispatches before it parses compiler options |
@@ -105,8 +108,16 @@ Design points for contributors:
 
 - The lockfile fixes the commit; the checksum is a second line of defense and is checked only when a checkout is created. Hashing every use would read the whole tree on every build.
 - A request for the default branch yields to any other requirement on the same repository.
-- Symbolic links in a checkout are not part of the checksum (only regular files are).
-- Tests of the package manager (`tests/pkg.rs`) build local repositories and run the real binary with a private `GAMMA_CACHE_DIR`; they need `git` but no network.
+- Symbolic links are part of the checksum, with a record that no regular file can produce (its length field is `u64::MAX`); trees without links hash as before, so old lockfiles stay valid. A link that is absolute or climbs out of the tree is an error when the checksum is computed, i.e. before the checkout is used (a bad checkout is deleted).
+- Checkouts and unpacked archives are made read-only after verification (`git::make_read_only`); everything that deletes one goes through `git::remove_tree`, which restores permissions first. Last use is the mtime of a `<dir>.used` file beside the checkout, since the checkout cannot hold a stamp.
+- Archives are keyed by the SHA-256 of the file, so a URL whose content changes gets a new directory. The lock stores both that hash and the tree checksum; `sha256` in the manifest wins over the lock when they differ (the author changed it on purpose). `update` does nothing to an archive whose URL is unchanged.
+- Tests of the package manager (`tests/pkg.rs`) build local repositories and archives (`file://` URLs, through `curl`) and run the real binary with a private `GAMMA_CACHE_DIR`; they need `git` and `curl` but no network.
+
+### Build settings and C sources
+
+`main.rs` reads the root package's build settings (`pkg::build::root_settings`) right after parsing the command line, applies `mode` and `debug-info` under any explicit option, and puts the manifest's `cflags` and `ldflags` in front of the environment's in the `Toolchain`. After the dependencies are resolved, `pkg::build::collect` walks the graph (using the `Resolution` for git and archive packages) and returns `cgen::Extras`: the C files with their include directories, the libraries and the library directories.
+
+`cgen/csrc.rs` turns `Extras` into something a build uses. `link_inputs` compiles each C file to an object, named by the hash of the *preprocessed* file (`cc -E`, so headers count), the compiler, its version and the flags, in `<cache>/native`; the resulting `Link` is passed to `cgen::compile` (object files and `-L` / `-rpath` / `-l` arguments) and mixed into the key of `cached_program`. `load_for_interpreter` links the same objects into a shared library, which `interp::load_library` opens (`dlopen`, `RTLD_GLOBAL`); `Ffi::lookup` searches those handles after the libraries a `foreign` block names, and `interp::add_library_dirs` adds `lib-dirs` to the places `open_lib` looks. `main.rs` takes the native path instead for Safe builds and `--target`, which cannot load code into the interpreter.
 
 ## Front end
 

@@ -21,6 +21,27 @@ macro_rules! need_git {
     };
 }
 
+/// Deletes a tree whose directories may be read-only (fetched packages are).
+fn force_remove(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fn walk(p: &Path) {
+            let Ok(meta) = std::fs::symlink_metadata(p) else { return };
+            if meta.is_dir() {
+                let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755));
+                if let Ok(rd) = std::fs::read_dir(p) {
+                    for e in rd.flatten() {
+                        walk(&e.path());
+                    }
+                }
+            }
+        }
+        walk(path);
+    }
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// A fresh directory for the test `name`.
 struct World {
     root: PathBuf,
@@ -38,7 +59,7 @@ impl World {
 
     fn in_dir(base: PathBuf, name: &str) -> World {
         let root = base.join(name);
-        let _ = std::fs::remove_dir_all(&root);
+        force_remove(&root);
         std::fs::create_dir_all(&root).unwrap();
         World { root: root.canonicalize().unwrap() }
     }
@@ -908,4 +929,412 @@ fn the_language_server_sees_fetched_git_dependencies() {
     assert!(child.wait().unwrap().success());
     // The server leaves the lockfile alone.
     assert_eq!(w.read("app/gamma.lock"), lock);
+}
+
+// ---- the cache, read-only checkouts, symbolic links and archive dependencies ----
+
+fn curl_available() -> bool {
+    Command::new("curl").arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+macro_rules! need_curl {
+    () => {
+        if !curl_available() {
+            eprintln!("skipped: curl is not installed");
+            return;
+        }
+    };
+}
+
+/// The checkouts in the cache's `git` store.
+fn checkouts(w: &World) -> Vec<PathBuf> {
+    let mut v = vec![];
+    if let Ok(repos) = std::fs::read_dir(w.cache().join("git/checkouts")) {
+        for r in repos.flatten() {
+            for c in std::fs::read_dir(r.path()).unwrap().flatten() {
+                if c.path().is_dir() {
+                    v.push(c.path());
+                }
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+/// The unpacked archives in the cache's `url` store.
+fn archive_dirs(w: &World) -> Vec<PathBuf> {
+    let mut v = vec![];
+    if let Ok(repos) = std::fs::read_dir(w.cache().join("git/url")) {
+        for r in repos.flatten() {
+            if !r.path().is_dir() {
+                continue;
+            }
+            for c in std::fs::read_dir(r.path()).unwrap().flatten() {
+                if c.path().is_dir() {
+                    v.push(c.path());
+                }
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+fn age_stamp(dir: &Path, days: u64) {
+    let mut name = dir.file_name().unwrap().to_os_string();
+    name.push(".used");
+    let stamp = dir.with_file_name(name);
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86400);
+    std::fs::OpenOptions::new().create(true).append(true).open(stamp).unwrap().set_modified(t).unwrap();
+}
+
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: `geteuid` has no preconditions.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(unix)]
+fn mode(p: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+fn git_dep_app(w: &World) {
+    sum_app(w, &format!("http = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("http")), &["http"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn checkouts_are_read_only_and_removable() {
+    need_git!();
+    let w = World::new("readonly");
+    w.lib("http", 7, Some("v1.0.0"));
+    git_dep_app(&w);
+    w.gamma("app", &["fetch"]).success();
+    let cos = checkouts(&w);
+    assert_eq!(cos.len(), 1);
+    for p in [cos[0].clone(), cos[0].join("lib.gm"), cos[0].join("gamma.toml")] {
+        assert_eq!(mode(&p) & 0o222, 0, "{} is writable", p.display());
+    }
+    // Editing a dependency in place is refused (a superuser can write anywhere).
+    if !is_root() {
+        assert!(std::fs::write(cos[0].join("lib.gm"), "changed").is_err());
+        assert!(std::fs::File::create(cos[0].join("new.gm")).is_err());
+        assert!(std::fs::remove_file(cos[0].join("lib.gm")).is_err());
+    }
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "7\n");
+    // Deleting restores permissions first; the next build fetches and verifies again.
+    let out = w.gamma("app", &["cache", "clean", "--all"]).success();
+    assert!(out.stdout.contains("Removed 1 package checkout, 1 repository mirror"), "{}", out.stdout);
+    assert!(checkouts(&w).is_empty());
+    let out = w.gamma("app", &["run", "."]).success();
+    assert_eq!(out.stdout, "7\n");
+    assert!(out.stderr.contains("Fetching http"), "{}", out.stderr);
+    assert_eq!(checkouts(&w).len(), 1);
+    // A tampered checkout (changed by a superuser, say) is found when it is rebuilt from the lock.
+    let lock = w.read("app/gamma.lock");
+    w.gamma("app", &["cache", "clean", "--all"]).success();
+    let manifest = lib_manifest("http");
+    w.git("http", &["checkout", "-q", "-b", "other"]);
+    w.write("http/lib.gm", &lib_source(99));
+    w.write("http/gamma.toml", &manifest);
+    w.commit("http", "other", None);
+    // The lock still names the original revision, and the mirror has it.
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "7\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
+}
+
+#[test]
+fn cache_dir_and_clean() {
+    need_git!();
+    let w = World::new("cache_clean");
+    w.lib("http", 7, Some("v1.0.0"));
+    git_dep_app(&w);
+    w.gamma("app", &["fetch"]).success();
+    let out = w.gamma("app", &["cache", "dir"]).success();
+    assert_eq!(out.stdout.trim(), w.cache().display().to_string());
+    // Native builds, as `run --backend=c` and the runtime cache leave them.
+    w.write("cache/run/prog-0123456789abcdef", "binary");
+    w.write("cache/gm_rt-0123456789abcdef.o", "object");
+    w.write("cache/gm_rt-0123456789abcdef.c", "source");
+    w.write("cache/native/obj-0123.o", "object");
+    w.write("cache/unrelated.txt", "not ours");
+    let age = |p: &str, days: u64| {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86400);
+        std::fs::File::open(w.path(p)).unwrap().set_modified(t).unwrap();
+    };
+    age("cache/run/prog-0123456789abcdef", 40);
+    age("cache/gm_rt-0123456789abcdef.o", 40);
+
+    // Nothing is old enough for the default of 30 days: the checkout was just used.
+    let out = w.gamma("app", &["cache", "clean"]).success();
+    assert!(out.stdout.contains("Removed 0 ") || out.stdout.contains("2 cached builds"), "{}", out.stdout);
+    assert!(!w.path("cache/run/prog-0123456789abcdef").exists());
+    assert!(!w.path("cache/gm_rt-0123456789abcdef.o").exists() && !w.path("cache/gm_rt-0123456789abcdef.c").exists());
+    assert!(w.path("cache/native/obj-0123.o").exists());
+    assert_eq!(checkouts(&w).len(), 1);
+    assert!(w.path("cache/unrelated.txt").exists());
+    let out = w.gamma("app", &["cache", "clean"]).success();
+    assert!(out.stdout.starts_with("Nothing to remove"), "{}", out.stdout);
+
+    // Unused for 40 days: removed, with the mirror nothing needs any more.
+    age_stamp(&checkouts(&w)[0], 40);
+    let out = w.gamma("app", &["cache", "clean", "--dry-run"]).success();
+    assert!(out.stdout.contains("Would remove 1 package checkout, 1 repository mirror"), "{}", out.stdout);
+    assert_eq!(checkouts(&w).len(), 1);
+    // A build that uses it marks it used again.
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "7\n");
+    assert!(w.gamma("app", &["cache", "clean"]).success().stdout.starts_with("Nothing to remove"));
+    age_stamp(&checkouts(&w)[0], 40);
+    let out = w.gamma("app", &["cache", "clean"]).success();
+    assert!(out.stdout.contains("Removed 1 package checkout, 1 repository mirror, 0 cached builds"), "{}", out.stdout);
+    assert!(out.stdout.contains("freed"), "{}", out.stdout);
+    assert!(checkouts(&w).is_empty());
+    assert!(!w.path("cache/git/db").read_dir().is_ok_and(|mut d| d.next().is_some()));
+    let out = w.gamma("app", &["run", "."]).success();
+    assert_eq!(out.stdout, "7\n");
+    assert!(out.stderr.contains("Fetching http"), "{}", out.stderr);
+
+    // The age is a number of days; `--all` takes no age.
+    let out = w.gamma("app", &["cache", "clean", "--older-than=0"]).success();
+    assert!(out.stdout.contains("1 package checkout"), "{}", out.stdout);
+    assert!(!w.gamma("app", &["cache", "clean", "--older-than=soon"]).ok);
+    assert!(!w.gamma("app", &["cache", "clean", "--all", "--older-than=3"]).ok);
+    assert!(!w.gamma("app", &["cache", "tidy"]).ok);
+    assert!(!w.gamma("app", &["cache"]).ok);
+    w.gamma("app", &["run", "."]).success();
+    let out = w.gamma("app", &["cache", "clean", "--all"]).success();
+    assert!(out.stdout.contains("Removed 1 package checkout"), "{}", out.stdout);
+    assert!(w.path("cache/unrelated.txt").exists());
+    assert!(!w.path("cache/native").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn symbolic_links_are_checksummed_and_must_stay_inside() {
+    need_git!();
+    let w = World::new("symlinks");
+    let files = [("gamma.toml", lib_manifest("lnk")), ("lib.gm", lib_source(3))];
+    let files: Vec<(&str, &str)> = files.iter().map(|(a, b)| (*a, b.as_str())).collect();
+    w.repo("lnk", &files, None);
+    std::os::unix::fs::symlink("lib.gm", w.path("lnk/alias.txt")).unwrap();
+    std::fs::create_dir_all(w.path("lnk/sub/deep")).unwrap();
+    std::os::unix::fs::symlink("../../lib.gm", w.path("lnk/sub/deep/up.txt")).unwrap();
+    w.commit("lnk", "links", Some("v1.0.0"));
+    // The same tree with the links replaced by copies.
+    w.repo("cpy", &files, None);
+    w.write("cpy/alias.txt", &lib_source(3));
+    w.write("cpy/sub/deep/up.txt", &lib_source(3));
+    w.commit("cpy", "copies", Some("v1.0.0"));
+    let mut sums = vec![];
+    for name in ["lnk", "cpy"] {
+        sum_app(&w, &format!("{n} = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url(name), n = name), &[name]);
+        w.gamma("app", &["fetch"]).success();
+        assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "3\n");
+        sums.push(lock_field(&w.read("app/gamma.lock"), "lnk", "checksum").unwrap());
+    }
+    assert_ne!(sums[0], sums[1]);
+
+    // Links that leave the package are refused, and no checkout is left behind.
+    for (i, target) in ["../../../etc/passwd", "/etc/passwd"].iter().enumerate() {
+        let name = format!("esc{}", i);
+        w.repo(&name, &files, None);
+        std::os::unix::fs::symlink(target, w.path(&format!("{}/leak.txt", name))).unwrap();
+        w.commit(&name, "escape", Some("v1.0.0"));
+        let _ = std::fs::remove_file(w.path("app/gamma.lock"));
+        sum_app(&w, &format!("lnk = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url(&name)), &["lnk"]);
+        let before = checkouts(&w).len();
+        let out = w.gamma("app", &["fetch"]).failure();
+        assert!(out.stderr.contains("leak.txt") && out.stderr.contains("points outside the package"), "{}", out.stderr);
+        assert_eq!(checkouts(&w).len(), before);
+    }
+}
+
+/// Writes a gzip-compressed tar file with `files` and symbolic `links` (path, target).
+fn make_tgz(path: &Path, files: &[(&str, &str)], links: &[(&str, &str)]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut b = tar::Builder::new(Vec::new());
+    for (p, data) in files {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(data.len() as u64);
+        h.set_mode(0o644);
+        h.set_mtime(0);
+        h.set_cksum();
+        b.append_data(&mut h, p, data.as_bytes()).unwrap();
+    }
+    for (p, target) in links {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Symlink);
+        h.set_size(0);
+        h.set_mode(0o777);
+        h.set_mtime(0);
+        h.set_cksum();
+        b.append_link(&mut h, p, target).unwrap();
+    }
+    let data = b.into_inner().unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &data).unwrap();
+    std::fs::write(path, gz.finish().unwrap()).unwrap();
+}
+
+fn sha256_of(path: &Path) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(std::fs::read(path).unwrap()).iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn util_archive(w: &World, file: &str, n: i32) {
+    make_tgz(
+        &w.path(file),
+        &[("util-1.0.0/gamma.toml", &lib_manifest("util")), ("util-1.0.0/lib.gm", &lib_source(n))],
+        &[],
+    );
+}
+
+#[test]
+fn archive_dependencies_are_downloaded_locked_and_verified() {
+    need_curl!();
+    let w = World::new("archives");
+    util_archive(&w, "dist/util-1.0.0.tar.gz", 5);
+    let url = w.url("dist/util-1.0.0.tar.gz");
+    let hash = sha256_of(&w.path("dist/util-1.0.0.tar.gz"));
+    sum_app(&w, &format!("util = {{ url = \"{}\" }}\n", url), &["util"]);
+
+    let out = w.gamma("app", &["run", "."]).success();
+    assert_eq!(out.stdout, "5\n");
+    assert!(out.stderr.contains("Fetching util") && out.stderr.contains("Locking util archive"), "{}", out.stderr);
+    let lock = w.read("app/gamma.lock");
+    assert_eq!(lock_field(&lock, "util", "source").unwrap(), format!("url+{}", url));
+    assert_eq!(lock_field(&lock, "util", "archive").unwrap(), format!("sha256:{}", hash));
+    assert!(lock_field(&lock, "util", "checksum").unwrap().starts_with("sha256:"));
+    assert!(lock_field(&lock, "util", "rev").is_none());
+    // Nothing is downloaded again, and the lock can be enforced.
+    let out = w.gamma("app", &["run", "."]).success();
+    assert!(!out.stderr.contains("Fetching"), "{}", out.stderr);
+    w.gamma("app", &["run", "--offline", "--locked", "."]).success();
+    w.gamma("app", &["build", ".", "-o", "app.out"]).success();
+    assert_eq!(w.read("app/gamma.lock"), lock);
+    // The unpacked archive is in the store, read-only, without the top-level directory.
+    let dirs = archive_dirs(&w);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].join("lib.gm").is_file() && dirs[0].join("gamma.toml").is_file());
+    #[cfg(unix)]
+    assert_eq!(mode(&dirs[0]) & 0o222, 0);
+
+    // `update` downloads again only if the URL changed: a different file at the same URL is ignored.
+    util_archive(&w, "dist/util-1.0.0.tar.gz", 6);
+    let out = w.gamma("app", &["update"]).success();
+    assert!(!out.stderr.contains("Fetching"), "{}", out.stderr);
+    assert_eq!(w.read("app/gamma.lock"), lock);
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "5\n");
+    // With the cache gone, the locked hash catches the changed file...
+    force_remove(&w.cache());
+    let out = w.gamma("app", &["run", "."]).failure();
+    assert!(out.stderr.contains("SHA-256") && out.stderr.contains("gamma.lock says"), "{}", out.stderr);
+    assert!(w.gamma("app", &["run", "--offline", "."]).failure().stderr.contains("--offline"));
+    // ...and the original file is accepted again.
+    util_archive(&w, "dist/util-1.0.0.tar.gz", 5);
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "5\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
+
+    // A new URL is a new package version.
+    util_archive(&w, "dist/util-1.1.0.tar.gz", 6);
+    let url2 = w.url("dist/util-1.1.0.tar.gz");
+    let hash2 = sha256_of(&w.path("dist/util-1.1.0.tar.gz"));
+    sum_app(&w, &format!("util = {{ url = \"{}\" }}\n", url2), &["util"]);
+    let out = w.gamma("app", &["run", "."]).success();
+    assert_eq!(out.stdout, "6\n");
+    assert!(out.stderr.contains("Fetching util"), "{}", out.stderr);
+    assert_eq!(lock_field(&w.read("app/gamma.lock"), "util", "archive").unwrap(), format!("sha256:{}", hash2));
+
+    // A `sha256` in the manifest must match the file.
+    let bad = "0".repeat(64);
+    sum_app(&w, &format!("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url2, bad), &["util"]);
+    let out = w.gamma("app", &["run", "."]).failure();
+    assert!(out.stderr.contains("SHA-256") && out.stderr.contains("gamma.toml says"), "{}", out.stderr);
+    sum_app(&w, &format!("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url2, hash2.to_uppercase()), &["util"]);
+    let out = w.gamma("app", &["run", "."]).success();
+    assert_eq!(out.stdout, "6\n");
+    // A hash in the manifest also stops a first download of another file.
+    let _ = std::fs::remove_file(w.path("app/gamma.lock"));
+    force_remove(&w.cache());
+    sum_app(&w, &format!("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url, hash2), &["util"]);
+    assert!(w.gamma("app", &["run", "."]).failure().stderr.contains("gamma.toml says"));
+}
+
+#[test]
+fn archive_subdirectories_add_and_bad_archives() {
+    need_curl!();
+    let w = World::new("archives2");
+    make_tgz(
+        &w.path("dist/mono.tgz"),
+        &[
+            ("mono-2/README", "a monorepo"),
+            ("mono-2/pkgs/inner/gamma.toml", &lib_manifest("inner")),
+            ("mono-2/pkgs/inner/lib.gm", &lib_source(8)),
+        ],
+        &[],
+    );
+    let url = w.url("dist/mono.tgz");
+    let hash = sha256_of(&w.path("dist/mono.tgz"));
+    sum_app(&w, &format!("inner = {{ url = \"{}\", subdir = \"pkgs/inner\" }}\n", url), &["inner"]);
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "8\n");
+    let lock = w.read("app/gamma.lock");
+    assert_eq!(lock_field(&lock, "inner", "subdir").as_deref(), Some("pkgs/inner"));
+    // A subdirectory that is not there.
+    sum_app(&w, &format!("inner = {{ url = \"{}\", subdir = \"pkgs/nope\" }}\n", url), &["inner"]);
+    assert!(w.gamma("app", &["run", "."]).failure().stderr.contains("has no directory `pkgs/nope`"));
+
+    // `gamma add --url`.
+    w.write("app2/gamma.toml", "# my app\n[package]\nname = \"app2\"\n");
+    w.write(
+        "app2/main.gm",
+        "inner :: import \"inner\"\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", inner.value())\n}\n",
+    );
+    w.gamma("app2", &["add", "inner", "--url", &url, "--sha256", &hash, "--subdir", "pkgs/inner"]).success();
+    let manifest = w.read("app2/gamma.toml");
+    assert!(manifest.starts_with("# my app\n"), "{}", manifest);
+    assert!(
+        manifest.contains(&format!("inner = {{ url = \"{}\", sha256 = \"{}\", subdir = \"pkgs/inner\" }}", url, hash)),
+        "{}",
+        manifest
+    );
+    assert_eq!(w.gamma("app2", &["run", "."]).success().stdout, "8\n");
+    assert!(w.read("app2/gamma.lock").contains("archive = "));
+    // A failing add leaves the manifest as it was.
+    let before = w.read("app2/gamma.toml");
+    let out = w.gamma("app2", &["add", "other", "--url", &w.url("dist/missing.tgz")]).failure();
+    assert!(out.stderr.contains("cannot download"), "{}", out.stderr);
+    assert_eq!(w.read("app2/gamma.toml"), before);
+    assert!(!w.gamma("app2", &["add", "x", "--url", &url, "--git", &url]).ok);
+    assert!(!w.gamma("app2", &["add", "x", "--path", "../y", "--sha256", &hash]).ok);
+    w.gamma("app2", &["remove", "inner"]).success();
+    assert!(!w.path("app2/gamma.lock").exists());
+
+    // Archives that are not acceptable.
+    w.write("dist/plain.tgz", "this is not an archive");
+    sum_app(&w, &format!("bad = {{ url = \"{}\" }}\n", w.url("dist/plain.tgz")), &["bad"]);
+    assert!(w.gamma("app", &["fetch"]).failure().stderr.contains("gzip"));
+    make_tgz(
+        &w.path("dist/dots.tgz"),
+        &[("pkg/gamma.toml", &lib_manifest("bad"))],
+        &[("pkg/leak", "../../../etc/passwd")],
+    );
+    sum_app(&w, &format!("bad = {{ url = \"{}\" }}\n", w.url("dist/dots.tgz")), &["bad"]);
+    let out = w.gamma("app", &["fetch"]).failure();
+    assert!(out.stderr.contains("points outside the package"), "{}", out.stderr);
+    assert!(archive_dirs(&w).iter().all(|d| !d.join("leak").exists()));
+    // Manifest errors.
+    for (dep, msg) in [
+        ("x = { url = \"u\", sha256 = \"abc\" }", "64 hexadecimal digits"),
+        ("x = { url = \"u\", git = \"g\" }", "both `git` and `url`"),
+        ("x = { path = \"p\", sha256 = \"abc\" }", "needs `url`"),
+        ("x = { url = \"u\", tag = \"t\" }", "needs `git`"),
+        ("x = { url = \"\" }", "is empty"),
+    ] {
+        w.write("app/gamma.toml", &format!("[package]\nname = \"app\"\n[dependencies]\n{}\n", dep));
+        let out = w.gamma("app", &["check", "."]).failure();
+        assert!(out.stderr.contains("gamma.toml:4: ") && out.stderr.contains(msg), "{}\n{}", dep, out.stderr);
+    }
 }

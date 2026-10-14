@@ -1,5 +1,6 @@
 //! Dependency resolution: from a root manifest and an optional lockfile to the revision
-//! of every git package, their checkouts and the lockfile that records them.
+//! of every git package, the archive of every URL package, their checkouts and the
+//! lockfile that records them.
 //!
 //! The graph is walked from the root package. Each git package is identified by its
 //! repository URL (and subdirectory); every requirement on it is collected, and one
@@ -7,9 +8,10 @@
 //! dependencies then add a requirement it does not satisfy, makes the walk start over
 //! with the larger set of requirements. Requirements only grow, so the walk ends.
 
+use super::archive;
 use super::git::{self, Refs, Store};
 use super::lock::{Lock, LockedPackage};
-use super::manifest::{GitSpec, Manifest, Source, normalize_url};
+use super::manifest::{GitSpec, Manifest, Source, UrlSource, normalize_url};
 use super::{Options, Refresh, Resolution};
 use semver::Version;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -33,6 +35,17 @@ struct Choice {
     rev: String,
     version: Option<String>,
     reference: String,
+}
+
+/// A downloaded and unpacked archive package.
+#[derive(Debug, Clone)]
+struct ArchiveInfo {
+    /// The SHA-256 of the archive file, hexadecimal.
+    sha256: String,
+    /// The canonical directory it is unpacked in.
+    dir: PathBuf,
+    /// The checksum of the unpacked tree.
+    checksum: String,
 }
 
 /// The version a tag name stands for: `vX.Y.Z` or `X.Y.Z`.
@@ -168,8 +181,13 @@ pub(super) struct Resolver<'a> {
     constraints: BTreeMap<Key, Vec<Req>>,
     fetched: HashSet<String>,
     refs: HashMap<String, Refs>,
+    /// The archives obtained so far, by URL (kept across walks).
+    archives: HashMap<String, ArchiveInfo>,
+    /// The names of the dependencies that are archives.
+    url_deps: HashSet<String>,
     // State of one walk.
     chosen: BTreeMap<Key, Choice>,
+    used_archives: std::collections::BTreeSet<Key>,
     checkouts: HashMap<Key, PathBuf>,
     checksums: HashMap<Key, String>,
     pkg_names: HashMap<Key, String>,
@@ -191,7 +209,10 @@ impl<'a> Resolver<'a> {
             constraints: BTreeMap::new(),
             fetched: HashSet::new(),
             refs: HashMap::new(),
+            archives: HashMap::new(),
+            url_deps: HashSet::new(),
             chosen: BTreeMap::new(),
+            used_archives: Default::default(),
             checkouts: HashMap::new(),
             checksums: HashMap::new(),
             pkg_names: HashMap::new(),
@@ -209,6 +230,7 @@ impl<'a> Resolver<'a> {
         let manifest = read_manifest(&root)?;
         loop {
             self.chosen.clear();
+            self.used_archives.clear();
             self.checkouts.clear();
             self.pkg_names.clear();
             self.pkg_deps.clear();
@@ -224,7 +246,7 @@ impl<'a> Resolver<'a> {
                 break;
             }
         }
-        if self.chosen.is_empty() {
+        if self.chosen.is_empty() && self.used_archives.is_empty() {
             return Ok(None);
         }
         self.check_refresh_names()?;
@@ -236,6 +258,7 @@ impl<'a> Resolver<'a> {
         if let Refresh::Names(names) = self.refresh {
             for n in names {
                 let known = self.chosen.keys().any(|k| self.entry_name(k) == *n)
+                    || self.url_deps.contains(n)
                     || self.constraints.values().flatten().any(|r| r.dep == *n);
                 if !known {
                     return Err(format!("`{}` is not a git dependency of this package", n));
@@ -368,20 +391,112 @@ impl<'a> Resolver<'a> {
                 }
             }
             git::checkout(&db, &choice.rev, &dest)?;
-            let sum = git::tree_checksum(&dest)?;
+            let sum = git::tree_checksum(&dest).inspect_err(|_| {
+                let _ = git::remove_tree(&dest);
+            })?;
             if let Some(l) = self.old.as_ref().and_then(|o| o.find(&key.0, key.1.as_deref()))
                 && l.rev == choice.rev
                 && l.checksum != sum
             {
                 let (name, expected) = (l.name.clone(), l.checksum.clone());
-                let _ = std::fs::remove_dir_all(&dest);
+                let _ = git::remove_tree(&dest);
                 return Err(format!("checksum mismatch for package {} (expected {}, found {})", name, expected, sum));
             }
             self.checksums.insert(key.clone(), sum);
+            git::make_read_only(&dest);
         }
+        git::mark_used(&dest);
         let canon = dest.canonicalize().map_err(|e| format!("cannot read {}: {}", dest.display(), e))?;
         self.checkouts.insert(key.clone(), canon.clone());
         Ok(canon)
+    }
+
+    /// The unpacked archive of the dependency `dep` (downloaded if it is not in the store
+    /// yet), verified against the manifest's `sha256` and the lockfile.
+    fn ensure_archive(&mut self, dep: &str, u: &UrlSource) -> Result<ArchiveInfo, String> {
+        if let Some(info) = self.archives.get(&u.url) {
+            if let Some(h) = &u.sha256
+                && *h != info.sha256
+            {
+                return Err(sha_mismatch(dep, &u.url, &info.sha256, h, "gamma.toml"));
+            }
+            return Ok(info.clone());
+        }
+        let lock_key = format!("url+{}", u.url);
+        let locked = self.old.as_ref().and_then(|o| o.packages.iter().find(|p| p.url == lock_key)).cloned();
+        let locked_hash = locked.as_ref().and_then(|l| l.archive.as_ref()).map(|a| a.trim_start_matches("sha256:"));
+        // What the archive must hash to, and where that comes from.
+        let expected: Option<(String, &str)> = match (&u.sha256, locked_hash) {
+            (Some(h), _) => Some((h.clone(), "gamma.toml")),
+            (None, Some(h)) => Some((h.to_string(), "gamma.lock")),
+            (None, None) => None,
+        };
+        // The lock vouches for the tree only if it vouches for this archive.
+        let locked_sum = locked
+            .as_ref()
+            .filter(|l| expected.as_ref().is_some_and(|(h, _)| l.archive.as_deref() == Some(&format!("sha256:{}", h))))
+            .map(|l| l.checksum.clone());
+        if self.opts.locked && locked_sum.is_none() {
+            return Err(if self.old.is_none() {
+                "gamma.lock is missing, but --locked was given; run `gamma fetch` and commit gamma.lock".into()
+            } else {
+                format!(
+                    "gamma.lock does not satisfy dependency `{}` ({}), and --locked was given; run `gamma fetch` and commit gamma.lock",
+                    dep, u.url
+                )
+            });
+        }
+        let summarize = |hash: &str, dir: &Path, sum: Option<String>| -> Result<ArchiveInfo, String> {
+            let checksum = match sum {
+                Some(s) => s,
+                None => git::tree_checksum(dir)?,
+            };
+            let dir = dir.canonicalize().map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+            Ok(ArchiveInfo { sha256: hash.to_string(), dir, checksum })
+        };
+        if let Some((hash, _)) = &expected {
+            let dest = self.store.archive(&u.url, hash);
+            if dest.is_dir() {
+                git::mark_used(&dest);
+                let info = summarize(hash, &dest, locked_sum)?;
+                self.archives.insert(u.url.clone(), info.clone());
+                return Ok(info);
+            }
+        }
+        if self.opts.offline {
+            return Err(format!(
+                "the archive of `{}` ({}) is not in the cache, and --offline was given; run `gamma fetch`",
+                dep, u.url
+            ));
+        }
+        eprintln!("    Fetching {} ({})", dep, u.url);
+        let dl = archive::download(&u.url, &self.store.downloads())?;
+        if let Some((h, origin)) = &expected
+            && *h != dl.sha256
+        {
+            return Err(sha_mismatch(dep, &u.url, &dl.sha256, h, origin));
+        }
+        let dest = self.store.archive(&u.url, &dl.sha256);
+        if !dest.is_dir() {
+            archive::unpack(&dl.path, &dest).map_err(|e| format!("dependency `{}` ({}): {}", dep, u.url, e))?;
+            let sum = git::tree_checksum(&dest).map_err(|e| {
+                let _ = git::remove_tree(&dest);
+                format!("dependency `{}` ({}): {}", dep, u.url, e)
+            })?;
+            if let Some(l) = locked_sum.as_ref().filter(|l| **l != sum) {
+                let _ = git::remove_tree(&dest);
+                return Err(format!("checksum mismatch for package {} (expected {}, found {})", dep, l, sum));
+            }
+            git::make_read_only(&dest);
+            git::mark_used(&dest);
+            let info = summarize(&dl.sha256, &dest, Some(sum))?;
+            self.archives.insert(u.url.clone(), info.clone());
+            return Ok(info);
+        }
+        git::mark_used(&dest);
+        let info = summarize(&dl.sha256, &dest, locked_sum)?;
+        self.archives.insert(u.url.clone(), info.clone());
+        Ok(info)
     }
 
     /// Visits the package in `dir`; `owner` is the git package it belongs to, with the
@@ -474,6 +589,38 @@ impl<'a> Resolver<'a> {
                     }
                     self.walk(&pkg_dir, &m, &dep.name, Some(&(key, co)))?;
                 }
+                Source::Url(u) => {
+                    let info = self.ensure_archive(&dep.name, u)?;
+                    let key: Key = (format!("url+{}", u.url), u.subdir.clone());
+                    let co = info.dir.clone();
+                    let pkg_dir = match &u.subdir {
+                        Some(s) => co.join(s).canonicalize().ok().filter(|p| p.starts_with(&co)),
+                        None => Some(co.clone()),
+                    };
+                    let Some(pkg_dir) = pkg_dir else {
+                        return Err(format!(
+                            "dependency `{}`: {} has no directory `{}`",
+                            dep.name,
+                            u.url,
+                            u.subdir.clone().unwrap_or_default()
+                        ));
+                    };
+                    if !pkg_dir.join("gamma.toml").is_file() {
+                        return Err(format!(
+                            "dependency `{}`: {} has no gamma.toml in its package directory",
+                            dep.name, u.url
+                        ));
+                    }
+                    if let Some((parent, _)) = owner {
+                        self.pkg_deps.entry(parent.clone()).or_default().push(key.clone());
+                    }
+                    deps.insert(dep.name.clone(), pkg_dir.clone());
+                    let m = read_manifest(&pkg_dir)?;
+                    self.pkg_names.insert(key.clone(), m.name.clone().unwrap_or_else(|| dep.name.clone()));
+                    self.url_deps.insert(dep.name.clone());
+                    self.used_archives.insert(key.clone());
+                    self.walk(&pkg_dir, &m, &dep.name, Some(&(key, co)))?;
+                }
             }
         }
         self.stack.pop();
@@ -504,12 +651,35 @@ impl<'a> Resolver<'a> {
                 version: choice.version,
                 reference: choice.reference,
                 rev: choice.rev,
+                archive: None,
                 checksum,
+                dependencies,
+            });
+        }
+        for key in self.used_archives.clone() {
+            let info = &self.archives[key.0.strip_prefix("url+").unwrap_or(&key.0)];
+            let mut dependencies: Vec<String> =
+                self.pkg_deps.get(&key).into_iter().flatten().map(|k| self.entry_name(k)).collect();
+            dependencies.sort();
+            dependencies.dedup();
+            packages.push(LockedPackage {
+                name: self.entry_name(&key),
+                url: key.0.clone(),
+                subdir: key.1.clone(),
+                version: None,
+                reference: String::new(),
+                rev: String::new(),
+                archive: Some(format!("sha256:{}", info.sha256)),
+                checksum: info.checksum.clone(),
                 dependencies,
             });
         }
         Ok(Lock { packages })
     }
+}
+
+fn sha_mismatch(dep: &str, url: &str, found: &str, expected: &str, origin: &str) -> String {
+    format!("the archive of dependency `{}` ({}) has the SHA-256 {}, but {} says {}", dep, url, found, origin, expected)
 }
 
 #[cfg(test)]
