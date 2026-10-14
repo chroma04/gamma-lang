@@ -692,6 +692,49 @@ pub fn map_effects(set: &EffectSet, f: &mut impl FnMut(Ty) -> Option<Ty>) -> Eff
     EffectSet::new(effects).flatten()
 }
 
+/// How many types and ids exist; see [`release_since`].
+pub struct Mark {
+    kinds: usize,
+    adts: usize,
+    effects: usize,
+    params: usize,
+}
+
+/// Records the types and ids allocated so far.
+pub fn mark() -> Mark {
+    // The one id that is created once for the whole process must exist before the mark.
+    EffectId::splice();
+    let i = interner().read().unwrap();
+    Mark { kinds: i.len, adts: i.adt_names.len(), effects: i.effect_names.len(), params: i.param_names.len() }
+}
+
+/// Frees the types and ids allocated since `mark` (the interner never frees on its own).
+/// A process that checks programs over and over, like the language server, calls this
+/// after each program, so that its memory does not grow with every run.
+///
+/// # Safety
+///
+/// Nothing created after `mark` may be used afterwards: no `Ty`, `AdtId`, `EffectId` or
+/// `ParamId`, and no `&'static TyKind` obtained from [`Ty::kind`]. No other thread may be
+/// allocating types.
+pub unsafe fn release_since(mark: Mark) {
+    let mut i = interner().write().unwrap();
+    for idx in (mark.kinds..i.len).rev() {
+        let (chunk, off) = kind_slot(idx);
+        let base = KINDS[chunk].load(Ordering::Acquire);
+        // SAFETY: slots below `len` are published; the slot is cleared before the kind is freed.
+        let slot = unsafe { &*base.add(off) };
+        let kind = slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        i.map.remove(unsafe { &*kind });
+        drop(unsafe { Box::from_raw(kind) });
+    }
+    i.len = mark.kinds;
+    i.adt_names.truncate(mark.adts);
+    i.effect_names.truncate(mark.effects);
+    i.param_names.truncate(mark.params);
+    i.adt_templates.retain(|k, v| (k.0 as usize) < mark.adts && (v.0 as usize) < mark.adts);
+}
+
 impl AdtId {
     /// Allocates a new nominal type id with the given display name.
     pub fn fresh(name: Symbol) -> AdtId {

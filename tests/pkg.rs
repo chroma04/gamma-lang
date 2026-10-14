@@ -841,3 +841,71 @@ fn usage_of_the_package_commands() {
     assert!(out.stderr.contains("unknown option `--bogus`"), "{}", out.stderr);
     assert!(Path::new(GAMMA).exists());
 }
+
+/// Writes one framed JSON-RPC message.
+fn lsp_send(w: &mut impl std::io::Write, body: &str) {
+    write!(w, "Content-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
+    w.flush().unwrap();
+}
+
+/// Reads framed messages until one contains `needle`; returns it.
+fn lsp_until(r: &mut impl std::io::BufRead, needle: &str) -> String {
+    loop {
+        let mut len = 0;
+        loop {
+            let mut line = String::new();
+            assert!(r.read_line(&mut line).unwrap() > 0, "the server exited");
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(n) = line.strip_prefix("Content-Length: ") {
+                len = n.parse().unwrap();
+            }
+        }
+        let mut body = vec![0; len];
+        r.read_exact(&mut body).unwrap();
+        let body = String::from_utf8(body).unwrap();
+        if body.contains(needle) {
+            return body;
+        }
+    }
+}
+
+#[test]
+fn the_language_server_sees_fetched_git_dependencies() {
+    need_git!();
+    let w = World::new("lsp");
+    w.lib("http", 7, Some("v1.0.0"));
+    sum_app(&w, &format!("http = {{ git = \"{}\" }}\n", w.url("http")), &["http"]);
+    w.gamma("app", &["fetch"]).success();
+    let lock = w.read("app/gamma.lock");
+    let main = w.path("app/main.gm").canonicalize().unwrap();
+    let mut child = Command::new(GAMMA)
+        .arg("lsp")
+        .env("GAMMA_CACHE_DIR", w.cache())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    lsp_send(&mut stdin, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#);
+    lsp_until(&mut stdout, r#""id":1"#);
+    lsp_send(&mut stdin, r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    let text = std::fs::read_to_string(&main).unwrap();
+    let open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file://{}","languageId":"gamma","version":1,"text":{:?}}}}}}}"#,
+        main.display(),
+        text
+    );
+    lsp_send(&mut stdin, &open);
+    let diags = lsp_until(&mut stdout, "publishDiagnostics");
+    assert!(diags.contains(r#""diagnostics":[]"#), "{}", diags);
+    lsp_send(&mut stdin, r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#);
+    lsp_until(&mut stdout, r#""id":2"#);
+    lsp_send(&mut stdin, r#"{"jsonrpc":"2.0","method":"exit"}"#);
+    assert!(child.wait().unwrap().success());
+    // The server leaves the lockfile alone.
+    assert_eq!(w.read("app/gamma.lock"), lock);
+}

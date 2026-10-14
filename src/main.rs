@@ -25,6 +25,7 @@ commands:
   add     add a dependency to gamma.toml: gamma add <name> (--path <dir> | --git <url> [--tag|--branch|--rev|--version <x>])
   remove  remove a dependency from gamma.toml
           (run `gamma help packages` for the options of the package commands)
+  lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
 
@@ -184,6 +185,15 @@ fn compiler_main() -> ExitCode {
     }
     if let Some(cmd) = std::env::args().nth(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
         return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if std::env::args().nth(1).as_deref() == Some("lsp") {
+        return match gamma::lsp::run_stdio() {
+            Ok(code) => ExitCode::from(code),
+            Err(e) => {
+                eprintln!("gamma lsp: {}", e);
+                ExitCode::FAILURE
+            }
+        };
     }
     let opts = match parse_args() {
         Ok(o) => o,

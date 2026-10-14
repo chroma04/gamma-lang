@@ -85,11 +85,11 @@ impl<'s> Sema<'s> {
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
         if root.is_dir() {
             let m = self.load_dir_module(root, Span::DUMMY, None, None)?;
-            return (!self.sess.diags.has_errors()).then_some(m);
+            return (self.keep_going || !self.sess.diags.has_errors()).then_some(m);
         }
         let file = self.sess.load(root)?;
         let ast = self.sess.parse(file);
-        if self.sess.diags.has_errors() {
+        if self.sess.diags.has_errors() && !self.keep_going {
             return None;
         }
         let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();

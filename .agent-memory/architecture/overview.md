@@ -27,6 +27,12 @@ src/cgen/          C back end (decisions/008); rtcache.rs = cached runtime objec
                    views.rs = `-g` debugger views; gdb_printers.py embedded in .debug_gdb_scripts
                    borrow.rs = pure fns / params read in place (decisions/016)
                    constarg.rs = literal-only by_ref args in static gm_kN (PR #17)
+src/pkg/           package manager: manifest, lock, git store, resolver, add/remove edits,
+                   new/init scaffold, cli (decisions/023)
+src/lsp/           `gamma lsp` (transport, position, analysis, features, server); src/ide.rs
+                   index model; src/sema/ide/ builds it after checking (decisions/023)
+editors/           vscode extension + TextMate grammar; tree-sitter-gamma (CI job "editors")
+tools/             package-release.sh, install.sh (release.yml), gen_*.py table generators
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handler
                    structs gm_node/gm_unw, fibers + asm context switch); rt_test.c
 lib/core/prelude.gm  core declarations in Gamma (embedded via include_str!)
