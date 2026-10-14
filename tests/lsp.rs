@@ -17,10 +17,7 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("gamma-lsp-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         // The server compares canonical paths.
-        let canonical = dir.canonicalize().unwrap();
-        // On Windows, without the `\\?\` prefix the server's paths do not have either.
-        let plain = canonical.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map(PathBuf::from);
-        TempDir(plain.unwrap_or(canonical))
+        TempDir(gamma::source::canonicalize(&dir).unwrap())
     }
 
     fn write(&self, name: &str, text: &str) -> PathBuf {
@@ -40,6 +37,12 @@ impl Drop for TempDir {
 fn uri(p: &Path) -> String {
     let text = p.display().to_string();
     if cfg!(windows) { format!("file:///{}", text.replace('\\', "/")) } else { format!("file://{text}") }
+}
+
+/// The path of a `file:` URI, as [`uri`] writes them.
+fn uri_path(u: &str) -> PathBuf {
+    let rest = u.strip_prefix("file://").expect("a file URI");
+    if cfg!(windows) { PathBuf::from(rest.trim_start_matches('/')) } else { PathBuf::from(rest) }
 }
 
 struct Lsp {
@@ -679,8 +682,7 @@ fn locations(v: &Value, root: &Path) -> Vec<(String, u64, u64)> {
         .expect("an array of locations")
         .iter()
         .map(|l| {
-            let file =
-                l["uri"].as_str().unwrap().strip_prefix(&format!("file://{}/", root.display())).unwrap().to_string();
+            let file = l["uri"].as_str().unwrap().strip_prefix(&format!("{}/", uri(root))).unwrap().to_string();
             (file, l["range"]["start"]["line"].as_u64().unwrap(), l["range"]["start"]["character"].as_u64().unwrap())
         })
         .collect();
@@ -838,8 +840,7 @@ fn definition_in_the_core_library_points_into_the_source_tree() {
     let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
     let target = d["uri"].as_str().unwrap_or_default();
     assert!(target.ends_with("/lib/core/list.gm"), "{}", d);
-    let file = target.strip_prefix("file://").unwrap();
-    assert_eq!(std::fs::read_to_string(file).unwrap(), LIST_SRC);
+    assert_eq!(std::fs::read_to_string(uri_path(target)).unwrap(), LIST_SRC);
     let line = d["range"]["start"]["line"].as_u64().unwrap() as usize;
     assert!(LIST_SRC.lines().nth(line).unwrap().starts_with("pub list ::"), "{}", d);
     // Hover shows the documentation of the core declaration.
@@ -860,7 +861,7 @@ fn definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy() 
     lsp.initialize();
     lsp.open(&path, CORE_PROGRAM);
     let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
-    let target = PathBuf::from(d["uri"].as_str().unwrap().strip_prefix("file://").unwrap());
+    let target = uri_path(d["uri"].as_str().unwrap());
     assert!(target.starts_with(cache.join("core")), "{}", d);
     assert_eq!(target.file_name().unwrap(), "list.gm");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), LIST_SRC);
@@ -922,8 +923,8 @@ fn a_file_in_a_new_directory_is_analyzed() {
 fn apply_edit(edit: &Value, root: &Path) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     for (u, edits) in edit["changes"].as_object().expect("changes") {
-        let path = u.strip_prefix("file://").unwrap();
-        let text = std::fs::read_to_string(path).unwrap();
+        let path = uri_path(u);
+        let text = std::fs::read_to_string(&path).unwrap();
         let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
         let offset =
             |p: &Value| starts[p["line"].as_u64().unwrap() as usize] + p["character"].as_u64().unwrap() as usize;
@@ -940,7 +941,7 @@ fn apply_edit(edit: &Value, root: &Path) -> std::collections::BTreeMap<String, S
         for (lo, hi, t) in list.into_iter().rev() {
             new.replace_range(lo..hi, &t);
         }
-        out.insert(Path::new(path).strip_prefix(root).unwrap().display().to_string(), new);
+        out.insert(path.strip_prefix(root).unwrap().display().to_string().replace('\\', "/"), new);
     }
     out
 }

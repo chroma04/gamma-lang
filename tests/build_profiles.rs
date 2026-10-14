@@ -287,7 +287,7 @@ fn debug_info_comes_from_the_manifest() {
     if have("cc") {
         // With debug information the executable keeps the generated C file's line map.
         w.gamma("app", &["build", "main.gm", "-o", "out"]).success();
-        assert!(w.path("app/out").is_file());
+        assert!(w.path(if cfg!(windows) { "app/out.exe" } else { "app/out" }).is_file());
     }
 }
 

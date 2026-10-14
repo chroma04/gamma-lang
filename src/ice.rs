@@ -15,7 +15,8 @@ static LAST: Mutex<Option<String>> = Mutex::new(None);
 pub fn install() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        // With `/` on every system, as diagnostics name files.
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file().replace('\\', "/"), l.line(), l.column()));
         if let Ok(mut last) = LAST.lock() {
             *last = Some(describe(&message(info), location.as_deref()));
         }

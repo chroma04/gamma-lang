@@ -285,6 +285,9 @@ impl Ffi {
     }
 
     fn lookup(&mut self, lib: &str, name: &str) -> Option<usize> {
+        // Before any foreign function runs, its C library's streams are set up.
+        #[cfg(windows)]
+        windows_c_libs();
         let c = CString::new(name).ok()?;
         // On Windows, handlers go to the C library whose `exit` ends the process.
         if cfg!(windows) && name == "atexit" {
@@ -352,27 +355,47 @@ fn flush_c_streams() {
     // SAFETY: flushing all C streams takes no arguments but null.
     unsafe { libc::fflush(std::ptr::null_mut()) };
     #[cfg(windows)]
-    {
-        use std::sync::OnceLock;
-        static OTHERS: OnceLock<Vec<usize>> = OnceLock::new();
-        let others = OTHERS.get_or_init(|| {
-            ["ucrtbase.dll", "msvcrt.dll"]
-                .iter()
-                .filter_map(|m| {
-                    let m = CString::new(*m).ok()?;
-                    let f = CString::new("fflush").ok()?;
-                    // SAFETY: C strings; the module stays loaded for the life of the process.
-                    let p = unsafe { dl::sym(dl::open(m.as_ptr()), f.as_ptr()) };
-                    (!p.is_null()).then_some(p as usize)
-                })
-                .collect()
-        });
-        for &f in others {
-            // SAFETY: `fflush(NULL)` of a C library.
-            let f: extern "C" fn(*mut c_void) -> i32 = unsafe { std::mem::transmute(f) };
-            f(std::ptr::null_mut());
-        }
+    for &f in windows_c_libs() {
+        // SAFETY: `fflush(NULL)` of a C library.
+        let f: extern "C" fn(*mut c_void) -> i32 = unsafe { std::mem::transmute(f) };
+        f(std::ptr::null_mut());
     }
+}
+
+/// The `fflush` of each C library of the process. The first call also puts their standard
+/// streams in binary mode, as compiled programs have them: no `\r` before each newline.
+#[cfg(windows)]
+fn windows_c_libs() -> &'static [usize] {
+    use std::sync::OnceLock;
+    static LIBS: OnceLock<Vec<usize>> = OnceLock::new();
+    LIBS.get_or_init(|| {
+        let sym = |m: *mut c_void, name: &str| {
+            let n = CString::new(name).ok()?;
+            // SAFETY: a module handle and a C string.
+            let p = unsafe { dl::sym(m, n.as_ptr()) };
+            (!p.is_null()).then_some(p)
+        };
+        ["ucrtbase.dll", "msvcrt.dll"]
+            .iter()
+            .filter_map(|m| {
+                let m = CString::new(*m).ok()?;
+                // SAFETY: a C string; the module stays loaded for the life of the process.
+                let h = unsafe { dl::open(m.as_ptr()) };
+                if h.is_null() {
+                    return None;
+                }
+                if let Some(setmode) = sym(h, "_setmode") {
+                    // SAFETY: `_setmode(int fd, int mode)` of that C library.
+                    let setmode: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(setmode) };
+                    const O_BINARY: i32 = 0x8000;
+                    for fd in 0..3 {
+                        setmode(fd, O_BINARY);
+                    }
+                }
+                sym(h, "fflush").map(|p| p as usize)
+            })
+            .collect()
+    })
 }
 
 /// Dynamic loading: `dlopen`/`dlsym` where they exist, `LoadLibrary`/`GetProcAddress` on Windows.

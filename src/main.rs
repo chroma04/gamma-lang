@@ -682,10 +682,18 @@ fn build(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    let exe = opts.output.clone().unwrap_or_else(|| {
-        let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
-        PathBuf::from(native_exe_name(&stem, &toolchain))
-    });
+    // An output name without an extension gets `.exe` on Windows, as the C compiler would
+    // add it there anyway.
+    let exe = match &opts.output {
+        Some(o) if o.extension().is_none() && o.file_name().is_some() => {
+            o.with_file_name(native_exe_name(&o.file_name().unwrap().to_string_lossy(), &toolchain))
+        }
+        Some(o) => o.clone(),
+        None => {
+            let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
+            PathBuf::from(native_exe_name(&stem, &toolchain))
+        }
+    };
     let built =
         native_link(&sess, &toolchain, &extras).and_then(|link| compile_native(&sess, &prog, &toolchain, &link, &exe));
     match built {

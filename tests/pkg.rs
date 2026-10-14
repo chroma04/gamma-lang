@@ -798,7 +798,7 @@ fn new_creates_a_working_package() {
     run_ok(&w, "my-app", &["run", "."]);
     // The executable `build .` writes is ignored.
     run_ok(&w, "my-app", &["build", "."]);
-    assert!(w.path("my-app/main").exists());
+    assert!(w.path(if cfg!(windows) { "my-app/main.exe" } else { "my-app/main" }).exists());
     if git_available() {
         let status = w.git("my-app", &["status", "--porcelain", "--ignored"]);
         assert!(status.contains("!! main"), "{}", status);

@@ -218,7 +218,10 @@ struct Reported {
 fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
     let mut out = vec![];
     for line in stderr.lines() {
-        let located = files.iter().find_map(|f| line.strip_prefix(&format!("{}:", f.display())).map(|r| (f, r)));
+        // Diagnostics name files with `/` on every system.
+        let located = files.iter().find_map(|f| {
+            line.strip_prefix(&format!("{}:", f.display().to_string().replace('\\', "/"))).map(|r| (f, r))
+        });
         let Some((file, rest)) = located else {
             // Diagnostics without a location still count.
             for sev in ["error", "warning"] {

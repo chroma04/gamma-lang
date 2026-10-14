@@ -57,6 +57,10 @@ fn the_failing_compiler_stops_a_native_run() {
     assert!(!out.status.success());
 }
 
+// On Windows not every C function used here is exported under its POSIX name (UCRT's
+// `snprintf` is an inline function of its headers), so the program runs natively there,
+// which the failing compiler of these tests stops.
+#[cfg(unix)]
 #[test]
 fn callbacks_and_pointers_run_in_the_interpreter() {
     let src = r#"
@@ -144,6 +148,10 @@ main :: fn() \ {Out} {
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be called at compile time"));
 }
 
+// On Windows not every C function used here is exported under its POSIX name (UCRT's
+// `snprintf` is an inline function of its headers), so the program runs natively there,
+// which the failing compiler of these tests stops.
+#[cfg(unix)]
 #[test]
 fn host_memory_persistent_pointers_and_errno() {
     // Memory C allocates is read and written directly, a pointer C keeps between calls

@@ -46,6 +46,10 @@ static void gm_backtrace(void) {
     }
 }
 
+/* Set while a stack overflow is reported: the report then ends the process without the
+ * C library's exit processing, which needs stack the overflowed thread may not have. */
+static _Thread_local int gm_overflowing;
+
 GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
     gm_flush();
     fputs("trap: ", stderr);
@@ -59,6 +63,9 @@ GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *
     gm_backtrace();
     fflush(stderr);
     /* The status of a process terminated by `abort` (SIGABRT). */
+#ifdef _WIN32
+    if (gm_overflowing) TerminateProcess(GetCurrentProcess(), 134);
+#endif
     exit(134);
 }
 
@@ -3927,6 +3934,7 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
 static _Thread_local gm_fiber *gm_fiber_pool;
 
 GM_API _Noreturn void gm_stack_overflow(void) {
+    gm_overflowing = 1;
     const char *msg = gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow";
     /* In Debug builds, the call that overflowed is the last one the caller recorded. */
     gm_bt *b = gm_bt_top;
