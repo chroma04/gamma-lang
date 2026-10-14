@@ -1,0 +1,6 @@
+pub Box :: struct(T: type) {
+    pub tag: i32
+    secret: T
+}
+
+pub make :: fn(T: type, v: T) -> Box(T) => Box(T)(tag: 0, secret: v)

@@ -1,0 +1,16 @@
+//! stage: check
+// A private field used in a generic function is reported once per source location,
+// however many times the function is instantiated.
+cap_of :: fn(T: type, l: List(T)) -> usize {
+    return l.cap                             //~ ERROR the field `cap` of `List(
+}
+
+main :: fn() \ {Alloc} {
+    a := list(u8)
+    b := list(i32)
+    c := list(string)
+    _ = cap_of(a)
+    _ = cap_of(b)
+    _ = cap_of(c)
+    _ = cap_of(a)
+}

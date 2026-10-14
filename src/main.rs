@@ -182,12 +182,22 @@ fn main() -> ExitCode {
         .spawn(compiler_main)
         .expect("cannot start the compiler thread")
         .join()
-        .unwrap_or(ExitCode::from(101))
+        .unwrap_or_else(|_| {
+            eprintln!("{}", gamma::ice::take_report());
+            ExitCode::from(101)
+        })
 }
 
 fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
+    // The language server catches panics per request and keeps the default hook's log.
+    if std::env::args().nth(1).as_deref() != Some("lsp") {
+        gamma::ice::install();
+        if std::env::var_os("GAMMA_DEBUG_PANIC").is_some() {
+            panic!("requested by GAMMA_DEBUG_PANIC");
+        }
+    }
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
     }

@@ -14,6 +14,19 @@ Versions and what each kind of change means are described in
   `docs/std/` is generated with it.
 - `gamma repl`: an interactive read-eval-print loop on the interpreter.
 
+### Changed
+
+- Diagnostics: a keyword used as a name is one error with a hint; a `struct` declared in
+  a function body no longer causes follow-up errors; repeated identical diagnostics are
+  reported once; "unreachable code" says which construct ends the control flow; a failed
+  call no longer also reports its unused result.
+- A panic in the compiler prints a short "internal compiler error" report and exits with
+  status 101; the backtrace is printed only with `RUST_BACKTRACE` set.
+
+### Fixed
+
+- A local type alias can be passed as the type argument of a generic function.
+
 ## 0.1.0 (not yet tagged)
 
 The first release: the complete language of `gamma-spec.md`, implemented on two

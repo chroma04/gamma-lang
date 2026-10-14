@@ -8,6 +8,7 @@ pub mod doc;
 pub mod driver;
 pub mod float;
 pub mod fmt;
+pub mod ice;
 pub mod ide;
 pub mod interp;
 pub mod layout;

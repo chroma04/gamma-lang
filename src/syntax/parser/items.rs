@@ -27,7 +27,7 @@ impl Parser<'_> {
                 self.deny_pub(is_pub, pub_span, "an intrinsic call");
                 ItemKind::Intrinsic(self.parse_expr()?)
             }
-            TokenKind::Ident(_) | TokenKind::Underscore if self.binding_ahead() => {
+            TokenKind::Ident(_) | TokenKind::Underscore | TokenKind::Keyword(_) if self.binding_ahead() => {
                 ItemKind::Binding(self.parse_binding()?)
             }
             _ => return self.expected("a declaration"),
