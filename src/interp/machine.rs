@@ -1,6 +1,7 @@
 //! The interpreter state and the typed helpers shared by all evaluation code.
 
 use super::bytes::Bytes;
+use super::fxmap::FxMap;
 use super::memory::{AllocKind, MemError, Memory};
 use super::num::{self, Int};
 use super::value::*;
@@ -11,7 +12,7 @@ use crate::tir::*;
 use crate::types::*;
 use num_bigint::BigInt;
 use std::cell::{RefCell, UnsafeCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -134,13 +135,13 @@ pub struct Machine<'a> {
     pub next_frame: u64,
     pub stack_floor: usize,
     pub temps: Vec<u64>,
-    pub str_cache: HashMap<(usize, usize), u64>,
+    pub str_cache: FxMap<(usize, usize), u64>,
     pub str_keep: Vec<Rc<[u8]>>,
-    pub cstr_cache: HashMap<(usize, usize), u64>,
-    pub consts: HashMap<ConstId, ConstEntry>,
+    pub cstr_cache: FxMap<(usize, usize), u64>,
+    pub consts: FxMap<ConstId, ConstEntry>,
     pub consts_busy: HashSet<ConstId>,
     /// Storage of `#global`s, by global and thread (0 except for `#thread_local` ones).
-    pub globals: HashMap<(GlobalId, u64), u64>,
+    pub globals: FxMap<(GlobalId, u64), u64>,
     /// The running thread (0: the main thread).
     pub thread_id: u64,
     pub out: Option<&'a mut dyn Write>,
@@ -161,7 +162,7 @@ pub struct Machine<'a> {
     /// Emptied argument vectors, kept to reuse their buffers.
     pub arg_pool: Vec<Vec<Value>>,
     /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
-    pub alloc_tags: HashMap<u64, (u64, u64, AllocSite)>,
+    pub alloc_tags: FxMap<u64, (u64, u64, AllocSite)>,
     /// Open files and directories of the file-system services.
     pub sys: super::sys::SysState,
     /// The program's threads (§19.6).
@@ -170,8 +171,14 @@ pub struct Machine<'a> {
     pub ffi: super::ffi::Ffi,
     /// Compiled code by function, and buffers of finished activations to reuse.
     pub vm_code: Vec<super::vm::CodeSlot<'a>>,
-    pub vm_regs: Vec<Vec<u64>>,
-    pub vm_vals: Vec<Vec<Value>>,
+    #[allow(clippy::vec_box)] // activations are referred to by address while they run
+    pub vm_sts: Vec<Box<super::vm::St<'a>>>,
+    /// The compiled calls in progress on the running fiber or thread, innermost last.
+    #[allow(clippy::vec_box)]
+    pub vm_stack: Vec<Box<super::vm::St<'a>>>,
+    /// What the VM needs to run `new` and `destroy` directly, by function.
+    pub heap_info: Vec<super::vm::HeapSlot>,
+    pub heap_cx: super::vm::HeapCx,
 }
 
 pub const MAX_DEPTH: u32 = 200_000;
@@ -204,12 +211,12 @@ impl<'a> Machine<'a> {
             next_frame: 1,
             stack_floor,
             temps: Vec::new(),
-            str_cache: HashMap::new(),
+            str_cache: FxMap::default(),
             str_keep: Vec::new(),
-            cstr_cache: HashMap::new(),
-            consts: HashMap::new(),
+            cstr_cache: FxMap::default(),
+            consts: FxMap::default(),
             consts_busy: HashSet::new(),
-            globals: HashMap::new(),
+            globals: FxMap::default(),
             thread_id: 0,
             out: None,
             errw: None,
@@ -220,13 +227,15 @@ impl<'a> Machine<'a> {
             frame_costs: vec![u64::MAX; prog.fns.len()],
             frame_pool: Vec::new(),
             arg_pool: Vec::new(),
-            alloc_tags: HashMap::new(),
+            alloc_tags: FxMap::default(),
             sys: Default::default(),
             threads: Default::default(),
             ffi: Default::default(),
             vm_code: (0..prog.fns.len()).map(|_| Default::default()).collect(),
-            vm_regs: Vec::new(),
-            vm_vals: Vec::new(),
+            vm_sts: Vec::new(),
+            vm_stack: Vec::new(),
+            heap_info: vec![Default::default(); prog.fns.len()],
+            heap_cx: Default::default(),
             code_end,
         }
     }
@@ -892,11 +901,17 @@ impl<'a> Machine<'a> {
     }
 
     /// The stack bytes a call of `f` is charged on a fiber stack ([`crate::tir::frame_cost`]).
+    #[inline(always)]
     pub fn frame_cost(&mut self, f: FnId) -> u64 {
         let known = self.frame_costs[f.index()];
         if known != u64::MAX {
             return known;
         }
+        self.frame_cost_slow(f)
+    }
+
+    #[inline(never)]
+    fn frame_cost_slow(&mut self, f: FnId) -> u64 {
         let prog = self.prog;
         let c = crate::tir::frame_cost(&prog.fns[f.index()], &mut |t| self.size_of(t) as u64);
         self.frame_costs[f.index()] = c;

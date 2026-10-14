@@ -1,0 +1,26 @@
+// 200000 performs of a handled effect operation.
+Counter :: effect {
+    bump: fn(n: i64) -> i64
+}
+
+Acc :: struct { total: i64 }
+
+handler Counter for ^Acc {
+    bump(self, n) => {
+        n + 1
+    }
+}
+
+work :: fn(n: i64) -> i64 \ {Counter} {
+    s: i64 = 0
+    for i in 0..n {
+        s = bump(i)
+    }
+    return s
+}
+
+main :: fn() \ {Out} {
+    acc := Acc(total: 0)
+    r := with &acc { work(200000) }
+    print("{}\n", r)
+}

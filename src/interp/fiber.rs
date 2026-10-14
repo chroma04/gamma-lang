@@ -112,8 +112,10 @@ struct FiberRec {
 }
 
 /// The per-thread part of the machine, saved across a handoff.
-pub(super) struct ThreadState {
+pub(super) struct ThreadState<'a> {
     temps: Vec<u64>,
+    #[allow(clippy::vec_box)]
+    vm_stack: Vec<Box<super::vm::St<'a>>>,
     thread_id: u64,
     fiber_stack: u64,
     depth: u32,
@@ -126,9 +128,10 @@ fn aborted() -> Box<Flow> {
 }
 
 impl<'a> Machine<'a> {
-    pub(super) fn save_thread(&mut self) -> ThreadState {
+    pub(super) fn save_thread(&mut self) -> ThreadState<'a> {
         ThreadState {
             temps: std::mem::take(&mut self.temps),
+            vm_stack: std::mem::take(&mut self.vm_stack),
             thread_id: self.thread_id,
             fiber_stack: self.fiber_stack,
             depth: self.depth,
@@ -137,8 +140,9 @@ impl<'a> Machine<'a> {
         }
     }
 
-    pub(super) fn restore_thread(&mut self, s: ThreadState) {
+    pub(super) fn restore_thread(&mut self, s: ThreadState<'a>) {
         self.temps = s.temps;
+        self.vm_stack = s.vm_stack;
         self.thread_id = s.thread_id;
         self.fiber_stack = s.fiber_stack;
         self.depth = s.depth;

@@ -5,6 +5,7 @@
 use super::func::{FnCx, error_expr};
 use super::{ModuleId, ParamInfo, Sema};
 use crate::source::Span;
+use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Expr, FnId, HandlerId};
 use crate::types::{ConstKey, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
@@ -223,6 +224,22 @@ impl<'s> Sema<'s> {
         let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, kind);
         self.instances.insert((f, args.clone()), id);
         self.instance_of.insert(id, (f, args.clone()));
+        if Some(sig.module) == self.prelude
+            && let Some(which) = match name.as_str() {
+                "new" => Some(tir::HeapFn::New),
+                "destroy" => Some(tir::HeapFn::Destroy),
+                _ => None,
+            }
+        {
+            self.prog.heap_fns.insert(id, which);
+            if self.prog.heap_allocator.is_none()
+                && let Some(p) = self.prelude
+                && let Some(&d) = self.modules[p.0 as usize].scope.get(&Symbol::intern("heap_allocator"))
+                && let super::DeclValue::Fn(h) = self.resolve_decl(d)
+            {
+                self.prog.heap_allocator = Some(h);
+            }
+        }
         if !args.iter().any(|a| has_param(*a)) {
             let depth = self.mono_depth + 1;
             if depth > MAX_MONO_DEPTH {

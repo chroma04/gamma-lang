@@ -443,9 +443,21 @@ pub struct Program {
     /// The `ctl` operations (§14), by effect and operation index: performing one
     /// suspends the running fiber.
     pub ctl_ops: std::collections::HashSet<(EffectId, u32)>,
+    /// The instances of the core library's `new` and `destroy`, which the interpreter
+    /// may run directly while the default heap allocator is current.
+    pub heap_fns: HashMap<FnId, HeapFn>,
+    /// The core library's `heap_allocator`, once something instantiates `new` or `destroy`.
+    pub heap_allocator: Option<FnId>,
     /// The target the program was checked for: layouts and `target` constants
     /// depend on it, so back ends use the same one.
     pub target: crate::layout::Target,
+}
+
+/// Which of the allocating functions of the core library an instance is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeapFn {
+    New,
+    Destroy,
 }
 
 /// Ids of the predeclared ambient effects, when the program uses them.

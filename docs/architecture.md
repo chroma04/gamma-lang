@@ -404,6 +404,27 @@ registers directly; calls to and from tree-walked code go through `Value`s.
   mention live in the frame, where both engines see them. A function the
   compiler cannot handle at all runs on the tree-walker as a whole.
 
+Calls between compiled functions do not nest Rust calls: the dispatch loop makes the
+callee the running activation, with the caller, the place for the result and where to go
+on kept in the callee's `St` and the callee on `Machine::vm_stack` (saved and restored
+with the other per-fiber parts of the machine). A call, a `perform` of a compiled clause
+and a call through a function pointer or closure all start this way, and a `return`
+copies the result straight into the caller's registers. Activations are boxed, pooled and
+reused with their register buffers; compiled code is referred to by pointer, since it is
+never dropped or replaced. Flows that unwind through several calls are handled by the
+same loop, innermost first, with the same traces as before.
+
+*Allocation.* `new` and `destroy` of the core library perform `Alloc.current`, call the
+allocator through its vtable and (Debug builds) record or check the owner and site of the
+block. When the innermost `Alloc` handler is the declaration for `Allocator` installed with
+the value `heap_allocator()` returns, the VM (`vm/heap.rs`, `Op::CallHeap`) does all of it
+in one step with the same effects on memory and the same tags. It does so only if nothing
+in the library code could trap or be observed to differ: no step budget, no fiber stack
+accounting, no threads, depth and Rust stack far from their limits, the block valid for
+`destroy`; otherwise the instruction makes the ordinary call, so every trap report is
+unchanged. The tables the machine keeps by address or id use a plain multiplicative hash
+(`fxmap.rs`), and reads and writes of up to 64 bytes go from memory to registers directly.
+
 The dispatch loop is instantiated per byte order and per whether a step budget
 (compile-time evaluation) is being counted, so the common case pays for neither.
 An `Op` is at most 24 bytes (checked at compile time): operands that do not fit
