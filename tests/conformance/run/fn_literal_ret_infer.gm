@@ -1,0 +1,49 @@
+// A block-bodied literal without `-> R` or an expected type takes its return type
+// from its `return`s (§11.1).
+main :: fn() \ {Out} {
+    double := fn(x: i32) {
+        return x * 2
+    }
+    print("{}\n", double(21))
+
+    sign := fn(x: i32) {
+        if x < 0 { return "neg" }
+        if x is 0 { return "zero" }
+        return "pos"
+    }
+    print("{} {} {}\n", (sign(-1), sign(0), sign(5)))
+
+    // A literal-only return takes the usual fallback.
+    zero := fn() {
+        return 0
+    }
+    z := zero()
+    print("{}\n", z)
+
+    // A literal return unifies with a typed one.
+    pick := fn(b: bool, y: u8) {
+        if b { return 7 }
+        return y
+    }
+    print("{}\n", pick(true, 1) + pick(false, 2))
+
+    // No value: `()`.
+    nothing := fn(x: i32) {
+        if x > 0 { return }
+    }
+    nothing(1)
+    also := fn() {}
+    also()
+
+    // Nested named functions infer too.
+    square :: fn(x: i64) {
+        return x * x
+    }
+    print("{}\n", square(1 << 20))
+
+    // An expected type still decides.
+    f: ^fn(x: i32) -> i64 = fn(x: i32) {
+        return x
+    }
+    print("{}\n", f(5))
+}

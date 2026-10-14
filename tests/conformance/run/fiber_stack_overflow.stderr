@@ -1,0 +1,23 @@
+trap: stack overflow on a fiber stack
+  at tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  ... more calls
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:13:12 in deep
+  called from tests/conformance/run/fiber_stack_overflow.gm:19:23 in main

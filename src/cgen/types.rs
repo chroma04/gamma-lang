@@ -2,13 +2,16 @@
 //! runtime's formatter reads.
 //!
 //! Scalars (integers up to 128 bits, floats, `bool`, pointers) are native C
-//! types. Every other first-class type, including integers wider than 128 bits,
-//! is a *blob*: a struct holding its bytes
-//! with the size and alignment of the Gamma layout, so values have exactly the
-//! bytes the interpreter gives them. Fields are read and written with `memcpy`
-//! at the layout's offsets.
+//! types. Structs, tuples, arrays, optionals, results and tagged unions are *typed
+//! structs*: members of the field types at the Gamma offsets, with explicit padding
+//! members, so values have exactly the bytes the interpreter gives them and the C
+//! compiler can see the scalars inside. Every other first-class type (`#packed` and
+//! `#bits` structs, zero-size types, integers wider than 128 bits, and everything
+//! under Fil-C) is a *blob*: a struct holding its bytes with the size and alignment
+//! of the Gamma layout. Fields of either are read and written with `memcpy` at the
+//! layout's offsets.
 //!
-//! Blobs do not cross the C ABI the way C structs do (a struct of two floats is
+//! Neither crosses the C ABI the way C structs do (a struct of two floats is
 //! passed in floating-point registers, a blob of 8 bytes in an integer register), so
 //! a struct or `#c_union` whose fields are all C-compatible (§19.1) also gets a
 //! *mirror*: a C type with the same fields and layout. Functions with the plain C
@@ -30,6 +33,11 @@ pub struct Types<'a> {
     desc_fwd: String,
     desc_parts: String,
     desc_defs: String,
+    /// Typed C structs by Gamma type (`None`: the type is a blob), and by their member
+    /// list so that types of the same shape share one.
+    typed: HashMap<Ty, Option<String>>,
+    typed_by_shape: HashMap<String, String>,
+    typed_defs: String,
     /// Mirror C types by Gamma type (`None`: the type has none).
     mirrors: HashMap<Ty, Option<String>>,
     mirror_defs: String,
@@ -82,6 +90,9 @@ impl<'a> Types<'a> {
             desc_fwd: String::new(),
             desc_parts: String::new(),
             desc_defs: String::new(),
+            typed: HashMap::new(),
+            typed_by_shape: HashMap::new(),
+            typed_defs: String::new(),
             mirrors: HashMap::new(),
             mirror_defs: String::new(),
             debug_names: false,
@@ -144,11 +155,143 @@ impl<'a> Types<'a> {
             Repr::Closure => "gm_closure".into(),
             Repr::Handler => "gm_hval".into(),
             Repr::Blob => {
+                if let Some(n) = self.typed(t) {
+                    return n;
+                }
                 let (s, a) = (self.size(t), self.align(t).max(1));
                 self.blobs.insert((s, a));
                 blob_name(s, a)
             }
         }
+    }
+
+    /// The typed C struct holding values of `t`, if it has one: a struct, tuple or array
+    /// whose members are the fields (or elements) at their Gamma offsets, with explicit
+    /// padding members so that no byte is left to the C compiler. Packed and `#bits`
+    /// structs, unions, optionals, results, zero-size types, Fil-C and 32-bit targets
+    /// (where C and Gamma disagree on the alignment of 64-bit members) use blobs.
+    fn typed(&mut self, t: Ty) -> Option<String> {
+        if let Some(m) = self.typed.get(&t) {
+            return m.clone();
+        }
+        let m = self.make_typed(t);
+        self.typed.insert(t, m.clone());
+        m
+    }
+
+    fn make_typed(&mut self, t: Ty) -> Option<String> {
+        if self.lay.target.filc || self.lay.target.ptr_bytes != 8 || self.size(t) == 0 {
+            return None;
+        }
+        // The members: C type, size, alignment, explicit alignment and offset.
+        let mut items: Vec<(String, u64, u64, Option<u64>, u64)> = vec![];
+        match t.kind() {
+            TyKind::Array { len, elem } => {
+                if *len == 0 || self.size(*elem) == 0 {
+                    return None;
+                }
+                let ec = self.cty(*elem);
+                let members = format!("{} a[{}];", ec, len);
+                return Some(self.define_typed(t, members, vec![("a".into(), 0)], self.align(*elem)));
+            }
+            TyKind::Tuple { elems, .. } => {
+                let offs = self.offsets(t);
+                for (i, &ft) in elems.iter().enumerate() {
+                    items.push((self.cty(ft), self.size(ft), self.align(ft), None, offs[i]));
+                }
+            }
+            TyKind::Optional(inner) => {
+                let offs = self.offsets(t);
+                items.push((self.cty(*inner), self.size(*inner), self.align(*inner), None, offs[0]));
+                items.push(("uint8_t".into(), 1, 1, None, offs[1]));
+            }
+            TyKind::Result { err, ok } => {
+                let offs = self.offsets(t);
+                items.push(("uint8_t".into(), 1, 1, None, offs[0]));
+                let payload = self.payload_union(&[*err, *ok]);
+                items.extend(payload.map(|(c, s, a)| (c, s, a, None, offs[1])));
+            }
+            TyKind::Adt(id, _) => match &self.prog.adts.get(id)?.kind {
+                AdtKind::Struct { fields, packed: false, bits: None, .. } => {
+                    let offs = self.offsets(t);
+                    for (i, f) in fields.iter().enumerate() {
+                        items.push((self.cty(f.ty), self.size(f.ty), self.align(f.ty), f.align, offs[i]));
+                    }
+                }
+                AdtKind::Union { tag, variants } => {
+                    let offs = self.offsets(t);
+                    items.push((self.cty(*tag), self.size(*tag), self.align(*tag), None, offs[0]));
+                    let payloads: Vec<Ty> = variants.iter().filter_map(|v| v.payload).collect();
+                    if offs.len() > 1 {
+                        let payload = self.payload_union(&payloads);
+                        items.extend(payload.map(|(c, s, a)| (c, s, a, None, offs[1])));
+                    }
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let mut members = vec![];
+        let mut named = vec![];
+        let mut cursor = 0;
+        let mut natural = 1;
+        for (i, (ty, sz, al, explicit, off)) in items.into_iter().enumerate() {
+            if sz == 0 {
+                continue;
+            }
+            if off > cursor {
+                members.push(format!("uint8_t p{}[{}];", i, off - cursor));
+            }
+            natural = natural.max(explicit.map_or(al, |x| x.max(al)));
+            let alignas = explicit.map_or(String::new(), |a| format!("_Alignas({}) ", a));
+            members.push(format!("{}{} f{};", alignas, ty, i));
+            named.push((format!("f{}", i), off));
+            // A union member's size is rounded up to its alignment.
+            cursor = off + sz.div_ceil(al.max(1)) * al.max(1);
+        }
+        if self.size(t) > cursor {
+            members.push(format!("uint8_t pe[{}];", self.size(t) - cursor));
+        }
+        Some(self.define_typed(t, members.join(" "), named, natural))
+    }
+
+    /// The C type of the payload of a union or result whose variants hold values of
+    /// `tys` (zero-size ones need no storage), with its size and alignment.
+    fn payload_union(&mut self, tys: &[Ty]) -> Option<(String, u64, u64)> {
+        let mut members = vec![];
+        let (mut size, mut align) = (0, 1);
+        for (i, &t) in tys.iter().enumerate() {
+            if self.size(t) > 0 {
+                members.push(format!("{} v{};", self.cty(t), i));
+                size = size.max(self.size(t));
+                align = align.max(self.align(t));
+            }
+        }
+        if members.is_empty() {
+            return None;
+        }
+        Some((format!("union {{ {} }}", members.join(" ")), size, align))
+    }
+
+    /// Defines (or finds) the struct with `members` for `t`, whose named members sit at the
+    /// given offsets and whose members' own alignment is `natural`.
+    fn define_typed(&mut self, t: Ty, members: String, named: Vec<(String, u64)>, natural: u64) -> String {
+        let (size, align) = (self.size(t), self.align(t));
+        let attr = if align > natural { format!(" __attribute__((aligned({})))", align) } else { String::new() };
+        let shape = format!("{}{}", attr, members);
+        if let Some(n) = self.typed_by_shape.get(&shape) {
+            return n.clone();
+        }
+        let name = format!("gm_t{}", self.typed_by_shape.len());
+        let _ = writeln!(self.typed_defs, "typedef struct{} {{ {} }} {};", attr, members, name);
+        let _ =
+            write!(self.typed_defs, "_Static_assert(sizeof({n}) == {} && _Alignof({n}) == {}", size, align, n = name);
+        for (m, off) in named {
+            let _ = write!(self.typed_defs, " && offsetof({}, {}) == {}", name, m, off);
+        }
+        let _ = writeln!(self.typed_defs, ", \"layout of `{}`\");", t);
+        self.typed_by_shape.insert(shape, name.clone());
+        name
     }
 
     /// The mirror of `t`: a C type with its fields, for a C-compatible struct,
@@ -295,6 +438,7 @@ impl<'a> Types<'a> {
                 let _ = writeln!(out, "typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};", a, s, name);
             }
         }
+        out.push_str(&self.typed_defs);
         out
     }
 
