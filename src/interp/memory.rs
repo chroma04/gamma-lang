@@ -144,6 +144,9 @@ pub struct Memory {
     cache: Box<[Cell<u32>; CACHE]>,
     /// Contents of static allocations referenced by [`AllocKind::Static`].
     pub statics: Vec<std::rc::Rc<[u8]>>,
+    /// Whether addresses above every interpreter allocation are host memory (returned by
+    /// or shared with foreign code) that may be accessed directly.
+    pub host_access: bool,
 }
 
 impl Memory {
@@ -157,7 +160,18 @@ impl Memory {
             last: Cell::new(0),
             cache: Box::new(std::array::from_fn(|_| Cell::new(0))),
             statics: Vec::new(),
+            host_access: false,
         }
+    }
+
+    /// Whether `len` bytes at `addr` are host memory the program may access directly: foreign
+    /// code is in use and `addr` lies above every address the interpreter handed out.
+    #[cold]
+    fn host_range(&self, addr: u64, len: u64, err: &MemError) -> bool {
+        self.host_access
+            && matches!(err, MemError::Unmapped { .. })
+            && addr >= self.next
+            && addr.checked_add(len).is_some_and(|e| e <= usize::MAX as u64)
     }
 
     pub fn alloc(&mut self, size: u64, align: u64, kind: AllocKind, mutable: bool) -> Result<u64, MemError> {
@@ -305,7 +319,15 @@ impl Memory {
         if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
-        let i = self.check(addr, len)?;
+        let i = match self.check(addr, len) {
+            Ok(i) => i,
+            Err(e) if self.host_range(addr, len, &e) => {
+                // SAFETY: foreign code handed out this address; as in C, the program is
+                // responsible for it pointing to `len` readable bytes.
+                return Ok(unsafe { std::slice::from_raw_parts(addr as usize as *const u8, len as usize) });
+            }
+            Err(e) => return Err(e),
+        };
         let a = &self.allocs[i];
         let off = (addr - a.base) as usize;
         Ok(&a.data()[off..off + len as usize])
@@ -330,7 +352,17 @@ impl Memory {
         if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
-        let i = self.check(addr, size as u64)?;
+        let i = match self.check(addr, size as u64) {
+            Ok(i) => i,
+            Err(e) if self.host_range(addr, size as u64, &e) => {
+                // SAFETY: as in `read`.
+                let s = unsafe { std::slice::from_raw_parts(addr as usize as *const u8, size) };
+                let mut b = [0u8; 8];
+                b[..size].copy_from_slice(s);
+                return Ok(u64::from_le_bytes(b));
+            }
+            Err(e) => return Err(e),
+        };
         let a = &self.allocs[i];
         let off = (addr - a.base) as usize;
         let s = &a.data()[off..off + size];
@@ -355,7 +387,16 @@ impl Memory {
         if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
-        let i = self.check(addr, size as u64)?;
+        let i = match self.check(addr, size as u64) {
+            Ok(i) => i,
+            Err(e) if self.host_range(addr, size as u64, &e) => {
+                // SAFETY: as in `read`; the bytes are writable for the same reason.
+                let d = unsafe { std::slice::from_raw_parts_mut(addr as usize as *mut u8, size) };
+                d.copy_from_slice(&w.to_le_bytes()[..size]);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         let a = &mut self.allocs[i];
         if !a.mutable {
             return Err(MemError::ReadOnly { addr, kind: a.kind });
@@ -379,7 +420,16 @@ impl Memory {
         if !Self::aligned(addr, align) {
             return Err(MemError::Misaligned { addr, align });
         }
-        let i = self.check(addr, data.len() as u64)?;
+        let i = match self.check(addr, data.len() as u64) {
+            Ok(i) => i,
+            Err(e) if self.host_range(addr, data.len() as u64, &e) => {
+                // SAFETY: as in `write_word`.
+                let d = unsafe { std::slice::from_raw_parts_mut(addr as usize as *mut u8, data.len()) };
+                d.copy_from_slice(data);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         let a = &mut self.allocs[i];
         if !a.mutable {
             return Err(MemError::ReadOnly { addr, kind: a.kind });

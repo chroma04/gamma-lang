@@ -127,7 +127,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             PatternKind::Lit(e) => self.literal_pattern(e, ty, p.span),
             PatternKind::Range { lo, hi, inclusive } => {
-                if !ty.is_integer() {
+                if !self.integer_pattern_ty(ty) {
                     self.error(p.span, format!("range patterns match integers, but this is `{}`", ty));
                     return pat(ty, PatKind::Wild, p.span);
                 }
@@ -215,7 +215,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 pat(ty, PatKind::Wild, span)
             }
             _ => {
-                if !ty.is_integer() {
+                if !self.integer_pattern_ty(ty) {
                     self.error(span, format!("an integer pattern needs an integer, but this is `{}`", ty));
                     return pat(ty, PatKind::Wild, span);
                 }
@@ -248,11 +248,20 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             },
         };
-        if !super::finalize::int_fits(&v, ty, &self.sema.target) {
+        // A literal's type is checked once it is known (when patterns are finalized).
+        if !ty.is_infer() && !super::finalize::int_fits(&v, ty, &self.sema.target) {
             self.error(e.span, format!("{} does not fit in `{}`", v, ty));
             return None;
         }
         Some(v)
+    }
+
+    /// True if integer patterns can match values of type `ty`: an integer type, or the
+    /// type of an integer literal whose type is not known yet, which is then restricted
+    /// to integers.
+    fn integer_pattern_ty(&mut self, ty: Ty) -> bool {
+        ty.is_integer()
+            || (self.infer.var_kind(ty) == Some(super::infer::VarKind::Int) && self.infer.require_integer(ty))
     }
 
     /// The value of the constant `e` (such as `m.MAX`) as a literal of type `ty`, for a
@@ -490,11 +499,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 let p = match pt.kind() {
                     // `.Rect(_)` ignores the whole payload.
                     _ if one && matches!(args[0].pat.kind, PatternKind::Wildcard) => pat(pt, PatKind::Wild, span),
-                    // One name for a payload of several elements binds the whole tuple:
-                    // `.Rect(r)` gives `r.w` and `r.h` (§9.2).
-                    TyKind::Tuple { elems, .. }
-                        if one && elems.len() > 1 && matches!(args[0].pat.kind, PatternKind::Bind(_)) =>
-                    {
+                    // One sub-pattern for a payload that is not a 1-tuple matches the whole
+                    // tuple: `.Rect(r)` gives `r.w` and `r.h` (§9.2).
+                    TyKind::Tuple { elems, .. } if one && elems.len() != 1 => {
                         self.pattern(&args[0].pat, pt, ctx, binds)
                     }
                     // A tuple payload's elements are written directly: `.Rect(w, h)` (§9.2).

@@ -144,6 +144,21 @@ static void test_floats(void) {
     D(5e-324, "5e-324");
     D((double)0.1f, "0.10000000149011612");
     D(123456789012345680000.0, "123456789012345680000");
+    D(1e23, "1e23");
+    D(9007199254740993.0, "9007199254740992");
+    D(4.35, "4.35");
+    D(9.5367431640625e-7, "9.5367431640625e-7"); /* 2^-20: the interval below is narrower */
+    D(1.0 / 1024.0 / 1024.0 / 1024.0 / 1024.0 / 1024.0 / 1024.0, "8.673617379884035e-19");
+    D(2.2250738585072014e-308, "2.2250738585072014e-308");
+    D(2.225073858507201e-308, "2.225073858507201e-308"); /* the largest subnormal */
+    D(1e-323, "1e-323");
+    D(1.5e-323, "1.5e-323");
+    /* Exact ties between two shortest candidates go to the even digit. */
+    D(1618551636065423.25, "1618551636065423.2");
+    D(1840508283716554.75, "1840508283716554.8");
+    D(2156270916921129.25, "2156270916921129.2");
+    D(625246290564228.75, "625246290564228.8");
+    D(10433110499478.1875, "10433110499478.188");
     D(__builtin_nan(""), "nan");
     D(__builtin_inf(), "inf");
     D(-__builtin_inf(), "-inf");
@@ -157,9 +172,9 @@ static void test_floats(void) {
     F(3.4028235e38f, "3.4028235e38");
     F(16777216.0f, "16777216");
     F(1e-10f, "1e-10");
-    /* Exact ties between two shortest candidates go to the larger digit. */
-    F(-3056815.25f, "-3056815.3");
-    F(30453.5625f, "30453.563");
+    /* Exact ties between two shortest candidates go to the even digit. */
+    F(-3056815.25f, "-3056815.2");
+    F(30453.5625f, "30453.562");
     F(__builtin_nanf(""), "nan");
     F(-__builtin_inff(), "-inf");
 #undef F
@@ -181,6 +196,41 @@ static void test_floats(void) {
     CHECK(gm_f64_to_f16(65519.0) == 0x7bff);
     CHECK(gm_f64_to_f16(0.1) == 0x2e66);
     CHECK(gm_f16_to_f64(0x2e66) > 0.0999 && gm_f16_to_f64(0x2e66) < 0.1001);
+}
+
+/* The digits gm_shortest returns read back as the value, and no shorter correctly rounded
+ * decimal does, over a pseudo-random sample of doubles and floats. */
+static void test_float_shortest(void) {
+    uint64_t s = 0x9E3779B97F4A7C15ULL;
+    for (int i = 0; i < 200000; i++) {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        double x;
+        unsigned bits = (i & 1) ? 32 : 64;
+        if (bits == 64) {
+            uint64_t u = s & 0x7fffffffffffffffULL;
+            memcpy(&x, &u, 8);
+            if (!(x > 0) || __builtin_isinf(x)) continue;
+        } else {
+            uint32_t u = (uint32_t)s & 0x7fffffffu;
+            float fl;
+            memcpy(&fl, &u, 4);
+            if (!(fl > 0) || __builtin_isinf(fl)) continue;
+            x = (double)fl;
+        }
+        char digits[24], buf[64];
+        int e;
+        gm_shortest(x, bits, digits, &e);
+        size_t n = strlen(digits);
+        snprintf(buf, sizeof buf, "%c.%se%d", digits[0], digits + 1, e);
+        if (bits == 64 ? strtod(buf, NULL) != x : strtof(buf, NULL) != (float)x) FAIL("[%s] does not read back as %.17g", buf, x);
+        if (n > 1) {
+            snprintf(buf, sizeof buf, "%.*e", (int)n - 2, x);
+            if (bits == 64 ? strtod(buf, NULL) == x : strtof(buf, NULL) == (float)x) FAIL("[%s] is shorter than [%s] for %.17g", buf, digits, x);
+        }
+        if (digits[n - 1] == '0') FAIL("trailing zero in [%s]", digits);
+    }
 }
 
 static void test_bool_ptr(void) {
@@ -1053,6 +1103,7 @@ int main(int argc, char **argv) {
     test_wide();
     test_byte_order();
     test_floats();
+    test_float_shortest();
     test_bool_ptr();
     test_strings();
     test_aggregates();

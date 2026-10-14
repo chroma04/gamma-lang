@@ -1,0 +1,33 @@
+// `for` over a tuple whose elements have one type iterates over its elements (§13.2).
+pair :: fn() -> (string, string) => ("x", "y")
+noisy :: fn(x: i32) -> i32 \ {Out} {
+    print("[{}]", x)
+    return x
+}
+main :: fn() \ {Out} {
+    for x in (1, 2, 3) { print("{} ", x) }
+    print("\n")
+    t := (10u8, 20u8, 30u8)
+    sum: u32 = 0
+    for x in t { sum += u32(x) }
+    print("{}\n", sum)
+    for s in pair() { print("{}", s) }
+    print("\n")
+    // Named elements, patterns, labels, `break` and `continue`.
+    for i, v in (a: (1, 2), b: (3, 4), c: (5, 6)) { print("{}:{} ", (i, v)) }
+    print("\n")
+    outer: for x in (1.5, 2.5, 3.5) {
+        for y in ("p", "q") {
+            if y is "q" { continue }
+            if x > 2.0 { break outer }
+            print("{} {} ", (x, y))
+        }
+    }
+    print("\n")
+    // The tuple is evaluated once, before the loop.
+    for x in (noisy(1), noisy(2), noisy(3)) { print("{} ", x) }
+    print("\n")
+    c := 3
+    for x in (c, c * 2) { print("{} ", x) }
+    print("\n")
+}

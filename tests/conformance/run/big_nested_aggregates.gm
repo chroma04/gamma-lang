@@ -1,0 +1,150 @@
+// Aggregates whose elements are aggregates, arrays or calls are built where they end up.
+// That must not change what a program observes: every element is evaluated before an
+// assignment changes its destination, a function reads its parameters as they were, and
+// padding, packed and `#bits` members, arrays of structs of arrays and unions with large
+// payloads keep their values and their layout.
+V :: struct { x: i64, y: i64 }
+Cell :: struct { id: u8, pos: V, vals: [3]i64 }
+Grid :: struct { n: i64, cells: [4]Cell, last: V }
+P :: #packed struct { a: u8, b: u32 }
+Flags :: #bits(u8) struct { lo: u4, hi: u4 }
+Mixed :: struct { p: P, f: Flags, c: Cell, tail: u8 }
+Shape :: union { Big: Grid, Small: i64, Pair: (V, V), Nothing }
+Wrap :: struct { tag: u16, shape: Shape, mixed: Mixed }
+
+cell :: fn(k: i64) -> Cell => Cell(id: k.trunc(u8), pos: V(x: k, y: -k), vals: [3]i64(k, k * 2, k * 3))
+
+grid :: fn(k: i64) -> Grid =>
+    Grid(n: k, cells: [4]Cell(cell(k), cell(k + 1), cell(k + 2), cell(k + 3)), last: V(x: k * 10, y: k * 20))
+
+sum :: fn(g: Grid) -> i64 {
+    s := g.n + g.last.x + g.last.y
+    for c in g.cells {
+        s += i64(c.id) + c.pos.x + c.pos.y + c.vals[0] + c.vals[1] + c.vals[2]
+    }
+    return s
+}
+
+// Reads its parameter while building the result (`g = rev(g)`).
+rev :: fn(g: Grid) -> Grid =>
+    Grid(n: g.last.y, cells: [4]Cell(g.cells[3], g.cells[2], g.cells[1], g.cells[0]), last: V(x: g.last.y, y: g.last.x))
+
+// The same through a pointer to the destination (`g = via(&g)`).
+via :: fn(p: ^const Grid) -> Grid =>
+    Grid(n: p.n + 1, cells: [4]Cell(p.cells[1], p.cells[0], p.cells[3], p.cells[2]), last: V(x: p.n, y: p.last.x))
+
+again :: fn(p: ^const Grid) -> Grid {
+    return via(p)
+}
+
+// Calls that read the destination while the result is built.
+peek :: fn(p: ^const Grid, i: usize) -> Cell => p.cells[i]
+rebuild :: fn(p: ^const Grid) -> Grid =>
+    Grid(n: 100, cells: [4]Cell(peek(p, 3), peek(p, 2), peek(p, 1), peek(p, 0)), last: p.last)
+
+// Elements that are calls, nested arrays and locals together.
+mix :: fn(k: i64) -> Grid {
+    c := cell(k)
+    d := c
+    d.pos.x = 77
+    return Grid(n: c.pos.x + d.pos.x, cells: [4]Cell(c, cell(k + 1), d, Cell(id: 9, pos: c.pos, vals: c.vals)), last: d.pos)
+}
+
+pad :: fn(k: i64) -> Mixed {
+    return Mixed(p: P(a: 1, b: 70000 + k.trunc(u32)), f: Flags(lo: 3, hi: 12), c: cell(k), tail: 250)
+}
+
+shape :: fn(k: i64) -> Shape {
+    if k % 3 is 0 { return .Big(grid(k)) }
+    if k % 3 is 1 { return .Pair(V(x: k, y: k + 1), V(x: -k, y: -k)) }
+    return .Small(k)
+}
+
+Fail :: union { Bad: i64 }
+find :: fn(k: i64) -> ?Grid {
+    if k > 0 { return grid(k) }
+    return null
+}
+checked :: fn(k: i64) -> Fail!Grid {
+    if k < 0 { return !Fail.Bad(k) }
+    return grid(k)
+}
+
+wrap :: fn(k: i64) -> Wrap => Wrap(tag: 7, shape: shape(k), mixed: pad(k))
+
+describe :: fn(s: Shape) -> i64 => match s {
+    .Big(g) => sum(g)
+    .Small(v) => v
+    .Pair(a, b) => a.x + a.y + b.x + b.y
+    .Nothing => -1
+}
+
+main :: fn() \ {Out} {
+    g := grid(1)
+    print("{}\n", sum(g))
+
+    // Self-referencing assignments.
+    g = Grid(n: g.last.y, cells: [4]Cell(g.cells[3], g.cells[2], g.cells[1], g.cells[0]), last: V(x: g.last.y, y: g.last.x))
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    g = rev(g)
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    g = rev(rev(g))
+    print("{} {}\n", (g.n, sum(g)))
+    g = via(&g)
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    g = again(&g)
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    g = rebuild(&g)
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    g = Grid(n: 0, cells: [4]Cell(peek(&g, 3), peek(&g, 3), peek(&g, 2), peek(&g, 1)), last: g.cells[0].pos)
+    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+
+    // Into a field and an element of something larger.
+    w := wrap(3)
+    w.mixed.c = cell(w.mixed.c.pos.x + 1)
+    w.mixed.c.vals = [3]i64(w.mixed.c.vals[2], w.mixed.c.vals[1], w.mixed.c.vals[0])
+    print("{} {} {}\n", (w.tag, w.mixed.c.id, w.mixed.c.vals))
+    gs := [3]Grid(grid(1), grid(2), grid(3))
+    gs[1] = rev(gs[2])
+    gs[2] = Grid(n: gs[0].n, cells: gs[1].cells, last: gs[1].last)
+    print("{} {} {}\n", (sum(gs[0]), sum(gs[1]), sum(gs[2])))
+    p := &gs[0]
+    p^ = rev(p^)
+    print("{}\n", sum(gs[0]))
+
+    // Elements built from locals and calls.
+    m := mix(5)
+    print("{} {} {} {} {}\n", (m.n, m.cells[0].pos, m.cells[2].pos, m.cells[3].id, m.last))
+
+    // Padding, packed and bits members inside a large struct.
+    mx := pad(4)
+    mx.p.b += 1
+    mx.f.lo = 5
+    print("{} {} {} {} {} {}\n", (mx.p.a, mx.p.b, mx.f.lo, mx.f.hi, mx.c.vals, mx.tail))
+    print("{}\n", mx)
+
+    // Unions with large payloads.
+    total: i64 = 0
+    for k in 0..7 {
+        s := shape(k)
+        total += describe(s)
+        w2 := wrap(k)
+        total += describe(w2.shape) + i64(w2.tag) + i64(w2.mixed.p.b)
+    }
+    print("{}\n", total)
+    s := shape(3)
+    s = .Pair(V(x: 1, y: 2), V(x: 3, y: 4))
+    print("{}\n", describe(s))
+    s = .Big(grid(2))
+    print("{}\n", describe(s))
+
+    // Optionals and results holding large values.
+    o: ?Grid = find(2)
+    print("{}\n", sum(o else grid(0)))
+    o = find(-1)
+    print("{}\n", sum(o else grid(1)))
+    r := checked(3)
+    print("{}\n", sum(r else grid(0)))
+    r = checked(-4)
+    print("{}\n", sum(r else grid(5)))
+}

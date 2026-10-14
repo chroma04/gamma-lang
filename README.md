@@ -28,7 +28,7 @@ under active construction:
 | Lexer (spec §2) | implemented |
 | Parser (spec Appendix A) | implemented |
 | Semantic analysis | the language: effects, handlers and fibers, generics with compile-time parameters, compile-time evaluation and `when`, modules, imports, tests, and C interop |
-| Interpreter / compile-time evaluator | implemented, except calls to foreign code (`gamma run` compiles such programs instead) |
+| Interpreter / compile-time evaluator | implemented, including calls to foreign code through `dlsym` and libffi (`gamma run` compiles only programs it cannot run, such as ones with inline assembly) |
 | Native code generation (via C) | the language, including fibers and foreign functions (`gamma build`, `gamma run --backend=c`) |
 | Standard library | core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network); `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/math`, `std/arena`, `std/fixed_buffer`, `std/thread`, `std/c` |
 

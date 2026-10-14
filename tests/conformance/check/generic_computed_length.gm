@@ -1,5 +1,4 @@
 //! stage: check
-Matrix :: struct(T: type, R, C: usize) { d: [R * C]T } //~ ERROR an array length computed from the compile-time parameters `R` and `C`
 Raw :: struct(T: type) { b: [@size_of(T)]u8 } //~ ERROR an array length computed from a type parameter
 
 zeroes :: fn(T: type) -> [@size_of(T)]u8 { //~ ERROR an array length computed from a type parameter
@@ -7,4 +6,28 @@ zeroes :: fn(T: type) -> [@size_of(T)]u8 { //~ ERROR an array length computed fr
     return b
 }
 
-main :: fn() {}
+wrapping :: fn(N :: usize) -> [N +% 1]u8 { //~ ERROR this array length is not supported in a type
+    return [N +% 1]u8(fill: 0) //~ ERROR this array length is not supported in a type
+}
+
+narrow :: fn(N :: u8) -> [N * 2]u8 { //~ ERROR this array length is not supported in a type
+    return [N * 2]u8(fill: 0) //~ ERROR this array length is not supported in a type
+}
+
+// A computed length does not make its parameter inferable.
+grow :: fn(N :: usize, a: [N + 1]u8) -> usize => a.len
+
+doubled :: fn(N :: usize, a: [N + N]u8) -> [2 * N]u8 => a //~ ERROR expected `[N * 2]u8`, found `[N + N]u8`
+
+drop1 :: fn(N :: usize) -> [N - 1]u8 { //~ ERROR the array length `N - 1` overflows or divides by zero with `N` = 0
+    return [N - 1]u8(fill: 7) //~ ERROR the array length `N - 1` overflows or divides by zero with `N` = 0
+}
+
+Halves :: struct(N: usize) { a: [N / 2]u8 }
+
+main :: fn() {
+    _ = grow(3, [4]u8(fill: 0))
+    _ = grow(a: [4]u8(fill: 0)) //~ ERROR missing argument for the compile-time parameter `N`
+    _ = drop1(0)
+    _ = drop1(5)
+}

@@ -24,6 +24,9 @@
 //!   that byte order, for tests whose output shows the layout of values in memory.
 //! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
 //!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it.
+//! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
+//!   tests of what the interpreter cannot do (such as calls through function pointers
+//!   re-typed to another signature).
 //! - `//! filter: text` runs a `test` test with `gamma test --filter=text`.
 //! - `//! exit: N` sets the expected exit status of a `run` or `test` test
 //!   (default 0). Their expected standard output is the sibling `<name>.stdout`
@@ -32,9 +35,11 @@
 //! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
+//!   One line may carry several annotations (`//~ ERROR a //~ NOTE b`).
 //!   Every reported error or warning must be expected this way. `//~ NOTE text`
-//!   expects a secondary location of some diagnostic on that line (such as a call
-//!   in a compile-time call stack); notes that no annotation names are allowed.
+//!   expects a note of some diagnostic on that line: a secondary location (such as
+//!   a call in a compile-time call stack) or an explanation attached to a diagnostic
+//!   reported there; notes that no annotation names are allowed.
 //!
 //! A directory whose name ends in `.test` is one test of several modules. The
 //! program's root module is its `main/` subdirectory if there is one, and the
@@ -94,6 +99,8 @@ struct Expectations {
     safe_skip: bool,
     /// The C lanes need `_Float16`.
     needs_f16: bool,
+    /// Run the test only through the C back end.
+    native: bool,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -110,6 +117,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         endian: None,
         safe_skip: false,
         needs_f16: false,
+        native: false,
         diags: vec![],
     };
     for path in files {
@@ -155,17 +163,20 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
                 }
                 e.safe_skip = true;
+            } else if directive.starts_with("native:") {
+                e.native = true;
             } else if let Some(code) = directive.strip_prefix("exit:") {
                 e.exit = code.trim().parse().map_err(|_| format!("{}: bad exit code", path.display()))?;
             } else {
                 return Err(format!("{}:{}: unknown directive `{}`", path.display(), i + 1, directive));
             }
         }
-        if let Some(pos) = line.find("//~") {
+        // A line may carry several annotations: `//~ ERROR a //~ NOTE b`.
+        for ann in line.split("//~").skip(1) {
             // `//~?` expects a diagnostic that has no source location.
-            let (unlocated, rest) = match line[pos + 3..].strip_prefix('?') {
+            let (unlocated, rest) = match ann.strip_prefix('?') {
                 Some(r) => (true, r.trim()),
-                None => (false, line[pos + 3..].trim()),
+                None => (false, ann.trim()),
             };
             let (sev, msg) = rest.split_once(' ').unwrap_or((rest, ""));
             let sev = match sev {
@@ -417,6 +428,12 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if let (Some(f), Stage::Test) = (&exp.filter, exp.stage) {
         cmd.arg(format!("--filter={}", f));
     }
+    if exp.native && matches!(exp.stage, Stage::Run | Stage::Test) {
+        if !c_backend_available() {
+            return Ok(());
+        }
+        cmd.arg("--backend=c");
+    }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
@@ -514,6 +531,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let golden = path.with_extension("stdout");
     if compiled
         && problems.is_empty()
+        && !exp.native
         && c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {

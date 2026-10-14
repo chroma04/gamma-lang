@@ -54,8 +54,20 @@ impl<'s> Sema<'s> {
     pub fn resolve_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         match &e.kind {
             ExprKind::Ident(id) => {
-                if let Some((_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
-                    return *t;
+                if let Some(&(_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    if let TyKind::Param(p) = t.kind()
+                        && self.effect_params.contains(p)
+                    {
+                        self.error(
+                            e.span,
+                            format!(
+                                "`{}` is an effect set, not a type; use it in an effect set as `..{}` (§16.6)",
+                                id.name, id.name
+                            ),
+                        );
+                        return Ty::error();
+                    }
+                    return t;
                 }
                 if let Some(d) = self.lookup_module_name(module, id.name) {
                     self.check_deprecated(d, id.span);
@@ -124,22 +136,9 @@ impl<'s> Sema<'s> {
                     self.error(e.span, "`[_]` is allowed only in array constructors");
                     return Ty::error();
                 };
-                // `[N]T` with `N` a compile-time value parameter (§16.5).
-                if let ExprKind::Ident(id) = &len.kind
-                    && let Some(&(_, pid)) = self.value_scope.iter().rev().find(|(n, _)| *n == id.name)
-                {
-                    if !self.value_params[&pid].is_integer() {
-                        self.error(
-                            len.span,
-                            format!("`{}` is not an integer, so it cannot be an array length", id.name),
-                        );
-                        return Ty::error();
-                    }
-                    let len = Ty::intern(TyKind::Param(pid));
-                    return Ty::intern(TyKind::ParamArray { len, elem });
-                }
-                match self.const_usize(module, len) {
-                    Some(n) => Ty::array(n, elem),
+                match self.array_len(module, len) {
+                    Some(ArrayLen::Known(n)) => Ty::array(n, elem),
+                    Some(ArrayLen::Param(len)) => Ty::intern(TyKind::ParamArray { len, elem }),
                     None => Ty::error(),
                 }
             }
@@ -299,11 +298,21 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// Evaluates a compile-time `usize` (an array length).
-    pub fn const_usize(&mut self, module: ModuleId, e: &ast::Expr) -> Option<u64> {
+    /// Evaluates the length of an array type `[len]T`.
+    pub fn array_len(&mut self, module: ModuleId, e: &ast::Expr) -> Option<ArrayLen> {
+        // `[N]T` with `N` a compile-time value parameter (§16.5).
+        if let ExprKind::Ident(id) = &e.kind
+            && let Some(&(_, pid)) = self.value_scope.iter().rev().find(|(n, _)| *n == id.name)
+        {
+            if !self.value_params[&pid].is_integer() {
+                self.error(e.span, format!("`{}` is not an integer, so it cannot be an array length", id.name));
+                return None;
+            }
+            return Some(ArrayLen::Param(Ty::intern(TyKind::Param(pid))));
+        }
         match self.try_untyped(module, e) {
             Some(Ok(Untyped::Int(i))) => match i.to_u64() {
-                Some(n) => Some(n),
+                Some(n) => Some(ArrayLen::Known(n)),
                 None => {
                     self.error(e.span, format!("array length {} is out of range", i));
                     None
@@ -317,24 +326,18 @@ impl<'s> Sema<'s> {
             None => {
                 // A typed constant expression, evaluated now (§7.15).
                 let ex = self.check_const_expr(module, e, Some(Ty::usize()))?;
-                // A length computed from compile-time parameters is not known until
-                // instantiation (§16.5).
-                let mut params = vec![];
+                let mut has_value_param = false;
                 let mut on_type = false;
                 super::func::visit(&ex, &mut |n| {
                     use crate::tir::ExprKind as K;
-                    if let K::ValueParam(p) = n.kind
-                        && !params.contains(&p.name().to_string())
-                    {
-                        params.push(p.name().to_string());
-                    }
+                    has_value_param |= matches!(n.kind, K::ValueParam(_));
                     on_type |= super::generics::has_param(n.ty)
                         || matches!(
                             n.kind,
                             K::SizeOf { .. } | K::TypeIs { .. } | K::IntLimit { .. } | K::TypeName { .. }
                         );
                 });
-                if params.is_empty() && on_type {
+                if on_type && !has_value_param {
                     self.error(
                         e.span,
                         "an array length computed from a type parameter is not supported in a type; \
@@ -342,27 +345,119 @@ impl<'s> Sema<'s> {
                     );
                     return None;
                 }
-                if !params.is_empty() {
-                    let list: Vec<String> = params.iter().map(|p| format!("`{}`", p)).collect();
-                    self.error(
-                        e.span,
-                        format!(
-                            "an array length computed from the compile-time parameter{} {} is not supported in a type; \
-                             use a parameter directly, or nested arrays such as `[R][C]T` (§16.5)",
-                            if params.len() > 1 { "s" } else { "" },
-                            list.join(" and ")
-                        ),
-                    );
-                    return None;
+                // A length computed from compile-time value parameters is known at
+                // instantiation (§16.5).
+                if has_value_param {
+                    return match len_ty(&ex) {
+                        Some(t) => {
+                            if matches!(t.kind(), TyKind::LenExpr { .. }) && !self.len_exprs.contains(&(t, e.span)) {
+                                self.len_exprs.push((t, e.span));
+                            }
+                            Some(ArrayLen::Param(t))
+                        }
+                        None => {
+                            self.error(
+                                e.span,
+                                "this array length is not supported in a type: a length computed from \
+                                 compile-time parameters may use only `usize` parameters, integer constants \
+                                 and the plain operators `+ - * / % << >> & | ^` (§16.5)",
+                            );
+                            None
+                        }
+                    };
                 }
                 let v = self.eval_tir_const(&ex)?;
                 let n = self.const_key_of_bytes(v.ty, &v.bytes).as_u64();
                 if n.is_none() {
                     self.error(e.span, "array length is out of range");
                 }
-                n
+                n.map(ArrayLen::Known)
             }
         }
+    }
+}
+
+impl<'s> Sema<'s> {
+    /// Reports the array lengths computed from the parameters bound by `map` that
+    /// trap for these arguments (§16.5), such as `[N - 1]T` with `N` = 0.
+    pub fn check_len_exprs(&mut self, map: &[(crate::types::ParamId, Ty)], at: Option<Span>) {
+        let bad: Vec<(Ty, Span)> = self
+            .len_exprs
+            .iter()
+            .copied()
+            .filter(|&(t, _)| {
+                let mut all_bound = true;
+                t.walk(&mut |p| {
+                    if let TyKind::Param(p) = p.kind() {
+                        all_bound &= map
+                            .iter()
+                            .any(|(q, a)| q == p && matches!(a.kind(), TyKind::Value(k) if k.as_int().is_some()));
+                    }
+                });
+                all_bound && super::generics::subst_ty(t, map).is_error()
+            })
+            .collect();
+        for (t, span) in bad {
+            let mut names = vec![];
+            t.walk(&mut |p| {
+                if let TyKind::Param(p) = p.kind()
+                    && let Some((_, a)) = map.iter().find(|(q, _)| q == p)
+                {
+                    let n = format!("`{}` = {}", p.name(), a);
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            });
+            let mut d = crate::diag::Diagnostic::error(
+                span,
+                format!("the array length `{}` overflows or divides by zero with {} (§16.5)", t, names.join(", ")),
+            );
+            if let Some(at) = at {
+                d = d.with_label(at, "instantiated here");
+            }
+            self.emit(d);
+        }
+    }
+}
+
+/// The length of an array type.
+pub enum ArrayLen {
+    Known(u64),
+    /// Depends on compile-time value parameters: a `Param` or a `LenExpr` (§16.5).
+    Param(Ty),
+}
+
+/// The length type of a constant `usize` expression over compile-time value
+/// parameters, if it uses only what a `LenExpr` can express.
+fn len_ty(e: &crate::tir::Expr) -> Option<Ty> {
+    use crate::syntax::ast::Flavor;
+    use crate::tir::{BinOp, Coercion, ExprKind as K};
+    use crate::types::LenOp;
+    match &e.kind {
+        K::ValueParam(p) => Some(Ty::intern(TyKind::Param(*p))),
+        K::Int(i) => {
+            let n = i.to_u64()?;
+            Some(Ty::intern(TyKind::Value(crate::types::ConstKey::int(Ty::usize(), &n.into(), 8))))
+        }
+        K::Coerce { kind: Coercion::IntWiden, expr } if !expr.ty.is_signed_integer() => len_ty(expr),
+        K::Binary { op, lhs, rhs } if e.ty.kind() == &TyKind::Usize => {
+            let op = match op {
+                BinOp::Add(Flavor::Checked) => LenOp::Add,
+                BinOp::Sub(Flavor::Checked) => LenOp::Sub,
+                BinOp::Mul(Flavor::Checked) => LenOp::Mul,
+                BinOp::Shl(Flavor::Checked) => LenOp::Shl,
+                BinOp::Div => LenOp::Div,
+                BinOp::Rem => LenOp::Rem,
+                BinOp::Shr => LenOp::Shr,
+                BinOp::BitAnd => LenOp::And,
+                BinOp::BitOr => LenOp::Or,
+                BinOp::BitXor => LenOp::Xor,
+                _ => return None,
+            };
+            Some(Ty::len_expr(op, len_ty(lhs)?, len_ty(rhs)?))
+        }
+        _ => None,
     }
 }
 
@@ -416,6 +511,11 @@ impl<'s> Sema<'s> {
             let (e, module): (&ast::Expr, ModuleId) = match (given[i], &default) {
                 (Some(e), _) => (e, module),
                 (None, Some(d)) => (d, self.adts[&template].module),
+                // An effect-set parameter left out is empty (§16.6).
+                (None, None) if self.effect_params.contains(pid) => {
+                    out.push(Ty::intern(TyKind::Effects(crate::types::EffectSet::empty())));
+                    continue;
+                }
                 (None, None) => {
                     self.error(
                         span,
@@ -431,6 +531,7 @@ impl<'s> Sema<'s> {
                     let vt = self.subst(vt, &map);
                     self.comptime_value(module, vt, e)?
                 }
+                None if self.effect_params.contains(pid) => self.resolve_effect_arg(module, e),
                 None => self.resolve_type(module, e),
             };
             if t.is_error() {

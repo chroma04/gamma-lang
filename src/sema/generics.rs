@@ -267,6 +267,7 @@ impl<'s> Sema<'s> {
         let locals = g.locals.clone();
         let hints = g.hints;
         let outer_depth = std::mem::replace(&mut self.mono_depth, req.depth);
+        self.check_len_exprs(&map, Some(req.span));
         let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
         let locals: Vec<tir::LocalDecl> =
@@ -702,7 +703,7 @@ pub fn subst_eref(e: &EffectRef, map: &[(ParamId, Ty)]) -> EffectRef {
 }
 
 pub fn subst_effects(s: &EffectSet, map: &[(ParamId, Ty)]) -> EffectSet {
-    EffectSet::new(s.effects.iter().map(|e| subst_eref(e, map)).collect())
+    EffectSet::new(s.effects.iter().map(|e| subst_eref(e, map)).collect()).flatten()
 }
 
 impl<'a, 's> FnCx<'a, 's> {
@@ -814,17 +815,24 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => None,
             })
             .collect();
+        // `f(u8)` with no run-time argument names an instantiation (§16.7).
+        let inst_only = receiver.is_none() && self.is_instantiation(&sig, args, &positional);
         // A compile-time value parameter is inferable only if another parameter's
-        // type mentions it (§16.2).
-        let inferable = |i: usize| match sig.params[i].generic {
+        // type mentions it other than inside a computed array length (§16.2).
+        let inferable_param = |i: usize| match sig.params[i].generic {
             None => false,
             Some(pid) if self.sema.value_params.contains_key(&pid) => sig.params.iter().any(|q| {
-                let mut found = false;
-                q.ty.walk(&mut |t| found |= matches!(t.kind(), TyKind::Param(x) if *x == pid));
-                found
+                let is_pid = |t: Ty| matches!(t.kind(), TyKind::Param(x) if *x == pid);
+                let (mut all, mut computed) = (0, 0);
+                q.ty.walk(&mut |t| match t.kind() {
+                    TyKind::LenExpr { lhs, rhs, .. } => computed += is_pid(*lhs) as u32 + is_pid(*rhs) as u32,
+                    _ => all += is_pid(t) as u32,
+                });
+                all > computed
             }),
             Some(_) => true,
         };
+        let inferable = &inferable_param;
         let non_inferable: Vec<usize> = (0..sig.params.len())
             .filter(|&i| {
                 !inferable(i)
@@ -837,13 +845,27 @@ impl<'a, 's> FnCx<'a, 's> {
         let n = non_inferable.len();
         let omit = positional.len() >= r && positional.len() <= n;
         // Which parameter each positional argument binds to.
-        let targets: Vec<usize> = if omit {
+        let candidates: Vec<usize> = if inst_only {
+            (0..sig.params.len())
+                .filter(|&i| sig.params[i].generic.is_some() && !named.contains(&sig.params[i].name))
+                .collect()
+        } else if omit {
             non_inferable.clone()
         } else {
             (0..sig.params.len())
                 .filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index && !sig.params[i].is_site())
                 .collect()
         };
+        // An effect-set parameter takes a positional argument only if one that denotes
+        // effects is written there; otherwise it is inferred or empty (§16.6).
+        let mut targets = vec![];
+        for i in candidates {
+            let is_effects = sig.params[i].generic.is_some_and(|p| self.sema.effect_params.contains(&p));
+            if is_effects && !positional.get(targets.len()).is_some_and(|e| self.denotes_effects(e)) {
+                continue;
+            }
+            targets.push(i);
+        }
         if positional.len() > targets.len() {
             self.error(span, format!("too many arguments: the function takes {}", targets.len()));
             return error_expr(span);
@@ -851,6 +873,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // Too many arguments to leave the type parameters out, and the first of them is
         // not a type: more arguments than the function takes, rather than explicit types.
         if !omit
+            && !inst_only
             && positional.len() > n
             && let Some(&first) = positional.first()
             && sig.params[targets[0]].generic.is_some_and(|p| !self.sema.value_params.contains_key(&p))
@@ -900,7 +923,12 @@ impl<'a, 's> FnCx<'a, 's> {
                     None => return error_expr(span),
                 }
             } else if let Some(pid) = p.generic {
-                let t = self.resolve_type(e);
+                let t = if self.sema.effect_params.contains(&pid) {
+                    let module = self.module;
+                    self.sema.resolve_effect_arg(module, e)
+                } else {
+                    self.resolve_type(e)
+                };
                 binds.insert(pid, t);
             } else {
                 let bound: Vec<(ParamId, Ty)> = binds.iter().map(|(k, v)| (*k, *v)).collect();
@@ -923,6 +951,8 @@ impl<'a, 's> FnCx<'a, 's> {
                     values[*i] = Some(self.arg_value(e, expect));
                     continue;
                 }
+                let lit = self.iterator_arg(e, expect);
+                let e = lit.as_ref().unwrap_or(e);
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!unbound || partial).then_some(expect));
                 self.temp_ref_arg = false;
@@ -1025,6 +1055,10 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                     }
                 }
+                // An effect-set parameter that nothing determines is empty (§16.6).
+                None if self.sema.effect_params.contains(pid) => {
+                    targs.push(Ty::intern(TyKind::Effects(crate::types::EffectSet::empty())))
+                }
                 None => {
                     // An array where a slice is expected says nothing about the slice's
                     // element type: arrays do not convert to slices (§6.7).
@@ -1075,6 +1109,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     );
                 }
             }
+        }
+        if inst_only {
+            let inst = self.sema.instantiate(f, targs, span);
+            return self.fn_ref(inst, span);
         }
         let map: Vec<(ParamId, Ty)> = sig.generics.iter().copied().zip(targs.iter().copied()).collect();
         // The run-time arguments in the order written (the receiver first).
@@ -1135,6 +1173,114 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
+    /// Whether a call of generic function `sig` gives only compile-time arguments and
+    /// leaves out a required run-time one: it then denotes the instantiation as a
+    /// function value rather than calling it (§16.7). An argument for a type parameter
+    /// must be a type, so `id(x)` for `id :: fn(T: type, x: T)` is still a call.
+    fn is_instantiation(&mut self, sig: &super::FnSig, args: &[ast::Arg], positional: &[&ast::Expr]) -> bool {
+        let mut free: Vec<usize> = vec![];
+        for (i, p) in sig.params.iter().enumerate() {
+            let named_here = args.iter().any(|a| matches!(&a.kind, ArgKind::Named(n, _) if n.name == p.name));
+            if p.generic.is_none() && named_here {
+                return false;
+            }
+            if p.generic.is_some() && !named_here {
+                free.push(i);
+            }
+        }
+        let needs_runtime = sig.params.iter().any(|p| p.generic.is_none() && p.default.is_none() && !p.is_site());
+        if !needs_runtime || positional.is_empty() && args.is_empty() || positional.len() > free.len() {
+            return false;
+        }
+        for (e, &i) in positional.iter().zip(&free) {
+            let p = &sig.params[i];
+            if p.generic.is_some_and(|g| self.sema.value_params.contains_key(&g)) {
+                // An inferable value parameter is a run-time argument's business.
+                let pid = p.generic.unwrap();
+                let mentioned = sig.params.iter().any(|q| {
+                    let mut found = false;
+                    q.ty.walk(&mut |t| found |= matches!(t.kind(), TyKind::Param(x) if x == &pid));
+                    found
+                });
+                if mentioned {
+                    return false;
+                }
+            } else if !self.denotes_type(e) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// A generic function named as a value where a function pointer type is expected:
+    /// the type arguments are taken from that type (§16.7). None if they cannot be.
+    pub fn generic_fn_from_expected(&mut self, f: FnId, expect: Option<Ty>, span: Span) -> Option<Expr> {
+        let want = expect.map(|t| self.infer.resolve(t))?;
+        let TyKind::FnPtr(want) = want.kind() else { return None };
+        let sig = self.sema.sigs[&f].clone();
+        let runtime: Vec<&ParamInfo> = sig.params.iter().filter(|p| p.generic.is_none()).collect();
+        if runtime.len() != want.params.len() {
+            return None;
+        }
+        let mut binds = HashMap::new();
+        for (p, w) in runtime.iter().zip(want.params.iter()) {
+            super::effects::match_params_pub(p.ty, *w, &mut binds);
+        }
+        super::effects::match_params_pub(sig.ret, want.ret, &mut binds);
+        let mut targs = vec![];
+        for pid in &sig.generics {
+            if self.sema.value_params.contains_key(pid) {
+                return None;
+            }
+            targs.push(*binds.get(pid)?);
+        }
+        for (pid, t) in sig.generics.iter().zip(&targs) {
+            if let Some(part) = second_class_part(*t) {
+                self.error(span, not_first_class(*t, part));
+            }
+            for c in self.sema.constraints.get(pid).cloned().unwrap_or_default() {
+                if !self.sema.satisfies(*t, c) {
+                    self.error(
+                        span,
+                        format!("`{}` does not satisfy `{:?}({})` required by this function", t, c, pid.name()),
+                    );
+                }
+            }
+        }
+        let inst = self.sema.instantiate(f, targs, span);
+        Some(self.fn_ref(inst, span))
+    }
+
+    /// Whether `e` is written as effects: `\ {…}`, an effect, or an effect-set parameter.
+    fn denotes_effects(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::EffectSet(_) => true,
+            ast::ExprKind::Call { callee, .. } => self.denotes_effects(callee),
+            ast::ExprKind::Ident(id) if self.lookup_local(id.name).is_some() => false,
+            ast::ExprKind::Ident(id) => {
+                if let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    return matches!(t.kind(), TyKind::Param(p) if self.sema.effect_params.contains(p));
+                }
+                let module = self.module;
+                match self.sema.lookup_module_name(module, id.name) {
+                    Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                    None => false,
+                }
+            }
+            ast::ExprKind::Field { base, name } => {
+                let module = self.module;
+                match self.sema.module_named(module, base) {
+                    Some(m) => match self.sema.module_member(m, *name) {
+                        Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                        None => false,
+                    },
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// True if `e` cannot denote a type: a literal or a local variable.
     fn clearly_value(&self, e: &ast::Expr) -> bool {
         match &e.kind {
@@ -1164,6 +1310,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let k = match v.kind() {
             TyKind::Value(k) => k,
             TyKind::Param(p) if self.sema.value_params.contains_key(p) => return Some(v),
+            // A computed length `[A + B]T` (§16.5) is a `usize`.
+            TyKind::LenExpr { .. } if ty == Ty::usize() => return Some(v),
+            TyKind::LenExpr { .. } => {
+                self.error(span, format!("`{}` = {} is a `usize`, but `{}` has type `{}`", name, v, name, ty));
+                return None;
+            }
             _ => {
                 self.error(span, format!("`{}` is a compile-time value parameter, but a type was given", name));
                 return None;

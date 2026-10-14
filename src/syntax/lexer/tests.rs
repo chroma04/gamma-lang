@@ -252,7 +252,7 @@ fn integer_suffixes() {
     one_err("12abc", "invalid suffix `abc`");
     one_err("0x1g", "invalid suffix `g`");
     one_err("1usize2", "invalid suffix");
-    one_err("1f32", "invalid suffix `f32` for integer literal");
+    one_err("0b1f32", "invalid suffix `f32` for a binary or octal literal");
     one_err("1.5u8", "invalid suffix `u8` for float literal");
     one_err("1_a", "separators");
 }
@@ -311,6 +311,17 @@ fn float_values_are_exact() {
 #[test]
 fn float_suffixes() {
     assert_eq!(toks("1.5f32 2.0f64 3.5e2f16 0x1.8p1f32 1e3f64"), "f3/2F32 f2F64 f350F16 f3F32 f1000F64 EOF");
+    // A decimal integer with a float suffix is a float; a hexadecimal one keeps `f` as a digit.
+    assert_eq!(toks("1f32 20f64 0f16"), "f1F32 f20F64 f0F16 EOF");
+    assert_eq!(toks("0x1f32"), "7986 EOF");
+}
+
+#[test]
+fn hex_floats_without_fraction() {
+    assert_eq!(float_value("0x1p4"), rat(16, 1));
+    assert_eq!(float_value("0xAp-1"), rat(5, 1));
+    assert_eq!(toks("0x1p4f32"), "f16F32 EOF");
+    one_err("0x1.8", "require a `p` exponent");
 }
 
 #[test]

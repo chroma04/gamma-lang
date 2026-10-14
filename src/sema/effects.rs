@@ -82,8 +82,39 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
                 match_params(*a, *b, binds);
             }
             match_params(f.ret, g.ret, binds);
+            match_effects(&f.effects, &g.effects, binds);
         }
+        (TyKind::Effects(a), TyKind::Effects(b)) => match_effects(a, b, binds),
         _ => {}
+    }
+}
+
+/// Binds the parameters of effect set `pat` from `actual` (§16.6): the arguments of an
+/// effect that occurs once in each, then a single `..E` from the effects of `actual`
+/// that `pat` does not name.
+fn match_effects(pat: &EffectSet, actual: &EffectSet, binds: &mut HashMap<ParamId, Ty>) {
+    for p in pat.effects.iter().filter(|p| !p.is_splice() && !p.args.is_empty()) {
+        let mut same = actual.effects.iter().filter(|a| a.effect == p.effect);
+        if let (Some(a), None) = (same.next(), same.next()) {
+            for (x, y) in p.args.iter().zip(a.args.iter()) {
+                if let (GenericArg::Type(x), GenericArg::Type(y)) = (x, y) {
+                    match_params(*x, *y, binds);
+                }
+            }
+        }
+    }
+    let mut splices = pat.effects.iter().filter(|p| p.is_splice());
+    if let (Some(sp), None) = (splices.next(), splices.next())
+        && let Some(GenericArg::Type(t)) = sp.args.first()
+        && let TyKind::Param(e) = t.kind()
+    {
+        let rest: Vec<EffectRef> = actual
+            .effects
+            .iter()
+            .filter(|a| !pat.effects.iter().any(|p| !p.is_splice() && p.effect == a.effect))
+            .cloned()
+            .collect();
+        binds.entry(*e).or_insert(Ty::intern(TyKind::Effects(EffectSet::new(rest))));
     }
 }
 
@@ -110,6 +141,18 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Calling an effect operation performs it (§12.1).
     pub fn perform_op(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
+        let hides = self.sema.hidden_universe_op(eff, op);
+        let errors_before = self.sema.sess.diags.len();
+        let call = self.perform_op_inner(eff, op, args, span);
+        if let Some(why) = hides {
+            // Errors about the call itself (its arguments) get the explanation too.
+            self.sema.sess.diags.note_since(errors_before, span, &why);
+            self.hiding_op_calls.push((span, why));
+        }
+        call
+    }
+
+    fn perform_op_inner(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
         let info = &self.sema.effects[&eff];
         let params = info.params.clone();
         let op_info = info.ops[op as usize].clone();
@@ -229,12 +272,20 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Checks a handler literal (§12.5), producing a second-class handler value.
     pub fn handler_literal(&mut self, lit: &ast::HandlerLit, with_expect: Option<Ty>, span: Span) -> Expr {
+        let Some(hid) = self.new_handler_literal(lit) else { return error_expr(span) };
+        self.handler_clauses(hid, lit, with_expect, span);
+        mk(Ty::intern(TyKind::Handler(hid.0)), tir::ExprKind::HandlerRef(hid), span)
+    }
+
+    /// Starts a handler literal: resolves its effect and reserves its handler, whose
+    /// clauses `handler_clauses` checks.
+    pub fn new_handler_literal(&mut self, lit: &ast::HandlerLit) -> Option<HandlerId> {
         let module = self.module;
-        let Some(eref) = self.sema.resolve_effect_ref(module, &lit.effect) else { return error_expr(span) };
+        let eref = self.sema.resolve_effect_ref(module, &lit.effect)?;
         let n_params = self.sema.effects[&eref.effect].params.len();
         if eref.args.len() != n_params {
             self.error(lit.effect.span, format!("`{}` needs {} type argument(s)", eref.effect.name(), n_params));
-            return error_expr(span);
+            return None;
         }
         let hid = HandlerId(self.sema.prog.handlers.len() as u32);
         self.sema.prog.handlers.push(tir::HandlerLit { effect: eref.clone(), clauses: vec![] });
@@ -247,6 +298,14 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(c.name.span, format!("operation `{}` is handled twice", c.name.name));
             }
         }
+        Some(hid)
+    }
+
+    /// Checks the clauses of the handler literal `hid`; `with_expect` is the type of the
+    /// value of the `with` that installs it, which its `break`s give.
+    pub fn handler_clauses(&mut self, hid: HandlerId, lit: &ast::HandlerLit, with_expect: Option<Ty>, span: Span) {
+        let eref = self.sema.prog.handlers[hid.index()].effect.clone();
+        let ops: Vec<Symbol> = self.sema.effects[&eref.effect].ops.iter().map(|o| o.name).collect();
         let mut clauses = vec![];
         for (i, opname) in ops.iter().enumerate() {
             let Some(c) = lit.clauses.iter().find(|c| c.name.name == *opname) else {
@@ -267,7 +326,6 @@ impl<'a, 's> FnCx<'a, 's> {
             clauses.push(f);
         }
         self.sema.prog.handlers[hid.index()].clauses = clauses;
-        mk(Ty::intern(TyKind::Handler(hid.0)), tir::ExprKind::HandlerRef(hid), span)
     }
 
     /// Checks one clause as a nested function of the current one.
@@ -339,6 +397,9 @@ impl<'a, 's> FnCx<'a, 's> {
             let t = self.infer.settle(v.ty);
             match t.kind() {
                 TyKind::Handler(id) => {
+                    if !self.pending_handlers.is_empty() {
+                        self.check_pending_handler(HandlerId(*id), expect.filter(|_| value));
+                    }
                     let eref = self.sema.prog.handlers[*id as usize].effect.clone();
                     if handled.contains(&eref) {
                         self.error(h.span, format!("two handlers for `{}` in one `with`", eref.effect.name()));
@@ -417,6 +478,15 @@ impl<'a, 's> FnCx<'a, 's> {
         // Whether this `with` handles a perform must not depend on type arguments (§16.6).
         let mut ambiguous = vec![];
         for (p, at) in &self.performed[start..] {
+            if p.is_splice()
+                && let Some(h) = handled.first()
+            {
+                ambiguous.push((*at, format!(
+                    "this performs `{}` inside a `with` that handles `{}`, which the effect-set parameter might include (§16.6)",
+                    p, h
+                )));
+                continue;
+            }
             if let Some(h) = handled.iter().find(|h| super::decls::may_coincide(p, h)) {
                 ambiguous.push((*at, format!(
                     "this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)",
@@ -430,7 +500,9 @@ impl<'a, 's> FnCx<'a, 's> {
         // Effects handled here are not performed by the `with` (§12.3).
         let mut i = start;
         while i < self.performed.len() {
-            if bad_handler || handled.contains(&self.performed[i].0) {
+            // Not those of a handler literal written before this `with` began (§12.5).
+            let shielded = self.shielded_performs.get(&self.performed[i].1).is_some_and(|&h| n >= h);
+            if !shielded && (bad_handler || handled.contains(&self.performed[i].0)) {
                 self.performed.remove(i);
             } else {
                 i += 1;
@@ -771,7 +843,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Replaces each `AddrOfTemp(v)` in `e` (outside nested calls) by the address of a
     /// local initialized with `v` by a statement added to `pre`.
-    fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
+    pub(super) fn lift_temps(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>) {
         if matches!(e.kind, tir::ExprKind::Call { .. } | tir::ExprKind::Closure(_)) {
             return;
         }
