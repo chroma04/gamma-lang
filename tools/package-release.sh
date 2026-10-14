@@ -3,10 +3,11 @@
 #
 #     tools/package-release.sh <asset> <path to the gamma binary> <output directory>
 #
-# writes <output directory>/gamma-<asset>.tar.gz and its .sha256. The archive holds one
-# directory, gamma-<version>-<asset>/, laid out as an installation prefix:
+# writes <output directory>/gamma-<asset>.tar.gz (a .zip for the Windows assets) and its
+# .sha256. The archive holds one directory, gamma-<version>-<asset>/, laid out as an
+# installation prefix:
 #
-#     bin/gamma
+#     bin/gamma             (bin/gamma.exe on Windows)
 #     lib/gamma/std/...     the standard library, found relative to the binary
 #     LICENSE, README.md
 set -eu
@@ -25,13 +26,34 @@ name="gamma-$version-$asset"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/$name/bin" "$work/$name/lib/gamma"
-cp "$binary" "$work/$name/bin/gamma"
+case "$asset" in
+    windows-*) exe=gamma.exe ;;
+    *) exe=gamma ;;
+esac
+cp "$binary" "$work/$name/bin/$exe"
 cp -R "$root/lib/std" "$work/$name/lib/gamma/std"
 cp "$root/LICENSE" "$root/README.md" "$work/$name/"
 
 mkdir -p "$out"
-archive="gamma-$asset.tar.gz"
-tar -C "$work" -czf "$out/$archive" "$name"
+case "$asset" in
+    windows-*)
+        archive="gamma-$asset.zip"
+        rm -f "$out/$archive"
+        outabs=$(cd "$out" && pwd)
+        if command -v zip >/dev/null 2>&1; then
+            (cd "$work" && zip -qr "$outabs/$archive" "$name")
+        elif command -v 7z >/dev/null 2>&1; then
+            (cd "$work" && 7z a -tzip -bso0 -bsp0 "$outabs/$archive" "$name")
+        else
+            # bsdtar, which ships with Windows, writes zip archives.
+            (cd "$work" && tar -a -cf "$outabs/$archive" "$name")
+        fi
+        ;;
+    *)
+        archive="gamma-$asset.tar.gz"
+        tar -C "$work" -czf "$out/$archive" "$name"
+        ;;
+esac
 (
     cd "$out"
     if command -v sha256sum >/dev/null 2>&1; then

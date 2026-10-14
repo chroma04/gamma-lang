@@ -333,7 +333,13 @@ declaration: integers of 8 to 64 bits, floats, pointers, `bool`, structs by valu
 (a `#c_union` by value is described to libffi as the struct the C ABI treats
 alike) and variadic calls (`ffi_prep_cif_var`, with the argument types read from
 the call site; the VM leaves such calls to the tree-walker). The `libffi` crate
-builds its own copy of libffi, so no system library is needed.
+builds its own copy of libffi, so no system library is needed. On Windows the symbols
+come from `LoadLibrary`/`GetProcAddress`: the C library is looked up in both
+`ucrtbase.dll` and `msvcrt.dll` (UCRT does not export `printf` and its relatives, and a
+MinGW program may use either), and the libraries a program names are opened as
+`<name>.dll` or `lib<name>.dll`. Since the two C libraries keep their own output buffers,
+the interpreter flushes both around foreign calls, and registers `atexit` handlers with
+the C library that ends the process.
 
 Interpreter pointers are addresses in the interpreter's address space, not host
 addresses, so memory crosses the boundary by copying. A pointer argument makes
@@ -451,7 +457,7 @@ How the runtime is linked depends on the build mode:
   would compile faster again but run several times slower. The cache
   (`src/cgen/rtcache.rs`) is the directory `$GAMMA_CACHE_DIR` (an empty value
   turns it off), else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`
-  (`~/Library/Caches/gamma` on macOS). An object's name is a hash of the runtime
+  (`~/Library/Caches/gamma` on macOS, `%LOCALAPPDATA%\gamma` on Windows). An object's name is a hash of the runtime
   source, the compiler's command (with its arguments and `$CFLAGS`) and `--version`
   output, and the flags, so a
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
@@ -467,6 +473,36 @@ How the runtime is linked depends on the build mode:
 The generated `main` runs the program's entry function on a thread with a 64 MiB
 stack (`gm_run_main`), so recursion depth does not depend on the host's default
 stack size, and roughly matches the interpreter's.
+
+**Windows.** The runtime has a second implementation of its system layer for x86-64
+Windows, selected by `_WIN32` in `runtime/gm_rt.h` and `runtime/gm_rt.c`, built with
+MinGW-w64 gcc or clang. It uses the Win32 API directly rather than a POSIX emulation
+such as winpthreads, so that programs need no DLL besides the system's (they are also
+linked `-static`):
+
+- Threads are `_beginthreadex` threads (the stack size is a reservation, so the
+  64 MiB main stack costs address space only); the runtime's lock is an `SRWLOCK`; the
+  futex is `WaitOnAddress` / `WakeByAddress*` (`-lsynchronization`); time is
+  `QueryPerformanceCounter` and `GetSystemTimePreciseAsFileTime`, and sleeping a
+  high-resolution waitable timer; random bytes come from `BCryptGenRandom`.
+- Names cross into Win32 as UTF-16: paths, the environment and the arguments (from
+  `GetCommandLineW`) are converted from and to UTF-8 at the boundary. Files are C
+  runtime descriptors opened with `CreateFileW` (so all sharing modes are allowed,
+  deleting an open file included, as with Rust's `File`) and `_open_osfhandle` in
+  binary mode; the standard streams are switched to binary mode by `gm_run_main`, which
+  also sets the console's output code page to UTF-8 when standard output is a console.
+  Directories are `FindFirstFileW` searches. Win32 errors map to the same `IoError`
+  kinds the interpreter derives from Rust's `ErrorKind`, and any other error is
+  `Other(<Win32 code>)`.
+- Sockets are Winsock 2 (`WSAStartup` on first use); `SO_REUSEADDR` is not set on
+  listeners, since on Windows it allows taking over a port in use.
+- A trap exits with status 134 as elsewhere. `roundeven`, which MinGW's C library
+  lacks, is `rint` (`GM_ROUNDEVEN`).
+- The C back end passes no `-pthread` and adds `-static -lws2_32 -lsynchronization
+  -lshell32 -lbcrypt` (`cgen::windows_libs`); executables get the extension `.exe`.
+- The Rust side compiles for `x86_64-pc-windows-msvc` or `-gnu`. Source file names are
+  stored with `/` (`SourceMap::add`) so that diagnostics read the same on every system, and
+  a crash status (an NT status such as `0xC0000005`) is reported as 134.
 
 `gamma test` uses the C back end for modules that need it (foreign functions,
 `@asm`; their output is then captured with the test's) or with `--backend=c`. `cgen::generate_tests` emits one program whose
@@ -642,7 +678,12 @@ visible (the cached runtime object is compiled with `-g -O2`); Checked and Fast
 builds keep `-O2`.
 
 **Fibers.** The runtime switches stacks with a few lines of assembly for x86-64,
-AArch64 and s390x that save the callee-saved registers. The body of a `with … on` is
+AArch64 and s390x that save the callee-saved registers. (On Windows the x86-64 version
+follows the Win64 convention: it also saves `rsi`, `rdi` and `xmm6`-`xmm15`, and swaps the
+stack bounds in the thread information block, `StackBase`, `StackLimit` and
+`DeallocationStack`, which the system reads when it dispatches an exception, so that
+code on a fiber's stack, which is ordinary heap memory, is on a valid stack as far as
+Windows can tell.) The body of a `with … on` is
 moved into a C function of its own, which reaches the enclosing function's frame
 through a pointer, and runs on a fiber whose stack is the given memory. The
 `with` itself becomes the driver loop. A `ctl` perform stores its arguments in a
@@ -656,7 +697,7 @@ consumed is always detected. In Debug and Checked builds every function entry
 compares its frame's address with the lowest address the running stack may use:
 the fiber's limit, or, on a thread's own stack, the bottom of that stack (found
 with `pthread_getattr_np` or `pthread_get_stackaddr_np` at the start of `main`
-and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. Large values read from a place are copied with `memmove` rather than through a C temporary.
+and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. (On Windows the stack's bounds come from `GetCurrentThreadStackLimits`, each thread keeps 64 KiB of guaranteed stack with `SetThreadStackGuarantee`, and a vectored exception handler reports `EXCEPTION_STACK_OVERFLOW` and the same faults.) Large values read from a place are copied with `memmove` rather than through a C temporary.
 
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.

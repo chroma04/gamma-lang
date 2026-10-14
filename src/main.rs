@@ -527,7 +527,7 @@ fn test_native(
     let entries: Vec<_> = selected.iter().map(|&i| prog.tests[i].entry).collect();
     let generated = gamma::cgen::generate_tests(prog, &sess.sources, &entries, &c_options(sess));
     let Some(dir) = native_dir("test") else { return ExitCode::FAILURE };
-    let exe = dir.join("tests");
+    let exe = dir.join(native_exe_name("tests", toolchain));
     let built = generated.map_err(|u| cgen_error(sess, u)).and_then(|out| {
         let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
         gamma::cgen::compile(&out, toolchain, &exe).map(|_| ())
@@ -560,10 +560,17 @@ fn test_native(
     code
 }
 
+/// The file name of an executable called `stem`: it has the extension `.exe` when the
+/// toolchain builds for Windows (which cannot run a program without it).
+fn native_exe_name(stem: &str, toolchain: &Result<Toolchain, String>) -> String {
+    let windows = toolchain.as_ref().ok().and_then(|t| t.target().ok()).is_some_and(|t| t.os == "Windows");
+    if windows { format!("{stem}.exe") } else { stem.to_string() }
+}
+
 /// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if
 /// that is set (a malformed value ends the process), and with `arg0` as the program's
 /// name if given and no runner is in the way.
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(not(unix), allow(unused_variables, unused_mut))]
 fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std::process::Command {
     let runner = gamma::toolchain::runner_from_env().unwrap_or_else(|e| {
         eprintln!("gamma: {}", e);
@@ -666,7 +673,7 @@ fn build(opts: &Options) -> ExitCode {
     let Some(prog) = prog else { return ExitCode::FAILURE };
     let exe = opts.output.clone().unwrap_or_else(|| {
         let stem = path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned());
-        PathBuf::from(stem)
+        PathBuf::from(native_exe_name(&stem, &toolchain))
     });
     match compile_native(&sess, &prog, &toolchain, &exe) {
         Ok(()) => ExitCode::SUCCESS,
@@ -687,7 +694,12 @@ fn exit_status_code(status: std::process::ExitStatus) -> u8 {
         const SIGTRAP: i32 = 5;
         return if sig == SIGILL || sig == SIGTRAP { 134 } else { (128 + sig) as u8 };
     }
-    status.code().map_or(134, |c| c as u8)
+    // On Windows a crash is an NT status such as 0xC0000409 (a fast fail) or 0xC0000005.
+    match status.code() {
+        Some(c) if (c as u32) >= 0xC000_0000 => 134,
+        Some(c) => c as u8,
+        None => 134,
+    }
 }
 
 /// `gamma run --backend=c`: compiles to a temporary executable and runs it.
@@ -716,7 +728,7 @@ fn run_native(
     let (exe, result) = match (&cached, &dir) {
         (Some(exe), _) => (exe.clone(), Ok(())),
         (None, Some(dir)) => {
-            let exe = dir.join("prog");
+            let exe = dir.join(native_exe_name("prog", toolchain));
             let r = compile_native(sess, prog, toolchain, &exe);
             (exe, r)
         }

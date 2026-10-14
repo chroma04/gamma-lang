@@ -50,7 +50,7 @@ impl Session {
     /// Loads a file, reporting a location-less error on failure.
     pub fn load(&mut self, path: &Path) -> Option<FileId> {
         if !self.overlays.is_empty() {
-            let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let key = crate::source::canonical(path);
             if let Some(text) = self.overlays.get(&key) {
                 return Some(self.sources.add(path, text.clone()));
             }

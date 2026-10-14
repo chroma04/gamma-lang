@@ -30,7 +30,7 @@ fn std_root() -> PathBuf {
     }
     static INSTALLED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     let installed = INSTALLED.get_or_init(|| {
-        let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let exe = crate::source::canonical(&std::env::current_exe().ok()?);
         let dir = exe.parent()?.parent()?.join("lib").join("gamma").join("std");
         dir.is_dir().then_some(dir)
     });

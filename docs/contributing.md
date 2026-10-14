@@ -86,6 +86,7 @@ main :: fn() {
 | `//! stage: lex\|parse\|check\|run\|test` | how far to run the compiler (default `run`); `test` runs the file's `test` declarations |
 | `//! dump` | compare the stage's dump with a golden file: `<name>.tokens` (lex) or `<name>.ast` (parse) |
 | `//! arch: x86_64` | run the test only on hosts of that architecture (`aarch64`, `s390x`, …) |
+| `//! os: unix` | run the test only when compiling for that kind of operating system (`unix`: all but Windows; or `windows`); for tests of what the other kind lacks (POSIX-only C functions, the System V calling convention). Keep these few: a test that is not about the platform should work on both, with `when target.os` where it must differ |
 | `//! endian: little` | run the test only on targets of that byte order (`big`), for tests that show the layout of values in memory |
 | `//! needs: f16` | leave the test out of the C lanes where the target's C compiler has no `_Float16` |
 | `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`; `safe` tests need Fil-C and are skipped without it) |

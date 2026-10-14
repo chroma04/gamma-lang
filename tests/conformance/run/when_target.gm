@@ -37,8 +37,8 @@ main :: fn() \ {Out} {
     }
     f: Flavor = .Spicy
     print("{} {}\n", (f, Flavor.Spicy.tag()))
-    when target.os is .Windows {
-        print("windows\n")
+    when target.os is .FreeBSD {
+        print("freebsd\n")
     } else when target.ptr_bits is 64 {
         print("64\n")
     } else {

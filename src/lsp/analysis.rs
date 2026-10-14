@@ -13,13 +13,21 @@ use std::path::{Path, PathBuf};
 
 /// The path as the compiler's overlays and file lookups spell it.
 pub fn canon(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    crate::source::canonical(p)
 }
 
 /// A `file://` URI for `path`.
 pub fn path_to_uri(path: &Path) -> String {
     let mut out = String::from("file://");
-    for &b in path.to_string_lossy().as_bytes() {
+    // A Windows path `C:\a\b` is the URI path `/C:/a/b`.
+    let text = path.to_string_lossy();
+    let text = if cfg!(windows) {
+        let t = text.replace('\\', "/");
+        if t.as_bytes().get(1) == Some(&b':') { format!("/{t}") } else { t }
+    } else {
+        text.into_owned()
+    };
+    for &b in text.as_bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => out.push(b as char),
             _ => out.push_str(&format!("%{:02X}", b)),
@@ -48,7 +56,12 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok().map(PathBuf::from)
+    let mut path = String::from_utf8(out).ok()?;
+    // The URI path `/C:/a/b` is the Windows path `C:/a/b`.
+    if cfg!(windows) && path.as_bytes().get(2) == Some(&b':') && path.starts_with('/') {
+        path.remove(0);
+    }
+    Some(PathBuf::from(path))
 }
 
 /// The result of checking one module directory.

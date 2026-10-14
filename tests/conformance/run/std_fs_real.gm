@@ -135,7 +135,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     // cwd
     cb: [4096]u8 = ---
     cn := try cwd(cb[..])
-    print("cwd: {} {}\n", (cn > 0, cb[0] is '/'))
+    print("cwd: {} {}\n", (cn > 0, cb[0] is '/' or cb[1] is ':'))
     if !e := cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
 
     // write_atomic
@@ -165,7 +165,7 @@ cleanup :: fn(root: string) \ {Fs} {
 }
 
 main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
-    tmp := var("TMPDIR") else "/tmp"
+    tmp := var("TMPDIR") else (var("TEMP") else "/tmp")
     r: [6]u8 = ---
     fill(r[..])
     name: [12]u8 = ---
