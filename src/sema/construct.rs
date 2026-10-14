@@ -203,6 +203,10 @@ impl<'a, 's> FnCx<'a, 's> {
         if is_constant(&v) {
             return v;
         }
+        let mut v = v;
+        // A temporary the value points to (`&mk()` for a `^const T` parameter) must live
+        // for the whole call, not just for the statement that binds the value.
+        self.lift_temps(&mut v, stmts);
         let span = v.span;
         let ty = v.ty;
         let t = self.temp(ty, span);

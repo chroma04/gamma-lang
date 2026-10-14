@@ -1,5 +1,6 @@
 // A `match` on a local initialized with a literal uses the type the local was given by
-// an earlier use, and tuples of such locals take their default types (§6.1, §7.12).
+// any use, before or after the `match`, and tuples of such locals take their default
+// types (§6.1, §7.12).
 main :: fn() \ {Out} {
     a := 200
     n: u8 = a
@@ -18,4 +19,18 @@ main :: fn() \ {Out} {
         _ => "no"
     }
     print("{} {} {} {}\n", (n, r, r2, r3))
+    // The type is fixed after the `match`: `b` is a `u8`, so these arms are exhaustive.
+    b := 255
+    match b {
+        0..=127 => print("low\n")
+        128..=255 => print("high\n")
+    }
+    m: u8 = b
+    c := -3
+    w := match (c, 1) {
+        (-3, k) => k
+        _ => 0
+    }
+    big: i64 = c
+    print("{} {} {}\n", (m, w, big))
 }

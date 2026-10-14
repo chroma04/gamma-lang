@@ -297,14 +297,16 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
     let callers: Vec<String> = (0..trap.trace.len())
         .filter_map(|i| Some(format!("  called from {} in {}\n", location(sess, trap.trace[i].1)?, name(i + 1)?)))
         .collect();
-    // Past BACKTRACE_MAX callers, only the first and last BACKTRACE_MAX / 2.
+    // Past BACKTRACE_MAX callers, only the first and last BACKTRACE_MAX / 2, with a line
+    // that does not count the calls in between (a stack overflow reaches different depths
+    // on different back ends).
     const BACKTRACE_MAX: usize = 20;
     let n = callers.len();
     for (i, line) in callers.iter().enumerate() {
         if n <= BACKTRACE_MAX || i < BACKTRACE_MAX / 2 || i >= n - BACKTRACE_MAX / 2 {
             s.push_str(line);
         } else if i == BACKTRACE_MAX / 2 {
-            s.push_str(&format!("  ... {} more calls\n", n - BACKTRACE_MAX));
+            s.push_str("  ... more calls\n");
         }
     }
     s

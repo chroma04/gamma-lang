@@ -641,6 +641,12 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Construction.** `.Name(payload)` or `.Name` when the union type is known from context; `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly as arguments: `.Rect(w: 2, h: 3)`.
 - **Inspection.** `match` (§8.6), `if pattern := e` (§8.2) and `is` (§7.6). `u.tag()` returns the tag value as the tag type.
 - **From a raw tag.** For an enum, `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of one of its variants. It is the only way to turn an integer into an enum; there is no unchecked form. A union with payloads has no `from_tag`, since a tag alone cannot give a payload.
+- **Reflection.** `@variants(T)` is a compile-time constant of type `[N]T` holding every variant of the enum `T` in declaration order, so `for d in @variants(Dir)` visits each variant and `@variants(Dir).len` counts them. `T` must be a tagged union none of whose variants has a payload, and a concrete type (not a type parameter). `@variant_name(x)` gives the name of the active variant of any tagged union value `x` as a `string`, as written in the declaration and without the dot: `@variant_name(Dir.E)` is `"E"`. It evaluates `x` once. Neither applies to a `#c_union`.
+
+```
+for d in @variants(Dir) { print(@variant_name(d)) }    // N E S W
+```
+
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
 
 #### 5.11.1 Untagged unions
@@ -709,6 +715,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
 - a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type). If the target is `?T` or `E!T` (possibly nested), the variable becomes `T`, the type that the wrapping coercion starts from;
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
+- a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
 Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
@@ -805,7 +812,7 @@ Every conversion that can lose information is a named builtin method. `T` is a t
 | `x.checked(T)` | float → integer | `?T`: `null` if not integral or doesn't fit |
 | `x.sat(T)` | integer → integer, float → integer | clamp to `T`'s range; NaN → 0 |
 | `x.bits(T)` | plain-data, `bool` or `#bits` struct → plain-data | reinterpret the bytes; `@size_of` must match |
-| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type; calling it is undefined unless the parameters and results have the same representation |
+| `p.cast(P)` | pointer → pointer | change pointee type, constness, or pointer kind; checked: the address must be suitably aligned for `P`. A function pointer converts only to another function pointer type with the same calling convention and number of parameters, whose parameters and result are each the same type as before or both pointers (to any pointee, including `rawptr`; `?` on both or neither); the effect sets may differ. Other signatures are a compile error. Calling the result is undefined if the pointee types make the callee misuse its arguments (so a `^fn(arg: ^T)` called as `^fn(arg: rawptr)` must be called with a `^T`) |
 | `p.addr()` | pointer → `usize` | the address |
 | `n.to_ptr(P)` | `usize` → `?P` | the pointer with address `n`; `null` if `n` is 0 |
 
@@ -829,7 +836,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
 
 ### 7.3 Operator summary
 
@@ -991,7 +998,7 @@ Argument binding rules are in §11.3.
 
 ### 7.13 Function and handler literals
 
-`fn(params) -> R \ {E} { body }`, `fn(params) -> R => expr`, and `handler Eff { clauses }` are expressions. Their restrictions are in §11.6 and §12.5.
+`fn(params) -> R \ {E} { body }`, `fn(params) -> R => expr`, and `handler Eff { clauses }` are expressions. Their restrictions are in §11.6 and §12.5. A function literal may omit `-> R` when its return type is known from context or can be inferred from its body (§11.1).
 
 ### 7.14 Expression statements
 
@@ -1054,7 +1061,7 @@ for_stmt = [ label ':' ] 'for' pattern { ',' pattern } 'in' expr block   // also
 
 ```
 for i in 0..n { … }                  // half-open; 0..=n is inclusive
-for x in xs { … }                    // xs: an array place or a slice
+for x in xs { … }                    // xs: an array place, a slice or a tuple of one element type
 for i, x in enumerate(xs) { … }      // tuple pattern without parentheses
 ```
 
@@ -1177,7 +1184,7 @@ A pattern is matched against a value of a known type, the **scrutinee type**.
 
 - Literal patterns are permitted for integer, `bool`, and `string` scrutinees (strings compare by content). Float literal patterns are not permitted.
 - Range patterns are permitted for integer scrutinees. Bounds must be constant, `lo <= hi` (for `..`, `lo < hi`).
-- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`. A single name for a payload of two or more elements binds the whole tuple: `.Rect(r)` binds `r: (w: f64, h: f64)`.
+- In a variant pattern with a tuple payload, the payload's elements are written directly: `.Rect(w, h)` or `.Rect(w: a, h: b)`. A single-element payload `.Circle(r)`. When the payload is a tuple of any size other than one and the pattern has exactly one positional sub-pattern, that sub-pattern matches the whole payload: `.Rect(r)` binds `r: (w: f64, h: f64)`, and a nested tuple pattern such as `.Pair((x, 0))` and `.Rect(_)` work the same way. With as many sub-patterns as elements the elements are matched one by one, as above.
 - In a struct pattern, the struct's fields must be visible (§3.3).
 - A binding pattern binds an immutable name (a copy of the matched part).
 - **Bare names always bind.** A pattern consisting of a bare identifier is always a binding, never a comparison. To prevent the classic mistake of a binding silently capturing everything, a bare identifier pattern that names a visible constant value (a top-level or local `::` binding of a number, string, `bool` or enum — not a function, type, module or effect) is a compile error: compare with a guard (`x if x is PAGE => …`) or, for a constant of another module, with a qualified pattern (`limits.MAX => …`).
@@ -1305,6 +1312,7 @@ effect_set = '{' [ effect % ',' ] '}'
 
 - `a, b: i32` declares two parameters of one type.
 - `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` or `E!()` (falling off the end returns `()`, which for `E!()` is a success). With an `=>` body, the expression's value is returned.
+- A function literal without `-> R` and without an expected return type (from a parameter type or an annotation, §6.4) takes its return type from its body. With an `=>` body it is the type of the expression. With a block body it is the common type of the values of its `return` statements: the first `return e` gives the type and the others convert to it; a literal-only `return 0` takes the usual fallback (§6.1) unless another `return` constrains it; `return` without a value, or no `return` at all, means `()`. A block that can reach its end while some `return` has a value is the error of an ordinary block body above. This applies to nested functions `name :: fn …` (§11.8) as well, except that one which refers to itself must declare `-> R`, because its own type is not yet known inside its body. A literal with an expected function type or an explicit `-> R` is checked against that type and is not inferred.
 - The effect set lists every effect the function may perform that it does not handle itself (§12.3). Omitted means empty.
 - Parameter types may be omitted only in a literal whose expected type is a known function type (e.g. an argument to a parameter of function type); they are then taken from it. When the expected return type is a type parameter still to be inferred, an `=>` literal without `-> R` has the type of its body expression, which determines that parameter: `people.sort_by_key(fn(p) => (p.last, p.first))` infers the key type.
 
@@ -1384,7 +1392,7 @@ A named function passed for a second-class parameter behaves the same way as a l
 
 ### 11.7 Function pointers
 
-`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
+`^fn(A) -> R \ {E}` is a first-class function pointer (§5.14). A named function, an instantiation of a generic function (§16.7), or a function literal that captures nothing, converts to a function pointer type when its parameter types and return type are identical, its calling convention is the type's (§19.2), and its effect set is a subset of `E` (§12.3). Calling a function pointer performs exactly the effects in its type, handled at the call site, like a call to a named function.
 
 Function pointers may be stored anywhere, compared with `is`, and passed to C when their signature is C-compatible and their effect set is empty or `{Sys}` (§19.2).
 
@@ -1492,6 +1500,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 - A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::` to a local, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame. A handler literal cannot be a top-level declaration; a handler that needs no frame is a handler declaration (§12.6).
 - Effects performed by a clause body are handled by the handlers in scope **where the literal is written**. They count as effects performed by the enclosing function at that point.
 - `break`, `continue` and `return` in clause bodies are described in §12.7.
+- The values of a clause's `break`s give the installing `with` its value (§12.7.1), so they are checked against the `with`'s type: for a literal bound with `::`, that of the first `with` that installs it (names and handlers are still those where the literal is written). Every later `with` that installs it must have the same type.
 
 ### 12.6 Handler declarations
 
@@ -1618,6 +1627,7 @@ is defined as follows.
    - a range `lo..hi` or `lo..=hi` of an integer type, or a value of type `Range(T)` or `RangeIncl(T)` with an integer `T` (§5.16), meaning `range(lo, hi)` or `range_incl(lo, hi)` (§21.4), which yield the integers in ascending order;
    - an array place, a pointer to an array, or a slice, meaning `each(e[..])`, which yields the elements' values in index order;
    - any other expression of array type, such as an array constructor or a call that returns an array (and has no `Yield` effect): the array is evaluated into a hidden variable that lives as long as the loop, which is then iterated as an array place.
+   - a tuple expression or value with at least one element, all of one type (after literal inference): `for x in (1, 2, 3)`. It means the same as iterating over the array of its elements, `[_]T(t.0, t.1, …)`, evaluated once before the loop. A tuple whose elements differ in type is a compile error. (Not to be confused with `x in (1, 2, 3)`, the membership test of §7.7.)
    Any other form is a compile error. `T` is the type of the yielded values.
 
 2. **Evaluation.** The callee and arguments `a1 … an` are evaluated first, left to right, **in the context outside the loop**. Then the call is made in a context where `Yield(T)` is handled by the loop's handler and every other effect is handled as outside the loop. Second-class arguments therefore keep their own (outer) context (§11.6).
@@ -1695,7 +1705,20 @@ while x := ca.next() {
 
 A general iterator can be turned into a pull-style generator by running it on a fiber (§14); a library type such as `Generator(T)` can package this (it is not part of the core library).
 
-### 13.5 Performance
+### 13.5 Iterators as arguments
+
+A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() \ {Yield(T)}` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) is passed as the function literal `fn() => f(a1, …, an)`: the callee calls it to run the iterator, and the call and its arguments are evaluated each time it does. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
+
+```
+words := try collect(str.fields(line))       // a List(string)
+third := nth(str.split(csv, ","), 2)         // ?string
+n := count(runes(text))
+names.collect(m.keys())                      // List.collect appends
+```
+
+`collect`, `count` and `nth` (§21.4) take iterator parameters; a function of the program can too. Lockstep iteration over two slices is `zip` (§21.4); over two iterators it needs cursors or fibers (§13.4).
+
+### 13.6 Performance
 
 *Implementation note (non-normative):* when the iterator's body is visible to the compiler, `for` compiles to the same loop as hand-written index code, because the handler is known statically and the `yield` clause is inlined. The standard iterators are `#inline`. See Appendix D.
 
@@ -2025,8 +2048,8 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
 - The body is still checked once, treating the parameter as an unknown constant of its type. `when` conditions may not depend on it (§16.7).
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
-- Inside the body, an array length that depends on a compile-time parameter must be the parameter itself: `[N]T` is allowed, `[N + 1]T` (or `[@size_of(T)]u8` for a type parameter `T`) is a compile error, because the body is checked once and array types must be comparable without knowing `N`. An array `[N]T` is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown `N`), and `a.len` is `N`.
-- A compile-time value parameter that appears in the type of another parameter is inferable (`N` above, from `a: [N]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
+- Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ^` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression up to folding constant subexpressions and the order of the operands of `+ * & | ^` (`[A + B]T` and `[B + A]T` are one type, `[2 * N]T` and `[N + N]T` are not). Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
+- A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
 
 ### 16.6 Generic effects
@@ -2041,7 +2064,7 @@ Effects may have parameters (`Yield(T)`). An effect set may mention type paramet
 ### 16.7 Restrictions
 
 - `when` conditions may not depend on type parameters or compile-time value parameters of an enclosing generic function or type (that would make "checked once" impossible). Use separate functions.
-- A generic function does not convert to a function pointer, and there is no partial application of type arguments; write a non-generic wrapper (`max_i32 :: fn(xs: []const i32) -> ?i32 => max(xs)`).
+- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)`. An argument for a type parameter must be a type, which tells `f(u8)` from a call such as `id(x)`; a function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
 - Recursion between generic instantiations must terminate: an instantiation that (transitively) requires an instantiation with a strictly larger type argument is a compile error after an implementation-defined depth (at least 64).
 
 ### 16.8 Structural hashing
@@ -2165,7 +2188,7 @@ In addition to performing all checks, a Debug build must:
 - tag each allocation with its allocator and trap when it is freed through a different one, reporting both sites;
 - place guard pages (or equivalent probes) on fiber stacks;
 - use the leak-checking allocator for tests;
-- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library and shorten long reports.
+- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library. A report of more than 20 calls consists of its first 10 and its last 10 calls, with the line `  ... more calls` between them, which does not state how many calls were left out; so a stack overflow, whose depth differs between implementations, reports identically.
 
 Debug builds may skip optimizations, including handler specialization; this never changes meaning.
 
@@ -2395,6 +2418,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@offset_of(S, field)` | `usize` | yes | 5.10.4 |
 | `@type_of(e)` | `type` (`e` is not evaluated) | yes | — |
 | `@type_name(T)` | `string` | yes | — |
+| `@variants(T)` | `[N]T`; every variant of the enum `T` in declaration order | yes | 5.11 |
+| `@variant_name(x)` | `string`; the name of the active variant of the tagged union value `x` | yes, if `x` is | 5.11 |
 | `@location()` | `SourceLocation` (file, line, column, function) of the call | yes | — |
 | `@caller_location()` | as above, of the caller (only as a parameter default) | yes | — |
 | `@static_assert(c, msg)` | `()` | yes | 17.7 |
@@ -2485,9 +2510,14 @@ enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))}
 reversed   :: fn(T: type, xs: []const T) \ {Yield(T)}
 bytes      :: fn(s: string) \ {Yield(u8)}
 runes      :: fn(s: string) \ {Yield(rune)}
+zip        :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))}
+
+collect    :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc}
+count      :: fn(T: type, it: fn() \ {Yield(T)}) -> usize
+nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 ```
 
-`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. All are `#inline`.
+`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
 ### 21.5 Containers (summary)
 
@@ -2576,7 +2606,7 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | --- | --- |
 | `string` or `[]u8` as an argument itself | its bytes, unchanged |
 | integers | decimal |
-| floats | the shortest decimal that reads back as the same value at the argument's type, without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
+| floats | the shortest decimal that reads back as the same value at the argument's type (among equally short candidates, the one nearest the exact value of the float, and on an exact tie the one whose last digit is even), without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
 | `bool` | `true`, `false` |
 | enums | `.Name` |
 | tagged unions | `.Name(payload)`; a tuple payload's elements are written directly: `.Rect(w: 2, h: 3)` |

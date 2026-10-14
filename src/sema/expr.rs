@@ -4,6 +4,7 @@
 use super::DeclValue;
 use super::func::{FnCx, LabelValue, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
 use super::infer::{Fallback, VarKind};
+use super::ty_expr::ArrayLen;
 use super::untyped::Untyped;
 use crate::diag::Diagnostic;
 use crate::source::Span;
@@ -71,7 +72,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, "`_` cannot be used as a value");
                 error_expr(span)
             }
-            ExprKind::Ident(id) => self.name(id.name, span),
+            ExprKind::Ident(id) => self.name(id.name, expect, span),
             ExprKind::Paren(inner) => self.expr(inner, expect),
             ExprKind::Tuple(elems) => self.tuple(elems, expect, span),
             ExprKind::Unary { op, operand } => self.unary(*op, operand, expect, span),
@@ -195,16 +196,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 // `[2][3]i32(…)`: the element type is everything after the outer prefix.
                 let elem_ty = self.resolve_type(&without_call(elem));
-                if let Some(ast::Expr { kind: ExprKind::Ident(id), .. }) = len.as_deref()
-                    && let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == id.name)
-                {
-                    let len = Ty::intern(TyKind::Param(pid));
-                    let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
-                    return self.construct_param_array(t, elem_ty, args, span);
-                }
                 let len = match len {
-                    Some(l) => match self.sema.const_usize(self.module, l) {
-                        Some(n) => Some(n),
+                    Some(l) => match self.sema.array_len(self.module, l) {
+                        Some(ArrayLen::Known(n)) => Some(n),
+                        Some(ArrayLen::Param(len)) => {
+                            let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
+                            return self.construct_param_array(t, elem_ty, args, span);
+                        }
                         None => return error_expr(span),
                     },
                     None => None,
@@ -240,7 +238,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// A name used as a value.
-    fn name(&mut self, name: crate::symbol::Symbol, span: Span) -> Expr {
+    fn name(&mut self, name: crate::symbol::Symbol, expect: Option<Ty>, span: Span) -> Expr {
         if let Some((b, depth)) = self.lookup_local_at(name) {
             return match b {
                 LocalBinding::Var(id) if depth < self.depth() => {
@@ -250,7 +248,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     mk(ty, tir::ExprKind::Upvar { levels: self.depth() - depth, local: id }, span)
                 }
                 LocalBinding::Var(id) => mk(self.local_ty(id), tir::ExprKind::Local(id), span),
-                LocalBinding::NestedFn(f) => self.named_fn_value(f, name, span),
+                LocalBinding::NestedFn(f) if self.open_fns.contains(&f) => {
+                    self.recursive_without_ret(name, span);
+                    error_expr(span)
+                }
+                LocalBinding::NestedFn(f) => self.named_fn_value(f, name, expect, span),
                 LocalBinding::Untyped(v) => self.untyped_literal(&v, span),
                 LocalBinding::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
                 LocalBinding::Label => {
@@ -273,7 +275,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let module = self.module;
         if let Some(d) = self.sema.lookup_module_name(module, name) {
-            return self.decl_expr(d, name, span);
+            return self.decl_expr(d, name, expect, span);
         }
         if super::builtins::builtin_type(name.as_str()).is_some() {
             self.error(span, format!("expected a value, found the type `{}`", name));
@@ -286,10 +288,10 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// The value of a top-level declaration named `name`.
-    pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, span: Span) -> Expr {
+    pub fn decl_expr(&mut self, d: super::DeclId, name: crate::symbol::Symbol, expect: Option<Ty>, span: Span) -> Expr {
         self.sema.check_deprecated(d, span);
         match self.sema.resolve_decl(d) {
-            DeclValue::Fn(f) => self.named_fn_value(f, name, span),
+            DeclValue::Fn(f) => self.named_fn_value(f, name, expect, span),
             DeclValue::Const { ty, id } => mk(ty, tir::ExprKind::Const(id), span),
             DeclValue::Untyped(v) => self.untyped_literal(&v, span),
             DeclValue::Type(_) | DeclValue::GenericType(_) => {
@@ -346,14 +348,17 @@ impl<'a, 's> FnCx<'a, 's> {
         Some(self.sema.module_member(m, *name))
     }
 
-    /// The named function `f` used as a value; a generic one has none (§16.7).
-    fn named_fn_value(&mut self, f: tir::FnId, name: crate::symbol::Symbol, span: Span) -> Expr {
+    /// The named function `f` used as a value. A generic one needs its type arguments:
+    /// written (`f(u8)`) or taken from the expected function pointer type (§16.7).
+    fn named_fn_value(&mut self, f: tir::FnId, name: crate::symbol::Symbol, expect: Option<Ty>, span: Span) -> Expr {
         if !self.sema.sigs[&f].generics.is_empty() {
+            if let Some(e) = self.generic_fn_from_expected(f, expect, span) {
+                return e;
+            }
             self.error(
                 span,
                 format!(
-                    "`{}` is generic, so it can only be called; it does not convert to a function pointer (§16.7)",
-                    name
+                    "`{name}` is generic, so it needs its compile-time arguments to be a function value: write `{name}(…)` with only the types and `::` values, or give a function pointer type that determines them (§16.7)"
                 ),
             );
             return error_expr(span);
@@ -598,7 +603,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// True if `e` denotes a type rather than a value: a type parameter in scope, a type
     /// name or instantiation, or a type expression.
-    fn denotes_type(&mut self, e: &ast::Expr) -> bool {
+    pub(super) fn denotes_type(&mut self, e: &ast::Expr) -> bool {
         match &e.kind {
             ExprKind::Paren(inner) => self.denotes_type(inner),
             ExprKind::Ident(id) => {
@@ -995,7 +1000,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // `m.x` — a declaration of another module (§3.2).
         if let Some(m) = self.module_of(base) {
             return match self.sema.module_member(m, name) {
-                Some(d) => self.decl_expr(d, name.name, span),
+                Some(d) => self.decl_expr(d, name.name, None, span),
                 None => error_expr(span),
             };
         }
@@ -1017,10 +1022,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 return mk(Ty::many_ptr(*is_const, *elem), tir::ExprKind::SlicePtr(Box::new(b)), span);
             }
             (TyKind::Array { len, .. }, "len") => return mk(Ty::usize(), tir::ExprKind::Int((*len).into()), span),
-            (TyKind::ParamArray { len, .. }, "len") => {
-                let TyKind::Param(p) = len.kind() else { unreachable!() };
-                return mk(Ty::usize(), tir::ExprKind::ValueParam(*p), span);
-            }
+            (TyKind::ParamArray { len, .. }, "len") => return self.len_value(*len, span),
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
@@ -1029,6 +1031,43 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
         error_expr(span)
+    }
+
+    /// The value of a length that depends on compile-time value parameters
+    /// (a `Param`, `Value` or `LenExpr`), as a `usize` (§16.5).
+    fn len_value(&mut self, len: Ty, span: Span) -> Expr {
+        match len.kind() {
+            TyKind::Param(p) => {
+                let v = mk(self.sema.value_params[p], tir::ExprKind::ValueParam(*p), span);
+                if v.ty == Ty::usize() {
+                    v
+                } else {
+                    mk(Ty::usize(), tir::ExprKind::Coerce { kind: Coercion::IntWiden, expr: Box::new(v) }, span)
+                }
+            }
+            TyKind::Value(k) => match k.as_int() {
+                Some(n) => mk(Ty::usize(), tir::ExprKind::Int(n), span),
+                None => error_expr(span),
+            },
+            TyKind::LenExpr { op, lhs, rhs } => {
+                use crate::types::LenOp;
+                let op = match op {
+                    LenOp::Add => tir::BinOp::Add(ast::Flavor::Checked),
+                    LenOp::Sub => tir::BinOp::Sub(ast::Flavor::Checked),
+                    LenOp::Mul => tir::BinOp::Mul(ast::Flavor::Checked),
+                    LenOp::Shl => tir::BinOp::Shl(ast::Flavor::Checked),
+                    LenOp::Div => tir::BinOp::Div,
+                    LenOp::Rem => tir::BinOp::Rem,
+                    LenOp::Shr => tir::BinOp::Shr,
+                    LenOp::And => tir::BinOp::BitAnd,
+                    LenOp::Or => tir::BinOp::BitOr,
+                    LenOp::Xor => tir::BinOp::BitXor,
+                };
+                let (lhs, rhs) = (self.len_value(*lhs, span), self.len_value(*rhs, span));
+                mk(Ty::usize(), tir::ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+            }
+            _ => error_expr(span),
+        }
     }
 
     /// Field `name` of a struct value, looking through `using` fields (§5.10.3).
@@ -1420,6 +1459,64 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
+            "variants" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if matches!(t.kind(), TyKind::Param(_)) {
+                    self.error(
+                        span,
+                        format!("`@variants` needs a concrete union type, not the type parameter `{}`", t),
+                    );
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
+                    return error_expr(span);
+                };
+                if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+                    self.error(
+                        span,
+                        format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
+                    );
+                    return error_expr(span);
+                }
+                let elems = (0..variants.len() as u32)
+                    .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
+                    .collect::<Vec<_>>();
+                mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
+            }
+            "variant_name" => {
+                let x = match args {
+                    [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
+                    _ => {
+                        self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
+                        return error_expr(span);
+                    }
+                };
+                let t = self.infer.resolve(x.ty);
+                if t.is_error() {
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(
+                        span,
+                        format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why),
+                    );
+                    return error_expr(span);
+                };
+                let pat = |kind| tir::Pat { ty: t, kind, span };
+                let arms = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| tir::Arm {
+                        pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
+                        guard: None,
+                        body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
+                    })
+                    .collect();
+                mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
+            }
             other => {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", other));
                 error_expr(span)
@@ -1799,6 +1896,9 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let (levels, ret) = self.return_target();
         self.check_fn_clause_exit(levels, "return", span);
+        if let Some(open) = self.open_ret_at(levels) {
+            return self.open_return(v, levels, open, span);
+        }
         let value = match v {
             Some(v) => {
                 let ex = self.expr(v, Some(ret));
@@ -1812,6 +1912,52 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(value) }, span)
+    }
+
+    fn open_ret_at(&self, levels: u32) -> Option<Option<Ty>> {
+        match levels {
+            0 => self.open_ret,
+            n => self.outer[self.outer.len() - n as usize].open_ret,
+        }
+    }
+
+    /// A `return` in a literal whose return type comes from its `return`s: the first one
+    /// with a value fixes the type, the others convert to it.
+    fn open_return(&mut self, v: Option<&ast::Expr>, levels: u32, fixed: Option<Ty>, span: Span) -> Expr {
+        let value = match (v, fixed) {
+            (Some(v), None) => {
+                let ex = self.expr(v, None);
+                if !ex.ty.is_never() && !ex.ty.is_error() {
+                    self.set_open_ret(levels, ex.ty);
+                }
+                ex
+            }
+            (Some(v), Some(t)) => {
+                let ex = self.expr(v, Some(t));
+                self.coerce(ex, t)
+            }
+            (None, fixed) => {
+                match fixed {
+                    Some(t) if !self.infer.resolve(t).is_unit() && !t.is_error() => {
+                        self.error(span, format!("`return` needs a value of type `{}`", t));
+                    }
+                    Some(_) => {}
+                    None => self.set_open_ret(levels, Ty::unit()),
+                }
+                unit(span)
+            }
+        };
+        mk(Ty::never(), tir::ExprKind::Return { levels, value: Box::new(value) }, span)
+    }
+
+    fn set_open_ret(&mut self, levels: u32, t: Ty) {
+        match levels {
+            0 => self.open_ret = Some(Some(t)),
+            n => {
+                let i = self.outer.len() - n as usize;
+                self.outer[i].open_ret = Some(Some(t));
+            }
+        }
     }
 
     /// Resolves the target of `break` / `continue` (§8.5, §12.7.1).
