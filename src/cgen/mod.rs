@@ -348,7 +348,10 @@ impl<'a> Gen<'a> {
             .line_paths
             .entry(span.file)
             .or_insert_with(|| {
-                std::fs::canonicalize(&f.path).ok().map(|p| c_string(p.display().to_string().as_bytes()))
+                // Named with `/`, as source files are everywhere.
+                crate::source::canonicalize(&f.path)
+                    .ok()
+                    .map(|p| c_string(p.display().to_string().replace('\\', "/").as_bytes()))
             })
             .clone()?;
         let (line, _) = f.line_col(span.lo);
@@ -897,7 +900,8 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     if opts.debug_info {
         // The debugger finds the C file by this name, so it is absolute when possible.
         let dir = c_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let abs = std::fs::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
+        let abs =
+            crate::source::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
         code = debug::resolve_lines(&code, &abs.display().to_string());
     }
     std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
