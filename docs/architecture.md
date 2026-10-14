@@ -56,6 +56,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | --- | --- |
 | `src/main.rs` | the `gamma` command-line tool |
 | `src/fmt.rs` | the source formatter behind `gamma fmt` (token based, see `docs/contributing.md`) |
+| `src/repl/` | the REPL behind `gamma repl` (see [REPL](#repl)) |
 | `src/lsp/` | the language server behind `gamma lsp` (see [Language server](#language-server)) |
 | `src/ide.rs` | the editor index: references, hover text, scopes and outlines of one module |
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
@@ -741,6 +742,23 @@ the caller's value runs during the call.
 Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
 written and read piecewise with `memcpy`, so type-based alias analysis gains
 nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
+
+## REPL
+
+`gamma repl` (`src/repl/`) has no incremental compilation or persistent interpreter state to build on: every `Machine` belongs to one `tir::Program`, and locals die when `main` returns. Each input is therefore compiled as a complete program from the session's state, with `sema::analyze` over an in-memory file (`Session::overlays`):
+
+| Part of the file | Content |
+| --- | --- |
+| helpers | `__repl_type`, which names the type an expression gets by default (`1 + 2`) |
+| declarations | the source text of each earlier top-level item, and for a declaration input the new text |
+| `main` | the kept statements, the replay marker, then the new input |
+
+- `input.rs` classifies text by parsing it twice, as top-level items and as the body of a function. `x := e` parses as an item but is not a declaration, so it is read as a statement. Items that are plain `name :: value` bindings are tried as constants first and as local variables if that fails.
+- `main` returns `AllocError!()` so `try` works on allocation.
+- An expression statement is tried as written (it must have type `()`), then as `__repl_v := e` followed by `print("{}\n", __repl_v)`.
+- Variables are replayed before the new input, with the output of `Out` and `Err` hidden until a marker string (`report::Filter`). A statement is kept if it checks with the effect set `{Alloc}` and the kept statements before it, which separates repeatable statements from those with visible effects. A variable defined from an effectful expression is kept anyway, and flagged.
+- Redefining a variable renames the new one (`x__2`) and rewrites later inputs at the token level (identifiers after `.` or before `:` are left alone).
+- `report::render_region` maps diagnostics in the input to positions relative to it; errors elsewhere in the synthesized file are shown against the whole text.
 
 ## Language server
 

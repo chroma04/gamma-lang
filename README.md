@@ -81,6 +81,7 @@ gamma fetch                  # download the dependencies, writing gamma.lock
 gamma update                 # move the dependencies to their newest allowed versions
 gamma fmt file.gm            # format source files in place (files or directories)
 gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
+gamma repl                   # an interactive read-eval-print loop (see the getting-started chapter)
 gamma lsp                    # the language server, for editors
 gamma lex file.gm            # print the token stream
 gamma parse --dump file.gm   # print the syntax tree

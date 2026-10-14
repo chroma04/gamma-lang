@@ -25,6 +25,7 @@ commands:
   add     add a dependency to gamma.toml: gamma add <name> (--path <dir> | --git <url> [--tag|--branch|--rev|--version <x>])
   remove  remove a dependency from gamma.toml
           (run `gamma help packages` for the options of the package commands)
+  repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
@@ -39,6 +40,7 @@ options:
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
                               with CC set, CC (given --target if it is clang)
+  --quiet                     (repl) no banner and prompts, even on a terminal
   --offline                   (check, run, build, test) never use the network: git
                               dependencies must be locked and already fetched
   --locked                    (check, run, build, test) fail if gamma.lock is missing or
@@ -87,6 +89,8 @@ struct Options {
     offline: bool,
     /// `--locked`: gamma.lock must be up to date.
     locked: bool,
+    /// `--quiet`: the REPL prints no banner or prompts.
+    quiet: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -106,6 +110,7 @@ fn parse_args() -> Result<Options, String> {
         target: None,
         offline: false,
         locked: false,
+        quiet: false,
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -117,6 +122,7 @@ fn parse_args() -> Result<Options, String> {
             "--dump" => opts.dump = true,
             "--offline" => opts.offline = true,
             "--locked" => opts.locked = true,
+            "--quiet" => opts.quiet = true,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
@@ -219,6 +225,12 @@ fn compiler_main() -> ExitCode {
         "run" => run(&opts),
         "test" => test(&opts),
         "build" => build(&opts),
+        "repl" => gamma::repl::run(gamma::repl::Options {
+            quiet: opts.quiet,
+            mode: opts.mode,
+            format: opts.format,
+            preload: opts.file.clone().into_iter().collect(),
+        }),
         other => {
             eprintln!("gamma: unknown command `{}`\n\n{}", other, USAGE);
             ExitCode::from(2)

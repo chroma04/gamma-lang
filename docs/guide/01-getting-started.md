@@ -78,6 +78,7 @@ gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
 gamma fmt --check file.gm  list the files that formatting would change, without writing
+gamma repl                 start an interactive session
 gamma help                 print usage
 gamma version              print the compiler version
 ```
@@ -85,6 +86,53 @@ gamma version              print the compiler version
 A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short` chooses how diagnostics are printed; they go to standard error, and the tool exits with status 1 if there were errors. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
 `gamma run` interprets the program, which starts at once and gives the most precise diagnostics, but runs it roughly 10 to 100 times slower than compiled code. For programs that do real work (megabytes of input, long loops, benchmarks), use `gamma run --backend=c`: the first run pays for a C compilation (around a second), and later runs of the same program reuse the executable, which is kept in the cache directory described below. The two back ends give the same output.
+
+### The REPL
+
+`gamma repl` reads inputs from standard input, one at a time, and runs them with the interpreter. On a terminal it prints a banner and the prompts `>> ` and `.. `; when standard input is a pipe or a file, or with `--quiet`, it prints only what the inputs print, so sessions can be scripted. `gamma repl lib.gm` first loads the declarations of `lib.gm` (see `:load`).
+
+```text
+>> 1 + 2
+3
+>> sq :: fn(n: i32) -> i32 => n * n
+>> x := 12
+>> sq(x)
+144
+>> x = x + 1
+>> sq :: fn(n: i32) -> i32 => n * n * n
+>> sq(x)
+2197
+>> math :: import "std/math"
+>> math.sqrt(2.0)
+1.4142135623730951
+```
+
+An input is one of three things:
+
+- **A definition**: a function, a struct, union or effect, an import, a handler, or a constant such as `N :: 3`. Definitions are visible to everything, including earlier functions. Defining a name again replaces the old definition. `main` is reserved.
+- **A statement**: a variable (`x := 12`, `y :: x + 1`), an assignment, a loop and so on. Variables persist from one input to the next, and can be defined again, even with another type. An input that is a plain `name :: value` is a constant if its value can be computed at compile time and a variable otherwise.
+- **An expression**: its value is printed with the display rules of `print` (§21.6.1). An expression of type `()` prints nothing.
+
+An input continues on the next line while a bracket is open or the input ends where more is expected, and the prompt becomes `.. `. A blank line ends an input that only lacks its end, so the error is shown; `:cancel` discards the input so far. Diagnostics use the normal format, with positions relative to the input (`<repl>:1:6`). An input with an error changes nothing. A trap prints its reason and location, and the session continues. Ambient effects work as in `main`: a statement can print, read files and so on.
+
+Commands start with a colon:
+
+```text
+:help           list the commands
+:quit           leave (end of input also leaves)
+:type <expr>    print the type of an expression, without running it
+:list           print the definitions and variables of the session
+:load <file>    add the declarations of a file (its `main` is ignored)
+:reset          forget everything
+```
+
+Because there is no incremental compiler, each input is checked and run as a whole program made of the session's definitions, a `main` that holds the variables, and the new input. Variables cannot outlive a run of the interpreter, so the statements that define them are run again, with their output hidden, before every input. Three consequences follow:
+
+- Only statements that can be repeated unnoticed are kept: those that need no effect except `Alloc`, and the definitions of variables. A statement that prints, reads or writes files, or uses the clock or random numbers, runs once and is not kept. If a variable is defined from such an expression (`data := load_file(path)`), the REPL says so, and the expression is evaluated again before every later input (its output stays hidden, and the cost is that of running it again). A statement that changes a variable by a call that has effects is not kept either.
+- An expression whose value is printed is kept only if it may change variables: it takes an address or calls a method (`it.next()`). A call like `f(x)` that changes nothing is not.
+- A variable defined again is renamed internally, because locals cannot be shadowed; diagnostics may show a name like `x__3`. Declarations loaded by `:load` and imports with `./` paths are resolved relative to the directory the REPL was started in.
+
+The REPL does not resolve package dependencies, and a program that needs the native back end (inline assembly, foreign code libffi cannot call) is not supported in it.
 
 ### Build modes
 
