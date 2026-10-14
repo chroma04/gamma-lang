@@ -315,9 +315,9 @@ for g in text.graphemes("e\u{301}🇫🇷👨\u{200d}👩\u{200d}👧") { n += 1
 
 ## `std/collections`
 
-Three containers beyond `List` and `HashMap`, each in its own module, because their
+Four containers beyond `List` and `HashMap`, each in its own module, because their
 functions are methods and a module has one namespace: `std/collections/deque`,
-`std/collections/heap` and `std/collections/bitset`. They follow the conventions of
+`std/collections/heap`, `std/collections/bitset` and `std/collections/ordered_map`. They follow the conventions of
 `List`: construction captures the current allocator, nothing allocates afterwards,
 growth returns `AllocError!()`, `deinit` frees through the stored allocator, and the
 fields are private.
@@ -371,6 +371,33 @@ seen.insert(42)
   cannot hold.
 - `items()` yields the members in increasing order; `next_member(from) -> ?usize` is the
   smallest member at least `from`.
+
+**`ordered_map`**: a map that keeps its keys in order, as a B-tree (nodes of up to 15
+keys, one allocation each).
+
+```gamma
+om :: import "std/collections/ordered_map"
+
+m := om.ordered_map(string, u32)      // keys ordered by `<`
+defer m.deinit()
+try m.put("pear", 3)
+try m.put("apple", 5)
+for e in m.entries() { … }            // apple, then pear
+for e in m.range("b", null) { … }     // keys from "b" on
+```
+
+- `ordered_map(K, V)` (needs `Ord(K)`) orders by `<`. `ordered_map_by(K, V, less)` takes
+  `less: ^fn(a, b: ^const K) -> bool`, true when `a` comes before `b` (a strict weak
+  ordering; keys neither of which comes first are the same key). Both give the same type,
+  `OrderedMap(K, V)`.
+- `put(k, v)` (`AllocError!()`; on failure the map is unchanged), `get(k) -> ?V`,
+  `get_ptr(k) -> ?^V` (valid until the next insertion or removal), `contains(k)`,
+  `remove(k) -> ?V`, `remove_entry(k) -> ?(key: K, value: V)`, `len()`, `is_empty()`,
+  `first()` and `last()` (`?(key: K, value: V)`), `clear()`, `deinit()`.
+- `entries()`, `keys()` and `values()` yield in key order. `range(lo, hi)` yields the
+  entries with `lo <= key < hi`; a bound that is `null` is open (`m.range(5, null)`). The
+  map must not change during an iteration.
+- Lookups, insertions and removals take O(log n) comparisons.
 
 ## `std/arena` and `std/fixed_buffer`
 
@@ -690,6 +717,87 @@ data := try hex.decode("4869", raw[..])             // "Hi"
   `src` is invalid.
 - `DecodeError` is `.InvalidByte(i)` (the offset of the first bad digit) or `.OddLength`;
   a bad digit is reported before an odd length.
+
+## `std/hash`
+
+Fixed, unkeyed checksums and digests for integrity checks: CRC-32 and SHA-256. Each
+algorithm is a module of its own (their functions share names), reached through
+`std/hash` or imported directly (`std/hash/sha256`). Nothing allocates or performs
+effects. Ciphers, keyed MACs, signatures and password hashing are not in the standard
+library.
+
+```gamma
+hash :: import "std/hash"
+hex :: import "std/encoding/hex"
+
+crc := hash.crc32.checksum("123456789")             // 0xcbf43926
+d := hash.sha256.sum("abc")                         // a [32]u8
+buf: [64]u8 = ---
+text := hex.encode(d[..], buf[..], false)           // "ba7816bf8f01cfea..."
+
+s := hash.sha256.init()                             // the same, for data in pieces
+s.update("a")
+s.update("bc")
+d2 := s.final()
+```
+
+- `crc32`: the CRC-32 of ISO-HDLC (zlib, gzip, PNG, Ethernet). `init()`,
+  `c.update(data)`, `c.final() -> u32` (the state is unchanged, so more data may follow),
+  `checksum(data) -> u32`.
+- `sha256`: FIPS 180-4. `init()`, `s.update(data)`, `s.final() -> Digest` (a `[32]u8`;
+  the state is unchanged), `sum(data) -> Digest`; `DIGEST_LEN` is 32 and `BLOCK_LEN` 64.
+- The result does not depend on how the input is split across `update` calls.
+
+## `std/json`
+
+JSON as in RFC 8259: a parser into a value tree and a writer. Parsing allocates; the
+`Document` owns everything and frees it with `deinit`.
+
+```gamma
+json :: import "std/json"
+
+doc := try json.parse("{\"name\": \"gamma\", \"tags\": [1, 2.5]}")
+defer doc.deinit()
+if v := doc.root.get("name") { … }                  // .String("gamma")
+
+out := list(u8)
+defer out.deinit()
+try json.write(&out, doc.root, 2)                   // indented by 2 spaces
+
+w := json.writer(&out, 0)                           // or write output directly
+try w.begin_object()
+try w.key("id")
+try w.write_int(7)
+try w.end_object()                                  // {"id":7}
+```
+
+- `Value` is a union: `Null`, `Bool`, `Number`, `String`, `Array: []Value` and
+  `Object: []Member` (`key`, `value`, in text order). `v.get(key) -> ?Value` finds an
+  object member and `v.at(i) -> ?Value` an array element.
+- `parse(text, max_depth = 512) -> ParseError!Document` accepts exactly RFC 8259's
+  grammar: any value at the top level, with surrounding space, tab, line feed and carriage
+  return. It rejects trailing commas, comments, leading zeros, `+`, `.5`, `1.`, `NaN`,
+  unescaped control characters, invalid UTF-8 in strings and a byte order mark. A `\u`
+  escape that is a lone surrogate is an error (`InvalidSurrogate`); a valid pair decodes
+  to one scalar value. Duplicate keys are all kept, in order, and `get` finds the last.
+  Nesting beyond `max_depth` is `TooDeep`.
+- Errors carry the byte offset (`UnexpectedEnd`, `UnexpectedByte`, `InvalidNumber`,
+  `InvalidEscape`, `InvalidSurrogate`, `ControlCharacter`, `InvalidUtf8`, `TrailingData`,
+  `TooDeep`, and `Memory: AllocError`). `position(text, offset)` gives the `line` and
+  `column` (from 1) for a message.
+- A `Number` keeps its literal `text`. `n.to_i64() -> ?i64` is the integer it denotes
+  (`12`, `1e3` and `5.0` are integers) or `null` if it has a fraction or is out of range.
+  `n.to_f64() -> (value: f64, exact: bool)` is the correctly rounded float, and `exact`
+  says whether it prints as the same decimal number as the literal (`0.1` is exact;
+  `9007199254740993` and `1e400` are not).
+- `write(&list, value, indent = 0)` appends a tree: compact, or one element per line
+  indented by `indent` spaces. `Writer` (`writer(&list, indent)`) writes without a tree:
+  `begin_object`, `key`, `begin_array`, `end_object`, `end_array`, `write_null`,
+  `write_bool`, `write_string`, `write_int`, `write_float`, `write_number` and
+  `write_value`. It keeps commas, colons and indentation right; calls out of order trap,
+  and nesting is limited to 256. Strings are escaped (`"`, `\`, control characters);
+  floats use the shortest form that reads back, so `2.0` is written `2`. The
+  errors are `WriteError`: `Memory`, `NonFinite` (NaN or infinity) and `InvalidUtf8`.
 
 ## `std/ascii`
 
