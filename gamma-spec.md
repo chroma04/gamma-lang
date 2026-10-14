@@ -197,12 +197,13 @@ A decimal literal may not have a leading `0` unless it is exactly `0` (so `017` 
 ```
 float_lit  = dec_lit '.' dec_lit [ exponent ] [ float_suffix ]
            | dec_lit exponent [ float_suffix ]
-           | hex_lit '.' hexdigits 'p' [ '+' | '-' ] dec_lit [ float_suffix ]
+           | dec_lit float_suffix
+           | hex_lit [ '.' hexdigits ] 'p' [ '+' | '-' ] dec_lit [ float_suffix ]
 exponent   = ( 'e' | 'E' ) [ '+' | '-' ] dec_lit
 float_suffix = 'f16' | 'f32' | 'f64'
 ```
 
-Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
+Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0). The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
 
 #### 2.5.3 Character literals
 
@@ -885,6 +886,8 @@ For `+ - * <<` on integers:
 | `a +| b` | `T` | saturates to `T`'s minimum or maximum |
 | `a +? b` | `?T` | `null` |
 
+**Chaining `?` flavors.** An operand of `+? -? *?`, or the left operand of `<<?`, may itself be `?T`, so `a *? b +? c` needs no parentheses or `else` between steps. Both operands are evaluated, left to right; if either is `null` the result is `null`, otherwise the operator applies to the values. The other flavors and the unflavored operators never take optional operands: `a *? b + c` is a compile error.
+
 Overflow means the mathematical result is not representable in `T`. For `<<`, overflow means any bit shifted out differs from the result's sign bit (for signed) or is 1 (for unsigned); `<<%` discards shifted-out bits; `<<|` saturates; `<<?` gives `null`.
 
 Unary `-x` overflows only for the minimum signed value; it is checked like `+`.
@@ -1282,10 +1285,10 @@ load_config :: fn(path: string) -> LoadError!Config \ {Alloc, Fs} {
 
 ### 10.7 Optional-returning arithmetic
 
-`a +? b`, `a -? b`, `a *? b`, `a <<? b` give `?T` (§7.4.2). `x.checked(T)` and `a.get(i)` give optionals. These compose with `else` and `try`:
+`a +? b`, `a -? b`, `a *? b`, `a <<? b` give `?T` and accept `?T` operands, so they chain (§7.4.2). `x.checked(T)` and `a.get(i)` give optionals. These compose with `else` and `try`:
 
 ```
-n = n *? 10 else return !.TooBig
+n = n *? 10 +? d else return !.TooBig
 ```
 
 ---

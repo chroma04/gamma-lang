@@ -115,8 +115,7 @@ parse_u16 :: fn(s: string) -> ParseError!u16 {
     n: u16 = 0
     for i, c in enumerate(s) {
         if c not in '0'..='9' { return !.BadDigit(i) }    // `i` says where
-        n = n *? 10 else return !.TooBig
-        n = n +? u16(c - '0') else return !.TooBig
+        n = n *? 10 +? u16(c - '0') else return !.TooBig
     }
     return n                                              // wraps as a success
 }
@@ -126,7 +125,7 @@ Three pieces of syntax appear here:
 
 - `!e` builds an error value. With a union error type known from context, variant shorthand works: `return !.TooBig`.
 - `return n` returns a success; the `u16` wraps into `ParseError!u16` implicitly.
-- `n *? 10 else return !.TooBig` combines an optional-returning operation with an early error return. This is the idiom for checked arithmetic in a function that returns a result.
+- `n *? 10 +? u16(c - '0') else return !.TooBig` combines optional-returning arithmetic with an early error return. The `?` flavors accept an optional operand, so they chain: the result is `null` if any step overflows. This is the idiom for checked arithmetic in a function that returns a result.
 
 Printing a result shows the success value or `!` followed by the error, for example `80` or `!.BadDigit(2)`.
 

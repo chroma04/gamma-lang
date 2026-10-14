@@ -61,3 +61,7 @@
   reserved type names only forbidden at top level (locals/params like `u1` may hide them: real
   code uses u1/u2/i53 locals); universe list synced with prelude; grammar gaps (else block,
   `_`/`---` primaries, when in union bodies) fixed; many § cross-refs fixed.
+- s10 literals/flavors: §2.5.2 `1f32` (decimal int + float suffix is a float; hex keeps `f`
+  as a digit) and `0x1p4` (hex float fraction optional); §7.4.2/§10.7 `?` flavors take `?T`
+  operands (both evaluated, null if either null; lowered in sema to a block + if-let, so
+  no back end changes). bool was already Ord (s7), so that todo half needed nothing.

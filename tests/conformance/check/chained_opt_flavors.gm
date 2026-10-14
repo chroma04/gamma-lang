@@ -1,0 +1,9 @@
+//! stage: check
+// Only the `?` flavors take optional operands (§7.4.2).
+f :: fn(m: u8, o: ?u8) {
+    a := m *? 2 + 1   //~ ERROR the operands of `+` have different types
+    b := o +% 1   //~ ERROR
+    c := m << o   //~ ERROR a shift amount must have an unsigned integer type
+}
+
+main :: fn() {}
