@@ -61,7 +61,7 @@ impl<'s> Sema<'s> {
     /// separators (`.` for the root itself), which names it in test reports.
     fn module_label(&self, module: ModuleId) -> String {
         let m = &self.modules[module.0 as usize];
-        let dir = m.dir.as_deref().map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        let dir = m.dir.as_deref().map(|d| crate::source::canonicalize(d).unwrap_or_else(|_| d.to_path_buf()));
         let root = m.package.map(|p| &self.packages[p].root);
         let rel = match (&dir, root) {
             (Some(d), Some(r)) => d.strip_prefix(r).ok(),

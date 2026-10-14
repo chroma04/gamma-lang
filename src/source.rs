@@ -92,15 +92,20 @@ impl SourceFile {
     }
 }
 
-/// The canonical form of `path` (`path` itself if it does not exist). On Windows the
-/// canonical path of the system has a `\\?\` prefix that no other spelling of the path has
-/// and that would show in diagnostics, so it is left off.
+/// The canonical form of `path` (`path` itself if it does not exist).
 pub fn canonical(path: &Path) -> PathBuf {
-    let c = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    match c.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+    canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// [`Path::canonicalize`], except that on Windows the result has no `\\?\` prefix: no
+/// other spelling of a path has it, it would show in diagnostics, and C compilers and
+/// other tools cannot open such paths. Use this instead of `canonicalize`.
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    let c = path.canonicalize()?;
+    Ok(match c.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         Some(plain) if !plain.starts_with("UNC\\") => PathBuf::from(plain),
         _ => c,
-    }
+    })
 }
 
 /// All source files known to one compilation.

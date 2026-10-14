@@ -197,8 +197,7 @@ fn add(args: &[String]) -> Result<(), Failure> {
                     "`--tag`, `--branch`, `--rev`, `--version` and `--subdir` need `--git`".into(),
                 ));
             }
-            let abs = Path::new(path)
-                .canonicalize()
+            let abs = crate::source::canonicalize(Path::new(path))
                 .map_err(|e| Failure::Error(format!("cannot use the path {}: {}", path, e)))?;
             NewDep::Path(relative_path(&root, &abs))
         }
@@ -354,7 +353,8 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
             )));
         }
         None => {
-            let abs = dir.canonicalize().map_err(|e| Failure::Error(format!("cannot use {}: {}", dir.display(), e)))?;
+            let abs = crate::source::canonicalize(&dir)
+                .map_err(|e| Failure::Error(format!("cannot use {}: {}", dir.display(), e)))?;
             scaffold::sanitize_name(&abs.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned()))
         }
     };

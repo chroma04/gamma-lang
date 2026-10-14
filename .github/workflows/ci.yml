@@ -28,7 +28,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets
       - name: Test
-        run: cargo test --all-targets --no-fail-fast
+        run: cargo test --all-targets
       - name: Conformance tests on the tree-walking interpreter
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -69,7 +69,7 @@ jobs:
       # No `CC` here: cc-rs would pass it to the MSVC build of libffi. Gamma itself takes
       # the first of cc, gcc and clang on PATH, which is MSYS2's (added first above).
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --no-fail-fast
 
   safe:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.

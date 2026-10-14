@@ -121,8 +121,7 @@ impl<'s> Sema<'s> {
         let dir = if relative {
             let dir = normalize(&from_dir.join(path));
             let root = package.map(|p| self.packages[p].root.clone());
-            let canon = dir
-                .canonicalize()
+            let canon = crate::source::canonicalize(&dir)
                 .unwrap_or_else(|_| normalize(&std::env::current_dir().unwrap_or_default().join(&dir)));
             if root.is_some_and(|r| !canon.starts_with(&r)) {
                 self.error(span, format!("the import path `{}` leaves the package (§3.2)", path));
@@ -170,7 +169,7 @@ impl<'s> Sema<'s> {
         parent: Option<usize>,
         name: Option<&str>,
     ) -> Option<ModuleId> {
-        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let key = crate::source::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         if let Some(&m) = self.module_by_dir.get(&key) {
             return Some(m);
         }
@@ -196,7 +195,7 @@ impl<'s> Sema<'s> {
         let m = self.add_module(Symbol::intern(&name), files, false);
         self.modules[m.0 as usize].dir = Some(dir.to_path_buf());
         // Standard library modules may use the system intrinsics, like the core library.
-        let std = std_root().canonicalize().unwrap_or_else(|_| std_root());
+        let std = crate::source::canonicalize(&std_root()).unwrap_or_else(|_| std_root());
         self.modules[m.0 as usize].is_std = key.starts_with(&std);
         self.modules[m.0 as usize].package = Some(package);
         self.module_by_dir.insert(key, m);
@@ -225,12 +224,12 @@ impl<'s> Sema<'s> {
             // The first directory searched comes last on the stack.
             subdirs.sort_by(|a, b| b.cmp(a));
             dirs.extend(subdirs);
-            let key = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            let key = crate::source::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             // A root given as a file stands for its directory.
             let is_root_dir = self.modules[root.0 as usize]
                 .dir
                 .as_ref()
-                .is_some_and(|d| d.canonicalize().unwrap_or_else(|_| d.clone()) == key);
+                .is_some_and(|d| crate::source::canonicalize(d).unwrap_or_else(|_| d.clone()) == key);
             if self.module_by_dir.contains_key(&key) || is_root_dir {
                 continue;
             }

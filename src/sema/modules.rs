@@ -93,7 +93,7 @@ impl<'s> Sema<'s> {
             return None;
         }
         let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
-        let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let canon = crate::source::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let package = self.package_of(&canon, None);
         let name = root.file_stem().map_or("main".to_string(), |s| s.to_string_lossy().into_owned());
         let m = self.add_module(Symbol::intern(&name), vec![ast], false);

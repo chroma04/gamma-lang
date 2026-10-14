@@ -184,7 +184,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 /// (`std/io`) inside the standard library (a `lib/std` directory), else the name of the
 /// directory or file with `.` and `..` resolved.
 fn root_name(path: &Path) -> Result<String, String> {
-    let canon = path.canonicalize().map_err(|e| format!("gamma: {}: {}", path.display(), e))?;
+    let canon = crate::source::canonicalize(path).map_err(|e| format!("gamma: {}: {}", path.display(), e))?;
     let dir = if canon.is_dir() { Some(canon.as_path()) } else { canon.parent() };
     let parts: Vec<String> =
         dir.iter().flat_map(|d| d.components()).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();

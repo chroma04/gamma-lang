@@ -57,7 +57,7 @@ pub enum Refresh {
 /// The root package for work at `start` (a file or a directory): the nearest directory at
 /// or above it that holds a `gamma.toml`.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
-    let abs = start.canonicalize().ok()?;
+    let abs = crate::source::canonicalize(start).ok()?;
     let mut cur = if abs.is_dir() { Some(abs.as_path()) } else { abs.parent() };
     while let Some(d) = cur {
         if d.join("gamma.toml").is_file() {

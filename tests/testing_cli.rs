@@ -21,7 +21,7 @@ impl Package {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("testing_cli").join(name);
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
+        let root = gamma::source::canonicalize(&root).unwrap();
         std::fs::write(root.join("gamma.toml"), format!("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name))
             .unwrap();
         for (rel, text) in files {

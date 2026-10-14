@@ -61,7 +61,7 @@ impl World {
         let root = base.join(name);
         force_remove(&root);
         std::fs::create_dir_all(&root).unwrap();
-        World { root: root.canonicalize().unwrap() }
+        World { root: gamma::source::canonicalize(&root).unwrap() }
     }
 
     fn cache(&self) -> PathBuf {
@@ -73,7 +73,7 @@ impl World {
     }
 
     fn url(&self, repo: &str) -> String {
-        format!("file://{}", self.path(repo).display())
+        file_url(&self.path(repo))
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -903,7 +903,7 @@ fn the_language_server_sees_fetched_git_dependencies() {
     sum_app(&w, &format!("http = {{ git = \"{}\" }}\n", w.url("http")), &["http"]);
     w.gamma("app", &["fetch"]).success();
     let lock = w.read("app/gamma.lock");
-    let main = w.path("app/main.gm").canonicalize().unwrap();
+    let main = gamma::source::canonicalize(&w.path("app/main.gm")).unwrap();
     let mut child = Command::new(GAMMA)
         .arg("lsp")
         .env("GAMMA_CACHE_DIR", w.cache())
@@ -918,8 +918,8 @@ fn the_language_server_sees_fetched_git_dependencies() {
     lsp_send(&mut stdin, r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
     let text = std::fs::read_to_string(&main).unwrap();
     let open = format!(
-        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file://{}","languageId":"gamma","version":1,"text":{:?}}}}}}}"#,
-        main.display(),
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","languageId":"gamma","version":1,"text":{:?}}}}}}}"#,
+        file_url(&main),
         text
     );
     lsp_send(&mut stdin, &open);
@@ -1339,4 +1339,10 @@ fn archive_subdirectories_add_and_bad_archives() {
         let out = w.gamma("app", &["check", "."]).failure();
         assert!(out.stderr.contains("gamma.toml:4: ") && out.stderr.contains(msg), "{}\n{}", dep, out.stderr);
     }
+}
+
+/// The `file:` URL of the local path `p` (`file:///D:/x` on Windows).
+fn file_url(p: &std::path::Path) -> String {
+    let s = p.display().to_string().replace('\\', "/");
+    if s.starts_with('/') { format!("file://{s}") } else { format!("file:///{s}") }
 }

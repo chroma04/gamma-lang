@@ -301,11 +301,11 @@ impl Scope {
     fn new(input: &Path) -> Scope {
         let root = package_root(input);
         let std = gamma::sema::std_root();
-        Scope { root, std: std.canonicalize().unwrap_or(std) }
+        Scope { root, std: gamma::source::canonicalize(&std).unwrap_or(std) }
     }
 
     fn contains(&self, p: &Path) -> bool {
-        let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let p = gamma::source::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         p.starts_with(&self.root) && !p.starts_with(&self.std)
     }
 }
@@ -313,7 +313,7 @@ impl Scope {
 /// The root directory of the package that holds `input`: the nearest directory with a
 /// `gamma.toml`, or else the directory of the input itself.
 fn package_root(input: &Path) -> PathBuf {
-    let canon = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+    let canon = gamma::source::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
     let dir = if canon.is_dir() { canon } else { canon.parent().map(Path::to_path_buf).unwrap_or_default() };
     let mut cur = Some(dir.as_path());
     while let Some(d) = cur {
@@ -480,7 +480,7 @@ fn coverage_report(sess: &Session, scope: &Scope, map: &gamma::coverage::CoverMa
     let mut files: BTreeMap<PathBuf, BTreeMap<u32, u32>> = BTreeMap::new();
     for (i, (file, line)) in map.points.iter().enumerate() {
         let path = &sess.sources.file(*file).path;
-        let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let path = gamma::source::canonicalize(path).unwrap_or_else(|_| path.clone());
         let hits = counts.get(i).copied().unwrap_or(0);
         let slot = files.entry(path).or_default().entry(*line).or_insert(0);
         *slot = (*slot).max(hits);

@@ -226,7 +226,8 @@ impl<'a> Resolver<'a> {
     /// Resolves the graph of the root package. Returns the resolution and the lock it
     /// implies, or `None` if there are no git dependencies.
     pub(super) fn run(&mut self) -> Result<Option<(Resolution, Lock)>, String> {
-        let root = self.root.canonicalize().map_err(|e| format!("cannot read {}: {}", self.root.display(), e))?;
+        let root = crate::source::canonicalize(&self.root)
+            .map_err(|e| format!("cannot read {}: {}", self.root.display(), e))?;
         let manifest = read_manifest(&root)?;
         loop {
             self.chosen.clear();
@@ -406,7 +407,7 @@ impl<'a> Resolver<'a> {
             git::make_read_only(&dest);
         }
         git::mark_used(&dest);
-        let canon = dest.canonicalize().map_err(|e| format!("cannot read {}: {}", dest.display(), e))?;
+        let canon = crate::source::canonicalize(&dest).map_err(|e| format!("cannot read {}: {}", dest.display(), e))?;
         self.checkouts.insert(key.clone(), canon.clone());
         Ok(canon)
     }
@@ -451,7 +452,7 @@ impl<'a> Resolver<'a> {
                 Some(s) => s,
                 None => git::tree_checksum(dir)?,
             };
-            let dir = dir.canonicalize().map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+            let dir = crate::source::canonicalize(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
             Ok(ArchiveInfo { sha256: hash.to_string(), dir, checksum })
         };
         if let Some((hash, _)) = &expected {
@@ -525,7 +526,7 @@ impl<'a> Resolver<'a> {
             match &dep.source {
                 Source::Path(p) => {
                     let joined = normalize(&dir.join(p));
-                    let canon = joined.canonicalize();
+                    let canon = crate::source::canonicalize(&joined);
                     if let Some((_, gr)) = owner {
                         match &canon {
                             Ok(c) if c.starts_with(gr) => {}
@@ -562,7 +563,7 @@ impl<'a> Resolver<'a> {
                     let choice = self.choose(&key)?;
                     let co = self.ensure_checkout(&key, &choice)?;
                     let pkg_dir = match &g.subdir {
-                        Some(s) => co.join(s).canonicalize().ok().filter(|p| p.starts_with(&co)),
+                        Some(s) => crate::source::canonicalize(&co.join(s)).ok().filter(|p| p.starts_with(&co)),
                         None => Some(co.clone()),
                     };
                     let Some(pkg_dir) = pkg_dir else {
@@ -594,7 +595,7 @@ impl<'a> Resolver<'a> {
                     let key: Key = (format!("url+{}", u.url), u.subdir.clone());
                     let co = info.dir.clone();
                     let pkg_dir = match &u.subdir {
-                        Some(s) => co.join(s).canonicalize().ok().filter(|p| p.starts_with(&co)),
+                        Some(s) => crate::source::canonicalize(&co.join(s)).ok().filter(|p| p.starts_with(&co)),
                         None => Some(co.clone()),
                     };
                     let Some(pkg_dir) = pkg_dir else {

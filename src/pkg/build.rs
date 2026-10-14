@@ -103,7 +103,7 @@ impl Collector<'_> {
                     _ => continue,
                 },
             };
-            let Ok(target) = target.canonicalize() else { continue };
+            let Ok(target) = crate::source::canonicalize(&target) else { continue };
             if !target.join("gamma.toml").is_file() || !self.seen.insert(target.clone()) {
                 continue;
             }

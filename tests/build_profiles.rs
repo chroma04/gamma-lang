@@ -3,7 +3,7 @@
 //! (the interpreter loads the C sources as a shared library) and, for the git
 //! dependency, `git`. Each test has a directory and a cache directory of its own.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
@@ -50,7 +50,7 @@ impl World {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("build_profiles").join(name);
         let _ = gamma::pkg::git::remove_tree(&root);
         std::fs::create_dir_all(&root).unwrap();
-        World { root: root.canonicalize().unwrap() }
+        World { root: gamma::source::canonicalize(&root).unwrap() }
     }
 
     fn path(&self, p: &str) -> PathBuf {
@@ -406,7 +406,7 @@ fn git_dependencies_can_wrap_c() {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "wrap"]);
     git(&["tag", "v1.0.0"]);
-    wrap_app(&w, &format!("{{ git = \"file://{}\", version = \"1\" }}", w.path("wrap").display()));
+    wrap_app(&w, &format!("{{ git = \"{}\", version = \"1\" }}", file_url(&w.path("wrap"))));
     let out = w.gamma("app", &["run", "."]).success();
     assert_eq!(out.stdout, "42 1000\n", "{}", out.stderr);
     assert_eq!(w.gamma("app", &["run", "--backend=c", "."]).success().stdout, "42 1000\n");
@@ -450,4 +450,10 @@ fn ldflags_of_the_manifest_reach_the_linker() {
     shim_package(&w, &format!("{}ldflags = [\"-lnonexistent_library_for_test\"]\n", SHIM_BUILD));
     let out = w.gamma("app", &["build", "main.gm"]).failure();
     assert!(out.stderr.contains("nonexistent_library_for_test"), "{}", out.stderr);
+}
+
+/// The `file:` URL of the local directory `p`, as git takes it (`file:///D:/x` on Windows).
+fn file_url(p: &Path) -> String {
+    let s = p.display().to_string().replace('\\', "/");
+    if s.starts_with('/') { format!("file://{s}") } else { format!("file:///{s}") }
 }
