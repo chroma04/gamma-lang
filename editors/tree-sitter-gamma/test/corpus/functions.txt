@@ -1,0 +1,420 @@
+================================================================================
+Function with block body
+================================================================================
+
+add :: fn(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (block
+        (return_expression
+          (binary_expression
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+Function with expression body
+================================================================================
+
+add :: fn(a: i32, b: i32) -> i32 => a + b
+unit :: fn() => ()
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (tuple_expression))))
+
+================================================================================
+Parameters with defaults and compile-time parameters
+================================================================================
+
+f :: fn(T: type, n :: usize, x: T = 0) {}
+g :: fn(a, b: i32, c) {}
+h :: fn(name: string = "x", loc: SourceLocation = @caller_location()) {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)
+          (integer_literal)))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)
+          (string_literal
+            (string_content)))
+        (parameter
+          (identifier)
+          (identifier)
+          (intrinsic_expression
+            (intrinsic_name)
+            (arguments))))
+      (block))))
+
+================================================================================
+Generic function with constraints
+================================================================================
+
+max :: fn(T: type, a: T, b: T) -> T where Ord(T) {
+    if a > b { return a }
+    return b
+}
+
+pairs :: fn(K, V: type, m: ^Map(K, V)) where Eq(K), Hash(K) {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (where_clause
+        (constraint
+          (identifier)
+          (identifier)))
+      (block
+        (if_expression
+          (binary_expression
+            (identifier)
+            (identifier))
+          (block
+            (return_expression
+              (identifier))))
+        (return_expression
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (pointer_type
+            (generic_type
+              (identifier)
+              (arguments
+                (identifier)
+                (identifier))))))
+      (where_clause
+        (constraint
+          (identifier)
+          (identifier))
+        (constraint
+          (identifier)
+          (identifier)))
+      (block))))
+
+================================================================================
+Function with effects
+================================================================================
+
+main :: fn() -> IoError!() \ {Out, Err(IoError)} {
+    print("hi\n")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (tuple_type))
+      (effect_set
+        (identifier)
+        (generic_type
+          (identifier)
+          (arguments
+            (identifier))))
+      (block
+        (call_expression
+          (identifier)
+          (arguments
+            (string_literal
+              (string_content)
+              (escape_sequence))))))))
+
+================================================================================
+Function literals as values
+================================================================================
+
+f :: fn() {
+    g := fn(x: i32) => x + 1
+    h :: fn(x: i32) -> i32 { return x }
+    apply(fn(x: i32) => x * 2, 3)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (function_expression
+            (parameters
+              (parameter
+                (identifier)
+                (identifier)))
+            (binary_expression
+              (identifier)
+              (integer_literal))))
+        (const_declaration
+          (identifier)
+          (function_expression
+            (parameters
+              (parameter
+                (identifier)
+                (identifier)))
+            (identifier)
+            (block
+              (return_expression
+                (identifier)))))
+        (call_expression
+          (identifier)
+          (arguments
+            (function_expression
+              (parameters
+                (parameter
+                  (identifier)
+                  (identifier)))
+              (binary_expression
+                (identifier)
+                (integer_literal)))
+            (integer_literal)))))))
+
+================================================================================
+Function attributes
+================================================================================
+
+#inline
+fast :: fn() {}
+
+#export("c_add")
+#callconv(.C)
+c_add :: fn(a: c_int, b: c_int) -> c_int => a + b
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (attribute
+    (attribute_name))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block)))
+  (attribute
+    (attribute_name)
+    (arguments
+      (string_literal
+        (string_content))))
+  (attribute
+    (attribute_name)
+    (arguments
+      (variant_expression
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Nested named functions and recursion
+================================================================================
+
+outer :: fn(n: u32) -> u32 {
+    inner :: fn(k: u32) -> u32 {
+        if k is 0 { return 0 }
+        return inner(k - 1) + 1
+    }
+    return inner(n)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (block
+        (const_declaration
+          (identifier)
+          (function_expression
+            (parameters
+              (parameter
+                (identifier)
+                (identifier)))
+            (identifier)
+            (block
+              (if_expression
+                (binary_expression
+                  (identifier)
+                  (integer_literal))
+                (block
+                  (return_expression
+                    (integer_literal))))
+              (return_expression
+                (binary_expression
+                  (call_expression
+                    (identifier)
+                    (arguments
+                      (binary_expression
+                        (identifier)
+                        (integer_literal))))
+                  (integer_literal))))))
+        (return_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier))))))))
+
+================================================================================
+Foreign blocks
+================================================================================
+
+c :: foreign "c" {
+    puts :: fn(s: cstring) -> c_int
+    #link_name("strlen")
+    c_strlen :: fn(s: cstring) -> usize
+    printf :: fn(fmt: cstring, ...) -> c_int
+    #global errno: c_int
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (foreign_block
+      (string_literal
+        (string_content))
+      (foreign_member
+        (identifier)
+        (function_type
+          (parameters
+            (parameter
+              (identifier)
+              (identifier)))
+          (identifier)))
+      (foreign_member
+        (attribute
+          (attribute_name)
+          (arguments
+            (string_literal
+              (string_content))))
+        (identifier)
+        (function_type
+          (parameters
+            (parameter
+              (identifier)
+              (identifier)))
+          (identifier)))
+      (foreign_member
+        (identifier)
+        (function_type
+          (parameters
+            (parameter
+              (identifier)
+              (identifier)))
+          (identifier)))
+      (foreign_member
+        (attribute
+          (attribute_name))
+        (identifier)
+        (identifier)))))

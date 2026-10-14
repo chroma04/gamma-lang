@@ -1,0 +1,69 @@
+add :: fn(a: i32) -> i32 => a + 1
+// <- function
+//     ^ keyword.function
+//        ^ variable.parameter
+//           ^ type.builtin
+//                ^ operator
+//                            ^ operator
+//                              ^ number
+
+Point :: struct {
+// <- type
+//       ^ keyword.type
+    x: f64
+//  ^ variable.member
+//     ^ type.builtin
+    #align(8) y: f64
+//  ^ attribute
+//            ^ variable.member
+}
+
+Shape :: union {
+//       ^ keyword.type
+    Circle: f32
+//  ^ constant
+}
+
+main :: fn() \ {Out} {
+// <- function
+//           ^ operator
+//              ^ type
+    n := 0x1p4
+//       ^ number.float
+//    ^ operator
+    s := "a\n{}"
+//       ^ string
+//         ^ string.escape
+    c := 'x'
+//       ^ character
+    if n is not 0 and true {
+//  ^ keyword.conditional
+//       ^ keyword.operator
+//                ^ keyword.operator
+//                    ^ boolean
+        print(s)
+//      ^ function.call
+    }
+    for i in 0..10 { }
+//  ^ keyword.repeat
+//        ^ keyword.repeat
+//            ^ operator
+    k := @size_of(Point)
+//       ^ function.builtin
+//                ^ type
+    p.run(k)
+//    ^ function.method.call
+    return .Circle(1.0)
+//  ^ keyword.return
+//          ^ constant
+//                 ^ number.float
+}
+
+pub LIMIT :: 10 // note
+// <- keyword.modifier
+//  ^ constant
+//                 ^ comment
+test "adds" {
+// <- keyword.type
+//   ^ string
+}

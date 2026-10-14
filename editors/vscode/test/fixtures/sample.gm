@@ -1,0 +1,52 @@
+// line comment
+/// doc comment
+/* block /* nested */ still comment */
+
+Point :: struct {
+    x, y: f64
+}
+
+Shape :: union {
+    Circle: f32
+    Empty
+}
+
+Log :: effect {
+    log: fn(msg: string)
+    stop: esc(code: i32) -> never
+}
+
+#inline
+add :: fn(a: i32, b: i32) -> i32 => a +% b
+
+main :: fn() -> IoError!() \ {Out, Err(IoError)} {
+    n := 1_000u32
+    h := 0x1p4
+    f := 1f32
+    big := 0xFF_u8
+    t := 3.5e-2f64
+    c := 'a'
+    nl := '\n'
+    s := "tab\t{} and {:>8.2} {{lit}}"
+    cs := c"hello"
+    raw := `C:\dir {}`
+    k := @size_of(Point)
+    ^const p := null
+    if n is not 0 and not (n in 1..10) { return }
+    outer: for i in 0..n { continue outer }
+    match shape {
+        .Circle(r) => print("{}", r)
+        .Empty => {}
+    }
+    x +|= 1
+    z := y <<% 2
+    print(s, k)
+}
+
+handler Log for ^Point {
+    log(self, m) => {}
+}
+
+test "adds" {
+    expect_eq(i32, add(1, 2), 3)
+}

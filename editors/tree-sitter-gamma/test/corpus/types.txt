@@ -1,0 +1,698 @@
+================================================================================
+Type prefixes
+================================================================================
+
+a: ?i32 = null
+b: ^u8 = p
+c: ^const u8 = p
+d: []u8 = s
+e: []const u8 = s
+f: [^]u8 = p
+g: [^]const u8 = p
+h: [4]u8 = arr
+i: [_]u8 = arr
+j: ?^[]const u8 = null
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (typed_declaration
+    (identifier)
+    (optional_type
+      (identifier))
+    (null))
+  (typed_declaration
+    (identifier)
+    (pointer_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (pointer_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (slice_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (slice_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (many_pointer_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (many_pointer_type
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (array_type
+      (integer_literal)
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (array_type
+      (discard)
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (optional_type
+      (pointer_type
+        (slice_type
+          (identifier))))
+    (null)))
+
+================================================================================
+Error union types
+================================================================================
+
+a :: fn() -> E!T {}
+b :: fn() -> IoError![]u8 {}
+c :: fn() -> E!?^T {}
+d :: fn() -> A!B!C {}
+e :: fn() -> AllocError!() {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (identifier))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (slice_type
+          (identifier)))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (optional_type
+          (pointer_type
+            (identifier))))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (error_union_type
+          (identifier)
+          (identifier)))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (error_union_type
+        (identifier)
+        (tuple_type))
+      (block))))
+
+================================================================================
+Named, generic and tuple types
+================================================================================
+
+a :: fn(x: m.T, y: List(u8), z: HashMap(string, List(u8))) {}
+b :: fn() -> (i32, bool) {}
+c :: fn() -> (x: f64, y: f64) {}
+d :: fn() -> (i32,) {}
+e :: fn() -> () {}
+f :: fn(a: Yield((i: usize, x: T))) {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (scoped_type
+            (identifier)
+            (identifier)))
+        (parameter
+          (identifier)
+          (generic_type
+            (identifier)
+            (arguments
+              (identifier))))
+        (parameter
+          (identifier)
+          (generic_type
+            (identifier)
+            (arguments
+              (identifier)
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier)))))))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (tuple_type
+        (identifier)
+        (identifier))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (tuple_type
+        (named_type
+          (identifier)
+          (identifier))
+        (named_type
+          (identifier)
+          (identifier)))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (tuple_type
+        (identifier))
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (tuple_type)
+      (block)))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (generic_type
+            (identifier)
+            (arguments
+              (tuple_expression
+                (named_element
+                  (identifier)
+                  (identifier))
+                (named_element
+                  (identifier)
+                  (identifier)))))))
+      (block))))
+
+================================================================================
+Function types
+================================================================================
+
+a: fn(i32, u8) -> bool = f
+b: ^fn(a: i32) -> i32 = f
+c: fn() \ {Out} = f
+d: fn(T) -> ?T \ {Alloc, Yield(T)} = f
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (typed_declaration
+    (identifier)
+    (function_type
+      (parameters
+        (parameter
+          (identifier))
+        (parameter
+          (identifier)))
+      (identifier))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (pointer_type
+      (function_type
+        (parameters
+          (parameter
+            (identifier)
+            (identifier)))
+        (identifier)))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (function_type
+      (parameters)
+      (effect_set
+        (identifier)))
+    (identifier))
+  (typed_declaration
+    (identifier)
+    (function_type
+      (parameters
+        (parameter
+          (identifier)))
+      (optional_type
+        (identifier))
+      (effect_set
+        (identifier)
+        (generic_type
+          (identifier)
+          (arguments
+            (identifier)))))
+    (identifier)))
+
+================================================================================
+Struct declarations
+================================================================================
+
+Point :: struct {
+    x, y: f64
+}
+
+Person :: struct {
+    pub name: string
+    age: u8 = 0
+    using base: Base
+}
+
+Pair :: struct(A: type, B: type) {
+    first: A
+    second: B
+}
+
+OneLine :: struct { a: i32, b: i32 }
+
+Empty :: struct {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier)
+          (integer_literal))
+        (field_declaration
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (parameters
+        (parameter
+          (identifier)
+          (identifier))
+        (parameter
+          (identifier)
+          (identifier)))
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list))))
+
+================================================================================
+Struct with attributes and where clause
+================================================================================
+
+#packed
+Header :: struct {
+    tag: u8
+    #align(4) len: u32
+}
+
+Sorted :: struct(T: type) where Ord(T) {
+    items: []T
+}
+
+Flags :: #bits(u8) struct {
+    a: u1
+    b: u3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (attribute
+    (attribute_name))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (attribute
+            (attribute_name)
+            (arguments
+              (integer_literal)))
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)))
+      (where_clause
+        (constraint
+          (identifier)
+          (identifier)))
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (slice_type
+            (identifier))))))
+  (const_declaration
+    (identifier)
+    (attributed_type
+      (attribute
+        (attribute_name)
+        (arguments
+          (identifier)))
+      (struct_type
+        (field_declaration_list
+          (field_declaration
+            (identifier)
+            (identifier))
+          (field_declaration
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+Struct with conditional fields
+================================================================================
+
+Config :: struct {
+    when target.os is .linux {
+        fd: i32
+    } else {
+        handle: usize
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (when_fields
+          (binary_expression
+            (field_expression
+              (identifier)
+              (identifier))
+            (variant_expression
+              (identifier)))
+          (field_declaration_list
+            (field_declaration
+              (identifier)
+              (identifier)))
+          (field_declaration_list
+            (field_declaration
+              (identifier)
+              (identifier))))))))
+
+================================================================================
+Union declarations
+================================================================================
+
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+
+Color :: union(u8) {
+    Red = 1
+    Green = 2
+    Blue = 4
+}
+
+Option :: union(T: type) {
+    Some: T
+    None
+}
+
+CUnion :: #c_union union {
+    i: i32
+    f: f32
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (union_type
+      (variant_list
+        (variant
+          (identifier)
+          (identifier))
+        (variant
+          (identifier)
+          (tuple_type
+            (named_type
+              (identifier)
+              (identifier))
+            (named_type
+              (identifier)
+              (identifier))))
+        (variant
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (union_type
+      (parameters
+        (parameter
+          (identifier)))
+      (variant_list
+        (variant
+          (identifier)
+          (integer_literal))
+        (variant
+          (identifier)
+          (integer_literal))
+        (variant
+          (identifier)
+          (integer_literal)))))
+  (const_declaration
+    (identifier)
+    (union_type
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)))
+      (variant_list
+        (variant
+          (identifier)
+          (identifier))
+        (variant
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (attributed_type
+      (attribute
+        (attribute_name))
+      (union_type
+        (variant_list
+          (variant
+            (identifier)
+            (identifier))
+          (variant
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+Union with conditional variants
+================================================================================
+
+Os :: union {
+    Linux
+    when target.arch is .x86_64 {
+        Intel
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (union_type
+      (variant_list
+        (variant
+          (identifier))
+        (when_variants
+          (binary_expression
+            (field_expression
+              (identifier)
+              (identifier))
+            (variant_expression
+              (identifier)))
+          (variant_list
+            (variant
+              (identifier))))))))
+
+================================================================================
+Effect declarations
+================================================================================
+
+Log :: effect {
+    log: fn(msg: string)
+    stop: esc(code: i32) -> never
+    next: ctl() -> ?i32
+}
+
+Yield :: effect(T: type) {
+    yield: fn(x: T)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (effect_type
+      (operation_list
+        (operation
+          (identifier)
+          (parameters
+            (parameter
+              (identifier)
+              (identifier))))
+        (operation
+          (identifier)
+          (parameters
+            (parameter
+              (identifier)
+              (identifier)))
+          (identifier))
+        (operation
+          (identifier)
+          (parameters)
+          (optional_type
+            (identifier))))))
+  (const_declaration
+    (identifier)
+    (effect_type
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)))
+      (operation_list
+        (operation
+          (identifier)
+          (parameters
+            (parameter
+              (identifier)
+              (identifier))))))))
+
+================================================================================
+Effect sets
+================================================================================
+
+f :: fn() \ {}
+g :: fn() -> i32 \ {Out, Err}
+h :: fn() \ {Yield(T), m.Net, Sched(\ {Out})}
+i :: fn(it: fn() \ {Yield(T), ..E}) \ {..E}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_type
+      (parameters)
+      (effect_set)))
+  (const_declaration
+    (identifier)
+    (function_type
+      (parameters)
+      (identifier)
+      (effect_set
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (function_type
+      (parameters)
+      (effect_set
+        (generic_type
+          (identifier)
+          (arguments
+            (identifier)))
+        (scoped_type
+          (identifier)
+          (identifier))
+        (generic_type
+          (identifier)
+          (arguments
+            (effect_set
+              (identifier)))))))
+  (const_declaration
+    (identifier)
+    (function_type
+      (parameters
+        (parameter
+          (identifier)
+          (function_type
+            (parameters)
+            (effect_set
+              (generic_type
+                (identifier)
+                (arguments
+                  (identifier)))
+              (effect_spread
+                (identifier))))))
+      (effect_set
+        (effect_spread
+          (identifier))))))

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "gamma",
+      "camelcase": "Gamma",
+      "scope": "source.gamma",
+      "path": ".",
+      "file-types": ["gm"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injections": "queries/injections.scm",
+      "injection-regex": "^(gamma|gm)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for the Gamma programming language",
+    "links": {
+      "repository": "https://github.com/chroma04/gamma-lang"
+    }
+  }
+}

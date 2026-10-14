@@ -1,0 +1,633 @@
+================================================================================
+Arithmetic precedence
+================================================================================
+
+a :: 1 + 2 * 3 - 4 / 5 % 6
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (integer_literal)
+        (binary_expression
+          (integer_literal)
+          (integer_literal)))
+      (binary_expression
+        (binary_expression
+          (integer_literal)
+          (integer_literal))
+        (integer_literal)))))
+
+================================================================================
+Overflow flavored operators
+================================================================================
+
+a :: x +% y -| z *? w
+b :: x <<% 1
+c :: x <<| 1
+d :: x <<? 1
+e :: x -% 1 +| 2 -? 3 *% 4 *| 5
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (integer_literal))
+        (integer_literal))
+      (binary_expression
+        (binary_expression
+          (integer_literal)
+          (integer_literal))
+        (integer_literal)))))
+
+================================================================================
+Shifts and bitwise operators
+================================================================================
+
+a :: x << 1 >> 2
+b :: (x & y) | z
+c :: x & y & z
+d :: x ~ y
+e :: x >> (a + b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (integer_literal))
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (parenthesized_expression
+        (binary_expression
+          (identifier)
+          (identifier)))
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (parenthesized_expression
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+================================================================================
+Comparison, range and logic
+================================================================================
+
+a :: x < y and y <= z
+b :: x is y or x is not z
+c :: x in 1..10
+d :: x not in 1..=10
+e :: not x and not y
+f :: a >= b
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (and_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (integer_literal)
+        (integer_literal))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (integer_literal)
+        (integer_literal))))
+  (const_declaration
+    (identifier)
+    (and_expression
+      (not_expression
+        (identifier))
+      (not_expression
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+================================================================================
+Unary operators
+================================================================================
+
+a :: -x
+b :: ~x
+c :: &x
+d :: !err
+e :: try f()
+f :: - -x
+g :: -x * y
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (call_expression
+        (identifier)
+        (arguments))))
+  (const_declaration
+    (identifier)
+    (unary_expression
+      (unary_expression
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (unary_expression
+        (identifier))
+      (identifier))))
+
+================================================================================
+Postfix operators
+================================================================================
+
+a :: x?
+b :: x!
+c :: p^
+d :: f(1, 2)
+e :: a[i]
+f :: a.b.c
+g :: t.0
+h :: x?.y
+i :: p^.field
+j :: f(x)(y)[0].z
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (optional_unwrap_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (result_unwrap_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (dereference_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (integer_literal)
+        (integer_literal))))
+  (const_declaration
+    (identifier)
+    (index_expression
+      (identifier)
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (field_expression
+        (identifier)
+        (identifier))
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (optional_unwrap_expression
+        (identifier))
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (dereference_expression
+        (identifier))
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (index_expression
+        (call_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))
+          (arguments
+            (identifier)))
+        (integer_literal))
+      (identifier))))
+
+================================================================================
+Slices
+================================================================================
+
+a :: xs[1..3]
+b :: xs[1..]
+c :: xs[..3]
+d :: xs[..]
+e :: xs[1..=3]
+f :: xs[..=3]
+g :: xs[i + 1..n * 2]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (integer_literal)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (integer_literal)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (slice_expression
+      (identifier)
+      (binary_expression
+        (identifier)
+        (integer_literal))
+      (binary_expression
+        (identifier)
+        (integer_literal)))))
+
+================================================================================
+Arguments
+================================================================================
+
+a :: f(x, y: 1, ..rest)
+b :: f()
+c :: f(x,)
+d :: Point(x: 1, y: 2)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (identifier)
+        (named_argument
+          (identifier)
+          (integer_literal))
+        (spread_argument
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments)))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (named_argument
+          (identifier)
+          (integer_literal))
+        (named_argument
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Tuples and parentheses
+================================================================================
+
+a :: ()
+b :: (1,)
+c :: (1, 2, 3)
+d :: (x: 1, y: 2)
+e :: (1 + 2) * 3
+f :: ((1, 2), (3, 4))
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (tuple_expression))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (integer_literal)
+      (integer_literal)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (named_element
+        (identifier)
+        (integer_literal))
+      (named_element
+        (identifier)
+        (integer_literal))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (parenthesized_expression
+        (binary_expression
+          (integer_literal)
+          (integer_literal)))
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (tuple_expression
+        (integer_literal)
+        (integer_literal))
+      (tuple_expression
+        (integer_literal)
+        (integer_literal)))))
+
+================================================================================
+Enum shorthand
+================================================================================
+
+a :: .Red
+b :: f(.North, .South)
+c :: .Some(1)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (variant_expression
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (variant_expression
+          (identifier))
+        (variant_expression
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (variant_expression
+        (identifier))
+      (arguments
+        (integer_literal)))))
+
+================================================================================
+Else forms
+================================================================================
+
+a :: x else 0
+b :: x else e => e
+c :: x else _ => 0
+d :: x else y else z
+e :: f() else return 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (else_expression
+      (identifier)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (else_expression
+      (identifier)
+      (identifier)
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (else_expression
+      (identifier)
+      (discard)
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (else_expression
+      (identifier)
+      (else_expression
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (else_expression
+      (call_expression
+        (identifier)
+        (arguments))
+      (return_expression
+        (integer_literal)))))
+
+================================================================================
+Error union expressions
+================================================================================
+
+R :: AllocError!usize
+S :: IoError!?u8
+T :: E!F!G
+u :: x! + 1
+v :: f!(1)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (error_union_expression
+      (identifier)
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (error_union_expression
+      (identifier)
+      (optional_type
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (error_union_expression
+      (identifier)
+      (error_union_type
+        (identifier)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (result_unwrap_expression
+        (identifier))
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (call_expression
+      (result_unwrap_expression
+        (identifier))
+      (arguments
+        (integer_literal)))))
+
+================================================================================
+Intrinsics
+================================================================================
+
+@static_assert(@size_of(u32) is 4, "size")
+a :: @min_stack
+b :: @max_value(u8)
+c :: @write(sink, "{}", x)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (intrinsic_expression
+    (intrinsic_name)
+    (arguments
+      (binary_expression
+        (intrinsic_expression
+          (intrinsic_name)
+          (arguments
+            (identifier)))
+        (integer_literal))
+      (string_literal
+        (string_content))))
+  (const_declaration
+    (identifier)
+    (intrinsic_expression
+      (intrinsic_name)))
+  (const_declaration
+    (identifier)
+    (intrinsic_expression
+      (intrinsic_name)
+      (arguments
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (intrinsic_expression
+      (intrinsic_name)
+      (arguments
+        (identifier)
+        (string_literal
+          (string_content))
+        (identifier)))))
