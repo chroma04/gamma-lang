@@ -289,7 +289,9 @@ mod tests {
             std::fs::create_dir_all(d.join(p)).unwrap();
             std::fs::write(d.join(p).join("f"), "data").unwrap();
         }
-        git::make_read_only(&d.join("git/checkouts"));
+        for c in ["r-1/aaa", "r-1/bbb", "s-2/ccc"] {
+            git::make_read_only(&d.join("git/checkouts").join(c));
+        }
         // `aaa` and `ccc` are stale; `bbb` was used just now.
         git::mark_used(&d.join("git/checkouts/r-1/aaa"));
         age(&git::stamp_of(&d.join("git/checkouts/r-1/aaa")), 40);
