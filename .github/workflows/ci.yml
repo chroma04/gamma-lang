@@ -36,6 +36,41 @@ jobs:
           GAMMA_TEST_C: "0"
         run: cargo test --test conformance
 
+  windows:
+    # x86_64 Windows: the compiler is built with the MSVC toolchain; the C back end uses
+    # MinGW-w64 gcc (MSVC's cl.exe is not supported), here from MSYS2.
+    name: Build and test (Windows, MinGW-w64 gcc)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MinGW-w64 gcc
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Put gcc on PATH
+        shell: pwsh
+        run: |
+          "${{ steps.msys.outputs.msys2-location }}\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Check the C compiler
+        shell: pwsh
+        run: |
+          gcc --version
+          gcc -dumpmachine
+      - name: Clippy
+        run: cargo clippy --all-targets
+      - name: Test
+        env:
+          CC: gcc
+        run: cargo test --all-targets
+
   safe:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
     name: Safe builds (Fil-C)

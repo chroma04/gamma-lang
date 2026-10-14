@@ -25,7 +25,8 @@ fn build() -> Option<PathBuf> {
     let cc = toolchain.display();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-test");
     std::fs::create_dir_all(&dir).ok()?;
-    let exe = dir.join(if cfg!(windows) { "rt_test.exe" } else { "rt_test" });
+    let windows = toolchain.target().is_ok_and(|t| t.os == "Windows");
+    let exe = dir.join(if windows { "rt_test.exe" } else { "rt_test" });
     let out = toolchain
         .command(&["-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function"])
         .arg("-I")
@@ -34,6 +35,7 @@ fn build() -> Option<PathBuf> {
         .arg("-o")
         .arg(&exe)
         .args(&toolchain.ldflags)
+        .args(gamma::cgen::windows_libs(&toolchain.target().expect("the target of the C compiler")))
         .output();
     match out {
         Err(e) => {

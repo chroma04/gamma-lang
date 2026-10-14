@@ -498,6 +498,8 @@ fn two_requirements_on_one_repository_share_a_revision() {
     assert!(!w.path("app/gamma.lock").exists());
 }
 
+// Names one repository two ways with a symbolic link, which creating on Windows needs a privilege.
+#[cfg(unix)]
 #[test]
 fn different_refs_of_one_repository_conflict() {
     need_git!();

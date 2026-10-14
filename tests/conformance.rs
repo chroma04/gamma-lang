@@ -22,6 +22,10 @@
 //!   for tests of features that exist on some targets only.
 //! - `//! endian: little` (or `big`) runs the test only when compiling for a target of
 //!   that byte order, for tests whose output shows the layout of values in memory.
+//! - `//! os: unix` (or `windows`) runs the test only when compiling for that kind of
+//!   operating system: `unix` is everything but Windows. It is for tests of what the other
+//!   kind lacks (POSIX-only C functions, the System V calling convention); keep such
+//!   tests few.
 //! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
 //!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it.
 //! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
@@ -95,6 +99,8 @@ struct Expectations {
     arch: Option<String>,
     /// The only byte order (`little` or `big`) the test applies to.
     endian: Option<String>,
+    /// The only kind of operating system the test applies to (`unix` or `windows`).
+    os: Option<String>,
     /// Leave the test out of the Safe lane.
     safe_skip: bool,
     /// The C lanes need `_Float16`.
@@ -115,6 +121,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         exit: 0,
         arch: None,
         endian: None,
+        os: None,
         safe_skip: false,
         needs_f16: false,
         native: false,
@@ -149,6 +156,11 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.mode = Some(mode.trim().to_string());
             } else if let Some(filter) = directive.strip_prefix("filter:") {
                 e.filter = Some(filter.trim().to_string());
+            } else if let Some(os) = directive.strip_prefix("os:") {
+                match os.trim() {
+                    "unix" | "windows" => e.os = Some(os.trim().to_string()),
+                    other => return Err(format!("{}:{}: unknown os `{}`", path.display(), i + 1, other)),
+                }
             } else if let Some(endian) = directive.strip_prefix("endian:") {
                 e.endian = Some(endian.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
@@ -264,6 +276,16 @@ fn target_arch() -> &'static str {
             Ok(_) => "other",
             Err(_) => std::env::consts::ARCH,
         }
+    })
+}
+
+/// The kind of operating system the tests compile for (`unix` or `windows`), as for [`target_arch`].
+fn target_os_kind() -> &'static str {
+    static OS: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    OS.get_or_init(|| {
+        let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
+        let windows = target.map_or(cfg!(windows), |t| t.os == "Windows");
+        if windows { "windows" } else { "unix" }
     })
 }
 
@@ -402,6 +424,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     };
     let exp = parse_expectations(&files)?;
     if exp.endian.as_deref().is_some_and(|e| e != target_endian()) {
+        return Ok(());
+    }
+    if exp.os.as_deref().is_some_and(|o| o != target_os_kind()) {
         return Ok(());
     }
     if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {

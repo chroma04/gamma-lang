@@ -17,7 +17,10 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("gamma-lsp-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         // The server compares canonical paths.
-        TempDir(dir.canonicalize().unwrap())
+        let canonical = dir.canonicalize().unwrap();
+        // On Windows, without the `\\?\` prefix the server's paths do not have either.
+        let plain = canonical.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map(PathBuf::from);
+        TempDir(plain.unwrap_or(canonical))
     }
 
     fn write(&self, name: &str, text: &str) -> PathBuf {
@@ -35,7 +38,8 @@ impl Drop for TempDir {
 }
 
 fn uri(p: &Path) -> String {
-    format!("file://{}", p.display())
+    let text = p.display().to_string();
+    if cfg!(windows) { format!("file:///{}", text.replace('\\', "/")) } else { format!("file://{text}") }
 }
 
 struct Lsp {

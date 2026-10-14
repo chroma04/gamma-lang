@@ -1,4 +1,5 @@
 // The x86-64 C ABI cross-checked: structs passed and returned by value are received as the scalars the System V ABI splits them into, and the other way round.
+//! os: unix
 //! arch: x86_64
 c :: import "std/c"
 

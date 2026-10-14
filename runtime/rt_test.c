@@ -1095,6 +1095,10 @@ static void test_byte_order(void) {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    _setmode(1, _O_BINARY);   /* as gm_run_main does: no newline translation */
+    _setmode(2, _O_BINARY);
+#endif
     gm_set_args(argc, argv);
     saved_argc = argc;
     saved_argv = argv;
