@@ -44,5 +44,6 @@ pub fn run_stdio() -> Result<u8, String> {
         .map_err(|e| format!("cannot start the reader thread: {}", e))?;
     let stdout = io::stdout();
     let mut server = server::Server::new(stdout.lock());
+    server.recycle = true;
     Ok(server.run(rx))
 }

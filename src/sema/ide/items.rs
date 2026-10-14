@@ -50,6 +50,11 @@ impl<'a, 's> Walker<'a, 's> {
                 self.expr(d);
             }
             if !declare {
+                // The names in a function type or an operation are only documentation.
+                let ty = p.ty.as_ref().map(|t| self.sema.src(t.span)).unwrap_or_default();
+                for n in &p.names {
+                    self.idx.defs.entry(n.span).or_insert(Hover { code: format!("{}: {}", n.name, ty), doc: None });
+                }
                 continue;
             }
             let is_type =

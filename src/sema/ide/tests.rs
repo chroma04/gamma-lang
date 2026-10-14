@@ -319,3 +319,100 @@ fn expression_types_show_on_hover() {
     let f = analyze(src);
     assert_eq!(f.hover(), "i32");
 }
+
+#[test]
+#[ignore]
+fn smoke_over_conformance_tests() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/conformance");
+    let mut files = vec![];
+    fn walk(d: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "gm") {
+                out.push(p);
+            }
+        }
+    }
+    walk(&root, &mut files);
+    files.sort();
+    let t = std::time::Instant::now();
+    let (mut n, mut refs, mut panics) = (0, 0, vec![]);
+    for f in &files {
+        let r = std::panic::catch_unwind(|| {
+            let mut sess = Session::new();
+            let idx = crate::sema::analyze_for_ide(&mut sess, f);
+            idx.refs.len()
+        });
+        match r {
+            Ok(k) => {
+                n += 1;
+                refs += k;
+            }
+            Err(_) => panics.push(f.clone()),
+        }
+    }
+    println!("{} files, {} refs, {:?}, panics: {:?}", n, refs, t.elapsed(), panics);
+    assert!(panics.is_empty());
+}
+
+/// Lists the identifiers of the files named by `GAMMA_COVERAGE` (space separated) that
+/// have neither a reference nor a declaration, to find gaps in name resolution.
+#[test]
+#[ignore]
+fn coverage_of_identifiers() {
+    use crate::syntax::token::TokenKind;
+    let Ok(list) = std::env::var("GAMMA_COVERAGE") else { return };
+    for path in list.split_whitespace() {
+        let mut sess = Session::new();
+        let idx = crate::sema::analyze_for_ide(&mut sess, std::path::Path::new(path));
+        let (file, f) = sess.sources.files().find(|(_, f)| f.path.to_string_lossy() == path).unwrap();
+        let mut diags = crate::diag::Diagnostics::new();
+        let lexed = crate::syntax::lexer::lex(file, &f.src, &mut diags);
+        let (mut total, mut missing) = (0, vec![]);
+        for t in &lexed.tokens {
+            if !matches!(t.kind, TokenKind::Ident(_)) {
+                continue;
+            }
+            total += 1;
+            let covered = idx.refs.iter().any(|r| r.from == t.span || r.to == t.span) || idx.defs.contains_key(&t.span);
+            if !covered {
+                let (line, _) = f.line_col(t.span.lo);
+                missing.push(format!("{}:{} {}", line, t.span.lo, &f.src[t.span.lo as usize..t.span.hi as usize]));
+            }
+        }
+        println!("{}: {} identifiers, {} without a reference or declaration", path, total, missing.len());
+        for m in &missing {
+            println!("   {}", m);
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn smoke_over_the_library() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib/std");
+    let mut dirs: Vec<_> =
+        std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    for d in dirs {
+        let t = std::time::Instant::now();
+        let mut sess = Session::new();
+        let idx = crate::sema::analyze_for_ide(&mut sess, &d);
+        let lines: usize =
+            sess.sources.files().filter(|(_, f)| f.path.starts_with(&d)).map(|(_, f)| f.src.lines().count()).sum();
+        let errs = sess.diags.iter().filter(|x| x.severity == crate::diag::Severity::Error).count();
+        println!(
+            "{:<12} {:>5} lines {:>4} errors {:>6} refs {:>5} defs {:>6} types {:>5} scopes  {:?}",
+            d.file_name().unwrap().to_string_lossy(),
+            lines,
+            errs,
+            idx.refs.len(),
+            idx.defs.len(),
+            idx.types.len(),
+            idx.scopes.len(),
+            t.elapsed()
+        );
+    }
+}

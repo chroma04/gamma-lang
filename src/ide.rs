@@ -2,12 +2,11 @@
 //! hover, which names are in scope, and the outline of each file.
 //!
 //! The index is built by [`crate::sema::analyze_for_ide`] and holds no references
-//! into the compiler: positions are [`Span`]s (byte offsets), types are interned
-//! [`Ty`] handles and everything else is plain text. Queries are linear scans, which
-//! is fast enough for the size of one module.
+//! into the compiler: positions are [`Span`]s (byte offsets) and everything else is
+//! plain text, so an index outlives the types and ids of the run that made it. Queries
+//! are linear scans, which is fast enough for the size of one module.
 
 use crate::source::{FileId, Span};
-use crate::types::Ty;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -51,10 +50,11 @@ pub struct Hover {
     pub doc: Option<String>,
 }
 
-/// The type of an expression.
+/// The type of an expression, as text.
 #[derive(Clone, Copy, Debug)]
 pub struct TypeInfo {
-    pub ty: Ty,
+    /// An index into [`IdeIndex::type_texts`].
+    pub text: u32,
     /// Worth showing on hover (not a block or a control-flow construct).
     pub hover: bool,
 }
@@ -107,9 +107,9 @@ pub struct IdeIndex {
     pub scopes: Vec<LocalScope>,
     /// The type of expressions, by span (the innermost expression for equal spans).
     pub types: HashMap<Span, TypeInfo>,
-    /// Members of nominal types that occur in `types`, by type.
-    pub type_members: HashMap<Ty, Rc<Vec<Item>>>,
-    /// Members of the module or type that the name at a span denotes.
+    /// The distinct types of `types`, written out.
+    pub type_texts: Vec<String>,
+    /// The members offered after the expression, type or module at a span.
     pub receivers: HashMap<Span, Rc<Vec<Item>>>,
     /// Top-level names usable in each file: its module's declarations.
     pub module_items: HashMap<FileId, Rc<Vec<Item>>>,
@@ -149,7 +149,7 @@ impl IdeIndex {
             (Some((range, h)), t) if t.is_none_or(|(s, _)| s.hi - s.lo >= range.hi - range.lo) => {
                 Some(HoverResult { range, hover: h.clone() })
             }
-            (_, Some((s, t))) => Some(HoverResult { range: *s, hover: Hover { code: t.ty.to_string(), doc: None } }),
+            (_, Some((s, t))) => Some(HoverResult { range: *s, hover: Hover { code: self.type_texts[t.text as usize].clone(), doc: None } }),
             _ => None,
         }
     }
@@ -186,22 +186,7 @@ impl IdeIndex {
 
     /// The members of the value, type or module written at `lo..hi`.
     pub fn members_at(&self, file: FileId, lo: u32, hi: u32) -> Option<Rc<Vec<Item>>> {
-        let span = Span { file, lo, hi };
-        if let Some(m) = self.receivers.get(&span) {
-            return Some(m.clone());
-        }
-        let mut ty = self.types.get(&span)?.ty;
-        // Members are reached through pointers and optionals alike.
-        loop {
-            if let Some(m) = self.type_members.get(&ty) {
-                return Some(m.clone());
-            }
-            match ty.kind() {
-                crate::types::TyKind::Ptr { pointee, .. } => ty = *pointee,
-                crate::types::TyKind::Optional(inner) => ty = *inner,
-                _ => return None,
-            }
-        }
+        self.receivers.get(&Span { file, lo, hi }).cloned()
     }
 
     /// Sorts the tables so that lookups and results are deterministic.

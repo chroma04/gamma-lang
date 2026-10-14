@@ -18,6 +18,9 @@ pub(super) struct TypeFact {
 #[derive(Default)]
 pub(super) struct Facts {
     pub types: HashMap<Span, TypeFact>,
+    /// The types of all expressions at a span, innermost first: a variant payload built
+    /// from a call's arguments has the span of the call that builds the variant.
+    pub all_types: HashMap<Span, Vec<Ty>>,
     /// The function a call at a span resolves to (a generic's definition, not an instance).
     pub calls: HashMap<Span, FnId>,
     /// Declared locals by the span of their name: name, type, mutable.
@@ -32,12 +35,21 @@ impl<'s> Sema<'s> {
         self.instance_of.get(&f).map_or(f, |(g, _)| *g)
     }
 
+    /// The facts of the program's functions, except those of the embedded core library,
+    /// which no editor can open.
     pub(super) fn collect_facts(&self) -> Facts {
         let mut facts = Facts::default();
+        let core: std::collections::HashSet<_> = self
+            .sess
+            .sources
+            .files()
+            .filter(|(_, f)| f.path.to_string_lossy().starts_with('<'))
+            .map(|(id, _)| id)
+            .collect();
         for (i, def) in self.prog.fns.iter().enumerate() {
             let f = FnId(i as u32);
             // Instances repeat the generic definition's spans with concrete types.
-            if self.instance_of.contains_key(&f) {
+            if self.instance_of.contains_key(&f) || core.contains(&def.span.file) {
                 continue;
             }
             for l in &def.locals {
@@ -82,6 +94,10 @@ impl<'s> Sema<'s> {
                 | ExprKind::Continue { .. }
         );
         facts.types.entry(e.span).or_insert(TypeFact { ty: e.ty, hover });
+        let all = facts.all_types.entry(e.span).or_default();
+        if !all.contains(&e.ty) {
+            all.push(e.ty);
+        }
         match &e.kind {
             ExprKind::Local(id) => {
                 if let Some(l) = self.prog.fns.get(f.index()).and_then(|d| d.locals.get(id.index())) {

@@ -35,6 +35,8 @@ pub struct Server<W: Write> {
     /// For each analyzed directory, the files it published diagnostics for.
     published: HashMap<PathBuf, HashSet<PathBuf>>,
     shutdown: bool,
+    /// Free the compiler's types after each analysis (see [`Analysis::run`]).
+    pub recycle: bool,
 }
 
 pub enum Flow {
@@ -56,6 +58,7 @@ impl<W: Write> Server<W> {
             stale: HashSet::new(),
             published: HashMap::new(),
             shutdown: false,
+            recycle: false,
         }
     }
 
@@ -227,7 +230,7 @@ impl<W: Write> Server<W> {
         let mut open: Vec<&PathBuf> = self.docs.keys().filter(|p| dir_of(p) == dir).collect();
         open.sort();
         let Some(primary) = open.first().map(|p| (*p).clone()) else { return };
-        let analysis = Analysis::run(dir, &overlays, &primary);
+        let analysis = Analysis::run(dir, &overlays, &primary, self.recycle);
         self.stale.remove(dir);
         self.publish(dir, &analysis);
         self.analyses.insert(dir.to_path_buf(), analysis);
@@ -385,7 +388,7 @@ impl<W: Write> Server<W> {
                         let patched = format!("{}{}", &text[..dot], &text[off..]);
                         let mut overlays = self.overlays();
                         overlays.insert(path.to_path_buf(), patched);
-                        let b = Analysis::run(&dir, &overlays, path);
+                        let b = Analysis::run(&dir, &overlays, path, self.recycle);
                         match b.file_id(path) {
                             Some(f) => {
                                 let cx = Ctx { a: &b, enc: self.enc, uri_of: &uri_of };

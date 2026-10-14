@@ -45,9 +45,18 @@ fn build(sema: &mut Sema, root: &Path, root_mod: Option<super::ModuleId>) -> Ide
     let facts = sema.collect_facts();
     let mut idx = IdeIndex::default();
     idx.refs.extend(facts.refs.iter().copied());
+    let mut texts: HashMap<String, u32> = HashMap::new();
     for (span, t) in &facts.types {
-        idx.types.insert(*span, TypeInfo { ty: t.ty, hover: t.hover });
+        let text = t.ty.to_string();
+        let next = texts.len() as u32;
+        let id = *texts.entry(text).or_insert(next);
+        idx.types.insert(*span, TypeInfo { text: id, hover: t.hover });
     }
+    let mut type_texts = vec![String::new(); texts.len()];
+    for (text, id) in texts {
+        type_texts[id as usize] = text;
+    }
+    idx.type_texts = type_texts;
     idx.universe = Rc::new(sema.universe_items());
     let Some(module) = root_mod else {
         idx.finish();
@@ -84,19 +93,18 @@ fn build(sema: &mut Sema, root: &Path, root_mod: Option<super::ModuleId>) -> Ide
         idx.module_items.insert(*id, scope_items.clone());
     }
     idx.outlines = outlines;
-    // Members of the types that values of the module have.
-    let mut seen: HashMap<Ty, Rc<Vec<crate::ide::Item>>> = HashMap::new();
-    for t in facts.types.values() {
+    // What `.` offers after each expression whose type has members.
+    let mut by_type: HashMap<Ty, Rc<Vec<crate::ide::Item>>> = HashMap::new();
+    for (span, t) in &facts.types {
         let mut ty = t.ty;
         while let TyKind::Ptr { pointee, .. } | TyKind::Optional(pointee) = ty.kind() {
             ty = *pointee;
         }
-        if !seen.contains_key(&ty) {
-            let members = sema.value_members(ty);
-            seen.insert(ty, Rc::new(members));
+        let members = by_type.entry(ty).or_insert_with(|| Rc::new(sema.value_members(ty)));
+        if !members.is_empty() {
+            idx.receivers.entry(*span).or_insert_with(|| members.clone());
         }
     }
-    idx.type_members = seen.into_iter().filter(|(_, m)| !m.is_empty()).collect();
     for scope in &mut idx.scopes {
         if scope.item.detail.is_empty()
             && let Some((_, ty, _)) = facts.locals.get(&scope.def)

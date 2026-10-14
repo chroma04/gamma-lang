@@ -74,22 +74,54 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 impl Analysis {
     /// Checks the module in `dir`, reading the open documents from `overlays`. A panic in
     /// the compiler becomes one diagnostic on `primary`.
-    pub fn run(dir: &Path, overlays: &HashMap<PathBuf, String>, primary: &Path) -> Analysis {
+    ///
+    /// With `recycle`, the types and ids that the run allocates are freed when it ends
+    /// (an analysis holds none), so that a long session does not grow the process.
+    pub fn run(dir: &Path, overlays: &HashMap<PathBuf, String>, primary: &Path, recycle: bool) -> Analysis {
+        let mark = recycle.then(crate::types::mark);
+        let a = Analysis::run_with(dir, overlays, primary, &crate::sema::analyze_for_ide);
+        if let Some(m) = mark {
+            // SAFETY: the analysis holds no types or ids; nothing else allocates types.
+            unsafe { crate::types::release_since(m) };
+        }
+        a
+    }
+
+    /// [`Analysis::run`] with the checker's entry point given, so that tests can make it fail.
+    fn run_with(
+        dir: &Path,
+        overlays: &HashMap<PathBuf, String>,
+        primary: &Path,
+        analyze: &dyn Fn(&mut Session, &Path) -> IdeIndex,
+    ) -> Analysis {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut sess = Session::new();
             sess.overlays = overlays.clone();
-            let index = crate::sema::analyze_for_ide(&mut sess, dir);
+            let index = analyze(&mut sess, dir);
             (sess, index)
         }));
         let (sess, index) = match result {
             Ok(r) => r,
             Err(payload) => {
-                let mut sess = Session::new();
-                if let Some(text) = overlays.get(primary) {
-                    sess.sources.add(primary, text.clone());
+                // Checking a module with syntax errors can fail where the compiler would
+                // have stopped at the first error: report what the compiler itself reports.
+                let strict = catch_unwind(AssertUnwindSafe(|| {
+                    let mut sess = Session::new();
+                    sess.overlays = overlays.clone();
+                    crate::sema::analyze_tests(&mut sess, dir);
+                    sess
+                }));
+                match strict {
+                    Ok(sess) if sess.diags.has_errors() => (sess, IdeIndex::default()),
+                    _ => {
+                        let mut sess = Session::new();
+                        if let Some(text) = overlays.get(primary) {
+                            sess.sources.add(primary, text.clone());
+                        }
+                        sess.diags.error(Span::DUMMY, format!("internal compiler error: {}", panic_message(&*payload)));
+                        (sess, IdeIndex::default())
+                    }
                 }
-                sess.diags.error(Span::DUMMY, format!("internal compiler error: {}", panic_message(&*payload)));
-                (sess, IdeIndex::default())
             }
         };
         let files = sess.sources.files().map(|(id, f)| (canon(&f.path), id)).collect();
@@ -203,12 +235,53 @@ mod tests {
     }
 
     #[test]
-    fn an_internal_error_becomes_a_diagnostic() {
+    fn a_missing_module_is_an_ordinary_error() {
         let primary = PathBuf::from("/nonexistent/dir/main.gm");
-        let a = Analysis::run(Path::new("/nonexistent/dir"), &HashMap::new(), &primary);
-        // The module does not exist: an ordinary error, reported on the primary file.
+        let a = Analysis::run(Path::new("/nonexistent/dir"), &HashMap::new(), &primary, false);
         let d = a.diagnostics(Encoding::Utf16, &|p| path_to_uri(p));
         assert_eq!(d[&primary].len(), 1);
         assert!(d[&primary][0]["message"].as_str().unwrap().contains("cannot read"));
+    }
+
+    /// A module directory with one file `main.gm` holding `text`; the directory is
+    /// removed when the returned guard is dropped.
+    struct Module {
+        dir: PathBuf,
+        file: PathBuf,
+    }
+
+    impl Drop for Module {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn module_with(name: &str, text: &str) -> Module {
+        let dir = canon(&std::env::temp_dir()).join(format!("gamma-lsp-{}-{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.gm");
+        std::fs::write(&file, text).unwrap();
+        Module { dir, file }
+    }
+
+    #[test]
+    fn a_panic_in_the_checker_becomes_a_diagnostic() {
+        let m = module_with("ice", "main :: fn() {}\n");
+        let boom = |_: &mut Session, _: &Path| -> IdeIndex { panic!("boom") };
+        let a = Analysis::run_with(&m.dir, &HashMap::new(), &m.file, &boom);
+        let d = a.diagnostics(Encoding::Utf16, &|p| path_to_uri(p));
+        assert_eq!(d[&m.file].len(), 1);
+        assert_eq!(d[&m.file][0]["message"], "internal compiler error: boom");
+        assert_eq!(d[&m.file][0]["range"]["start"], serde_json::json!({"line": 0, "character": 0}));
+    }
+
+    #[test]
+    fn a_panic_with_syntax_errors_reports_the_syntax_errors() {
+        let m = module_with("ice2", "main :: fn( {\n");
+        let boom = |_: &mut Session, _: &Path| -> IdeIndex { panic!("boom") };
+        let a = Analysis::run_with(&m.dir, &HashMap::new(), &m.file, &boom);
+        let d = a.diagnostics(Encoding::Utf16, &|p| path_to_uri(p));
+        assert!(!d[&m.file].is_empty());
+        assert!(d[&m.file].iter().all(|x| !x["message"].as_str().unwrap().contains("internal")), "{:?}", d);
     }
 }

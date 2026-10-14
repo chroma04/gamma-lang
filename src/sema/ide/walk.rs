@@ -235,8 +235,14 @@ impl<'a, 's> Walker<'a, 's> {
         false
     }
 
+    /// The variant `name` of one of the union types of the expressions at `span`.
+    fn variant_at(&mut self, span: Span, name: ast::Ident) -> Option<DeclId> {
+        let tys = self.facts.all_types.get(&span).cloned().unwrap_or_default();
+        tys.into_iter().find_map(|t| self.variant_use(t, name))
+    }
+
     /// The variant `name` of the union type `ty`, seen through optionals and results.
-    fn variant_use(&mut self, ty: Ty, name: ast::Ident) {
+    fn variant_use(&mut self, ty: Ty, name: ast::Ident) -> Option<DeclId> {
         let mut t = ty;
         loop {
             match t.kind() {
@@ -250,6 +256,20 @@ impl<'a, 's> Walker<'a, 's> {
             && let Some(to) = self.member_def(d, name.name)
         {
             self.add_ref(name.span, to);
+            return Some(d);
+        }
+        None
+    }
+
+    /// The name `field` in the tuple payload of variant `variant` of union `d`.
+    fn payload_field(&mut self, d: DeclId, variant: Symbol, field: ast::Ident) {
+        let item = self.sema.decls[d.0 as usize].item.clone();
+        let ast::ItemKind::Binding(b) = &item.kind else { return };
+        let ExprKind::Union(lit) = &b.init.kind else { return };
+        let mut found = None;
+        find_payload_field(&lit.members, variant, field.name, &mut found);
+        if let Some(to) = found {
+            self.add_ref(field.span, to);
         }
     }
 
@@ -272,9 +292,7 @@ impl<'a, 's> Walker<'a, 's> {
             | ExprKind::Continue { .. } => {}
             ExprKind::Ident(id) => self.name_use(*id),
             ExprKind::DotIdent(id) => {
-                if let Some(t) = self.type_of(e.span) {
-                    self.variant_use(t, *id);
-                }
+                self.variant_at(e.span, *id);
             }
             ExprKind::Paren(i)
             | ExprKind::OptUnwrap(i)
@@ -419,6 +437,8 @@ impl<'a, 's> Walker<'a, 's> {
     /// `callee(args)`.
     fn call(&mut self, e: &ast::Expr, callee: &ast::Expr, args: &[ast::Arg]) {
         let target = self.facts.calls.get(&e.span).copied();
+        // A union variant construction: the union's declaration and the variant.
+        let mut variant: Option<(DeclId, Symbol)> = None;
         match &callee.kind {
             ExprKind::Field { base, name } if matches!(self.classify(base), Base::Value) => {
                 self.expr(base);
@@ -428,21 +448,25 @@ impl<'a, 's> Walker<'a, 's> {
                     self.fn_use(name.span, f);
                 }
             }
-            ExprKind::DotIdent(id) => {
-                if let Some(t) = self.type_of(e.span) {
-                    self.variant_use(t, *id);
+            ExprKind::Field { base, name } => {
+                if let Base::Type(d) = self.classify(base) {
+                    variant = Some((d, name.name));
                 }
+                self.expr(callee);
             }
+            ExprKind::DotIdent(id) => variant = self.variant_at(e.span, *id).map(|d| (d, id.name)),
             _ => self.expr(callee),
         }
         // Named arguments name parameters, or fields in a construction.
         let mut struct_decl = None;
-        if target.is_none() {
+        if target.is_none() && variant.is_none() {
             struct_decl = self.type_of(e.span).and_then(|t| self.sema.adt_decl_of(t));
         }
         for a in args {
             if let ArgKind::Named(n, _) = &a.kind {
-                if let Some(f) = target {
+                if let Some((d, v)) = variant {
+                    self.payload_field(d, v, *n);
+                } else if let Some(f) = target {
                     let param = self.sema.sigs.get(&f).and_then(|s| s.params.iter().find(|p| p.name == n.name));
                     if let Some(p) = param {
                         let (ps, pty, pname) = (p.span, p.ty, p.name);
@@ -698,6 +722,27 @@ fn find_field(members: &[ast::StructMember], name: Symbol, found: &mut Option<(S
                 find_field(then, name, found);
                 if let Some(e) = else_ {
                     find_field(e, name, found);
+                }
+            }
+        }
+    }
+}
+
+fn find_payload_field(members: &[ast::UnionMember], variant: Symbol, field: Symbol, found: &mut Option<Span>) {
+    for m in members {
+        match m {
+            ast::UnionMember::Variant(v) if v.name.name == variant => {
+                if let Some(ast::Expr { kind: ExprKind::Tuple(elems), .. }) = &v.payload {
+                    if let Some(n) = elems.iter().filter_map(|e| e.name).find(|n| n.name == field) {
+                        found.get_or_insert(n.span);
+                    }
+                }
+            }
+            ast::UnionMember::Variant(_) => {}
+            ast::UnionMember::When { then, else_, .. } => {
+                find_payload_field(then, variant, field, found);
+                if let Some(e) = else_ {
+                    find_payload_field(e, variant, field, found);
                 }
             }
         }
