@@ -147,6 +147,11 @@ The suite also runs with a cross compiler, when the machine can run its output
 CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance --test runtime
 ```
 
+`CC` and `CFLAGS` also reach the build scripts of C dependencies (libffi), which
+must compile for the host. If the build fails to link, point them at the host
+compiler with the target-specific variables, as CI does:
+`CC_x86_64_unknown_linux_gnu=gcc CFLAGS_x86_64_unknown_linux_gnu=`.
+
 Without binfmt, `GAMMA_RUNNER` names the emulator that starts the executables, and
 a big-endian target works the same way (CI runs it on s390x):
 

@@ -84,5 +84,8 @@ jobs:
         env:
           CC: s390x-linux-gnu-gcc
           CFLAGS: -static
+          # Build scripts (libffi-sys) compile C for the host: keep them off the cross compiler.
+          CC_x86_64_unknown_linux_gnu: gcc
+          CFLAGS_x86_64_unknown_linux_gnu: ""
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
