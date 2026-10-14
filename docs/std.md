@@ -10,8 +10,9 @@ io :: import "std/io"
 fs :: import "std/fs"
 ```
 
-The `gamma` tool finds them in the directory named by `$GAMMA_STD`, or in `lib/std`
-next to the compiler's sources.
+The `gamma` tool finds them in the directory named by `$GAMMA_STD`; otherwise, for an
+installed release (`<prefix>/bin/gamma`), in `<prefix>/lib/gamma/std`; otherwise in
+`lib/std` next to the sources the compiler was built from.
 
 ## Ambient effects and their handlers
 

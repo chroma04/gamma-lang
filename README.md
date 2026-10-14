@@ -20,19 +20,43 @@ main :: fn() \ {Out} {
 
 ## Status
 
-This repository contains the reference implementation, written in Rust. It is
-under active construction:
+This repository contains the reference implementation, written in Rust. The whole
+specification is implemented, on two back ends that must agree on every test: an
+interpreter (the default for `gamma run` and `gamma test`) and a C code generator
+(`gamma build`, `--backend=c`).
 
 | Component | Status |
 | --- | --- |
-| Lexer (spec §2) | implemented |
-| Parser (spec Appendix A) | implemented |
-| Semantic analysis | the language: effects, handlers and fibers, generics with compile-time parameters, compile-time evaluation and `when`, modules, imports, tests, and C interop |
-| Interpreter / compile-time evaluator | implemented, including calls to foreign code through `dlsym` and libffi (`gamma run` compiles only programs it cannot run, such as ones with inline assembly) |
-| Native code generation (via C) | the language, including fibers and foreign functions (`gamma build`, `gamma run --backend=c`) |
-| Standard library | core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network); `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/math`, `std/arena`, `std/fixed_buffer`, `std/thread`, `std/c` |
+| Lexer and parser (spec §2, Appendix A) | implemented; `gamma fmt` formats code |
+| Semantic analysis | the whole language: effects, handlers and fibers, generics with compile-time and effect-set parameters, compile-time evaluation and `when`, modules, packages, tests, and C interop |
+| Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
+| Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x) |
+| Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 24 modules: `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread`, `std/c` |
+| Packages | `gamma.toml` manifests with path and git dependencies, version requirements and a `gamma.lock` lockfile (`gamma new`, `add`, `fetch`, `update`) |
+| Editors | a language server (`gamma lsp`), a VS Code extension, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
 
-## Building
+### Which back end?
+
+`gamma run` and `gamma test` interpret the program: there is no C compiler involved, it
+starts at once, and it is the quickest way to iterate. Use `--backend=c` (or `gamma build`)
+when the program's speed matters (compute-heavy code often runs 10 to 30 times faster), when
+it uses inline assembly, when you want to debug it with gdb or lldb (`-g`), or to check it
+under `--mode=safe`. Both back ends give the same output; a program that differs between
+them is a bug.
+
+## Installing
+
+Prebuilt binaries for Linux and macOS (x86_64 and arm64) are attached to each
+[release](https://github.com/chroma04/gamma-lang/releases):
+
+```sh
+curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh
+```
+
+installs `gamma` and its standard library in `~/.gamma` (`GAMMA_INSTALL` changes that).
+Native builds also need a C compiler (`cc`, gcc or clang).
+
+## Building from source
 
 You need a recent stable Rust toolchain.
 
@@ -41,21 +65,25 @@ cargo build --release
 ./target/release/gamma help
 ```
 
-Available commands today:
+## Using it
 
 ```sh
-gamma run file.gm            # type-check and run a program (a file or a module directory)
-gamma run --backend=c file.gm  # compile through C and run (default backend: interp)
+gamma new hello              # create a package: gamma.toml, main.gm with a test, .gitignore
+gamma run hello              # type-check and run a program (a file or a module directory)
+gamma test hello             # run the `test` declarations of a module and its imports
+gamma run --backend=c file.gm  # compile through C and run
 gamma build file.gm -o prog  # compile to a native executable via the system C compiler
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
-gamma test file.gm           # run the `test` declarations of a module and its imports
 gamma test --filter=parse file.gm  # only the tests whose name contains `parse`
-gamma lex file.gm            # print the token stream
-gamma parse file.gm          # check syntax
-gamma parse --dump file.gm   # print the syntax tree
+gamma add json --git https://github.com/someone/json-gm  # add a dependency
+gamma fetch                  # download the dependencies, writing gamma.lock
+gamma update                 # move the dependencies to their newest allowed versions
 gamma fmt file.gm            # format source files in place (files or directories)
 gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
+gamma lsp                    # the language server, for editors
+gamma lex file.gm            # print the token stream
+gamma parse --dump file.gm   # print the syntax tree
 ```
 
 `run`, `build` and `test` also take `--mode=debug|checked|safe|fast` (default `debug`). Safe builds check every memory access and need [Fil-C](https://fil-c.org) on Linux (see the [safety chapter](docs/guide/13-safety.md)).

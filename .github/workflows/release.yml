@@ -1,0 +1,96 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` builds the `gamma` binaries for Linux and macOS (x86_64 and
+# arm64), checks that each one runs a program on the interpreter and through C from its
+# installed layout, and publishes them as a GitHub release. Running the workflow by hand
+# builds and checks the archives without publishing them.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so that the binaries run on older glibc versions.
+          - os: ubuntu-22.04
+            asset: linux-x86_64
+          - os: ubuntu-22.04-arm
+            asset: linux-aarch64
+          - os: macos-15-intel
+            asset: macos-x86_64
+          - os: macos-14
+            asset: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check that the tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: bash
+        run: tools/package-release.sh "${{ matrix.asset }}" target/release/gamma dist
+      - name: Smoke test the installed layout
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -C "$RUNNER_TEMP/smoke" -xzf "dist/gamma-${{ matrix.asset }}.tar.gz"
+          gamma="$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma)"
+          cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
+          str :: import "std/str"
+
+          main :: fn() \ {Out} {
+              print("{}\n", str.contains("gamma", "mm"))
+          }
+          EOF
+          # Hide the source tree's library, so that only the packaged one can be found.
+          mv lib/std lib/std.hidden
+          cd "$RUNNER_TEMP"
+          test "$("$gamma" run hello.gm)" = true
+          test "$("$gamma" run --backend=c hello.gm)" = true
+          "$gamma" version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamma-${{ matrix.asset }}
+          path: dist/*
+
+  publish:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Gamma $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            dist/*.tar.gz dist/SHA256SUMS tools/install.sh

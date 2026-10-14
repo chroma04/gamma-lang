@@ -18,11 +18,22 @@ pub struct Package {
     pub deps: HashMap<String, PathBuf>,
 }
 
-/// The directory of the standard library: `$GAMMA_STD` if set, otherwise the
-/// `lib/std` directory of this source tree.
+/// The directory of the standard library: `$GAMMA_STD` if set; otherwise
+/// `lib/gamma/std` next to the directory of the running executable, as in an installed
+/// release (`<prefix>/bin/gamma`, `<prefix>/lib/gamma/std`); otherwise the `lib/std`
+/// directory of the source tree the compiler was built from.
 fn std_root() -> PathBuf {
-    match std::env::var_os("GAMMA_STD") {
-        Some(p) => PathBuf::from(p),
+    if let Some(p) = std::env::var_os("GAMMA_STD") {
+        return PathBuf::from(p);
+    }
+    static INSTALLED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let installed = INSTALLED.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let dir = exe.parent()?.parent()?.join("lib").join("gamma").join("std");
+        dir.is_dir().then_some(dir)
+    });
+    match installed {
+        Some(dir) => dir.clone(),
         None => Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std"),
     }
 }

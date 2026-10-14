@@ -187,6 +187,31 @@ interpreter (`src/interp/num.rs`) computes the same table at start-up. The algor
 Schubfach; both implementations are tested against a slow search over the exact decimal
 expansion, which defines the result (spec §21.6.1).
 
+## Releases
+
+A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml`.
+Pushing the tag runs `.github/workflows/release.yml`, which:
+
+1. builds `gamma` in release mode on Linux (x86_64 and arm64, on Ubuntu 22.04 so that the
+   binaries run with older glibc versions) and macOS (x86_64 and arm64);
+2. packages each with `tools/package-release.sh` as `gamma-<os>-<arch>.tar.gz` plus a
+   `.sha256` file. The archive is an installation prefix: `bin/gamma`, the standard library
+   in `lib/gamma/std` (an installed compiler finds it relative to its own path), `LICENSE`
+   and `README.md`;
+3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
+   compiler runs a program that imports `std/...`, on the interpreter and through C;
+4. creates the GitHub release with the archives, `SHA256SUMS` and `tools/install.sh`.
+
+To cut a release: bump `version` in `Cargo.toml` (and `Cargo.lock` with `cargo build`),
+merge that, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Running the workflow by hand
+(workflow dispatch) builds and checks the archives without publishing anything, which is a
+good test after changing the workflow or the packaging script.
+
+`tools/install.sh` downloads the archive for the machine it runs on, checks its checksum and
+installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
+`GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
+the script against archives built locally with `tools/package-release.sh`.
+
 ## The specification
 
 `gamma-spec.md` is the definition of the language. If an implementation question
