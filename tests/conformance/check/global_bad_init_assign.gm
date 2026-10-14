@@ -1,0 +1,7 @@
+//! stage: check
+// A `#global` whose initializer has errors is still assignable: no second error.
+#global n: u32 = nope //~ ERROR unknown name `nope`
+
+main :: fn() \ {Sys} {
+    n = 1
+}

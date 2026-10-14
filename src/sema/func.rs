@@ -1124,12 +1124,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let immutable = match self.lookup_local_at(id.name) {
             Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
             Some(_) => true,
-            // A `#global` is mutable storage (§19.3).
+            // A `#global` is mutable storage (§19.3); a declaration with errors was reported.
             None => {
                 let module = self.module;
                 !matches!(
                     self.sema.lookup_module_name(module, id.name).map(|d| self.sema.resolve_decl(d)),
-                    Some(super::decls::DeclValue::Global { .. })
+                    Some(super::decls::DeclValue::Global { .. } | super::decls::DeclValue::Error)
                 )
             }
         };

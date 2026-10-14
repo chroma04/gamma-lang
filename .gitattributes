@@ -16,3 +16,7 @@
 *.toml text eol=lf
 *.md text eol=lf
 *.png binary
+# Fixtures whose carriage returns are what they test: never converted.
+tests/conformance/lex/crlf.gm -text
+tests/conformance/lex/errors_cr.gm -text
+tests/conformance/run/std_io.stdin -text
