@@ -1,41 +1,18 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-14) — PRs #1–#33 merged; s6–s10 = parallel Claude Projects threads
+- s11 (PR #34, branch claude/inspiring-johnson-094ac5): the user's to-do P1 tooling items —
+  package manager + gamma new/init, `gamma lsp`, editors/ (TextMate, tree-sitter, VS Code),
+  release pipeline + install.sh, README refresh (decisions/023, sessions/s11). Remaining items
+  of that to-do list are P2/nice (Windows, build profiles, gamma doc, REPL, coverage, …).
 - 2026-10-14 merge round: #25–#33 merged in order onto main (papercuts, spec pass, C typed
   structs, interpreter FFI, effect-set params, literals, op hiding, --target/big-endian, VM
   speedups). Merge-only fixes: SavedFrame swap_frame needs open_ret; C layout asserts escape
   type names (effect sets print `\ {..}`); VM kernel test used overflowing i128 product.
-- Thread "bytecode VM" (branch claude/project-thread-rh6kp0): `gamma run` interpreter compiles
-  functions to register bytecode (src/interp/vm/, decisions/020); bench 34.1 s → 10.0 s; tree-walker
-  kept for fallbacks and `GAMMA_INTERP=tree` (CI lane on ubuntu).
-- s9 thread "performance round" (branch claude/perf-refactor-tzdpsa): interpreter ~35% faster
-  (locals in frame slots, lock-free Ty::kind), smaller Debug C, Safe builds link the cached
-  runtime, faster test suite; measurements + leftover ideas in decisions/019. Profiling with
-  perf: see decisions/019 end.
-- s8 thread "bug-hunting round" (PR #18, merged): ~40 compiler,
-  runtime and stdlib fixes found by hunter subagents (sessions/s08-2026-10-12-bughunt.md);
-  leftovers bugs-open.md #39–40.
-- s7 thread "Dogfooding" (branch claude/dogfooding-wnnaie): spec §22 stdlib policy (apply it
-  to every stdlib addition!), format specs, L2–L6, many new std modules (decisions/018,
-  sessions/s07). Leftovers in bugs-open.md #31–38.
-- s6 thread "Fil-C memory safety" (PR #14, merged): `--mode=safe` via Fil-C, spec §18.7, Safe
-  lane (GAMMA_TEST_SAFE=1), CI job (decisions/017). Thread "Faster Fil-C codegen" (PR #15,
-  merged): ladder once per scope, typed GM_LD/GM_ST under Fil-C, to_ptr fix; Safe now ~2–16×
-  Checked (decisions/017 end).
-- s6 thread "C perf" (branch claude/project-thread-8a201g): items 4–6 — nested handler
-  specialization, exit-test omission, gm_out results, in-place construction, borrowed params,
-  -fno-strict-aliasing (decisions/016, sessions/s06). Other s6 threads: build speed,
-  cross-compiling, debugger views (expect merges touching src/cgen).
-- s6 thread "Speed up native builds" (branch claude/project-thread-1hib7q): Debug builds link a
-  cached runtime object, -O1 (decisions/014). C codegen thread too.
-- s6 thread "Support cross-compiling" (branch claude/project-thread-y3y0bn, PR #12): CC with
-  args, CFLAGS/LDFLAGS, target probed from the compiler (decisions/015); suite passes
-  cross-compiled for aarch64 under qemu.
-- s5 (Claude Projects thread "Strengthen the C back end"): `gamma build -g` debug info
-  (decisions/013); plan for the rest in roadmap/c-backend-plan.md. Thread "Better debugger
-  views" (branch claude/project-thread-scimha): plan item 7, typed views + gdb printers.
-- Parallel s6 threads (2026-10-11): std/text graphemes (branch claude/project-thread-rk2qb5,
-  see roadmap/M11), plus others on native build speed, cross-compiling, C perf, debugger.
+- Merged threads (details in decisions/ and sessions/): bytecode VM (020), perf round (019),
+  bug hunt s8, dogfooding s7 (§22 stdlib policy — apply it to every std addition; 018), Fil-C
+  Safe mode (017), C perf (016), native build speed (014), cross-compiling (015), debug info
+  and gdb views (013), std/text graphemes. Leftover bugs: roadmap/bugs-open.md #31–40.
 - The whole spec is implemented in both back ends (interpreter + C), except "Not yet". Every run
   test runs on both and must match (gcc and clang). Milestone files roadmap/M00..M12; decisions/.
 - Sessions 1–3: see sessions/. Session 4: C big values by address, std/collections, qualified
@@ -49,8 +26,8 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive the s6 PRs green; C back end plan items 1–7 done (uncaptured locals as C locals:
-   thread "Uncaptured locals", branch claude/project-thread-oemqrj).
+1. Drive PR #34 green. Next to-do candidates (P2): build profiles in gamma.toml, gamma test
+   --all, gamma doc, REPL, Windows runtime, Safe-mode allocation speed, diagnostics polish.
 2. bugs-open.md leftovers (#23–#40); computed array lengths done (decisions/007); VM
    follow-ups in decisions/020 (superinstructions, smaller Op, cheaper calls).
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
@@ -74,11 +51,12 @@
                   · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
                   · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
                   · 022 effect-set parameters (`E: effects`, `..E`, Sched(E))
+                  · 023 tooling: packages, LSP, editor grammars, release
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
                   · s06-2026-10-12-safe.md (Safe mode) · s07-2026-10-12.md (dogfooding)
-                  · s08-2026-10-12-bughunt.md (bug hunt)
+                  · s08-2026-10-12-bughunt.md (bug hunt) · s11-2026-10-14-p1-tooling.md
 - gotchas/        environment.md
 
 ## Conventions

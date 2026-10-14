@@ -1,0 +1,327 @@
+================================================================================
+Handler literal
+================================================================================
+
+f :: fn() {
+    printer :: handler Log {
+        log(m) => print("{}\n", m)
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (const_declaration
+          (identifier)
+          (handler_expression
+            (identifier)
+            (handler_body
+              (handler_clause
+                (identifier)
+                (clause_parameters
+                  (identifier))
+                (call_expression
+                  (identifier)
+                  (arguments
+                    (string_literal
+                      (string_content)
+                      (escape_sequence))
+                    (identifier)))))))))))
+
+================================================================================
+Handler literal with several clauses and block bodies
+================================================================================
+
+h :: handler Ids {
+    next() => { n += 1; resume k(n) }
+    fresh(self, k) => {
+        resume k(1)
+    }
+    stop(code) => break
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (handler_expression
+      (identifier)
+      (handler_body
+        (handler_clause
+          (identifier)
+          (clause_parameters)
+          (block
+            (assignment_statement
+              (identifier)
+              (integer_literal))
+            (resume_expression
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier))))))
+        (handler_clause
+          (identifier)
+          (clause_parameters
+            (identifier)
+            (identifier))
+          (block
+            (resume_expression
+              (call_expression
+                (identifier)
+                (arguments
+                  (integer_literal))))))
+        (handler_clause
+          (identifier)
+          (clause_parameters
+            (identifier))
+          (break_expression))))))
+
+================================================================================
+Handler declaration
+================================================================================
+
+handler Log for ^CountingLog {
+    log(self, m) => { self.count += 1 }
+}
+
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) \ {Alloc} {
+    yield(self, x) => push(self, x)
+}
+
+handler log.Log for Silent {
+    log(self, m) => {}
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (pointer_type
+      (identifier))
+    (handler_body
+      (handler_clause
+        (identifier)
+        (clause_parameters
+          (identifier)
+          (identifier))
+        (block
+          (assignment_statement
+            (field_expression
+              (identifier)
+              (identifier))
+            (integer_literal))))))
+  (handler_declaration
+    (parameters
+      (parameter
+        (identifier)
+        (identifier))
+      (parameter
+        (identifier)
+        (identifier)))
+    (generic_type
+      (identifier)
+      (arguments
+        (identifier)))
+    (pointer_type
+      (generic_type
+        (identifier)
+        (arguments
+          (identifier)
+          (identifier))))
+    (effect_set
+      (identifier))
+    (handler_body
+      (handler_clause
+        (identifier)
+        (clause_parameters
+          (identifier)
+          (identifier))
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (identifier))))))
+  (handler_declaration
+    (scoped_type
+      (identifier)
+      (identifier))
+    (identifier)
+    (handler_body
+      (handler_clause
+        (identifier)
+        (clause_parameters
+          (identifier)
+          (identifier))
+        (block)))))
+
+================================================================================
+With
+================================================================================
+
+f :: fn() {
+    with printer { work() }
+    with a, b { work() }
+    with (handler Log { log(m) => {} }) { work() }
+    with counter on stack { work() }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (with_expression
+          (identifier)
+          (block
+            (call_expression
+              (identifier)
+              (arguments))))
+        (with_expression
+          (identifier)
+          (identifier)
+          (block
+            (call_expression
+              (identifier)
+              (arguments))))
+        (with_expression
+          (parenthesized_expression
+            (handler_expression
+              (identifier)
+              (handler_body
+                (handler_clause
+                  (identifier)
+                  (clause_parameters
+                    (identifier))
+                  (block)))))
+          (block
+            (call_expression
+              (identifier)
+              (arguments))))
+        (with_expression
+          (identifier)
+          (identifier)
+          (block
+            (call_expression
+              (identifier)
+              (arguments))))))))
+
+================================================================================
+With labels and break
+================================================================================
+
+f :: fn() {
+    r := done: with catcher {
+        work()
+        break done 1
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (with_expression
+            (label
+              (identifier))
+            (identifier)
+            (block
+              (call_expression
+                (identifier)
+                (arguments))
+              (break_expression
+                (label
+                  (identifier))
+                (integer_literal)))))))))
+
+================================================================================
+Resume and continuations
+================================================================================
+
+f :: fn() {
+    with h on fiber {
+        resume k(1)
+        resume k()
+    }
+}
+
+g :: fn(k: cont(i32)) {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (with_expression
+          (identifier)
+          (identifier)
+          (block
+            (resume_expression
+              (call_expression
+                (identifier)
+                (arguments
+                  (integer_literal))))
+            (resume_expression
+              (call_expression
+                (identifier)
+                (arguments))))))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (generic_type
+            (identifier)
+            (arguments
+              (identifier)))))
+      (block))))
+
+================================================================================
+Effect performing and passing effect sets
+================================================================================
+
+f :: fn() \ {Log} {
+    log("x")
+    g(\ {Out, Err})
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (effect_set
+        (identifier))
+      (block
+        (call_expression
+          (identifier)
+          (arguments
+            (string_literal
+              (string_content))))
+        (call_expression
+          (identifier)
+          (arguments
+            (effect_set
+              (identifier)
+              (identifier))))))))

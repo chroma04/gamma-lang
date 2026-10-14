@@ -1,0 +1,26 @@
+{
+  "name": "tree-sitter-gamma",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Gamma programming language",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "gamma"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "queries/*",
+    "src/**"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse-corpus": "bash scripts/parse-corpus.sh"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.25.10"
+  }
+}

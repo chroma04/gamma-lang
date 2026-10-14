@@ -1,0 +1,75 @@
+{
+  "name": "gamma-lang",
+  "displayName": "Gamma",
+  "description": "Syntax highlighting and language server support for the Gamma programming language.",
+  "version": "0.1.0",
+  "publisher": "gamma-lang",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": ["Programming Languages"],
+  "keywords": ["gamma", "gm", "effects", "systems"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gamma",
+        "aliases": ["Gamma", "gamma"],
+        "extensions": [".gm"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gamma",
+        "scopeName": "source.gamma",
+        "path": "./syntaxes/gamma.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.gamma.codeblock",
+        "path": "./syntaxes/markdown-injection.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": {
+          "meta.embedded.block.gamma": "gamma"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Gamma",
+      "properties": {
+        "gamma.path": {
+          "type": "string",
+          "default": "gamma",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `gamma` executable. The default looks it up on `PATH`."
+        },
+        "gamma.lsp.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start the language server (`gamma lsp`) for Gamma files. Syntax highlighting works without it."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "gamma.restartServer",
+        "title": "Gamma: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node test/tokenize.mjs",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.0.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

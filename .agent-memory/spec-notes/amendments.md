@@ -65,3 +65,4 @@
   as a digit) and `0x1p4` (hex float fraction optional); §7.4.2/§10.7 `?` flavors take `?T`
   operands (both evaluated, null if either null; lowered in sema to a block + if-let, so
   no back end changes). bool was already Ord (s7), so that todo half needed nothing.
+- s11: Appendix A file production allows no final NL; A.4 stmt takes attributes before a binding (rejected by §20.2). Grammar agent's other spec/compiler gaps (not amended): (i32) as type is grouping via postfix_expr; '#' 'global' notation; attrs before any type parse then error (callconv test); `_` as arg name; break label vs value is scope-dependent.

@@ -1,0 +1,796 @@
+================================================================================
+If, else if, else
+================================================================================
+
+f :: fn() {
+    if a { 1 }
+    if a { 1 } else { 2 }
+    if a { 1 } else if b { 2 } else { 3 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal)))
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal))
+          (else_clause
+            (block
+              (integer_literal))))
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal))
+          (else_if_clause
+            (identifier)
+            (block
+              (integer_literal)))
+          (else_clause
+            (block
+              (integer_literal))))))))
+
+================================================================================
+If as an expression
+================================================================================
+
+f :: fn() {
+    x := if a { 1 } else { 2 }
+    y := if a { 1 } else 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (if_expression
+            (identifier)
+            (block
+              (integer_literal))
+            (else_clause
+              (block
+                (integer_literal)))))
+        (short_declaration
+          (identifier)
+          (else_expression
+            (if_expression
+              (identifier)
+              (block
+                (integer_literal)))
+            (integer_literal)))))))
+
+================================================================================
+If with binding conditions
+================================================================================
+
+f :: fn() {
+    if v := get() { use(v) }
+    if v := get() and v > 3 { use(v) }
+    if a and v := get() and b { use(v) }
+    if .Some(x) := get() { use(x) }
+    if x := f() or g() { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (if_expression
+          (let_condition
+            (identifier)
+            (call_expression
+              (identifier)
+              (arguments)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (if_expression
+          (condition_chain
+            (let_condition
+              (identifier)
+              (call_expression
+                (identifier)
+                (arguments)))
+            (binary_expression
+              (identifier)
+              (integer_literal)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (if_expression
+          (condition_chain
+            (condition_chain
+              (identifier)
+              (let_condition
+                (identifier)
+                (call_expression
+                  (identifier)
+                  (arguments))))
+            (identifier))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (if_expression
+          (let_condition
+            (call_expression
+              (variant_expression
+                (identifier))
+              (arguments
+                (identifier)))
+            (call_expression
+              (identifier)
+              (arguments)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (if_expression
+          (let_condition
+            (identifier)
+            (binary_expression
+              (call_expression
+                (identifier)
+                (arguments))
+              (call_expression
+                (identifier)
+                (arguments))))
+          (block))))))
+
+================================================================================
+If with error capture
+================================================================================
+
+f :: fn() {
+    if cond { 1 } else e => handle(e)
+    if cond { 1 } else e => { handle(e) }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal))
+          (else_clause
+            (identifier)
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal))
+          (else_clause
+            (identifier)
+            (block
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier))))))))))
+
+================================================================================
+While loops
+================================================================================
+
+f :: fn() {
+    while i < n { i += 1 }
+    while v := next() { use(v) }
+    outer: while true {
+        break outer
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (while_statement
+          (binary_expression
+            (identifier)
+            (identifier))
+          (block
+            (assignment_statement
+              (identifier)
+              (integer_literal))))
+        (while_statement
+          (let_condition
+            (identifier)
+            (call_expression
+              (identifier)
+              (arguments)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (while_statement
+          (label
+            (identifier))
+          (boolean_literal)
+          (block
+            (break_expression
+              (identifier))))))))
+
+================================================================================
+For loops
+================================================================================
+
+f :: fn() {
+    for i in 0..10 { use(i) }
+    for i, x in enumerate(xs) { use(i, x) }
+    for _ in range(u32, 0, 3) { }
+    for (a, b) in pairs { }
+    outer: for x in xs {
+        for y in ys {
+            if x is y { continue outer }
+        }
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (for_expression
+          (identifier)
+          (binary_expression
+            (integer_literal)
+            (integer_literal))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)))))
+        (for_expression
+          (identifier)
+          (identifier)
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)
+                (identifier)))))
+        (for_expression
+          (discard)
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)
+              (integer_literal)
+              (integer_literal)))
+          (block))
+        (for_expression
+          (tuple_expression
+            (identifier)
+            (identifier))
+          (identifier)
+          (block))
+        (for_expression
+          (label
+            (identifier))
+          (identifier)
+          (identifier)
+          (block
+            (for_expression
+              (identifier)
+              (identifier)
+              (block
+                (if_expression
+                  (binary_expression
+                    (identifier)
+                    (identifier))
+                  (block
+                    (continue_expression
+                      (label
+                        (identifier)))))))))))))
+
+================================================================================
+For as an expression
+================================================================================
+
+f :: fn() {
+    total := for x in xs { if x > 3 { break x } }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (for_expression
+            (identifier)
+            (identifier)
+            (block
+              (if_expression
+                (binary_expression
+                  (identifier)
+                  (integer_literal))
+                (block
+                  (break_expression
+                    (identifier)))))))))))
+
+================================================================================
+Break, continue and return
+================================================================================
+
+f :: fn() {
+    while true {
+        break
+        continue
+        break 5
+        break outer
+        break outer value
+        continue outer
+    }
+    return
+    return 1 + 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (while_statement
+          (boolean_literal)
+          (block
+            (break_expression)
+            (continue_expression)
+            (break_expression
+              (integer_literal))
+            (break_expression
+              (identifier))
+            (break_expression
+              (label
+                (identifier))
+              (identifier))
+            (continue_expression
+              (label
+                (identifier)))))
+        (return_expression)
+        (return_expression
+          (binary_expression
+            (integer_literal)
+            (integer_literal)))))))
+
+================================================================================
+Match
+================================================================================
+
+f :: fn(s: Shape) -> f32 {
+    return match s {
+        .Circle(r) => 3.14 * r * r
+        .Rect(w, h) => w * h
+        .Empty => 0.0
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters
+        (parameter
+          (identifier)
+          (identifier)))
+      (identifier)
+      (block
+        (return_expression
+          (match_expression
+            (identifier)
+            (match_body
+              (match_arm
+                (call_expression
+                  (variant_expression
+                    (identifier))
+                  (arguments
+                    (identifier)))
+                (binary_expression
+                  (binary_expression
+                    (float_literal)
+                    (identifier))
+                  (identifier)))
+              (match_arm
+                (call_expression
+                  (variant_expression
+                    (identifier))
+                  (arguments
+                    (identifier)
+                    (identifier)))
+                (binary_expression
+                  (identifier)
+                  (identifier)))
+              (match_arm
+                (variant_expression
+                  (identifier))
+                (float_literal)))))))))
+
+================================================================================
+Match arms with blocks, guards and several patterns
+================================================================================
+
+f :: fn() {
+    match x {
+        0 => zero()
+        1, 2, 3 => small()
+        4..=9 => {
+            medium()
+        }
+        n if n < 0 => negative()
+        -5 => minus_five()
+        "a" => letter()
+        null => nothing()
+        !e => failed(e)
+        _ => other()
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (integer_literal)
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (integer_literal)
+              (integer_literal)
+              (integer_literal)
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (binary_expression
+                (integer_literal)
+                (integer_literal))
+              (block
+                (call_expression
+                  (identifier)
+                  (arguments))))
+            (match_arm
+              (identifier)
+              (binary_expression
+                (identifier)
+                (integer_literal))
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (unary_expression
+                (integer_literal))
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (string_literal
+                (string_content))
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (null)
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (unary_expression
+                (identifier))
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier))))
+            (match_arm
+              (discard)
+              (call_expression
+                (identifier)
+                (arguments)))))))))
+
+================================================================================
+Match on one line
+================================================================================
+
+f :: fn() { match x { .A => 1 } }
+g :: fn() { match x { .A => 1; .B => 2 } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal)))))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))))))))
+
+================================================================================
+Match patterns for structs, tuples and qualified names
+================================================================================
+
+f :: fn() {
+    match v {
+        Point(x: 0, y) => a(y)
+        (a, b) => c(a, b)
+        Shape.Circle(r) => d(r)
+        m.LIMIT => e()
+        (x: 1, y: _) => f()
+        .Some(.Pair(a, b)) => g(a, b)
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (call_expression
+                (identifier)
+                (arguments
+                  (named_argument
+                    (identifier)
+                    (integer_literal))
+                  (identifier)))
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier))))
+            (match_arm
+              (tuple_expression
+                (identifier)
+                (identifier))
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier)
+                  (identifier))))
+            (match_arm
+              (call_expression
+                (field_expression
+                  (identifier)
+                  (identifier))
+                (arguments
+                  (identifier)))
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier))))
+            (match_arm
+              (field_expression
+                (identifier)
+                (identifier))
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (tuple_expression
+                (named_element
+                  (identifier)
+                  (integer_literal))
+                (named_element
+                  (identifier)
+                  (discard)))
+              (call_expression
+                (identifier)
+                (arguments)))
+            (match_arm
+              (call_expression
+                (variant_expression
+                  (identifier))
+                (arguments
+                  (call_expression
+                    (variant_expression
+                      (identifier))
+                    (arguments
+                      (identifier)
+                      (identifier)))))
+              (call_expression
+                (identifier)
+                (arguments
+                  (identifier)
+                  (identifier))))))))))
+
+================================================================================
+Defer and errdefer
+================================================================================
+
+f :: fn() {
+    defer free(p)
+    errdefer { cleanup() }
+    defer x = 0
+    defer count += 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (defer_statement
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier))))
+        (defer_statement
+          (block
+            (call_expression
+              (identifier)
+              (arguments))))
+        (defer_statement
+          (assignment_statement
+            (identifier)
+            (integer_literal)))
+        (defer_statement
+          (assignment_statement
+            (identifier)
+            (integer_literal)))))))
+
+================================================================================
+Discard
+================================================================================
+
+f :: fn() {
+    discard k
+    _ = compute()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (discard_statement
+          (identifier))
+        (assignment_statement
+          (discard)
+          (call_expression
+            (identifier)
+            (arguments)))))))
+
+================================================================================
+Statement-level when
+================================================================================
+
+f :: fn() {
+    when target.os is .linux {
+        linux()
+    } else when target.os is .macos {
+        mac()
+    } else {
+        other()
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (when_statement
+          (binary_expression
+            (field_expression
+              (identifier)
+              (identifier))
+            (variant_expression
+              (identifier)))
+          (block
+            (call_expression
+              (identifier)
+              (arguments)))
+          (when_else_statement
+            (when_statement
+              (binary_expression
+                (field_expression
+                  (identifier)
+                  (identifier))
+                (variant_expression
+                  (identifier)))
+              (block
+                (call_expression
+                  (identifier)
+                  (arguments)))
+              (when_else_statement
+                (block
+                  (call_expression
+                    (identifier)
+                    (arguments)))))))))))

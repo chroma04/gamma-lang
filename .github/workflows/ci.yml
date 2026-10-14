@@ -89,3 +89,32 @@ jobs:
           CFLAGS_x86_64_unknown_linux_gnu: ""
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
+
+  editors:
+    # The TextMate grammar's scope tests, and the tree-sitter grammar: its generated
+    # parser must be up to date, its corpus tests must pass, and it must parse every file
+    # of the standard library and every conformance test the compiler accepts.
+    name: Editor grammars
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: TextMate grammar
+        working-directory: editors/vscode
+        run: npm ci && npm test
+      - name: Tree-sitter grammar
+        working-directory: editors/tree-sitter-gamma
+        run: |
+          npm ci
+          npx tree-sitter generate
+          git diff --exit-code -- src
+          npm test
+      - name: Tree-sitter grammar on the repository's Gamma code
+        run: |
+          cargo build
+          cd editors/tree-sitter-gamma && STRICT=1 ./scripts/parse-corpus.sh

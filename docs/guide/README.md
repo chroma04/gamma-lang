@@ -24,12 +24,14 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `discard`, a scheduler sketch |
 | [13. Safety](13-safety.md) | Build modes, checked operations, traps, what is undefined behavior |
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access |
+| [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 
 ## Conventions used in this guide
 
 - Code blocks are tagged `gamma`. A line comment starting with `// error:` marks code that the specification says is a compile error; it is shown so you recognize the mistake.
 - `...` inside a code block stands for elided code and is not Gamma syntax.
 - Section references such as "§10.6" refer to the [specification](../../gamma-spec.md). Appendix C of the specification explains the design reasoning in more depth.
+- [Editor support](../editors.md) describes syntax highlighting and the language server for common editors.
 - Boxes titled **Common mistake** describe C habits that Gamma turns into compile errors.
 - Where an example needs a helper that the language does not define (for instance a queue type for a scheduler), the text says so and calls it "a function you would write" or similar. The core library is exactly what [§21](../../gamma-spec.md#21-the-core-library) defines; this guide does not use any other library functions.
 

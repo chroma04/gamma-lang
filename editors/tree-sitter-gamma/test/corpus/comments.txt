@@ -1,0 +1,105 @@
+================================================================================
+Line and doc comments
+================================================================================
+
+// A plain comment.
+/// A doc comment.
+//// not a doc comment
+f :: 1 // trailing
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (doc_comment)
+  (comment)
+  (const_declaration
+    (identifier)
+    (integer_literal))
+  (comment))
+
+================================================================================
+Nested block comments
+================================================================================
+
+/* outer /* inner */ still outer */
+f :: /* inline */ 1
+
+/*
+multi
+line
+*/
+g :: 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment)
+  (const_declaration
+    (identifier)
+    (block_comment)
+    (integer_literal))
+  (block_comment)
+  (const_declaration
+    (identifier)
+    (integer_literal)))
+
+================================================================================
+Comments between statements
+================================================================================
+
+f :: fn() {
+    // before
+    a := 1 // after
+    /* between */
+    b := 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (comment)
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (comment)
+        (block_comment)
+        (short_declaration
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Comments do not hide a continuation line
+================================================================================
+
+f :: fn() {
+    x := get()
+        // explain the fallback
+        else 0
+    y := 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (else_expression
+            (call_expression
+              (identifier)
+              (arguments))
+            (comment)
+            (integer_literal)))
+        (short_declaration
+          (identifier)
+          (integer_literal))))))
