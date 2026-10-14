@@ -1,0 +1,458 @@
+================================================================================
+Newlines end statements
+================================================================================
+
+f :: fn() {
+    a := 1
+    b := 2
+
+
+    c := 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Semicolons separate statements
+================================================================================
+
+f :: fn() { a := 1; b := 2; c := 3 }
+g :: 1; h :: 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (integer_literal)))))
+  (const_declaration
+    (identifier)
+    (integer_literal))
+  (const_declaration
+    (identifier)
+    (integer_literal)))
+
+================================================================================
+Newline after a binary operator continues
+================================================================================
+
+f :: fn() {
+    a := 1 +
+        2 *
+        3
+    b := x and
+        y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (binary_expression
+            (integer_literal)
+            (binary_expression
+              (integer_literal)
+              (integer_literal))))
+        (short_declaration
+          (identifier)
+          (and_expression
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+Newline before else, and, or continues
+================================================================================
+
+f :: fn() {
+    if a { 1 }
+    else { 2 }
+    b := x
+        and y
+        and z
+    c := x
+        or y
+    d := get()
+        else 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (if_expression
+          (identifier)
+          (block
+            (integer_literal))
+          (else_clause
+            (block
+              (integer_literal))))
+        (short_declaration
+          (identifier)
+          (and_expression
+            (and_expression
+              (identifier)
+              (identifier))
+            (identifier)))
+        (short_declaration
+          (identifier)
+          (binary_expression
+            (identifier)
+            (identifier)))
+        (short_declaration
+          (identifier)
+          (else_expression
+            (call_expression
+              (identifier)
+              (arguments))
+            (integer_literal)))))))
+
+================================================================================
+Newline before .name continues a method chain
+================================================================================
+
+f :: fn() {
+    xs := list
+        .filter(a)
+        .map(b)
+    y := 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (call_expression
+            (field_expression
+              (call_expression
+                (field_expression
+                  (identifier)
+                  (identifier))
+                (arguments
+                  (identifier)))
+              (identifier))
+            (arguments
+              (identifier))))
+        (short_declaration
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Newline before a binding pattern line is significant
+================================================================================
+
+f :: fn() {
+    x := 1
+    .Num(n) := v else return
+    y := 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (call_expression
+            (variant_expression
+              (identifier))
+            (arguments
+              (identifier)))
+          (else_expression
+            (identifier)
+            (return_expression)))
+        (short_declaration
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Newlines inside parentheses and brackets are insignificant
+================================================================================
+
+f :: fn() {
+    g(
+        1,
+        2
+    )
+    h := a[
+        i
+    ]
+    t := (
+        1,
+        2,
+    )
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (call_expression
+          (identifier)
+          (arguments
+            (integer_literal)
+            (integer_literal)))
+        (short_declaration
+          (identifier)
+          (index_expression
+            (identifier)
+            (identifier)))
+        (short_declaration
+          (identifier)
+          (tuple_expression
+            (integer_literal)
+            (integer_literal)))))))
+
+================================================================================
+Newlines inside braces nested in parentheses are significant
+================================================================================
+
+f :: fn() {
+    apply(fn(x: i32) {
+        a := x
+        b := x
+    })
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (call_expression
+          (identifier)
+          (arguments
+            (function_expression
+              (parameters
+                (parameter
+                  (identifier)
+                  (identifier)))
+              (block
+                (short_declaration
+                  (identifier)
+                  (identifier))
+                (short_declaration
+                  (identifier)
+                  (identifier))))))))))
+
+================================================================================
+Match arms end at newlines
+================================================================================
+
+f :: fn() {
+    match x {
+        .A => 1
+        .B => 2
+        .C => g()
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))
+            (match_arm
+              (variant_expression
+                (identifier))
+              (call_expression
+                (identifier)
+                (arguments)))))))))
+
+================================================================================
+Match arm does not continue onto a dotted line
+================================================================================
+
+f :: fn() {
+    match x {
+        .A => 1
+        .B => 2
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (match_expression
+          (identifier)
+          (match_body
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))
+            (match_arm
+              (variant_expression
+                (identifier))
+              (integer_literal))))))))
+
+================================================================================
+Attributes before a declaration on their own line
+================================================================================
+
+#inline
+f :: fn() {}
+
+#export("g") #inline
+g :: fn() {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (attribute
+    (attribute_name))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block)))
+  (attribute
+    (attribute_name)
+    (arguments
+      (string_literal
+        (string_content))))
+  (attribute
+    (attribute_name))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block))))
+
+================================================================================
+Struct fields separated by commas or newlines
+================================================================================
+
+A :: struct {
+    a: i32,
+    b: i32,
+    c: i32
+}
+
+B :: struct {
+    a: i32
+    b: i32
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier))
+        (field_declaration
+          (identifier)
+          (identifier))))))
+
+================================================================================
+Return before a closing brace
+================================================================================
+
+f :: fn() {
+    if x { return }
+    return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (if_expression
+          (identifier)
+          (block
+            (return_expression)))
+        (return_expression)))))

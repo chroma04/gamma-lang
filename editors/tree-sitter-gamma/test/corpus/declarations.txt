@@ -1,0 +1,476 @@
+================================================================================
+Constants and aliases
+================================================================================
+
+pi :: 3.14159
+Name :: string
+Bytes :: []const u8
+Alias :: m.Other
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (float_literal))
+  (const_declaration
+    (identifier)
+    (identifier))
+  (const_declaration
+    (identifier)
+    (slice_type
+      (identifier)))
+  (const_declaration
+    (identifier)
+    (field_expression
+      (identifier)
+      (identifier))))
+
+================================================================================
+Public declarations
+================================================================================
+
+pub answer :: 42
+pub Point :: struct { x: i32 }
+pub f :: fn() {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (integer_literal))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (identifier)))))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block))))
+
+================================================================================
+Imports
+================================================================================
+
+std :: import "std"
+fmt :: import "std/fmt"
+local :: import "./util"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (import_expression
+      (string_literal
+        (string_content))))
+  (const_declaration
+    (identifier)
+    (import_expression
+      (string_literal
+        (string_content))))
+  (const_declaration
+    (identifier)
+    (import_expression
+      (string_literal
+        (string_content)))))
+
+================================================================================
+Tests
+================================================================================
+
+test "adds" {
+    expect_eq(i32, 1 + 1, 2)
+}
+
+test "empty" {}
+
+test :: fn() {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (test_declaration
+    (string_literal
+      (string_content))
+    (block
+      (call_expression
+        (identifier)
+        (arguments
+          (identifier)
+          (binary_expression
+            (integer_literal)
+            (integer_literal))
+          (integer_literal)))))
+  (test_declaration
+    (string_literal
+      (string_content))
+    (block))
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block))))
+
+================================================================================
+Top-level when
+================================================================================
+
+when target.os is .linux {
+    impl :: fn() {}
+} else when target.os is .macos {
+    impl :: fn() {}
+} else {
+    impl :: fn() {}
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (when_declaration
+    (binary_expression
+      (field_expression
+        (identifier)
+        (identifier))
+      (variant_expression
+        (identifier)))
+    (declaration_block
+      (const_declaration
+        (identifier)
+        (function_expression
+          (parameters)
+          (block))))
+    (when_else_declaration
+      (when_declaration
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (variant_expression
+            (identifier)))
+        (declaration_block
+          (const_declaration
+            (identifier)
+            (function_expression
+              (parameters)
+              (block))))
+        (when_else_declaration
+          (declaration_block
+            (const_declaration
+              (identifier)
+              (function_expression
+                (parameters)
+                (block)))))))))
+
+================================================================================
+Top-level intrinsic
+================================================================================
+
+@static_assert(@size_of(Point) is 8, "Point must be 8 bytes")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (intrinsic_expression
+    (intrinsic_name)
+    (arguments
+      (binary_expression
+        (intrinsic_expression
+          (intrinsic_name)
+          (arguments
+            (identifier)))
+        (integer_literal))
+      (string_literal
+        (string_content)))))
+
+================================================================================
+Global variables
+================================================================================
+
+#global counter: u32 = 0
+#thread_local #global tls: i32 = 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (attribute
+    (attribute_name))
+  (typed_declaration
+    (identifier)
+    (identifier)
+    (integer_literal))
+  (attribute
+    (attribute_name))
+  (attribute
+    (attribute_name))
+  (typed_declaration
+    (identifier)
+    (identifier)
+    (integer_literal)))
+
+================================================================================
+Local bindings
+================================================================================
+
+f :: fn() {
+    a := 1
+    b :: 2
+    c: i32 = 3
+    d: i32 : 4
+    e, g := 1, 2
+    x, y: f64 = 1.0, 2.0
+    buf: [64]u8 = ---
+    p := &a
+    q: ?^i32 = null
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (const_declaration
+          (identifier)
+          (integer_literal))
+        (typed_declaration
+          (identifier)
+          (identifier)
+          (integer_literal))
+        (typed_declaration
+          (identifier)
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (identifier)
+          (integer_literal)
+          (integer_literal))
+        (typed_declaration
+          (identifier)
+          (identifier)
+          (identifier)
+          (float_literal)
+          (float_literal))
+        (typed_declaration
+          (identifier)
+          (array_type
+            (integer_literal)
+            (identifier))
+          (uninitialized))
+        (short_declaration
+          (identifier)
+          (unary_expression
+            (identifier)))
+        (typed_declaration
+          (identifier)
+          (optional_type
+            (pointer_type
+              (identifier)))
+          (null))))))
+
+================================================================================
+Destructuring
+================================================================================
+
+f :: fn() {
+    (a, b) := pair()
+    Point(x: px, y: py) := p
+    .Num(n) := v else return
+    (x: a, y: b) := t
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (tuple_expression
+            (identifier)
+            (identifier))
+          (call_expression
+            (identifier)
+            (arguments)))
+        (short_declaration
+          (call_expression
+            (identifier)
+            (arguments
+              (named_argument
+                (identifier)
+                (identifier))
+              (named_argument
+                (identifier)
+                (identifier))))
+          (identifier))
+        (short_declaration
+          (call_expression
+            (variant_expression
+              (identifier))
+            (arguments
+              (identifier)))
+          (else_expression
+            (identifier)
+            (return_expression)))
+        (short_declaration
+          (tuple_expression
+            (named_element
+              (identifier)
+              (identifier))
+            (named_element
+              (identifier)
+              (identifier)))
+          (identifier))))))
+
+================================================================================
+Assignment
+================================================================================
+
+f :: fn() {
+    x = 1
+    a.b = 2
+    xs[i] = 3
+    p^ = 4
+    a, b = b, a
+    x += 1
+    x -= 1
+    x *= 2
+    x /= 2
+    x %= 3
+    x <<= 1
+    x >>= 1
+    x &= 1
+    x |= 1
+    x ~= 1
+    x +%= 1
+    x -%= 1
+    x *%= 1
+    x <<%= 1
+    x +|= 1
+    x -|= 1
+    x *|= 1
+    x <<|= 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (field_expression
+            (identifier)
+            (identifier))
+          (integer_literal))
+        (assignment_statement
+          (index_expression
+            (identifier)
+            (identifier))
+          (integer_literal))
+        (assignment_statement
+          (dereference_expression
+            (identifier))
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (identifier)
+          (identifier)
+          (identifier))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))
+        (assignment_statement
+          (identifier)
+          (integer_literal))))))
+
+================================================================================
+Nested blocks
+================================================================================
+
+f :: fn() {
+    {
+        inner := 1
+    }
+    { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (block
+          (short_declaration
+            (identifier)
+            (integer_literal)))
+        (block)))))
