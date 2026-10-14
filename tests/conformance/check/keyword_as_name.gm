@@ -1,0 +1,18 @@
+//! stage: check
+// A keyword where a name is expected is one error, and later uses of the word
+// do not report more.
+add :: fn(match: i32, x: i32) -> i32 {     //~ ERROR `match` is a keyword and cannot be used as a name
+    match + x
+}
+
+P :: struct { for: i32 }                   //~ ERROR `for` is a keyword and cannot be used as a name
+
+while :: fn(a: i32) -> i32 { a }           //~ ERROR `while` is a keyword and cannot be used as a name
+
+main :: fn() {
+    esc := 3                               //~ ERROR `esc` is a keyword and cannot be used as a name //~ NOTE rename it
+    _ = esc
+    _ = esc + 1
+    ctl := add(1, 2)                       //~ ERROR `ctl` is a keyword and cannot be used as a name
+    _ = ctl
+}

@@ -203,7 +203,7 @@ impl Parser<'_> {
             };
             return Ok(UnionMember::When { cond, then, else_, span: self.span_from(start) });
         }
-        let name = self.parse_ident("a variant name")?;
+        let name = self.parse_decl_ident("a variant name")?;
         let payload = if self.eat(Punct::Colon) { Some(self.parse_type()?) } else { None };
         let value = if self.eat(Punct::Assign) { Some(self.parse_expr()?) } else { None };
         Ok(UnionMember::Variant(Variant { name, payload, value, span: self.span_from(start) }))
@@ -254,7 +254,7 @@ impl Parser<'_> {
     /// `name: fn(params) -> T`, with `esc` or `ctl` in place of `fn`.
     fn parse_op_decl(&mut self) -> PResult<OpDecl> {
         let start = self.lo();
-        let name = self.parse_ident("an operation name")?;
+        let name = self.parse_decl_ident("an operation name")?;
         self.expect(Punct::Colon, "and an operation kind after the name")?;
         let kind = match self.kind() {
             TokenKind::Keyword(Keyword::Fn) => OpKind::Fn,
@@ -322,7 +322,7 @@ impl Parser<'_> {
     /// `name(a, b, k) => expr | block`.
     fn parse_clause(&mut self) -> PResult<Clause> {
         let start = self.lo();
-        let name = self.parse_ident("an operation name")?;
+        let name = self.parse_decl_ident("an operation name")?;
         self.expect(Punct::LParen, "after the operation name")?;
         let mut params = Vec::new();
         while !self.at(Punct::RParen) {
@@ -392,7 +392,7 @@ impl Parser<'_> {
         let global = attrs.iter().position(|a| a.name.name == self.words.global);
         if let Some(i) = global {
             attrs.remove(i);
-            let name = self.parse_ident("the name of the foreign variable")?;
+            let name = self.parse_decl_ident("the name of the foreign variable")?;
             self.expect(Punct::Colon, "and a type after the variable name")?;
             let ty = self.parse_type()?;
             return Ok(ForeignMember {
@@ -401,7 +401,7 @@ impl Parser<'_> {
                 span: self.span_from(start),
             });
         }
-        let name = self.parse_ident("the name of a foreign function")?;
+        let name = self.parse_decl_ident("the name of a foreign function")?;
         self.expect(Punct::ColonColon, "and a function type after the name")?;
         if !self.at_kw(Keyword::Fn) {
             return self.expected("a function type like `fn(args) -> T`");

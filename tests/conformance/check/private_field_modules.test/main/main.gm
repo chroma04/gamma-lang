@@ -1,0 +1,20 @@
+//! stage: check
+// A private field of a generic type used from another module is reported once
+// per source location, however many instantiations there are.
+box :: import "../box"
+
+peek :: fn(T: type, b: box.Box(T)) -> T {
+    return b.secret                              //~ ERROR the field `secret` of `Box(T)` is private
+}
+
+main :: fn() {
+    a := box.make(i32, 1)
+    b := box.make(u8, 2)
+    c := box.make(string, "x")
+    _ = peek(a)
+    _ = peek(b)
+    _ = peek(c)
+    _ = a.tag
+    _ = a.secret                                 //~ ERROR the field `secret` of `Box(i32)` is private
+    _ = b.secret                                 //~ ERROR the field `secret` of `Box(u8)` is private
+}

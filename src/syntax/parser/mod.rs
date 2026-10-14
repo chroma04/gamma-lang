@@ -37,7 +37,7 @@ mod stmt;
 mod tests;
 mod types;
 
-use crate::diag::Diagnostics;
+use crate::diag::{Diagnostic, Diagnostics};
 use crate::source::{FileId, Span};
 use crate::symbol::Symbol;
 use crate::syntax::ast::{Expr, ExprKind, File, Ident, Item, NodeIdGen};
@@ -111,6 +111,9 @@ pub(super) struct Parser<'a> {
     spec_limit: usize,
     /// True if line terminators in the file are CR LF (for doc comment placement).
     crlf: bool,
+    /// Keywords already reported as misused names; later uses of the same word
+    /// in an expression are read as that name, so one mistake gives one error.
+    kw_names: Vec<Keyword>,
 }
 
 /// Parses one lexed file into an AST, reporting syntax errors to `diags`.
@@ -164,6 +167,7 @@ impl<'a> Parser<'a> {
             spec_waste: 0,
             spec_limit: toks.len() * 50 + 1000,
             crlf,
+            kw_names: Vec::new(),
         }
     }
 
@@ -261,7 +265,45 @@ impl<'a> Parser<'a> {
 
     /// An identifier or `_` at offset `n`.
     pub(super) fn nth_is_name(&self, n: usize) -> bool {
-        matches!(self.nth(n), TokenKind::Ident(_) | TokenKind::Underscore)
+        match self.nth(n) {
+            TokenKind::Ident(_) | TokenKind::Underscore => true,
+            // A keyword where a binding or parameter name belongs (`esc := 1`,
+            // `fn(match: i32)`) is read as a name, and reported when consumed.
+            TokenKind::Keyword(_) => {
+                matches!(self.nth(n + 1), TokenKind::Punct(Punct::Colon | Punct::ColonEq | Punct::ColonColon))
+            }
+            _ => false,
+        }
+    }
+
+    /// Consumes the keyword at the current token where a name was expected,
+    /// reports it once, and returns it as the name so that parsing goes on.
+    pub(super) fn keyword_as_name(&mut self, k: Keyword) -> Ident {
+        let span = self.span();
+        self.bump();
+        self.err_count += 1;
+        if !self.kw_names.contains(&k) {
+            self.kw_names.push(k);
+        }
+        let text = k.as_str();
+        self.diags.push(
+            Diagnostic::error(span, format!("`{text}` is a keyword and cannot be used as a name"))
+                .with_note(format!("rename it, for example to `{text}_`")),
+        );
+        Ident { name: Symbol::intern(text), span }
+    }
+
+    /// True if the current token is a keyword already reported as a misused name.
+    pub(super) fn at_reported_kw_name(&self) -> bool {
+        matches!(self.kind(), TokenKind::Keyword(k) if self.kw_names.contains(k))
+    }
+
+    /// Consumes the current token as a name already reported by [`Self::keyword_as_name`].
+    pub(super) fn bump_reported_kw_name(&mut self) -> Ident {
+        let span = self.span();
+        let TokenKind::Keyword(k) = self.kind() else { unreachable!() };
+        self.bump();
+        Ident { name: Symbol::intern(k.as_str()), span }
     }
 
     pub(super) fn skip_newlines(&mut self) {
@@ -282,8 +324,18 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Ident { name: Symbol::intern("_"), span })
             }
+            TokenKind::Keyword(k) => Ok(self.keyword_as_name(*k)),
             _ => self.expected(what),
         }
+    }
+
+    /// Consumes an identifier (not `_`) in a position that declares a name:
+    /// a keyword there is reported and taken as the name.
+    pub(super) fn parse_decl_ident(&mut self, what: &str) -> PResult<Ident> {
+        if let TokenKind::Keyword(k) = self.kind() {
+            return Ok(self.keyword_as_name(*k));
+        }
+        self.parse_ident(what)
     }
 
     /// Consumes an identifier (not `_`).

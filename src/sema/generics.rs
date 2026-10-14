@@ -1301,7 +1301,9 @@ impl<'a, 's> FnCx<'a, 's> {
     /// True if `e` cannot denote a type: a literal or a local variable.
     fn clearly_value(&self, e: &ast::Expr) -> bool {
         match &e.kind {
-            ast::ExprKind::Ident(id) => self.lookup_local(id.name).is_some(),
+            ast::ExprKind::Ident(id) => {
+                self.lookup_local(id.name).is_some_and(|b| !matches!(b, super::func::LocalBinding::Type(_)))
+            }
             ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Str(_) | ast::ExprKind::Bool(_) => true,
             _ => false,
         }

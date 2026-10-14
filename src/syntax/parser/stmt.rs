@@ -117,6 +117,10 @@ impl Parser<'_> {
             }
             TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.parse_block()?),
             TokenKind::Ident(_) | TokenKind::Underscore => self.parse_name_stmt()?,
+            TokenKind::Keyword(_) if self.binding_ahead() => {
+                let binding = self.parse_binding()?;
+                StmtKind::Binding { attrs: Vec::new(), binding }
+            }
             TokenKind::Punct(Punct::Dot | Punct::Bang | Punct::LParen | Punct::Minus)
             | TokenKind::Int(_)
             | TokenKind::Str(_) => match self.parse_let_else()? {

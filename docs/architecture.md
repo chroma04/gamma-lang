@@ -63,6 +63,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |
+| `src/ice.rs` | the report printed for an internal compiler error |
 | `src/symbol.rs` | interned identifiers |
 | `src/syntax/token.rs` | token definitions |
 | `src/syntax/lexer.rs` | the lexer |
@@ -173,6 +174,23 @@ lowercase and specific. The `--diag-format=short` flag prints one
 `path:line:col: severity: message` line per diagnostic, followed by a
 `note` line for each secondary location and each attached explanation; this is
 what the test suite matches against.
+
+Cascades are kept down in three ways. `Diagnostics::push` drops a diagnostic that
+repeats an earlier one with the same severity, location and message, and an error
+whose message mentions the error type `{error}`, which only restates an earlier
+error. The parser reports a keyword used as a name once and reads later uses of the
+word as that name. Semantic analysis gives an expression that is already wrong the
+error type, which every later check accepts silently; a statement whose expression
+reported an error does not also get the "value is unused" error.
+
+An "unreachable code" error carries a note at the construct that ends the control
+flow (`never_cause` in `src/sema/func.rs`).
+
+`src/ice.rs` handles panics in the compiler: a hook installed by `main` records the
+message and location, and `main` prints them as an "internal compiler error" with
+a request to report it, exiting with status 101. `RUST_BACKTRACE` also shows the
+backtrace. The language server does not install the hook, since it catches panics
+itself. `GAMMA_DEBUG_PANIC=1` makes any command panic at start-up, to test the report.
 
 ## Semantic analysis
 

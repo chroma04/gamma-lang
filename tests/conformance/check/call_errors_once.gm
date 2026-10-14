@@ -1,0 +1,22 @@
+//! stage: check
+// A call that is wrong gets its own error and no follow-up about its unused result,
+// and a wrong type application before a constructor call is reported once.
+add :: fn(a: i32, b: i32) -> i32 => a + b
+
+Pair :: struct(T: type) { a: T, b: T }
+
+make :: fn() {
+    p := Pair(i32, i32)(a: 1, b: 2)   //~ ERROR `Pair` takes 1 argument(s)
+    _ = p
+}
+
+main :: fn() {
+    add(1, 2, 3)                      //~ ERROR too many arguments: the function takes 2
+    add(1)                            //~ ERROR missing argument for parameter `b`
+    add("a", 2)                       //~ ERROR expected `i32`, found `string`
+    c := add
+    c(1, 2, 3)                        //~ ERROR too many arguments: the function takes 2
+    c(1)                              //~ ERROR missing argument: the function takes 2
+    c("a", 2)                         //~ ERROR expected `i32`, found `string`
+    make()
+}

@@ -1,0 +1,44 @@
+//! stage: check
+// "unreachable code" says what ends control flow before it (§8).
+Stop :: effect { halt: esc() -> never }
+
+forever :: fn() {
+    while true { }                        //~ NOTE this loop never ends: it has no `break`
+    _ = 1                                 //~ ERROR unreachable code
+}
+
+early :: fn() -> i32 {
+    return 1                              //~ NOTE this `return` leaves the function
+    _ = 2                                 //~ ERROR unreachable code
+}
+
+loop_exit :: fn() {
+    while true {
+        break                             //~ NOTE this `break` leaves the loop
+        _ = 3                             //~ ERROR unreachable code
+    }
+}
+
+loop_next :: fn() {
+    while true {
+        continue                          //~ NOTE this `continue` starts the next iteration
+        _ = 3                             //~ ERROR unreachable code
+    }
+}
+
+stop :: fn() {
+    trap("x")                             //~ NOTE this stops the program
+    _ = 4                                 //~ ERROR unreachable code
+}
+
+op :: fn() \ {Stop} {
+    halt()                                //~ NOTE this operation never returns
+    _ = 5                                 //~ ERROR unreachable code
+}
+
+branches :: fn(c: bool) -> i32 {
+    if c { return 1 } else { return 2 }   //~ NOTE this `if` never completes
+    _ = 6                                 //~ ERROR unreachable code
+}
+
+main :: fn() {}
