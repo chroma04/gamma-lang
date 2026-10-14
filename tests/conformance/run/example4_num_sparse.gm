@@ -25,7 +25,7 @@ assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr \ {Alloc} {
     sums := map((u32, u32), f64)
     defer sums.deinit()
     for e in entries {
-        slot := try sums.get_or_put((e.row, e.col), 0.0)
+        slot := (try sums.entry((e.row, e.col), 0.0)).value
         slot^ += e.val
     }
     flat := list(Entry)
@@ -157,7 +157,7 @@ main :: fn() -> AllocError!() \ {Alloc, Out} {
     hist := map(u64, u32)
     defer hist.deinit()
     for v in m.vals {
-        c := try hist.get_or_put(v.bits(u64), 0)
+        c := (try hist.entry(v.bits(u64), 0)).value
         c^ += 1
     }
     print("distinct coefficient values: {}\n", hist.len())
