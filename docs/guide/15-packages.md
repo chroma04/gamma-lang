@@ -1,5 +1,7 @@
 # 15. Packages
 
+[Contents](README.md) · [Previous: Interoperating with C](14-interop.md) · [Next: The standard library](16-standard-library.md)
+
 A **package** is a directory tree with a `gamma.toml` manifest at its root. This chapter covers the manifest, the two kinds of dependency (a directory next to yours, or a git repository), the lockfile, and the commands that manage them. The language itself only fixes that a manifest names a package and its dependencies (§3.1); the format below belongs to this implementation.
 
 ## Starting a package

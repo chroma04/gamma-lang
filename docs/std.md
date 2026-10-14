@@ -10,6 +10,9 @@ io :: import "std/io"
 fs :: import "std/fs"
 ```
 
+[Chapter 16 of the guide](guide/16-standard-library.md) is a tour of all of this with
+runnable examples; this file is the reference.
+
 The `gamma` tool finds them in the directory named by `$GAMMA_STD`; otherwise, for an
 installed release (`<prefix>/bin/gamma`), in `<prefix>/lib/gamma/std`; otherwise in
 `lib/std` next to the sources the compiler was built from.
