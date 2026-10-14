@@ -28,7 +28,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --no-fail-fast
       - name: Conformance tests on the tree-walking interpreter
         if: matrix.os == 'ubuntu-latest'
         env:

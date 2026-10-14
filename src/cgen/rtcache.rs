@@ -44,7 +44,7 @@ pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf
     let obj = dir.join(format!("{stem}.o"));
     if obj.is_file() {
         // Mark it as recently used, so the cache cleaner keeps it.
-        let _ = std::fs::File::open(&obj).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        touch(&obj);
         return Some(obj);
     }
     std::fs::create_dir_all(&dir).ok()?;
@@ -108,7 +108,7 @@ pub fn cached_program(
     let exe = dir.join(if generated.target.os == "Windows" { format!("{stem}.exe") } else { stem.clone() });
     if exe.is_file() {
         // Mark it as recently used, so pruning keeps it.
-        let _ = std::fs::File::open(&exe).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        touch(&exe);
         return Ok(Some(exe));
     }
     if std::fs::create_dir_all(&dir).is_err() {
@@ -127,6 +127,14 @@ pub fn cached_program(
 
 /// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing
 /// any used in the last ten minutes (another process may be about to run it).
+/// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps
+/// it. Windows sets times only through a handle opened for writing.
+pub(crate) fn touch(p: &Path) {
+    let now = std::time::SystemTime::now();
+    let f = std::fs::OpenOptions::new().write(true).open(p).or_else(|_| std::fs::File::open(p));
+    let _ = f.and_then(|f| f.set_modified(now));
+}
+
 fn prune(dir: &Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut progs: Vec<(std::time::SystemTime, PathBuf)> = rd

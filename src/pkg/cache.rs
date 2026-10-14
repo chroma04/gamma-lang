@@ -261,7 +261,8 @@ mod tests {
 
     fn age(p: &Path, days: u64) {
         let t = SystemTime::now() - Duration::from_secs(days * 86400);
-        std::fs::File::open(p).unwrap().set_modified(t).unwrap();
+        // Windows sets times only through a handle opened for writing.
+        std::fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
     }
 
     fn policy(days: u64, all: bool) -> Policy {

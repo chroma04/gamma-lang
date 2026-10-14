@@ -14,7 +14,7 @@ use super::Options;
 use super::rtcache::{cache_dir, private_name, rename_or_remove};
 use crate::toolchain::Toolchain;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One C file of a package, with the include directories of that package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -147,10 +147,6 @@ fn native_cache() -> Option<PathBuf> {
     std::fs::create_dir_all(&d).ok().map(|_| d)
 }
 
-fn touch(p: &Path) {
-    let _ = std::fs::File::open(p).and_then(|f| f.set_modified(std::time::SystemTime::now()));
-}
-
 /// Compiles the C sources of `extras` (or finds them in the cache) and returns what a
 /// build with `opts` and `toolchain` links.
 pub fn link_inputs(extras: &Extras, opts: &Options, toolchain: &Toolchain) -> Result<Link, String> {
@@ -200,7 +196,7 @@ pub fn link_inputs(extras: &Extras, opts: &Options, toolchain: &Toolchain) -> Re
             (None, None) => unreachable!(),
         };
         if obj.is_file() {
-            touch(&obj);
+            super::rtcache::touch(&obj);
         } else {
             let tmp = private_name(&dir, &format!("obj-{}", key), "o");
             let out = toolchain
@@ -265,7 +261,7 @@ pub fn load_for_interpreter(extras: &Extras, opts: &Options, toolchain: &Toolcha
         (None, None) => unreachable!(),
     };
     if lib.is_file() {
-        touch(&lib);
+        super::rtcache::touch(&lib);
     } else {
         let tmp = private_name(&dir, &format!("lib-{}", key), ext);
         let mut flags: Vec<String> =

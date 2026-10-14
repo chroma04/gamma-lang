@@ -1065,7 +1065,7 @@ fn cache_dir_and_clean() {
     w.write("cache/unrelated.txt", "not ours");
     let age = |p: &str, days: u64| {
         let t = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86400);
-        std::fs::File::open(w.path(p)).unwrap().set_modified(t).unwrap();
+        std::fs::OpenOptions::new().write(true).open(w.path(p)).unwrap().set_modified(t).unwrap();
     };
     age("cache/run/prog-0123456789abcdef", 40);
     age("cache/gm_rt-0123456789abcdef.o", 40);
