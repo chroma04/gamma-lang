@@ -48,3 +48,13 @@
 - Follow-ups: superinstructions (cmp+branch, load+op), shrink Op (40 B), avoid the Rc Frame
   per activation when no Frame locals, cheaper Value boundary for builtins/calls to tree code.
 - No run conformance test falls back to the tree-walker for a whole function.
+
+## s10 VM speedups (perf follow-ups done)
+- i64 kernels with cold overflow path; raw-ip dispatch reading hot registers unchecked, guarded
+  by `Code::valid()` (register/jump-target validation) + sentinel trap at code end. `Op` 40→24 B
+  (side tables, size assert). Fused `TickBr`; `AddI/SubI/MulI/BinI` immediates (unmeasured gain).
+- Lazy frames (no Rc frame without frame locals); reg→reg arg copies; in-place aggregates;
+  perform / fn ptr / closure calls straight from registers. `GAMMA_VM_PAIRS` counts op pairs.
+- Callgrind: call 1150→340 instr, perform 1730→900, new/destroy 22k→16k. Micro 1.6–2.2×.
+- Next: lisp-style code hits slow ops (LdLocal, AddrLocal, LdUpvar, Builtin, EqG, Str, arg vecs
+  into tree-walked code); new/destroy cost spread across builtins.

@@ -364,6 +364,19 @@ registers directly; calls to and from tree-walked code go through `Value`s.
 
 The dispatch loop is instantiated per byte order and per whether a step budget
 (compile-time evaluation) is being counted, so the common case pays for neither.
+An `Op` is at most 24 bytes (checked at compile time): operands that do not fit
+live in side tables of the `Code` (`operands`, `builtins`, `coercions`, `bins`).
+Integer instructions work on 64-bit patterns, with a cold path for overflow that
+applies the wrap, saturate or checked semantics, and an instruction that
+compares and branches also counts the step. The loop runs on a raw instruction
+pointer and register base and reads hot registers unchecked; that is sound
+because `Code::valid` checks, when a function is compiled, that those registers
+and every jump target are in range and that the code ends in a trap. An
+activation creates its heap `Frame` only when something needs one, and calls
+between compiled functions, effect clauses and function pointers copy arguments
+register to register. `--features vm-profile` counts opcodes and adjacent pairs
+(`GAMMA_VM_PROFILE=1`, `GAMMA_VM_PAIRS=1`), which is how fused instructions are
+chosen.
 `GAMMA_INTERP=tree` turns the VM off; see `docs/contributing.md` for the
 debugging switches.
 
