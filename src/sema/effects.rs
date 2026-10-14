@@ -82,22 +82,39 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
                 match_params(*a, *b, binds);
             }
             match_params(f.ret, g.ret, binds);
-            // `fn() \ {Yield(T)}` against `fn() \ {Yield(string)}`: an effect with one
-            // instantiation on each side.
-            for e in f.effects.effects.iter() {
-                let mut same = g.effects.effects.iter().filter(|x| x.effect == e.effect);
-                if let (Some(x), None) = (same.next(), same.next())
-                    && x.args.len() == e.args.len()
-                {
-                    for (p, q) in e.args.iter().zip(x.args.iter()) {
-                        if let (GenericArg::Type(p), GenericArg::Type(q)) = (p, q) {
-                            match_params(*p, *q, binds);
-                        }
-                    }
+            match_effects(&f.effects, &g.effects, binds);
+        }
+        (TyKind::Effects(a), TyKind::Effects(b)) => match_effects(a, b, binds),
+        _ => {}
+    }
+}
+
+/// Binds the parameters of effect set `pat` from `actual` (§16.6): the arguments of an
+/// effect that occurs once in each, then a single `..E` from the effects of `actual`
+/// that `pat` does not name.
+fn match_effects(pat: &EffectSet, actual: &EffectSet, binds: &mut HashMap<ParamId, Ty>) {
+    for p in pat.effects.iter().filter(|p| !p.is_splice() && !p.args.is_empty()) {
+        let mut same = actual.effects.iter().filter(|a| a.effect == p.effect);
+        if let (Some(a), None) = (same.next(), same.next()) {
+            for (x, y) in p.args.iter().zip(a.args.iter()) {
+                if let (GenericArg::Type(x), GenericArg::Type(y)) = (x, y) {
+                    match_params(*x, *y, binds);
                 }
             }
         }
-        _ => {}
+    }
+    let mut splices = pat.effects.iter().filter(|p| p.is_splice());
+    if let (Some(sp), None) = (splices.next(), splices.next())
+        && let Some(GenericArg::Type(t)) = sp.args.first()
+        && let TyKind::Param(e) = t.kind()
+    {
+        let rest: Vec<EffectRef> = actual
+            .effects
+            .iter()
+            .filter(|a| !pat.effects.iter().any(|p| !p.is_splice() && p.effect == a.effect))
+            .cloned()
+            .collect();
+        binds.entry(*e).or_insert(Ty::intern(TyKind::Effects(EffectSet::new(rest))));
     }
 }
 
@@ -449,6 +466,15 @@ impl<'a, 's> FnCx<'a, 's> {
         // Whether this `with` handles a perform must not depend on type arguments (§16.6).
         let mut ambiguous = vec![];
         for (p, at) in &self.performed[start..] {
+            if p.is_splice()
+                && let Some(h) = handled.first()
+            {
+                ambiguous.push((*at, format!(
+                    "this performs `{}` inside a `with` that handles `{}`, which the effect-set parameter might include (§16.6)",
+                    p, h
+                )));
+                continue;
+            }
             if let Some(h) = handled.iter().find(|h| super::decls::may_coincide(p, h)) {
                 ambiguous.push((*at, format!(
                     "this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)",

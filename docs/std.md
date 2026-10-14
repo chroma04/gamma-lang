@@ -737,11 +737,32 @@ with &s on main_stack {
   behind `spawn`.
 - `spawn(T, f, arg, stack)` starts a task calling `f(arg)` on `stack`, to run once the
   current task gives way. The task ends, running its `defer`s, when `f` returns. A few
-  bytes at the start of `stack` hold the task's start-up data. A task performs only
-  `Sched`, so it shares data through the pointer it is given.
+  bytes at the start of `stack` hold the task's start-up data.
 - `Scheduler` is the handler's state, `scheduler()` makes one (keeping the current
   allocator for its queue of ready tasks) and `deinit(&s)` frees the queue. A scheduler
   with no ready task when one is needed (a task waiting forever) traps.
+- Tasks may perform other effects too, handled outside the scheduler's `with`. They are the
+  scheduler's effect-set parameter (§16.6): `scheduler(\ {Out, Clock})` makes a
+  `Scheduler(\ {Out, Clock})`, whose tasks are typed `\ {Sched(\ {Out, Clock}), Out, Clock}`
+  (or perform fewer of them), and the `with &s` must be able to perform `Out` and `Clock`.
+  A single effect needs no braces: `scheduler(Out)`, `Sched(Out)`. Plain `scheduler()` and
+  `Sched` mean no other effects.
+
+```gamma
+talker :: fn(name: ^string) \ {fiber.Sched(Out), Out} {
+    print("{} starts\n", name^)
+    fiber.yield_now()
+    print("{} ends\n", name^)
+}
+
+s := fiber.scheduler(Out)
+defer s.deinit()
+with &s on main_stack {
+    fiber.spawn(string, talker, &first, stack_a)
+    fiber.spawn(string, talker, &second, stack_b)
+    fiber.join()
+}
+```
 
 ## `std/log`
 

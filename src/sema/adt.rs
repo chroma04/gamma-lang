@@ -34,8 +34,9 @@ impl<'s> Sema<'s> {
         let mut generics = vec![];
         let mut defaults = vec![];
         for p in params.into_iter().flatten() {
-            let is_type =
-                p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
+            let is_effects = p.ty.as_ref().is_some_and(super::decls::is_effects_kind);
+            let is_type = is_effects
+                || p.ty.as_ref().is_some_and(|t| matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "type"));
             // A value parameter (`N :: usize` or `hash: ?^fn(…) = null`): every
             // parameter of a type is compile-time (§16.4).
             let value_ty = match &p.ty {
@@ -49,6 +50,9 @@ impl<'s> Sema<'s> {
             for n in &p.names {
                 let pid = crate::types::ParamId::fresh(n.name);
                 generics.push(pid);
+                if is_effects {
+                    self.effect_params.insert(pid);
+                }
                 defaults.push(p.default.clone().map(std::rc::Rc::new));
                 match value_ty {
                     Some(t) => {

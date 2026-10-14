@@ -61,8 +61,7 @@
                   · 006 generics (monomorphization by TIR cloning)
                   · 007 value params + sema-time const eval · 008 C back end · 009 interop
                   · 010 fibers · 011 stack size · 012 handler specialization + local exits
-                  · 013 debug info (-g: #line per C line, named frame fields)
-                  · 014 native build speed (cached runtime object, GM_API linkage)
+                  · 013 debug info (-g) · 014 native build speed (cached runtime obj)
                   · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
                   · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
                   · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
@@ -70,6 +69,7 @@
                   · 019 perf round s9 (where time goes, what was measured/kept/dropped)
                   · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
                   · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
+                  · 022 effect-set parameters (`E: effects`, `..E`, Sched(E))
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-2026-10-08.md · s02-2026-10-09.md · s03-2026-10-10.md · s04-2026-10-10.md
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)

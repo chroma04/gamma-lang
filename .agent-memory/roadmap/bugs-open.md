@@ -23,7 +23,6 @@
 30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
     runnable from a root (`gamma test --all`?), @fn_cast.
 ## s7 leftovers
-34. std/fiber tasks may perform only `Sched` (fn pointers have fixed effects).
 35. std/log ErrLog requires Clock even when time is false.
 36. WaitGroup wait is `wait_all` (name clash in module); lstat on symlinks untested.
 37. HashMap keeps get_or_put next to entry (second way; consider removing per §22).

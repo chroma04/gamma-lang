@@ -1308,6 +1308,7 @@ fn_lit     = 'fn' '(' [ param % ',' ] ')' [ '->' type ] [ '\' effect_set ] [ whe
 fn_body    = block | '=>' expr
 param      = ident { ',' ident } [ ( ':' | '::' ) type ] [ '=' expr ]
 effect_set = '{' [ effect % ',' ] '}'
+effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6)
 ```
 
 - `a, b: i32` declares two parameters of one type.
@@ -1439,7 +1440,7 @@ effect_lit = 'effect' [ '(' param % ',' ')' ] '{' { op_decl terminator } '}'
 op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' type ]
 ```
 
-An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`); an effect is instantiated by applying it to type arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
+An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`) or effect sets (`effect(E: effects)`, §16.6); an effect is instantiated by applying it to arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
 Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`. A name clash between an operation and another top-level name of `M` is a compile error.
 
@@ -1570,9 +1571,9 @@ When an operation is performed, its handler's clause runs with the operation's a
 
 ### 12.8 Effect polymorphism
 
-Gamma has no effect variables. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. Function *pointers* have a fixed effect set.
+Gamma has no effect variables in the types of values. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. A function *pointer* type has a fixed effect set, but a generic function, type, effect or handler may abstract over one with an effect-set parameter (`E: effects`, §16.6), which is fixed per instantiation.
 
-Generic effects (`Yield(T)`) and effect sets mentioning type parameters (`\ {Yield(T)}`) are allowed; the set is fixed per instantiation.
+Generic effects (`Yield(T)`) and effect sets mentioning type parameters (`\ {Yield(T)}`) or effect-set parameters (`\ {..E}`) are allowed; the set is fixed per instantiation.
 
 ### 12.9 Ambient effects
 
@@ -1970,7 +1971,7 @@ max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 - **Checked once.** The body is type-checked once, where it is written, treating each type parameter as an opaque type that supports only what its constraints grant (§16.3). An error in a generic body is reported there, whether or not the function is ever called.
 - **Monomorphized.** Each distinct set of type arguments produces a separate compiled function. Instantiation never fails type-checking, with two exceptions, both reported at the instantiating call: an untyped literal used at type `T` is checked against each instantiation (`T(300)` where `T` is `u8`), and an `@write` template is checked against its arguments (§21.6.1). `T(c)` for an untyped constant `c` types `c` at `T`, exactly as `x: T = c` does (it needs `Num(T)`, or `Float(T)` for a float constant); `T(x)` for a typed `x` is not available, since no conversion to every type `T` is lossless: use `x.trunc(T)`, `x.sat(T)` or `x.checked(T)`.
-- Type parameters and `::` parameters are compile-time; parameters declared with `:` whose type is not `type` are ordinary run-time parameters.
+- Type parameters, effect-set parameters (`E: effects`, §16.6) and `::` parameters are compile-time; parameters declared with `:` whose type is not `type` or `effects` are ordinary run-time parameters.
 - **Type arguments must be first-class run-time types.** A second-class function type `fn(…)`, `type`, an effect type, or any type containing one is not a valid argument for a type parameter (of a function or of a generic type). This is checked at each instantiation. Without it, `Box(fn() -> i32)` could store a second-class value and let it outlive its frame.
 
 ### 16.2 Inference of type arguments
@@ -2052,9 +2053,28 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
 
-### 16.6 Generic effects
+### 16.6 Generic effects and effect-set parameters
 
-Effects may have parameters (`Yield(T)`). An effect set may mention type parameters of the enclosing generic function: `\ {Yield(T)}`. There is no abstraction over effect sets themselves (§12.8).
+Effects may have parameters (`Yield(T)`). An effect set may mention type parameters of the enclosing generic function: `\ {Yield(T)}`.
+
+**Effect-set parameters.** A parameter declared `E: effects` stands for a set of effects. Functions, generic types, effects and handler declarations may have them, and they are compile-time like type parameters: each distinct set produces its own instantiation.
+
+```
+apply :: fn(E: effects, f: ^fn(x: i32) \ {..E}, x: i32) \ {..E} {
+    f(x)
+}
+
+Sched :: effect(E: effects) {
+    spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never \ {Sched(E), ..E}, arg: rawptr, stack: []u8)
+    …
+}
+```
+
+- Inside an effect set, `..E` stands for the effects of `E`; after instantiation it is replaced by them (duplicates merge). `E` itself is not a type and may appear only as `..E` or as the argument of another effect-set parameter (`Sched(E)`, `Scheduler(E)`).
+- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), or as another effect-set parameter. A function's effect-set parameter takes a positional argument only where one written this way stands; otherwise it is inferred, like a type parameter (§16.2), from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
+- The body is checked once, with `..E` as an opaque member of the sets that mention it: `apply` may call `f` because its own set includes `..E`. Since `E` might include any effect, a `with` may not handle anything around code that performs `..E` (the next paragraph's rule, for effect sets).
+
+This is how a stored function pointer can be polymorphic in its effects without effect variables in the types of values: `std/fiber`'s `Sched(E)` lets tasks perform the effects `E`, which the scheduler's handler, `handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}`, requires where it is installed (§14.6).
 
 **Distinctness.** Because generic bodies are checked once, handler resolution must not depend on the instantiation. Two instantiations of the same generic effect are **provably distinct** if they differ in some argument position where both are concrete and unequal (`Yield(i32)` and `Yield(u8)`), or where one is concrete and the other is a different type constructor applied (`Yield(i32)` and `Yield(^T)`). Inside a generic function or type, two instantiations that are neither identical nor provably distinct may not meet in either of these ways:
 
@@ -2835,8 +2855,9 @@ fn_type       = 'fn' '(' [ fn_type_param % ',' ] ')' [ '->' type ] [ '\' effect_
 fn_type_param = [ IDENT { ',' IDENT } ':' ] type | '...'                       // '...' only in foreign
 tuple_type    = '(' ')' | '(' type ',' ')' | '(' type ',' type { ',' type } [ ',' ] ')'
               | '(' IDENT ':' type { ',' IDENT ':' type } [ ',' ] ')'
-effect_set    = '{' [ effect_ref % ',' ] '}'
-effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net
+effect_set    = '{' [ effect_entry % ',' ] '}'
+effect_entry  = effect_ref | '..' IDENT                          // '..E' (§16.6)
+effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net, Sched(\ {Out})
 
 struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'
 field_decl    = [ 'pub' ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
@@ -2936,6 +2957,7 @@ primary       = literal | IDENT | '_' | '---' | 'null' | 'true' | 'false'
               | '.' IDENT                                         // variant, type from context
               | type_only                                          // ?T, ^T, []T, [N]T, fn types, struct/union/effect literals
               | fn_lit | handler_lit | import_expr | foreign_block
+              | '\' effect_set                                   // an effect-set argument (§16.6)
               | if_expr | match_expr | with_expr | [ label ] for_stmt   // for is an expression, §13.2
               | intrinsic_call
               | jump_expr
@@ -3148,7 +3170,7 @@ Operator overloading is excluded for the same reason: an operator never calls us
 ### C.10 Future directions
 
 - A `Send`-like rule that would let fibers migrate between threads.
-- Stored function values polymorphic in their effects (would need effect variables or existential handlers).
+- Stored function values polymorphic in their effects at run time (effect variables or existential handlers); effect-set parameters (§16.6) cover the compile-time case.
 - SIMD vector types with guaranteed code generation.
 - If experience shows heavy dictionary-passing boilerplate for user-defined numeric types, a compile-time parameter defaulting to a constant found by name in the type's own module — which would still involve no global resolution.
 

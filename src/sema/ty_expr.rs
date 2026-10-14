@@ -54,8 +54,20 @@ impl<'s> Sema<'s> {
     pub fn resolve_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         match &e.kind {
             ExprKind::Ident(id) => {
-                if let Some((_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
-                    return *t;
+                if let Some(&(_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
+                    if let TyKind::Param(p) = t.kind()
+                        && self.effect_params.contains(p)
+                    {
+                        self.error(
+                            e.span,
+                            format!(
+                                "`{}` is an effect set, not a type; use it in an effect set as `..{}` (§16.6)",
+                                id.name, id.name
+                            ),
+                        );
+                        return Ty::error();
+                    }
+                    return t;
                 }
                 if let Some(d) = self.lookup_module_name(module, id.name) {
                     self.check_deprecated(d, id.span);
@@ -499,6 +511,11 @@ impl<'s> Sema<'s> {
             let (e, module): (&ast::Expr, ModuleId) = match (given[i], &default) {
                 (Some(e), _) => (e, module),
                 (None, Some(d)) => (d, self.adts[&template].module),
+                // An effect-set parameter left out is empty (§16.6).
+                (None, None) if self.effect_params.contains(pid) => {
+                    out.push(Ty::intern(TyKind::Effects(crate::types::EffectSet::empty())));
+                    continue;
+                }
                 (None, None) => {
                     self.error(
                         span,
@@ -514,6 +531,7 @@ impl<'s> Sema<'s> {
                     let vt = self.subst(vt, &map);
                     self.comptime_value(module, vt, e)?
                 }
+                None if self.effect_params.contains(pid) => self.resolve_effect_arg(module, e),
                 None => self.resolve_type(module, e),
             };
             if t.is_error() {
