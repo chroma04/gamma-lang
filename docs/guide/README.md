@@ -24,6 +24,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `discard`, a scheduler sketch |
 | [13. Safety](13-safety.md) | Build modes, checked operations, traps, what is undefined behavior |
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access |
+| [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 
 ## Conventions used in this guide
 

@@ -199,7 +199,7 @@ Points worth knowing:
 - Everything is **private to its module unless marked `pub`**. A private name is visible from every file of the same module, and from nowhere else. Struct fields have the same rule (§3.3).
 - A module binding is not a value: you cannot store it, pass it or compare it. The import graph must be acyclic.
 - A binding that just names another declaration is an alias for it: `Shape :: geom.Shape`, `area :: geom.area`, `Map :: HashMap`. Generic types and functions work through aliases and qualified names alike (`geom.Pair(i32)`). A `pub` alias re-exports the declaration, and a `pub` import is itself a member, so a module can gather others: with `pub geom :: import "./geom"` in module `lib`, `lib.geom.area(s)` works.
-- The manifest is a small TOML file. This implementation reads the `[dependencies]` section, where each dependency is a directory given relative to the manifest; other keys are ignored:
+- The manifest is a small TOML file with a `[package]` section and a `[dependencies]` section. A dependency is a directory given relative to the manifest, or a git repository with a version requirement ([chapter 15](15-packages.md) covers git dependencies, the lockfile and `gamma new`):
 
   ```toml
   [package]
