@@ -60,23 +60,36 @@ name :: fn(level: Level) -> string {
 }
 
 /// A handler that prints records of level `min` and above to standard error, one per line:
-/// `INFO message`, or `2026-10-12T04:38:42Z INFO message` when `time` is true (the current
-/// UTC time from the `Clock` effect, to the second).
+/// `INFO message`. It needs only the `Err` effect; use `StampedLog` to add the time.
 pub ErrLog :: struct {
     pub min: Level = .Info
-    pub time: bool = false
 }
 
-handler Log for ^ErrLog \ {Err, Clock} {
+handler Log for ^ErrLog \ {Err} {
     begin(self, level) => {
         if level < self.min { return false }
-        if self.time {
-            now := time.from_unix(wall())
-            now.nanosecond = 0
-            buf: [time.RFC3339_LEN]u8 = ---
-            write_err(time.format_rfc3339(now, buf[..]))
-            write_err(" ")
-        }
+        write_err(name(level))
+        write_err(" ")
+        return true
+    }
+    write(self, bytes) => write_err(bytes)
+    end(self) => write_err("\n")
+}
+
+/// Like `ErrLog`, but every line starts with the current UTC time from the `Clock` effect,
+/// to the second: `2026-10-12T04:38:42Z INFO message`.
+pub StampedLog :: struct {
+    pub min: Level = .Info
+}
+
+handler Log for ^StampedLog \ {Err, Clock} {
+    begin(self, level) => {
+        if level < self.min { return false }
+        now := time.from_unix(wall())
+        now.nanosecond = 0
+        buf: [time.RFC3339_LEN]u8 = ---
+        write_err(time.format_rfc3339(now, buf[..]))
+        write_err(" ")
         write_err(name(level))
         write_err(" ")
         return true

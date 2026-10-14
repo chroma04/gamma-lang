@@ -1,0 +1,686 @@
+//! stage: test
+// std/json: what the parser accepts and rejects (cases in the style of JSONTestSuite: `y_`
+// must parse, `n_` must not, `i_` is where RFC 8259 leaves a choice), the offsets of
+// errors, number conversion, and the writer. The test allocator fails a test that leaks,
+// so every path through `parse` also shows that it gives its memory back.
+json :: import "std/json"
+fixed_buffer :: import "std/fixed_buffer"
+
+parses :: fn(text: string) -> bool \ {Alloc} {
+    doc := json.parse(text) else return false
+    doc.deinit()
+    return true
+}
+
+// The error `text` produces, if any.
+fails :: fn(text: string) -> ?json.ParseError \ {Alloc} {
+    doc := json.parse(text) else e => return e
+    doc.deinit()
+    return null
+}
+
+Case :: struct {
+    name: string
+    text: string
+}
+
+test "accepted texts" {
+    cases := [_]Case(
+        Case(name: "y_array_empty", text: "[]"),
+        Case(name: "y_array_empty_string", text: "[\"\"]"),
+        Case(name: "y_array_ending_with_newline", text: "[\"a\"]\n"),
+        Case(name: "y_array_false", text: "[false]"),
+        Case(name: "y_array_heterogeneous", text: "[null, 1, \"1\", {}]"),
+        Case(name: "y_array_null", text: "[null]"),
+        Case(name: "y_array_with_leading_space", text: " [1]"),
+        Case(name: "y_array_with_several_null", text: "[1,null,null,null,2]"),
+        Case(name: "y_array_with_trailing_space", text: "[2] "),
+        Case(name: "y_number", text: "[123e65]"),
+        Case(name: "y_number_0e+1", text: "[0e+1]"),
+        Case(name: "y_number_0e1", text: "[0e1]"),
+        Case(name: "y_number_after_space", text: "[ 4]"),
+        Case(name: "y_number_double_close_to_zero", text: "[-0.000000000000000000000000000000000000000000000000000000000000000000000000000001]"),
+        Case(name: "y_number_int_with_exp", text: "[20e1]"),
+        Case(name: "y_number_minus_zero", text: "[-0]"),
+        Case(name: "y_number_negative_int", text: "[-123]"),
+        Case(name: "y_number_negative_one", text: "[-1]"),
+        Case(name: "y_number_negative_zero", text: "[-0]"),
+        Case(name: "y_number_real_capital_e", text: "[1E22]"),
+        Case(name: "y_number_real_capital_e_neg_exp", text: "[1E-2]"),
+        Case(name: "y_number_real_capital_e_pos_exp", text: "[1E+2]"),
+        Case(name: "y_number_real_exponent", text: "[123e45]"),
+        Case(name: "y_number_real_fraction_exponent", text: "[123.456e78]"),
+        Case(name: "y_number_real_neg_exp", text: "[1e-2]"),
+        Case(name: "y_number_real_pos_exponent", text: "[1e+2]"),
+        Case(name: "y_number_simple_int", text: "[123]"),
+        Case(name: "y_number_simple_real", text: "[123.456789]"),
+        Case(name: "y_object", text: "{\"asd\":\"sdf\", \"dfg\":\"fgh\"}"),
+        Case(name: "y_object_basic", text: "{\"asd\":\"sdf\"}"),
+        Case(name: "y_object_duplicated_key", text: "{\"a\":\"b\",\"a\":\"c\"}"),
+        Case(name: "y_object_duplicated_key_and_value", text: "{\"a\":\"b\",\"a\":\"b\"}"),
+        Case(name: "y_object_empty", text: "{}"),
+        Case(name: "y_object_empty_key", text: "{\"\":0}"),
+        Case(name: "y_object_escaped_null_in_key", text: "{\"foo\\u0000bar\": 42}"),
+        Case(name: "y_object_extreme_numbers", text: "{ \"min\": -1.0e+28, \"max\": 1.0e+28 }"),
+        Case(name: "y_object_long_strings", text: "{\"x\":[{\"id\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}], \"id\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}"),
+        Case(name: "y_object_simple", text: "{\"a\":[]}"),
+        Case(name: "y_object_string_unicode", text: "{\"title\":\"\\u041f\\u043e\\u043b\\u0442\\u043e\\u0440\\u0430 \\u0417\\u0435\\u043c\\u043b\\u0435\\u043a\\u043e\\u043f\\u0430\" }"),
+        Case(name: "y_object_with_newlines", text: "{\n\"a\": \"b\"\n}"),
+        Case(name: "y_string_1_2_3_bytes_UTF-8_sequences", text: "[\"\\u0060\\u012a\\u12AB\"]"),
+        Case(name: "y_string_accepted_surrogate_pair", text: "[\"\\uD801\\udc37\"]"),
+        Case(name: "y_string_accepted_surrogate_pairs", text: "[\"\\ud83d\\ude39\\ud83d\\udc8d\"]"),
+        Case(name: "y_string_backslash_and_u_escaped_zero", text: "[\"\\\\u0000\"]"),
+        Case(name: "y_string_backslash_doublequotes", text: "[\"\\\"\"]"),
+        Case(name: "y_string_comments", text: "[\"a/*b*/c/*d//e\"]"),
+        Case(name: "y_string_double_escape_a", text: "[\"\\\\a\"]"),
+        Case(name: "y_string_double_escape_n", text: "[\"\\\\n\"]"),
+        Case(name: "y_string_escaped_control_character", text: "[\"\\u0012\"]"),
+        Case(name: "y_string_escaped_noncharacter", text: "[\"\\uFFFF\"]"),
+        Case(name: "y_string_in_array", text: "[\"asd\"]"),
+        Case(name: "y_string_in_array_with_leading_space", text: "[ \"asd\"]"),
+        Case(name: "y_string_last_surrogates_1_and_2", text: "[\"\\uDBFF\\uDFFF\"]"),
+        Case(name: "y_string_nbsp_uescaped", text: "[\"new\\u00A0line\"]"),
+        Case(name: "y_string_nonCharacterInUTF-8_U+FFFF", text: "[\"\u{ffff}\"]"),
+        Case(name: "y_string_null_escape", text: "[\"\\u0000\"]"),
+        Case(name: "y_string_one-byte-utf-8", text: "[\"\\u002c\"]"),
+        Case(name: "y_string_pi", text: "[\"\u{3c0}\"]"),
+        Case(name: "y_string_reservedCharacterInUTF-8_U+1BFFF", text: "[\"\u{1bfff}\"]"),
+        Case(name: "y_string_simple_ascii", text: "[\"asd \"]"),
+        Case(name: "y_string_space", text: "\" \""),
+        Case(name: "y_string_surrogates_U+1D11E_MUSICAL_SYMBOL_G_CLEF", text: "[\"\\uD834\\uDd1e\"]"),
+        Case(name: "y_string_three-byte-utf-8", text: "[\"\\u0821\"]"),
+        Case(name: "y_string_two-byte-utf-8", text: "[\"\\u0123\"]"),
+        Case(name: "y_string_u+2028_line_sep", text: "[\"\u{2028}\"]"),
+        Case(name: "y_string_u+2029_par_sep", text: "[\"\u{2029}\"]"),
+        Case(name: "y_string_uEscape", text: "[\"\\u0061\\u30af\\u30EA\\u30b9\"]"),
+        Case(name: "y_string_uescaped_newline", text: "[\"new\\u000Aline\"]"),
+        Case(name: "y_string_unescaped_char_delete", text: "[\"\u{7f}\"]"),
+        Case(name: "y_string_unicode", text: "[\"\\uA66D\"]"),
+        Case(name: "y_string_unicodeEscapedBackslash", text: "[\"\\u005C\"]"),
+        Case(name: "y_string_unicode_2", text: "[\"\u{2342}\u{3234}\u{2342}\"]"),
+        Case(name: "y_string_unicode_U+10FFFE_nonchar", text: "[\"\\uDBFF\\uDFFE\"]"),
+        Case(name: "y_string_with_del_character", text: "[\"a\u{7f}a\"]"),
+        Case(name: "y_structure_lonely_false", text: "false"),
+        Case(name: "y_structure_lonely_int", text: "42"),
+        Case(name: "y_structure_lonely_negative_real", text: "-0.1"),
+        Case(name: "y_structure_lonely_null", text: "null"),
+        Case(name: "y_structure_lonely_string", text: "\"asd\""),
+        Case(name: "y_structure_lonely_true", text: "true"),
+        Case(name: "y_structure_string_empty", text: "\"\""),
+        Case(name: "y_structure_trailing_newline", text: "[\"a\"]\n"),
+        Case(name: "y_structure_true_in_array", text: "[true]"),
+        Case(name: "y_structure_whitespace_array", text: " [] "),
+        Case(name: "whitespace of all four kinds", text: " \t\n\r[ \t\n\r1 \t\n\r, \t\n\r2 \t\n\r] \t\n\r"),
+        Case(name: "i_number_huge_exp", text: "[0.4e00669999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999969999999006]"),
+        Case(name: "i_number_neg_int_huge_exp", text: "[-1e+9999]"),
+        Case(name: "i_number_real_underflow", text: "[123e-10000000]"),
+        Case(name: "i_number_too_big_pos_int", text: "[100000000000000000000]"),
+        Case(name: "i_number_very_big_negative_int", text: "[-237462374673276894279832749832423479823246327846]"),
+    )
+    for c in cases {
+        if not parses(c.text) { expect(false, c.name) }
+    }
+}
+
+test "rejected texts" {
+    cases := [_]Case(
+        Case(name: "n_array_1_true_without_comma", text: "[1 true]"),
+        Case(name: "n_array_a_invalid_utf8", text: "[a\xe5]"),
+        Case(name: "n_array_colon_instead_of_comma", text: "[\"\": 1]"),
+        Case(name: "n_array_comma_after_close", text: "[\"\"],"),
+        Case(name: "n_array_comma_and_number", text: "[,1]"),
+        Case(name: "n_array_double_comma", text: "[1,,2]"),
+        Case(name: "n_array_double_extra_comma", text: "[\"x\",,]"),
+        Case(name: "n_array_extra_close", text: "[\"x\"]]"),
+        Case(name: "n_array_extra_comma", text: "[\"\",]"),
+        Case(name: "n_array_incomplete", text: "[\"x\""),
+        Case(name: "n_array_incomplete_invalid_value", text: "[x"),
+        Case(name: "n_array_inner_array_no_comma", text: "[3[4]]"),
+        Case(name: "n_array_invalid_utf8", text: "[\xff]"),
+        Case(name: "n_array_items_separated_by_semicolon", text: "[1:2]"),
+        Case(name: "n_array_just_comma", text: "[,]"),
+        Case(name: "n_array_just_minus", text: "[-]"),
+        Case(name: "n_array_missing_value", text: "[   , \"\"]"),
+        Case(name: "n_array_newlines_unclosed", text: "[\"a\",\n4\n,1,"),
+        Case(name: "n_array_number_and_comma", text: "[1,]"),
+        Case(name: "n_array_number_and_several_commas", text: "[1,,]"),
+        Case(name: "n_array_spaces_vertical_tab_formfeed", text: "[\"\u{b}a\"\\f]"),
+        Case(name: "n_array_star_inside", text: "[*]"),
+        Case(name: "n_array_unclosed", text: "[\"\""),
+        Case(name: "n_array_unclosed_trailing_comma", text: "[1,"),
+        Case(name: "n_array_unclosed_with_new_lines", text: "[1,\n1\n,1"),
+        Case(name: "n_array_unclosed_with_object_inside", text: "[{}"),
+        Case(name: "n_incomplete_false", text: "[fals]"),
+        Case(name: "n_incomplete_null", text: "[nul]"),
+        Case(name: "n_incomplete_true", text: "[tru]"),
+        Case(name: "n_number_++", text: "[++1234]"),
+        Case(name: "n_number_+1", text: "[+1]"),
+        Case(name: "n_number_+Inf", text: "[+Inf]"),
+        Case(name: "n_number_-01", text: "[-01]"),
+        Case(name: "n_number_-1.0.", text: "[-1.0.]"),
+        Case(name: "n_number_-2.", text: "[-2.]"),
+        Case(name: "n_number_-NaN", text: "[-NaN]"),
+        Case(name: "n_number_.-1", text: "[.-1]"),
+        Case(name: "n_number_.2e-3", text: "[.2e-3]"),
+        Case(name: "n_number_0.1.2", text: "[0.1.2]"),
+        Case(name: "n_number_0.3e+", text: "[0.3e+]"),
+        Case(name: "n_number_0.3e", text: "[0.3e]"),
+        Case(name: "n_number_0.e1", text: "[0.e1]"),
+        Case(name: "n_number_0_capital_E+", text: "[0E+]"),
+        Case(name: "n_number_0_capital_E", text: "[0E]"),
+        Case(name: "n_number_0e+", text: "[0e+]"),
+        Case(name: "n_number_0e", text: "[0e]"),
+        Case(name: "n_number_1.0e+", text: "[1.0e+]"),
+        Case(name: "n_number_1.0e-", text: "[1.0e-]"),
+        Case(name: "n_number_1.0e", text: "[1.0e]"),
+        Case(name: "n_number_1_000", text: "[1 000.0]"),
+        Case(name: "n_number_1eE2", text: "[1eE2]"),
+        Case(name: "n_number_2.e+3", text: "[2.e+3]"),
+        Case(name: "n_number_2.e-3", text: "[2.e-3]"),
+        Case(name: "n_number_2.e3", text: "[2.e3]"),
+        Case(name: "n_number_9.e+", text: "[9.e+]"),
+        Case(name: "n_number_Inf", text: "[Inf]"),
+        Case(name: "n_number_NaN", text: "[NaN]"),
+        Case(name: "n_number_Infinity", text: "[Infinity]"),
+        Case(name: "n_number_U+FF11_fullwidth_digit_one", text: "[\u{ff11}]"),
+        Case(name: "n_number_expression", text: "[1+2]"),
+        Case(name: "n_number_hex_1_digit", text: "[0x1]"),
+        Case(name: "n_number_hex_2_digits", text: "[0x42]"),
+        Case(name: "n_number_infinity", text: "[Infinity]"),
+        Case(name: "n_number_invalid+-", text: "[0e+-1]"),
+        Case(name: "n_number_invalid-negative-real", text: "[-123.123foo]"),
+        Case(name: "n_number_minus_infinity", text: "[-Infinity]"),
+        Case(name: "n_number_minus_sign_with_trailing_garbage", text: "[-foo]"),
+        Case(name: "n_number_minus_space_1", text: "[- 1]"),
+        Case(name: "n_number_neg_int_starting_with_zero", text: "[-012]"),
+        Case(name: "n_number_neg_real_without_int_part", text: "[-.123]"),
+        Case(name: "n_number_neg_with_garbage_at_end", text: "[-1x]"),
+        Case(name: "n_number_real_garbage_after_e", text: "[1ea]"),
+        Case(name: "n_number_real_without_fractional_part", text: "[1.]"),
+        Case(name: "n_number_starting_with_dot", text: "[.123]"),
+        Case(name: "n_number_with_alpha", text: "[1.2a-3]"),
+        Case(name: "n_number_with_alpha_char", text: "[1.8011670033376514H-308]"),
+        Case(name: "n_number_with_leading_zero", text: "[012]"),
+        Case(name: "n_object_bad_value", text: "[\"x\", truth]"),
+        Case(name: "n_object_bracket_key", text: "{[: \"x\"}"),
+        Case(name: "n_object_comma_instead_of_colon", text: "{\"x\", null}"),
+        Case(name: "n_object_double_colon", text: "{\"x\"::\"b\"}"),
+        Case(name: "n_object_emoji", text: "{\u{1f1e8}\u{1f1ed}}"),
+        Case(name: "n_object_garbage_at_end", text: "{\"a\":\"a\" 123}"),
+        Case(name: "n_object_key_with_single_quotes", text: "{key: 'value'}"),
+        Case(name: "n_object_lone_continuation_byte_in_key_and_trailing_comma", text: "{\"\xb9\":\"0\",}"),
+        Case(name: "n_object_missing_colon", text: "{\"a\" b}"),
+        Case(name: "n_object_missing_key", text: "{:\"b\"}"),
+        Case(name: "n_object_missing_semicolon", text: "{\"a\" \"b\"}"),
+        Case(name: "n_object_missing_value", text: "{\"a\":"),
+        Case(name: "n_object_no-colon", text: "{\"a\""),
+        Case(name: "n_object_non_string_key", text: "{1:1}"),
+        Case(name: "n_object_non_string_key_but_huge_number_instead", text: "{9999E9999:1}"),
+        Case(name: "n_object_repeated_null_null", text: "{null:null,null:null}"),
+        Case(name: "n_object_several_trailing_commas", text: "{\"id\":0,,,,,}"),
+        Case(name: "n_object_single_quote", text: "{'a':0}"),
+        Case(name: "n_object_trailing_comma", text: "{\"id\":0,}"),
+        Case(name: "n_object_trailing_comment", text: "{\"a\":\"b\"}/**/"),
+        Case(name: "n_object_trailing_comment_open", text: "{\"a\":\"b\"}/**//"),
+        Case(name: "n_object_trailing_comment_slash_open", text: "{\"a\":\"b\"}//"),
+        Case(name: "n_object_trailing_comment_slash_open_incomplete", text: "{\"a\":\"b\"}/"),
+        Case(name: "n_object_two_commas_in_a_row", text: "{\"a\":\"b\",,\"c\":\"d\"}"),
+        Case(name: "n_object_unquoted_key", text: "{a: \"b\"}"),
+        Case(name: "n_object_unterminated-value", text: "{\"a\":\"a"),
+        Case(name: "n_object_with_single_string", text: "{ \"foo\" : \"bar\", \"a\" }"),
+        Case(name: "n_object_with_trailing_garbage", text: "{\"a\":\"b\"}#"),
+        Case(name: "n_single_space", text: " "),
+        Case(name: "n_string_1_surrogate_then_escape", text: "[\"\\uD800\\\"]"),
+        Case(name: "n_string_1_surrogate_then_escape_u", text: "[\"\\uD800\\u\"]"),
+        Case(name: "n_string_1_surrogate_then_escape_u1", text: "[\"\\uD800\\u1\"]"),
+        Case(name: "n_string_1_surrogate_then_escape_u1x", text: "[\"\\uD800\\u1x\"]"),
+        Case(name: "n_string_accentuated_char_no_quotes", text: "[\u{e9}]"),
+        Case(name: "n_string_backslash_00", text: "[\"\\\u{0}\"]"),
+        Case(name: "n_string_escape_x", text: "[\"\\x00\"]"),
+        Case(name: "n_string_escaped_backslash_bad", text: "[\"\\\\\\\"]"),
+        Case(name: "n_string_escaped_ctrl_char_tab", text: "[\"\\\t\"]"),
+        Case(name: "n_string_escaped_emoji", text: "[\"\\\u{1f300}\"]"),
+        Case(name: "n_string_incomplete_escape", text: "[\"\\\"]"),
+        Case(name: "n_string_incomplete_escaped_character", text: "[\"\\u00A\"]"),
+        Case(name: "n_string_incomplete_surrogate", text: "[\"\\uD834\\uDd\"]"),
+        Case(name: "n_string_incomplete_surrogate_escape_invalid", text: "[\"\\uD800\\uD800\\x\"]"),
+        Case(name: "n_string_invalid-utf-8-in-escape", text: "[\"\\u\xe5\"]"),
+        Case(name: "n_string_invalid_backslash_esc", text: "[\"\\a\"]"),
+        Case(name: "n_string_invalid_unicode_escape", text: "[\"\\uqqqq\"]"),
+        Case(name: "n_string_invalid_utf8_after_escape", text: "[\"\\\xe5\"]"),
+        Case(name: "n_string_leading_uescaped_thinspace", text: "[\\u0020\"asd\"]"),
+        Case(name: "n_string_no_quotes_with_bad_escape", text: "[\\n]"),
+        Case(name: "n_string_single_doublequote", text: "\""),
+        Case(name: "n_string_single_quote", text: "['single quote']"),
+        Case(name: "n_string_single_string_no_double_quotes", text: "abc"),
+        Case(name: "n_string_start_escape_unclosed", text: "[\"\\"),
+        Case(name: "n_string_unescaped_ctrl_char", text: "[\"a\u{0}a\"]"),
+        Case(name: "n_string_unescaped_newline", text: "[\"new\nline\"]"),
+        Case(name: "n_string_unescaped_tab", text: "[\"\t\"]"),
+        Case(name: "n_string_unicode_CapitalU", text: "\"\\UA66D\""),
+        Case(name: "n_string_with_trailing_garbage", text: "\"\"x"),
+        Case(name: "n_structure_U+2060_word_joined", text: "[\u{2060}]"),
+        Case(name: "n_structure_UTF8_BOM_no_data", text: "\u{feff}"),
+        Case(name: "n_structure_angle_bracket_.", text: "<.>"),
+        Case(name: "n_structure_angle_bracket_null", text: "[<null>]"),
+        Case(name: "n_structure_array_trailing_garbage", text: "[1]x"),
+        Case(name: "n_structure_array_with_extra_array_close", text: "[1]]"),
+        Case(name: "n_structure_array_with_unclosed_string", text: "[\"asd]"),
+        Case(name: "n_structure_ascii-unicode-identifier", text: "a\xe5"),
+        Case(name: "n_structure_capitalized_True", text: "[True]"),
+        Case(name: "n_structure_close_unopened_array", text: "1]"),
+        Case(name: "n_structure_comma_instead_of_closing_brace", text: "{\"x\": true,"),
+        Case(name: "n_structure_double_array", text: "[][]"),
+        Case(name: "n_structure_end_array", text: "]"),
+        Case(name: "n_structure_incomplete_UTF8_BOM", text: "\xef\xbb{}"),
+        Case(name: "n_structure_lone-invalid-utf-8", text: "\xe5"),
+        Case(name: "n_structure_lone-open-bracket", text: "["),
+        Case(name: "n_structure_no_data", text: ""),
+        Case(name: "n_structure_null-byte-outside-string", text: "[\u{0}]"),
+        Case(name: "n_structure_number_with_trailing_garbage", text: "2@"),
+        Case(name: "n_structure_object_followed_by_closing_object", text: "{}}"),
+        Case(name: "n_structure_object_unclosed_no_value", text: "{\"\":"),
+        Case(name: "n_structure_object_with_comment", text: "{\"a\":/*comment*/\"b\"}"),
+        Case(name: "n_structure_object_with_trailing_garbage", text: "{\"a\": true} \"x\""),
+        Case(name: "n_structure_open_array_apostrophe", text: "['"),
+        Case(name: "n_structure_open_array_comma", text: "[,"),
+        Case(name: "n_structure_open_array_object", text: "[{\"\":"),
+        Case(name: "n_structure_open_array_open_object", text: "[{"),
+        Case(name: "n_structure_open_array_open_string", text: "[\"a"),
+        Case(name: "n_structure_open_array_string", text: "[\"a\""),
+        Case(name: "n_structure_open_object", text: "{"),
+        Case(name: "n_structure_open_object_close_array", text: "{]"),
+        Case(name: "n_structure_open_object_comma", text: "{,"),
+        Case(name: "n_structure_open_object_open_array", text: "{["),
+        Case(name: "n_structure_open_object_open_string", text: "{\"a"),
+        Case(name: "n_structure_open_object_string_with_apostrophes", text: "{'a'"),
+        Case(name: "n_structure_open_open", text: "[\"\\{[\"\\{[\"\\{[\"\\{"),
+        Case(name: "n_structure_single_eacute", text: "\u{e9}"),
+        Case(name: "n_structure_single_star", text: "*"),
+        Case(name: "n_structure_trailing_#", text: "{\"a\":\"b\"}#{}"),
+        Case(name: "n_structure_uescaped_LF_before_string", text: "[\\u000A\"\"]"),
+        Case(name: "n_structure_unclosed_array", text: "[1"),
+        Case(name: "n_structure_unclosed_array_partial_null", text: "[ false, nul"),
+        Case(name: "n_structure_unclosed_array_unfinished_false", text: "[ true, fals"),
+        Case(name: "n_structure_unclosed_array_unfinished_true", text: "[ false, tru"),
+        Case(name: "n_structure_unclosed_object", text: "{\"asd\":\"asd\""),
+        Case(name: "n_structure_unicode-identifier", text: "\xe5"),
+        Case(name: "n_structure_whitespace_U+2060_word_joiner", text: "[\u{2060}]"),
+        Case(name: "n_structure_whitespace_formfeed", text: "[\u{c}]"),
+        Case(name: "n_structure_vertical_tab", text: "[\u{b}1]"),
+        Case(name: "n_structure_non_breaking_space", text: "\u{a0}[1]"),
+        Case(name: "i_string_1st_surrogate_but_2nd_missing", text: "[\"\\uDADA\"]"),
+        Case(name: "i_string_1st_valid_surrogate_2nd_invalid", text: "[\"\\uD888\\u1234\"]"),
+        Case(name: "i_string_incomplete_surrogate_and_escape_valid", text: "[\"\\uD800\\n\"]"),
+        Case(name: "i_string_incomplete_surrogate_pair", text: "[\"\\uDd1ea\"]"),
+        Case(name: "i_string_incomplete_surrogates_escape_valid", text: "[\"\\uD800\\uD800\\n\"]"),
+        Case(name: "i_string_invalid_lonely_surrogate", text: "[\"\\ud800\"]"),
+        Case(name: "i_string_invalid_surrogate", text: "[\"\\ud800abc\"]"),
+        Case(name: "i_string_inverted_surrogates_U+1D11E", text: "[\"\\uDd1e\\uD834\"]"),
+        Case(name: "i_string_lone_second_surrogate", text: "[\"\\uDFAA\"]"),
+        Case(name: "i_string_not_in_unicode_range", text: "[\"\xf4\xbf\xbf\xbf\"]"),
+        Case(name: "i_string_overlong_sequence_2_bytes", text: "[\"\xc0\xaf\"]"),
+        Case(name: "i_string_UTF-8_invalid_sequence", text: "[\"\xe6\x97\xa5\xd1\x88\xfa\"]"),
+    )
+    for c in cases {
+        if parses(c.text) { expect(false, c.name) }
+    }
+}
+
+test "error offsets and kinds" {
+    expect(fails("") is .UnexpectedEnd(0))
+    expect(fails("[1,]") is .UnexpectedByte(3))
+    expect(fails("[1 2]") is .UnexpectedByte(3))
+    expect(fails("  tru") is .UnexpectedEnd(5))
+    expect(fails("trux") is .UnexpectedByte(3))
+    expect(fails("[01]") is .InvalidNumber(2))
+    expect(fails("-") is .UnexpectedEnd(1))
+    expect(fails("-x") is .InvalidNumber(1))
+    expect(fails("[1.]") is .InvalidNumber(3))
+    expect(fails("[1e+]") is .InvalidNumber(4))
+    expect(fails("{\"a\":1,}") is .UnexpectedByte(7))
+    expect(fails("{1:2}") is .UnexpectedByte(1))
+    expect(fails("{\"a\" 1}") is .UnexpectedByte(5))
+    expect(fails("[1] x") is .TrailingData(4))
+    expect(fails("\"a\tb\"") is .ControlCharacter(2))
+    expect(fails("\"\\q\"") is .InvalidEscape(2))
+    expect(fails("\"\\u12G4\"") is .InvalidEscape(5))
+    expect(fails("\"\\ud800\"") is .InvalidSurrogate(1))
+    expect(fails("\"ab\\udc00\"") is .InvalidSurrogate(3))
+    expect(fails("\"\\ud800\\u0041\"") is .InvalidSurrogate(1))
+    expect(fails("\"ab\xe5\"") is .InvalidUtf8(3))
+    expect(fails("\"abc") is .UnexpectedEnd(4))
+    expect(fails("[1,2") is .UnexpectedEnd(4))
+    expect(fails("\u{feff}[]") is .UnexpectedByte(0))
+}
+
+test "the nesting limit" {
+    deep: [600]u8 = ---
+    for i in 0..600 { deep[i] = '[' }
+    expect(fails(deep[0..600]) is .TooDeep(512))
+    // Exactly at the limit, closed again.
+    ok: [1024]u8 = ---
+    for i in 0..512 {
+        ok[i] = '['
+        ok[1023 - i] = ']'
+    }
+    expect(parses(ok[..]))
+    expect(fails(ok[..]) is null)
+    doc := try json.parse("[[[]]]", 3)
+    doc.deinit()
+    expect(json.parse("[[[[]]]]", 3) is !.TooDeep(3))
+}
+
+test "positions" {
+    text := "{\n  \"a\": 1,\n  \"b\": ?\n}"
+    p := json.position(text, 19)
+    expect_eq(p.line, 3)
+    expect_eq(p.column, 8)
+    expect_eq(json.position(text, 0).line, 1)
+    expect_eq(json.position(text, 0).column, 1)
+    expect_eq(json.position(text, 1000).line, 4)
+}
+
+test "the tree" {
+    doc := try json.parse(" {\"a\": [1, true, null, \"x\\ny\"], \"b\": {\"c\": -2.5e1}, \"a\": 7} ")
+    defer doc.deinit()
+    // Duplicate keys are kept; `get` finds the last.
+    obj := doc.root
+    match obj {
+        .Object(ms) => {
+            expect_eq(ms.len, 3)
+            expect(ms[0].key is "a" and ms[1].key is "b" and ms[2].key is "a")
+        }
+        _ => expect(false, "an object")
+    }
+    last := obj.get("a") else return ()
+    match last {
+        .Number(n) => expect(n.text is "7")
+        _ => expect(false, "the last duplicate")
+    }
+    expect(obj.get("zzz") is null)
+    first := json.at(doc.root, 0)
+    expect(first is null)
+    b := obj.get("b") else return ()
+    c := b.get("c") else return ()
+    match c {
+        .Number(n) => {
+            expect(n.text is "-2.5e1")
+            expect(n.to_i64() is -25)
+            r := n.to_f64()
+            expect(r.value is -25.0 and r.exact)
+        }
+        _ => expect(false, "a number")
+    }
+}
+
+test "arrays and strings" {
+    doc := try json.parse("[1, true, null, \"x\\ny\", \"\\u00e9\\ud83d\\ude00\\\"\", \"\", []]")
+    defer doc.deinit()
+    expect(doc.root.at(1) is .Bool(true))
+    expect(doc.root.at(2) is .Null)
+    expect(doc.root.at(7) is null)
+    s := doc.root.at(3) else return ()
+    match s {
+        .String(t) => expect(t is "x\ny")
+        _ => expect(false, "a string")
+    }
+    s2 := doc.root.at(4) else return ()
+    match s2 {
+        .String(t) => {
+            expect(t is "\u{e9}\u{1f600}\"")
+            expect(t.len is 7)
+        }
+        _ => expect(false, "a string")
+    }
+    s3 := doc.root.at(5) else return ()
+    match s3 {
+        .String(t) => expect(t.len is 0)
+        _ => expect(false, "a string")
+    }
+    // The text may be freed or changed once parsed: the document has its own copy.
+    expect(doc.root.at(6) is .Array(_))
+}
+
+num :: fn(text: string) -> json.Number => json.Number(text: text)
+
+test "integer conversion" {
+    expect(num("0").to_i64() is 0)
+    expect(num("-0").to_i64() is 0)
+    expect(num("0.0").to_i64() is 0)
+    expect(num("0e500").to_i64() is 0)
+    expect(num("12").to_i64() is 12)
+    expect(num("-12").to_i64() is -12)
+    expect(num("1e3").to_i64() is 1000)
+    expect(num("1E+3").to_i64() is 1000)
+    expect(num("5.0").to_i64() is 5)
+    expect(num("12.50e1").to_i64() is 125)
+    expect(num("125e-1").to_i64() is null)
+    expect(num("1.5").to_i64() is null)
+    expect(num("1e-1").to_i64() is null)
+    expect(num("100e-2").to_i64() is 1)
+    expect(num("9223372036854775807").to_i64() is 9223372036854775807)
+    expect(num("9223372036854775808").to_i64() is null)
+    expect(num("-9223372036854775808").to_i64() is -9223372036854775807 - 1)
+    expect(num("-9223372036854775809").to_i64() is null)
+    expect(num("922337203685477580.7e1").to_i64() is 9223372036854775807)
+    expect(num("1e19").to_i64() is null)
+    expect(num("1e18").to_i64() is 1000000000000000000)
+    expect(num("1e99999999999").to_i64() is null)
+    expect(num("10000000000000000000000").to_i64() is null)
+}
+
+test "float conversion and exactness" {
+    a := num("0.1").to_f64()
+    expect(a.value is 0.1 and a.exact)
+    b := num("1e3").to_f64()
+    expect(b.value is 1000.0 and b.exact)
+    c := num("9007199254740993").to_f64()
+    expect(c.value is 9007199254740992.0 and not c.exact)
+    d := num("9007199254740992").to_f64()
+    expect(d.value is 9007199254740992.0 and d.exact)
+    e := num("1e400").to_f64()
+    expect(e.value.is_inf() and not e.exact)
+    f := num("0.1000000000000000000001").to_f64()
+    expect(f.value is 0.1 and not f.exact)
+    g := num("-0").to_f64()
+    expect(g.value is 0.0 and g.value.sign_bit() and g.exact)
+    h := num("1.5e300").to_f64()
+    expect(h.value is 1.5e300 and h.exact)
+    i := num("12.340").to_f64()
+    expect(i.value is 12.34 and i.exact)
+    j := num("0.00012").to_f64()
+    expect(j.value is 0.00012 and j.exact)
+    k := num("1e-400").to_f64()
+    expect(k.value is 0.0 and not k.exact)
+    l := num("123456789012345678").to_f64()
+    expect(not l.exact)
+    m := num("5e-324").to_f64()
+    expect(m.value > 0.0 and m.exact)
+}
+
+dump :: fn(v: json.Value, indent: usize) -> []u8 \ {Alloc} {
+    out := list(u8)
+    json.write(&out, v, indent) else return empty_slice(u8)
+    return out.into_slice() else empty_slice(u8)
+}
+
+test "writing a tree" {
+    doc := try json.parse("{\"a\":[1,2.50,{\"b\":null}],\"c\":\"\\u0001\\\"\\\\\\/\",\"d\":[],\"e\":{}}")
+    defer doc.deinit()
+    compact := dump(doc.root, 0)
+    defer free(compact)
+    expect(compact is "{\"a\":[1,2.50,{\"b\":null}],\"c\":\"\\u0001\\\"\\\\/\",\"d\":[],\"e\":{}}")
+    pretty := dump(doc.root, 2)
+    defer free(pretty)
+    expect(pretty is "{\n  \"a\": [\n    1,\n    2.50,\n    {\n      \"b\": null\n    }\n  ],\n  \"c\": \"\\u0001\\\"\\\\/\",\n  \"d\": [],\n  \"e\": {}\n}")
+    // Round trip: parsing the output gives the same output.
+    again := try json.parse(compact)
+    defer again.deinit()
+    compact2 := dump(again.root, 0)
+    defer free(compact2)
+    expect(compact2 is compact)
+}
+
+test "the writer" {
+    out := list(u8)
+    defer out.deinit()
+    w := json.writer(&out, 0)
+    try w.begin_object()
+    try w.key("name")
+    try w.write_string("tab\there \u{e9}\u{7}")
+    try w.key("n")
+    try w.write_int(-12)
+    try w.key("big")
+    try w.write_int(u64(18446744073709551615))
+    try w.key("f")
+    try w.write_float(0.1)
+    try w.key("g")
+    try w.write_float(1.0e21)
+    try w.key("h")
+    try w.write_float(f32(0.5))
+    try w.key("ok")
+    try w.write_bool(true)
+    try w.key("nothing")
+    try w.write_null()
+    try w.key("list")
+    try w.begin_array()
+    try w.write_int(1)
+    try w.begin_array()
+    try w.end_array()
+    try w.write_string("")
+    try w.end_array()
+    try w.end_object()
+    expect(out.items is "{\"name\":\"tab\\there \u{e9}\\u0007\",\"n\":-12,\"big\":18446744073709551615,\"f\":0.1,\"g\":1e21,\"h\":0.5,\"ok\":true,\"nothing\":null,\"list\":[1,[],\"\"]}")
+    // Written text parses back.
+    doc := try json.parse(out.items)
+    doc.deinit()
+}
+
+test "writer errors" {
+    out := list(u8)
+    defer out.deinit()
+    w := json.writer(&out, 0)
+    expect(w.write_float(f64(0.0) / 0.0) is !.NonFinite)
+    inf: f64 = 1.0e308 * 10.0
+    expect(w.write_float(inf) is !.NonFinite)
+    bad := [_]u8(0x61, 0xff)
+    expect(w.write_string(bad[..]) is !.InvalidUtf8)
+    // A failed call writes nothing before the failure is known.
+    expect_eq(out.items.len, 0)
+}
+
+test "indented writer output" {
+    out := list(u8)
+    defer out.deinit()
+    w := json.writer(&out, 4)
+    try w.begin_array()
+    try w.write_int(1)
+    try w.begin_object()
+    try w.key("k")
+    try w.write_string("v")
+    try w.end_object()
+    try w.end_array()
+    expect(out.items is "[\n    1,\n    {\n        \"k\": \"v\"\n    }\n]")
+}
+
+test "running out of memory is an error" {
+    // A text of a few thousand bytes, parsed in buffers of every size: the parse either
+    // succeeds or reports `Memory`, never anything else.
+    text := list(u8)
+    defer text.deinit()
+    try text.extend("[")
+    for i in 0..100 {
+        if i > 0 { try text.extend(",") }
+        try text.write("{{\"id\":{},\"name\":\"item {}\",\"tags\":[\"a\",\"b\"]}}", (i, i))
+    }
+    try text.extend("]")
+    store: [100000]u8 = ---
+    failed: u32 = 0
+    worked: u32 = 0
+    size: usize = 0
+    while size <= 100000 {
+        fb := fixed_buffer.over(store[0..size])
+        with fb.allocator() {
+            r := json.parse(text.items)
+            match r {
+                !.Memory(_) => { failed += 1 }
+                !_ => expect(false, "only Memory can fail")
+                doc => {
+                    worked += 1
+                    expect(doc.root.at(99) is not null)
+                }
+            }
+        }
+        size += 4999
+    }
+    expect(failed > 0 and worked > 0)
+}
+
+next :: fn(seed: ^u64) -> u32 {
+    seed^ = seed^ *% 6364136223846793005 +% 1442695040888963407
+    return (seed^ >> 33).trunc(u32)
+}
+
+// Writes a pseudo-random value of at most `depth` more levels.
+generate :: fn(w: ^json.Writer, seed: ^u64, depth: u32) -> json.WriteError!() \ {Alloc} {
+    kinds: u32 = if depth is 0 { 6 } else { 8 }
+    match next(seed) % kinds {
+        0 => try w.write_null()
+        1 => try w.write_bool(next(seed) % 2 is 0)
+        2 => try w.write_int(i64(next(seed)) - 2147483648)
+        3 => try w.write_float((f64(next(seed)) - 2147483648.0) / 1024.0)
+        4 => try w.write_float(f64(next(seed)) * 1.0e250)
+        5 => {
+            // A string with escapes, control characters and non-ASCII text.
+            pieces := [_]string("a", "\"", "\\", "\n", "\t", "\u{1}", "\u{e9}", "\u{20ac}", "\u{1f600}", "/", " ")
+            s := list(u8)
+            defer s.deinit()
+            n := next(seed) % 8
+            for _ in 0..n { try s.extend(pieces[(next(seed) % 11).trunc(usize)]) }
+            try w.write_string(s.items)
+        }
+        6 => {
+            try w.begin_array()
+            n := next(seed) % 4
+            for _ in 0..n { try generate(w, seed, depth - 1) }
+            try w.end_array()
+        }
+        _ => {
+            try w.begin_object()
+            n := next(seed) % 4
+            for i in 0..n {
+                try w.key(if i % 2 is 0 { "k" } else { "key\n" })
+                try generate(w, seed, depth - 1)
+            }
+            try w.end_object()
+        }
+    }
+    return ()
+}
+
+test "random documents survive writing and parsing" {
+    seed: u64 = 12345
+    for round in 0..300 {
+        compact := list(u8)
+        defer compact.deinit()
+        w := json.writer(&compact, 0)
+        try generate(&w, &seed, 4)
+        doc := try json.parse(compact.items)
+        defer doc.deinit()
+        // Writing the parsed tree gives the same text, indented or not.
+        again := list(u8)
+        defer again.deinit()
+        try json.write(&again, doc.root, 0)
+        expect(again.items is compact.items)
+        pretty := list(u8)
+        defer pretty.deinit()
+        try json.write(&pretty, doc.root, 1 + round % 4)
+        doc2 := try json.parse(pretty.items)
+        defer doc2.deinit()
+        back := list(u8)
+        defer back.deinit()
+        try json.write(&back, doc2.root, 0)
+        expect(back.items is compact.items)
+    }
+}

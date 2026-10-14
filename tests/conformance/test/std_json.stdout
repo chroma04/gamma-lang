@@ -1,0 +1,16 @@
+test "accepted texts" ... ok
+test "rejected texts" ... ok
+test "error offsets and kinds" ... ok
+test "the nesting limit" ... ok
+test "positions" ... ok
+test "the tree" ... ok
+test "arrays and strings" ... ok
+test "integer conversion" ... ok
+test "float conversion and exactness" ... ok
+test "writing a tree" ... ok
+test "the writer" ... ok
+test "writer errors" ... ok
+test "indented writer output" ... ok
+test "running out of memory is an error" ... ok
+test "random documents survive writing and parsing" ... ok
+15 passed, 0 failed

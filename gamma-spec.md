@@ -2480,7 +2480,7 @@ These names are predeclared in every module, without import. The type names in t
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
 | operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2576,9 +2576,8 @@ map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
 get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
-get_or_put :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!^V // stores `default` if absent
 Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
-entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // as get_or_put, with the stored key
+entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // stores `default` if absent; pointers to the stored key and value
 contains :: fn(m: ^const HashMap(…), k: K) -> bool
 remove   :: fn(m: ^HashMap(…), k: K) -> ?V
 remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
@@ -2590,7 +2589,7 @@ clear    :: fn(m: ^HashMap(…))                                      // keeps t
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr`, `get_or_put` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2804,7 +2803,9 @@ Modules follow the core library's conventions, so that learning one teaches the 
 
 ### 22.4 Outside the standard library
 
-These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography (it needs dedicated security maintenance), compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography, compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+
+*Cryptography* here means whatever needs dedicated security maintenance: ciphers, message authentication codes and other keyed constructions, signatures, key exchange, key derivation and password hashing. Fixed, unkeyed digests and checksums of published standards, used to detect corruption and to identify content (CRC-32, SHA-256), are not excluded: they have one settled definition, no parameters to choose wrongly, and a test-vector suite that leaves nothing to interpretation, so they are admitted on reason 2 (§22.2). A digest in the library carries no promise beyond its standard; whether it suits a security purpose is the caller's decision.
 
 *Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
 

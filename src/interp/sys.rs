@@ -193,6 +193,11 @@ impl<'a> Machine<'a> {
                 let r = self.join_thread(h)?;
                 Ok(int(self, e.ty, r as i128))
             }
+            SysOp::ThreadDetach => {
+                let h = self.int_arg(&args[0], &vals[0]);
+                let r = self.detach_thread(h);
+                Ok(int(self, e.ty, r as i128))
+            }
             SysOp::ThreadYield => {
                 self.yield_thread()?;
                 Ok(Value::unit())

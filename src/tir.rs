@@ -139,6 +139,9 @@ pub enum SysOp {
     ThreadSpawn,
     /// `@thread_join(h: i64) -> i64`: waits for the thread to finish.
     ThreadJoin,
+    /// `@thread_detach(h: i64) -> i64`: the thread is never joined; its resources are
+    /// released when it ends.
+    ThreadDetach,
     /// `@thread_yield()`: lets other threads run.
     ThreadYield,
     /// `@futex_wait(addr: ^u32, expected: u32, timeout_ns: i64) -> i64`: blocks while
@@ -211,6 +214,7 @@ impl SysOp {
             // The function's type is checked separately: any `^fn(arg: rawptr) \ {Sys}`.
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
+            SysOp::ThreadDetach => ("thread_detach", vec![i64], i64),
             SysOp::ThreadYield => ("thread_yield", vec![], Ty::unit()),
             SysOp::FutexWait => ("futex_wait", vec![Ty::ptr(false, Ty::u32()), Ty::u32(), i64], i64),
             SysOp::FutexWake => ("futex_wake", vec![Ty::ptr(false, Ty::u32()), Ty::u32()], i64),
@@ -219,7 +223,7 @@ impl SysOp {
         }
     }
 
-    pub const ALL: [SysOp; 39] = [
+    pub const ALL: [SysOp; 40] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -254,6 +258,7 @@ impl SysOp {
         SysOp::NetPeer,
         SysOp::ThreadSpawn,
         SysOp::ThreadJoin,
+        SysOp::ThreadDetach,
         SysOp::ThreadYield,
         SysOp::FutexWait,
         SysOp::FutexWake,

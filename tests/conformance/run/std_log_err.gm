@@ -18,15 +18,22 @@ work :: fn() \ {log.Log} {
     log.error("done")
 }
 
+// Without a timestamp the handler needs no `Clock`.
+plain_only :: fn() \ {Err} {
+    plain := log.ErrLog(min: .Error)
+    with &plain { work() }
+}
+
 main :: fn() \ {Out, Err, Clock} {
     plain := log.ErrLog()
     with &plain { work() }
+    plain_only()
 
     loud := log.ErrLog(min: .Debug)
     with &loud { work() }
 
     clock := Fixed(secs: 1_700_000_000)
-    stamped := log.ErrLog(min: .Warn, time: true)
+    stamped := log.StampedLog(min: .Warn)
     with &clock, &stamped { work() }
     print("done\n", ())
 }

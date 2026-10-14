@@ -1,0 +1,308 @@
+//! stage: test
+// std/collections/ordered_map: a B-tree map. The test allocator fails a test that leaks,
+// so every test also shows that `deinit`, `clear` and the merges of removals give each
+// node back.
+om :: import "std/collections/ordered_map"
+fixed_buffer :: import "std/fixed_buffer"
+
+test "an empty map" {
+    m := om.ordered_map(u32, string)
+    defer m.deinit()
+    expect_eq(m.len(), 0)
+    expect(m.is_empty())
+    expect(m.get(1) is null)
+    expect(m.first() is null)
+    expect(m.last() is null)
+    expect(m.remove(1) is null)
+    expect(not m.contains(1))
+    n: u32 = 0
+    for _ in m.entries() { n += 1 }
+    for _ in m.range(null, null) { n += 1 }
+    expect_eq(n, 0)
+}
+
+test "put, get, replace and remove" {
+    m := om.ordered_map(u32, string)
+    defer m.deinit()
+    try m.put(5, "five")
+    try m.put(1, "one")
+    try m.put(9, "nine")
+    expect_eq(m.len(), 3)
+    expect(m.get(5) is "five")
+    expect(m.get(2) is null)
+    try m.put(5, "FIVE")
+    expect_eq(m.len(), 3)
+    expect(m.get(5) is "FIVE")
+    expect(m.contains(9))
+    expect(m.remove(9) is "nine")
+    expect(m.remove(9) is null)
+    expect_eq(m.len(), 2)
+    expect(not m.contains(9))
+    if p := m.get_ptr(1) { p^ = "uno" }
+    expect(m.get(1) is "uno")
+    expect(m.get_ptr(77) is null)
+    r := m.remove_entry(1) else return ()
+    expect(r.key is 1 and r.value is "uno")
+    expect(m.remove_entry(1) is null)
+}
+
+test "first, last and iteration are in key order" {
+    m := om.ordered_map(i32, i32)
+    defer m.deinit()
+    for i in 0..50 { try m.put(((i * 17) % 50).trunc(i32) - 25, i.trunc(i32)) }
+    expect_eq(m.len(), 50)
+    f := m.first() else return ()
+    l := m.last() else return ()
+    expect(f.key is -25 and l.key is 24)
+    prev: i32 = -1000
+    n: usize = 0
+    for e in m.entries() {
+        expect(e.key > prev)
+        prev = e.key
+        n += 1
+    }
+    expect_eq(n, 50)
+    ks := try collect(fn() => m.keys())
+    defer ks.deinit()
+    vs := try collect(fn() => m.values())
+    defer vs.deinit()
+    expect_eq(ks.items.len, 50)
+    expect_eq(vs.items.len, 50)
+    expect(ks.items[0] is -25 and ks.items[49] is 24)
+    for i in 0..50 { expect(m.get(ks.items[i]) is vs.items[i]) }
+}
+
+test "ranges" {
+    m := om.ordered_map(u32, u32)
+    defer m.deinit()
+    for i in 0..200 { try m.put(i * 10, i) }
+    // Half open: the low end in, the high end out.
+    got := try collect(fn() => m.range(100, 150))
+    defer got.deinit()
+    expect_eq(got.items.len, 5)
+    expect(got.items[0].key is 100 and got.items[4].key is 140)
+    // Bounds between keys.
+    mid := try collect(fn() => m.range(101, 149))
+    defer mid.deinit()
+    expect_eq(mid.items.len, 4)
+    expect(mid.items[0].key is 110 and mid.items[3].key is 140)
+    // Open ends.
+    from := try collect(fn() => m.range(1950, null))
+    defer from.deinit()
+    expect_eq(from.items.len, 5)
+    upto := try collect(fn() => m.range(null, 30))
+    defer upto.deinit()
+    expect_eq(upto.items.len, 3)
+    all := try collect(fn() => m.range(null, null))
+    defer all.deinit()
+    expect_eq(all.items.len, 200)
+    // Empty ranges.
+    none := try collect(fn() => m.range(55, 56))
+    defer none.deinit()
+    expect_eq(none.items.len, 0)
+    backwards := try collect(fn() => m.range(500, 100))
+    defer backwards.deinit()
+    expect_eq(backwards.items.len, 0)
+    beyond := try collect(fn() => m.range(5000, null))
+    defer beyond.deinit()
+    expect_eq(beyond.items.len, 0)
+}
+
+test "ascending and descending insertion, removal in several orders" {
+    m := om.ordered_map(u32, u32)
+    defer m.deinit()
+    for i in 0..3000 { try m.put(i, i * 2) }
+    for i in 0..3000 {
+        j := 5999 - i
+        if j >= 3000 { try m.put(j, j * 2) }
+    }
+    // The keys 0..3000 were put in order, and then 3000..6000 in descending order.
+    expect_eq(m.len(), 6000)
+    n: u32 = 0
+    for e in m.entries() {
+        expect(e.key is n and e.value is n * 2)
+        n += 1
+    }
+    // Remove the odd keys from the top, then the rest from the bottom.
+    k: u32 = 6000
+    while k > 0 {
+        k -= 1
+        if k % 2 is 1 { expect(m.remove(k) is k * 2) }
+    }
+    expect_eq(m.len(), 3000)
+    for i in 0..3000 {
+        key := i.trunc(u32) * 2
+        expect(m.remove(key) is key * 2)
+        expect_eq(m.len(), 3000 - i - 1)
+    }
+    expect(m.first() is null)
+    // The map is usable again.
+    try m.put(7, 7)
+    expect(m.first() is (key: 7, value: 7))
+}
+
+test "a custom order" {
+    // Descending.
+    m := om.ordered_map_by(u32, u32, fn(a, b: ^const u32) -> bool => a^ > b^)
+    defer m.deinit()
+    for i in 0..100 { try m.put(i, i) }
+    f := m.first() else return ()
+    l := m.last() else return ()
+    expect(f.key is 99 and l.key is 0)
+    prev: u32 = 1000
+    for e in m.entries() {
+        expect(e.key < prev)
+        prev = e.key
+    }
+    got := try collect(fn() => m.range(50, 47))
+    defer got.deinit()
+    expect_eq(got.items.len, 3)
+    expect(got.items[0].key is 50 and got.items[2].key is 48)
+}
+
+Word :: struct {
+    text: string
+    rank: u32
+}
+
+test "keys that compare by a field, and equal keys under the order" {
+    // Words ordered by length only: two words of the same length are the same key.
+    m := om.ordered_map_by(string, u32, fn(a, b: ^const string) -> bool => a^.len < b^.len)
+    defer m.deinit()
+    try m.put("a", 1)
+    try m.put("ccc", 3)
+    try m.put("bb", 2)
+    try m.put("zzz", 30)
+    expect_eq(m.len(), 3)
+    expect(m.get("xyz") is 30)
+    expect(m.get("q") is 1)
+    ks := try collect(fn() => m.keys())
+    defer ks.deinit()
+    // The stored key of "ccc" stays "ccc", though "zzz" replaced its value.
+    expect(ks.items[2] is "ccc")
+    r := m.remove_entry("???") else return ()
+    expect(r.key is "ccc" and r.value is 30)
+}
+
+test "struct keys and the natural order of tuples" {
+    m := om.ordered_map((u8, u8), string)
+    defer m.deinit()
+    try m.put((2, 1), "c")
+    try m.put((1, 9), "b")
+    try m.put((1, 2), "a")
+    try m.put((3, 0), "d")
+    s := list(u8)
+    defer s.deinit()
+    for e in m.entries() { try s.extend(e.value) }
+    expect(s.items is "abcd")
+}
+
+// A small deterministic generator.
+Rng :: struct { state: u64 }
+
+next :: fn(r: ^Rng) -> u32 {
+    r.state = r.state *% 6364136223846793005 +% 1442695040888963407
+    return (r.state >> 33).trunc(u32)
+}
+
+test "random operations agree with a hash map and a sort" {
+    rng := Rng(state: 987654321)
+    for domain in [_]u32(8, 40, 400, 5000) {
+        m := om.ordered_map(u32, u32)
+        defer m.deinit()
+        model := map(u32, u32)
+        defer model.deinit()
+        for step in 0..6000 {
+            k := next(&rng) % domain
+            op := next(&rng) % 10
+            if op < 5 {
+                v := next(&rng)
+                try m.put(k, v)
+                try model.put(k, v)
+            } else if op < 8 {
+                expect(m.remove(k) is model.remove(k))
+            } else if op < 9 {
+                expect(m.get(k) is model.get(k))
+                expect_eq(m.contains(k), model.contains(k))
+            } else {
+                // The same map, seen through a range.
+                lo := next(&rng) % domain
+                hi := next(&rng) % domain
+                want := list(u32)
+                defer want.deinit()
+                for e in model.entries() {
+                    if e.key >= lo and e.key < hi { try want.push(e.key) }
+                }
+                want.items.sort()
+                got := try collect(fn() => m.range(lo, hi))
+                defer got.deinit()
+                expect_eq(got.items.len, want.items.len)
+                for i in 0..want.items.len { expect(got.items[i].key is want.items[i]) }
+            }
+            expect_eq(m.len(), model.len())
+            if step % 500 is 0 {
+                keys := list(u32)
+                defer keys.deinit()
+                try keys.collect(fn() => model.keys())
+                keys.items.sort()
+                expect_eq(keys.items.len, m.len())
+                i: usize = 0
+                for e in m.entries() {
+                    expect(e.key is keys.items[i])
+                    expect(model.get(e.key) is e.value)
+                    i += 1
+                }
+                if keys.items.len > 0 {
+                    f := m.first() else return ()
+                    l := m.last() else return ()
+                    expect(f.key is keys.items[0] and l.key is keys.items[keys.items.len - 1])
+                }
+            }
+        }
+    }
+}
+
+test "clear frees every node and the map can be reused" {
+    m := om.ordered_map(u32, u32)
+    defer m.deinit()
+    for i in 0..1000 { try m.put(i, i) }
+    m.clear()
+    expect_eq(m.len(), 0)
+    expect(m.first() is null)
+    try m.put(3, 4)
+    expect(m.get(3) is 4)
+    m.deinit()
+    expect_eq(m.len(), 0)
+    try m.put(1, 1)
+    expect_eq(m.len(), 1)
+}
+
+test "running out of memory leaves the map intact" {
+    store: [6000]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        m := om.ordered_map(u32, u32)
+        added: u32 = 0
+        for i in 0..1000 {
+            k := (i * 389) % 1000
+            m.put(k, k + 1) else break
+            added += 1
+        }
+        expect(added > 20 and added < 1000)
+        expect_eq(m.len(), added)
+        // Still ordered and complete.
+        prev: i64 = -1
+        n: u32 = 0
+        for e in m.entries() {
+            expect(i64(e.key) > prev)
+            expect(e.value is e.key + 1)
+            prev = e.key
+            n += 1
+        }
+        expect_eq(n, added)
+        // Existing keys can still be updated and removed.
+        expect(m.remove(0) is 1)
+        m.put(1, 7) else trap()
+        expect(m.get(1) is 7)
+    }
+}

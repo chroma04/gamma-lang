@@ -1,0 +1,847 @@
+// std/json: JSON as in RFC 8259 (and ECMA-404): a parser into a value tree, and a writer.
+//
+//     json :: import "std/json"
+//
+//     doc := try json.parse("{\"name\": \"gamma\", \"tags\": [1, 2.5]}")
+//     defer doc.deinit()
+//     name := doc.root.get("name")                      // ?Value; .String("gamma")
+//
+//     out := list(u8)
+//     defer out.deinit()
+//     try json.write(&out, doc.root, 2)                 // the tree again, indented
+//
+//     w := json.writer(&out, 0)                         // or build output directly
+//     try w.begin_object()
+//     try w.key("id")
+//     try w.write_int(7)
+//     try w.end_object()                                // {"id":7}
+//
+// Parsing. `parse` accepts exactly the texts the RFC's grammar describes: any JSON value
+// at the top level, surrounded by the four whitespace bytes (space, tab, line feed,
+// carriage return) and nothing else. It rejects everything the RFC rejects: trailing
+// commas, comments, single quotes, leading zeros and a leading `+` in numbers, `.5` and
+// `1.`, `NaN` and `Infinity`, unescaped control characters in strings, and unterminated
+// input. Further choices where the RFC leaves room:
+//
+//   - The text must be valid UTF-8 inside strings (the RFC requires UTF-8); a byte order
+//     mark is not skipped.
+//   - A `\u` escape that is a lone surrogate, or a surrogate pair that is not a high
+//     followed by a low surrogate, is an error (`InvalidSurrogate`), since strings of
+//     this library are UTF-8. A correct pair is decoded to one scalar value.
+//   - Duplicate keys in an object are all kept, in order. `get` finds the last one, as
+//     most JSON implementations do.
+//   - Nesting deeper than `max_depth` (default 512) is an error, so hostile input cannot
+//     exhaust the stack.
+//   - A number keeps its literal text. It is converted on demand, with `to_i64` or
+//     `to_f64`, which say whether the conversion lost anything.
+//
+// A parsed `Document` owns all its memory, taken from the allocator current when `parse`
+// was called, and gives it back at once with `deinit`. Strings and slices inside the tree
+// are valid until then.
+//
+// Errors carry the byte offset of the problem; `position` turns an offset into a line and
+// column for messages.
+
+arena :: import "std/arena"
+str :: import "std/str"
+
+/// A JSON number, kept as its literal text (which the grammar has been checked for).
+pub Number :: struct {
+    pub text: string
+}
+
+/// One member of an object.
+pub Member :: struct {
+    pub key: string
+    pub value: Value
+}
+
+/// A JSON value.
+pub Value :: union {
+    Null
+    Bool: bool
+    Number: Number
+    String: string
+    Array: []Value
+    Object: []Member
+}
+
+/// A parsed text: the root value and the memory behind it.
+pub Document :: struct {
+    pub root: Value
+    arena: arena.Arena
+}
+
+/// Why parsing failed. Every payload is the byte offset of the problem in the input.
+pub ParseError :: union {
+    /// The input ended inside a value, or contains no value at all.
+    UnexpectedEnd: usize
+    /// A byte that cannot start or continue the construct being read.
+    UnexpectedByte: usize
+    /// A malformed number: a leading zero, a missing digit, a bare sign.
+    InvalidNumber: usize
+    /// A bad escape in a string: an unknown letter after the backslash, or a `\u` without
+    /// four hexadecimal digits.
+    InvalidEscape: usize
+    /// A `\u` escape that is a lone surrogate (the offset of its backslash).
+    InvalidSurrogate: usize
+    /// A control character (below U+0020) in a string, which must be escaped.
+    ControlCharacter: usize
+    /// A byte sequence in a string that is not UTF-8.
+    InvalidUtf8: usize
+    /// Something other than whitespace after the value.
+    TrailingData: usize
+    /// Arrays and objects nested deeper than the limit.
+    TooDeep: usize
+    /// The memory could not be obtained.
+    Memory: AllocError
+}
+
+/// A line and a column, counting from 1; the column counts bytes.
+pub Position :: struct {
+    pub line: usize
+    pub column: usize
+}
+
+/// The line and column of byte `offset` in `text` (an offset past the end is the end).
+/// A line ends at a line feed.
+pub position :: fn(text: string, offset: usize) -> Position {
+    end := offset.min(text.len)
+    line: usize = 1
+    start: usize = 0
+    for i in 0..end {
+        if text[i] is '\n' {
+            line += 1
+            start = i + 1
+        }
+    }
+    return Position(line: line, column: end - start + 1)
+}
+
+// ---------------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------------
+
+/// The value of member `key` of an object, or `null` if `v` is not an object or has no such
+/// member. With duplicate keys, the last one.
+pub get :: fn(v: Value, key: string) -> ?Value {
+    match v {
+        .Object(members) => {
+            i := members.len
+            while i > 0 {
+                i -= 1
+                if members[i].key is key { return members[i].value }
+            }
+            return null
+        }
+        _ => return null
+    }
+}
+
+/// The element `i` of an array, or `null` if `v` is not an array or `i` is out of range.
+pub at :: fn(v: Value, i: usize) -> ?Value {
+    match v {
+        .Array(items) => return items.get(i)
+        _ => return null
+    }
+}
+
+/// Releases the document's memory. The root and everything reached from it are invalid
+/// afterwards.
+pub deinit :: fn(d: ^Document) {
+    d.arena.deinit()
+    d.root = .Null
+}
+
+// ---------------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------------
+
+// The parts of a number literal: the digits of the integer and fraction parts, the
+// exponent.
+Parts :: struct {
+    neg: bool
+    int_start: usize
+    int_end: usize
+    frac_start: usize
+    frac_end: usize
+    exp: i64
+}
+
+// Splits a literal that has been checked against the grammar.
+split :: fn(s: string) -> Parts {
+    i: usize = 0
+    neg := false
+    if s[0] is '-' {
+        neg = true
+        i = 1
+    }
+    int_start := i
+    while i < s.len and s[i] >= '0' and s[i] <= '9' { i += 1 }
+    int_end := i
+    frac_start := i
+    frac_end := i
+    if i < s.len and s[i] is '.' {
+        i += 1
+        frac_start = i
+        while i < s.len and s[i] >= '0' and s[i] <= '9' { i += 1 }
+        frac_end = i
+    }
+    exp: i64 = 0
+    if i < s.len {
+        // An exponent: `e` or `E`, an optional sign and digits. Huge ones saturate.
+        i += 1
+        eneg := false
+        if s[i] is '-' {
+            eneg = true
+            i += 1
+        } else if s[i] is '+' {
+            i += 1
+        }
+        while i < s.len {
+            if exp < 1_000_000_000 { exp = exp * 10 + (s[i] - '0').trunc(i64) }
+            i += 1
+        }
+        if eneg { exp = -exp }
+    }
+    return Parts(
+        neg: neg, int_start: int_start, int_end: int_end,
+        frac_start: frac_start, frac_end: frac_end, exp: exp)
+}
+
+// The significant digits of a literal: the digits of both parts without leading and
+// trailing zeros, and the decimal exponent of the first of them (the value is
+// `d.ddd * 10^exp`). A literal that is zero has no digits.
+Normal :: struct {
+    first: usize     // index into the literal of the first significant digit (digits may skip the point)
+    count: usize
+    exp: i64
+}
+
+// The i-th digit of the integer and fraction parts taken together.
+digit_at :: fn(s: string, p: Parts, i: usize) -> u8 {
+    n := p.int_end - p.int_start
+    if i < n { return s[p.int_start + i] }
+    return s[p.frac_start + (i - n)]
+}
+
+normalize :: fn(s: string, p: Parts) -> Normal {
+    total := (p.int_end - p.int_start) + (p.frac_end - p.frac_start)
+    lo: usize = 0
+    while lo < total and digit_at(s, p, lo) is '0' { lo += 1 }
+    if lo is total { return Normal(first: 0, count: 0, exp: 0) }
+    hi := total
+    while digit_at(s, p, hi - 1) is '0' { hi -= 1 }
+    int_len := (p.int_end - p.int_start).trunc(i64)
+    return Normal(first: lo, count: hi - lo, exp: int_len - 1 - lo.trunc(i64) + p.exp)
+}
+
+/// The number as an `i64`, if it denotes an integer in range: `12`, `-0`, `1e3` and
+/// `5.0` do; `1.5`, `1e-1` and `9223372036854775808` do not.
+pub to_i64 :: fn(n: Number) -> ?i64 {
+    p := split(n.text)
+    nm := normalize(n.text, p)
+    if nm.count is 0 { return 0 }
+    // value = digits * 10^e, with digits free of trailing zeros.
+    frac_len := (p.frac_end - p.frac_start).trunc(i64)
+    int_len := (p.int_end - p.int_start).trunc(i64)
+    total := int_len + frac_len
+    e := p.exp - frac_len + (total - (nm.first.trunc(i64) + nm.count.trunc(i64)))
+    if e < 0 or nm.count > 19 or e > 19 { return null }
+    v: u128 = 0
+    for i in 0..nm.count { v = v * 10 + (digit_at(n.text, p, nm.first + i) - '0').trunc(u128) }
+    for _ in 0..e.trunc(usize) {
+        v = v * 10
+        if v > 18446744073709551616 { return null }
+    }
+    if p.neg {
+        if v > 9223372036854775808 { return null }
+        if v is 9223372036854775808 { return -9223372036854775807 - 1 }
+        return -(v.trunc(i64))
+    }
+    if v > 9223372036854775807 { return null }
+    return v.trunc(i64)
+}
+
+/// The number as an `f64`, correctly rounded, and whether nothing was lost: `exact` is
+/// true when the `f64` prints (shortest round-trip form) as the same decimal number as the
+/// literal, so `0.1` and `1e3` are exact and `0.1000000000000000000001`,
+/// `9007199254740993` and `1e400` (which is infinite) are not. A literal that is zero
+/// gives 0 or -0 and is exact.
+pub to_f64 :: fn(n: Number) -> (value: f64, exact: bool) {
+    x := str.parse_float(f64, n.text) else return (value: 0.0, exact: false)
+    p := split(n.text)
+    nm := normalize(n.text, p)
+    if nm.count is 0 { return (value: x, exact: true) }
+    if x.is_inf() or x.is_nan() { return (value: x, exact: false) }
+    // The shortest digits of |x| in scientific form, `d.ddde<exp>`.
+    buf: [64]u8 = ---
+    b := str.builder(buf[..])
+    b.write("{:e}", if x < 0.0 { -x } else { x })
+    s := b.str()
+    k: usize = 0
+    digits: usize = 0
+    while k < s.len and s[k] is not 'e' {
+        if s[k] is not '.' { digits += 1 }
+        k += 1
+    }
+    if digits is not nm.count { return (value: x, exact: false) }
+    // Same digits?
+    j: usize = 0
+    for i in 0..k {
+        if s[i] is '.' { continue }
+        if s[i] is not digit_at(n.text, p, nm.first + j) { return (value: x, exact: false) }
+        j += 1
+    }
+    ex := str.parse_int(i64, s[k + 1..]) else return (value: x, exact: false)
+    return (value: x, exact: ex is nm.exp)
+}
+
+// ---------------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------------
+
+Parser :: struct {
+    text: string
+    pos: usize
+    max_depth: usize
+}
+
+skip_ws :: fn(p: ^Parser) {
+    while p.pos < p.text.len {
+        c := p.text[p.pos]
+        if c is ' ' or c is '\t' or c is '\n' or c is '\r' { p.pos += 1 } else { return }
+    }
+}
+
+// The error for finding byte `pos`, or the end of the input, where something else was
+// expected.
+unexpected :: fn(p: ^Parser, pos: usize) -> ParseError {
+    if pos >= p.text.len { return .UnexpectedEnd(p.text.len) }
+    return .UnexpectedByte(pos)
+}
+
+is_digit :: fn(c: u8) -> bool => c >= '0' and c <= '9'
+
+/// Parses `text`, which must be one JSON value.
+pub parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document \ {Alloc} {
+    a := arena.new()
+    p := Parser(text: text, pos: 0, max_depth: max_depth)
+    res: ParseError!Value = .Null
+    with a.allocator() { res = parse_document(&p) }
+    root := res else e => {
+        a.deinit()
+        return !e
+    }
+    return Document(root: root, arena: a)
+}
+
+parse_document :: fn(p: ^Parser) -> ParseError!Value \ {Alloc} {
+    skip_ws(p)
+    v := try parse_value(p, 0)
+    skip_ws(p)
+    if p.pos < p.text.len { return !.TrailingData(p.pos) }
+    return v
+}
+
+parse_value :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+    if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+    c := p.text[p.pos]
+    return match c {
+        'n' => {
+            try literal(p, "null")
+            Value.Null
+        }
+        't' => {
+            try literal(p, "true")
+            Value.Bool(true)
+        }
+        'f' => {
+            try literal(p, "false")
+            Value.Bool(false)
+        }
+        '"' => Value.String(try parse_string(p))
+        '[' => try parse_array(p, depth)
+        '{' => try parse_object(p, depth)
+        '-', '0'..='9' => Value.Number(try parse_number(p))
+        _ => return !.UnexpectedByte(p.pos)
+    }
+}
+
+literal :: fn(p: ^Parser, word: string) -> ParseError!() {
+    for i in 0..word.len {
+        if p.pos + i >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        if p.text[p.pos + i] is not word[i] { return !.UnexpectedByte(p.pos + i) }
+    }
+    p.pos += word.len
+    return ()
+}
+
+parse_number :: fn(p: ^Parser) -> ParseError!Number \ {Alloc} {
+    t := p.text
+    start := p.pos
+    i := start
+    if t[i] is '-' { i += 1 }
+    if i >= t.len { return !.UnexpectedEnd(t.len) }
+    if t[i] is '0' {
+        i += 1
+        if i < t.len and is_digit(t[i]) { return !.InvalidNumber(i) }
+    } else if t[i] >= '1' and t[i] <= '9' {
+        while i < t.len and is_digit(t[i]) { i += 1 }
+    } else {
+        return !.InvalidNumber(i)
+    }
+    if i < t.len and t[i] is '.' {
+        i += 1
+        if i >= t.len { return !.UnexpectedEnd(t.len) }
+        if not is_digit(t[i]) { return !.InvalidNumber(i) }
+        while i < t.len and is_digit(t[i]) { i += 1 }
+    }
+    if i < t.len and (t[i] is 'e' or t[i] is 'E') {
+        i += 1
+        if i < t.len and (t[i] is '+' or t[i] is '-') { i += 1 }
+        if i >= t.len { return !.UnexpectedEnd(t.len) }
+        if not is_digit(t[i]) { return !.InvalidNumber(i) }
+        while i < t.len and is_digit(t[i]) { i += 1 }
+    }
+    p.pos = i
+    return Number(text: try dupe(u8, t[start..i]))
+}
+
+// The value of the hexadecimal digit `c`, or 255.
+hex_value :: fn(c: u8) -> u8 {
+    if c >= '0' and c <= '9' { return c - '0' }
+    if c >= 'a' and c <= 'f' { return c - 'a' + 10 }
+    if c >= 'A' and c <= 'F' { return c - 'A' + 10 }
+    return 255
+}
+
+// The four hexadecimal digits at `at`, as a number.
+hex4 :: fn(p: ^Parser, at: usize) -> ParseError!u32 {
+    v: u32 = 0
+    for k in 0..4 {
+        if at + k >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        d := hex_value(p.text[at + k])
+        if d is 255 { return !.InvalidEscape(at + k) }
+        v = v * 16 + d.trunc(u32)
+    }
+    return v
+}
+
+// The length of the well-formed UTF-8 sequence at `i` (Unicode Table 3-7), or 0.
+utf8_len :: fn(t: string, i: usize) -> usize {
+    c := t[i]
+    if c < 0x80 { return 1 }
+    n: usize = 0
+    lo: u8 = 0x80
+    hi: u8 = 0xBF
+    if c >= 0xC2 and c <= 0xDF {
+        n = 2
+    } else if c >= 0xE0 and c <= 0xEF {
+        n = 3
+        if c is 0xE0 { lo = 0xA0 }
+        if c is 0xED { hi = 0x9F }
+    } else if c >= 0xF0 and c <= 0xF4 {
+        n = 4
+        if c is 0xF0 { lo = 0x90 }
+        if c is 0xF4 { hi = 0x8F }
+    } else {
+        return 0
+    }
+    if i + n > t.len { return 0 }
+    if t[i + 1] < lo or t[i + 1] > hi { return 0 }
+    for k in 2..n {
+        if t[i + k] < 0x80 or t[i + k] > 0xBF { return 0 }
+    }
+    return n
+}
+
+// Appends the UTF-8 encoding of scalar value `cp` at `buf[n..]` (when `buf` is not empty)
+// and returns the number of bytes.
+encode_utf8 :: fn(cp: u32, buf: []u8, n: usize) -> usize {
+    len: usize = if cp < 0x80 { 1 } else if cp < 0x800 { 2 } else if cp < 0x10000 { 3 } else { 4 }
+    if buf.len is 0 { return len }
+    if len is 1 {
+        buf[n] = cp.trunc(u8)
+    } else if len is 2 {
+        buf[n] = (0xC0 | (cp >> 6)).trunc(u8)
+        buf[n + 1] = (0x80 | (cp & 0x3F)).trunc(u8)
+    } else if len is 3 {
+        buf[n] = (0xE0 | (cp >> 12)).trunc(u8)
+        buf[n + 1] = (0x80 | ((cp >> 6) & 0x3F)).trunc(u8)
+        buf[n + 2] = (0x80 | (cp & 0x3F)).trunc(u8)
+    } else {
+        buf[n] = (0xF0 | (cp >> 18)).trunc(u8)
+        buf[n + 1] = (0x80 | ((cp >> 12) & 0x3F)).trunc(u8)
+        buf[n + 2] = (0x80 | ((cp >> 6) & 0x3F)).trunc(u8)
+        buf[n + 3] = (0x80 | (cp & 0x3F)).trunc(u8)
+    }
+    return len
+}
+
+// Reads the string whose opening quote is at `p.pos`, checking it. Returns the offset of
+// the closing quote and the decoded length. When `buf` is not empty the decoded bytes are
+// stored in it (it holds at least that length: this is the second pass).
+read_string :: fn(p: ^Parser, buf: []u8) -> ParseError!(end: usize, len: usize) {
+    t := p.text
+    i := p.pos + 1
+    n: usize = 0
+    while true {
+        if i >= t.len { return !.UnexpectedEnd(t.len) }
+        c := t[i]
+        if c is '"' { return (end: i, len: n) }
+        if c < 0x20 { return !.ControlCharacter(i) }
+        if c is '\\' {
+            if i + 1 >= t.len { return !.UnexpectedEnd(t.len) }
+            e := t[i + 1]
+            single: u8 = match e {
+                '"' => '"'
+                '\\' => '\\'
+                '/' => '/'
+                'b' => 8
+                'f' => 12
+                'n' => '\n'
+                'r' => '\r'
+                't' => '\t'
+                _ => 0
+            }
+            if single is not 0 {
+                if buf.len > 0 { buf[n] = single }
+                n += 1
+                i += 2
+            } else if e is 'u' {
+                cp := try hex4(p, i + 2)
+                used: usize = 6
+                if cp >= 0xD800 and cp <= 0xDBFF {
+                    // A high surrogate must be followed by `\u` and a low surrogate.
+                    if i + 12 > t.len or t[i + 6] is not '\\' or t[i + 7] is not 'u' {
+                        return !.InvalidSurrogate(i)
+                    }
+                    lo := try hex4(p, i + 8)
+                    if lo < 0xDC00 or lo > 0xDFFF { return !.InvalidSurrogate(i) }
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                    used = 12
+                } else if cp >= 0xDC00 and cp <= 0xDFFF {
+                    return !.InvalidSurrogate(i)
+                }
+                n += encode_utf8(cp, buf, n)
+                i += used
+            } else {
+                return !.InvalidEscape(i + 1)
+            }
+        } else if c < 0x80 {
+            if buf.len > 0 { buf[n] = c }
+            n += 1
+            i += 1
+        } else {
+            k := utf8_len(t, i)
+            if k is 0 { return !.InvalidUtf8(i) }
+            if buf.len > 0 { buf[n..n + k].copy_from(t[i..i + k]) }
+            n += k
+            i += k
+        }
+    }
+}
+
+parse_string :: fn(p: ^Parser) -> ParseError!string \ {Alloc} {
+    r := try read_string(p, empty_slice(u8))
+    if r.len is 0 {
+        p.pos = r.end + 1
+        return ""
+    }
+    buf := try make(u8, r.len)
+    _ = try read_string(p, buf)
+    p.pos = r.end + 1
+    return buf
+}
+
+parse_array :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+    if depth >= p.max_depth { return !.TooDeep(p.pos) }
+    p.pos += 1
+    items := list(Value)
+    skip_ws(p)
+    if p.pos < p.text.len and p.text[p.pos] is ']' {
+        p.pos += 1
+        return Value.Array(items.items)
+    }
+    while true {
+        skip_ws(p)
+        v := try parse_value(p, depth + 1)
+        try items.push(v)
+        skip_ws(p)
+        if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        c := p.text[p.pos]
+        if c is ',' {
+            p.pos += 1
+        } else if c is ']' {
+            p.pos += 1
+            break
+        } else {
+            return !.UnexpectedByte(p.pos)
+        }
+    }
+    return Value.Array(try items.into_slice())
+}
+
+parse_object :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+    if depth >= p.max_depth { return !.TooDeep(p.pos) }
+    p.pos += 1
+    members := list(Member)
+    skip_ws(p)
+    if p.pos < p.text.len and p.text[p.pos] is '}' {
+        p.pos += 1
+        return Value.Object(members.items)
+    }
+    while true {
+        skip_ws(p)
+        if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        if p.text[p.pos] is not '"' { return !.UnexpectedByte(p.pos) }
+        k := try parse_string(p)
+        skip_ws(p)
+        if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        if p.text[p.pos] is not ':' { return !.UnexpectedByte(p.pos) }
+        p.pos += 1
+        skip_ws(p)
+        v := try parse_value(p, depth + 1)
+        try members.push(Member(key: k, value: v))
+        skip_ws(p)
+        if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
+        c := p.text[p.pos]
+        if c is ',' {
+            p.pos += 1
+        } else if c is '}' {
+            p.pos += 1
+            break
+        } else {
+            return !.UnexpectedByte(p.pos)
+        }
+    }
+    return Value.Object(try members.into_slice())
+}
+
+// ---------------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------------
+
+/// Why writing failed.
+pub WriteError :: union {
+    /// The output list could not grow.
+    Memory: AllocError
+    /// A float that is NaN or infinite, which JSON cannot represent.
+    NonFinite
+    /// A string that is not valid UTF-8.
+    InvalidUtf8
+}
+
+/// The deepest nesting a `Writer` supports.
+pub MAX_WRITE_DEPTH :: 256
+
+/// Appends JSON text to a list. It tracks commas, colons, indentation and the nesting, so
+/// the output is well formed as long as the calls are: values go where a value is
+/// expected (at the top level, in an array, or after a `key`), and every `begin_` is
+/// closed by its `end_`. Calls that break these rules, or nest deeper than
+/// `MAX_WRITE_DEPTH`, trap.
+pub Writer :: struct {
+    out: ^List(u8)
+    indent: usize
+    depth: usize
+    in_object: [256]bool
+    has_items: [256]bool
+    after_key: bool
+}
+
+/// A writer appending to `out`. With `indent` 0 the output is compact; otherwise each
+/// element goes on its own line, indented by `indent` spaces per level, and a space follows
+/// each colon.
+pub writer :: fn(out: ^List(u8), indent: usize = 0) -> Writer {
+    return Writer(
+        out: out, indent: indent, depth: 0,
+        in_object: [256]bool(fill: false), has_items: [256]bool(fill: false), after_key: false)
+}
+
+// A line break and the indentation for `depth` levels.
+newline :: fn(w: ^Writer, depth: usize) -> WriteError!() {
+    if w.indent is 0 { return () }
+    try w.out.push('\n')
+    for _ in 0..depth * w.indent { try w.out.push(' ') }
+    return ()
+}
+
+// What comes before a value or a key: a comma and a line break between elements.
+separate :: fn(w: ^Writer) -> WriteError!() {
+    if w.depth is 0 { return () }
+    d := w.depth - 1
+    if w.has_items[d] { try w.out.push(',') }
+    w.has_items[d] = true
+    try newline(w, w.depth)
+    return ()
+}
+
+// Called before every value.
+before_value :: fn(w: ^Writer) -> WriteError!() {
+    if w.depth > 0 and w.in_object[w.depth - 1] {
+        assert(w.after_key, "json.Writer: a value in an object needs a key first")
+        w.after_key = false
+        return ()
+    }
+    try separate(w)
+    return ()
+}
+
+/// Starts an object.
+pub begin_object :: fn(w: ^Writer) -> WriteError!() {
+    try before_value(w)
+    assert(w.depth < 256, "json.Writer: nesting too deep")
+    try w.out.push('{')
+    w.in_object[w.depth] = true
+    w.has_items[w.depth] = false
+    w.depth += 1
+    return ()
+}
+
+/// Starts an array.
+pub begin_array :: fn(w: ^Writer) -> WriteError!() {
+    try before_value(w)
+    assert(w.depth < 256, "json.Writer: nesting too deep")
+    try w.out.push('[')
+    w.in_object[w.depth] = false
+    w.has_items[w.depth] = false
+    w.depth += 1
+    return ()
+}
+
+// Closes the innermost container with `close`.
+end :: fn(w: ^Writer, want_object: bool, close: u8) -> WriteError!() {
+    assert(w.depth > 0 and w.in_object[w.depth - 1] is want_object and not w.after_key, "json.Writer: unbalanced end")
+    w.depth -= 1
+    if w.has_items[w.depth] { try newline(w, w.depth) }
+    try w.out.push(close)
+    return ()
+}
+
+/// Ends the innermost object, which must be open and have no key waiting for its value.
+pub end_object :: fn(w: ^Writer) -> WriteError!() => end(w, true, '}')
+
+/// Ends the innermost array, which must be open.
+pub end_array :: fn(w: ^Writer) -> WriteError!() => end(w, false, ']')
+
+/// Writes an object member's name; its value follows.
+pub key :: fn(w: ^Writer, name: string) -> WriteError!() {
+    assert(w.depth > 0 and w.in_object[w.depth - 1] and not w.after_key, "json.Writer: a key belongs in an object, before its value")
+    try separate(w)
+    try write_quoted(w, name)
+    try w.out.push(':')
+    if w.indent > 0 { try w.out.push(' ') }
+    w.after_key = true
+    return ()
+}
+
+// A string literal with the escapes JSON needs.
+write_quoted :: fn(w: ^Writer, s: string) -> WriteError!() {
+    if not s.utf8_valid() { return !.InvalidUtf8 }
+    out := w.out
+    try out.push('"')
+    start: usize = 0
+    for i in 0..s.len {
+        c := s[i]
+        if c >= 0x20 and c is not '"' and c is not '\\' { continue }
+        try out.extend(s[start..i])
+        start = i + 1
+        match c {
+            '"' => try out.extend("\\\"")
+            '\\' => try out.extend("\\\\")
+            '\n' => try out.extend("\\n")
+            '\r' => try out.extend("\\r")
+            '\t' => try out.extend("\\t")
+            8 => try out.extend("\\b")
+            12 => try out.extend("\\f")
+            _ => {
+                digits := "0123456789abcdef"
+                try out.extend("\\u00")
+                try out.push(digits[(c >> 4).trunc(usize)])
+                try out.push(digits[(c & 15).trunc(usize)])
+            }
+        }
+    }
+    try out.extend(s[start..])
+    try out.push('"')
+    return ()
+}
+
+/// Writes `null`.
+pub write_null :: fn(w: ^Writer) -> WriteError!() {
+    try before_value(w)
+    try w.out.extend("null")
+    return ()
+}
+
+/// Writes `true` or `false`.
+pub write_bool :: fn(w: ^Writer, b: bool) -> WriteError!() {
+    try before_value(w)
+    try w.out.extend(if b { "true" } else { "false" })
+    return ()
+}
+
+/// Writes a string, escaping `"`, `\` and the control characters. Everything else,
+/// non-ASCII text included, is written as it is. The string must be valid UTF-8.
+pub write_string :: fn(w: ^Writer, s: string) -> WriteError!() {
+    try before_value(w)
+    try write_quoted(w, s)
+    return ()
+}
+
+/// Writes an integer of any size.
+pub write_int :: fn(T: type, w: ^Writer, x: T) -> WriteError!() where Int(T) {
+    try before_value(w)
+    try w.out.write("{}", x)
+    return ()
+}
+
+/// Writes a float in the shortest form that reads back as the same value (the form
+/// `print` uses), so `2.0` is `2` and `1e21` is `1e21`. NaN and infinities are an error.
+pub write_float :: fn(T: type, w: ^Writer, x: T) -> WriteError!() where Float(T) {
+    if x.is_nan() or x.is_inf() { return !.NonFinite }
+    try before_value(w)
+    try w.out.write("{}", x)
+    return ()
+}
+
+/// Writes a number literal as it is. The text must be a valid JSON number, such as the
+/// `text` of a parsed `Number` (anything else makes the output invalid JSON).
+pub write_number :: fn(w: ^Writer, n: Number) -> WriteError!() {
+    try before_value(w)
+    try w.out.extend(n.text)
+    return ()
+}
+
+/// Writes a whole value tree.
+pub write_value :: fn(w: ^Writer, v: Value) -> WriteError!() {
+    match v {
+        .Null => try write_null(w)
+        .Bool(b) => try write_bool(w, b)
+        .Number(n) => try write_number(w, n)
+        .String(s) => try write_string(w, s)
+        .Array(items) => {
+            try begin_array(w)
+            for x in items { try write_value(w, x) }
+            try end_array(w)
+        }
+        .Object(members) => {
+            try begin_object(w)
+            for m in members {
+                try key(w, m.key)
+                try write_value(w, m.value)
+            }
+            try end_object(w)
+        }
+    }
+    return ()
+}
+
+/// Appends the JSON text of `v` to `out`: compact when `indent` is 0, otherwise indented
+/// as for `writer`.
+pub write :: fn(out: ^List(u8), v: Value, indent: usize = 0) -> WriteError!() {
+    w := writer(out, indent)
+    try write_value(&w, v)
+    return ()
+}

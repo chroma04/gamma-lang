@@ -2643,7 +2643,9 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
 
 /* ---- threads ---------------------------------------------------------------------------- */
 
-typedef struct { pthread_t t; void (*f)(void *); void *arg; } gm_thread;
+/* `detached` and `finished` are guarded by gm_rt_lock: whichever of the thread's end and
+ * the call to detach it comes second frees the record. */
+typedef struct { pthread_t t; void (*f)(void *); void *arg; int detached, finished; } gm_thread;
 
 /* The stack size of the threads the runtime starts. */
 #define GM_THREAD_STACK_SIZE ((size_t)8 << 20)
@@ -2652,6 +2654,14 @@ static void *gm_thread_main(void *p) {
     gm_thread_stack();
     gm_thread *t = (gm_thread *)p;
     t->f(t->arg);
+    pthread_mutex_lock(&gm_rt_lock);
+    if (t->detached) {
+        pthread_mutex_unlock(&gm_rt_lock);
+        free(t);
+    } else {
+        t->finished = 1;
+        pthread_mutex_unlock(&gm_rt_lock);
+    }
     return NULL;
 }
 
@@ -2694,6 +2704,7 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     if (t == NULL) return gm_io_error(ENOMEM);
     t->f = (void (*)(void *))f;
     t->arg = arg;
+    t->detached = t->finished = 0;
     pthread_mutex_lock(&gm_rt_lock);
     size_t slot = 0;
     while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
@@ -2734,6 +2745,19 @@ GM_API int64_t gm_thread_join(int64_t h) {
     gm_threads[h - 1] = NULL;
     pthread_mutex_unlock(&gm_rt_lock);
     free(t);
+    return r == 0 ? 0 : gm_io_error(r);
+}
+
+GM_API int64_t gm_thread_detach(int64_t h) {
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_thread *t = gm_threads[h - 1];
+    gm_threads[h - 1] = NULL;
+    int done = t->finished;
+    pthread_t tid = t->t;
+    t->detached = 1;
+    pthread_mutex_unlock(&gm_rt_lock);
+    int r = pthread_detach(tid);
+    if (done) free(t);
     return r == 0 ? 0 : gm_io_error(r);
 }
 

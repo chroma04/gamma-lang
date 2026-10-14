@@ -1,0 +1,477 @@
+// std/collections/ordered_map: a map that keeps its keys in order, as a B-tree.
+//
+//     om :: import "std/collections/ordered_map"
+//
+//     m := om.ordered_map(string, u32)              // keys ordered by `<`
+//     defer m.deinit()
+//     try m.put("pear", 3)
+//     try m.put("apple", 5)
+//     for e in m.entries() { print("{} {}\n", (e.key, e.value)) }     // apple, then pear
+//     for e in m.range("b", null) { … }             // keys from "b" on
+//     print("{}\n", m.first())                      // (key: "apple", value: 5)
+//
+// The order of the keys comes from the key type's `<` (`ordered_map`), or from a comparison
+// function (`ordered_map_by`, like `sort_by` and `heap_by`): `less(a, b)` says that `a`
+// comes before `b`, and must be a strict weak ordering. Two keys are the same key when
+// neither comes before the other. The function is stored in the map, so it is a plain
+// function pointer. A map keeps the allocator it was created with, performs no `Alloc`
+// afterwards, and reports a failed allocation as `AllocError`, leaving the map as it was.
+//
+// Lookups, insertions and removals take O(log n) comparisons. Iteration is in key order.
+// A map must not change during an iteration. Pointers from `get_ptr` are valid until the
+// next insertion or removal.
+//
+// The tree has nodes of up to 15 keys. A node is one allocation, so a map of n entries
+// takes about n / 11 blocks.
+
+// The most keys in a node, and the fewest in a node other than the root. A node with
+// `MAX_KEYS` keys is split on the way down by an insertion; a node with `MIN_KEYS` keys
+// is fed from a neighbor or merged on the way down by a removal.
+MAX_KEYS :: 15
+MIN_KEYS :: 7
+
+Node :: struct(K, V: type) {
+    count: usize
+    leaf: bool
+    keys: [15]K
+    vals: [15]V
+    kids: [16]?^Node(K, V)
+}
+
+/// A map from `K` to `V`, ordered by the comparison function it was created with.
+pub OrderedMap :: struct(K, V: type) {
+    root: ?^Node(K, V)
+    count: usize
+    less: ^fn(a, b: ^const K) -> bool
+    alloc: Allocator
+}
+
+/// An empty map ordered by `<`, using the current allocator.
+pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K) {
+    return ordered_map_by(K, V, fn(a, b: ^const K) -> bool => a^ < b^)
+}
+
+/// An empty map ordered by `less`, using the current allocator. `less(a, b)` says that
+/// `a` comes before `b`; it should be a strict weak ordering. It is stored in the map, so it
+/// is a plain function pointer: it cannot capture variables.
+pub ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) \ {Alloc} {
+    return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: current())
+}
+
+// The index of the first key of `x` that does not come before `k`.
+lower_bound :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K, V), k: ^const K) -> usize {
+    lo: usize = 0
+    hi := x.count
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if less(&x.keys[mid], k) { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+// Whether key `i` of `x` is the key `k`, given that it is the lower bound of `k`.
+matches :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K, V), i: usize, k: ^const K) -> bool {
+    return i < x.count and not less(k, &x.keys[i])
+}
+
+new_node :: fn(K, V: type, alloc: Allocator, leaf: bool) -> AllocError!^Node(K, V) {
+    raw := alloc.vt.alloc(alloc.data, @size_of(Node(K, V)), @align_of(Node(K, V))) else return !.OutOfMemory
+    x := raw.cast(^Node(K, V))
+    x.count = 0
+    x.leaf = leaf
+    return x
+}
+
+free_node :: fn(K, V: type, alloc: Allocator, x: ^Node(K, V)) {
+    alloc.vt.free(alloc.data, x.cast([^]u8), @size_of(Node(K, V)), @align_of(Node(K, V)))
+}
+
+free_tree :: fn(K, V: type, alloc: Allocator, x: ^Node(K, V)) {
+    if not x.leaf {
+        for i in 0..x.count + 1 {
+            if c := x.kids[i] { free_tree(alloc, c) }
+        }
+    }
+    free_node(alloc, x)
+}
+
+/// The number of entries.
+pub len :: fn(K, V: type, m: ^const OrderedMap(K, V)) -> usize => m.count
+
+/// Whether the map has no entries.
+pub is_empty :: fn(K, V: type, m: ^const OrderedMap(K, V)) -> bool => m.count is 0
+
+// The node and index holding `k`.
+locate :: fn(K, V: type, m: ^const OrderedMap(K, V), k: ^const K) -> ?(node: ^Node(K, V), at: usize) {
+    cur := m.root
+    while x := cur {
+        i := lower_bound(m.less, x, k)
+        if matches(m.less, x, i, k) { return (node: x, at: i) }
+        if x.leaf { return null }
+        cur = x.kids[i]
+    }
+    return null
+}
+
+/// The value of `k`, if present.
+pub get :: fn(K, V: type, m: ^const OrderedMap(K, V), k: K) -> ?V {
+    r := locate(m, &k) else return null
+    return r.node.vals[r.at]
+}
+
+/// A pointer to the value stored for `k`, if present, so it can be read or updated in place.
+/// It is valid until the next insertion or removal.
+pub get_ptr :: fn(K, V: type, m: ^OrderedMap(K, V), k: K) -> ?^V {
+    r := locate(m, &k) else return null
+    return &r.node.vals[r.at]
+}
+
+/// Whether `k` is present.
+pub contains :: fn(K, V: type, m: ^const OrderedMap(K, V), k: K) -> bool {
+    return locate(m, &k) is not null
+}
+
+// Splits the full child `i` of `x` (which is not full) into two nodes, moving the median
+// key up into `x`.
+split_child :: fn(K, V: type, alloc: Allocator, x: ^Node(K, V), i: usize) -> AllocError!() {
+    y := x.kids[i] else trap("unreachable: a missing child")
+    z := try new_node(K, V, alloc, y.leaf)
+    mid := MIN_KEYS
+    z.count = MIN_KEYS
+    for j in 0..MIN_KEYS {
+        z.keys[j] = y.keys[mid + 1 + j]
+        z.vals[j] = y.vals[mid + 1 + j]
+    }
+    if not y.leaf {
+        for j in 0..MIN_KEYS + 1 { z.kids[j] = y.kids[mid + 1 + j] }
+    }
+    median_key := y.keys[mid]
+    median_val := y.vals[mid]
+    y.count = MIN_KEYS
+    // Make room in `x`.
+    j := x.count
+    while j > i {
+        x.keys[j] = x.keys[j - 1]
+        x.vals[j] = x.vals[j - 1]
+        x.kids[j + 1] = x.kids[j]
+        j -= 1
+    }
+    x.keys[i] = median_key
+    x.vals[i] = median_val
+    x.kids[i + 1] = z
+    x.count += 1
+    return ()
+}
+
+/// Sets the value of `k`, adding it if absent. When `k` is already present its stored key
+/// is kept (the new one is equal under the ordering).
+pub put :: fn(K, V: type, m: ^OrderedMap(K, V), k: K, v: V) -> AllocError!() {
+    if r := locate(m, &k) {
+        r.node.vals[r.at] = v
+        return ()
+    }
+    if m.root is null { m.root = try new_node(K, V, m.alloc, true) }
+    root := m.root else trap("unreachable: no root")
+    if root.count is MAX_KEYS {
+        s := try new_node(K, V, m.alloc, false)
+        s.kids[0] = root
+        // If the split fails, `s` is not part of the tree yet.
+        split_child(m.alloc, s, 0) else e => {
+            free_node(m.alloc, s)
+            return !e
+        }
+        m.root = s
+    }
+    x := m.root else trap("unreachable: no root")
+    while true {
+        i := lower_bound(m.less, x, &k)
+        if x.leaf {
+            j := x.count
+            while j > i {
+                x.keys[j] = x.keys[j - 1]
+                x.vals[j] = x.vals[j - 1]
+                j -= 1
+            }
+            x.keys[i] = k
+            x.vals[i] = v
+            x.count += 1
+            break
+        }
+        c := x.kids[i] else trap("unreachable: a missing child")
+        if c.count is MAX_KEYS {
+            try split_child(m.alloc, x, i)
+            if m.less(&x.keys[i], &k) { i += 1 }
+            c = x.kids[i] else trap("unreachable: a missing child")
+        }
+        x = c
+    }
+    m.count += 1
+    return ()
+}
+
+// The rightmost entry below `x`.
+rightmost :: fn(K, V: type, x: ^Node(K, V)) -> ^Node(K, V) {
+    cur := x
+    while not cur.leaf { cur = cur.kids[cur.count] else trap("unreachable: a missing child") }
+    return cur
+}
+
+leftmost :: fn(K, V: type, x: ^Node(K, V)) -> ^Node(K, V) {
+    cur := x
+    while not cur.leaf { cur = cur.kids[0] else trap("unreachable: a missing child") }
+    return cur
+}
+
+// Removes key `i` of the leaf `x`.
+leaf_remove :: fn(K, V: type, x: ^Node(K, V), i: usize) {
+    for j in i..x.count - 1 {
+        x.keys[j] = x.keys[j + 1]
+        x.vals[j] = x.vals[j + 1]
+    }
+    x.count -= 1
+}
+
+// Merges child `i + 1` and key `i` of `x` into child `i`, and frees the right child.
+merge_children :: fn(K, V: type, alloc: Allocator, x: ^Node(K, V), i: usize) {
+    l := x.kids[i] else trap("unreachable: a missing child")
+    r := x.kids[i + 1] else trap("unreachable: a missing child")
+    n := l.count
+    l.keys[n] = x.keys[i]
+    l.vals[n] = x.vals[i]
+    for j in 0..r.count {
+        l.keys[n + 1 + j] = r.keys[j]
+        l.vals[n + 1 + j] = r.vals[j]
+    }
+    if not l.leaf {
+        for j in 0..r.count + 1 { l.kids[n + 1 + j] = r.kids[j] }
+    }
+    l.count = n + 1 + r.count
+    for j in i..x.count - 1 {
+        x.keys[j] = x.keys[j + 1]
+        x.vals[j] = x.vals[j + 1]
+        x.kids[j + 1] = x.kids[j + 2]
+    }
+    x.count -= 1
+    free_node(alloc, r)
+}
+
+// Moves the last key of child `i - 1` through `x` into the front of child `i`.
+borrow_from_left :: fn(K, V: type, x: ^Node(K, V), i: usize) {
+    c := x.kids[i] else trap("unreachable: a missing child")
+    l := x.kids[i - 1] else trap("unreachable: a missing child")
+    j := c.count
+    while j > 0 {
+        c.keys[j] = c.keys[j - 1]
+        c.vals[j] = c.vals[j - 1]
+        j -= 1
+    }
+    if not c.leaf {
+        j = c.count + 1
+        while j > 0 {
+            c.kids[j] = c.kids[j - 1]
+            j -= 1
+        }
+        c.kids[0] = l.kids[l.count]
+    }
+    c.keys[0] = x.keys[i - 1]
+    c.vals[0] = x.vals[i - 1]
+    x.keys[i - 1] = l.keys[l.count - 1]
+    x.vals[i - 1] = l.vals[l.count - 1]
+    l.count -= 1
+    c.count += 1
+}
+
+// Moves the first key of child `i + 1` through `x` onto the end of child `i`.
+borrow_from_right :: fn(K, V: type, x: ^Node(K, V), i: usize) {
+    c := x.kids[i] else trap("unreachable: a missing child")
+    r := x.kids[i + 1] else trap("unreachable: a missing child")
+    c.keys[c.count] = x.keys[i]
+    c.vals[c.count] = x.vals[i]
+    if not c.leaf { c.kids[c.count + 1] = r.kids[0] }
+    x.keys[i] = r.keys[0]
+    x.vals[i] = r.vals[0]
+    for j in 0..r.count - 1 {
+        r.keys[j] = r.keys[j + 1]
+        r.vals[j] = r.vals[j + 1]
+    }
+    if not r.leaf {
+        for j in 0..r.count { r.kids[j] = r.kids[j + 1] }
+    }
+    r.count -= 1
+    c.count += 1
+}
+
+// Removes `k` from the subtree at `x`, which has more than the minimum number of keys
+// unless it is the root. Returns the stored key and value.
+remove_from :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, alloc: Allocator, x: ^Node(K, V), k: ^const K) -> ?(key: K, value: V) {
+    i := lower_bound(less, x, k)
+    found := matches(less, x, i, k)
+    if x.leaf {
+        if not found { return null }
+        r := (key: x.keys[i], value: x.vals[i])
+        leaf_remove(x, i)
+        return r
+    }
+    if found {
+        r := (key: x.keys[i], value: x.vals[i])
+        l := x.kids[i] else trap("unreachable: a missing child")
+        rt := x.kids[i + 1] else trap("unreachable: a missing child")
+        if l.count > MIN_KEYS {
+            p := rightmost(l)
+            pk := p.keys[p.count - 1]
+            pv := p.vals[p.count - 1]
+            _ = remove_from(less, alloc, l, &pk)
+            x.keys[i] = pk
+            x.vals[i] = pv
+            return r
+        }
+        if rt.count > MIN_KEYS {
+            s := leftmost(rt)
+            sk := s.keys[0]
+            sv := s.vals[0]
+            _ = remove_from(less, alloc, rt, &sk)
+            x.keys[i] = sk
+            x.vals[i] = sv
+            return r
+        }
+        merge_children(alloc, x, i)
+        _ = remove_from(less, alloc, l, k)
+        return r
+    }
+    // Not here: descend, first making sure the child has keys to spare.
+    c := x.kids[i] else trap("unreachable: a missing child")
+    child := i
+    if c.count <= MIN_KEYS {
+        left_spare := false
+        if i > 0 {
+            sib := x.kids[i - 1] else trap("unreachable: a missing child")
+            left_spare = sib.count > MIN_KEYS
+        }
+        right_spare := false
+        if i < x.count {
+            sib := x.kids[i + 1] else trap("unreachable: a missing child")
+            right_spare = sib.count > MIN_KEYS
+        }
+        if left_spare {
+            borrow_from_left(x, i)
+        } else if right_spare {
+            borrow_from_right(x, i)
+        } else if i < x.count {
+            merge_children(alloc, x, i)
+        } else {
+            merge_children(alloc, x, i - 1)
+            child = i - 1
+        }
+        c = x.kids[child] else trap("unreachable: a missing child")
+    }
+    return remove_from(less, alloc, c, k)
+}
+
+// Removes `k` and returns the stored key and value.
+take :: fn(K, V: type, m: ^OrderedMap(K, V), k: ^const K) -> ?(key: K, value: V) {
+    root := m.root else return null
+    r := remove_from(m.less, m.alloc, root, k)
+    if root.count is 0 {
+        // The root is empty: a leaf root leaves an empty map, an inner one is replaced by
+        // its only child.
+        m.root = if root.leaf { null } else { root.kids[0] }
+        free_node(m.alloc, root)
+    }
+    if r is not null { m.count -= 1 }
+    return r
+}
+
+/// Removes `k`, returning its value if it was present.
+pub remove :: fn(K, V: type, m: ^OrderedMap(K, V), k: K) -> ?V {
+    r := take(m, &k) else return null
+    return r.value
+}
+
+/// Removes `k`, returning the stored key and its value if it was present.
+pub remove_entry :: fn(K, V: type, m: ^OrderedMap(K, V), k: K) -> ?(key: K, value: V) {
+    return take(m, &k)
+}
+
+/// The entry with the smallest key.
+pub first :: fn(K, V: type, m: ^const OrderedMap(K, V)) -> ?(key: K, value: V) {
+    root := m.root else return null
+    x := leftmost(root)
+    return (key: x.keys[0], value: x.vals[0])
+}
+
+/// The entry with the largest key.
+pub last :: fn(K, V: type, m: ^const OrderedMap(K, V)) -> ?(key: K, value: V) {
+    root := m.root else return null
+    x := rightmost(root)
+    return (key: x.keys[x.count - 1], value: x.vals[x.count - 1])
+}
+
+// Yields the entries of the subtree at `x` in key order.
+walk :: fn(K, V: type, x: ^const Node(K, V)) \ {Yield((key: K, value: V))} {
+    for i in 0..x.count {
+        if not x.leaf {
+            if c := x.kids[i] { walk(c) }
+        }
+        yield((key: x.keys[i], value: x.vals[i]))
+    }
+    if not x.leaf {
+        if c := x.kids[x.count] { walk(c) }
+    }
+}
+
+/// The entries in key order. The map must not change during the iteration.
+pub entries :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield((key: K, value: V))} {
+    if root := m.root { walk(root) }
+}
+
+/// The keys in order.
+pub keys :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(K)} {
+    for e in entries(m) { yield(e.key) }
+}
+
+/// The values, in the order of their keys.
+pub values :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(V)} {
+    for e in entries(m) { yield(e.value) }
+}
+
+// Yields the entries of the subtree at `x` with `lo <= key < hi` (a missing bound is no
+// bound); returns false once a key at or past `hi` was seen, which ends the iteration.
+walk_range :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K, V), lo, hi: ?K) -> bool \ {Yield((key: K, value: V))} {
+    i: usize = 0
+    if l := lo { i = lower_bound(less, x, &l) }
+    for j in i..x.count {
+        if not x.leaf {
+            if c := x.kids[j] {
+                if not walk_range(less, c, lo, hi) { return false }
+            }
+        }
+        if h := hi {
+            if not less(&x.keys[j], &h) { return false }
+        }
+        yield((key: x.keys[j], value: x.vals[j]))
+    }
+    if not x.leaf {
+        if c := x.kids[x.count] { return walk_range(less, c, lo, hi) }
+    }
+    return true
+}
+
+/// The entries with `lo <= key < hi`, in key order. A bound that is `null` is left open:
+/// `range(5, null)` yields the keys from 5 on. The map must not change during the
+/// iteration.
+pub range :: fn(K, V: type, m: ^const OrderedMap(K, V), lo, hi: ?K) \ {Yield((key: K, value: V))} {
+    root := m.root else return
+    _ = walk_range(m.less, root, lo, hi)
+}
+
+/// Removes every entry and frees the nodes.
+pub clear :: fn(K, V: type, m: ^OrderedMap(K, V)) {
+    if root := m.root { free_tree(m.alloc, root) }
+    m.root = null
+    m.count = 0
+}
+
+/// Frees the map's storage through its own allocator.
+pub deinit :: fn(K, V: type, m: ^OrderedMap(K, V)) {
+    clear(m)
+}
