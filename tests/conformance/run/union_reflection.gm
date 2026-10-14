@@ -1,0 +1,31 @@
+Color :: union { Red, Green, Blue }
+Shape :: union {
+    Circle: f32
+    Rect: (w: f32, h: f32)
+    Empty
+}
+Opt :: union(T: type) { Some: T, None }
+
+COUNT :: @variants(Color).len
+ALL :: @variants(Color)
+
+next :: fn(counter: ^u32) -> Shape \ {Out} {
+    print("next called\n")
+    counter^ += 1
+    return .Circle(1.0)
+}
+
+name_of :: fn(T: type, o: Opt(T)) -> string => @variant_name(o)
+
+main :: fn() \ {Out} {
+    for c in @variants(Color) {
+        print("{} {}\n", (@variant_name(c), c.tag()))
+    }
+    print("{} {}\n", (@variants(Color).len, COUNT))
+    print("{}\n", @variant_name(ALL[2]))
+    print("{} {} {}\n", (@variant_name(Shape.Circle(2.0)), @variant_name(Shape.Rect(w: 1, h: 2)), @variant_name(Shape.Empty)))
+    n: u32 = 0
+    print("{}\n", @variant_name(next(&n)))
+    print("{}\n", n)
+    print("{} {}\n", (name_of(i32, Opt(i32).Some(3)), name_of(string, Opt(string).None)))
+}

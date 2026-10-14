@@ -218,6 +218,8 @@ pub struct Sema<'s> {
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
     pub value_params: HashMap<crate::types::ParamId, Ty>,
+    /// The effect-set parameters (`E: effects`, §16.6); their names are in `type_params`.
+    pub effect_params: std::collections::HashSet<crate::types::ParamId>,
     /// The predeclared `Yield` effect (§13.1).
     pub yield_effect: Option<EffectId>,
     /// Types and locations of clause-level `break`s of each handler literal,
@@ -274,6 +276,9 @@ pub struct Sema<'s> {
     pub adt_inst_depth: u32,
     /// Instances created during the outermost instantiation in progress, with their templates.
     pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Every array length computed from compile-time value parameters, with its
+    /// span: checked for overflow at each instantiation (§16.5).
+    pub len_exprs: Vec<(Ty, Span)>,
     /// Whether ever-deeper instantiation has been reported.
     pub adt_inst_overflowed: bool,
 }
@@ -350,6 +355,7 @@ impl<'s> Sema<'s> {
             local_fns: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
+            effect_params: Default::default(),
             yield_effect: None,
             handler_breaks: HashMap::new(),
             decl_clause_breaks: HashMap::new(),
@@ -375,6 +381,7 @@ impl<'s> Sema<'s> {
             deferred_constraints: vec![],
             adt_inst_depth: 0,
             adt_new_instances: vec![],
+            len_exprs: vec![],
             adt_inst_overflowed: false,
         }
     }
@@ -385,6 +392,28 @@ impl<'s> Sema<'s> {
 
     pub fn error(&mut self, span: Span, msg: impl Into<String>) {
         self.sess.diags.error(span, msg);
+    }
+
+    /// When operation `op` of `eff`, declared outside the core library, has the name of a
+    /// universe operation, an explanation that the declaration hides it (§4.6).
+    pub fn hidden_universe_op(&self, eff: EffectId, op: u32) -> Option<String> {
+        let info = &self.effects[&eff];
+        if self.modules[info.module.0 as usize].is_prelude {
+            return None;
+        }
+        let name = info.ops[op as usize].name;
+        let mut hidden: Vec<Symbol> = self
+            .effects
+            .values()
+            .filter(|e| self.modules[e.module.0 as usize].is_prelude && e.ops.iter().any(|o| o.name == name))
+            .map(|e| e.name)
+            .collect();
+        hidden.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let universe = hidden.first()?;
+        Some(format!(
+            "`{name}` here is the operation `{}.{name}`, whose declaration hides the universe operation `{universe}.{name}`",
+            info.name
+        ))
     }
 
     pub fn emit(&mut self, d: Diagnostic) {

@@ -8,7 +8,7 @@ use num_bigint::BigInt;
 use std::rc::Rc;
 
 pub fn target64() -> Target {
-    Target { ptr_bytes: 8, little_endian: true, int128_align: 16, os: "Linux", arch: "X86_64", filc: false }
+    Target { ptr_bytes: 8, little_endian: true, int128_align: 16, os: "Linux", arch: "X86_64", filc: false, f16: true }
 }
 
 pub fn cfg() -> RunConfig {

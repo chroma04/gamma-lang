@@ -10,7 +10,7 @@ trap: bottom
   called from tests/conformance/run/backtrace_long.gm:6:12 in down
   called from tests/conformance/run/backtrace_long.gm:6:12 in down
   called from tests/conformance/run/backtrace_long.gm:6:12 in down
-  ... 11 more calls
+  ... more calls
   called from tests/conformance/run/backtrace_long.gm:6:12 in down
   called from tests/conformance/run/backtrace_long.gm:6:12 in down
   called from tests/conformance/run/backtrace_long.gm:6:12 in down

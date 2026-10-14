@@ -1062,7 +1062,10 @@ impl<'a> Machine<'a> {
             return Ok(*a);
         }
         let Some(init) = &def.init else {
-            return self.trap(span, "not supported by the interpreter yet: foreign global");
+            let name = def.link_name.map_or_else(|| def.name.as_str().to_string(), |n| n.as_str().to_string());
+            let addr = self.foreign_global_addr(span, &name)?;
+            self.globals.insert(key, addr);
+            return Ok(addr);
         };
         let bytes = self.with_root_frame(def.ty, |m, act| m.eval_bytes(act, init))?;
         let ti = self.ti(def.ty);

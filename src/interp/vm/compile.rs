@@ -1850,6 +1850,12 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr], want: Option<Arg>) -> C<Arg> {
         let span = e.span;
+        // A variadic foreign call needs the types of its arguments, which the tree-walker has.
+        if let Callee::Fn(f) = callee
+            && matches!(self.m.prog.fns[f.index()].kind, FnKind::Foreign { variadic: true, .. })
+        {
+            return Err(unsupported!());
+        }
         let refs: Vec<&'a Expr> = args.iter().collect();
         let cv = match callee {
             Callee::Indirect(c) => {

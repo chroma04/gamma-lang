@@ -91,11 +91,8 @@ fn generate_entries(
     opts: &Options,
 ) -> CResult<Generated> {
     let target = prog.target.clone();
-    // The runtime and the generated code read integers as little-endian bytes.
-    if !target.little_endian {
-        return unsupported(Span::DUMMY, "big-endian targets");
-    }
     let lookup = |id: AdtId| prog.adts.get(&id);
+    let has_f16 = target.f16;
     let layouts = Layouts::new(target, &lookup);
     let mut ty = Types::new(prog, &layouts);
     ty.debug_names = opts.debug_info;
@@ -121,6 +118,7 @@ fn generate_entries(
         spec_tables: std::collections::HashSet::new(),
         exits: HashMap::new(),
         pure_memo: HashMap::new(),
+        early_memo: HashMap::new(),
         captured: None,
         site_consts: vec![],
         handler_tables: String::new(),
@@ -161,6 +159,12 @@ fn generate_entries(
     out.push_str(&consts);
     out.push_str(&g.helpers.bodies);
     out.push_str(&g.bodies);
+    if !has_f16 && out.contains("_Float16") {
+        return unsupported(
+            Span::DUMMY,
+            "`f16` needs a C compiler with `_Float16`, which this target's compiler lacks",
+        );
+    }
     // An exported symbol must not be a name the generated program uses itself.
     if !prog.exports.is_empty() {
         let whole = format!("{}\n{}\n{}", RT_H, RT_C, out);
@@ -211,6 +215,7 @@ pub struct Gen<'a> {
     exits: HashMap<(FnId, Option<func::Spec>), Option<bool>>,
     /// Memo of `is_pure` (`None` while being computed).
     pure_memo: HashMap<FnId, Option<bool>>,
+    early_memo: HashMap<FnId, Vec<bool>>,
     /// The locals that function literals or handler clauses reach through their
     /// environment, by function (computed on first use, see `Gen::frame_locals`).
     captured: Option<std::collections::HashSet<(FnId, crate::tir::LocalId)>>,
@@ -616,7 +621,7 @@ impl<'a> Gen<'a> {
             TyKind::Result { err, ok } => {
                 let offs = self.ty.offsets(ret);
                 let d = self.ty.desc(*err);
-                let _ = writeln!(s, "    if (r.b[{}]) {{", offs[0]);
+                let _ = writeln!(s, "    if (((uint8_t *)&r)[{}]) {{", offs[0]);
                 s.push_str("        gm_buf b = {0};\n        gm_buf_push(&b, \"error: \", 7);\n");
                 // A union's value is named with its type: `E.NotFound` (§3.7).
                 if let TyKind::Adt(id, _) = err.kind()
@@ -625,13 +630,13 @@ impl<'a> Gen<'a> {
                     let name = err.to_string();
                     let _ = writeln!(s, "        gm_buf_push(&b, {}, {});", c_string(name.as_bytes()), name.len());
                 }
-                let _ = writeln!(s, "        gm_format(&b, {}, r.b + {}, true);", d, offs[1]);
+                let _ = writeln!(s, "        gm_format(&b, {}, (uint8_t *)&r + {}, true);", d, offs[1]);
                 s.push_str("        gm_buf_push(&b, \"\\n\", 1);\n        gm_flush();\n");
                 s.push_str("        gm_write_err(b.data, b.len);\n        return 1;\n    }\n");
                 if ok.is_integer() {
                     let _ = writeln!(
                         s,
-                        "    gm_flush();\n    return (uint8_t)GM_LD({}, r.b + {});",
+                        "    gm_flush();\n    return (uint8_t)GM_LD({}, (uint8_t *)&r + {});",
                         self.ty.cty(*ok),
                         offs[1]
                     );

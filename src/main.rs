@@ -27,6 +27,10 @@ options:
   --backend=interp|c          (run, test) use the interpreter (default) or compile via C
   --filter=<text>             (test) run only the tests whose name or module path
                               contains <text>
+  --target=<triple>           (check, run --backend=c, test, build) compile for the machine
+                              <triple> names (`s390x-linux-gnu`) with a cross C compiler:
+                              with CC unset <triple>-gcc, else `clang --target=<triple>`;
+                              with CC set, CC (given --target if it is clang)
   -o <file>                   (build) the executable to write (default: the input's name)
   -g                          (build, and run and test via C) add debug information that maps
                               the executable to the Gamma source, for debuggers; a Debug build
@@ -43,6 +47,9 @@ environment:
             compiler (`zig cc -target aarch64-linux-musl`) makes it the target
   CFLAGS    extra C compiler options
   LDFLAGS   extra linker options
+  GAMMA_RUNNER
+            a command that runs the executables of `run --backend=c` and `test`
+            (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments
 ";
 
 struct Options {
@@ -62,6 +69,8 @@ struct Options {
     debug_info: bool,
     /// `--filter=…`: run only the tests that match.
     filter: Option<String>,
+    /// `--target=…`: the target triple to compile for.
+    target: Option<String>,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -78,6 +87,7 @@ fn parse_args() -> Result<Options, String> {
         mode: gamma::interp::Mode::Debug,
         debug_info: false,
         filter: None,
+        target: None,
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -97,6 +107,13 @@ fn parse_args() -> Result<Options, String> {
             "--mode=fast" => opts.mode = gamma::interp::Mode::Fast,
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
+            a if a.starts_with("--target=") => {
+                let triple = &a["--target=".len()..];
+                if triple.is_empty() {
+                    return Err("`--target=` needs a target triple".to_string());
+                }
+                opts.target = Some(triple.to_string());
+            }
             a if a.starts_with("--filter=") => opts.filter = Some(a["--filter=".len()..].to_string()),
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
             a => {
@@ -207,7 +224,16 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
     let mut sess = Session::new();
     sess.mode = opts.mode;
     sess.debug_info = opts.debug_info;
-    let toolchain = if opts.mode == gamma::interp::Mode::Safe {
+    let toolchain = if let Some(triple) = &opts.target {
+        if opts.mode == gamma::interp::Mode::Safe {
+            Err("`--target` cannot be combined with `--mode=safe`, which builds for the host with Fil-C".to_string())
+        } else {
+            Toolchain::for_target(triple).and_then(|t| {
+                sess.target = t.target_for(triple)?;
+                Ok(t)
+            })
+        }
+    } else if opts.mode == gamma::interp::Mode::Safe {
         Toolchain::for_safe_build().and_then(|t| {
             let target = t.target()?;
             if !target.filc {
@@ -225,6 +251,11 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
             Ok(t)
         })
     };
+    // An explicit target must be reachable: there is nothing else to fall back to.
+    if let (Some(_), Err(e)) = (&opts.target, &toolchain) {
+        eprintln!("gamma: {}", e);
+        std::process::exit(1);
+    }
     (sess, toolchain)
 }
 
@@ -249,12 +280,13 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    // The interpreter cannot call C or run assembly, so such programs run natively.
-    let uses_c = prog.needs_native();
-    if opts.c_backend || uses_c {
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    // The interpreter calls C itself where it can (§19.2); it cannot run assembly, or foreign
+    // code it cannot find or describe to libffi, so such programs run natively.
+    if opts.c_backend || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
         return run_native(&sess, &prog, &toolchain, path, opts);
     }
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    gamma::interp::set_owns_process(true);
     let mut args = vec![path.display().to_string()];
     args.extend(opts.program_args.iter().cloned());
     let mut stdout = std::io::stdout();
@@ -297,14 +329,16 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
     let callers: Vec<String> = (0..trap.trace.len())
         .filter_map(|i| Some(format!("  called from {} in {}\n", location(sess, trap.trace[i].1)?, name(i + 1)?)))
         .collect();
-    // Past BACKTRACE_MAX callers, only the first and last BACKTRACE_MAX / 2.
+    // Past BACKTRACE_MAX callers, only the first and last BACKTRACE_MAX / 2, with a line
+    // that does not count the calls in between (a stack overflow reaches different depths
+    // on different back ends).
     const BACKTRACE_MAX: usize = 20;
     let n = callers.len();
     for (i, line) in callers.iter().enumerate() {
         if n <= BACKTRACE_MAX || i < BACKTRACE_MAX / 2 || i >= n - BACKTRACE_MAX / 2 {
             s.push_str(line);
         } else if i == BACKTRACE_MAX / 2 {
-            s.push_str(&format!("  ... {} more calls\n", n - BACKTRACE_MAX));
+            s.push_str("  ... more calls\n");
         }
     }
     s
@@ -369,17 +403,18 @@ fn test(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    // The interpreter cannot call C or run assembly, so such programs test natively.
+    // Tests of modules that call C or run assembly are compiled natively, so that C's output
+    // is captured with the test's.
     let selected: Vec<usize> =
         (0..prog.tests.len()).filter(|&i| test_selected(&prog.tests[i], opts.filter.as_deref())).collect();
     let mut report = TestReport {
         filtered_out: opts.filter.as_ref().map(|_| prog.tests.len() - selected.len()),
         ..TestReport::default()
     };
-    if opts.c_backend || prog.needs_native() {
+    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    if opts.c_backend || prog.has_foreign() || gamma::interp::foreign_supported(&prog, &cfg).is_err() {
         return test_native(&sess, &prog, &toolchain, &selected, report);
     }
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
     for &i in &selected {
         let t = &prog.tests[i];
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -421,7 +456,7 @@ fn test_native(
         Ok(()) => {
             for (j, &i) in selected.iter().enumerate() {
                 let t = &prog.tests[i];
-                let mut cmd = std::process::Command::new(&exe);
+                let mut cmd = runner_command(&exe, None);
                 cmd.arg(j.to_string()).stdin(std::process::Stdio::null());
                 let failure = match cmd.output() {
                     Ok(o) if o.status.code() == Some(0) => None,
@@ -443,6 +478,32 @@ fn test_native(
     };
     let _ = std::fs::remove_dir_all(&dir);
     code
+}
+
+/// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if
+/// that is set (a malformed value ends the process), and with `arg0` as the program's
+/// name if given and no runner is in the way.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std::process::Command {
+    let runner = gamma::toolchain::runner_from_env().unwrap_or_else(|e| {
+        eprintln!("gamma: {}", e);
+        std::process::exit(2)
+    });
+    match runner.split_first() {
+        Some((prog, args)) => {
+            let mut cmd = std::process::Command::new(prog);
+            cmd.args(args).arg(exe);
+            cmd
+        }
+        None => {
+            let mut cmd = std::process::Command::new(exe);
+            #[cfg(unix)]
+            if let Some(name) = arg0 {
+                std::os::unix::process::CommandExt::arg0(&mut cmd, name);
+            }
+            cmd
+        }
+    }
 }
 
 /// The standard error of a failed native test as the interpreter reports it: a
@@ -580,10 +641,9 @@ fn run_native(
     };
     let code = match result {
         Ok(()) => {
-            let mut cmd = std::process::Command::new(&exe);
-            // The program sees the source path as its name, as with the interpreter.
-            #[cfg(unix)]
-            std::os::unix::process::CommandExt::arg0(&mut cmd, path);
+            // The program sees the source path as its name, as with the interpreter
+            // (unless a runner starts it, which names it by its path).
+            let mut cmd = runner_command(&exe, Some(path));
             let status = cmd.args(&opts.program_args).status();
             match status {
                 Ok(s) => ExitCode::from(exit_status_code(s)),

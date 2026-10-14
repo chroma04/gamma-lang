@@ -77,7 +77,7 @@ divide :: fn(a, b: i32) -> ?i32 {
 
 A **trap** terminates the process at once. Debug and Checked builds first report the source location and reason on standard error. A trap is *not* an exception: it cannot be caught, it does not unwind, it does not run `defer` statements, and it never returns to any handler. Recoverable failure uses results and optionals ([chapter 5](05-optionals-and-errors.md)); a trap means "this program has a bug".
 
-Debug builds (the default) also report how the program got there: each call leading to the trap, innermost first, with the function it lies in. Frames of the core library are left out, and a very deep recursion is shortened to its first and last calls:
+Debug builds (the default) also report how the program got there: each call leading to the trap, innermost first, with the function it lies in. Frames of the core library are left out, and a report of more than 20 calls is shortened to its first 10 and last 10, with a `  ... more calls` line between them:
 
 ```
 trap: index 5 out of bounds for length 3

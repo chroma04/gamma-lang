@@ -1,0 +1,34 @@
+//! stage: check
+// Effect-set parameters (§16.6).
+Note :: effect { note: fn(x: i32) }
+
+apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
+    return f(x)
+}
+
+hidden :: fn(E: effects, f: ^fn() \ {..E}) \ {..E} {
+    with (handler Note { note(x) => {} }) {
+        f()   //~ ERROR which the effect-set parameter might include
+    }
+}
+
+as_type :: fn(E: effects, x: E) {}   //~ ERROR is an effect set, not a type
+
+bare :: fn(E: effects, f: ^fn() \ {..E}) \ {E} {}   //~ ERROR splice it into the set as `..E`
+
+noisy :: fn(x: i32) -> i32 \ {Note} {
+    note(x)
+    return x
+}
+
+quiet :: fn(x: i32) -> i32 => x + 1
+
+caller :: fn() -> i32 \ {Note} {
+    return apply(noisy, 1) + apply(quiet, 2)
+}
+
+leaks :: fn() -> i32 {
+    return apply(noisy, 1)   //~ ERROR which the function does not declare
+}
+
+main :: fn() {}

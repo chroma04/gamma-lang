@@ -437,6 +437,8 @@ impl Dumper {
                 node("array-type", vec![len.as_ref().map_or(atom("_"), |l| self.expr(l)), self.expr(elem)])
             }
             ExprKind::ErrorUnionType { err, ok } => node("error-union-type", vec![self.expr(err), self.expr(ok)]),
+            ExprKind::EffectSet(list) => node("effect-set", list.iter().map(|e| self.expr(e)).collect()),
+            ExprKind::EffectSplice(e) => node("effect-splice", vec![self.expr(e)]),
             ExprKind::FnType(sig) => self.fn_sig("fn-type", sig, vec![]),
             ExprKind::ContType(x) => node("cont-type", vec![self.expr(x)]),
             ExprKind::Struct(s) => self.struct_lit(s),

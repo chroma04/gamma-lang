@@ -116,7 +116,28 @@ CC="clang --target=aarch64-linux-gnu --sysroot=/path/to/sysroot" gamma build hel
 CC=aarch64-linux-gnu-gcc LDFLAGS=-static gamma build hello.gm
 ```
 
-`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a little-endian target with `__int128` (in practice, a 64-bit one) and POSIX threads.
+`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and POSIX threads. Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
+
+**`--target=<triple>`** (accepted by `check`, `run`, `test` and `build`) names the machine to compile for and picks the compiler for it:
+
+- With `CC` unset, the compiler is `<triple>-gcc` if that is on `PATH` (as installed by Debian's `gcc-s390x-linux-gnu` and similar packages), and otherwise `clang --target=<triple>` if `clang` is.
+- With `CC` set, it is used as written, except that `--target=<triple>` is appended when it is clang (`-target <triple>` for `zig cc`) and names no target itself. A gcc in `CC` has to be the cross compiler for the triple already.
+- `CFLAGS` and `LDFLAGS` apply as usual.
+
+Either way the compiler is asked which machine it targets, and the build stops with an error if that is not the triple's architecture, byte order and operating system (`gamma build --target=s390x-linux-gnu` with a compiler for AArch64 is an error, not a wrong executable). `--target` cannot be combined with `--mode=safe`.
+
+```text
+LDFLAGS=-static gamma build --target=s390x-linux-gnu hello.gm
+```
+
+An executable built for another machine cannot run on this one by itself. `gamma run --backend=c` and `gamma test` start the program behind the command in `GAMMA_RUNNER`, an emulator or a remote-execution wrapper (split into words like `CC`), when that is set:
+
+```text
+GAMMA_RUNNER="qemu-s390x -L /usr/s390x-linux-gnu" LDFLAGS=-static \
+    gamma run --backend=c --target=s390x-linux-gnu hello.gm
+```
+
+The program is then named by its path in `argv[0]` rather than by the source file.
 
 ## Source files
 
@@ -219,7 +240,7 @@ A test outside the root module is reported with its module's directory, relative
 
 `--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
 
-Tests run in the interpreter by default. A module that calls C functions or contains `@asm` cannot run there, so its tests are compiled with the C back end instead, and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
+Tests run in the interpreter by default. A module that calls C functions or contains `@asm` has its tests compiled with the C back end instead (so that C's output is captured with the test's), and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
 
 ## Where to go next
 

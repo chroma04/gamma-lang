@@ -1,3 +1,4 @@
+//! needs: f16
 // std/str: parse_radix, and parse_float's syntax, errors, special values and round trips.
 str :: import "std/str"
 fmt :: import "std/fmt"

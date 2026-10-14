@@ -253,6 +253,36 @@ impl<'a, 's> FnCx<'a, 's> {
                 )
             }
             TyKind::Error => return Some(error_expr(span)),
+            // A tuple whose elements have one type iterates like the array of them:
+            // `{ t := src; for x in [t.0, t.1, …] { body } }`.
+            TyKind::Tuple { elems, .. } if !elems.is_empty() => {
+                let elem = elems[0];
+                for &other in &elems[1..] {
+                    if self.infer.unify(elem, other).is_err() {
+                        let (a, b) = (self.infer.resolve(elem), self.infer.resolve(other));
+                        self.error(
+                            f.iter.span,
+                            format!(
+                                "the elements of a tuple iterated by `for` must have one type, but found `{}` and `{}`",
+                                a, b
+                            ),
+                        );
+                        return Some(error_expr(span));
+                    }
+                }
+                let t = self.temp(st, span);
+                let items = (0..elems.len() as u32)
+                    .map(|i| {
+                        let base = Box::new(mk(st, tir::ExprKind::Local(t), span));
+                        mk(elem, tir::ExprKind::Field { base, index: i }, span)
+                    })
+                    .collect();
+                let aty = Ty::array(elems.len() as u64, elem);
+                let arr = mk(aty, tir::ExprKind::Array(items), span);
+                let lp = self.for_each_value(f, arr)?;
+                let stmts = vec![Stmt::Let { local: t, init: Some(src) }, Stmt::Expr(lp)];
+                return Some(block_of(stmts, span));
+            }
             TyKind::Adt(..) if self.sema.range_of(st).is_some() => {
                 // A range value: { r := src; for i in r.lo..r.hi { body } }
                 let (inclusive, elem) = self.sema.range_of(st).unwrap();

@@ -1,0 +1,17 @@
+//! stage: check
+// Only an iterator call can be passed for an iterator parameter (§13.5).
+str :: import "std/str"
+
+size :: fn(s: string) -> usize => s.len
+
+pairs :: fn() \ {Yield(i32), Yield(u8)} {
+    yield(1i32)
+    yield(2u8)
+}
+
+main :: fn() \ {Alloc} {
+    a := count(size("abc"))         //~ ERROR this call is not an iterator (it returns `usize`
+    b := count(7)                   //~ ERROR cannot infer the type parameter `T`
+    c := count(pairs())             //~ ERROR so the type it is passed at cannot be inferred
+    d := nth(str.fields("a b"), -1) //~ ERROR does not fit in `usize`
+}

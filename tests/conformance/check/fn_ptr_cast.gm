@@ -1,0 +1,17 @@
+//! stage: check
+// `cast` between function pointer types needs matching shapes (§6.6).
+task :: fn(arg: ^u32) \ {Out} {}
+two :: fn(a: ^u32, b: u8) {}
+count :: fn(x: i32) -> i32 => x
+find :: fn(x: i32) -> ?^u32 => null
+main :: fn() {
+    a := task.cast(^fn(arg: rawptr) \ {Out})
+    b := task.cast(^fn(arg: rawptr))
+    c := two.cast(^fn(a: rawptr, b: u8))
+    d := find.cast(^fn(x: i32) -> ?rawptr)
+    e := task.cast(^fn(arg: rawptr, more: rawptr))   //~ ERROR they take 1 and 2 parameters
+    f := two.cast(^fn(a: rawptr, b: u16))            //~ ERROR parameter 2 is `u8`
+    g := count.cast(^fn(x: i32) -> rawptr)           //~ ERROR the results `i32` and `rawptr`
+    h := count.cast(^fn(x: rawptr) -> i32)           //~ ERROR parameter 1
+    i := find.cast(^fn(x: i32) -> rawptr)            //~ ERROR the results
+}

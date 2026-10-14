@@ -1,8 +1,8 @@
 //! Integers wider than 128 bits (§5.1).
 //!
-//! These are blobs holding the little-endian two's-complement value, and every
-//! operation is a call to one of the runtime's `gm_w*` routines with the address
-//! of each operand, the width and the signedness. The routines return the
+//! These are blobs holding the two's-complement value in 64-bit words, least
+//! significant first, each in the target's byte order, and every operation is a
+//! call to one of the runtime's `gm_w*` routines with the address of each operand, the width and the signedness. The routines return the
 //! overflow flag that the flavor of the operator (§7.4.2) needs, and they ignore
 //! the padding bits above the width and always write them as the extension, so a
 //! value is the same whichever way it was made.
@@ -61,6 +61,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             x += &modulus;
         }
         let mut bytes = x.to_bytes_le().1;
+        bytes.resize(w.size as usize, 0);
+        let mut bytes = crate::layout::int_bytes_swap_order(&bytes, self.g.ty.lay.target.little_endian);
         while bytes.last() == Some(&0) {
             bytes.pop();
         }

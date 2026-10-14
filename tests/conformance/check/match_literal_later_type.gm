@@ -1,0 +1,30 @@
+//! stage: check
+// The patterns of a `match` on a literal-typed local are checked against the type that
+// a later statement gives it (§6.1).
+f :: fn() {
+    a := 1
+    match a {                   //~ ERROR `255` is not covered
+        0..=254 => {}
+    }
+    n: u8 = a
+    b := 2
+    match b {
+        -1 => {}                //~ ERROR does not fit in `u32`
+        _ => {}
+    }
+    m: u32 = b
+    c := 3
+    match c {
+        1 => {}
+        _ => {}
+    }
+    f: f64 = c                  //~ ERROR expected `f64`
+    d := 0
+    match d {
+        0..=300 => {}           //~ ERROR 300 does not fit in `u8`
+        _ => {}
+    }
+    k: u8 = d
+}
+
+main :: fn() {}

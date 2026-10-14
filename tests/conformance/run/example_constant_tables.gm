@@ -1,3 +1,4 @@
+//! needs: f16
 Planet :: struct {
     name: string
     mass: f64

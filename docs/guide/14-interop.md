@@ -63,6 +63,7 @@ libc :: foreign "c" {
 - `"c"` is the C standard library; other names are passed to the linker. `#link_name("sym")` on a member overrides the symbol name. `#callconv` selects another calling convention (see [Calling conventions](#calling-conventions-callconv)).
 - Parameter and result types must be C-compatible. A `cstring` is a `[^]const u8`; a `c"..."` literal makes one. A regular `string` is a slice and is not NUL-terminated, so it never converts to a `cstring` by accident.
 - **A foreign function's effect set is `{Sys}`** unless you annotate it. An annotation with a smaller set, like `\ {}` on `strlen`, is a *trusted assertion* by you that the C function touches nothing but its arguments. The compiler does not verify it. Foreign functions are never evaluated at compile time regardless.
+- `gamma run` calls foreign functions from the interpreter itself (it looks the symbols up in the C library and in the libraries the program names, and passes memory across by copying it), so a program that calls C needs no C compiler to run. Where it cannot, it compiles the program with the C back end instead: for inline assembly, a symbol it cannot find, a `#packed` struct or an `i128` passed to C, or a target other than the host's. Two limits of the interpreter's calls: C must not keep a pointer into a Gamma object after the call except to use it in a later call that passes the same object, and a Gamma function that traps while C is calling it ends the program when C returns (the trap is reported as usual). `gamma test` compiles modules that call C.
 - Variadic functions end in `...`. Arguments in the variadic position must be C-compatible scalars of at least `c_int` width for integers and `f64` for floats, and C's default argument promotions are not applied for you: convert explicitly.
 
 ```gamma
@@ -303,7 +304,7 @@ add :: fn(a, b: u32) -> u32 \ {Sys} {
 barrier :: fn() \ {Sys} => @asm("", (), (), "memory")
 ```
 
-It needs `Sys`, misusing it is undefined behavior, and it is never evaluated at compile time. The interpreter cannot run assembly, so `gamma run` compiles programs that use it, as it does for programs with foreign functions. Use `when target.arch is …` to provide each architecture's version.
+It needs `Sys`, misusing it is undefined behavior, and it is never evaluated at compile time. The interpreter cannot run assembly, so `gamma run` compiles programs that use it. Use `when target.arch is …` to provide each architecture's version.
 
 ## Where the safety net ends
 

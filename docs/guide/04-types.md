@@ -237,6 +237,7 @@ Rules that differ from C:
 - A pattern on the right of `is` may not bind names (`s is .Circle(r)` is an error); use `if .Circle(r) := s`.
 - `d in (.N, .S)` tests an enum against several values; enums also compare with `<` by tag value.
 - Integers become enums only through `Dir.from_tag(x)`, which returns `?Dir` and is `null` for a value that is not a tag. There is no unchecked cast, because values from C or the network may be out of range. Going the other way is `u8(d)` (an enum converts losslessly to its tag type) and `d.tag()`.
+- `@variants(Dir)` is a constant array holding every variant of an enum in declaration order, so `for d in @variants(Dir)` visits them all and `@variants(Dir).len` counts them. `@variant_name(x)` gives the active variant's name as a `string` (`"E"` for `Dir.E`) for any tagged union, with or without payloads.
 - A tagged union is laid out as `{ tag, payload }`; an enum is just its tag.
 
 ```gamma

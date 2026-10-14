@@ -29,11 +29,20 @@ main :: fn() \ {Out, Sys} {
     print("{} {} {}\n", (r.a, r.b, r.c))
     back := r.bits(V3)
     print("{} {} {}\n", (back.x, back.y, back.z))
-    arr := [_]u16(0x0102, 0x0304)
-    w := arr.bits(u32)
-    print("{}\n", w)
-    bs := w.bits([4]u8)
-    print("{} {} {} {}\n", (bs[0], bs[1], bs[2], bs[3]))
+    // The array's first element is the low half of the integer on a little-endian target.
+    when target.endian is .Little {
+        arr := [_]u16(0x0102, 0x0304)
+        w := arr.bits(u32)
+        print("{}\n", w)
+        bs := w.bits([4]u8)
+        print("{} {} {} {}\n", (bs[0], bs[1], bs[2], bs[3]))
+    } else {
+        arr := [_]u16(0x0304, 0x0102)
+        w := arr.bits(u32)
+        print("{}\n", w)
+        bs := w.bits([4]u8)
+        print("{} {} {} {}\n", (bs[3], bs[2], bs[1], bs[0]))
+    }
     print("{}\n", (-1.0).bits(u64))
 
     data := [_]u32(10, 20, 30, 40, 50)

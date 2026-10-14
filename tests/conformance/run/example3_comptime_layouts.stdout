@@ -1,6 +1,6 @@
 crc32("123456789") = 3421780262
 crc32 empty = 0
-endian little word 8
+endian true word 8
 sine: 0 23170 32767 0 -32767
 negative index: -32767 -1608
 table ends: 0 1608 32767
