@@ -319,7 +319,7 @@ pub fn decode_int(bytes: &[u8], signed: bool, bits: u32, little: bool) -> Int {
             Int::from_u128(v)
         }
     } else {
-        let le: Vec<u8> = if little { bytes.to_vec() } else { bytes.iter().rev().copied().collect() };
+        let le = crate::layout::int_bytes_swap_order(bytes, little);
         let mut u = BigUint::from_bytes_le(&le);
         let mask = (BigUint::one() << bits as usize) - BigUint::one();
         u &= mask;
@@ -365,7 +365,7 @@ pub fn encode_int(v: &Int, size: usize, little: bool) -> Bytes {
         }
     }
     if !little {
-        out.reverse();
+        out = Bytes::from_slice(&crate::layout::int_bytes_swap_order(&out, false));
     }
     out
 }

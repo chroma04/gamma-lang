@@ -68,6 +68,16 @@ impl<'s> Sema<'s> {
         }
     }
 
+    /// The key of plain data of type `ty` stored in `bytes` in the target's layout. The
+    /// bytes of an integer are kept little-endian in the key, whatever the target.
+    pub fn const_key_of_bytes(&self, ty: Ty, bytes: &[u8]) -> ConstKey {
+        if ty.is_integer() {
+            ConstKey::Bytes(ty, crate::layout::int_bytes_swap_order(bytes, self.target.little_endian).into())
+        } else {
+            ConstKey::Bytes(ty, bytes.into())
+        }
+    }
+
     /// The canonical key of a compile-time value used as a generic argument
     /// (§16.4): plain data by its bytes, a function pointer by its function.
     pub fn const_key(&mut self, v: &ConstValue, span: Span) -> Option<ConstKey> {
@@ -80,13 +90,13 @@ impl<'s> Sema<'s> {
                     None
                 }
             }
-            ([], _) if !is_pointer(v.ty) => Some(ConstKey::Bytes(v.ty, v.bytes.clone().into())),
+            ([], _) if !is_pointer(v.ty) => Some(self.const_key_of_bytes(v.ty, &v.bytes)),
             ([r], _) if v.ty == Ty::string() && r.offset == 0 => {
                 let StaticData::Bytes(data) = &r.target else {
                     self.error(span, "this compile-time string is not supported yet");
                     return None;
                 };
-                let len = crate::types::ConstKey::Bytes(Ty::usize(), v.bytes[v.bytes.len() / 2..].into()).as_u64()?;
+                let len = self.const_key_of_bytes(Ty::usize(), &v.bytes[v.bytes.len() / 2..]).as_u64()?;
                 let start = r.addend as usize;
                 Some(ConstKey::Str(data[start..start + len as usize].into()))
             }

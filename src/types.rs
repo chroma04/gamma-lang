@@ -79,7 +79,8 @@ pub enum GenericArg {
 /// A canonical, hashable encoding of a compile-time value used as a generic argument.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ConstKey {
-    /// The value's type and its bytes in target layout.
+    /// The value's type and its bytes in target layout, except that an integer's bytes are
+    /// little-endian whatever the target (see `Sema::const_key_of_bytes`).
     Bytes(Ty, Box<[u8]>),
     /// A named function, by declaration identity (with its name, for display).
     Fn(u32, Symbol),

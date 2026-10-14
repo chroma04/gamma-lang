@@ -557,34 +557,28 @@ static uint64_t rng(void) {
 typedef __int128 i128;
 typedef unsigned __int128 u128;
 
+/* Byte i, counting from the least significant, of an integer in the layout of the wide
+ * routines (64-bit words, least significant first) or, if `nat`, of an integer of `size`
+ * bytes as the target stores it (the layout of gm_wconv's operands). */
+static uint8_t *w_byte(uint8_t *buf, size_t size, bool nat, size_t i) { return nat ? gm_ibp(buf, size, i) : gm_wbp(buf, i); }
+
 /* Writes the value v (sign- or zero-extended from `bits`) to the `size` bytes at buf, with
  * random padding above `bits` if junk. */
-static void w_pack(uint8_t *buf, size_t size, uint32_t bits, i128 v, bool junk) {
-    memset(buf, v < 0 ? 0xff : 0, size);
-    memcpy(buf, &v, size < 16 ? size : 16);
+static void w_pack(uint8_t *buf, size_t size, bool nat, uint32_t bits, i128 v, bool junk) {
+    for (size_t i = 0; i < size; i++) *w_byte(buf, size, nat, i) = i < 16 ? (uint8_t)((u128)v >> (8 * i)) : (v < 0 ? 0xff : 0);
     if (junk && bits < size * 8) {
         for (uint32_t i = bits; i < size * 8; i++) {
-            if (rng() & 1) buf[i / 8] ^= (uint8_t)(1u << (i % 8));
+            if (rng() & 1) *w_byte(buf, size, nat, i / 8) ^= (uint8_t)(1u << (i % 8));
         }
     }
 }
 
-static i128 w_unpack(const uint8_t *buf, uint32_t bits, bool sgn) {
-    u128 raw = 0;
-    memcpy(&raw, buf, GM_WBYTES(bits) < 16 ? GM_WBYTES(bits) : 16);
-    if (bits < 128) raw &= ((u128)1 << bits) - 1;
-    if (sgn && bits < 128 && ((raw >> (bits - 1)) & 1)) raw |= ~(u128)0 << bits;
-    return (i128)raw;
-}
-
 /* The expected bytes of v in a type of `bits` bits: sign- or zero-extended to the storage. */
 static bool w_canonical(const uint8_t *buf, uint32_t bits, bool sgn, i128 v) {
-    uint8_t want[16] = {0};
-    memset(want, v < 0 ? 0xff : 0, sizeof want);
-    memcpy(want, &v, 16);
     size_t size = GM_WBYTES(bits);
     for (size_t i = 0; i < size; i++) {
-        if (buf[i] != (i < 16 ? want[i] : (v < 0 ? 0xff : 0))) return false;
+        uint8_t want = i < 16 ? (uint8_t)((u128)v >> (8 * i)) : (v < 0 ? 0xff : 0);
+        if (*gm_wbp(buf, i) != want) return false;
     }
     (void)sgn;
     return true;
@@ -628,8 +622,8 @@ static void w_cross_check(uint32_t bits, bool sgn) {
     i128 lo = w_lo(bits, sgn), hi = w_hi(bits, sgn);
     for (int iter = 0; iter < 3000; iter++) {
         i128 a = w_rand(bits, sgn), b = w_rand(bits, sgn);
-        w_pack(A, size, bits, a, true);
-        w_pack(B, size, bits, b, true);
+        w_pack(A, size, false, bits, a, true);
+        w_pack(B, size, false, bits, b, true);
         i128 s = a + b, d = a - b;
         bool ovf = gm_wadd(R, A, B, bits, sgn);
         WCHECK(ovf == (s < lo || s > hi) && w_canonical(R, bits, sgn, w_wrap((u128)s, bits, sgn)),
@@ -707,15 +701,14 @@ static void w_conv_check(uint32_t sbits, bool ssgn, uint32_t dbits, bool dsgn) {
     i128 dlo = w_lo(dbits, dsgn), dhi = w_hi(dbits, dsgn);
     for (int iter = 0; iter < 500; iter++) {
         i128 v = w_rand(sbits, ssgn);
-        w_pack(A, ssize, sbits, v, true);
+        w_pack(A, ssize, true, sbits, v, true);
         memset(R, 0x5a, sizeof R);
         int f = gm_wconv(R, dsize, dbits, dsgn, A, ssize, sbits, ssgn);
         bool fits = v >= dlo && v <= dhi;
         i128 want = w_wrap((u128)v, dbits, dsgn);
         WCHECK((f & 1) == fits && ((f >> 1) & 1) == (v < 0), "conv flags %u/%d -> %u/%d", sbits, ssgn, dbits, dsgn);
         uint8_t expect[40];
-        memset(expect, want < 0 ? 0xff : 0, sizeof expect);
-        memcpy(expect, &want, 16);
+        w_pack(expect, dsize, true, dbits, want, false);
         WCHECK(memcmp(R, expect, dsize) == 0, "conv value %u/%d -> %u/%d", sbits, ssgn, dbits, dsgn);
     }
 }
@@ -724,14 +717,14 @@ static void w_conv_check(uint32_t sbits, bool ssgn, uint32_t dbits, bool dsgn) {
 static void w_dec(uint8_t *r, uint32_t bits, bool sgn, const char *s) {
     size_t size = GM_WBYTES(bits);
     uint8_t *ten = (uint8_t *)calloc(2, size), *dig = ten + size;
-    ten[0] = 10;
+    gm_wput(ten, 0, 10);
     memset(r, 0, size);
     bool neg = *s == '-';
     if (neg) s++;
     for (; *s; s++) {
         gm_wmul(r, r, ten, bits, sgn);
         memset(dig, 0, size);
-        dig[0] = (uint8_t)(*s - '0');
+        gm_wput(dig, 0, (uint64_t)(*s - '0'));
         if (neg) gm_wsub(r, r, dig, bits, sgn);
         else gm_wadd(r, r, dig, bits, sgn);
     }
@@ -853,8 +846,13 @@ static void test_wide_identities(void) {
                 }
                 /* Make some operands small or sparse. */
                 size_t keep = 1 + rng() % size;
-                if (iter % 3 == 0) memset(b + keep, 0, size - keep);
-                if (iter % 5 == 0) memset(a + keep, sgn && (a[keep - 1] & 0x80) ? 0xff : 0, size - keep);
+                if (iter % 3 == 0) {
+                    for (size_t i = keep; i < size; i++) *gm_wbp(b, i) = 0;
+                }
+                if (iter % 5 == 0) {
+                    uint8_t fill = sgn && (*gm_wbp(a, keep - 1) & 0x80) ? 0xff : 0;
+                    for (size_t i = keep; i < size; i++) *gm_wbp(a, i) = fill;
+                }
                 /* (a + b) - b == a and (a - b) + b == a, even with overflow. */
                 gm_wadd(t, a, b, bits, sgn);
                 gm_wsub(d, t, b, bits, sgn);
@@ -927,7 +925,7 @@ static void test_wide_misc(void) {
     /* Overflow edges. */
     gm_wmax(a, 200, false);
     memset(b, 0, sizeof b);
-    b[0] = 1;
+    gm_wput(b, 0, 1);
     CHECK(gm_wadd(r, a, b, 200, false));
     w_expect(r, 200, false, "0", "wrapped sum", 0);
     CHECK(gm_wsub(r, b, a, 200, false) && gm_wsub(r, b, b, 200, false) == false);
@@ -941,7 +939,7 @@ static void test_wide_misc(void) {
     w_expect(r, 200, true, "1", "max squared wraps to 1", 0);
     gm_wmin(a, 200, true);
     memset(b, 0, sizeof b);
-    b[0] = 1;
+    gm_wput(b, 0, 1);
     CHECK(gm_wdiv(r, NULL, a, b, 200, true) == 0);
     CHECK(gm_wcmp(r, a, 200, true) == 0);
 
@@ -950,7 +948,7 @@ static void test_wide_misc(void) {
     gm_wshr(a, a, 99, 200, true);
     w_expect(a, 200, true, "-1267650600228229401496703205376", "min >> 99", 0);
     memset(b, 0, sizeof b);
-    b[0] = 1;
+    gm_wput(b, 0, 1);
     CHECK(!gm_wshl(b, b, 99, 200, true));
     CHECK(!gm_wmul(r, a, b, 200, true));
     gm_wmin(b, 200, true);
@@ -958,7 +956,7 @@ static void test_wide_misc(void) {
 
     /* Powers. */
     memset(a, 0, sizeof a);
-    a[0] = 3;
+    gm_wput(a, 0, 3);
     CHECK(!gm_wpow(r, a, 100, 200, false));
     w_expect(r, 200, false, "515377520732011331036461129765621272702107522001", "3^100", 0);
     CHECK(gm_wpow(r, a, 200, 200, false));
@@ -967,10 +965,17 @@ static void test_wide_misc(void) {
 
     /* Shift amounts. */
     uint8_t amt[32] = {0};
-    amt[0] = 200;
+    *gm_wbp(amt, 0) = 200;
     CHECK(gm_wshamt(amt, 200) == 200);
-    amt[20] = 1;
+    *gm_wbp(amt, 20) = 1;
     CHECK(gm_wshamt(amt, 200) == UINT64_MAX);
+    /* An amount of at most 128 bits is an ordinary integer. */
+    unsigned __int128 small = 77;
+    CHECK(gm_wshamt((const uint8_t *)&small, 128) == 77);
+    small = (unsigned __int128)1 << 70;
+    CHECK(gm_wshamt((const uint8_t *)&small, 128) == UINT64_MAX);
+    uint16_t small16 = 9;
+    CHECK(gm_wshamt((const uint8_t *)&small16, 16) == 9);
 
     /* Hash of small values equals the bytes of the minimal two's complement form. */
     memset(a, 0, sizeof a);
@@ -983,7 +988,7 @@ static void test_wide_misc(void) {
 
     /* Floats. */
     memset(a, 0, sizeof a);
-    a[24] = 1; /* 2^192 */
+    *gm_wbp(a, 24) = 1; /* 2^192 */
     CHECK(gm_wtof(a, 256, false, 53) == 6277101735386680763835789423207666416102355444464034512896.0);
     CHECK(gm_wtof(a, 256, false, 24) == 6277101735386680763835789423207666416102355444464034512896.0);
     memset(a, 0xff, 32); /* -1 as i256, 2^256 - 1 as u256 */
@@ -991,18 +996,18 @@ static void test_wide_misc(void) {
     CHECK(gm_wtof(a, 256, false, 53) == 115792089237316195423570985008687907853269984665640564039457584007913129639936.0);
     /* 2^53 + 1 rounds to even, 2^53 + 3 rounds up. */
     memset(a, 0, sizeof a);
-    a[0] = 1;
-    a[6] = 0x20;
+    *gm_wbp(a, 0) = 1;
+    *gm_wbp(a, 6) = 0x20;
     CHECK(gm_wtof(a, 200, false, 53) == 9007199254740992.0);
-    a[0] = 3;
+    *gm_wbp(a, 0) = 3;
     CHECK(gm_wtof(a, 200, false, 53) == 9007199254740996.0);
-    a[0] = 0;
-    a[8] = 1;
-    a[24] = 0;
+    *gm_wbp(a, 0) = 0;
+    *gm_wbp(a, 8) = 1;
+    *gm_wbp(a, 24) = 0;
     CHECK(gm_wfromd(r, 200, false, 18446744073709551616.0) == 0);
-    CHECK(r[8] == 1 && r[0] == 0);
+    CHECK(*gm_wbp(r, 8) == 1 && *gm_wbp(r, 0) == 0);
     CHECK(gm_wfromd(r, 200, false, -1.0) == 1);
-    CHECK(gm_wfromd(r, 200, true, -1.0) == 0 && r[24] == 0xff);
+    CHECK(gm_wfromd(r, 200, true, -1.0) == 0 && *gm_wbp(r, 24) == 0xff);
     CHECK(gm_wfromd(r, 130, true, 1.0 / 0.0) == 2 && gm_wfromd(r, 130, true, -1.0 / 0.0) == 1);
     CHECK(gm_wfromd(r, 130, false, 0.0 / 0.0) == 3);
     CHECK(gm_wfromd(r, 131, false, 1361129467683753853853498429727072845824.0) == 0);  /* 2^130 */
@@ -1011,9 +1016,9 @@ static void test_wide_misc(void) {
     CHECK(gm_wfromd(r, 130, true, -1361129467683753853853498429727072845824.0) == 1);
 
     /* bswap */
-    for (int i = 0; i < 32; i++) a[i] = (uint8_t)i;
+    for (int i = 0; i < 32; i++) *gm_wbp(a, (size_t)i) = (uint8_t)i;
     gm_wbswap(r, a, 256);
-    CHECK(r[0] == 31 && r[31] == 0 && r[15] == 16);
+    CHECK(*gm_wbp(r, 0) == 31 && *gm_wbp(r, 31) == 0 && *gm_wbp(r, 15) == 16);
 }
 
 static void test_wide(void) {
@@ -1064,6 +1069,31 @@ static int scenario(const char *name) {
     return 0;
 }
 
+/* Integers are addressed by significance, whatever the byte order. */
+static void test_byte_order(void) {
+    uint32_t w32 = 0x01020304u;
+    CHECK(*gm_ibp(&w32, 4, 0) == 4 && *gm_ibp(&w32, 4, 3) == 1);
+    CHECK(gm_load_u128(&w32, 4) == 0x01020304u);
+    uint16_t w16 = 0;
+    gm_store_u128(&w16, 2, 0xbeef);
+    CHECK(w16 == 0xbeef);
+    unsigned __int128 w128 = ((unsigned __int128)0x1122334455667788ULL << 64) | 0x99aabbccddeeff00ULL;
+    CHECK(gm_load_u128(&w128, 16) == w128 && *gm_ibp(&w128, 16, 15) == 0x11 && *gm_ibp(&w128, 16, 0) == 0x00);
+    /* A wider-than-128-bit integer is 64-bit words, least significant first, each native. */
+    uint64_t wide[3] = {0x0102030405060708ULL, 0x1112131415161718ULL, 0x2122232425262728ULL};
+    CHECK(*gm_wbp((uint8_t *)wide, 0) == 0x08 && *gm_wbp((uint8_t *)wide, 7) == 0x01);
+    CHECK(*gm_wbp((uint8_t *)wide, 8) == 0x18 && *gm_wbp((uint8_t *)wide, 23) == 0x21);
+    /* A #bits struct is an integer of its storage size. */
+    static const gm_field bf[] = {{"lo", 0, &ty_u8}, {"hi", 8, &ty_u8}};
+    static const gm_type bits16 = {.kind = GM_K_BITS, .size = 2, .align = 2, .name = "B", .nfields = 2, .fields = bf};
+    uint16_t b = 0x0a0b;
+    check_fmt(&bits16, &b, true, "B(lo: 11, hi: 10)");
+    /* Tag and wide formatting see the same layout. */
+    uint8_t bytes32[4] = {0};
+    gm_store_u128(bytes32, 4, 305419896);
+    check_int(&ty_u32, bytes32, "305419896");
+}
+
 int main(int argc, char **argv) {
     gm_set_args(argc, argv);
     saved_argc = argc;
@@ -1071,6 +1101,7 @@ int main(int argc, char **argv) {
     if (argc > 1) return scenario(argv[1]);
     test_ints();
     test_wide();
+    test_byte_order();
     test_floats();
     test_float_shortest();
     test_bool_ptr();

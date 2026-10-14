@@ -25,3 +25,14 @@ Context: c-backend-plan item 3. `Command::new($CC)` broke on `zig cc …`; layou
 - Conformance `//! arch:` now compares with the toolchain's target arch (tests/conformance.rs
   target_arch), so x86-only tests skip in cross runs.
 - Merged with #9 (cached runtime object): rtcache::runtime_object takes &Toolchain; cache key includes cc args + CFLAGS; runtime object compiled via toolchain.command. LDFLAGS after the runtime object.
+
+## s10: --target and big-endian
+- `--target=<triple>` (toolchain.rs for_target/for_triple/check_triple): CC unset → `<triple>-gcc`
+  else `clang --target`; CC set → used, `--target` appended only for clang without one (and
+  `-target` for zig cc). Probed arch/endian/os must match the triple. Not with --mode=safe.
+- `GAMMA_RUNNER` (split like CC) runs built executables (run --backend=c, test, test suites).
+- Big-endian: ints ≤128 bits native order; wider = u64 words LS-first, each native (§5.1).
+  Runtime uses gm_ibp/gm_wbp/gm_load_u128; ConstKey int bytes always LE (`const_key_of_bytes`).
+  Hash mixes LE bytes everywhere. s390x fibers in asm. `Target::f16` probed; `//! needs: f16`,
+  `//! endian:` directives. CI s390x job (qemu-user, CFLAGS=-static). Local: apt
+  gcc-s390x-linux-gnu qemu-user; no binfmt here, so always GAMMA_RUNNER.

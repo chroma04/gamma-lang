@@ -367,7 +367,7 @@ impl<'s> Sema<'s> {
                     };
                 }
                 let v = self.eval_tir_const(&ex)?;
-                let n = crate::types::ConstKey::Bytes(v.ty, v.bytes.into()).as_u64();
+                let n = self.const_key_of_bytes(v.ty, &v.bytes).as_u64();
                 if n.is_none() {
                     self.error(e.span, "array length is out of range");
                 }

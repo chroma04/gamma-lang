@@ -3,7 +3,8 @@
 //! `runtime/rt_test.c` includes the runtime and checks it directly. This test compiles it
 //! with the system C compiler (`$CC`, else `cc`), runs the checks, and runs the scenarios in
 //! which the runtime ends the process (traps) to check their exit status and output. Without
-//! a usable C compiler the tests are skipped.
+//! a usable C compiler the tests are skipped. For a cross compiler in `CC`, `GAMMA_RUNNER`
+//! names what runs the executable (an emulator).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -54,7 +55,16 @@ fn build() -> Option<PathBuf> {
 /// Runs the test binary with `args`, or returns `None` when it could not be built.
 fn run(args: &[&str]) -> Option<Output> {
     let exe = test_binary()?;
-    Some(Command::new(exe).args(args).output().expect("run the compiled runtime test"))
+    let runner = gamma::toolchain::runner_from_env().expect("GAMMA_RUNNER");
+    let mut cmd = match runner.split_first() {
+        Some((prog, rest)) => {
+            let mut cmd = Command::new(prog);
+            cmd.args(rest).arg(exe);
+            cmd
+        }
+        None => Command::new(exe),
+    };
+    Some(cmd.args(args).output().expect("run the compiled runtime test"))
 }
 
 fn text(bytes: &[u8]) -> String {

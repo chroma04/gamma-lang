@@ -28,8 +28,13 @@ where_am_i :: fn(loc: SourceLocation = @caller_location()) -> u32 => loc.line
 
 main :: fn() \ {Out} {
     print("{} {}\n", (word_name(), @size_of(WORD)))
-    h := Header(magic: 1, le: true)
-    print("{}\n", h)
+    when target.endian is .Little {
+        h := Header(magic: 1, le: true)
+        print("{}\n", h)
+    } else {
+        h := Header(magic: 1, be: true)
+        print("Header(magic: {}, le: {})\n", (h.magic, h.be))
+    }
     f: Flavor = .Spicy
     print("{} {}\n", (f, Flavor.Spicy.tag()))
     when target.os is .Windows {

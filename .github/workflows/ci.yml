@@ -67,3 +67,25 @@ jobs:
           /opt/fil/bin/filcc --version
       - name: Test Safe builds
         run: GAMMA_TEST_SAFE=1 cargo test --test conformance --test native_build
+
+  s390x:
+    # s390x is 64-bit big-endian: the suite runs cross-compiled under qemu-user.
+    name: Big-endian cross build (s390x)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the cross toolchain and the emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-s390x-linux-gnu qemu-user
+      - name: Conformance and runtime tests for s390x
+        env:
+          CC: s390x-linux-gnu-gcc
+          CFLAGS: -static
+          # Build scripts (libffi-sys) compile C for the host: keep them off the cross compiler.
+          CC_x86_64_unknown_linux_gnu: gcc
+          CFLAGS_x86_64_unknown_linux_gnu: ""
+          GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
+        run: cargo test --release --test conformance --test runtime --test cross

@@ -20,6 +20,10 @@
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for
 //!   that architecture (the host's, or the one a cross compiler in `CC` targets),
 //!   for tests of features that exist on some targets only.
+//! - `//! endian: little` (or `big`) runs the test only when compiling for a target of
+//!   that byte order, for tests whose output shows the layout of values in memory.
+//! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
+//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it.
 //! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
 //!   tests of what the interpreter cannot do (such as calls through function pointers
 //!   re-typed to another signature).
@@ -89,8 +93,12 @@ struct Expectations {
     exit: i32,
     /// The only architecture the test applies to, as `std::env::consts::ARCH` names it.
     arch: Option<String>,
+    /// The only byte order (`little` or `big`) the test applies to.
+    endian: Option<String>,
     /// Leave the test out of the Safe lane.
     safe_skip: bool,
+    /// The C lanes need `_Float16`.
+    needs_f16: bool,
     /// Run the test only through the C back end.
     native: bool,
     /// (file, line, severity, message substring); line 0 means no location.
@@ -106,7 +114,9 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         filter: None,
         exit: 0,
         arch: None,
+        endian: None,
         safe_skip: false,
+        needs_f16: false,
         native: false,
         diags: vec![],
     };
@@ -139,8 +149,15 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.mode = Some(mode.trim().to_string());
             } else if let Some(filter) = directive.strip_prefix("filter:") {
                 e.filter = Some(filter.trim().to_string());
+            } else if let Some(endian) = directive.strip_prefix("endian:") {
+                e.endian = Some(endian.trim().to_string());
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
+            } else if let Some(needs) = directive.strip_prefix("needs:") {
+                match needs.trim() {
+                    "f16" => e.needs_f16 = true,
+                    other => return Err(format!("{}:{}: unknown requirement `{}`", path.display(), i + 1, other)),
+                }
             } else if let Some(safe) = directive.strip_prefix("safe:") {
                 if !safe.trim().starts_with("skip ") {
                     return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
@@ -242,11 +259,28 @@ fn target_arch() -> &'static str {
             Ok("X86_64") => "x86_64",
             Ok("Aarch64") => "aarch64",
             Ok("Riscv64") => "riscv64",
+            Ok("S390x") => "s390x",
             Ok("Wasm32") => "wasm32",
             Ok(_) => "other",
             Err(_) => std::env::consts::ARCH,
         }
     })
+}
+
+/// The byte order the tests compile for (`little` or `big`), as for [`target_arch`].
+fn target_endian() -> &'static str {
+    static ENDIAN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ENDIAN.get_or_init(|| {
+        let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
+        let little = target.map_or(cfg!(target_endian = "little"), |t| t.little_endian);
+        if little { "little" } else { "big" }
+    })
+}
+
+/// Whether the target's C compiler has `_Float16`.
+fn target_has_f16() -> bool {
+    static F16: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F16.get_or_init(|| gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| t.f16))
 }
 
 /// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
@@ -367,6 +401,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         (vec![path.to_path_buf()], path.to_path_buf())
     };
     let exp = parse_expectations(&files)?;
+    if exp.endian.as_deref().is_some_and(|e| e != target_endian()) {
+        return Ok(());
+    }
     if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {
         return Ok(());
     }
@@ -487,7 +524,10 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         }
     }
 
-    let compiled = matches!(exp.stage, Stage::Run | Stage::Test) && !expects_errors && !bless;
+    let compiled = matches!(exp.stage, Stage::Run | Stage::Test)
+        && !expects_errors
+        && !bless
+        && !(exp.needs_f16 && !target_has_f16());
     let golden = path.with_extension("stdout");
     if compiled
         && problems.is_empty()

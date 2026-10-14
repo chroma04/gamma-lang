@@ -1,3 +1,4 @@
+//! needs: f16
 // IEEE float behaviour in f16, f32 and f64: shortest printing, rounding conversions, NaN and infinity, signed zero, subnormals, bit patterns and compensated summation.
 math :: import "std/math"
 fmt :: import "std/fmt"

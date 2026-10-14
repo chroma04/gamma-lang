@@ -1,3 +1,4 @@
+//! needs: f16
 // A float suffix on a decimal integer and a hexadecimal float without a fraction (§2.5.2).
 main :: fn() \ {Out} {
     a := 1f32

@@ -380,8 +380,15 @@ and `$LDFLAGS`; see `src/toolchain.rs`) in GNU C11 mode, with `-fwrapv` and
 `-fno-strict-aliasing` (Gamma memory is untyped bytes). The compilation target is
 decided before semantic analysis, because layouts and the `target` module depend
 on it: the default compiler means the host, and any other toolchain is asked for
-its predefined macros (`$CC $CFLAGS -dM -E`). The checked program records its
-target (`Program::target`), and the interpreter and the C back end both use it.
+its predefined macros (`$CC $CFLAGS -dM -E`). `--target=<triple>` chooses the
+compiler for a triple (`Toolchain::for_target`: `<triple>-gcc`, else
+`clang --target=<triple>`, or `$CC` with the option added if it is clang) and then
+checks the probed target against the triple (`check_triple`: architecture, byte
+order, operating system), so a mismatched compiler is an error. `GAMMA_RUNNER`
+prefixes the command that runs a built executable (`gamma run --backend=c`,
+`gamma test`), for cross builds run under an emulator. The checked program
+records its target (`Program::target`), and the interpreter and the C back end
+both use it.
 The generated code follows the interpreter exactly, and the conformance
 runner checks this: every `run` test also runs natively and must print the same
 output and exit with the same status.
@@ -445,7 +452,8 @@ it keeps the capabilities of the pointers inside, nor on 32-bit targets, where
 C and Gamma align 64-bit members differently.
 
 **Wide integers.** An integer wider than 128 bits is a blob holding its
-little-endian two's-complement value in `⌈bits/64⌉` words (`src/cgen/wide.rs`).
+two's-complement value in `⌈bits/64⌉` 64-bit words, least significant first, each
+word in the target's byte order (`src/cgen/wide.rs`).
 Every operation (arithmetic and its overflow flavors, shifts, comparison,
 conversion to and from other integers and floats, `min`, `abs`, `pow`, bit
 counting, hashing and decimal display) calls a `gm_w*` routine of the runtime
@@ -456,6 +464,24 @@ the width as the sign (or zero) extension and always write them that way, so a
 value is the same whichever way it was made, and they use schoolbook
 multiplication and shift-and-subtract division. `runtime/rt_test.c` checks them
 against `__int128` and against exact big-integer vectors.
+
+**Byte order.** The C back end and the runtime work on little- and big-endian
+targets. An integer of up to 128 bits is one number in the target's byte order
+(C's own layout, read with `GM_LD`/`GM_ST`); a wider one is the word sequence above, so
+the `gm_w*` routines see native 64-bit words whatever the order. Code that must
+address the bytes of an integer goes through `gm_ibp` (the i-th least significant
+byte; `gm_wbp` for the wide layout) instead of indexing, and `gm_load_u128` /
+`gm_store_u128` read and write a whole integer of any storage size. Bytes of
+compile-time values are laid out for the target (`int_bytes_swap_order` in
+`src/layout.rs`; a `ConstKey` keeps an integer's bytes little-endian, whatever the
+target), and the interpreter's memory is in target order, so constants emitted into
+C are exactly what the generated code would store. Hashes mix the little-endian
+bytes of every value, so they agree across targets, and printed output is the same
+everywhere except where a program looks at its own memory (`bits`, `#c_union`,
+`target.endian`). Fibers switch stacks in assembly for x86-64, AArch64 and s390x;
+other architectures trap on the first fiber switch. `f16` is C's `_Float16`; where
+the C compiler has none (`Target::f16`), a program that uses `f16` is rejected
+with an error naming the limitation.
 
 **Functions and frames.** Each function becomes
 `RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. The locals that
@@ -571,8 +597,8 @@ name. A Debug build with `-g` is compiled with `-O0` so that every local is
 visible (the cached runtime object is compiled with `-g -O2`); Checked and Fast
 builds keep `-O2`.
 
-**Fibers.** The runtime switches stacks with a few lines of assembly for x86-64
-and AArch64 that save the callee-saved registers. The body of a `with … on` is
+**Fibers.** The runtime switches stacks with a few lines of assembly for x86-64,
+AArch64 and s390x that save the callee-saved registers. The body of a `with … on` is
 moved into a C function of its own, which reaches the enclosing function's frame
 through a pointer, and runs on a fiber whose stack is the given memory. The
 `with` itself becomes the driver loop. A `ctl` perform stores its arguments in a
