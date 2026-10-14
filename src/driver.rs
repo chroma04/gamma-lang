@@ -19,6 +19,9 @@ pub struct Session {
     pub debug_info: bool,
     /// The compilation target (§3.6): layouts and the `target` module follow it.
     pub target: crate::layout::Target,
+    /// Where the git dependencies of the program's packages were fetched to, if the
+    /// package manager resolved any.
+    pub packages: Option<std::sync::Arc<crate::pkg::Resolution>>,
 }
 
 impl Default for Session {
@@ -36,6 +39,7 @@ impl Session {
             mode: crate::interp::Mode::Debug,
             debug_info: false,
             target: crate::layout::Target::host(),
+            packages: None,
         }
     }
 

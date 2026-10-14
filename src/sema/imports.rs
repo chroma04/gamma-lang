@@ -2,10 +2,12 @@
 //! directories, loading those modules, and rejecting import cycles.
 //!
 //! A package is the directory tree under a `gamma.toml` manifest. The manifest
-//! format is described in chapter 1 of the language guide; this file reads the
-//! subset it needs: path dependencies.
+//! format is described in chapter 15 of the language guide (`crate::pkg::manifest`
+//! parses it). Path dependencies are read here; git dependencies come resolved from
+//! the package manager through the session.
 
 use super::{ModuleId, Sema};
+use crate::pkg::manifest::{Manifest, Source};
 use crate::source::Span;
 use crate::symbol::Symbol;
 use std::collections::HashMap;
@@ -57,8 +59,14 @@ impl<'s> Sema<'s> {
         self.packages.len() - 1
     }
 
-    /// Reads the dependencies of the manifest in `root`.
+    /// The dependencies of the package in `root`: those the package manager resolved, or
+    /// else the path dependencies of its manifest.
     fn read_manifest(&mut self, root: &Path) -> HashMap<String, PathBuf> {
+        if let Some(res) = self.sess.packages.clone()
+            && let Some(deps) = res.deps_of(root)
+        {
+            return deps.clone();
+        }
         let path = root.join("gamma.toml");
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
@@ -67,13 +75,26 @@ impl<'s> Sema<'s> {
                 return HashMap::new();
             }
         };
-        match parse_manifest(&text) {
-            Ok(deps) => deps.into_iter().map(|(name, p)| (name, root.join(p))).collect(),
-            Err((line, msg)) => {
-                self.error(Span::DUMMY, format!("{}:{}: {}", path.display(), line, msg));
-                HashMap::new()
+        let manifest = match Manifest::parse(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                self.error(Span::DUMMY, format!("{}:{}: {}", path.display(), e.line, e.msg));
+                return HashMap::new();
+            }
+        };
+        let mut deps = HashMap::new();
+        for dep in manifest.deps {
+            match dep.source {
+                Source::Path(p) => {
+                    deps.insert(dep.name, root.join(p));
+                }
+                Source::Git(_) => {
+                    let msg = format!("dependency `{}` is a git dependency; run `gamma fetch`", dep.name);
+                    self.error(Span::DUMMY, format!("{}:{}: {}", path.display(), dep.line, msg));
+                }
             }
         }
+        deps
     }
 
     /// `import "path"` written in `module`: the imported module (§3.2).
@@ -218,62 +239,9 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Parses the dependencies of a manifest: `name = { path = "dir" }` lines in a
-/// `[dependencies]` section. Other sections and keys are accepted and ignored.
-pub fn parse_manifest(text: &str) -> Result<Vec<(String, String)>, (usize, String)> {
-    let mut deps = vec![];
-    let mut section = String::new();
-    for (i, raw) in text.lines().enumerate() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(s) = line.strip_prefix('[') {
-            let Some(s) = s.strip_suffix(']') else { return Err((i + 1, "expected `]`".into())) };
-            section = s.trim().to_string();
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            return Err((i + 1, "expected `key = value`".into()));
-        };
-        let (key, value) = (key.trim(), value.trim());
-        if section != "dependencies" {
-            continue;
-        }
-        let inner = value
-            .strip_prefix('{')
-            .and_then(|v| v.strip_suffix('}'))
-            .ok_or((i + 1, format!("dependency `{}` must be written `{{ path = \"…\" }}`", key)))?;
-        let mut path = None;
-        for field in inner.split(',') {
-            let Some((k, v)) = field.split_once('=') else { continue };
-            if k.trim() == "path" {
-                let v = v.trim();
-                path = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')).map(str::to_string);
-            }
-        }
-        match path {
-            Some(p) => deps.push((key.to_string(), p)),
-            None => return Err((i + 1, format!("dependency `{}` needs a `path = \"…\"`", key))),
-        }
-    }
-    Ok(deps)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn manifest_dependencies() {
-        let deps = parse_manifest(
-            "[package]\nname = \"app\"  # comment\n\n[dependencies]\njson = { path = \"../json\", version = \"1\" }\n",
-        )
-        .unwrap();
-        assert_eq!(deps, vec![("json".to_string(), "../json".to_string())]);
-        assert!(parse_manifest("[dependencies]\nx = \"1.0\"\n").is_err());
-        assert!(parse_manifest("[package\n").is_err());
-    }
 
     #[test]
     fn normalizes_paths() {

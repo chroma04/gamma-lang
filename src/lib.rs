@@ -9,6 +9,7 @@ pub mod float;
 pub mod fmt;
 pub mod interp;
 pub mod layout;
+pub mod pkg;
 pub mod sema;
 pub mod source;
 pub mod symbol;
