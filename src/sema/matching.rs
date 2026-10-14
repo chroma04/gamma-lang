@@ -27,9 +27,11 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Checks a `match`. With `value` false, arms are statements (§7.12).
     pub fn match_expr(&mut self, m: &ast::MatchExpr, value: bool, expect: Option<Ty>) -> Expr {
         let scrutinee = self.expr(&m.scrutinee, None);
-        // Patterns are checked against a known type, so literals in the scrutinee take
-        // their fallback types now (§6.1).
-        let mut sty = self.settle_now(scrutinee.ty);
+        // A scrutinee whose type still contains literal types (`a := 1; match a …`) keeps
+        // them open: a later statement may still fix them (§6.1). Integer patterns restrict
+        // them to integers, and exhaustiveness is checked once they are final.
+        let mut sty = self.infer.resolve(scrutinee.ty);
+        let deferred = sty.has_infer();
         if self.is_c_union(sty) {
             self.error(m.scrutinee.span, c_union_match(sty));
             sty = Ty::error();
@@ -51,18 +53,16 @@ impl<'a, 's> FnCx<'a, 's> {
             arms.push(tir::Arm { pat, guard, body });
         }
         // Exhaustiveness and reachability.
-        if !sty.is_error() {
+        if deferred {
+            self.deferred_matches.push((m.span, m.arms.iter().map(|a| a.span).collect()));
+        } else if !sty.is_error() {
             let report = {
                 let checker = self.checker();
                 let list: Vec<(&Pat, bool)> = arms.iter().map(|a| (&a.pat, a.guard.is_some())).collect();
                 checker.check_match(sty, &list)
             };
-            if let Some(missing) = report.missing {
-                self.error(m.span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
-            }
-            for i in report.unreachable {
-                self.error(m.arms[i].span, "this arm can never be chosen: earlier arms cover it");
-            }
+            let arm_spans: Vec<Span> = m.arms.iter().map(|a| a.span).collect();
+            self.report_match(report, m.span, &arm_spans);
         }
         let ty = if value {
             match expect {
@@ -81,6 +81,32 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         Expr { ty, kind: tir::ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span: m.span }
+    }
+
+    pub fn report_match(&mut self, report: super::exhaust::MatchReport, span: Span, arms: &[Span]) {
+        if let Some(missing) = report.missing {
+            self.error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
+        }
+        for i in report.unreachable {
+            self.error(arms[i], "this arm can never be chosen: earlier arms cover it");
+        }
+    }
+
+    /// Checks a `match` whose exhaustiveness was deferred until its scrutinee's literal
+    /// types were final.
+    pub fn check_deferred_match(&mut self, e: &Expr) {
+        let tir::ExprKind::Match { scrutinee, arms } = &e.kind else { return };
+        let Some(i) = self.deferred_matches.iter().position(|d| d.0 == e.span) else { return };
+        let (span, arm_spans) = self.deferred_matches.swap_remove(i);
+        if scrutinee.ty.is_error() {
+            return;
+        }
+        let report = {
+            let checker = self.checker();
+            let list: Vec<(&Pat, bool)> = arms.iter().map(|a| (&a.pat, a.guard.is_some())).collect();
+            checker.check_match(scrutinee.ty, &list)
+        };
+        self.report_match(report, span, &arm_spans);
     }
 
     /// The pattern of an arm: alternatives must bind the same names with the same types.

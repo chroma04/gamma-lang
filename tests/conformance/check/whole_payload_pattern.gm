@@ -1,0 +1,27 @@
+//! stage: check
+// A single sub-pattern for a tuple payload matches the whole tuple (§9.2);
+// exhaustiveness and reachability see through it.
+N :: union { Pair: (u8, u8), One: (u8,), Leaf: u32 }
+ok :: fn(n: N) -> u32 => match n {
+    .Pair(p) => u32(p.0)
+    .One((x)) => u32(x)
+    .Leaf(x) => x
+}
+partial :: fn(n: N) -> u32 => match n {   //~ ERROR is not covered
+    .Pair((x, 0)) => u32(x)
+    .One(x) => u32(x)
+    .Leaf(x) => x
+}
+dead :: fn(n: N) -> u32 => match n {
+    .Pair(_) => 1
+    .Pair((x, y)) => u32(x + y)           //~ ERROR can never be chosen
+    .One(x) => u32(x)
+    .Leaf(x) => x
+}
+wrong :: fn(n: N) -> u32 => match n {
+    .Pair("a") => 1                       //~ ERROR needs
+    .Pair(_) => 2
+    .One(x) => u32(x)
+    .Leaf(x) => x
+}
+main :: fn() {}

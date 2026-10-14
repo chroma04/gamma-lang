@@ -1,0 +1,27 @@
+// The `?` flavors take optional operands, so `a *? b +? c` chains (§7.4.2).
+note :: fn(x: u8) -> u8 \ {Out} {
+    print("evaluated {}\n", x)
+    return x
+}
+
+parse_u8 :: fn(s: string) -> ?u8 {
+    n: u8 = 0
+    for c in s {
+        n = n *? 10 +? (c - '0') else return null
+    }
+    return n
+}
+
+main :: fn() \ {Out} {
+    m := 100u8
+    print("{} {}\n", (m *? 2 +? 1, m +? 2 *? 2))
+    print("{}\n", 1 +? m *? 2 +? 3)
+    // Both operands are evaluated even when the left one is already null.
+    print("{}\n", m *? 3 +? note(1))
+    print("{}\n", m *? 2 -? 250)
+    print("{} {}\n", ((m +? 1) <<? 1u8, (m +? 100) <<? 1u8))
+    x: ?i32 = null
+    print("{} {}\n", (x +? 1, 5 -? x))
+    print("{} {} {}\n", (parse_u8("255"), parse_u8("256"), parse_u8("2550")))
+    print("{}\n", m *? 3 +? 1 else 0)
+}

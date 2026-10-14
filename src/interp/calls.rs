@@ -25,6 +25,12 @@ impl<'a> Machine<'a> {
         match callee {
             Callee::Fn(f) => {
                 let vals = self.eval_args(a, args)?;
+                let def = &self.prog.fns[f.index()];
+                if let FnKind::Foreign { variadic: true, .. } = def.kind {
+                    // The types of the variadic arguments decide how they are passed.
+                    let extra: Vec<Ty> = args[def.params.len()..].iter().map(|x| x.ty).collect();
+                    return self.call_foreign(e.span, *f, vals, &extra);
+                }
                 self.call_function(e.span, *f, vals, None, a.cx.clone(), None, false)
             }
             Callee::Indirect(c) => {
@@ -83,8 +89,7 @@ impl<'a> Machine<'a> {
         let prog = self.prog;
         let f = &prog.fns[fid.index()];
         let Some(body) = &f.body else {
-            return self
-                .trap(span, format!("not supported by the interpreter yet: call to foreign function `{}`", f.name));
+            return self.call_foreign(span, fid, args, &[]);
         };
         if let Some(code) = self.code_of(fid) {
             return self.vm_call_values(span, fid, code, args, env, ctx, installing, is_clause_lit);

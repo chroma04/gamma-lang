@@ -315,6 +315,10 @@ pub enum ExprKind {
         len: Option<Box<Expr>>,
         elem: Box<Expr>,
     },
+    /// `\ {E1, E2}` as a compile-time argument: an effect set (§16.6).
+    EffectSet(Vec<Expr>),
+    /// `..E` in an effect set: the effects of the effect-set parameter `E` (§16.6).
+    EffectSplice(Box<Expr>),
     /// `E!T` in a type position (§5.13).
     ErrorUnionType {
         err: Box<Expr>,

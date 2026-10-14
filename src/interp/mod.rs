@@ -31,6 +31,7 @@ mod consts;
 pub mod display;
 mod eval;
 mod fast;
+mod ffi;
 mod fiber;
 mod machine;
 pub mod memory;
@@ -63,6 +64,7 @@ use machine::Machine;
 use std::io::Write;
 use value::*;
 
+pub use ffi::{check_program as foreign_supported, set_owns_process};
 pub use value::Trap;
 
 #[derive(Clone, Debug)]
@@ -203,6 +205,9 @@ fn run_main_inner(
     vm::profile_report();
     if let Some(w) = m.out.as_mut() {
         let _ = w.flush();
+    }
+    if let Outcome::Exit(code) = outcome {
+        m.exit_process(code);
     }
     outcome
 }

@@ -374,7 +374,15 @@ impl Parser<'_> {
             let mut effects = Vec::new();
             p.skip_newlines();
             while !p.at(Punct::RBrace) {
-                effects.push(p.parse_type()?);
+                if p.at(Punct::DotDot) {
+                    let start = p.lo();
+                    p.bump();
+                    let e = p.parse_type()?;
+                    let span = p.span_from(start);
+                    effects.push(p.mk_expr(ExprKind::EffectSplice(Box::new(e)), span));
+                } else {
+                    effects.push(p.parse_type()?);
+                }
                 p.skip_newlines();
                 if !p.eat(Punct::Comma) {
                     break;

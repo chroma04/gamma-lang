@@ -47,33 +47,6 @@ impl<'a, 's> FnCx<'a, 's> {
         body
     }
 
-    /// Gives the literal types in `ty` their final types now, where a check cannot wait for
-    /// the end of the function: from the coercions already recorded for them (as
-    /// `finalize` would), else their fallbacks (§6.1).
-    pub fn settle_now(&mut self, ty: Ty) -> Ty {
-        let t = self.infer.resolve(ty);
-        if !t.has_infer() {
-            return t;
-        }
-        let mut vars = vec![];
-        t.walk(&mut |x| {
-            if x.is_infer() {
-                vars.push(x);
-            }
-        });
-        for i in 0..self.pending.len() {
-            let (source, target) = (self.pending[i].source, self.pending[i].target);
-            let src = self.infer.resolve(source);
-            if src.is_infer() && vars.iter().any(|&v| self.infer.resolve(v) == src) {
-                let core = literal_core(target);
-                if self.infer.unify(src, core).is_err() {
-                    self.infer.unify(src, target).ok();
-                }
-            }
-        }
-        self.infer.settle(ty)
-    }
-
     /// Rewrites a nested function's body once inference is complete.
     pub fn finalize_nested(&mut self, mut body: Expr) -> Expr {
         self.fin_expr(&mut body);
@@ -162,7 +135,14 @@ impl<'a, 's> FnCx<'a, 's> {
     fn fin_pat(&mut self, p: &mut tir::Pat) {
         p.ty = self.infer.resolve(p.ty);
         match &mut p.kind {
-            tir::PatKind::Const(c) => self.fin_expr(c),
+            // Constants are expressions, finalized with the other children of the `match`.
+            tir::PatKind::Range { lo, hi, .. } => {
+                for v in [&*lo, &*hi] {
+                    if p.ty.is_integer() && !int_fits(v, p.ty, &self.sema.target) {
+                        self.error(p.span, format!("{} does not fit in `{}`", v, p.ty));
+                    }
+                }
+            }
             tir::PatKind::Some(q) | tir::PatKind::Ok(q) | tir::PatKind::Err(q) => self.fin_pat(q),
             tir::PatKind::Variant { payload: Some(q), .. } => self.fin_pat(q),
             tir::PatKind::Fields(fs) => fs.iter_mut().for_each(|(_, q)| self.fin_pat(q)),
@@ -172,9 +152,16 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     fn fin_expr(&mut self, e: &mut Expr) {
+        let errors = self.sema.sess.diags.error_count();
         e.for_each_child_mut(&mut |c| self.fin_expr(c));
         match &mut e.kind {
-            ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| self.fin_pat(&mut a.pat)),
+            ExprKind::Match { arms, .. } => {
+                arms.iter_mut().for_each(|a| self.fin_pat(&mut a.pat));
+                // A pattern that does not fit the final type was reported already.
+                if !self.deferred_matches.is_empty() && self.sema.sess.diags.error_count() == errors {
+                    self.check_deferred_match(e);
+                }
+            }
             ExprKind::If { cond, .. } | ExprKind::Loop { cond, .. } => {
                 for c in cond.iter_mut() {
                     if let tir::CondPart::Match { pat, .. } = c {

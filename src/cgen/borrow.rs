@@ -25,6 +25,29 @@ impl<'a> Gen<'a> {
         def.params.iter().zip(candidates).map(|(p, c)| c && !touched.contains(p)).collect()
     }
 
+    /// For each parameter of `f`: whether it is used in place and also appears inside an
+    /// aggregate or array construction, which `FnGen::expr_into` may build directly in the
+    /// result destination while still reading the parameter. A caller must then not pass
+    /// a destination that overlaps the parameter's value.
+    pub fn read_during_build(&mut self, f: FnId) -> Vec<bool> {
+        if let Some(r) = self.early_memo.get(&f) {
+            return r.clone();
+        }
+        let mut r = self.borrowed_params(f);
+        if r.contains(&true) {
+            let def = &self.prog.fns[f.index()];
+            let mut used = vec![];
+            if let Some(body) = &def.body {
+                locals_in_aggregates(body, false, &mut used);
+            }
+            for (flag, p) in r.iter_mut().zip(&def.params) {
+                *flag = *flag && used.contains(p);
+            }
+        }
+        self.early_memo.insert(f, r.clone());
+        r
+    }
+
     /// Whether `f` is pure in the sense of the module docs: a named function or a
     /// literal that captures nothing, with no effects, that stores only into its own
     /// locals and calls only pure functions.
@@ -118,7 +141,7 @@ fn own_place(place: &Expr) -> bool {
 }
 
 /// The local that place `e` is part of, if it is not reached through a pointer.
-fn root_local(e: &Expr) -> Option<LocalId> {
+pub fn root_local(e: &Expr) -> Option<LocalId> {
     match &e.kind {
         ExprKind::Local(l) => Some(*l),
         ExprKind::Field { base, .. } | ExprKind::VariantPayload { base, .. } => root_local(base),
@@ -159,4 +182,13 @@ fn mutated_in_block(b: &Block, out: &mut Vec<LocalId>) {
         }
     }
     b.for_each_child(&mut |x| mutated_locals(x, out));
+}
+
+/// Collects the locals read inside the construction of an aggregate or array in `e`.
+fn locals_in_aggregates(e: &Expr, inside: bool, out: &mut Vec<LocalId>) {
+    if inside && let ExprKind::Local(l) = &e.kind {
+        out.push(*l);
+    }
+    let inside = inside || matches!(e.kind, ExprKind::Aggregate(_) | ExprKind::Array(_));
+    e.for_each_child(&mut |x| locals_in_aggregates(x, inside, out));
 }

@@ -69,14 +69,21 @@ impl<'a> Lexer<'a> {
             if self.at_exponent(b"eE") {
                 exp = Some(self.scan_exponent(&mut err));
             }
-        } else if radix == 16 && frac_part.is_some() {
+        } else if radix == 16 {
             if self.at_exponent(b"p") {
                 exp = Some(self.scan_exponent(&mut err));
-            } else {
+            } else if frac_part.is_some() {
                 err.get_or_insert_with(|| "hexadecimal float literals require a `p` exponent".to_string());
             }
         }
-        let is_float = frac_part.is_some() || exp.is_some();
+        // A decimal integer with a float suffix (`1f32`) is a float literal.
+        let float_by_suffix = radix == 10 && frac_part.is_none() && exp.is_none() && {
+            let at = self.pos;
+            let is_float_suffix = float_suffix(self.scan_ident()).is_some();
+            self.pos = at;
+            is_float_suffix
+        };
+        let is_float = frac_part.is_some() || exp.is_some() || float_by_suffix;
 
         // Suffix: any identifier characters directly after the literal.
         let suffix = self.scan_ident();
@@ -513,7 +520,7 @@ fn int_suffix(s: &str) -> Result<IntSuffix, String> {
     }
     if float_suffix(s).is_some() {
         return Err(format!(
-            "invalid suffix `{}` for integer literal; a float literal needs a fractional part or an exponent",
+            "invalid suffix `{}` for a binary or octal literal; only decimal and hexadecimal floats exist",
             s
         ));
     }

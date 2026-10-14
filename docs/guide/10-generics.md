@@ -168,7 +168,17 @@ stack_demo :: fn() \ {Out} {
 Observe three things.
 
 - `N :: usize` is a **compile-time value parameter**. It is declared with `::` instead of `:`, its argument must be a constant expression, and each distinct value produces its own instantiation. Inside the body it is a constant, so it can size arrays. When it appears in the type of another parameter (as `N` does in `s: ^Stack(T, N)`), it is inferable like a type parameter.
-- Because the body is checked once, without knowing `N`, an array length in it must be the parameter itself: `[N]T` is fine, `[N + 1]T` is an error. Such an array is built with `[N]T(fill: x)` or `---`, since a list of elements cannot be counted against an unknown `N`.
+- Because the body is checked once, without knowing `N`, an array length in it is either the parameter itself or plain `usize` arithmetic on such parameters and constants: `[N]T`, `[N + 1]T` and `[R * C]T` are fine, `[@size_of(T)]u8` is an error. Lengths are compared as written (`[A + B]T` and `[B + A]T` are the same type, `[N + N]T` and `[2 * N]T` are not), and each instantiation computes them, so `[N - 1]T` with `N = 0` is a compile error where it is instantiated. Such an array is built with `[N]T(fill: x)` or `---`, since a list of elements cannot be counted against an unknown length.
+
+```
+concat :: fn(A, B :: usize, x: [A]u8, y: [B]u8) -> [A + B]u8 {
+    out: [A + B]u8 = ---
+    for i in 0..A { out[i] = x[i] }
+    for i in 0..B { out[A + i] = y[i] }
+    return out
+}
+```
+
 - Inside the type's own module, methods take the generic type as a pointer, `^Stack(T, N)`, with the type's parameters as their leading compile-time parameters. Method syntax skips those parameters, which is why `st.push(10)` works and `T` and `N` are inferred.
 - Two instantiations are the same type if every argument is the same: types are identical, values are `is`-equal.
 
@@ -240,6 +250,20 @@ bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
     return total
 }
 ```
+
+### Effect-set parameters
+
+A parameter declared `E: effects` stands for a whole set of effects. Inside an effect set it is spliced with `..E`, so a function can pass on whatever its callback performs:
+
+```gamma
+apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
+    return f(x)
+}
+```
+
+`E` is usually inferred from the argument, and an explicit argument is an effect set literal such as `\ {Out, Alloc}` or a single effect. Left out entirely, `E` is empty. Effects and handlers take such parameters too: `std/fiber`'s `Sched(E)` lets fiber tasks perform the effects `E`, handled outside the scheduler.
+
+The same once-checked rule applies: `..E` performed inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type, so it cannot appear outside an effect set.
 
 ## Restrictions
 

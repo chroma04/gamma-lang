@@ -48,3 +48,10 @@ include_str!, concatenated into ONE translation unit with the generated code). B
   them; div-by-zero/MIN/-1/bounds always checked.
 - `gamma build [-o out] file`, `gamma run --backend=c`. Harness runs every run test on both
   backends (skip list tests/conformance/c-skip.txt, to shrink to empty).
+- s9: aggregates are typed C structs (cgen/types.rs: real member types at Gamma offsets, explicit
+  uint8_t padding, unions for payloads, _Static_assert layout, shared by shape). Still blobs:
+  #packed/#bits, zero-size, >128-bit ints, Fil-C, 32-bit targets. Field access still memcpy at
+  offsets. expr_into(`Observed`) builds nested aggregates in place for fresh destinations; an
+  assignment to an existing place builds in a temp; caller copies an overlapping in-place arg when
+  callee reads a borrowed param during a build (`read_during_build`) or the call is indirect.
+  bigcopy: gcc 0.70→0.45 s, clang 0.23→0.17 s (gcc still doesn't inline the copies).
