@@ -1,0 +1,32 @@
+// A generic function given only its compile-time arguments is a function value (§16.7).
+double :: fn(T: type, x: T) -> T where Num(T) => x + x
+
+scale :: fn(k :: i32, x: i32) -> i32 => k * x
+
+zero :: fn(T: type) -> T where Num(T) => 0
+
+apply :: fn(f: ^fn(x: u8) -> u8, v: u8) -> u8 => f(v)
+
+main :: fn() \ {Out} {
+    p: ^fn(x: u8) -> u8 = double(u8)
+    q := double(i64)
+    print("{} {}\n", (p(21), q(1 << 40)))
+
+    // Type arguments taken from the expected pointer type.
+    r: ^fn(x: f32) -> f32 = double
+    print("{}\n", r(1.25))
+    print("{}\n", apply(double, 100))
+
+    // A value parameter, and a tuple of instantiations.
+    times3 := scale(3)
+    print("{}\n", times3(5))
+    fs := (double(u8), double(u8))
+    h := fs.1
+    print("{}\n", h(4))
+
+    // With no run-time parameter, `zero(T)` is still a call.
+    z := zero(u16)
+    print("{}\n", z)
+    // Applying the instantiation directly calls the pointer.
+    print("{}\n", double(u32)(8))
+}

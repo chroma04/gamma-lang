@@ -1,0 +1,35 @@
+// A handler literal bound with `::` gets the type of the first `with` that installs it
+// as the expected type of its clauses' `break` values (§12.5, §12.7), and its clauses
+// perform their effects where the literal is written.
+Fail :: effect { fail: esc(why: string) -> never }
+Log :: effect { log: fn(msg: string) }
+step :: fn(n: i32) -> u8 \ {Fail} {
+    if n > 2 { fail("too big") }
+    return 7
+}
+noisy :: fn(n: i32) -> u8 \ {Fail, Log} {
+    log("step")
+    return step(n)
+}
+Color :: union { Red, Green, Blue }
+main :: fn() \ {Out} {
+    count := 0
+    lg :: handler Log { log(m) => { count += 1 } }
+    with lg {
+        h :: handler Fail { fail(why) => { log(why); break .Red } }
+        c: Color = with h { _ = step(5); .Blue }
+        print("{}\n", c)
+        // The clause's `log` goes to `lg`, in scope where `h` was written, not to the
+        // handler of the inner `with`.
+        with (handler Log { log(m) => print("inner {}\n", m) }) {
+            d: Color = with h { _ = noisy(9); .Green }
+            print("{}\n", d)
+        }
+    }
+    print("{}\n", count)
+    for i in 0..3 {
+        k :: handler Fail { fail(why) => if i > 1 { break null } else { break 1 } }
+        v: ?u8 = with k { step(i * 3) }
+        print("{}\n", v)
+    }
+}

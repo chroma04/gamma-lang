@@ -222,6 +222,8 @@ widen :: fn() -> u16 {
 }
 ```
 
+The one other place where an operand widens is the right side of a compound assignment: with `total: u64` and `x: u32`, `total += x` is allowed, because every `u32` fits in a `u64` (the result always has the type of the variable on the left).
+
 `T(x)` and the named lossy conversions (`trunc`, `checked`, `sat`, ...) are in [chapter 4](04-types.md).
 
 ## Operators

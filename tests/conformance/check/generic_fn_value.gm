@@ -1,9 +1,16 @@
 //! stage: check
-// A generic function can only be called; it has no function-pointer value (§16.7).
+// A generic function used as a value needs its compile-time arguments (§16.7).
 f :: fn(T: type, x: T) -> T => x
+g2 :: fn(T: type, U: type, x: T) -> T => x
 main :: fn() {
-    g := f //~ ERROR `f` is generic, so it can only be called
+    g := f //~ ERROR `f` is generic, so it needs its compile-time arguments
     h :: fn(T: type, x: T) -> T => x
-    k := h //~ ERROR `h` is generic, so it can only be called
+    k := h //~ ERROR `h` is generic, so it needs its compile-time arguments
+    p: ^fn(x: u8) -> u8 = f(u8)
+    q: ^fn(x: u8) -> u8 = f
+    r: ^fn(x: u8) -> u16 = f //~ ERROR
+    s := g2(u8) //~ ERROR cannot infer the type parameter `U`
+    t: ^fn(x: u8) -> u8 = g2 //~ ERROR
+    u: ^fn(x: u16) -> u16 = f(u8) //~ ERROR
     _ = f(u8, 3)
 }

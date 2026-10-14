@@ -25,6 +25,11 @@
 // the `with` joins, not the tasks, and a task that never ends is a deadlock, which traps.
 // A task's `arg` and `stack` must outlive the task.
 //
+// Tasks may perform other effects too, handled where the scheduler is installed. They are
+// the scheduler's effect-set parameter (§16.6): with `s := fiber.scheduler(\ {Out, Clock})`
+// a task is a `fn(arg: ^T) \ {Sched(\ {Out, Clock}), Out, Clock}` (or uses fewer of them), and
+// the `with &s` needs `Out` and `Clock` itself.
+//
 // `Scheduler` keeps the allocator it was created with for its queue of ready tasks and
 // performs no `Alloc` afterwards.
 
@@ -32,41 +37,44 @@ queue :: import "std/collections/deque"
 
 /// What a task can ask of its scheduler. `spawn`, which takes a typed task function, is the
 /// way to start a task; `spawn_raw` is the operation underneath.
-pub Sched :: effect {
+/// `E` is what tasks may perform besides `Sched`; `Sched` alone is `Sched(\ {})`.
+pub Sched :: effect(E: effects) {
     yield_now: ctl()
-    spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never \ {Sched}, arg: rawptr, stack: []u8)
+    spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never \ {Sched(E), ..E}, arg: rawptr, stack: []u8)
     exit: ctl() -> never
     join: ctl()
 }
 
-/// A round-robin scheduler: the ready tasks in a queue, in the order they will run.
-pub Scheduler :: struct {
+/// A round-robin scheduler: the ready tasks in a queue, in the order they will run. Its tasks
+/// may perform the effects `E`.
+pub Scheduler :: struct(E: effects) {
     ready: queue.Deque(cont(()))
     joiner: ?cont(())
     live: usize
 }
 
-/// A scheduler with no tasks, using the current allocator for its queue.
-pub scheduler :: fn() -> Scheduler \ {Alloc} {
-    return Scheduler(ready: queue.deque(cont(())), joiner: null, live: 0)
+/// A scheduler with no tasks, using the current allocator for its queue. Its tasks may
+/// perform the effects `E` (none if left out).
+pub scheduler :: fn(E: effects) -> Scheduler(E) \ {Alloc} {
+    return Scheduler(E)(ready: queue.deque(cont(())), joiner: null, live: 0)
 }
 
 /// Frees the scheduler's queue. All tasks must have ended.
-pub deinit :: fn(s: ^Scheduler) {
+pub deinit :: fn(E: effects, s: ^Scheduler(E)) {
     s.ready.deinit()
 }
 
 // The next ready task, which the scheduler resumes when the current one gives way.
-next :: fn(s: ^Scheduler) -> cont(()) {
+next :: fn(E: effects, s: ^Scheduler(E)) -> cont(()) {
     return s.ready.pop_front() else trap("deadlock: no task is ready to run")
 }
 
 // Queues a task to run later.
-push :: fn(s: ^Scheduler, k: cont(())) {
+push :: fn(E: effects, s: ^Scheduler(E), k: cont(())) {
     s.ready.push_back(k) else trap("out of memory in the scheduler")
 }
 
-handler Sched for ^Scheduler {
+handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E} {
     yield_now(self, k) => {
         push(self, k)
         r := next(self)
@@ -98,15 +106,15 @@ handler Sched for ^Scheduler {
 }
 
 // What a new task starts from. It lives at the bottom of the task's stack.
-Start :: struct {
-    f: ^fn(arg: rawptr) \ {Sched}
+Start :: struct(E: effects) {
+    f: ^fn(arg: rawptr) \ {Sched(E), ..E}
     arg: rawptr
 }
 
 // A task function is a one-pointer-argument function, called here without its argument
 // type, which the representation does not depend on.
-entry :: fn(p: rawptr) -> never \ {Sched} {
-    start := p.cast(^Start)
+entry :: fn(E: effects, p: rawptr) -> never \ {Sched(E), ..E} {
+    start := p.cast(^Start(E))
     start.f(start.arg)
     exit()
 }
@@ -114,9 +122,9 @@ entry :: fn(p: rawptr) -> never \ {Sched} {
 /// Starts a task calling `f(arg)` on `stack`, to run once the current task gives way. The
 /// task ends when `f` returns. A little of `stack` (up to 48 bytes) holds the task's
 /// start-up data, so the stack should be a bit larger than the task needs.
-pub spawn :: fn(T: type, f: ^fn(arg: ^T) \ {Sched}, arg: ^T, stack: []u8) \ {Sched} {
+pub spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) \ {Sched(E), ..E}, arg: ^T, stack: []u8) \ {Sched(E)} {
     off := (16 - stack.ptr.addr() % 16) % 16
-    start := stack[off..off + 32].ptr.cast(^Start)
-    start^ = Start(f: f.cast(^fn(arg: rawptr) \ {Sched}), arg: arg.cast(rawptr))
-    spawn_raw(entry, start.cast(rawptr), stack[off + 32..stack.len])
+    start := stack[off..off + 32].ptr.cast(^Start(E))
+    start^ = Start(E)(f: f.cast(^fn(arg: rawptr) \ {Sched(E), ..E}), arg: arg.cast(rawptr))
+    spawn_raw(entry(E), start.cast(rawptr), stack[off + 32..stack.len])
 }
