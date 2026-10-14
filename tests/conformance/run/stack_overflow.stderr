@@ -1,0 +1,23 @@
+trap: stack overflow
+  at tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  ... more calls
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:8:12 in down
+  called from tests/conformance/run/stack_overflow.gm:22:19 in main

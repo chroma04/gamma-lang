@@ -276,6 +276,9 @@ pub struct Sema<'s> {
     pub adt_inst_depth: u32,
     /// Instances created during the outermost instantiation in progress, with their templates.
     pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Every array length computed from compile-time value parameters, with its
+    /// span: checked for overflow at each instantiation (§16.5).
+    pub len_exprs: Vec<(Ty, Span)>,
     /// Whether ever-deeper instantiation has been reported.
     pub adt_inst_overflowed: bool,
 }
@@ -378,6 +381,7 @@ impl<'s> Sema<'s> {
             deferred_constraints: vec![],
             adt_inst_depth: 0,
             adt_new_instances: vec![],
+            len_exprs: vec![],
             adt_inst_overflowed: false,
         }
     }

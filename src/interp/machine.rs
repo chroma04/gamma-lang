@@ -162,6 +162,8 @@ pub struct Machine<'a> {
     pub sys: super::sys::SysState,
     /// The program's threads (§19.6).
     pub threads: super::threads::Threads,
+    /// Foreign function calls (§19.2).
+    pub ffi: super::ffi::Ffi,
     /// Compiled code by function, and buffers of finished activations to reuse.
     pub vm_code: Vec<super::vm::CodeSlot<'a>>,
     pub vm_regs: Vec<Vec<u64>>,
@@ -217,6 +219,7 @@ impl<'a> Machine<'a> {
             alloc_tags: HashMap::new(),
             sys: Default::default(),
             threads: Default::default(),
+            ffi: Default::default(),
             vm_code: (0..prog.fns.len()).map(|_| Default::default()).collect(),
             vm_regs: Vec::new(),
             vm_vals: Vec::new(),

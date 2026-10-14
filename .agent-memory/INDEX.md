@@ -47,7 +47,7 @@
 ## Next steps
 1. Drive the s6 PRs green; C back end plan items 1–7 done (uncaptured locals as C locals:
    thread "Uncaptured locals", branch claude/project-thread-oemqrj).
-2. bugs-open.md leftovers (#23–#40); future: symbolic array lengths; VM
+2. bugs-open.md leftovers (#23–#40); computed array lengths done (decisions/007); VM
    follow-ups in decisions/020 (superinstructions, smaller Op, cheaper calls).
 3. lib/ must stay `gamma fmt`-formatted (tests/fmt.rs checks).
 4. Safe mode follow-up (decisions/017 end): constant large args static (done, PR #17);

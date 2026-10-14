@@ -1,0 +1,31 @@
+// Predeclared names (§21.1), including the operations of the ambient effects,
+// may be hidden by a declaration of the same name at top level or in a function.
+// The effect's own operation stays reachable as `Effect.op`.
+
+current :: fn() -> u32 => 7
+yield :: fn(x: u32) -> u32 => x + 1
+read :: fn() -> u32 => 3
+range :: fn(n: u32) -> u32 => n * 2
+
+shadow_locals :: fn() -> u32 {
+    now := 10u32
+    write_out := 20u32
+    exit := 30u32
+    // A local may reuse a reserved type name, hiding the type for its scope.
+    u1 := 4u32
+    return now + write_out + exit + u1
+}
+
+main :: fn() \ {Out, Alloc} {
+    print("{} {} {} {}\n", (current(), yield(1), read(), range(4)))
+    print("{}\n", shadow_locals())
+
+    // The hidden operation is still reachable through its effect, and the
+    // core functions that use it are unaffected.
+    a := Alloc.current()
+    _ = a
+    xs := make(u8, 4) else return
+    defer free(xs)
+    print("{}\n", xs.len)
+    for i in 0..3 { print("{}\n", i) }
+}

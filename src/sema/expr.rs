@@ -4,6 +4,7 @@
 use super::DeclValue;
 use super::func::{FnCx, LabelValue, LocalBinding, Obligation, PendingCoercion, error_expr, unit};
 use super::infer::{Fallback, VarKind};
+use super::ty_expr::ArrayLen;
 use super::untyped::Untyped;
 use crate::diag::Diagnostic;
 use crate::source::Span;
@@ -195,16 +196,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 // `[2][3]i32(…)`: the element type is everything after the outer prefix.
                 let elem_ty = self.resolve_type(&without_call(elem));
-                if let Some(ast::Expr { kind: ExprKind::Ident(id), .. }) = len.as_deref()
-                    && let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == id.name)
-                {
-                    let len = Ty::intern(TyKind::Param(pid));
-                    let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
-                    return self.construct_param_array(t, elem_ty, args, span);
-                }
                 let len = match len {
-                    Some(l) => match self.sema.const_usize(self.module, l) {
-                        Some(n) => Some(n),
+                    Some(l) => match self.sema.array_len(self.module, l) {
+                        Some(ArrayLen::Known(n)) => Some(n),
+                        Some(ArrayLen::Param(len)) => {
+                            let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
+                            return self.construct_param_array(t, elem_ty, args, span);
+                        }
                         None => return error_expr(span),
                     },
                     None => None,
@@ -1024,10 +1022,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 return mk(Ty::many_ptr(*is_const, *elem), tir::ExprKind::SlicePtr(Box::new(b)), span);
             }
             (TyKind::Array { len, .. }, "len") => return mk(Ty::usize(), tir::ExprKind::Int((*len).into()), span),
-            (TyKind::ParamArray { len, .. }, "len") => {
-                let TyKind::Param(p) = len.kind() else { unreachable!() };
-                return mk(Ty::usize(), tir::ExprKind::ValueParam(*p), span);
-            }
+            (TyKind::ParamArray { len, .. }, "len") => return self.len_value(*len, span),
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
@@ -1036,6 +1031,43 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
         error_expr(span)
+    }
+
+    /// The value of a length that depends on compile-time value parameters
+    /// (a `Param`, `Value` or `LenExpr`), as a `usize` (§16.5).
+    fn len_value(&mut self, len: Ty, span: Span) -> Expr {
+        match len.kind() {
+            TyKind::Param(p) => {
+                let v = mk(self.sema.value_params[p], tir::ExprKind::ValueParam(*p), span);
+                if v.ty == Ty::usize() {
+                    v
+                } else {
+                    mk(Ty::usize(), tir::ExprKind::Coerce { kind: Coercion::IntWiden, expr: Box::new(v) }, span)
+                }
+            }
+            TyKind::Value(k) => match k.as_int() {
+                Some(n) => mk(Ty::usize(), tir::ExprKind::Int(n), span),
+                None => error_expr(span),
+            },
+            TyKind::LenExpr { op, lhs, rhs } => {
+                use crate::types::LenOp;
+                let op = match op {
+                    LenOp::Add => tir::BinOp::Add(ast::Flavor::Checked),
+                    LenOp::Sub => tir::BinOp::Sub(ast::Flavor::Checked),
+                    LenOp::Mul => tir::BinOp::Mul(ast::Flavor::Checked),
+                    LenOp::Shl => tir::BinOp::Shl(ast::Flavor::Checked),
+                    LenOp::Div => tir::BinOp::Div,
+                    LenOp::Rem => tir::BinOp::Rem,
+                    LenOp::Shr => tir::BinOp::Shr,
+                    LenOp::And => tir::BinOp::BitAnd,
+                    LenOp::Or => tir::BinOp::BitOr,
+                    LenOp::Xor => tir::BinOp::BitXor,
+                };
+                let (lhs, rhs) = (self.len_value(*lhs, span), self.len_value(*rhs, span));
+                mk(Ty::usize(), tir::ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+            }
+            _ => error_expr(span),
+        }
     }
 
     /// Field `name` of a struct value, looking through `using` fields (§5.10.3).
@@ -1426,6 +1458,64 @@ impl<'a, 's> FnCx<'a, 's> {
                     return mk(Ty::string(), tir::ExprKind::TypeName { of: t }, span);
                 }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
+            }
+            "variants" => {
+                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                if matches!(t.kind(), TyKind::Param(_)) {
+                    self.error(
+                        span,
+                        format!("`@variants` needs a concrete union type, not the type parameter `{}`", t),
+                    );
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
+                    return error_expr(span);
+                };
+                if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+                    self.error(
+                        span,
+                        format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
+                    );
+                    return error_expr(span);
+                }
+                let elems = (0..variants.len() as u32)
+                    .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
+                    .collect::<Vec<_>>();
+                mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
+            }
+            "variant_name" => {
+                let x = match args {
+                    [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
+                    _ => {
+                        self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
+                        return error_expr(span);
+                    }
+                };
+                let t = self.infer.resolve(x.ty);
+                if t.is_error() {
+                    return error_expr(span);
+                }
+                let Some((variants, _)) = self.sema.union_variants(t) else {
+                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+                    self.error(
+                        span,
+                        format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why),
+                    );
+                    return error_expr(span);
+                };
+                let pat = |kind| tir::Pat { ty: t, kind, span };
+                let arms = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| tir::Arm {
+                        pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
+                        guard: None,
+                        body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
+                    })
+                    .collect();
+                mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
             }
             other => {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", other));

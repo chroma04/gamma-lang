@@ -26,6 +26,8 @@ struct Var {
     kind: VarKind,
     /// Restricted to unsigned integer types (indices, shift amounts).
     unsigned: bool,
+    /// Restricted to integer types (matched against integer patterns).
+    integer: bool,
     fallback: Fallback,
     resolved: Option<Ty>,
 }
@@ -44,7 +46,14 @@ pub struct Mismatch;
 impl InferTable {
     pub fn new_var(&mut self, kind: VarKind) -> Ty {
         let v = InferVar(self.vars.len() as u32);
-        self.vars.push(Var { parent: v.0, kind, unsigned: false, fallback: Fallback::I32, resolved: None });
+        self.vars.push(Var {
+            parent: v.0,
+            kind,
+            unsigned: false,
+            integer: false,
+            fallback: Fallback::I32,
+            resolved: None,
+        });
         Ty::infer(v)
     }
 
@@ -103,6 +112,22 @@ impl InferTable {
         }
     }
 
+    /// Restricts the variable `ty` (if unresolved) to integer types. Returns false if `ty`
+    /// is a float variable or a concrete type that is not an integer.
+    pub fn require_integer(&mut self, ty: Ty) -> bool {
+        match self.shallow(ty).kind() {
+            TyKind::Infer(v) => {
+                let r = self.root(v.0) as usize;
+                if self.vars[r].kind == VarKind::Float {
+                    return false;
+                }
+                self.vars[r].integer = true;
+                true
+            }
+            _ => self.shallow(ty).is_integer(),
+        }
+    }
+
     /// Raises the fallback of an unresolved variable (e.g. for range bounds).
     pub fn set_fallback(&mut self, ty: Ty, fallback: Fallback) {
         if let TyKind::Infer(v) = self.shallow(ty).kind() {
@@ -118,6 +143,7 @@ impl InferTable {
         match var.kind {
             VarKind::Float => ty.is_float(),
             VarKind::Int if var.unsigned => ty.is_unsigned_integer(),
+            VarKind::Int if var.integer => ty.is_integer(),
             VarKind::Int => ty.is_integer() || ty.is_float(),
         }
     }
@@ -135,13 +161,15 @@ impl InferTable {
                 let kind =
                     if vx.kind == VarKind::Float || vy.kind == VarKind::Float { VarKind::Float } else { VarKind::Int };
                 let unsigned = vx.unsigned || vy.unsigned;
-                if kind == VarKind::Float && unsigned {
+                let integer = vx.integer || vy.integer;
+                if kind == VarKind::Float && (unsigned || integer) {
                     return Err(Mismatch);
                 }
                 self.vars[rx as usize].parent = ry;
                 let v = &mut self.vars[ry as usize];
                 v.kind = kind;
                 v.unsigned = unsigned;
+                v.integer = integer;
                 v.fallback = vx.fallback.max(vy.fallback);
                 Ok(())
             }

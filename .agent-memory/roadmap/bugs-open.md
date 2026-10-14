@@ -28,8 +28,5 @@
 37. HashMap keeps get_or_put next to entry (second way; consider removing per §22).
 38. Later (must clear §22): reflection, JSON, hashes, ordered maps.
 ## s8 (bug hunt) leftovers
-39. `match a` before the statement that types `a` (`a := 1; match a…; n: u8 = a`) still fixes
-    `a` to i32 (settle_now only sees coercions recorded so far; whole-body inference would need
-    deferred pattern checks).
-40. A handler literal bound with `::` and later used in `with` gets no expected type for its
-    clauses' `break` values (only literals written in the `with` do).
+(#39, #40 fixed: deferred match exhaustiveness via FnCx.deferred_matches; pending handler
+ literals checked at first `with`, FnCx.pending_handlers + shielded_performs.)

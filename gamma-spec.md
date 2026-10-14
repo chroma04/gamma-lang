@@ -2,7 +2,7 @@
 
 Version 1.0. Gamma is a systems programming language intended to replace C: simple, fast and sensible, with algebraic effects for allocation, I/O, iteration, early exit and coroutines.
 
-This specification is self-contained. Chapters 1–21 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
+This specification is self-contained. Chapters 1–22 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
 
 | § | Chapter |
 | --- | --- |
@@ -27,6 +27,7 @@ This specification is self-contained. Chapters 1–21 and Appendices A–B are n
 | 19 | [Interoperability and low-level facilities](#19-interoperability-and-low-level-facilities) |
 | 20 | [Attributes and intrinsics](#20-attributes-and-intrinsics) |
 | 21 | [The core library](#21-the-core-library) |
+| 22 | [The standard library: scope and admission](#22-the-standard-library-scope-and-admission) |
 | A | [Grammar](#appendix-a-grammar) |
 | B | [Reference tables](#appendix-b-reference-tables) |
 | C | [Design rationale](#appendix-c-design-rationale) |
@@ -167,7 +168,7 @@ while    with
 | Word | Special only |
 | --- | --- |
 | `const` | immediately after `^`, `[^]` or `[]` in a type (§5.5) |
-| `on` | after the handler list of a `with` (§12.6) |
+| `on` | after the handler list of a `with` (§12.7) |
 | `where` | after a function signature or a type's parameter list (§16.3) |
 | `test` | at the start of a top-level declaration (§3.8) |
 
@@ -372,7 +373,7 @@ main :: fn() -> u8 \ {...}               // exit status
 main :: fn() -> E!() \ {...}             // E is any type
 ```
 
-The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes `error: ` and the error value to standard error, formatted as by `{}` (§21.6) and, for a union, preceded by its type name (`error: ConfigError.Missing`), and exits with status 1.
+The runtime installs the default handler for each ambient effect, calls `main`, and exits with status 0 (or the returned `u8`). If `main` returns an error, the runtime writes `error: ` and the error value to standard error, formatted as by `{}` (§21.6.1) and, for a union, preceded by its type name (`error: ConfigError.Missing`), and exits with status 1.
 
 Command-line arguments and the environment are obtained through the `Env` effect.
 
@@ -384,7 +385,7 @@ test "parse rejects letters" {
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value. The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value; wherever a test writes an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
 
 ---
 
@@ -453,7 +454,7 @@ The statement means `if P := e { rest of the block } else { d }`. A pattern bind
 Scopes nest: the universe scope (predeclared names, §21.1) contains each module's top-level scope, which contains function bodies, which contain blocks.
 
 - A local binding is in scope from the end of its declaration to the end of the enclosing block. A binding's own initializer cannot refer to it.
-- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse names declared at top level, imported module names, and predeclared names; the local hides them for its scope.
+- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse names declared at top level, imported module names and predeclared names, the reserved type names of §21.1 included (`u1 := rand()` is a local named `u1`); the local hides them for its scope, so inside it the name no longer denotes the type. A name that hides a predeclared one hides it completely: the effect operations of §21.1 (`current`, `write_out`, `yield`, …) are ordinary predeclared function names, so a program may declare its own `current` or bind a local `now` (the operation stays reachable as `Alloc.current`, `Clock.now`).
 - Function literals and handler literals are part of their enclosing function for this rule.
 - Top-level names in one module must be distinct, across all files of the module.
 - `_` never introduces a binding and may be used any number of times.
@@ -640,6 +641,12 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Construction.** `.Name(payload)` or `.Name` when the union type is known from context; `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly as arguments: `.Rect(w: 2, h: 3)`.
 - **Inspection.** `match` (§8.6), `if pattern := e` (§8.2) and `is` (§7.6). `u.tag()` returns the tag value as the tag type.
 - **From a raw tag.** For an enum, `Dir.from_tag(x)` gives `?Dir`, which is `null` unless `x` is the tag of one of its variants. It is the only way to turn an integer into an enum; there is no unchecked form. A union with payloads has no `from_tag`, since a tag alone cannot give a payload.
+- **Reflection.** `@variants(T)` is a compile-time constant of type `[N]T` holding every variant of the enum `T` in declaration order, so `for d in @variants(Dir)` visits each variant and `@variants(Dir).len` counts them. `T` must be a tagged union none of whose variants has a payload, and a concrete type (not a type parameter). `@variant_name(x)` gives the name of the active variant of any tagged union value `x` as a `string`, as written in the declaration and without the dot: `@variant_name(Dir.E)` is `"E"`. It evaluates `x` once. Neither applies to a `#c_union`.
+
+```
+for d in @variants(Dir) { print(@variant_name(d)) }    // N E S W
+```
+
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
 
 #### 5.11.1 Untagged unions
@@ -708,6 +715,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
 - a coercion site (§6.4) whose target type is known fixes the variable to that type (no widening is inferred: the variable becomes exactly the target type). If the target is `?T` or `E!T` (possibly nested), the variable becomes `T`, the type that the wrapping coercion starts from;
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
+- a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
 Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
@@ -748,7 +756,7 @@ Untyped constants are permitted at top level and as locals. A typed constant is 
 
 ### 6.4 Implicit coercions
 
-Gamma has no implicit conversions between different numeric types in expressions. Binary operators require operands of the identical type (§7.4). The following coercions happen implicitly at **coercion sites** only: initialization of a binding, assignment, argument passing (including named and spread arguments), return, field values in constructors, `else` fallbacks, the operand of a `break` that supplies the value of a `with` or `for` (§12.7, §13.2), and arms of `if`/`match` expressions joined to a known result type.
+Gamma has no implicit conversions between different numeric types in expressions. Binary operators require operands of the identical type (§7.4); the one exception is the right side of a compound assignment (§4.7). The following coercions happen implicitly at **coercion sites** only: initialization of a binding, assignment, argument passing (including named and spread arguments), return, field values in constructors, `else` fallbacks, the operand of a `break` that supplies the value of a `with` or `for` (§12.7, §13.2), and arms of `if`/`match` expressions joined to a known result type.
 
 | From | To | Rule |
 | --- | --- | --- |
@@ -773,7 +781,7 @@ Coercions do not chain, with one exception: any number of wrap-present / wrap-su
 
 ### 6.5 Lossless conversion: `T(x)`
 
-`T(x)` with a single positional argument whose type is not a tuple whose fields fill `T` is a **conversion**. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
+`T(x)` with a single positional argument is a **conversion** when `T` is not a tuple or array type; for those, `T(…)` is always construction (§7.11), with one value per element, so a tuple is never converted to another tuple type: `(i64, i64)(..p)` builds one from `p: (i32, i32)`, coercing each element. When `x` coerces to `T` implicitly (§6.4), the conversion is that coercion: `string(buf)` with `buf: []u8`. Otherwise it is permitted exactly when the conversion is lossless for every value of the source type, and is a compile error otherwise:
 
 | `x: S` | `T(x)` permitted when |
 | --- | --- |
@@ -862,7 +870,7 @@ Precedence, tightest first. Operators on one level associate left-to-right unles
 
 #### 7.4.1 Operand types
 
-Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to plain `#bits` structs (§5.10.5; on the underlying integer, so fieldwise).
+Binary arithmetic and bitwise operators require both operands to have the same type (an untyped literal or constant takes the other operand's type, §6.1). The result has that type. (In a compound assignment the right operand may be a narrower numeric type, §4.7.) Integer operators apply to integer types; `+ - * /` and unary `-` also apply to float types; `%` does not apply to floats (use `math.rem`). Unary `-` applies only to signed integers and floats. Bitwise operators apply to unsigned and signed integers (as bit patterns) and to plain `#bits` structs (§5.10.5; on the underlying integer, so fieldwise).
 
 A unary `-` applied directly to an untyped literal is part of the literal for typing purposes: `-128i8` and `x: i8 = -128` are valid.
 
@@ -978,7 +986,7 @@ Methods cannot be added to types declared in other modules; write a free functio
 - A struct type: construction (§5.10.1). Struct construction takes **named** arguments and spreads only; positional arguments are not allowed, so reordering fields can never silently change meaning, and `S(x)` with one positional argument is always a conversion.
 - A union variant `.V(args)` / `U.V(args)`: construction with the payload.
 - An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements.
-- A tuple type: construction from positional/named arguments.
+- A tuple type: construction from positional/named arguments and spreads, one value per element; each value coerces to its element's type (§6.4). It is never a conversion, even with one argument (§6.5).
 - An optional type `?T(x)`: an optional holding `x` (coerced to `T`), or with `null`, the absent value of `?T`. This is how inner levels of nested optionals are written: `??i32` holds `?i32(null)`.
 - Any other type with exactly one argument: conversion (§6.5).
 
@@ -1008,8 +1016,9 @@ A **constant expression** is an expression whose value is computed at compile ti
 
 ```
 block     = '{' { statement terminator } [ statement ] '}'
-statement = binding | assignment | expr | defer_stmt | when_stmt
+statement = binding | assignment | expr | defer_stmt | when_stmt | while_stmt
           | 'return' [ expr ] | 'break' [ label ] [ expr ] | 'continue' [ label ]
+          | 'discard' expr
 ```
 
 `return`, `break`, `continue` and `resume` are expressions of type `never` (§5.17), so they can appear as operands, most usefully after `else`: `n = n *? 10 else return !.TooBig`. An operand after `return`/`break` extends to the end of the enclosing expression.
@@ -1367,7 +1376,7 @@ retry :: fn(times: u32, op: fn() -> IoError!()) -> IoError!() {
     return op()                         // last attempt: its error is ours
 }
 
-retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
+try retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
 ```
 
 `retry` performs no effects of its own and needs no effect annotation to accept callbacks that perform any. A callee that wants to *provide* an effect lists it:
@@ -1492,6 +1501,7 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 - A handler literal may capture locals of the enclosing function by reference, and is **second-class** under exactly the rules of §11.6: it may be bound with `::` to a local, used in `with`, and captured by other second-class literals; it cannot be stored, returned, or outlive its frame. A handler literal cannot be a top-level declaration; a handler that needs no frame is a handler declaration (§12.6).
 - Effects performed by a clause body are handled by the handlers in scope **where the literal is written**. They count as effects performed by the enclosing function at that point.
 - `break`, `continue` and `return` in clause bodies are described in §12.7.
+- The values of a clause's `break`s give the installing `with` its value (§12.7.1), so they are checked against the `with`'s type: for a literal bound with `::`, that of the first `with` that installs it (names and handlers are still those where the literal is written). Every later `with` that installs it must have the same type.
 
 ### 12.6 Handler declarations
 
@@ -1511,7 +1521,7 @@ handler Log for ^FileLogger \ {Fs} {
 - The first clause parameter (`self`) has type `T`; the rest are the operation's parameters (and for `ctl`, the continuation).
 - `\ {A}` declares the effects the clauses may perform; the effects performed by every clause body must be a subset of `A`, checked as for functions (§12.3). They are handled by the handlers in scope at the `with` that installs the handler, **outside** that `with` (a clause never handles its own performs). They count as effects performed by the `with` statement.
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
-- Clauses of a handler declaration have no enclosing function, so labeled `break`/`continue` and captures are not available. A clause body behaves like a function body of its own: `return v` (and `try`, §10.3) ends the clause with the value `v`, which is the clause's result exactly as if it were the body's last expression. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
+- Clauses of a handler declaration have no enclosing function, so labeled `break`/`continue` and captures are not available. A clause body behaves like a function body of its own: `return v` (and `try`, §10.5) ends the clause with the value `v`, which is the clause's result exactly as if it were the body's last expression. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
 - **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
 
@@ -1526,7 +1536,7 @@ handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
 ### 12.7 `with`
 
 ```
-with_expr = [ label ':' ] 'with' expr % ',' [ 'on' expr ] block
+with_expr = [ label ':' ] 'with' expr { ',' expr } [ 'on' expr ] block
 ```
 
 `with h1, h2, … { B }` evaluates `h1`, `h2`, … left to right, then runs `B` with their handlers installed. `with a, b { B }` is equivalent to `with a { with b { B } }`: a later handler is inside the earlier ones, so effects required by `b`'s clauses (§12.6) may be handled by `a`, but not the reverse. List providers first: `with heap_allocator(), logger_that_allocates() { … }`. Two handlers for the same effect in one `with` is a compile error. `on s` is required if and only if some installed handler handles a `ctl` operation (§14.1).
@@ -1585,7 +1595,7 @@ Any of these may also be handled by user handlers; only `Sys` cannot.
 
 ### 12.10 `Sys`
 
-`Sys` has no operations and cannot be handled. It is the effect of operations that escape Gamma's model: calling foreign functions (unless annotated otherwise, §19.2), accessing `#global` storage, volatile memory access, inline assembly, creating threads, and the low-level primitives from which the ambient effects' default handlers are built. A function whose effect set does not contain `Sys` (and calls no foreign function annotated with a smaller set) cannot observe or modify state outside its arguments, the memory they point to, and its handlers. An exported function may have `Sys` and installs handlers internally (§19.2).
+`Sys` has no operations and cannot be handled. It is the effect of operations that escape Gamma's model: calling foreign functions (unless annotated otherwise, §19.2), accessing `#global` storage, volatile memory access, inline assembly, creating threads, and the low-level primitives from which the ambient effects' default handlers are built. A function whose effect set does not contain `Sys` (and calls no foreign function annotated with a smaller set) cannot observe or modify state outside its arguments, the memory they point to, and its handlers. An exported function may have `Sys` and installs handlers internally (§19.4).
 
 ### 12.11 Static guarantees
 
@@ -1696,7 +1706,20 @@ while x := ca.next() {
 
 A general iterator can be turned into a pull-style generator by running it on a fiber (§14); a library type such as `Generator(T)` can package this (it is not part of the core library).
 
-### 13.5 Performance
+### 13.5 Iterators as arguments
+
+A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() \ {Yield(T)}` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) is passed as the function literal `fn() => f(a1, …, an)`: the callee calls it to run the iterator, and the call and its arguments are evaluated each time it does. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
+
+```
+words := try collect(str.fields(line))       // a List(string)
+third := nth(str.split(csv, ","), 2)         // ?string
+n := count(runes(text))
+names.collect(m.keys())                      // List.collect appends
+```
+
+`collect`, `count` and `nth` (§21.4) take iterator parameters; a function of the program can too. Lockstep iteration over two slices is `zip` (§21.4); over two iterators it needs cursors or fibers (§13.4).
+
+### 13.6 Performance
 
 *Implementation note (non-normative):* when the iterator's body is visible to the compiler, `for` compiles to the same loop as hand-written index code, because the handler is known statically and the `yield` clause is inlined. The standard iterators are `#inline`. See Appendix D.
 
@@ -1981,7 +2004,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Eq(T)` | every type for which `is` is defined (§7.6) | `is`, `is not`, `in` over `T`, literal patterns of `T`, `@hash` (§16.8) |
 | `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
-| `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, `.trunc` / `.checked` / `.sat` |
+| `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
 | `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
@@ -2026,8 +2049,8 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
 - The body is still checked once, treating the parameter as an unknown constant of its type. `when` conditions may not depend on it (§16.7).
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
-- Inside the body, an array length that depends on a compile-time parameter must be the parameter itself: `[N]T` is allowed, `[N + 1]T` (or `[@size_of(T)]u8` for a type parameter `T`) is a compile error, because the body is checked once and array types must be comparable without knowing `N`. An array `[N]T` is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown `N`), and `a.len` is `N`.
-- A compile-time value parameter that appears in the type of another parameter is inferable (`N` above, from `a: [N]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
+- Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ^` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression up to folding constant subexpressions and the order of the operands of `+ * & | ^` (`[A + B]T` and `[B + A]T` are one type, `[2 * N]T` and `[N + N]T` are not). Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
+- A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
 
 ### 16.6 Generic effects and effect-set parameters
@@ -2170,6 +2193,7 @@ Every run-time check in Gamma follows one rule: **it traps in Debug, Checked and
 | slicing `a[lo..hi]` | `lo <= hi <= len` | undefined behavior |
 | `p.cast(P)` | address aligned for `P` | undefined behavior on use |
 | `@min_stack` and fiber stack overflow | enough stack | undefined behavior |
+| `@unreachable()` | never evaluated | undefined behavior |
 | consuming a continuation twice; `with` completing with unconsumed continuations; consuming on the wrong `with` or thread | §14.2 rules | undefined behavior |
 | `expect`, `assert` (§21.6) | condition is true | `assert`: removed; `expect`: tests only |
 | integer `/`, `%` | divisor ≠ 0; not `MIN / -1` | **always traps** |
@@ -2184,7 +2208,7 @@ In addition to performing all checks, a Debug build must:
 - tag each allocation with its allocator and trap when it is freed through a different one, reporting both sites;
 - place guard pages (or equivalent probes) on fiber stacks;
 - use the leak-checking allocator for tests;
-- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library and shorten long reports.
+- report, with a trap's location, the calls that led to it: each call's location and the function it lies in, innermost first. Implementations may leave out frames of the core library. A report of more than 20 calls consists of its first 10 and its last 10 calls, with the line `  ... more calls` between them, which does not state how many calls were left out; so a stack overflow, whose depth differs between implementations, reports identically.
 
 Debug builds may skip optimizations, including handler specialization; this never changes meaning.
 
@@ -2281,10 +2305,11 @@ libc :: foreign "c" {
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
 - **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
 - Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
+- An interpreter may call foreign functions itself, with the semantics of a native call: C sees the memory the pointers it is given point to, and what C writes there is visible afterwards. Where it cannot give a call those semantics (a library it cannot load, a signature it cannot pass), it must run the program natively instead.
 - **Calling convention**: the target's C ABI by default. `#callconv(.X)` selects another: `.C` (the target's C ABI, the default, so it only states the default), `.SysV` (the System V AMD64 ABI) and `.Win64` (the Microsoft x64 ABI). `.SysV` and `.Win64` exist only where `target.arch` is `.X86_64`; naming them on another architecture, or naming any other convention, is an error. On the supported x86-64 targets the C ABI is System V, so `.SysV` means exactly `.C`; only `.Win64` differs.
   - The attribute applies to a top-level function declaration, to a foreign member (it describes the C function being called), and to a `^fn` type: `#callconv(.Win64) ^fn(a: i32) -> i32`. Anywhere else it is an error.
   - A function or function pointer type with a convention other than `.C` has the plain calling convention (§19.1): its effect set must be empty or `{Sys}`, and a function must be top-level, non-generic and capture nothing. A function literal that captures nothing and is written where such a pointer type is expected has that convention.
-  - The convention is part of a function pointer type: `#callconv(.Win64) ^fn(i32) -> i32` and `^fn(i32) -> i32` are different types and no coercion converts between them, including the effect-widening coercion of §11.6. A function with a convention other than `.C` used as a value is a `^fn` carrying its convention; it cannot become a second-class `fn` value, which always uses the language's own convention. `@fiber` (§14.6) and thread entry points (§19.6) take `.C` pointers only.
+  - The convention is part of a function pointer type: `#callconv(.Win64) ^fn(i32) -> i32` and `^fn(i32) -> i32` are different types and no coercion converts between them, including the effect-widening coercion of §12.3. A function with a convention other than `.C` used as a value is a `^fn` carrying its convention; it cannot become a second-class `fn` value, which always uses the language's own convention. `@fiber` (§14.6) and thread entry points (§19.6) take `.C` pointers only.
   - Calls, direct or through a pointer of the right type, use the function's convention. An `#export`ed function (§19.4) is exported with its convention. The convention changes no Gamma semantics: the interpreter and compile-time evaluation ignore it.
 
 ### 19.3 Global variables
@@ -2307,14 +2332,14 @@ checksum :: fn(data: [^]const u8, len: usize) -> u32 { … }
 
 #export("gm_load")
 load :: fn(path: cstring) -> c.c_int \ {Sys} {
-    with heap_allocator(), stderr_log(), real_fs() {
+    with heap_allocator(), system_io(), system_output() {
         cfg := load_config(path_from(path)) else e => { last_error = code(e); return -1 }
         …
     }
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using `Sys`-level constructors from the library (`heap_allocator()`, `real_fs()`, …). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers; it installs whatever handlers it needs, using the default handlers of the core library (`heap_allocator()`, `system_io()`, `system_output()`, §21.1). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2414,6 +2439,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@offset_of(S, field)` | `usize` | yes | 5.10.4 |
 | `@type_of(e)` | `type` (`e` is not evaluated) | yes | — |
 | `@type_name(T)` | `string` | yes | — |
+| `@variants(T)` | `[N]T`; every variant of the enum `T` in declaration order | yes | 5.11 |
+| `@variant_name(x)` | `string`; the name of the active variant of the tagged union value `x` | yes, if `x` is | 5.11 |
 | `@location()` | `SourceLocation` (file, line, column, function) of the call | yes | — |
 | `@caller_location()` | as above, of the caller (only as a parameter default) | yes | — |
 | `@static_assert(c, msg)` | `()` | yes | 17.7 |
@@ -2441,15 +2468,15 @@ The core library is the part of the standard library that the language definitio
 
 ### 21.1 The universe scope
 
-These names are predeclared in every module, without import. The type names in the first row are reserved and may not be redeclared anywhere; the others may be hidden by a local or top-level declaration of the same name (§4.6).
+These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may still reuse them (a random sample named `u1`), hiding the type for their scope (§4.6). Every other name, including the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
 
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
-| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, … (each effect's operations, §12.1) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, and the methods of `Instant` and `Duration` (§21.7) |
+| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2504,9 +2531,14 @@ enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))}
 reversed   :: fn(T: type, xs: []const T) \ {Yield(T)}
 bytes      :: fn(s: string) \ {Yield(u8)}
 runes      :: fn(s: string) \ {Yield(rune)}
+zip        :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))}
+
+collect    :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc}
+count      :: fn(T: type, it: fn() \ {Yield(T)}) -> usize
+nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 ```
 
-`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. All are `#inline`.
+`range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
 ### 21.5 Containers (summary)
 
@@ -2595,7 +2627,7 @@ Since the template is a compile-time parameter, a mismatch is reported at the in
 | --- | --- |
 | `string` or `[]u8` as an argument itself | its bytes, unchanged |
 | integers | decimal |
-| floats | the shortest decimal that reads back as the same value at the argument's type, without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
+| floats | the shortest decimal that reads back as the same value at the argument's type (among equally short candidates, the one nearest the exact value of the float, and on an exact tie the one whose last digit is even), without a trailing `.0`: positional notation when 10⁻⁶ ≤ \|x\| < 10²¹ (`1.5`, `-2`, `0.001`), otherwise `<digits>e<exponent>` (`1e21`, `2.5e-7`); `-0.0` is `-0`; `nan`, `inf`, `-inf` |
 | `bool` | `true`, `false` |
 | enums | `.Name` |
 | tagged unions | `.Name(payload)`; a tuple payload's elements are written directly: `.Rect(w: 2, h: 3)` |
@@ -2613,7 +2645,7 @@ The rules are fixed and not extensible: there is no way for a type to customize 
 
 ```
 spec  = [[fill] align] ['+'] ['#'] ['0'] [width] ['.' precision] [kind]
-align = '<' | '>' | '^'          (left, right, centered)
+align = '<' | '>' | '^'          (left, right, centered: an odd leftover fill unit goes on the right)
 kind  = 'x' | 'X' | 'o' | 'b' | 'e'
 ```
 
@@ -2834,12 +2866,13 @@ field_decl    = [ 'pub' ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
 union_lit     = { attribute } 'union' [ '(' type ')' | '(' param_list ')' ] [ where_clause ]
                 '{' { NL } [ variant { ( ',' | NL ) { NL } variant } ] { NL } [ ',' ] { NL } '}'
 variant       = IDENT [ ':' type ] [ '=' expr ]
+              | 'when' expr '{' { variant ( ',' | NL ) } '}' [ 'else' '{' { variant ( ',' | NL ) } '}' ]
 effect_lit    = 'effect' [ '(' param_list ')' ] '{' { NL } { op_decl NL { NL } } '}'
 op_decl       = IDENT ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param_list ] ')' [ '->' type ]
 where_clause  = 'where' ( IDENT '(' type ')' ) % ','
 ```
 
-In `struct`, `union` and `effect` parameter lists every parameter is compile-time, so parameters are declared with `:`; `::` is not allowed there. `union(T)` with a single type argument sets the tag type; `union(P: type, …)` with named parameters declares a generic union.
+In the parameter lists of `struct`, `union` and `effect` literals and of generic handler declarations every parameter is compile-time, so parameters are declared with `:`; `::` is not allowed there. `union(T)` with a single type argument sets the tag type; `union(P: type, …)` with named parameters declares a generic union.
 
 ### A.3 Functions and handlers
 
@@ -2850,12 +2883,12 @@ param_list    = param % ','
 param         = IDENT { ',' IDENT } [ ( ':' | '::' ) type ] [ '=' expr ]     // '::' = compile-time (§16.5)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
-handler_decl  = 'handler' [ '(' params ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
+handler_decl  = 'handler' [ '(' param_list ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
 clause        = IDENT '(' [ IDENT % ',' ] ')' '=>' ( expr | block )
 
 foreign_block = 'foreign' STRING '{' { NL } { foreign_member NL { NL } } '}'
 foreign_member= { attribute } IDENT '::' fn_type
-              | '#' 'global' IDENT ':' type
+              | { attribute } '#' 'global' IDENT ':' type
 import_expr   = 'import' STRING
 ```
 
@@ -2892,11 +2925,11 @@ cond_part     = pattern ':=' expr | expr
 
 ### A.5 Expressions
 
-Precedence levels are those of §7.3 / Appendix B; each `exprN` uses operators of level N.
+Precedence levels are those of §7.3 / Appendix B; the productions from `else_expr` down to `postfix_expr` correspond to levels 11 down to 1.
 
 ```
 expr          = else_expr
-else_expr     = logic_expr [ 'else' ( IDENT '=>' ( expr | block ) | else_expr ) ]
+else_expr     = logic_expr [ 'else' ( IDENT '=>' ( expr | block ) | block | else_expr ) ]   // block: not in a head (rule 4)
 logic_expr    = not_expr { 'and' not_expr } | not_expr 'or' not_expr { 'or' not_expr }
 not_expr      = 'not' not_expr | cmp_expr
 cmp_expr      = range_expr [ cmp_op ( range_expr | is_pattern ) ]
@@ -2918,8 +2951,8 @@ postfix       = '?' | '!' | '^'
               | '[' expr ']'
               | '[' [ expr ] ( '..' | '..=' ) [ expr ] ']'
               | '.' IDENT | '.' INT
-arg           = expr | IDENT ':' expr | '..' expr | '---'
-primary       = literal | IDENT | 'null' | 'true' | 'false'
+arg           = expr | IDENT ':' expr | '..' expr
+primary       = literal | IDENT | '_' | '---' | 'null' | 'true' | 'false'
               | '(' expr ')' | tuple_expr
               | '.' IDENT                                         // variant, type from context
               | type_only                                          // ?T, ^T, []T, [N]T, fn types, struct/union/effect literals
@@ -3046,7 +3079,7 @@ The goals of §1 are applied in priority order: **sensible**, then **fast**, the
 ### C.2 Types and values
 
 - **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used anywhere in the function; only a literal nothing constrains falls back (`i32`, `f64`, or `usize` for ranges and array lengths). This keeps the common case unannotated while never converting between types: a literal that does not fit its inferred type is an error, not a wrap.
-- **No implicit numeric conversion in expressions.** Lossless widening happens only at coercion sites (assignment, arguments, return). `T(x)` converts only when lossless for every value of the source *type*; legality never depends on how clever the compiler's range analysis is. Lossy conversions are named methods: `trunc`, `round`, `checked`, `sat`, `bits`.
+- **No implicit numeric conversion in expressions.** Lossless widening happens only at coercion sites (assignment, arguments, return) and on the right of a compound assignment (`total += x`). `T(x)` converts only when lossless for every value of the source *type*; legality never depends on how clever the compiler's range analysis is. Lossy conversions are named methods: `trunc`, `round`, `checked`, `sat`, `bits`.
 - **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one.
 - **Arbitrary-width integers** make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified (unlike C bitfields).
 - **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other, and wrap implicitly so success paths read like plain code.

@@ -485,6 +485,7 @@ impl<'s> Sema<'s> {
         self.adt_instances.insert((template, args.clone()), inst);
         let ty = Ty::intern(TyKind::Adt(inst, gargs));
         let map: Vec<(crate::types::ParamId, Ty)> = params.iter().copied().zip(args.iter().copied()).collect();
+        self.check_len_exprs(&map, None);
         let info = &self.adts[&template];
         let (module, defaults, has_using) = (info.module, info.defaults.clone(), info.has_using);
         self.adts.insert(inst, AdtInfo { name, module, defaults, has_using });

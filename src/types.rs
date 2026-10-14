@@ -182,6 +182,61 @@ pub enum CallConv {
     Win64,
 }
 
+/// An operator of a computed array length (§16.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LenOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Shl,
+    Shr,
+    And,
+    Or,
+    Xor,
+}
+
+impl LenOp {
+    /// The result on `usize` operands, or `None` where the operation traps.
+    pub fn apply(self, a: u64, b: u64) -> Option<u64> {
+        match self {
+            LenOp::Add => a.checked_add(b),
+            LenOp::Sub => a.checked_sub(b),
+            LenOp::Mul => a.checked_mul(b),
+            LenOp::Div => a.checked_div(b),
+            LenOp::Rem => a.checked_rem(b),
+            LenOp::Shl => {
+                let r = a.checked_shl(u32::try_from(b).ok()?)?;
+                (r >> b == a).then_some(r)
+            }
+            LenOp::Shr => u32::try_from(b).ok().and_then(|b| a.checked_shr(b)),
+            LenOp::And => Some(a & b),
+            LenOp::Or => Some(a | b),
+            LenOp::Xor => Some(a ^ b),
+        }
+    }
+
+    pub fn symbol(self) -> &'static str {
+        match self {
+            LenOp::Add => "+",
+            LenOp::Sub => "-",
+            LenOp::Mul => "*",
+            LenOp::Div => "/",
+            LenOp::Rem => "%",
+            LenOp::Shl => "<<",
+            LenOp::Shr => ">>",
+            LenOp::And => "&",
+            LenOp::Or => "|",
+            LenOp::Xor => "^",
+        }
+    }
+
+    fn commutative(self) -> bool {
+        matches!(self, LenOp::Add | LenOp::Mul | LenOp::And | LenOp::Or | LenOp::Xor)
+    }
+}
+
 /// The signature part of a function or function pointer type (§5.14).
 /// Parameter names are not part of the type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -260,6 +315,15 @@ pub enum TyKind {
     /// A compile-time value used as a generic argument (§16.4, §16.5), such as
     /// the `16` of `Ring(u8, 16)`. Never the type of an expression.
     Value(ConstKey),
+    /// An array length computed from compile-time value parameters, such as the
+    /// `R * C` of `[R * C]T` (§16.5): `lhs` and `rhs` are each a `Param`, a `Value`
+    /// or another `LenExpr`. Built by [`Ty::len_expr`], which folds it once both
+    /// operands are values.
+    LenExpr {
+        op: LenOp,
+        lhs: Ty,
+        rhs: Ty,
+    },
     /// An unresolved literal type variable.
     Infer(InferVar),
     /// A compile-time effect set used as a generic argument: the argument of an
@@ -379,6 +443,24 @@ impl Ty {
     pub fn usize() -> Ty {
         Ty::intern(TyKind::Usize)
     }
+
+    /// The array length `lhs op rhs` (§16.5): a `usize` value when both operands
+    /// are values (an error type where the operation traps), else a `LenExpr` with
+    /// the operands of a commutative operator in a canonical order.
+    pub fn len_expr(op: LenOp, lhs: Ty, rhs: Ty) -> Ty {
+        match (lhs.kind(), rhs.kind()) {
+            (TyKind::Error, _) | (_, TyKind::Error) => Ty::error(),
+            (TyKind::Value(a), TyKind::Value(b)) => match (a.as_u64(), b.as_u64()) {
+                (Some(a), Some(b)) => match op.apply(a, b) {
+                    Some(n) => Ty::intern(TyKind::Value(ConstKey::int(Ty::usize(), &n.into(), 8))),
+                    None => Ty::error(),
+                },
+                _ => Ty::error(),
+            },
+            _ if op.commutative() && rhs < lhs => Ty::intern(TyKind::LenExpr { op, lhs: rhs, rhs: lhs }),
+            _ => Ty::intern(TyKind::LenExpr { op, lhs, rhs }),
+        }
+    }
     pub fn isize() -> Ty {
         Ty::intern(TyKind::Isize)
     }
@@ -489,9 +571,9 @@ impl Ty {
             | TyKind::Array { elem: t, .. }
             | TyKind::Optional(t)
             | TyKind::Cont(t) => t.walk(f),
-            TyKind::ParamArray { len, elem } => {
-                len.walk(f);
-                elem.walk(f);
+            TyKind::ParamArray { len: a, elem: b } | TyKind::LenExpr { lhs: a, rhs: b, .. } => {
+                a.walk(f);
+                b.walk(f);
             }
             TyKind::Result { err, ok } => {
                 err.walk(f);
@@ -546,9 +628,11 @@ impl Ty {
                         Some(n) => TyKind::Array { len: n, elem },
                         None => TyKind::Error,
                     },
+                    TyKind::Error => TyKind::Error,
                     _ => TyKind::ParamArray { len, elem },
                 }
             }
+            TyKind::LenExpr { op, lhs, rhs } => return Ty::len_expr(*op, lhs.map(f), rhs.map(f)),
             TyKind::Optional(t) => TyKind::Optional(t.map(f)),
             TyKind::Cont(t) => TyKind::Cont(t.map(f)),
             TyKind::Effects(set) => TyKind::Effects(map_effects(set, f)),
@@ -722,6 +806,18 @@ impl fmt::Display for Ty {
             TyKind::Cont(t) => write!(f, "cont({})", t),
             TyKind::Param(p) => write!(f, "{}", p.name()),
             TyKind::ParamArray { len, elem } => write!(f, "[{}]{}", len, elem),
+            TyKind::LenExpr { op, lhs, rhs } => {
+                for (i, t) in [lhs, rhs].into_iter().enumerate() {
+                    if i == 1 {
+                        write!(f, " {} ", op.symbol())?;
+                    }
+                    match t.kind() {
+                        TyKind::LenExpr { .. } => write!(f, "({})", t)?,
+                        _ => write!(f, "{}", t)?,
+                    }
+                }
+                Ok(())
+            }
             TyKind::Value(k) => write!(f, "{}", k),
             TyKind::Effects(set) => {
                 f.write_str("\\ {")?;
