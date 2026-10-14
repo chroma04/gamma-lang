@@ -270,7 +270,30 @@ impl<'a, 's> FnCx<'a, 's> {
         // With spreads, every value goes through a temporary, in the order written.
         let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
         let mut stmts = vec![];
-        for arg in args {
+        // `T(t)` with a tuple `t` is not a conversion: a tuple type takes one value per
+        // element (§6.5), and `T(..t)` builds it from another tuple.
+        if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
+            && elems.len() != 1
+        {
+            let v = self.expr(e, None);
+            let vt = self.infer.resolve(v.ty);
+            if let TyKind::Tuple { .. } = vt.kind() {
+                self.error(
+                    span,
+                    format!(
+                        "`{}` takes one value per element, so a tuple is not converted to it; spread it: `{}(..t)` (§6.5)",
+                        ty, ty
+                    ),
+                );
+                return error_expr(span);
+            }
+            if !elems.is_empty() {
+                slots[0] = Some(self.coerce(v, elems[0]));
+                next = 1;
+            }
+        }
+        let skip = next;
+        for arg in &args[skip.min(args.len())..] {
             let parts = match &arg.kind {
                 ArgKind::Positional(e) => {
                     if next >= elems.len() {

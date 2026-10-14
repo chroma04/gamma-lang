@@ -57,3 +57,7 @@
   second-class fn not part of another type, not `&`, not returned from literals; §12.5 no
   top-level handler literals; §5.11 from_tag enums only; §12.7/§8.8 clause exits + esc/ctl
   performs in defer; App./§16.7 depth limits (mono 256, ADT inst 64).
+- s9 spec pass: §6.5 tuple types `T(x)` always construct (spread `T(..t)` to convert); §21.1
+  reserved type names only forbidden at top level (locals/params like `u1` may hide them: real
+  code uses u1/u2/i53 locals); universe list synced with prelude; grammar gaps (else block,
+  `_`/`---` primaries, when in union bodies) fixed; many § cross-refs fixed.
