@@ -1,18 +1,18 @@
-// std/collections/bitset: a set of small unsigned integers, one bit each.
-//
-//     bs :: import "std/collections/bitset"
-//
-//     s := try bs.bitset(100)              // members are 0..100
-//     defer s.deinit()
-//     s.insert(3)
-//     s.insert(64)
-//     for i in s.items() { print("{}\n", i) }     // 3, 64
-//
-// The universe is fixed when the set is created: it holds the integers below the
-// capacity `n` given to `bitset`. The bits live in a block of 64-bit words from the
-// allocator that was current at creation, so no operation after construction allocates
-// and none can fail for lack of memory. Bits at positions `n` and above are never set,
-// which keeps the whole-word operations (`count`, `union_with`, …) exact.
+//! A set of small unsigned integers, one bit each.
+//!
+//!     bs :: import "std/collections/bitset"
+//!
+//!     s := try bs.bitset(100)              // members are 0..100
+//!     defer s.deinit()
+//!     s.insert(3)
+//!     s.insert(64)
+//!     for i in s.items() { print("{}\n", i) }     // 3, 64
+//!
+//! The universe is fixed when the set is created: it holds the integers below the
+//! capacity `n` given to `bitset`. The bits live in a block of 64-bit words from the
+//! allocator that was current at creation, so no operation after construction allocates
+//! and none can fail for lack of memory. Bits at positions `n` and above are never set,
+//! which keeps the whole-word operations (`count`, `union_with`, …) exact.
 
 /// A set of the integers below its capacity, stored one bit each.
 pub BitSet :: struct {

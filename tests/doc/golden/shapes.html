@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Module shapes</title>
+<style>
+:root { color-scheme: light dark; --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --code-bg: #f3f4f6; --rule: #d1d9e0; --link: #0550ae; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --code-bg: #161b22; --rule: #30363d; --link: #58a6ff; } }
+body { margin: 0 auto; max-width: 52rem; padding: 1.5rem 1rem 4rem; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, sans-serif; }
+a { color: var(--link); }
+h1, h2, h3 { line-height: 1.25; }
+h2 { margin-top: 2.5rem; padding-bottom: .3rem; border-bottom: 1px solid var(--rule); }
+h3 { margin-top: 2rem; }
+code, pre { font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--code-bg); padding: .75rem 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid var(--rule); padding: .3rem .6rem; text-align: left; vertical-align: top; }
+blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); }
+.contents { columns: 14rem; column-gap: 2rem; padding-left: 1.2rem; }
+.members dt { margin-top: .5rem; }
+.members dd { margin-left: 1.5rem; }
+</style>
+</head>
+<body>
+<h1>Module <code>shapes</code></h1>
+<p><a href="index.html">All modules</a></p>
+<p>A second file of the module. Files are read in name order, so this one comes first.</p>
+<p>Shapes and what can be done with them.</p>
+<p>A small module for the documentation generator&#39;s tests. It uses every kind of public declaration:</p>
+<pre><code>shapes :: import &quot;./shapes&quot;
+c := shapes.circle(2.0)</code></pre>
+<p>Markdown in comments is passed through: <em>emphasis</em>, <strong>strong</strong>, <code>code</code> and <a href="https://example.com">links</a>.</p>
+<h2 id="contents">Contents</h2>
+<ul class="contents">
+<li><a href="#Options"><code>Options</code></a></li>
+<li><a href="#Point"><code>Point</code></a></li>
+<li><a href="#Pair"><code>Pair</code></a></li>
+<li><a href="#Counter"><code>Counter</code></a></li>
+<li><a href="#Slot"><code>Slot</code></a></li>
+<li><a href="#Shape"><code>Shape</code></a></li>
+<li><a href="#PointRef"><code>PointRef</code></a></li>
+<li><a href="#Measure"><code>Measure</code></a></li>
+<li><a href="#Points"><code>Points</code></a></li>
+<li><a href="#Events"><code>Events</code></a></li>
+<li><a href="#handler-Events-for--Counter"><code>handler Events for ^Counter</code></a></li>
+<li><a href="#SIDES"><code>SIDES</code></a></li>
+<li><a href="#PI_APPROX"><code>PI_APPROX</code></a></li>
+<li><a href="#NO_DOC"><code>NO_DOC</code></a></li>
+<li><a href="#TABLE"><code>TABLE</code></a></li>
+<li><a href="#UNIT"><code>UNIT</code></a></li>
+<li><a href="#UNIT-2"><code>UNIT</code></a></li>
+<li><a href="#last"><code>last</code></a></li>
+<li><a href="#verbose"><code>verbose</code></a></li>
+<li><a href="#unit_square"><code>unit_square</code></a></li>
+<li><a href="#circle"><code>circle</code></a></li>
+<li><a href="#area"><code>area</code></a></li>
+<li><a href="#copy_all"><code>copy_all</code></a></li>
+<li><a href="#twice"><code>twice</code></a></li>
+<li><a href="#undocumented"><code>undocumented</code></a></li>
+<li><a href="#native"><code>native</code></a></li>
+<li><a href="#alloc_mod"><code>alloc_mod</code></a></li>
+</ul>
+<h2>Structs</h2>
+<h3 id="Options"><code>Options</code></h3>
+<pre><code>Options :: struct {
+    pub a: bool = false
+    pub b: bool = false
+}</code></pre>
+<p>Options in a table:</p>
+<table>
+<thead><tr><th>name</th><th>meaning</th></tr></thead>
+<tbody>
+<tr><td><code>a</code></td><td>first | left</td></tr>
+<tr><td><code>b</code></td><td>second</td></tr>
+</tbody>
+</table>
+<ol>
+<li>one</li>
+<li>two</li>
+</ol>
+<h3 id="Point"><code>Point</code></h3>
+<pre><code>Point :: struct {
+    pub x: f64 = 0.0
+    pub y: f64 = 0.0
+    // private fields omitted
+}</code></pre>
+<p>A point in the plane.</p>
+<p>Coordinates are in meters. The <code>&lt;</code> and <code>&amp;</code> characters stay text: a &lt; b &amp;&amp; c &gt; d.</p>
+<p>Fields:</p>
+<dl class="members">
+<dt><code>x</code></dt>
+<dd>Distance to the right of the origin.</dd>
+<dt><code>y</code></dt>
+<dd>Distance above the origin.</dd>
+</dl>
+<h3 id="Pair"><code>Pair</code></h3>
+<pre><code>Pair :: struct(T: type) where Eq(T) {
+    pub first, second: T
+}</code></pre>
+<p>A pair of values of one type.</p>
+<h3 id="Counter"><code>Counter</code></h3>
+<pre><code>Counter :: struct {
+    pub n: u32 = 0
+}</code></pre>
+<p>Counts the shapes it hears about.</p>
+<h2>Unions</h2>
+<h3 id="Slot"><code>Slot</code></h3>
+<pre><code>#c_union
+Slot :: union {
+    Empty
+    Int: i64
+    Float: f64
+}</code></pre>
+<p>Where a value is stored.</p>
+<p>Variants:</p>
+<dl class="members">
+<dt><code>Empty</code></dt>
+<dd>Nothing at all.</dd>
+<dt><code>Int</code></dt>
+<dd>A whole number.</dd>
+</dl>
+<h3 id="Shape"><code>Shape</code></h3>
+<pre><code>Shape :: union(u8) {
+    Circle: f64
+    Square: f64
+}</code></pre>
+<p>A shape. Each variant holds its size.</p>
+<ul>
+<li><code>Circle(radius)</code> is round;</li>
+<li><code>Square(side)</code> has four equal sides.</li>
+</ul>
+<h2>Type aliases</h2>
+<h3 id="PointRef"><code>PointRef</code></h3>
+<pre><code>PointRef :: ^Point</code></pre>
+<p>A pointer to a point.</p>
+<h3 id="Measure"><code>Measure</code></h3>
+<pre><code>Measure :: fn(s: ^const Shape) -&gt; f64</code></pre>
+<p>A function that measures a shape.</p>
+<h3 id="Points"><code>Points</code></h3>
+<pre><code>Points :: List(Point)</code></pre>
+<p>A list of points.</p>
+<h2>Effects</h2>
+<h3 id="Events"><code>Events</code></h3>
+<pre><code>Events :: effect {
+    created: fn(s: ^const Shape)
+    abort: esc(reason: string) -&gt; never
+    name: ctl(s: ^const Shape) -&gt; string
+}</code></pre>
+<p>Reports what happens to shapes.</p>
+<p>Operations:</p>
+<dl class="members">
+<dt><code>created</code></dt>
+<dd>A shape was created.</dd>
+<dt><code>abort</code></dt>
+<dd>Aborts the current computation.</dd>
+<dt><code>name</code></dt>
+<dd>Asks for a name.</dd>
+</dl>
+<h2>Handlers</h2>
+<h3 id="handler-Events-for--Counter"><code>handler Events for ^Counter</code></h3>
+<pre><code>handler Events for ^Counter</code></pre>
+<p>Counts creations.</p>
+<h2>Constants</h2>
+<h3 id="SIDES"><code>SIDES</code></h3>
+<pre><code>SIDES: u8 : 3</code></pre>
+<p>The number of sides of a triangle.</p>
+<h3 id="PI_APPROX"><code>PI_APPROX</code></h3>
+<pre><code>PI_APPROX :: 355.0 / 113.0</code></pre>
+<p>A rational approximation of pi.</p>
+<h3 id="NO_DOC"><code>NO_DOC</code></h3>
+<pre><code>NO_DOC: i32 : 7</code></pre>
+<h3 id="TABLE"><code>TABLE</code></h3>
+<pre><code>TABLE: [25]u32</code></pre>
+<p>A long table is not shown, only its type.</p>
+<h3 id="UNIT"><code>UNIT</code></h3>
+<pre><code>// when target.os is .Windows
+UNIT: string : &quot;inch&quot;</code></pre>
+<h3 id="UNIT-2"><code>UNIT</code></h3>
+<pre><code>// otherwise
+UNIT: string : &quot;meter&quot;</code></pre>
+<p>Meters, except on Windows.</p>
+<h2>Variables</h2>
+<h3 id="last"><code>last</code></h3>
+<pre><code>last := Shape.Circle(0.0)</code></pre>
+<p>The last shape made, for debugging.</p>
+<h3 id="verbose"><code>verbose</code></h3>
+<pre><code>verbose: bool = false</code></pre>
+<p>Whether to print every shape.</p>
+<h2>Functions</h2>
+<h3 id="unit_square"><code>unit_square</code></h3>
+<pre><code>unit_square :: fn() -&gt; Shape</code></pre>
+<p>The unit square.</p>
+<h3 id="circle"><code>circle</code></h3>
+<pre><code>circle :: fn(radius: f64) -&gt; Shape</code></pre>
+<p>A circle of the given radius.</p>
+<h3 id="area"><code>area</code></h3>
+<pre><code>area :: fn(s: ^const Shape) -&gt; f64</code></pre>
+<p>The area of <code>s</code>, in square meters.</p>
+<pre><code>a := shapes.area(&amp;shapes.circle(1.0))</code></pre>
+<h3 id="copy_all"><code>copy_all</code></h3>
+<pre><code>copy_all :: fn(
+    T: type,
+    from: []const T,
+    n :: usize = 1,
+    notify: ^fn(s: ^const T) \ {Events},
+) -&gt; AllocError![]T \ {Alloc, Events} where Plain(T)</code></pre>
+<p>Copies <code>n</code> shapes with the allocator in effect.</p>
+<h3 id="twice"><code>twice</code></h3>
+<pre><code>#inline
+twice :: fn(x: f64) -&gt; f64</code></pre>
+<h3 id="undocumented"><code>undocumented</code></h3>
+<pre><code>undocumented :: fn()</code></pre>
+<h2>Foreign functions</h2>
+<h3 id="native"><code>native</code></h3>
+<pre><code>native :: foreign &quot;m&quot; {
+    sqrt :: fn(x: f64) -&gt; f64 \ {}
+}</code></pre>
+<p>Foreign helpers.</p>
+<h2>Imports</h2>
+<h3 id="alloc_mod"><code>alloc_mod</code></h3>
+<pre><code>alloc_mod :: import &quot;std/fixed_buffer&quot;</code></pre>
+<p>Another name for the allocator module.</p>
+</body>
+</html>

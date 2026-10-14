@@ -18,6 +18,8 @@ commands:
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
+  doc     generate API documentation: gamma doc <module> [--format=markdown|html] [-o <path>] [--all] [--missing]
+          (run `gamma help doc` for the options)
   new     create a package in a new directory: gamma new <dir>
   init    create a package in an existing directory: gamma init [dir]
   fetch   download the git dependencies of a package and write gamma.lock
@@ -183,6 +185,9 @@ fn compiler_main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
     }
+    if std::env::args().nth(1).as_deref() == Some("doc") {
+        return gamma::doc::run(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if let Some(cmd) = std::env::args().nth(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
         return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -207,6 +212,9 @@ fn compiler_main() -> ExitCode {
             print!("{}", USAGE);
             if opts.file.as_deref() == Some(std::path::Path::new("packages")) {
                 print!("\n{}", gamma::pkg::cli::USAGE);
+            }
+            if opts.file.as_deref() == Some(std::path::Path::new("doc")) {
+                print!("\n{}", gamma::doc::USAGE);
             }
             ExitCode::SUCCESS
         }

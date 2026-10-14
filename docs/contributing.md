@@ -39,6 +39,27 @@ checks that formatting keeps the tokens and is idempotent for every `.gm` file i
 otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
 reformatted, since some pin columns in their expected output.
 
+## API documentation
+
+`gamma doc` (`src/doc/`) writes Markdown or HTML documentation for the `pub`
+declarations of a module from the syntax tree, their `///` comments and the `//!`
+comments at the top of the module's files. It copies signatures from the source text,
+so a module needs to parse but not to type-check. Document the standard library in
+those comments.
+
+The reference in `docs/std/` is generated, not written by hand. After changing a doc
+comment or a public declaration in `lib/std`, regenerate it:
+
+```
+cargo run -- doc lib/std --all -o docs/std
+```
+
+`cargo test --test doc` fails with this command in its message while the checked-in files
+differ from the output. `gamma doc lib/std --all --missing -o /tmp/std` also lists the
+public declarations that have no doc comment. The generator's own tests compare against
+the files in `tests/doc/golden/`, which are rewritten by
+`GAMMA_BLESS=1 cargo test --test doc` after an intended change to the output.
+
 ## Tests
 
 There are two kinds of tests.

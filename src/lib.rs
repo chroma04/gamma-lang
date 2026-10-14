@@ -4,6 +4,7 @@
 
 pub mod cgen;
 pub mod diag;
+pub mod doc;
 pub mod driver;
 pub mod float;
 pub mod fmt;

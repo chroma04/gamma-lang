@@ -1,18 +1,18 @@
-// std/collections/deque: a double-ended queue in a growable ring buffer.
-//
-//     dq :: import "std/collections/deque"
-//
-//     d := dq.deque(u32)                   // captures the current allocator
-//     defer d.deinit()
-//     try d.push_back(2)
-//     try d.push_front(1)
-//     for x in d.items() { print("{}\n", x) }     // 1, 2
-//
-// Like `List`, a deque keeps the allocator it was created with, performs no `Alloc`
-// afterwards, and reports a failed growth as `AllocError`. Operations at either end
-// take constant time (amortized when they grow the buffer). The ring is stored in
-// one block of `cap` elements; the element at logical index `i` lives in slot
-// `(head + i) mod cap`.
+//! A double-ended queue in a growable ring buffer.
+//!
+//!     dq :: import "std/collections/deque"
+//!
+//!     d := dq.deque(u32)                   // captures the current allocator
+//!     defer d.deinit()
+//!     try d.push_back(2)
+//!     try d.push_front(1)
+//!     for x in d.items() { print("{}\n", x) }     // 1, 2
+//!
+//! Like `List`, a deque keeps the allocator it was created with, performs no `Alloc`
+//! afterwards, and reports a failed growth as `AllocError`. Operations at either end
+//! take constant time (amortized when they grow the buffer). The ring is stored in
+//! one block of `cap` elements; the element at logical index `i` lives in slot
+//! `(head + i) mod cap`.
 
 /// A growable double-ended queue that keeps the allocator it was created with.
 pub Deque :: struct(T: type) {

@@ -1,33 +1,54 @@
-// std/c: C's platform-dependent types (§19.1), for declaring foreign functions.
+//! C's platform-dependent types (§19.1), for declaring foreign functions.
 
+/// C's `signed char`.
 pub c_schar :: i8
+/// C's `unsigned char`.
 pub c_uchar :: u8
+/// C's `short`.
 pub c_short :: i16
+/// C's `unsigned short`.
 pub c_ushort :: u16
+/// C's `int`.
 pub c_int :: i32
+/// C's `unsigned int`.
 pub c_uint :: u32
+/// C's `long long`.
 pub c_longlong :: i64
+/// C's `unsigned long long`.
 pub c_ulonglong :: u64
+/// C's `size_t`.
 pub c_size_t :: usize
+/// C's `ssize_t`.
 pub c_ssize_t :: isize
+/// C's `ptrdiff_t`.
 pub c_ptrdiff_t :: isize
+/// C's `intptr_t`.
 pub c_intptr_t :: isize
+/// C's `uintptr_t`.
 pub c_uintptr_t :: usize
+/// C's `float`.
 pub c_float :: f32
+/// C's `double`.
 pub c_double :: f64
 
 // `char` is unsigned on Linux for Arm and RISC-V, and signed elsewhere.
 when target.os is .Linux and (target.arch is .Aarch64 or target.arch is .Riscv64) {
+    /// C's `char`, which is unsigned on this target.
     pub c_char :: u8
 } else {
+    /// C's `char`, which is signed on this target.
     pub c_char :: i8
 }
 
 // `long` is 32 bits on Windows and on 32-bit targets, and pointer-sized elsewhere.
 when target.os is .Windows or target.ptr_bits is 32 {
+    /// C's `long`, 32 bits wide on this target.
     pub c_long :: i32
+    /// C's `unsigned long`, 32 bits wide on this target.
     pub c_ulong :: u32
 } else {
+    /// C's `long`, 64 bits wide on this target.
     pub c_long :: i64
+    /// C's `unsigned long`, 64 bits wide on this target.
     pub c_ulong :: u64
 }

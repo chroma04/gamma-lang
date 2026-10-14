@@ -1,18 +1,18 @@
-// std/random: a fast seedable generator, and helpers that draw from `Rand`.
-//
-// The ambient `Rand` effect is the source of randomness: by default it is the operating
-// system, in tests a fixed seed. `Rng` (xoshiro256**) is a handler for `Rand`, so the
-// same code can be made reproducible by installing a seeded generator with `with`.
-//
-//     random :: import "std/random"
-//     r := random.seeded(42)
-//     with &r {
-//         die := random.range(u8, 1, 7)          // 1 to 6, the same on every run
-//         if random.chance(0.5) { … }
-//     }
-//
-// Every helper obtains its bits by calling `fill` once or more, so any handler of `Rand`
-// works. The generator is not suitable for cryptography.
+//! A fast seedable generator, and helpers that draw from `Rand`.
+//!
+//! The ambient `Rand` effect is the source of randomness: by default it is the operating
+//! system, in tests a fixed seed. `Rng` (xoshiro256**) is a handler for `Rand`, so the
+//! same code can be made reproducible by installing a seeded generator with `with`.
+//!
+//!     random :: import "std/random"
+//!     r := random.seeded(42)
+//!     with &r {
+//!         die := random.range(u8, 1, 7)          // 1 to 6, the same on every run
+//!         if random.chance(0.5) { … }
+//!     }
+//!
+//! Every helper obtains its bits by calling `fill` once or more, so any handler of `Rand`
+//! works. The generator is not suitable for cryptography.
 
 math :: import "std/math"
 
@@ -78,8 +78,8 @@ load_u64 :: fn(b: []const u8) -> u64 {
     return v
 }
 
-// Fills `buf` from the generator: eight bytes (little-endian) per output, the tail from
-// one more output.
+/// Fills `buf` from the generator: eight bytes (little-endian) per output, the tail from
+/// one more output.
 handler Rand for ^Rng {
     fill(self, buf) => {
         i: usize = 0

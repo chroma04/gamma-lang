@@ -1,0 +1,152 @@
+//! Shapes and what can be done with them.
+//!
+//! A small module for the documentation generator's tests. It uses every kind of
+//! public declaration:
+//!
+//!     shapes :: import "./shapes"
+//!     c := shapes.circle(2.0)
+//!
+//! Markdown in comments is passed through: *emphasis*, **strong**, `code` and
+//! [links](https://example.com).
+
+mem :: import "std/fixed_buffer"
+
+/// The number of sides of a triangle.
+pub SIDES: u8 : 3
+
+/// A rational approximation of pi.
+pub PI_APPROX :: 355.0 / 113.0
+
+pub NO_DOC: i32 : 7
+
+/// A long table is not shown, only its type.
+pub TABLE: [25]u32 : [_]u32(1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000, 20000, 21000, 22000, 23000, 24000, 25000)
+
+/// A point in the plane.
+///
+/// Coordinates are in meters. The `<` and `&` characters stay text: a < b && c > d.
+pub Point :: struct {
+    /// Distance to the right of the origin.
+    pub x: f64 = 0.0
+    /// Distance above the origin.
+    pub y: f64 = 0.0
+    id: u32
+}
+
+/// A pair of values of one type.
+pub Pair :: struct(T: type) where Eq(T) {
+    pub first, second: T
+}
+
+/// Where a value is stored.
+#c_union
+pub Slot :: union {
+    /// Nothing at all.
+    Empty
+    /// A whole number.
+    Int: i64
+    Float: f64
+}
+
+/// A shape. Each variant holds its size.
+///
+/// - `Circle(radius)` is round;
+/// - `Square(side)` has four equal sides.
+pub Shape :: union(u8) {
+    Circle: f64
+    Square: f64
+}
+
+/// A pointer to a point.
+pub PointRef :: ^Point
+
+/// A function that measures a shape.
+pub Measure :: fn(s: ^const Shape) -> f64
+
+/// A list of points.
+pub Points :: List(Point)
+
+/// Reports what happens to shapes.
+pub Events :: effect {
+    /// A shape was created.
+    created: fn(s: ^const Shape)
+    /// Aborts the current computation.
+    abort: esc(reason: string) -> never
+    /// Asks for a name.
+    name: ctl(s: ^const Shape) -> string
+}
+
+/// Counts the shapes it hears about.
+pub Counter :: struct {
+    pub n: u32 = 0
+}
+
+/// Counts creations.
+handler Events for ^Counter {
+    created(self, s) => { self.n += 1 }
+    abort(self, reason) => {}
+    name(self, s) => ""
+}
+
+/// A handler for a type that is not public.
+handler Events for Hidden {
+    created(self, s) => {}
+    abort(self, reason) => {}
+    name(self, s) => ""
+}
+
+Hidden :: struct {}
+
+/// The last shape made, for debugging.
+pub last := Shape.Circle(0.0)
+
+/// Whether to print every shape.
+pub verbose: bool = false
+
+/// A circle of the given radius.
+pub circle :: fn(radius: f64) -> Shape => .Circle(radius)
+
+/// The area of `s`, in square meters.
+///
+/// ```gamma
+/// a := shapes.area(&shapes.circle(1.0))
+/// ```
+pub area :: fn(s: ^const Shape) -> f64 {
+    return match s^ {
+        .Circle(r) => PI_APPROX * r * r
+        .Square(w) => w * w
+    }
+}
+
+/// Copies `n` shapes with the allocator in effect.
+pub copy_all :: fn(
+    T: type,
+    from: []const T,
+    n :: usize = 1,
+    notify: ^fn(s: ^const T) \ {Events},
+) -> AllocError![]T \ {Alloc, Events} where Plain(T) {
+    return try make_fill(T, n, from[0])
+}
+
+#inline
+pub twice :: fn(x: f64) -> f64 => x * 2.0
+
+pub undocumented :: fn() {}
+
+sides_of :: fn(s: Shape) -> u8 => 0
+
+/// The platform's preferred unit.
+when target.os is .Windows {
+    pub UNIT: string : "inch"
+} else {
+    /// Meters, except on Windows.
+    pub UNIT: string : "meter"
+}
+
+/// Foreign helpers.
+pub native :: foreign "m" {
+    sqrt :: fn(x: f64) -> f64 \ {}
+}
+
+/// Another name for the allocator module.
+pub alloc_mod :: import "std/fixed_buffer"

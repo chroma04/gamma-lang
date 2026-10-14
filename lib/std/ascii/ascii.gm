@@ -1,11 +1,11 @@
-// std/ascii: classification and case of single bytes.
-//
-// Every function takes one byte and answers for the 128 ASCII characters; bytes of 128
-// and above are not letters, digits, spaces or anything else here. Nothing allocates and
-// nothing performs effects.
-//
-//     ascii :: import "std/ascii"
-//     if ascii.is_alpha(c) { out.push(ascii.to_lower(c)) }
+//! Classification and case of single bytes.
+//!
+//! Every function takes one byte and answers for the 128 ASCII characters; bytes of 128
+//! and above are not letters, digits, spaces or anything else here. Nothing allocates and
+//! nothing performs effects.
+//!
+//!     ascii :: import "std/ascii"
+//!     if ascii.is_alpha(c) { out.push(ascii.to_lower(c)) }
 
 /// Whether `c` is `A`-`Z` or `a`-`z`.
 pub is_alpha :: fn(c: u8) -> bool => is_upper(c) or is_lower(c)

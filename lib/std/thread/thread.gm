@@ -1,20 +1,20 @@
-// std/thread: threads and the synchronization built on futexes (§19.6).
-//
-// A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
-// installed; `defaults` installs the usual ones:
-//
-//     work :: fn(arg: ^State) \ {Sys} {
-//         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
-//     }
-//     t := try thread.spawn(State, work, &state)
-//     t.join()
-//
-// Only function pointers and data cross threads: handlers, second-class functions and
-// continuations stay on the thread that made them. Shared memory needs atomics
-// (`@atomic_*`) or one of the types below; a data race is undefined behavior.
-//
-// `Mutex`, `Condvar` and `WaitGroup` are plain structs without allocation, usable as
-// fields; `Channel` is a bounded queue between threads.
+//! Threads and the synchronization built on futexes (§19.6).
+//!
+//! A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
+//! installed; `defaults` installs the usual ones:
+//!
+//!     work :: fn(arg: ^State) \ {Sys} {
+//!         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
+//!     }
+//!     t := try thread.spawn(State, work, &state)
+//!     t.join()
+//!
+//! Only function pointers and data cross threads: handlers, second-class functions and
+//! continuations stay on the thread that made them. Shared memory needs atomics
+//! (`@atomic_*`) or one of the types below; a data race is undefined behavior.
+//!
+//! `Mutex`, `Condvar` and `WaitGroup` are plain structs without allocation, usable as
+//! fields; `Channel` is a bounded queue between threads.
 
 /// A running thread, to be joined.
 pub Thread :: struct { handle: i64 }

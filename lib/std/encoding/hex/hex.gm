@@ -1,14 +1,14 @@
-// std/encoding/hex: Base16 as in RFC 4648 section 8, two hexadecimal digits per byte.
-//
-//     hex :: import "std/encoding/hex"
-//     buf: [16]u8 = ---
-//     text := hex.encode("Hi!", buf[..], false)          // "486921"
-//     raw: [8]u8 = ---
-//     data := try hex.decode("4869", raw[..])            // "Hi"
-//
-// Encoding and decoding write into a buffer you supply and return the part of it that was
-// written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
-// effects.
+//! Base16 as in RFC 4648 section 8, two hexadecimal digits per byte.
+//!
+//!     hex :: import "std/encoding/hex"
+//!     buf: [16]u8 = ---
+//!     text := hex.encode("Hi!", buf[..], false)          // "486921"
+//!     raw: [8]u8 = ---
+//!     data := try hex.decode("4869", raw[..])            // "Hi"
+//!
+//! Encoding and decoding write into a buffer you supply and return the part of it that was
+//! written, or append to a `List(u8)`. Nothing else allocates, and nothing performs
+//! effects.
 
 /// Why decoding failed.
 pub DecodeError :: union {
