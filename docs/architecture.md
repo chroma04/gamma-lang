@@ -748,7 +748,7 @@ a file of the edited directory; the next idle moment re-checks them.
 
 `sema::analyze_for_ide` runs the same pipeline as `gamma test` (so `main` is not
 required), with `Sema::keep_going` set so that syntax errors do not stop it.
-The diagnostics stay in the session. `Analysis::run` wraps the call in
+The diagnostics stay in the `Session`. `Analysis::run` wraps the call in
 `catch_unwind`. If the checker panics, the run is repeated as `gamma test` would
 do it, which stops at syntax errors, and those errors are reported. If that
 fails too, the user sees one "internal compiler error" diagnostic on the first
@@ -757,11 +757,11 @@ open file of the directory.
 Diagnostics are published for every open document of the directory and for every
 other file that has diagnostics. Files that had diagnostics before and have none
 now get an empty list. A diagnostic without a location goes to line 0 of the
-first open document. Labels become `relatedInformation`; notes are appended to
-the message.
+first open document. Labels become `relatedInformation`; the explanations that a
+diagnostic carries are appended to its message.
 
-The type interner never frees memory, and a run allocates fresh ids for every
-struct, union and effect, so a long session would grow without bound. The index
+The type interner never frees anything, and a run allocates fresh ids for every
+struct, union and effect, so a server that runs for days would grow without bound. The index
 therefore holds no `Ty`, only text, and the server calls `types::mark` before a
 run and `types::release_since` after it. This is safe only because nothing else
 allocates types, so the library tests never call it.

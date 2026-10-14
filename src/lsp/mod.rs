@@ -2,7 +2,7 @@
 //! input and output.
 //!
 //! The server is single-threaded apart from a thread that reads messages. Each open
-//! document is kept in memory, and the directory (module) that contains it is checked
+//! document is kept as text, and the directory (module) that contains it is checked
 //! with the open documents standing in for the files on disk; see `docs/architecture.md`.
 
 mod analysis;

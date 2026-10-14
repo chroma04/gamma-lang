@@ -76,7 +76,7 @@ impl Analysis {
     /// the compiler becomes one diagnostic on `primary`.
     ///
     /// With `recycle`, the types and ids that the run allocates are freed when it ends
-    /// (an analysis holds none), so that a long session does not grow the process.
+    /// (an analysis holds none), so that a server that runs for days does not grow.
     pub fn run(dir: &Path, overlays: &HashMap<PathBuf, String>, primary: &Path, recycle: bool) -> Analysis {
         let mark = recycle.then(crate::types::mark);
         let a = Analysis::run_with(dir, overlays, primary, &crate::sema::analyze_for_ide);

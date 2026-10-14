@@ -107,7 +107,7 @@ impl<W: Write> Server<W> {
             return Flow::Continue;
         };
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        // A bug in a handler must not end the session: answer with an error and go on.
+        // A bug in a handler must not stop the server: answer with an error and go on.
         let guarded = catch_unwind(AssertUnwindSafe(|| match msg.get("id").cloned() {
             Some(id) => {
                 self.request(id, &method, params);

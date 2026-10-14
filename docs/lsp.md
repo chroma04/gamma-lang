@@ -7,7 +7,7 @@ server is part of the `gamma` binary and needs no configuration.
 
 ## What it does
 
-| Feature | Notes |
+| Feature | What it does |
 | --- | --- |
 | Diagnostics | Errors and warnings of the compiler, as you type. Secondary locations are attached as related information. |
 | Hover | The type of a name or expression. For a function: its signature with the effect set, for example `greet :: fn(n: i32) \ {Out}`. For a type: its declaration. The doc comment (`///`) follows. |

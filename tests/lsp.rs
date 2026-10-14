@@ -42,7 +42,7 @@ struct Lsp {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
-    notes: Vec<Value>,
+    queued: Vec<Value>,
     next_id: i64,
 }
 
@@ -84,7 +84,7 @@ impl Lsp {
                 }
             }
         });
-        Lsp { child, stdin, rx, notes: vec![], next_id: 1 }
+        Lsp { child, stdin, rx, queued: vec![], next_id: 1 }
     }
 
     fn send_raw(&mut self, body: &str) {
@@ -112,7 +112,7 @@ impl Lsp {
             if m.get("id") == Some(&json!(id)) {
                 return m;
             }
-            self.notes.push(m);
+            self.queued.push(m);
         }
     }
 
@@ -149,15 +149,15 @@ impl Lsp {
                 && m["params"]["uri"] == uri(path)
                 && m["params"]["version"] == version
         };
-        if let Some(i) = self.notes.iter().position(wanted) {
-            return self.notes.remove(i)["params"]["diagnostics"].as_array().unwrap().clone();
+        if let Some(i) = self.queued.iter().position(wanted) {
+            return self.queued.remove(i)["params"]["diagnostics"].as_array().unwrap().clone();
         }
         loop {
             let m = self.next_message();
             if wanted(&m) {
                 return m["params"]["diagnostics"].as_array().unwrap().clone();
             }
-            self.notes.push(m);
+            self.queued.push(m);
         }
     }
 
@@ -513,11 +513,11 @@ main :: fn() {
 #[test]
 fn only_gamma_files_are_analyzed() {
     let dir = TempDir::new();
-    let notes = dir.write("notes.md", "# not code\n");
+    let readme = dir.write("readme.md", "# not code\n");
     let mut lsp = Lsp::start();
     lsp.initialize();
-    lsp.open(&notes, "# not code\n");
-    let h = lsp.result("textDocument/hover", lsp.at(&notes, 0, 1));
+    lsp.open(&readme, "# not code\n");
+    let h = lsp.result("textDocument/hover", lsp.at(&readme, 0, 1));
     assert_eq!(h, Value::Null);
     assert_eq!(lsp.shutdown(), 0);
 }
