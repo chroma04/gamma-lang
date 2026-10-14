@@ -2802,7 +2802,9 @@ Modules follow the core library's conventions, so that learning one teaches the 
 
 ### 22.4 Outside the standard library
 
-These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography (it needs dedicated security maintenance), compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+These belong in packages, whatever their popularity: application protocols above the transport (HTTP, TLS, SMTP), cryptography, compression formats, databases, graphical and terminal user interfaces, image and audio formats, serialization formats without a single authoritative standard (YAML, TOML, XML dialects), bindings to particular C libraries, and frameworks (test, logging or web) beyond the minimal service of §22.3.
+
+*Cryptography* here means whatever needs dedicated security maintenance: ciphers, message authentication codes and other keyed constructions, signatures, key exchange, key derivation and password hashing. Fixed, unkeyed digests and checksums of published standards, used to detect corruption and to identify content (CRC-32, SHA-256), are not excluded: they have one settled definition, no parameters to choose wrongly, and a test-vector suite that leaves nothing to interpretation, so they are admitted on reason 2 (§22.2). A digest in the library carries no promise beyond its standard; whether it suits a security purpose is the caller's decision.
 
 *Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
 
