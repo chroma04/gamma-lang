@@ -69,6 +69,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/layout.rs` | sizes, alignments and field offsets for a target |
 | `src/float.rs` | correctly rounded conversion of exact literals to IEEE formats |
 | `src/tir.rs` | the typed intermediate representation |
+| `src/pkg/` | the package manager: manifest, lockfile, git dependencies, `gamma new` (see below) |
 | `src/sema/` | semantic analysis (see below) |
 | `src/interp/` | the interpreter (see below) |
 | `src/cgen/` | the C back end (see below) |
@@ -78,6 +79,32 @@ cycle, reported with every declaration in it (spec §3.4).
 | `tools/` | generators for checked-in files (the Unicode tables of `std/text`) |
 | `tests/conformance.rs` | the conformance test runner |
 | `tests/conformance/` | conformance tests, grouped by area |
+
+## Packages
+
+`src/pkg/` is everything about manifests and dependencies. It does not depend on semantic analysis; the compiler depends on it in two places.
+
+| File | Contents |
+| --- | --- |
+| `manifest.rs` | the one `gamma.toml` parser (`toml_edit`, so errors have lines); validation of dependency tables |
+| `lock.rs` | `gamma.lock`: deterministic rendering and parsing |
+| `git.rs` | the `git` command-line tool, the on-disk store (`<cache>/git/db`, `<cache>/git/checkouts`) and the SHA-256 checksum of a checkout |
+| `resolve.rs` | the resolver: version selection, lock reuse, checkouts, cycle and path-escape checks |
+| `edit.rs` | format-preserving manifest edits for `gamma add` and `gamma remove` |
+| `scaffold.rs` | the files of `gamma new` and `gamma init` |
+| `cli.rs` | argument handling of the package commands, which `main.rs` dispatches before it parses compiler options |
+| `mod.rs` | `Resolution`, `sync` (resolve, fetch, write the lock) and `prepare` (what the compiler calls) |
+
+Before `check`, `run`, `build` and `test` analyze a program, `main.rs` calls `pkg::prepare` with the input path. It finds the root package (the nearest `gamma.toml`), walks the dependency graph (path dependencies too, since they may have git dependencies), and returns a `Resolution`: package directory to dependency name to dependency directory. The result goes into `Session::packages`. `sema/imports.rs` consults it in `package_of`; a package without an entry falls back to reading its manifest for path dependencies, and reports a git dependency it has no resolution for.
+
+The resolver identifies a git package by its normalized URL and `subdir`, collects every requirement on it, and chooses one revision: the locked one if it still satisfies all requirements, else the highest matching tag, the branch head, or the commit. A choice that a later requirement contradicts restarts the walk with the larger requirement set; requirements only grow, so it terminates. Manifests are read from checkouts, which are made (into a temporary directory, then renamed) as soon as a revision is chosen. Checkouts are named by revision, so choosing again is free.
+
+Design points for contributors:
+
+- The lockfile fixes the commit; the checksum is a second line of defense and is checked only when a checkout is created. Hashing every use would read the whole tree on every build.
+- A request for the default branch yields to any other requirement on the same repository.
+- Symbolic links in a checkout are not part of the checksum (only regular files are).
+- Tests of the package manager (`tests/pkg.rs`) build local repositories and run the real binary with a private `GAMMA_CACHE_DIR`; they need `git` but no network.
 
 ## Front end
 

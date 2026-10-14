@@ -18,6 +18,13 @@ commands:
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
   fmt     format source files in place: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)
+  new     create a package in a new directory: gamma new <dir>
+  init    create a package in an existing directory: gamma init [dir]
+  fetch   download the git dependencies of a package and write gamma.lock
+  update  move git dependencies to newer revisions
+  add     add a dependency to gamma.toml: gamma add <name> (--path <dir> | --git <url> [--tag|--branch|--rev|--version <x>])
+  remove  remove a dependency from gamma.toml
+          (run `gamma help packages` for the options of the package commands)
   help    print this message
   version print the compiler version
 
@@ -31,6 +38,10 @@ options:
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
                               with CC set, CC (given --target if it is clang)
+  --offline                   (check, run, build, test) never use the network: git
+                              dependencies must be locked and already fetched
+  --locked                    (check, run, build, test) fail if gamma.lock is missing or
+                              would change
   -o <file>                   (build) the executable to write (default: the input's name)
   -g                          (build, and run and test via C) add debug information that maps
                               the executable to the Gamma source, for debuggers; a Debug build
@@ -71,6 +82,10 @@ struct Options {
     filter: Option<String>,
     /// `--target=…`: the target triple to compile for.
     target: Option<String>,
+    /// `--offline`: do not use the network for dependencies.
+    offline: bool,
+    /// `--locked`: gamma.lock must be up to date.
+    locked: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -88,6 +103,8 @@ fn parse_args() -> Result<Options, String> {
         debug_info: false,
         filter: None,
         target: None,
+        offline: false,
+        locked: false,
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -97,6 +114,8 @@ fn parse_args() -> Result<Options, String> {
         }
         match arg.as_str() {
             "--dump" => opts.dump = true,
+            "--offline" => opts.offline = true,
+            "--locked" => opts.locked = true,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
@@ -163,6 +182,9 @@ fn compiler_main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
     }
+    if let Some(cmd) = std::env::args().nth(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
+        return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
     let opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {
@@ -173,6 +195,9 @@ fn compiler_main() -> ExitCode {
     match opts.command.as_str() {
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
+            if opts.file.as_deref() == Some(std::path::Path::new("packages")) {
+                print!("\n{}", gamma::pkg::cli::USAGE);
+            }
             ExitCode::SUCCESS
         }
         "version" | "--version" => {
@@ -259,6 +284,22 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
     (sess, toolchain)
 }
 
+/// Fetches the git dependencies of the package that contains `input` (see `gamma::pkg`)
+/// and tells the session where they are. Reports the error and returns false on failure.
+fn prepare_packages(opts: &Options, sess: &mut Session, input: &std::path::Path) -> bool {
+    let pkg_opts = gamma::pkg::Options { offline: opts.offline, locked: opts.locked };
+    match gamma::pkg::prepare(input, &pkg_opts) {
+        Ok(res) => {
+            sess.packages = res.map(std::sync::Arc::new);
+            true
+        }
+        Err(e) => {
+            eprintln!("gamma: {}", e);
+            false
+        }
+    }
+}
+
 fn check(opts: &Options) -> ExitCode {
     let Some(path) = &opts.file else {
         eprintln!("gamma: no input file\n\n{}", USAGE);
@@ -266,6 +307,9 @@ fn check(opts: &Options) -> ExitCode {
     };
     // Only the target matters to checking.
     let (mut sess, _) = new_session(opts);
+    if !prepare_packages(opts, &mut sess, path) {
+        return ExitCode::FAILURE;
+    }
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
     eprint!("{}", sess.render_diagnostics(opts.format));
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -277,6 +321,9 @@ fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let (mut sess, toolchain) = new_session(opts);
+    if !prepare_packages(opts, &mut sess, path) {
+        return ExitCode::FAILURE;
+    }
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -400,6 +447,9 @@ fn test(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let (mut sess, toolchain) = new_session(opts);
+    if !prepare_packages(opts, &mut sess, path) {
+        return ExitCode::FAILURE;
+    }
     let prog = gamma::sema::analyze_tests(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
@@ -576,6 +626,9 @@ fn build(opts: &Options) -> ExitCode {
     let (mut sess, toolchain) = new_session(opts);
     if let Err(e) = &toolchain {
         eprintln!("gamma: {}", e);
+        return ExitCode::FAILURE;
+    }
+    if !prepare_packages(opts, &mut sess, path) {
         return ExitCode::FAILURE;
     }
     let prog = gamma::sema::analyze(&mut sess, path);

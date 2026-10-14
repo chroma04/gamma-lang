@@ -289,7 +289,7 @@ Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 ### 3.1 Packages and modules
 
 - A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
-- A **package** is a directory tree containing a `gamma.toml` manifest at its root. The manifest names the package and lists its dependencies, each as a name mapped to a source location and version. The manifest format is implementation-defined, except as stated here.
+- A **package** is a directory tree containing a `gamma.toml` manifest at its root. The manifest names the package and lists its dependencies, each as a name mapped to a source location and version. The manifest format is implementation-defined, except as stated here; the reference implementation's is described in chapter 15 of the guide (`docs/guide/15-packages.md`).
 - The **root module** of a program is the module named on the compiler's command line. It must declare `main` (§3.7). A library has no `main`.
 
 ### 3.2 Imports

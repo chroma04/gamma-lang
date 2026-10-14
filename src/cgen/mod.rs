@@ -16,7 +16,7 @@ mod fiber;
 mod func;
 mod helpers;
 mod rtcache;
-pub use rtcache::cached_program;
+pub use rtcache::{cache_dir, cached_program};
 mod types;
 mod views;
 mod wide;
