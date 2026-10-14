@@ -431,6 +431,11 @@ t.join()
 
 - `spawn(T, f, arg) -> IoError!Thread`, `t.join()`, `yield_now()`, `cpu_count() -> u32`
   (at least 1).
+- `t.detach()` instead of `join` lets a thread run on its own: it is never joined and its
+  resources are released when it ends. Tell the rest of the program that it is done
+  through shared state (a `WaitGroup`, a `Channel`, an atomic). When `main` returns the
+  process exits and detached threads that are still running stop wherever they are, without
+  running their `defer`s.
 - `Mutex` is a plain struct (no allocation) that sleeps in the kernel while it waits:
   `mutex()`, `m.lock()`, `m.try_lock() -> bool`, `m.unlock()`.
 - `Condvar`: `condvar()`, `c.wait(&m)` unlocks `m`, waits and locks it again, and may
@@ -438,7 +443,7 @@ t.join()
   `c.wait_timeout(&m, d) -> bool` is `false` if `d` passed without a signal;
   `c.signal()` wakes one waiter and `c.broadcast()` all of them.
 - `WaitGroup`: `wait_group()`, `w.add(n)` before starting work, `w.done()` when a piece
-  finishes (more calls than `add` trap), `w.wait_all()` returns when the count is zero.
+  finishes (more calls than `add` trap), `w.wait()` returns when the count is zero.
 - `Channel(T)` is a bounded blocking queue for any number of senders and receivers:
   `channel(T, capacity) -> AllocError!Channel(T)` (capacity at least 1; it keeps the
   allocator it was created with), `c.send(x) -> bool` waits while the queue is full and
@@ -788,9 +793,9 @@ The handlers of this module keep state, so they are installed by address (`with 
 - `log(level, template, args)` formats like `print` and writes a record; it formats
   nothing when `begin` says no. `debug`, `info`, `warn` and `error` are the same with a
   fixed level.
-- `ErrLog(min: .Info, time: false)` prints `LEVEL message` lines to `Err` (with
-  `2026-10-12T04:38:42Z ` in front when `time` is true, from the `Clock` effect); records
-  below `min` are dropped.
+- `ErrLog(min: .Info)` prints `LEVEL message` lines to `Err`; records below `min` are
+  dropped. It needs no clock. `StampedLog(min: .Info)` is the same with
+  `2026-10-12T04:38:42Z ` in front of each line, from the `Clock` effect.
 - `ListLog(list: &out, min: .Debug)` appends the same lines to a `List(u8)`, which is
   handy in tests; the first allocation failure is kept in its `err` field.
 - `Discard()` wants no records at all.

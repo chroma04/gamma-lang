@@ -83,7 +83,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     cs: [2]thread.Thread = ---
     for i in 0..3 { ps[i] = try thread.spawn(Pipe, produce, &p) }
     for i in 0..2 { cs[i] = try thread.spawn(Pipe, consume, &p) }
-    p.producers.wait_all()
+    p.producers.wait()
     p.ch.close()
     for i in 0..3 { ps[i].join() }
     for i in 0..2 { cs[i].join() }
@@ -109,10 +109,10 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     j.wg.add(5)
     js: [5]thread.Thread = ---
     for i in 0..5 { js[i] = try thread.spawn(Job, task, &j) }
-    j.wg.wait_all()
+    j.wg.wait()
     print("tasks done: {}\n", j.done_count)
     for i in 0..5 { js[i].join() }
-    j.wg.wait_all()
+    j.wg.wait()
     print("empty wait group returns at once\n")
 
     // wait_timeout gives up when nobody signals.

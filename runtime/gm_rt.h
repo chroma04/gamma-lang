@@ -410,6 +410,7 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINV
 GM_API_VAR pthread_mutex_t gm_rt_lock;
 GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
 GM_API int64_t gm_thread_join(int64_t h);
+GM_API int64_t gm_thread_detach(int64_t h);
 GM_API void gm_thread_yield(void);
 /* Blocks while *addr == expected, until woken or the timeout (ns; negative: none) passes;
  * 0 or an error code. May return early. */
