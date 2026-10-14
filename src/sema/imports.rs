@@ -116,6 +116,7 @@ impl<'s> Sema<'s> {
         };
         let package = self.modules[module.0 as usize].package;
         let relative = path.starts_with("./") || path.starts_with("../");
+        let mut name = None;
         let dir = if relative {
             let dir = normalize(&from_dir.join(path));
             let root = package.map(|p| self.packages[p].root.clone());
@@ -146,16 +147,28 @@ impl<'s> Sema<'s> {
                     }
                 }
             };
+            if rest.is_empty() && first != "std" {
+                // A package's root module is named after the dependency, not after its
+                // directory (a fetched git package lives in a directory named by revision).
+                name = Some(first);
+            }
             normalize(&if rest.is_empty() { base } else { base.join(rest) })
         };
-        let m = self.load_dir_module(&dir, span, if relative { package } else { None })?;
+        let m = self.load_dir_module(&dir, span, if relative { package } else { None }, name)?;
         self.import_edges.push((module, m, span));
         Some(m)
     }
 
     /// The module of directory `dir`, loading it the first time. `parent` is the package of
-    /// the module that imports it by a relative path.
-    pub(super) fn load_dir_module(&mut self, dir: &Path, span: Span, parent: Option<usize>) -> Option<ModuleId> {
+    /// the module that imports it by a relative path. The module is named `name`, or else
+    /// after its directory.
+    pub(super) fn load_dir_module(
+        &mut self,
+        dir: &Path,
+        span: Span,
+        parent: Option<usize>,
+        name: Option<&str>,
+    ) -> Option<ModuleId> {
         let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         if let Some(&m) = self.module_by_dir.get(&key) {
             return Some(m);
@@ -181,7 +194,10 @@ impl<'s> Sema<'s> {
             let f = self.sess.load(p)?;
             files.push(self.sess.parse(f));
         }
-        let name = key.file_name().map_or("module".to_string(), |s| s.to_string_lossy().into_owned());
+        let name = match name {
+            Some(n) => n.to_string(),
+            None => key.file_name().map_or("module".to_string(), |s| s.to_string_lossy().into_owned()),
+        };
         let package = self.package_of(&key, parent);
         let m = self.add_module(Symbol::intern(&name), files, false);
         self.modules[m.0 as usize].dir = Some(dir.to_path_buf());

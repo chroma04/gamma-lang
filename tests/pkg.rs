@@ -224,6 +224,10 @@ fn add_fetch_and_run_a_git_dependency() {
     // The lockfile is stable.
     w.gamma("app", &["fetch"]).success();
     assert_eq!(w.read("app/gamma.lock"), lock);
+    // Diagnostics name the package's module after the dependency, not its directory.
+    w.write("app/main.gm", "http :: import \"http\"\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", http.nope())\n}\n");
+    let out = w.gamma("app", &["check", "."]).failure();
+    assert!(out.stderr.contains("the module `http` has no declaration `nope`"), "{}", out.stderr);
 }
 
 #[test]

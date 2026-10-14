@@ -84,7 +84,7 @@ impl<'s> Sema<'s> {
     /// inside a directory (§3.1).
     pub(super) fn load_root(&mut self, root: &Path) -> Option<ModuleId> {
         if root.is_dir() {
-            let m = self.load_dir_module(root, Span::DUMMY, None)?;
+            let m = self.load_dir_module(root, Span::DUMMY, None, None)?;
             return (!self.sess.diags.has_errors()).then_some(m);
         }
         let file = self.sess.load(root)?;
