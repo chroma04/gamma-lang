@@ -19,7 +19,9 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive this session's PR to merge.
+1. Drive this session's PR to merge. s15 (claude/tender-cannon-qqxawd) wrote
+   docs/design-review.md: ranked language-design proposals, NOT adopted yet; ask/await the
+   user before implementing (decisions/025).
 2. bugs-open.md: #50–53 (parser postfix after prefixed construction, `cont` local, fallback
    type of literal locals, diagnostics), #48–49 (gcc on huge C functions/expressions), Safe
    new/destroy (~4x Checked).
@@ -46,6 +48,7 @@
                   · 022 effect-set parameters (`E: effects`, `..E`, Sched(E))
                   · 023 tooling: packages, LSP, editor grammars, release
                   · 024 locals not named like types (+ local consts at comptime, scope isolation)
+                  · 025 design review proposals (thesis, principles, F1–F10; pending user)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
