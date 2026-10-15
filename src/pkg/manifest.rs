@@ -141,6 +141,28 @@ pub fn is_identifier(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Why `s` cannot name a package or a dependency, if it cannot: it is the first
+/// segment of an import path, so it must be an identifier that is no keyword,
+/// no builtin type name, and not the name of the core or standard library.
+pub fn name_problem(s: &str, what: &str) -> Option<String> {
+    if !is_identifier(s) {
+        return Some(format!("invalid {what} name `{s}`: use letters, digits and `_`, not starting with a digit"));
+    }
+    if s == "_" {
+        return Some(format!("invalid {what} name `_`: it is not a usable name"));
+    }
+    if crate::syntax::token::Keyword::from_str(s).is_some() {
+        return Some(format!("invalid {what} name `{s}`: it is a keyword"));
+    }
+    if crate::sema::is_reserved_type_name(s) || matches!(s, "string" | "cstring" | "rune") {
+        return Some(format!("invalid {what} name `{s}`: it is the name of a builtin type"));
+    }
+    if s == "std" || s == "core" {
+        return Some(format!("invalid {what} name `{s}`: it is the name of the standard library"));
+    }
+    None
+}
+
 /// The identity of a git repository: its URL without a trailing `/` or `.git`.
 pub fn normalize_url(url: &str) -> String {
     let mut u = url.trim().trim_end_matches('/');
@@ -176,11 +198,8 @@ impl Manifest {
             if let Some(item) = t.get("name") {
                 let line = lines.of(item.span());
                 let n = item.as_str().ok_or_else(|| err(line, "the package name must be a string".into()))?;
-                if !is_identifier(n) {
-                    return Err(err(
-                        line,
-                        format!("invalid package name `{}`: use letters, digits and `_`, not starting with a digit", n),
-                    ));
+                if let Some(problem) = name_problem(n, "package") {
+                    return Err(err(line, problem));
                 }
                 m.name = Some(n.to_string());
             }
@@ -199,14 +218,8 @@ impl Manifest {
             };
             for (name, item) in t.iter() {
                 let line = lines.of(t.get_key_value(name).and_then(|(k, _)| k.span()).or_else(|| item.span()));
-                if !is_identifier(name) {
-                    return Err(err(
-                        line,
-                        format!(
-                            "invalid dependency name `{}`: use letters, digits and `_`, not starting with a digit",
-                            name
-                        ),
-                    ));
+                if let Some(problem) = name_problem(name, "dependency") {
+                    return Err(err(line, problem));
                 }
                 let source = parse_dependency(name, item, line, &lines)?;
                 m.deps.push(Dependency { name: name.to_string(), line, source });

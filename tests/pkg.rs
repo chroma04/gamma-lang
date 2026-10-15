@@ -844,6 +844,50 @@ fn init_never_overwrites() {
 }
 
 #[test]
+fn init_does_not_claim_to_create_a_package_over_an_existing_manifest() {
+    let w = World::outside("init_invalid_manifest");
+    w.write("proj/gamma.toml", "[package\n");
+    let out = run_ok(&w, "proj", &["init", "--vcs=none"]);
+    assert!(out.stdout.contains("Skipped gamma.toml (already exists)"), "{}", out.stdout);
+    assert!(!out.stdout.contains("Created package"), "{}", out.stdout);
+    assert!(out.stdout.contains("main.gm"), "{}", out.stdout);
+    assert_eq!(w.read("proj/gamma.toml"), "[package\n");
+}
+
+#[test]
+fn names_that_cannot_be_imported_are_rejected() {
+    let w = World::outside("bad_names");
+    for name in ["fn", "import", "true", "_", "i32", "u8", "bool", "string", "std", "core"] {
+        let out = w.gamma(".", &["new", "--vcs=none", &format!("--name={name}"), "d"]).failure();
+        assert!(out.stderr.contains("invalid package name"), "{name}: {}", out.stderr);
+        assert!(!w.path("d/gamma.toml").exists(), "{name}");
+        std::fs::remove_dir_all(w.path("d")).ok();
+    }
+    // The directory name is used when it is one of them, unless `--name` says otherwise.
+    let out = w.gamma(".", &["new", "--vcs=none", "fn"]).failure();
+    assert!(out.stderr.contains("--name"), "{}", out.stderr);
+    run_ok(&w, ".", &["new", "--vcs=none", "std", "--name=mystd"]);
+    w.write("app/gamma.toml", "[package]\nname = \"app\"\n\n[dependencies]\n");
+    for name in ["true", "i32", "std", "core", "_"] {
+        let out = w.gamma("app", &["add", name, "--path", "../mystd"]).failure();
+        assert!(out.stderr.contains("invalid dependency name"), "{name}: {}", out.stderr);
+    }
+    w.write("bad/gamma.toml", "[package]\nname = \"std\"\n");
+    w.write("bad/main.gm", "main :: fn() {}\n");
+    assert!(w.gamma("bad", &["check", "."]).failure().stderr.contains("invalid package name"));
+}
+
+#[test]
+fn a_directory_name_that_is_changed_is_reported() {
+    let w = World::outside("name_note");
+    let out = run_ok(&w, ".", &["new", "--vcs=none", "ünï-cödé"]);
+    assert!(out.stdout.contains("Created package `_n__c_d_`"), "{}", out.stdout);
+    assert!(out.stdout.contains("is not a valid package name"), "{}", out.stdout);
+    let out = run_ok(&w, ".", &["new", "--vcs=none", "plain"]);
+    assert!(!out.stdout.contains("Note"), "{}", out.stdout);
+}
+
+#[test]
 fn init_leaves_an_enclosing_repository_alone() {
     need_git!();
     let w = World::new("init_in_repo");

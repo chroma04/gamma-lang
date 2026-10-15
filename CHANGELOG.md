@@ -53,6 +53,13 @@ Versions and what each kind of change means are described in
 ### Fixed
 
 - A local type alias can be passed as the type argument of a generic function.
+- The REPL reports a stray closing bracket or an unfinished block comment on a line of its
+  own at once, instead of swallowing the following lines.
+- `gamma lsp` answers requests before `initialize` with error -32002, survives a huge
+  `Content-Length`, and does not format a document that has syntax errors.
+- Package and dependency names that can never be imported (keywords, `_`, builtin type
+  names, `std`, `core`) are rejected; `gamma new` notes when it changes the directory name,
+  and `gamma init` no longer says it created a package over an existing `gamma.toml`.
 
 ## 0.1.0 (not yet tagged)
 
