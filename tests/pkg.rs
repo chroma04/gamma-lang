@@ -1390,3 +1390,55 @@ fn file_url(p: &std::path::Path) -> String {
     let s = p.display().to_string().replace('\\', "/");
     if s.starts_with('/') { format!("file://{s}") } else { format!("file:///{s}") }
 }
+
+#[test]
+fn a_hand_edited_lock_is_noticed() {
+    need_git!();
+    let w = World::new("edited_lock");
+    w.lib("a", 1, Some("v1.2.3"));
+    sum_app(&w, &format!("a = {{ git = \"{}\", version = \"1\" }}\n", w.url("a")), &["a"]);
+    w.gamma("app", &["fetch"]).success();
+    let lock = w.read("app/gamma.lock");
+    assert_eq!(lock_field(&lock, "a", "version").as_deref(), Some("1.2.3"));
+    let sum = lock_field(&lock, "a", "checksum").unwrap();
+
+    // An edited version: --locked refuses, a plain run repairs it.
+    w.write("app/gamma.lock", &lock.replace("version = \"1.2.3\"", "version = \"9.9.9\""));
+    let out = w.gamma("app", &["run", "--locked", "."]).failure();
+    assert!(out.stderr.contains("needs to be updated"), "{}", out.stderr);
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
+
+    // A removed version is restored the same way.
+    w.write("app/gamma.lock", &lock.replace("version = \"1.2.3\"\n", ""));
+    w.gamma("app", &["run", "--locked", "."]).failure();
+    w.gamma("app", &["run", "."]).success();
+    assert_eq!(w.read("app/gamma.lock"), lock);
+
+    // An edited checksum is caught against the checkout already in the cache.
+    let bad = lock.replace(&sum, &format!("sha256:{}", "0".repeat(64)));
+    for args in [&["run", "--locked", "."][..], &["run", "."]] {
+        w.write("app/gamma.lock", &bad);
+        let out = w.gamma("app", args).failure();
+        assert!(out.stderr.contains("checksum mismatch for package a"), "{}", out.stderr);
+        assert_eq!(w.read("app/gamma.lock"), bad);
+    }
+    w.write("app/gamma.lock", &lock);
+    w.gamma("app", &["run", "--locked", "."]).success();
+}
+
+#[test]
+fn an_empty_lock_is_a_missing_lock() {
+    need_git!();
+    let w = World::new("empty_lock");
+    w.lib("a", 1, Some("v1.0.0"));
+    sum_app(&w, &format!("a = {{ git = \"{}\", version = \"1\" }}\n", w.url("a")), &["a"]);
+    w.gamma("app", &["fetch"]).success();
+    let lock = w.read("app/gamma.lock");
+    w.write("app/gamma.lock", " \n");
+    let out = w.gamma("app", &["run", "--locked", "."]).failure();
+    assert!(out.stderr.contains("gamma.lock is missing"), "{}", out.stderr);
+    w.write("app/gamma.lock", "");
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
+}

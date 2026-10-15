@@ -250,11 +250,7 @@ fn zero_jobs_is_a_usage_error() {
 #[test]
 fn invalid_option_values_are_named() {
     let err = usage_error(&["run", "--mode=bogus", "x.gm"]);
-    assert!(
-        err.contains("invalid value `bogus` for --mode (expected debug, checked, safe or fast)"),
-        "{}",
-        err
-    );
+    assert!(err.contains("invalid value `bogus` for --mode (expected debug, checked, safe or fast)"), "{}", err);
     let err = usage_error(&["run", "--backend=bogus", "x.gm"]);
     assert!(err.contains("invalid value `bogus` for --backend"), "{}", err);
     let err = usage_error(&["check", "--diag-format=bogus", "x.gm"]);

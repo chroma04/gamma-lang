@@ -200,7 +200,9 @@ fn parse_args() -> Result<Options, String> {
             a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
-            a if a.starts_with("--backend=") => return Err(invalid_value("--backend", &a["--backend=".len()..], "c or interp")),
+            a if a.starts_with("--backend=") => {
+                return Err(invalid_value("--backend", &a["--backend=".len()..], "c or interp"));
+            }
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
             "-g" => {
                 opts.debug_info = true;
