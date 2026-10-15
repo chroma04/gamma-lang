@@ -1,6 +1,7 @@
 //! Markdown output.
 
 use super::collect::{Decl, Kind, Module};
+use super::md_html::demote_headings;
 
 /// The page of one module.
 pub fn module(m: &Module, index: Option<&str>) -> String {
@@ -9,7 +10,7 @@ pub fn module(m: &Module, index: Option<&str>) -> String {
         out.push_str(&format!("[All modules]({})\n\n", link));
     }
     if !m.doc.is_empty() {
-        out.push_str(&m.doc);
+        out.push_str(&demote_headings(&m.doc, 3));
         out.push_str("\n\n");
     }
     for kind in Kind::ALL {
@@ -29,7 +30,7 @@ fn declaration(out: &mut String, d: &Decl) {
     out.push_str(&format!("### `{}`\n\n", d.name));
     out.push_str(&format!("```gamma\n{}\n```\n\n", d.sig));
     if let Some(doc) = &d.doc {
-        out.push_str(doc);
+        out.push_str(&demote_headings(doc, 3));
         out.push_str("\n\n");
     }
     if !d.members.is_empty() {
