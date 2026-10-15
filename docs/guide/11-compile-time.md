@@ -73,6 +73,26 @@ lookup_demo :: fn() -> u32 {
 }
 ```
 
+Such a local constant is not second-rate: wherever a compile-time value is needed, a local constant (an untyped one like `K :: 4`, a typed one like `Z: usize : 3`, or one computed by a call) can be used, in array lengths, local type aliases, `@static_assert`, `when` conditions and arguments for compile-time parameters:
+
+```gamma
+square :: fn(x: usize) -> usize => x * x
+
+local_demo :: fn() -> usize {
+    K :: 4
+    S :: square(3)
+    Row :: [K]u16                        // a local type alias built from a local constant
+    @static_assert(K is 4, "K is four")
+    grid := [S]bool(fill: true)          // array length from a computed constant
+    row: Row = Row(fill: 2)
+    total := grid.len + row.len          // 9 + 4
+    when K is 4 { total += 1 }
+    return total                         // 14
+}
+```
+
+A local that is *not* a constant expression (for example `n := square(x)` of a run-time `x`) cannot be used this way, and the compiler reports the name as unknown in a compile-time position.
+
 ### The step budget
 
 Each required evaluation has a budget of evaluation steps (implementation-defined, and at least ten million per top-level declaration). A runaway loop is a compile error rather than a hang. A declaration that needs more can ask for it with an attribute:
@@ -84,7 +104,7 @@ BIG_TABLE :: crc_table(0x04C11DB7)
 
 ### What a constant may contain
 
-A compile-time value that becomes part of the program (a top-level constant, a `#global` initializer) lives in static memory, so it is restricted:
+A compile-time value that becomes part of the program (a top-level constant, a `#global` initializer, a local constant that was evaluated at compile time) lives in static memory, so it is restricted:
 
 - It may contain pointers only of read-only kinds (`^const T`, `[^]const T`, `[]const T`, `cstring`) and function pointers. Mutable pointers, `rawptr`, continuations and allocators are errors.
 - Every pointer must point into static data: a string literal or another top-level constant. A pointer into memory that existed only during the evaluation is a compile error.
@@ -177,7 +197,7 @@ Header :: struct {
 
 It can appear as a top-level declaration or as a statement. `@compile_error("message")` is an intrinsic of type `never` that is an error if it is compiled, which makes it the `#error` of Gamma when it sits in a `when` branch (as above).
 
-Other compile-time intrinsics are `@size_of(T)`, `@align_of(T)`, `@offset_of(S, field)`, `@type_of(e)` (without evaluating `e`), `@type_name(T)`, `@location()`, `@hash(x, seed)` for values without pointers, and the bit-twiddling helpers `@clz`, `@ctz`, `@popcount`, `@bswap`, `@bitreverse`, `@rotl` and `@rotr`. §20.3 of the [specification][s20] has the full table, including the intrinsics that are not compile-time.
+Other compile-time intrinsics are `@size_of(T)`, `@align_of(T)`, `@offset_of(S, field)`, `@type_of(e)` (without evaluating `e`), `@type_name(T)`, `@location()`, `@hash(x, seed)` (structural, for any type that supports `is`), and the bit-twiddling helpers `@clz`, `@ctz`, `@popcount`, `@bswap`, `@bitreverse`, `@rotl` and `@rotr`. §20.3 of the [specification][s20] has the full table, including the intrinsics that are not compile-time.
 
 ## Why this design
 

@@ -178,6 +178,7 @@ The operation `fail` is declared `-> never`, because a handler for it can only e
 | The clause ends by | `fn` | `esc` | `ctl` |
 | --- | --- | --- | --- |
 | producing a value (falling off the end) | the perform returns it | the perform returns it | not allowed |
+| `continue` (unlabeled, at clause level) | not allowed | same as producing `()` | not allowed |
 | `break` (unlabeled, at clause level) | not allowed | exit the installing `with` | exit the `with` |
 | `break L`, `continue L`, `return` (handler literals only) | not allowed | exit to that target | likewise |
 | `resume k(v)` | no | no | continue the suspended code ([chapter 12](12-fibers.md)) |
@@ -217,7 +218,7 @@ stats_demo :: fn() \ {Out} {
 }
 ```
 
-The first clause parameter (`self`) has the handler's type; the rest are the operation's parameters. A handler declaration must appear in the module that declares the effect or the one that declares the type. A declaration may add `\ {A}` after the type to say which effects its clauses perform (those are handled *outside* the `with` that installs it). This is how the allocator types in [chapter 9](09-memory.md) work, and it is also how you give a struct a handler without writing a handler literal at every use. Clauses of a declaration have no enclosing function, so `return` and captures are not available there, but an unlabeled `break` still exits the `with`.
+The first clause parameter (`self`) has the handler's type; the rest are the operation's parameters. A handler declaration must appear in the module that declares the effect or the one that declares the type. A declaration may add `\ {A}` after the type to say which effects its clauses perform (those are handled *outside* the `with` that installs it). This is how the allocator types in [chapter 9](09-memory.md) work, and it is also how you give a struct a handler without writing a handler literal at every use. Clauses of a declaration have no enclosing function, so labeled `break`/`continue` and captures are not available there. A `return v` (or `try`) ends the clause with the value `v`, as if it were the clause's last expression, and an unlabeled `break` still exits the `with`.
 
 A generic type gets one declaration for all its instances by listing the parameters after `handler`, written as for a generic struct:
 
@@ -292,9 +293,9 @@ repeat_demo :: fn() \ {Out} {
 
 `repeat` declares no effects, and still accepts a callback that prints, because that `Out` belongs to the context of the call, which is `repeat_demo`. Contrast `count_output` above, whose parameter is `fn() \ {Out}`: by listing `Out` in the parameter type, `count_output` promises to handle it, and it does. A callee that wants to *provide* an effect to its callback lists the effect in the callback's type; a callee that just calls it lists nothing.
 
-This is why Gamma has no effect variables or effect-polymorphism syntax: second-class callbacks give you the same expressiveness with no extra notation. A **function pointer** `^fn(...) \ {E}`, being first-class, has a fixed effect set that is handled by whoever calls it. A pointer or named function whose effects are a subset of `E` can be used where `^fn(...) \ {E}` is expected.
+This is why ordinary higher-order functions need no effect variables or effect-polymorphism syntax: second-class callbacks give you the same expressiveness with no extra notation. A **function pointer** `^fn(...) \ {E}`, being first-class, has a fixed effect set that is handled by whoever calls it. A pointer or named function whose effects are a subset of `E` can be used where `^fn(...) \ {E}` is expected. When a *stored* function pointer has to be polymorphic in its effects, a generic function, type, effect or handler can take an effect-set parameter `E: effects` and splice it into effect sets as `..E` ([chapter 10](10-generics.md)). Such a set is fixed for each instantiation, so there are still no effect variables in the types of values.
 
-Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and an effect set may mention type parameters of an enclosing generic function (`\ {Yield(T)}`).
+Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and an effect set may mention type parameters of an enclosing generic function (`\ {Yield(T)}`). An instantiation can be given a name, usable in effect sets and handler literals and for performing it directly: after `Bytes :: Yield(u8)`, a function may declare `\ {Bytes}` and call `Bytes.yield(b)`.
 
 ## Static guarantees
 
@@ -316,7 +317,7 @@ Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and 
 - Operation kinds `fn`, `esc` and `ctl` tell you whether a perform returns, may exit, or may suspend.
 - Handlers come from handler literals or from `handler E for T` declarations.
 - `Out`, `Alloc`, `Fs` and the other ambient effects are ordinary effects; `Sys` marks what escapes the model.
-- Callbacks passed as `fn(...)` carry their own effects with them, so no effect variables are needed.
+- Callbacks passed as `fn(...)` carry their own effects with them, so no effect variables are needed; effect-set parameters (`E: effects`, [chapter 10](10-generics.md)) cover stored function pointers.
 
 Next, [chapter 8](08-iteration.md) uses `esc` to explain `for`.
 

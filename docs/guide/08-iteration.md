@@ -36,7 +36,7 @@ main :: fn() \ {Out} {
 - `break` exits the loop. Because `yield` is an `esc` operation, this *unwinds* the iterator's frames, so its `defer` statements run, and execution continues after the loop.
 - `return`, a labeled `break`/`continue`, and `try` inside `B` work as you would expect and also unwind the iterator on the way out.
 
-That is all there is to it. The language gives `for` three source forms: a call to a function with exactly one `Yield(T)` in its effect set, a range `lo..hi` or `lo..=hi` (or a stored range value, below), and an array or slice (which means `each(...)` of it). An array that is not a variable, such as `[3]i32(5, 6, 7)` or the result of a call that returns an array, is first copied into a hidden variable that lives as long as the loop. Anything else, such as `for x in some_struct`, is a compile error.
+That is all there is to it. The language gives `for` a handful of source forms: a call to a function with exactly one `Yield(T)` in its effect set, a range `lo..hi` or `lo..=hi` (or a stored range value, below), an array, a pointer to an array or a slice (which means `each(...)` of it), and a tuple whose elements all have one type (`for x in (1, 2, 3)` iterates the elements like an array). An array that is not a variable, such as `[3]i32(5, 6, 7)` or the result of a call that returns an array, is first copied into a hidden variable that lives as long as the loop. Anything else, such as `for x in some_struct`, is a compile error.
 
 Ranges are ordinary values of the core types `Range(T)` and `RangeIncl(T)`, structs with the fields `lo` and `hi`. You can store one, pass it, iterate it later, test membership with `in`, and slice with it:
 
@@ -161,7 +161,7 @@ std_demo :: fn(names: []const string, scores: []u32) \ {Out} {
 }
 ```
 
-A comma-separated list of patterns in a `for` head is a tuple pattern without parentheses, so `i, name` takes apart the `(i, x)` pairs of `enumerate`. The `for` pattern must be irrefutable and may not reuse the name of a local in scope.
+A comma-separated list of patterns in a `for` head is a tuple pattern without parentheses, so `i, name` takes apart the `(i, x)` pairs of `enumerate`. The `for` pattern must be irrefutable, and its names may not reuse the name of a local in scope or of a type (a loop variable cannot be called `u8` or `string`).
 
 `return` inside a loop body leaves the whole function, unwinding the iterator:
 
