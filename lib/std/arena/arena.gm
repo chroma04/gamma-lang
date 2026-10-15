@@ -86,8 +86,10 @@ chunk_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
     }
     // A new chunk: twice the previous one, and big enough for this request.
     header := align_up(@size_of(Chunk), 16)
+    if size > @max_value(usize) - header - align { return null }
     need := header + size + align
-    n := (a.size * 2).max(4096).max(need)
+    doubled := if a.size > @max_value(usize) / 2 { a.size } else { a.size * 2 }
+    n := doubled.max(4096).max(need)
     c := a.parent.vt.alloc(a.parent.data, n, 16) else return null
     h := c.cast(^Chunk)
     h.prev = a.chunk

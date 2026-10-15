@@ -5,7 +5,8 @@
 //!     out := io.file_out(file)                        // `print` writes to the file, buffered
 //!     with &out { report() }
 //!     try out.flush()                                  // ... so flush before closing the file
-//!     with &io.StringIn(data: "a\nb\n") { … }         // `In` reads a string
+//!     src := io.StringIn(data: "a\nb\n")
+//!     with &src { … }                                  // `In` reads a string
 //!     lo := io.ListOut(list: &text)                    // `print` appends to a list
 //!     with &lo { report() }
 

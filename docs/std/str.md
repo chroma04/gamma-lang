@@ -357,7 +357,7 @@ Forgets everything appended, keeping the buffer.
 ### `write`
 
 ```gamma
-write :: fn(A: type, b: ^Builder, template :: string, args: A)
+write :: fn(A: type, b: ^Builder, template :: string, args: A = ())
 ```
 
 Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
