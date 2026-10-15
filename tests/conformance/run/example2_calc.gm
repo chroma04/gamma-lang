@@ -200,7 +200,7 @@ run_line :: fn(store: ^Store, src: string) -> ?i64 \ {Alloc, Out} {
 }
 
 main :: fn() \ {Out, Alloc} {
-    store := Store(vars: map(string, i64))
+    store := Store(vars: hash_map(string, i64))
     defer store.vars.deinit()
     lines := [_]string(
         "let y = 4",

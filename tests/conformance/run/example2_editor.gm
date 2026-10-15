@@ -197,7 +197,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
 }
 
 main :: fn() -> IoError!() \ {Out, In, Alloc} {
-    budget := Budget(limit: 260, inner: current())
+    budget := Budget(limit: 260, inner: Alloc.current())
     ed := with Allocator(data: &budget, vt: &BUDGET_VT) { Editor(lines: list(string), undo: list(Undo), budget: &budget) }
     defer {
         for l in ed.lines.items { release(l) }

@@ -62,7 +62,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     _ = st.push(10)
     _ = st.push(20)
     while v := st.pop() { print("{}\n", v) }
-    names := map_with(hash: fold_hash, eq: fold_eq, K: string, u32)
+    names := hash_map_with(hash: fold_hash, eq: fold_eq, K: string, u32)
     defer names.deinit()
     try names.put("Ada", 1)
     try names.put("ADA", 2)

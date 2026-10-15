@@ -18,9 +18,9 @@ c_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 CV :: AllocVtable(alloc: c_alloc, resize: c_resize, free: c_free)
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    c := Counter(inner: current(), cur: 0, peak: 0)
+    c := Counter(inner: Alloc.current(), cur: 0, peak: 0)
     with Allocator(data: (&c).cast(rawptr), vt: &CV) {
-        m := map(u32, u32)
+        m := hash_map(u32, u32)
         defer m.deinit()
         for i in 0..200000 {
             try m.put(i, i)

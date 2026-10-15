@@ -290,7 +290,12 @@ impl<'a, 's> FnCx<'a, 's> {
         } else if super::builtins::builtin_fn(name.as_str()).is_some() {
             self.error(span, format!("the builtin function `{}` can only be called", name));
         } else {
-            self.error(span, format!("unknown name `{}`", name));
+            let mut d = crate::diag::Diagnostic::error(span, format!("unknown name `{}`", name));
+            if let Some(hint) = self.sema.universe_hint(name) {
+                self.sema.migrate_universe(name, span);
+                d = d.with_note(hint);
+            }
+            self.sema.emit(d);
         }
         error_expr(span)
     }

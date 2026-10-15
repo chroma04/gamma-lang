@@ -31,7 +31,7 @@ pub Index :: struct(T: type, K: type) {
 }
 
 pub index :: fn(T: type, K: type, t: ^const Table(T), key: ^fn(row: ^const T) -> K) -> AllocError!Index(T, K) \ {Alloc} where Eq(K) {
-    m := map(K, usize)
+    m := hash_map(K, usize)
     errdefer m.deinit()
     for i in 0..t.rows.items.len {
         k := key(&t.rows.items[i])

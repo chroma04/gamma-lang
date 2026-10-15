@@ -24,7 +24,7 @@ count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() \ {Al
 }
 
 main :: fn() \ {Out, Alloc} {
-    m := map(string, u32)
+    m := hash_map(string, u32)
     count_words(&m, "the cat and the hat and the bat") else trap()
     words := list(string)
     words.collect(fn() => m.keys()) else trap()

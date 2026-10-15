@@ -1,0 +1,25 @@
+//! stage: check
+// The universe scope holds the predeclared effects but not their operations, except
+// `yield` (§21.1): an operation is reached through its effect, so a program's own
+// declarations may use the same names.
+Sched :: effect {
+    exit: fn()
+}
+
+run :: fn() \ {Sched} {
+    exit()                       // this module's `Sched.exit`
+}
+
+stop :: fn() \ {Env} {
+    Env.exit(1)
+}
+
+clock :: fn() -> Instant \ {Clock} {
+    return now()                 //~ ERROR unknown name `now` //~ NOTE write `Clock.now(…)`
+}
+
+file_of :: fn(f: ?File) {}       //~ ERROR unknown type `File` //~ NOTE import it and write `fs.File`
+
+since :: fn(n: i32) -> i32 => n  // the method `Instant.since` is not in the universe either
+
+main :: fn() {}

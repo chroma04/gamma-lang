@@ -60,7 +60,7 @@ bar :: fn(n: u32, out: []u8) -> string {
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     a := arena.new()
     defer a.deinit()
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     total: u32 = 0
     nlines: u32 = 0

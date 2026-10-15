@@ -40,7 +40,7 @@ MemKv :: struct {
     m: HashMap(Key, i64)
 }
 
-mem_new :: fn() -> MemKv \ {Alloc} => MemKv(m: map(Key, i64))
+mem_new :: fn() -> MemKv \ {Alloc} => MemKv(m: hash_map(Key, i64))
 
 mem_put :: fn(s: ^MemKv, key: string, val: i64) -> KvError!() {
     k := try key_of(key)
@@ -241,7 +241,7 @@ compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool \ {Fs, Alloc} {
         try append_record(SNAP_TMP, b.str())
     }
     if crash is .AfterTmp { return false }
-    try rename(SNAP_TMP, SNAP)
+    try Fs.rename(SNAP_TMP, SNAP)
     if crash is .AfterRename { return false }
     try fs.write_all(WAL, "")
     db.records = 0
@@ -325,7 +325,7 @@ test "a torn last record is dropped and the log repaired" {
     buf: [64]u8 = ---
     expect(describe(&db2.mem, buf[..]) is "a=1 b=2")
     // The repair cut the log back to the last good record.
-    info := ok(stat(WAL))
+    info := ok(Fs.stat(WAL))
     expect(info.size.trunc(usize) is rep.valid_len)
     rep2 := Report()
     db3 := ok(recover(&rep2))
@@ -371,7 +371,7 @@ test "compaction shrinks the log and survives crashes at every step" {
     buf: [96]u8 = ---
     want := "k0=35 k1=36 k2=37 k4=39"
     expect(describe(&db.mem, buf[..]) is want)
-    before := (ok(stat(WAL))).size
+    before := (ok(Fs.stat(WAL))).size
 
     // Crash 1: the temporary snapshot is written but never renamed.
     expect(not ok(compact(&db, .AfterTmp)))
@@ -392,7 +392,7 @@ test "compaction shrinks the log and survives crashes at every step" {
     // A clean compaction.
     expect(ok(compact(&db, .Never)))
     expect(db.records is 0)
-    after := (ok(stat(WAL))).size
+    after := (ok(Fs.stat(WAL))).size
     expect(before > 500 and after is 0)
     rep = Report()
     r3 := ok(recover(&rep))

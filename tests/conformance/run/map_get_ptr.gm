@@ -6,7 +6,7 @@ hash_len :: fn(k: ^const string, seed: u64) -> u64 => k.len.trunc(u64) +% seed
 eq_str :: fn(a, b: ^const string) -> bool => a^ is b^
 
 main :: fn() \ {Out, Alloc} {
-    m := map(u32, u64)
+    m := hash_map(u32, u64)
     defer m.deinit()
 
     // Absent in an empty map.
@@ -21,7 +21,7 @@ main :: fn() \ {Out, Alloc} {
     print("missing: {}\n", m.get_ptr(3) is null)
 
     // Counting with entry.
-    counts := map(u32, u32)
+    counts := hash_map(u32, u32)
     defer counts.deinit()
     data := [_]u32(3, 1, 3, 3, 2, 1, 7)
     for x in data {
@@ -37,7 +37,7 @@ main :: fn() \ {Out, Alloc} {
     print("len still: {}\n", counts.len())
 
     // Growth: many insertions through entry keep every value reachable.
-    big := map(u32, u32)
+    big := hash_map(u32, u32)
     defer big.deinit()
     for i in 0..1000 {
         v := (big.entry(i, i * 2) else return).value
@@ -57,7 +57,7 @@ main :: fn() \ {Out, Alloc} {
     print("re-added: {}\n", w^)
 
     // Struct values are updated through the pointer.
-    pts := map(u32, Point)
+    pts := hash_map(u32, Point)
     defer pts.deinit()
     _ = pts.put(9, Point(x: 1, y: 2)) else return
     pp := pts.get_ptr(9) else return
@@ -66,7 +66,7 @@ main :: fn() \ {Out, Alloc} {
     print("point: {}\n", pts.get(9))
 
     // Custom hash and equality.
-    sm := map_with(K: string, i32, hash_len, eq_str)
+    sm := hash_map_with(K: string, i32, hash_len, eq_str)
     defer sm.deinit()
     sv := (sm.entry("abc", 1) else return).value
     sv^ += 1

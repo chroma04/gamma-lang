@@ -1,11 +1,12 @@
 // An access mode with neither write nor append opens read-only, like POSIX; `create`
 // still creates the file. The test works in a fresh directory under `target/`.
+fs :: import "std/fs"
 
 hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 
 main :: fn() -> IoError!() \ {Out, Fs, Rand} {
     r: [6]u8 = ---
-    fill(r[..])
+    Rand.fill(r[..])
     name := [_]u8('t', 'a', 'r', 'g', 'e', 't', '/', 'g', 'a', 'm', 'm', 'a', '-', 'r', 'o', '-',
                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     for i in 0..6 {
@@ -13,26 +14,26 @@ main :: fn() -> IoError!() \ {Out, Fs, Rand} {
         name[17 + 2 * i] = hex(r[i] & 15)
     }
     dir := name[..]
-    try make_dir(dir)
+    try Fs.make_dir(dir)
     path_buf: [64]u8 = ---
     path := join(path_buf[..], dir, "a.txt")
 
-    f := try open(path, OpenOptions(read: false, write: false, create: true))
-    print("created: {}\n", (try stat(path)).size)
+    f := try Fs.open(path, fs.OpenOptions(read: false, write: false, create: true))
+    print("created: {}\n", (try Fs.stat(path)).size)
     buf: [8]u8 = ---
     print("read: {}\n", try f.read_from(buf[..]))
-    close(f)
+    Fs.close(f)
 
-    w := try open(path, OpenOptions(read: false, write: true, truncate: true))
+    w := try Fs.open(path, fs.OpenOptions(read: false, write: true, truncate: true))
     _ = try w.write_to("data")
-    close(w)
-    g := try open(path, OpenOptions(read: false, write: false))
+    Fs.close(w)
+    g := try Fs.open(path, fs.OpenOptions(read: false, write: false))
     n := try g.read_from(buf[..])
     print("read: {}\n", buf[0..n])
-    close(g)
+    Fs.close(g)
 
-    try remove(path)
-    try remove_dir(dir)
+    try Fs.remove(path)
+    try Fs.remove_dir(dir)
     return ()
 }
 

@@ -55,7 +55,7 @@ pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K) {
 /// `a` comes before `b`; it should be a strict weak ordering. It is stored in the map, so it
 /// is a plain function pointer: it cannot capture variables.
 pub ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) \ {Alloc} {
-    return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: current())
+    return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: Alloc.current())
 }
 
 // The index of the first key of `x` that does not come before `k`.

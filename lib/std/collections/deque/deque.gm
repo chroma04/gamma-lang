@@ -24,7 +24,7 @@ pub Deque :: struct(T: type) {
 
 /// An empty deque using the current allocator. It allocates on the first push.
 pub deque :: fn(T: type) -> Deque(T) \ {Alloc} {
-    return Deque(T)(buf: empty_slice(T), head: 0, count: 0, alloc: current())
+    return Deque(T)(buf: empty_slice(T), head: 0, count: 0, alloc: Alloc.current())
 }
 
 // The storage slot of logical index `i` (at most the length).

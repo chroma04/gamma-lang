@@ -25,7 +25,7 @@ main :: fn() \ {Out, Rand} {
     x := random.next(&g)
     y := random.next(&g)
     buf: [11]u8 = ---
-    with &f { fill(buf[..]) }
+    with &f { Rand.fill(buf[..]) }
     ok := true
     for i in 0..8 {
         if buf[i] is not (x >> (i * 8).trunc(u32)).trunc(u8) { ok = false }

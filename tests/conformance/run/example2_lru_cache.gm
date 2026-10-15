@@ -16,7 +16,7 @@ Lru :: struct(K, V: type) {
 }
 
 lru :: fn(K, V: type, cap: usize) -> Lru(K, V) \ {Alloc} where Eq(K) {
-    return Lru(K, V)(index: map(K, ^Node(K, V)), cap: cap)
+    return Lru(K, V)(index: hash_map(K, ^Node(K, V)), cap: cap)
 }
 
 unlink :: fn(K, V: type, c: ^Lru(K, V), n: ^Node(K, V)) {

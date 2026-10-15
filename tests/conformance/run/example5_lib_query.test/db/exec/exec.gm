@@ -85,7 +85,7 @@ pub Group :: struct {
 /// Groups the matching rows by `key` and totals `val` per group.
 pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Query(T),
                    key: fn(row: ^const T) -> K, val: fn(row: ^const T) -> i64) -> AllocError!HashMap(K, Group) \ {Alloc, Trace} where Eq(K) {
-    groups := map(K, Group)
+    groups := hash_map(K, Group)
     errdefer groups.deinit()
     try for r in rows(t, q) {
         copy := r
@@ -100,7 +100,7 @@ pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Q
 /// An inner hash join of `ta` and `tb` on equal keys; `tb`'s key should be unique.
 pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const table.Table(B),
                ka: fn(row: ^const A) -> K, kb: fn(row: ^const B) -> K) -> AllocError!() \ {Yield((left: A, right: B)), Alloc, Trace} where Eq(K) {
-    build := map(K, usize)
+    build := hash_map(K, usize)
     defer build.deinit()
     right := tb.all()
     for i in 0..right.len { try build.put(kb(&right[i]), i) }

@@ -7,6 +7,15 @@
 //!     reply: [5]u8 = ---
 //!     try net.recv_exact(s, reply[..])
 
+/// A TCP connection (§21.7).
+pub Socket :: core.Socket
+
+/// A TCP socket listening for connections.
+pub Listener :: core.Listener
+
+/// Which direction of a connection `Net.shutdown` closes.
+pub Shutdown :: core.Shutdown
+
 /// Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress (returns
 /// 0) fails with `.Other(0)`.
 pub send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net} {

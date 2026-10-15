@@ -22,7 +22,7 @@ free_csr :: fn(m: ^Csr) \ {Alloc} {
 
 // Assembles duplicate (row, col) entries by summing them, then builds the CSR arrays.
 assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr \ {Alloc} {
-    sums := map((u32, u32), f64)
+    sums := hash_map((u32, u32), f64)
     defer sums.deinit()
     for e in entries {
         slot := (try sums.entry((e.row, e.col), 0.0)).value
@@ -154,7 +154,7 @@ main :: fn() -> AllocError!() \ {Alloc, Out} {
     print("3 iterations are not enough: {}\n", short is null)
 
     // Histogram of the coefficient values with a HashMap keyed by the bit pattern.
-    hist := map(u64, u32)
+    hist := hash_map(u64, u32)
     defer hist.deinit()
     for v in m.vals {
         c := (try hist.entry(v.bits(u64), 0)).value

@@ -33,7 +33,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     try fs.make_dir_all(at(p[..], root, "a/b/c"))
     try fs.make_dir_all(at(p[..], root, "a//b/./c/"))
     try fs.make_dir_all(at(p[..], root, "empty"))
-    print("made nested directories: {}\n", (try stat(at(p[..], root, "a/b/c"))).kind is .Dir)
+    print("made nested directories: {}\n", (try Fs.stat(at(p[..], root, "a/b/c"))).kind is .Dir)
     try put(root, "a/one.txt", "1")
     try put(root, "a/b/two.txt", "22")
     try put(root, "a/b/c/three.txt", "333")
@@ -109,33 +109,33 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     }
 
     // stat, lstat
-    f := try lstat(at(p[..], root, "a/b/two.txt"))
+    f := try Fs.lstat(at(p[..], root, "a/b/two.txt"))
     print("lstat file: {} {}\n", f.kind is .File, f.size)
-    print("lstat dir: {}\n", (try lstat(at(p[..], root, "a"))).kind is .Dir)
-    if !e := lstat(at(p[..], root, "missing")) { print("lstat missing: {}\n", e) }
+    print("lstat dir: {}\n", (try Fs.lstat(at(p[..], root, "a"))).kind is .Dir)
+    if !e := Fs.lstat(at(p[..], root, "missing")) { print("lstat missing: {}\n", e) }
 
     // truncate, sync
-    h := try open(at(p[..], root, "top.txt"), OpenOptions(read: true, write: true))
+    h := try Fs.open(at(p[..], root, "top.txt"), fs.OpenOptions(read: true, write: true))
     _ = try h.write_to("hello world")
     try h.sync()
     try h.truncate(5)
-    print("truncated to {}\n", (try stat(at(p[..], root, "top.txt"))).size)
+    print("truncated to {}\n", (try Fs.stat(at(p[..], root, "top.txt"))).size)
     try h.truncate(8)
-    print("extended to {}\n", (try stat(at(p[..], root, "top.txt"))).size)
+    print("extended to {}\n", (try Fs.stat(at(p[..], root, "top.txt"))).size)
     _ = try h.seek(0, .Start)
     buf: [16]u8 = ---
     got := try h.read_from(buf[..])
     print("contents: {} then {} zero bytes\n", buf[0..5], got - 5)
-    close(h)
-    ro := try open(at(p[..], root, "top.txt"), OpenOptions())
+    Fs.close(h)
+    ro := try Fs.open(at(p[..], root, "top.txt"), fs.OpenOptions())
     if !e := ro.truncate(1) { print("truncate read-only: {}\n", e.tag() > 0) }
-    close(ro)
+    Fs.close(ro)
 
     // cwd
     cb: [4096]u8 = ---
-    cn := try cwd(cb[..])
+    cn := try Fs.cwd(cb[..])
     print("cwd: {} {}\n", cn > 0, cb[0] is '/' or cb[1] is ':')
-    if !e := cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
+    if !e := Fs.cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
 
     // write_atomic
     try fs.make_dir_all(at(p[..], root, "atomic"))
@@ -149,24 +149,24 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     print("entries in the directory: {}\n", try count(at(p[..], root, "atomic")))
     if !e := fs.write_atomic(at(p[..], root, "no/such/dir/file"), "x") { print("atomic failure: {}\n", e) }
     print("entries in the root: {}\n", try count(root))
-    try remove(target)
+    try Fs.remove(target)
 }
 
 cleanup :: fn(root: string) \ {Fs} {
     p: [512]u8 = ---
     for rel in [_]string("a/b/c/three.txt", "a/b/two.txt", "a/one.txt", "top.txt") {
-        _ = remove(at(p[..], root, rel))
+        _ = Fs.remove(at(p[..], root, rel))
     }
     for rel in [_]string("a/b/c", "a/b", "a", "empty", "atomic") {
-        _ = remove_dir(at(p[..], root, rel))
+        _ = Fs.remove_dir(at(p[..], root, rel))
     }
-    _ = remove_dir(root)
+    _ = Fs.remove_dir(root)
 }
 
 main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
-    tmp := var("TMPDIR") else (var("TEMP") else "/tmp")
+    tmp := Env.var("TMPDIR") else (Env.var("TEMP") else "/tmp")
     r: [6]u8 = ---
-    fill(r[..])
+    Rand.fill(r[..])
     name: [12]u8 = ---
     for i in 0..6 {
         name[2 * i] = hex(r[i] >> 4)
@@ -179,9 +179,9 @@ main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
     full[0..root.len].copy_from(root)
     full[root.len..root.len + 12].copy_from(name[..])
     dir := full[0..root.len + 12]
-    try make_dir(dir)
+    try Fs.make_dir(dir)
     result := scenario(dir)
     cleanup(dir)
-    print("cleaned up: {}\n", stat(dir) is !.NotFound)
+    print("cleaned up: {}\n", Fs.stat(dir) is !.NotFound)
     return result
 }

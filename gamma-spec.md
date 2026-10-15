@@ -486,7 +486,7 @@ The statement means `if P := e { rest of the block } else { d }`. A pattern bind
 Scopes nest: the universe scope (predeclared names, §21.1) contains each module's top-level scope, which contains function bodies, which contain blocks.
 
 - A local binding is in scope from the end of its declaration to the end of the enclosing block. A binding's own initializer cannot refer to it.
-- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias. (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely: the effect operations of §21.1 (`current`, `write_out`, `yield`, …) are ordinary predeclared function names, so a program may declare its own `current` or bind a local `now` (the operation stays reachable as `Alloc.current`, `Clock.now`).
+- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias. (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely. The operations of the predeclared effects other than `yield` are not in the universe at all (§21.1), so a program may name its own declarations `now`, `read` or `exit` freely.
 - Function literals and handler literals are part of their enclosing function for this rule.
 - Top-level names in one module must be distinct, across all files of the module.
 - `_` never introduces a binding and may be used any number of times.
@@ -1070,7 +1070,7 @@ capture   = ident '=>' ( block | expr )
 
 The condition is a `bool` expression, or a **binding condition** `pattern := e`, or several of these joined by `and`.
 
-- A binding condition succeeds if `e`'s value matches `pattern` (§9), binding the pattern's names. Refutable patterns are the point: `if user := find(id)` (an irrefutable binding pattern on an optional matches only a present value, §9.3), `if .Circle(r) := shape`, `if f := open(path)` on a result (matches only success).
+- A binding condition succeeds if `e`'s value matches `pattern` (§9), binding the pattern's names. Refutable patterns are the point: `if user := find(id)` (an irrefutable binding pattern on an optional matches only a present value, §9.3), `if .Circle(r) := shape`, `if f := Fs.open(path, opts)` on a result (matches only success).
 - In a chain `c1 and c2 and …`, parts are evaluated left to right and the chain stops at the first failure. Names bound by a part are in scope in the later parts and in the `then` block — not in `else` branches.
 - Binding conditions may not be combined with `or` or negated with `not`.
 - **Error capture.** If the *last* part of an `if` condition is a binding condition on a result, the final `else` may be `else e => …`, which binds the error value to `e`. This is permitted only when the `if` has exactly one condition part.
@@ -1425,7 +1425,7 @@ retry :: fn(times: u32, op: fn() -> IoError!()) -> IoError!() {
     return op()                         // last attempt: its error is ours
 }
 
-try retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
+try retry(3, fn() => Net.send(conn, packet))   // Net is handled by retry's caller
 ```
 
 `retry` performs no effects of its own and needs no effect annotation to accept callbacks that perform any. A callee that wants to *provide* an effect lists it:
@@ -1493,7 +1493,7 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`) or effect sets (`effect(E: effects)`, §16.6); an effect is instantiated by applying it to arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`, and through an instantiation or an alias of one as `E(T).op` or `Ev.op` (with `Ev :: E(T)`), which performs that instantiation without inference. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`, and through an instantiation or an alias of one as `E(T).op` or `Ev.op` (with `Ev :: E(T)`), which performs that instantiation without inference. A name clash between an operation and another top-level name of `M` is a compile error. Outside `M`, an operation is reached as `m.op` or `m.E.op` (with `m` the import of `M`); for the predeclared effects, whose operations the universe leaves out, as `E.op` (§21.1).
 
 ### 12.2 Operation kinds
 
@@ -2076,10 +2076,10 @@ HashMap :: struct(K, V: type,
     …
 }
 
-ids := map(string, u32)                                // @hash and `is`
+ids := hash_map(string, u32)                                // @hash and `is`
 try ids.put("ada", 1)
 
-names := map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2521,15 +2521,17 @@ The core library is the part of the standard library that the language definitio
 
 ### 21.1 The universe scope
 
-These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name, including the effects and the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
+These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names.
+
+The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation of a predeclared effect is reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write_out(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are also called as methods (`f.read_from(buf)`, §21.7). The universe also leaves out the types of `Fs` and `Net`, which the standard modules `std/fs` and `std/net` export (`fs.File`, `net.Socket`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
 
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`, `Test` |
-| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, `note`, `fail`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| operations | `yield` only; the others are reached through their effects |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2595,7 +2597,7 @@ nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 
 ### 21.5 Containers (summary)
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `map` and `map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `hash_map` and `hash_map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
 
 ```
 // core/list
@@ -2620,7 +2622,7 @@ HashMap  :: struct(K, V: type,
                    hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
                    eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
 map      :: fn(K, V: type) -> HashMap(K, V) \ {Alloc} where Eq(K)
-map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
+hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
@@ -2657,7 +2659,7 @@ eprint :: fn(A: type, template :: string, args: ..A) \ {Err}
 - `expect(cond, msg)` performs `Test.fail` (§3.8) when `cond` is `false`, reporting `msg` (prefixed `expectation failed: ` unless it is the default) and its caller's location.
 - `expect_eq(actual, expected)`, unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), writes `expected: ` and `actual: ` lines with both values through `Test.note`, then performs `Test.fail` with `expectation failed: the values differ` and its own location.
 - `ok(x)` is the success value of `x`; if `x` is an error, it writes `error: ` and the error value through `Test.note` and performs `Test.fail` with its caller's location.
-- `print(t, args…)` is `@write(fn(b) => write_out(b), t, args…)`, and `eprint` likewise with `write_err`.
+- `print(t, args…)` is `@write(fn(b) => Out.write_out(b), t, args…)`, and `eprint` likewise with `Err.write_err`.
 
 #### 21.6.1 Formatting: `@write`
 
@@ -3141,7 +3143,7 @@ The goals of §1 are applied in priority order: **sensible**, then **fast**, the
 ### C.3 Functions
 
 - **Two kinds of function value.** `fn(…)` is second-class: it may capture locals by reference, costs no allocation, and can be passed down but never stored or returned. `^fn(…)` is a plain code pointer: first-class, C-compatible, capturing nothing. Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
-- **Effect polymorphism without effect variables.** A second-class callback's effects are handled where it was written, except those its parameter type lists, which the callee handles. So `retry(3, fn() => send(p))` needs no annotation for `send`'s effects, while `capture_output(body: fn() \ {Out})` can provide an effect to its callback.
+- **Effect polymorphism without effect variables.** A second-class callback's effects are handled where it was written, except those its parameter type lists, which the callee handles. So `retry(3, fn() => Net.send(c, p))` needs no annotation for `Net`, while `capture_output(body: fn() \ {Out})` can provide an effect to its callback.
 - **Parameters are distinct objects.** Passing a large value by reference is an optimization the implementation may make when unobservable, never a semantic the programmer must reason about.
 
 ### C.4 Generics, and why there are no traits

@@ -37,6 +37,13 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** the universe scope holds the predeclared effects but not their
+  operations, except `yield`: write `Clock.now()`, `Alloc.current()`, `Env.args()`,
+  `Fs.open(path, opts)` (methods on files and sockets are unchanged). The types of `Fs`
+  and `Net` (`File`, `OpenOptions`, `Socket`, …) are exported by `std/fs` and `std/net`
+  instead, and the methods of `Instant` and `Duration` are reached only as methods. An
+  unknown name that is one of these says how to reach it (§21.1).
+- **Breaking:** `map` and `map_with` are renamed `hash_map` and `hash_map_with`.
 - **Breaking:** rest parameters. The last parameter of a function may be declared
   `args: ..A`; it takes the remaining positional arguments as one typed tuple, and a spread
   passes one on (`print(template, ..args)`). `print`, `eprint`, `@write`, `List.write`,

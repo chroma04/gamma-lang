@@ -10,11 +10,32 @@ use std::rc::Rc;
 
 const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
 
+/// Public declarations of the core prelude that the universe scope leaves out, besides the
+/// effect operations (§21.1): the types of `Fs` and `Net`, which `std/fs` and `std/net`
+/// export, and the methods of `Instant` and `Duration`.
+const UNIVERSE_HIDDEN: &[&str] = &[
+    "File",
+    "Dir",
+    "OpenOptions",
+    "FileKind",
+    "FileInfo",
+    "DirEntry",
+    "SeekFrom",
+    "Socket",
+    "Listener",
+    "Shutdown",
+    "since",
+    "after",
+    "plus",
+    "minus",
+    "to_ms",
+];
+
 /// The other core modules (§21.5): name, source, and the names re-exported to
 /// the universe scope. Their remaining functions are reached as methods.
 const CORE_MODULES: &[(&str, &str, &[&str])] = &[
     ("list", include_str!("../../lib/core/list.gm"), &["List", "list"]),
-    ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "map", "map_with"]),
+    ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "hash_map", "hash_map_with"]),
     ("slice", include_str!("../../lib/core/slice.gm"), &[]),
 ];
 
@@ -26,6 +47,7 @@ impl<'s> Sema<'s> {
         self.collect_whens(id);
         self.prelude = Some(id);
         self.load_target_module(id);
+        self.bind_core_module(id);
         for (name, src, exports) in CORE_MODULES {
             let file = self.sess.sources.add(format!("<core>/{}.gm", name), src.to_string());
             let ast = self.sess.parse(file);
@@ -255,8 +277,75 @@ impl<'s> Sema<'s> {
         }
         let prelude = self.prelude?;
         let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
-        let core = self.modules[module.0 as usize].is_prelude;
-        if core || self.decls[d.0 as usize].item.is_pub { Some(d) } else { None }
+        let m = &self.modules[module.0 as usize];
+        if m.is_prelude {
+            return Some(d);
+        }
+        if !self.decls[d.0 as usize].item.is_pub {
+            return None;
+        }
+        // The name `core` for the core library itself is the standard library's (§22).
+        if name.as_str() == "core" {
+            return m.is_std.then_some(d);
+        }
+        if self.universe_hidden(d) { None } else { Some(d) }
+    }
+
+    /// Whether the core library's public declaration `d` is left out of the universe
+    /// scope (§21.1): an effect operation other than `yield`, reached through its effect
+    /// (`Clock.now()`); a type of the `Fs` or `Net` effects, reached through `std/fs` and
+    /// `std/net`; or a function reached as a method.
+    pub fn universe_hidden(&self, d: DeclId) -> bool {
+        let decl = &self.decls[d.0 as usize];
+        if decl.op_of.is_some() {
+            return decl.name.name.as_str() != "yield";
+        }
+        UNIVERSE_HIDDEN.contains(&decl.name.name.as_str())
+    }
+
+    /// Migration aid: where a name left out of the universe scope is used.
+    pub fn migrate_universe(&mut self, name: Symbol, span: Span) {
+        if std::env::var_os("GAMMA_MIGRATE").is_none() {
+            return;
+        }
+        let Some(prelude) = self.prelude else { return };
+        let Some(&d) = self.modules[prelude.0 as usize].scope.get(&name) else { return };
+        let file = self.sess.sources.file(span.file).path.clone();
+        let with = match self.decls[d.0 as usize].op_of {
+            Some((e, _)) => format!("{}.{}", self.decls[e.0 as usize].name.name, name),
+            None => match name.as_str() {
+                "Socket" | "Listener" | "Shutdown" => format!("net.{}", name),
+                "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => {
+                    format!("fs.{}", name)
+                }
+                _ => return,
+            },
+        };
+        eprintln!("MIGRATE_QUALIFY\t{}\t{}\t{}\t{}", file.display(), span.lo, span.hi, with);
+    }
+
+    /// For an unknown name that the core library declares but leaves out of the universe
+    /// scope, how to reach it.
+    pub fn universe_hint(&mut self, name: Symbol) -> Option<String> {
+        let prelude = self.prelude?;
+        let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
+        if !self.universe_hidden(d) {
+            return None;
+        }
+        let decl = &self.decls[d.0 as usize];
+        if let Some((e, _)) = decl.op_of {
+            let effect = self.decls[e.0 as usize].name.name;
+            return Some(format!("`{name}` is an operation of `{effect}`: write `{effect}.{name}(…)` (§21.1)"));
+        }
+        let module = match name.as_str() {
+            "Socket" | "Listener" | "Shutdown" => Some("std/net"),
+            "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => Some("std/fs"),
+            _ => None,
+        };
+        Some(match module {
+            Some(m) => format!("`{name}` is declared by `{m}`: import it and write `{}.{name}`", &m[4..]),
+            None => format!("`{name}` is a method of `Instant` or `Duration`: write `x.{name}(…)`"),
+        })
     }
 
     /// The module that a module-binding name (`m` in `m.T`) denotes in `module`.
@@ -318,6 +407,33 @@ impl<'s> Sema<'s> {
 
     /// The predeclared module `target` (§3.6): compile-time constants describing
     /// the compilation target, generated from the session's target.
+    /// Binds `core` to the core prelude itself, for the standard library, which exports
+    /// some of its declarations under other modules (`std/fs`'s `File`).
+    fn bind_core_module(&mut self, prelude: ModuleId) {
+        let name = ast::Ident { name: Symbol::intern("core"), span: Span::DUMMY };
+        let item = Rc::new(ast::Item {
+            id: ast::NodeId(u32::MAX),
+            span: Span::DUMMY,
+            doc: None,
+            attrs: vec![],
+            is_pub: true,
+            kind: ItemKind::Intrinsic(ast::Expr {
+                id: ast::NodeId(u32::MAX),
+                kind: ast::ExprKind::Underscore,
+                span: Span::DUMMY,
+            }),
+        });
+        let id = DeclId(self.decls.len() as u32);
+        self.decls.push(Decl {
+            name,
+            module: prelude,
+            item,
+            state: DeclState::Done(super::DeclValue::Module(prelude)),
+            op_of: None,
+        });
+        self.modules[prelude.0 as usize].scope.insert(name.name, id);
+    }
+
     fn load_target_module(&mut self, prelude: ModuleId) {
         let t = &self.target;
         let src = format!(

@@ -47,7 +47,7 @@ pub seeded :: fn(seed: u64) -> Rng {
 pub from_rand :: fn() -> Rng \ {Rand} {
     while true {
         buf: [32]u8 = ---
-        fill(buf[..])
+        Rand.fill(buf[..])
         r := Rng(s: [_]u64(0, 0, 0, 0))
         any: u64 = 0
         for i in 0..4 {
@@ -102,7 +102,7 @@ handler Rand for ^Rng {
 /// A uniformly distributed `u64`.
 pub next_u64 :: fn() -> u64 \ {Rand} {
     buf: [8]u8 = ---
-    fill(buf[..])
+    Rand.fill(buf[..])
     return load_u64(buf[..])
 }
 

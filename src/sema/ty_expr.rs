@@ -140,7 +140,12 @@ impl<'s> Sema<'s> {
                 if let Some(t) = builtin_type(id.name.as_str()) {
                     return t;
                 }
-                self.error(e.span, format!("unknown type `{}`", id.name));
+                let mut d = crate::diag::Diagnostic::error(e.span, format!("unknown type `{}`", id.name));
+                if let Some(hint) = self.universe_hint(id.name) {
+                    self.migrate_universe(id.name, e.span);
+                    d = d.with_note(hint);
+                }
+                self.emit(d);
                 Ty::error()
             }
             ExprKind::Paren(inner) => self.resolve_type(module, inner),

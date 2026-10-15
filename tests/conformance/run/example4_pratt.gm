@@ -489,7 +489,7 @@ main :: fn() \ {Out, Alloc} {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
-        it := Interp(globals: map(string, i64), funcs: map(string, Def))
+        it := Interp(globals: hash_map(string, i64), funcs: hash_map(string, Def))
         run_source(&it, PROGRAM_OK)
         print("({} calls)\n", it.calls)
 

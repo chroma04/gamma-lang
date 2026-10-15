@@ -104,11 +104,11 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     fb.reset()
 
     // Counting allocator on the heap: List, HashMap and a heap of records.
-    cnt := Counting(parent: current(), allocs: 0, frees: 0, bytes: 0)
+    cnt := Counting(parent: Alloc.current(), allocs: 0, frees: 0, bytes: 0)
     with Allocator(data: &cnt, vt: &COUNTING_VT) {
         l := list(Rec)
         for i in 0..N { try l.push(make_rec(i.trunc(u32))) }
-        m := map(u32, Rec)
+        m := hash_map(u32, Rec)
         for i in 0..500 { try m.put(i.trunc(u32) * 3, make_rec(i.trunc(u32))) }
         h := hp.heap_by(T: Rec, fn(a, b: ^const Rec) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id))
         for r in l.items { try h.push(r) }

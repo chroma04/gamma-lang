@@ -219,7 +219,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() \ {Ex
 }
 
 new_build :: fn() -> Build \ {Alloc} {
-    return Build(cache: map(string, CacheEntry), outputs: map(string, u64))
+    return Build(cache: hash_map(string, CacheEntry), outputs: hash_map(string, u64))
 }
 
 drop :: fn(b: ^Build) {

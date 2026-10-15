@@ -63,7 +63,7 @@ bench "1000 List pushes and a sum" {
 }
 
 bench "1000 HashMap inserts and lookups" {
-    m := map(u32, u32)
+    m := hash_map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
         ok(m.put(i, i * 2))

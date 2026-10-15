@@ -73,7 +73,7 @@ test "a range has a length" {
 }
 
 test "a map full of tombstones is rehashed without growing" {
-    m := map(u32, u32)
+    m := hash_map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
         ok(m.put(i, i))

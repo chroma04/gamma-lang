@@ -421,28 +421,6 @@ impl<'s> Sema<'s> {
         self.sess.diags.error(span, msg);
     }
 
-    /// When operation `op` of `eff`, declared outside the core library, has the name of a
-    /// universe operation, an explanation that the declaration hides it (§4.6).
-    pub fn hidden_universe_op(&self, eff: EffectId, op: u32) -> Option<String> {
-        let info = &self.effects[&eff];
-        if self.modules[info.module.0 as usize].is_prelude {
-            return None;
-        }
-        let name = info.ops[op as usize].name;
-        let mut hidden: Vec<Symbol> = self
-            .effects
-            .values()
-            .filter(|e| self.modules[e.module.0 as usize].is_prelude && e.ops.iter().any(|o| o.name == name))
-            .map(|e| e.name)
-            .collect();
-        hidden.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        let universe = hidden.first()?;
-        Some(format!(
-            "`{name}` here is the operation `{}.{name}`, whose declaration hides the universe operation `{universe}.{name}`",
-            info.name
-        ))
-    }
-
     pub fn emit(&mut self, d: Diagnostic) {
         self.sess.diags.push(d);
     }

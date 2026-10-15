@@ -1,6 +1,6 @@
-// Predeclared names (§21.1), including the operations of the ambient effects,
-// may be hidden by a declaration of the same name at top level or in a function.
-// The effect's own operation stays reachable as `Effect.op`.
+// Predeclared names (§21.1) may be hidden by a declaration of the same name at top
+// level or in a function, and the names of effect operations, which the universe leaves
+// out (but `yield`), are free to use. Operations are reached as `Effect.op`.
 
 current :: fn() -> u32 => 7
 yield :: fn(x: u32) -> u32 => x + 1
@@ -18,8 +18,8 @@ main :: fn() \ {Out, Alloc} {
     print("{} {} {} {}\n", current(), yield(1), read(), range(4))
     print("{}\n", shadow_locals())
 
-    // The hidden operation is still reachable through its effect, and the
-    // core functions that use it are unaffected.
+    // An operation is reached through its effect, and the core functions that
+    // use it are unaffected.
     a := Alloc.current()
     _ = a
     xs := make(u8, 4) else return

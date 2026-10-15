@@ -183,7 +183,7 @@ library :: fn() \ {Out, Alloc} {
         print("{} ", i)
     }
     print("\n")
-    m := map(u200, i129)
+    m := hash_map(u200, i129)
     defer m.deinit()
     for i in range(T: u200, 0, 50) {
         _ = m.put((i << 100) + 1, i129(i.trunc(u64)) - 25)

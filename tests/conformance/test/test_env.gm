@@ -2,18 +2,18 @@
 //! exit: 1
 // In tests, `Env` has no arguments and no variables, and `exit` ends the test (§12.9).
 test "no environment" {
-    expect(var("HOME") is null)
-    expect(var("PATH") is null)
-    expect(args().len is 0)
+    expect(Env.var("HOME") is null)
+    expect(Env.var("PATH") is null)
+    expect(Env.args().len is 0)
 }
 
 test "exit 0 passes" {
-    exit(0)
+    Env.exit(0)
 }
 
 test "exit 3 fails" {
     print("before\n")
-    exit(3)
+    Env.exit(3)
 }
 
 main :: fn() {}

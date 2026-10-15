@@ -2,16 +2,17 @@
 // std/io under the in-memory file system: `FileOut` buffers output until it is flushed or
 // the buffer would overflow, and keeps the first error; `ListOut` builds strings.
 io :: import "std/io"
+fs :: import "std/fs"
 
-WRITE :: OpenOptions(read: false, write: true, create: true, truncate: true)
+WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
 
 // The size of the file at `path` as the file system sees it now.
 size_of_file :: fn(path: string) -> IoError!u64 \ {Fs} {
-    return (try stat(path)).size
+    return (try Fs.stat(path)).size
 }
 
 slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
-    f := try open(path, OpenOptions())
+    f := try Fs.open(path, fs.OpenOptions())
     defer f.close()
     total: usize = 0
     while true {
@@ -23,7 +24,7 @@ slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
 }
 
 test "output waits for flush" {
-    f := ok(open("out.txt", WRITE))
+    f := ok(Fs.open("out.txt", WRITE))
     out := io.file_out(f)
     with &out {
         print("hello, ")
@@ -41,7 +42,7 @@ test "output waits for flush" {
 }
 
 test "Out and Err share the buffer in order" {
-    f := ok(open("both.txt", WRITE))
+    f := ok(Fs.open("both.txt", WRITE))
     out := io.file_out(f)
     with &out {
         print("one ")
@@ -56,18 +57,18 @@ test "Out and Err share the buffer in order" {
 }
 
 test "a full buffer is written out" {
-    f := ok(open("big.txt", WRITE))
+    f := ok(Fs.open("big.txt", WRITE))
     out := io.file_out(f)
     chunk: [1000]u8 = ---
     chunk[..].fill('a')
     with &out {
-        for _ in 0..4 { write_out(chunk[..]) }
+        for _ in 0..4 { Out.write_out(chunk[..]) }
     }
     // 4000 bytes fit the 4096-byte buffer.
     expect(ok(size_of_file("big.txt")) is 0)
     more: [200]u8 = ---
     more[..].fill('b')
-    with &out { write_out(more[..]) }
+    with &out { Out.write_out(more[..]) }
     // The 200 bytes would overflow it: the 4000 are written first, then they are buffered.
     expect(ok(size_of_file("big.txt")) is 4000)
     ok(out.flush())
@@ -80,13 +81,13 @@ test "a full buffer is written out" {
 }
 
 test "a piece that exactly fills the buffer stays buffered" {
-    f := ok(open("exact.txt", WRITE))
+    f := ok(Fs.open("exact.txt", WRITE))
     out := io.file_out(f)
     chunk: [4096]u8 = ---
     chunk[..].fill('x')
-    with &out { write_out(chunk[..]) }
+    with &out { Out.write_out(chunk[..]) }
     expect(ok(size_of_file("exact.txt")) is 0)
-    with &out { write_out("y") }
+    with &out { Out.write_out("y") }
     expect(ok(size_of_file("exact.txt")) is 4096)
     ok(out.flush())
     expect(ok(size_of_file("exact.txt")) is 4097)
@@ -94,16 +95,16 @@ test "a piece that exactly fills the buffer stays buffered" {
 }
 
 test "a piece larger than the buffer is written directly, after what precedes it" {
-    f := ok(open("huge.txt", WRITE))
+    f := ok(Fs.open("huge.txt", WRITE))
     out := io.file_out(f)
     huge: [10000]u8 = ---
     huge[..].fill('h')
     with &out {
-        write_out("head:")
-        write_out(huge[..])
+        Out.write_out("head:")
+        Out.write_out(huge[..])
     }
     expect(ok(size_of_file("huge.txt")) is 10005, "written without flush")
-    with &out { write_out(":tail") }
+    with &out { Out.write_out(":tail") }
     expect(ok(size_of_file("huge.txt")) is 10005)
     ok(out.flush())
     expect(ok(size_of_file("huge.txt")) is 10010)
@@ -116,10 +117,10 @@ test "a piece larger than the buffer is written directly, after what precedes it
 }
 
 test "the first error is kept and later output is dropped" {
-    w := ok(open("ro.txt", WRITE))
+    w := ok(Fs.open("ro.txt", WRITE))
     w.close()
     // A file opened for reading cannot be written.
-    f := ok(open("ro.txt", OpenOptions()))
+    f := ok(Fs.open("ro.txt", fs.OpenOptions()))
     out := io.file_out(f)
     with &out { print("lost") }
     expect(out.err is null, "no error until the buffer is written")
@@ -131,13 +132,13 @@ test "the first error is kept and later output is dropped" {
 }
 
 test "an error on a large piece is kept" {
-    f := ok(open("ro2.txt", WRITE))
+    f := ok(Fs.open("ro2.txt", WRITE))
     f.close()
-    r := ok(open("ro2.txt", OpenOptions()))
+    r := ok(Fs.open("ro2.txt", fs.OpenOptions()))
     out := io.file_out(r)
     huge: [5000]u8 = ---
     huge[..].fill('q')
-    with &out { write_out(huge[..]) }
+    with &out { Out.write_out(huge[..]) }
     expect(out.err is .Other(9))
     expect(out.flush() is !.Other(9))
     r.close()

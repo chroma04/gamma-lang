@@ -174,7 +174,10 @@ impl<'s> Sema<'s> {
                 .scope
                 .values()
                 .copied()
-                .filter(|d| self.decls[d.0 as usize].item.is_pub)
+                .filter(|d| {
+                    let decl = &self.decls[d.0 as usize];
+                    decl.item.is_pub && !self.universe_hidden(*d) && decl.name.name.as_str() != "core"
+                })
                 .collect();
             ds.sort();
             items.extend(ds.into_iter().map(|d| self.decl_item(d)));

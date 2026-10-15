@@ -161,4 +161,4 @@ pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Mat
 }
 
 /// Parses the process arguments, as the `Env` effect supplies them.
-pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, args())
+pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, Env.args())

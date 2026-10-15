@@ -224,7 +224,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 case_insensitive_demo :: fn() -> AllocError!() \ {Alloc} {
-    names := map_with(string, u32, hash: fold_hash, eq: fold_eq)
+    names := hash_map_with(string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     return ()

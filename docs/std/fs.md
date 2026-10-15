@@ -44,6 +44,64 @@ ReadError :: union {
 
 Why reading a whole file failed.
 
+## Type aliases
+
+### `File`
+
+```gamma
+File :: core.File
+```
+
+An open file: a handle that the `Fs` effect's operations take (§21.7).
+
+### `Dir`
+
+```gamma
+Dir :: core.Dir
+```
+
+An open directory, read with `Fs.next_entry`.
+
+### `OpenOptions`
+
+```gamma
+OpenOptions :: core.OpenOptions
+```
+
+How `Fs.open` opens a file: `OpenOptions(write: true, create: true)`.
+
+### `FileKind`
+
+```gamma
+FileKind :: core.FileKind
+```
+
+What a path names: a file, a directory, a symbolic link, or something else.
+
+### `FileInfo`
+
+```gamma
+FileInfo :: core.FileInfo
+```
+
+What `Fs.stat` and `Fs.lstat` report about a path.
+
+### `DirEntry`
+
+```gamma
+DirEntry :: core.DirEntry
+```
+
+A directory entry from `Fs.next_entry`: the length of its name, and what it is.
+
+### `SeekFrom`
+
+```gamma
+SeekFrom :: core.SeekFrom
+```
+
+Where `Fs.seek` counts from.
+
 ## Functions
 
 ### `read_all`

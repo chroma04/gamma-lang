@@ -3,29 +3,29 @@
 // a fake clock that `sleep` advances, and random bytes from a fixed seed.
 
 wait_and_measure :: fn() -> Duration \ {Clock} {
-    t0 := now()
-    sleep(secs(3))
-    sleep(ms(250))
-    return now().since(t0)
+    t0 := Clock.now()
+    Clock.sleep(secs(3))
+    Clock.sleep(ms(250))
+    return Clock.now().since(t0)
 }
 
 test "input is empty" {
     buf: [8]u8 = ---
-    n := ok(read(buf[..]))
+    n := ok(In.read(buf[..]))
     expect(n is 0)
 }
 
 test "sleeping advances the fake clock without waiting" {
-    expect(now().ns is 0)
+    expect(Clock.now().ns is 0)
     expect(wait_and_measure().to_ms() is 3250)
-    expect(wall() is 1_700_000_003_250_000_000)
+    expect(Clock.wall() is 1_700_000_003_250_000_000)
 }
 
 test "random bytes are reproducible" {
     a: [4]u8 = ---
-    fill(a[..])
+    Rand.fill(a[..])
     print("{}\n", a)
     b: [4]u8 = ---
-    fill(b[..])
+    Rand.fill(b[..])
     expect(a is not b)
 }

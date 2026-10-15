@@ -127,7 +127,7 @@ test "make_dir_all" {
     ok(fs.make_dir_all("a/b/c"))
     ok(fs.make_dir_all("a/b/c"))
     ok(fs.make_dir_all("/a//b/./c/"))
-    expect((ok(stat("a/b/c"))).kind is .Dir)
+    expect((ok(Fs.stat("a/b/c"))).kind is .Dir)
     ok(fs.make_dir_all(""))
     ok(fs.make_dir_all("/"))
     ok(put("a/file", "x"))
@@ -156,7 +156,7 @@ test "write_atomic replaces the file and leaves no temporary" {
     }
     expect(n is 2, "a failure leaves nothing behind")
     // Replacing a directory fails and removes the temporary.
-    ok(make_dir("d"))
+    ok(Fs.make_dir("d"))
     expect(fs.write_atomic("d", "x") is !.Other(21))
     n = 0
     for r in fs.entries("/") {
@@ -167,21 +167,21 @@ test "write_atomic replaces the file and leaves no temporary" {
 }
 
 test "truncate and sync" {
-    f := ok(open("f", OpenOptions(read: true, write: true, create: true)))
+    f := ok(Fs.open("f", fs.OpenOptions(read: true, write: true, create: true)))
     _ = ok(f.write_to("hello world"))
     ok(f.sync())
     ok(f.truncate(5))
-    expect((ok(stat("f"))).size is 5)
+    expect((ok(Fs.stat("f"))).size is 5)
     ok(f.truncate(8))
-    expect((ok(stat("f"))).size is 8)
+    expect((ok(Fs.stat("f"))).size is 8)
     _ = ok(f.seek(0, .Start))
     buf: [16]u8 = ---
     n := ok(f.read_from(buf[..]))
     expect(n is 8)
     expect(buf[0..8] is "hello\0\0\0")
     ok(f.truncate(0))
-    expect((ok(stat("f"))).size is 0)
-    ro := ok(open("f", OpenOptions()))
+    expect((ok(Fs.stat("f"))).size is 0)
+    ro := ok(Fs.open("f", fs.OpenOptions()))
     expect(ro.truncate(1) is !.Other(9))
     ro.close()
     expect(f.truncate(MEM_TOO_BIG) is !.NoSpace)
@@ -194,21 +194,21 @@ MEM_TOO_BIG :: 1 << 40
 
 test "lstat is stat, and cwd is the root" {
     ok(put("f", "abc"))
-    ok(make_dir("d"))
-    a := ok(lstat("f"))
+    ok(Fs.make_dir("d"))
+    a := ok(Fs.lstat("f"))
     expect(a.kind is .File and a.size is 3)
-    expect((ok(lstat("d"))).kind is .Dir)
-    expect(lstat("nothing") is !.NotFound)
+    expect((ok(Fs.lstat("d"))).kind is .Dir)
+    expect(Fs.lstat("nothing") is !.NotFound)
     buf: [8]u8 = ---
-    n := ok(cwd(buf[..]))
+    n := ok(Fs.cwd(buf[..]))
     expect(buf[0..n] is "/")
     empty := empty_slice(u8)
-    expect(cwd(empty) is !.InvalidInput)
+    expect(Fs.cwd(empty) is !.InvalidInput)
 }
 
 test "next_entry reports kinds" {
     ok(tree())
-    d := ok(open_dir("t"))
+    d := ok(Fs.open_dir("t"))
     defer d.close_dir()
     buf: [16]u8 = ---
     dirs: u32 = 0

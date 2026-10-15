@@ -5,7 +5,7 @@ count_lines :: fn() -> IoError!(lines: usize, bytes: usize) \ {In} {
     lines: usize = 0
     bytes: usize = 0
     while true {
-        n := try read(buf[..])
+        n := try In.read(buf[..])
         if n is 0 { break }
         bytes += n
         for b in buf[0..n] {
@@ -16,23 +16,23 @@ count_lines :: fn() -> IoError!(lines: usize, bytes: usize) \ {In} {
 }
 
 main :: fn() -> IoError!() \ {Out, In, Clock, Rand} {
-    t0 := now()
+    t0 := Clock.now()
     c := try count_lines()
     print("{} lines, {} bytes\n", c.lines, c.bytes)
     small: [4]u8 = ---
-    print("eof again: {}\n", try read(small[..]))
+    print("eof again: {}\n", try In.read(small[..]))
 
-    sleep(ms(5))
-    elapsed := now().since(t0)
+    Clock.sleep(ms(5))
+    elapsed := Clock.now().since(t0)
     print("slept at least 5 ms: {}\n", elapsed.to_ms() >= 5)
     print("later: {}\n", t0.after(secs(1)).ns - t0.ns)
     print("durations: {} {} {}\n", us(3).ns, ms(2).plus(ns(7)).ns, secs(2).minus(ms(500)).to_ms())
-    print("wall clock after 2020: {}\n", wall() > 1_577_836_800_000_000_000)
+    print("wall clock after 2020: {}\n", Clock.wall() > 1_577_836_800_000_000_000)
 
     a: [32]u8 = ---
     b: [32]u8 = ---
-    fill(a[..])
-    fill(b[..])
+    Rand.fill(a[..])
+    Rand.fill(b[..])
     print("random buffers differ: {}\n", a is not b)
 
     err: IoError = .Other(5)

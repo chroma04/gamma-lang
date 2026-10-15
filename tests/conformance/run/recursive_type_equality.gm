@@ -23,7 +23,7 @@ main :: fn() \ {Out, Alloc} {
     z: Value = .Arr(top3[..])
     print("{} {} {}\n", x is y, x is z, x is .Null)
 
-    m := map(Value, i32)
+    m := hash_map(Value, i32)
     defer m.deinit()
     m.put(x, 10) else return
     m.put(z, 20) else return

@@ -38,7 +38,7 @@ find_slot :: fn(c: ^Lru, key: u32) -> ?usize {
 
 put :: fn(c: ^Lru, key: u32, value: i64, ttl: Duration) \ {Clock} {
     c.clock += 1
-    expires: u64 = if ttl.ns is 0 { 0 } else { now().ns + ttl.ns }
+    expires: u64 = if ttl.ns is 0 { 0 } else { Clock.now().ns + ttl.ns }
     if i := find_slot(c, key) {
         c.slots[i] = Slot(key: key, value: value, stamp: c.clock, expires: expires, used: true)
         return
@@ -64,7 +64,7 @@ get :: fn(c: ^Lru, key: u32) -> ?i64 \ {Clock} {
         return null
     }
     s := &c.slots[idx?]
-    if s.expires is not 0 and now().ns >= s.expires {
+    if s.expires is not 0 and Clock.now().ns >= s.expires {
         s.used = false
         c.misses += 1
         return null
@@ -77,8 +77,8 @@ get :: fn(c: ^Lru, key: u32) -> ?i64 \ {Clock} {
 // ---- persistence ---------------------------------------------------------------------------------
 
 save :: fn(c: ^const Lru, path: string) -> fs.ReadError!() \ {Fs} {
-    f := try open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
-    defer close(f)
+    f := try Fs.open(path, fs.OpenOptions(read: false, write: true, create: true, truncate: true))
+    defer Fs.close(f)
     for s in c.slots {
         if not s.used { continue }
         line: [48]u8 = ---
@@ -150,13 +150,13 @@ test "entries expire on the fake clock" {
     c.put(1, 11, ms(50))
     c.put(2, 22, secs(10))
     c.put(3, 33, ms(0))
-    sleep(ms(49))
+    Clock.sleep(ms(49))
     expect(c.get(1) is 11)
-    sleep(ms(1))
+    Clock.sleep(ms(1))
     expect(c.get(1) is null)               // exactly at the deadline: expired
-    sleep(secs(5))
+    Clock.sleep(secs(5))
     expect(c.get(2) is 22)
-    sleep(secs(5))
+    Clock.sleep(secs(5))
     expect(c.get(2) is null)
     expect(c.get(3) is 33)                 // no ttl: lives forever
 }
@@ -172,7 +172,7 @@ test "saved cache round-trips through the in-memory file system" {
     defer free(data)
     expect(data.len is 36)
     expect(data[0..5] is "5=-50")
-    info := stat("cache.txt") else return
+    info := Fs.stat("cache.txt") else return
     expect(info.size is 36)
 }
 

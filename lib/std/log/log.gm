@@ -68,12 +68,12 @@ pub ErrLog :: struct {
 handler Log for ^ErrLog \ {Err} {
     begin(self, level) => {
         if level < self.min { return false }
-        write_err(name(level))
-        write_err(" ")
+        Err.write_err(name(level))
+        Err.write_err(" ")
         return true
     }
-    write(self, bytes) => write_err(bytes)
-    end(self) => write_err("\n")
+    write(self, bytes) => Err.write_err(bytes)
+    end(self) => Err.write_err("\n")
 }
 
 /// Like `ErrLog`, but every line starts with the current UTC time from the `Clock` effect,
@@ -85,17 +85,17 @@ pub StampedLog :: struct {
 handler Log for ^StampedLog \ {Err, Clock} {
     begin(self, level) => {
         if level < self.min { return false }
-        now := time.from_unix(wall())
+        now := time.from_unix(Clock.wall())
         now.nanosecond = 0
         buf: [time.RFC3339_LEN]u8 = ---
-        write_err(time.format_rfc3339(now, buf[..]))
-        write_err(" ")
-        write_err(name(level))
-        write_err(" ")
+        Err.write_err(time.format_rfc3339(now, buf[..]))
+        Err.write_err(" ")
+        Err.write_err(name(level))
+        Err.write_err(" ")
         return true
     }
-    write(self, bytes) => write_err(bytes)
-    end(self) => write_err("\n")
+    write(self, bytes) => Err.write_err(bytes)
+    end(self) => Err.write_err("\n")
 }
 
 /// A handler that appends records of level `min` and above to `list`, one line each, as

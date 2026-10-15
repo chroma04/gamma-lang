@@ -15,7 +15,7 @@ show :: fn(v: ??u8) \ {Out} {
     }
 }
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    m := map(string, ?u32)
+    m := hash_map(string, ?u32)
     defer m.deinit()
     try m.put("none", null)
     try m.put("five", 5)

@@ -49,7 +49,7 @@ free_keys :: fn(m: ^HashMap(string, u32)) \ {Alloc} {
 }
 
 main :: fn() -> Failure!() \ {Out, In, Alloc} {
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer free_keys(&counts)
     lines: u32 = 0
     total: u32 = 0

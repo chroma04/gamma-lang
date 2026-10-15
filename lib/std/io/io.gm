@@ -9,6 +9,7 @@
 //!     with &src { … }                                  // `In` reads a string
 //!     lo := io.ListOut(list: &text)                    // `print` appends to a list
 //!     with &lo { report() }
+fs :: import "std/fs"
 
 /// Reads from `In` through a buffer, a line at a time. `reader` reads through a buffer
 /// of 4096 bytes kept inside the `Reader`; `reader_with` reads through a buffer you supply.
@@ -86,7 +87,7 @@ pub next_line :: fn(r: ^Reader) -> IoError!?string \ {In} {
                 return !.InvalidInput
             }
         }
-        n := try read(buf[r.end..buf.len])
+        n := try In.read(buf[r.end..buf.len])
         if n is 0 { r.eof = true }
         r.end += n
     }
@@ -101,7 +102,7 @@ trim_cr :: fn(line: []u8) -> string {
 pub read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In} {
     buf: [4096]u8 = ---
     while true {
-        n := try read(buf[..])
+        n := try In.read(buf[..])
         if n is 0 { return () }
         for b in buf[0..n] {
             out.push(b) else return !.NoSpace
@@ -131,7 +132,7 @@ pub read_all :: fn() -> ReadError![]u8 \ {In, Alloc} {
             data = bigger
             cap *= 2
         }
-        n := read(data[len..cap]) else e => {
+        n := In.read(data[len..cap]) else e => {
             free(data)
             return !.Io(e)
         }
@@ -150,7 +151,7 @@ pub read_all :: fn() -> ReadError![]u8 \ {In, Alloc} {
 }
 
 /// A handler for `In` that reads the file `f`.
-pub FileIn :: struct { pub f: File }
+pub FileIn :: struct { pub f: fs.File }
 
 handler In for FileIn \ {Fs} {
     read(self, buf) => self.f.read_from(buf)
@@ -168,14 +169,14 @@ handler In for FileIn \ {Fs} {
 ///     with &out { report() }
 ///     try out.flush()
 pub FileOut :: struct {
-    pub f: File
+    pub f: fs.File
     pub err: ?IoError = null
     buf: [4096]u8 = [4096]u8(fill: 0)
     len: usize = 0
 }
 
 /// A buffered output handler for the file `f`, with nothing buffered yet.
-pub file_out :: fn(f: File) -> FileOut => FileOut(f: f)
+pub file_out :: fn(f: fs.File) -> FileOut => FileOut(f: f)
 
 // Writes all of `bytes` to the file, keeping the first error.
 write_through :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {

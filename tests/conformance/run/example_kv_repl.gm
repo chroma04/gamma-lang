@@ -116,7 +116,7 @@ execute :: fn(db: ^Db, w: Words) -> CmdError!() \ {Out} {
 }
 
 main :: fn() -> IoError!() \ {Out, In, Alloc, Env} {
-    db := Db(arena: arena.new(), data: map(string, i64))
+    db := Db(arena: arena.new(), data: hash_map(string, i64))
     defer print("cleanup done\n")
     defer db.arena.deinit()
     defer db.data.deinit()
@@ -142,6 +142,6 @@ main :: fn() -> IoError!() \ {Out, In, Alloc, Env} {
         }
     }
     print("{} lines, {} commands run, {} failed\n", line_no, db.ops, failures)
-    if failures > 0 { exit(2) }
+    if failures > 0 { Env.exit(2) }
     return ()
 }

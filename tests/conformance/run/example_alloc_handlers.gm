@@ -38,7 +38,7 @@ handler Alloc for ^Tracker {
     current(self) => Allocator(data: self, vt: &TRACK_VT)
 }
 
-tracker :: fn() -> Tracker \ {Alloc} => Tracker(inner: current())
+tracker :: fn() -> Tracker \ {Alloc} => Tracker(inner: Alloc.current())
 
 report :: fn(label: string, t: ^const Tracker) \ {Out} {
     print("{}: live={} peak={} allocs={} frees={} biggest={}\n",

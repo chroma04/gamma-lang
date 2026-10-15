@@ -6,7 +6,7 @@ Node :: struct {
 }
 
 new_node :: fn() -> AllocError!^Node \ {Alloc} {
-    return try new(Node(kids: map(u8, ^Node)))
+    return try new(Node(kids: hash_map(u8, ^Node)))
 }
 
 insert :: fn(root: ^Node, word: string) -> AllocError!() \ {Alloc} {

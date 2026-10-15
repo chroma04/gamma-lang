@@ -192,7 +192,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("{} {}\n", last, names.remove(0))
 
     // Word counts: `entry` stores 0 for a new key and points at the value.
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     for w in [_]string("a", "b", "a", "c", "a", "b") {
         e := try counts.entry(w, 0)

@@ -679,7 +679,7 @@ TestTracker :: struct {
 
 test_tracker :: fn() -> TestTracker {
     heap := heap_allocator()
-    return TestTracker(live: 0, inner: heap, blocks: with heap { map(usize, LiveBlock) })
+    return TestTracker(live: 0, inner: heap, blocks: with heap { hash_map(usize, LiveBlock) })
 }
 
 track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
