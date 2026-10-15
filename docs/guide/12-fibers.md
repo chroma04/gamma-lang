@@ -220,7 +220,7 @@ run_two :: fn(main_stack, stack_a, stack_b: []u8) -> u32 {
 
 A `join` at the end means the `with` completes only after both tasks have exited, so every continuation has been consumed.
 
-In this sketch a task can perform only `Sched`, because the type of `spawn`'s entry function names its effects. `std/fiber` lifts that limit with an effect-set parameter (see [generics](10-generics.md)): its `Sched(E)` lets tasks perform the effects `E` as well, and its handler requires `E` where the scheduler is installed, so a task can `print` when the scheduler is made with `fiber.scheduler(Out)` and the task is declared `\ {fiber.Sched(Out), Out}`.
+In this sketch a task can perform only `Sched`, because the type of `spawn`'s entry function names its effects. `std/fiber` lifts that limit with an effect-set parameter (see [generics](10-generics.md)): its `Sched(E)` lets tasks perform the effects `E` as well, and its handler requires `E` where the scheduler is installed, so a task can `print` when the scheduler is made with `fiber.scheduler(Out)` and the task is declared `\ {fiber.Sched(Out), Out}`. The code that installs the scheduler (`with &sched on stack { ... }`) must then be able to perform `Out` itself, and `fiber.scheduler()` takes its queue from the current allocator, so it performs `Alloc`.
 
 ## Sizing stacks and other notes
 

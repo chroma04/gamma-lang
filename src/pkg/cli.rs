@@ -31,7 +31,7 @@ package commands:
                     and mirrors no checkout needs; --all removes everything
 
 build settings (`[build]`, `[profile.<name>]`) are described in docs/guide/15-packages.md;
-`--profile=<name>` selects a profile in check, run, build and test.
+`--profile=<name>` selects a profile in check, run, build, test and bench.
 ";
 
 /// Whether `command` is one of the package commands.

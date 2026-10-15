@@ -97,7 +97,7 @@ trim_cr :: fn(line: []u8) -> string {
     return line
 }
 
-/// Reads all of `In` into `out`.
+/// Reads all of `In` into `out`, appending. A failure to grow the list is `.NoSpace`.
 pub read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In} {
     buf: [4096]u8 = ---
     while true {

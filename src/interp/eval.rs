@@ -946,7 +946,7 @@ impl<'a> Machine<'a> {
                     ),
                 }
             }
-            // The interpreter runs one thread, so atomics are plain memory accesses (§19.6).
+            // Threads take turns under a global lock (see threads.rs), so atomics are plain memory accesses (§19.6).
             Builtin::AtomicLoad
             | Builtin::AtomicStore
             | Builtin::AtomicSwap

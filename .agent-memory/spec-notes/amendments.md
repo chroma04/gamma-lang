@@ -58,11 +58,20 @@
   top-level handler literals; §5.11 from_tag enums only; §12.7/§8.8 clause exits + esc/ctl
   performs in defer; App./§16.7 depth limits (mono 256, ADT inst 64).
 - s9 spec pass: §6.5 tuple types `T(x)` always construct (spread `T(..t)` to convert); §21.1
-  reserved type names only forbidden at top level (locals/params like `u1` may hide them: real
-  code uses u1/u2/i53 locals); universe list synced with prelude; grammar gaps (else block,
+  universe list synced with prelude; grammar gaps (else block,
   `_`/`---` primaries, when in union bodies) fixed; many § cross-refs fixed.
 - s10 literals/flavors: §2.5.2 `1f32` (decimal int + float suffix is a float; hex keeps `f`
   as a digit) and `0x1p4` (hex float fraction optional); §7.4.2/§10.7 `?` flavors take `?T`
   operands (both evaluated, null if either null; lowered in sema to a block + if-let, so
   no back end changes). bool was already Ord (s7), so that todo half needed nothing.
 - s11: Appendix A file production allows no final NL; A.4 stmt takes attributes before a binding (rejected by §20.2). Grammar agent's other spec/compiler gaps (not amended): (i32) as type is grouping via postfix_expr; '#' 'global' notation; attrs before any type parse then error (callconv test); `_` as arg name; break label vs value is scope-dependent.
+- s12: §22.4 "cryptography" excludes fixed, unkeyed digests/checksums (std/hash admitted).
+- s13: §11.1 top-level fns never infer their return type; §2.5.3 `'é'` example; §4.6/§21.1
+  no local binding may be named like a visible type (incl. every sized int name; reverses the
+  s9 "locals may hide reserved names" rule — decisions/024); local constants usable at
+  compile time; effect aliases `Bytes :: Yield(u8)`.
+- s14 audit: §1.4 reference impl's --mode/--target; §3.1 single .gm file as root; §3.6 exact
+  target.os/arch sets (+ .Other); removed "string literal initializes [N]u8" (never
+  implemented); §21.1 every universe type barred for locals; §21.5 only List/list/HashMap/
+  map/map_with re-exported; §21.6 expect/expect_eq only directly in a test body; §12.9 Clock
+  wall; A.1 bench; examples fixed (@variant_name, capture_output, FileLogger).

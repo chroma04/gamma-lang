@@ -35,13 +35,14 @@ commands:
           (run `gamma help packages` for the options of the package commands)
   repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
-  help    print this message
+  help    print this message; `gamma help packages` and `gamma help doc` add the options of
+          the package commands and of `doc`
   version print the compiler version
 
 options:
   --diag-format=human|short   how to print diagnostics (default: human)
   --dump                      (parse) print the syntax tree
-  --backend=interp|c          (run, test) use the interpreter (default) or compile via C
+  --backend=interp|c          (run, test, bench) use the interpreter (default) or compile via C
   --filter=<text>             (test, bench) run only the tests whose name or module path
                               contains <text>
   --all                       (test, bench) also run those of the modules of the package
@@ -52,28 +53,28 @@ options:
   --time                      (test, bench) print how long each test took and the total
   --coverage[=<file>]         (test) count the lines of the package that the tests run, with
                               the interpreter; print a table, and with <file> write LCOV
-  --target=<triple>           (check, run --backend=c, test, build) compile for the machine
+  --target=<triple>           (check, run --backend=c, test, bench, build) compile for the machine
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
                               with CC set, CC (given --target if it is clang)
   --quiet                     (repl) no banner and prompts, even on a terminal
-  --offline                   (check, run, build, test) never use the network: git
+  --offline                   (check, run, build, test, bench) never use the network: git
                               dependencies must be locked and already fetched
-  --locked                    (check, run, build, test) fail if gamma.lock is missing or
+  --locked                    (check, run, build, test, bench) fail if gamma.lock is missing or
                               would change
   -o <file>                   (build) the executable to write (default: the input's name)
-  --profile=<name>            (check, run, build, test) use the `[profile.<name>]` table of
+  --profile=<name>            (check, run, build, test, bench) use the `[profile.<name>]` table of
                               gamma.toml over its `[build]` table (mode, debug-info, cflags,
                               ldflags, c-sources, include-dirs, libs, lib-dirs); options on
                               the command line win over both
-  -g                          (build, and run and test via C) add debug information that maps
+  -g                          (build, and run, test and bench via C) add debug information that maps
                               the executable to the Gamma source, for debuggers; a Debug build
                               is then compiled without optimization
   --mode=debug|checked|safe|fast
-                              (run, build, test) the build mode (default: debug): Debug,
-                              Checked and Safe trap on failed checks, Fast omits them; Debug
-                              also checks every free; Safe compiles with Fil-C, which traps
-                              on every invalid memory access
+                              (run, build, test, bench, repl) the build mode (default: debug;
+                              bench: fast): Debug, Checked and Safe trap on failed checks,
+                              Fast omits them; Debug also checks every free; Safe compiles
+                              with Fil-C, which traps on every invalid memory access
 
 environment:
   CC        the C compiler for native builds, with any arguments (default: cc, and

@@ -200,7 +200,7 @@ Fetched packages live in the same cache directory as compiled runtime objects: `
 | --- | --- |
 | `git/db/` | one bare mirror per repository |
 | `git/checkouts/<repo>/<rev>/` | the files of each revision in use |
-| `git/url/<name>/<hash>/` | each unpacked archive |
+| `git/url/<name>-<hash>/<hash>/` | each unpacked archive (`<name>` is the archive's file name) |
 | `run/`, `native/`, `gm_rt-*` | cached executables, compiled C sources, the compiled runtime |
 
 All of it can be deleted at any time; the next build fetches or compiles again from the lock. **Checkouts are read-only**: once a checkout is created and verified, Gamma removes the write permission from its files and directories, so editing a dependency in place fails with a permission error instead of silently changing every program that uses the checkout. To change a dependency, edit its repository (or use a `path` dependency while you work on it). Gamma restores permissions before it deletes a checkout.
@@ -212,7 +212,7 @@ $ gamma cache clean
 Removed 2 package checkouts, 1 repository mirror, 3 cached builds (14.2 MiB freed) in /home/me/.cache/gamma
 ```
 
-- `gamma cache clean` removes checkouts and archives unused for 30 days, the mirrors that no checkout is left for, the cached executables, compiled C sources and runtime objects unused for 30 days (they carry their last use in their modification time), and half-written temporary files older than a day. `--older-than=<days>` changes the age; `--older-than=0` removes everything not in use right now.
+- `gamma cache clean` removes checkouts and archives unused for 30 days, the mirrors that no checkout is left for, the cached executables, compiled C sources and runtime objects unused for 30 days (they carry their last use in their modification time), and half-written temporary files older than a day. `--older-than=<days>` changes the age; `--older-than=0` removes everything not in use right now. `--all` and `--older-than` cannot be combined.
 - `gamma cache clean --all` removes everything Gamma keeps there (and nothing else in the directory), whatever its age.
 - `--dry-run` reports what would be removed without removing it.
 

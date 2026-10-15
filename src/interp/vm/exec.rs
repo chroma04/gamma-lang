@@ -790,7 +790,7 @@ impl<'a> Machine<'a> {
 
     /// Runs the code of activation `root` from instruction `start`. Calls of compiled
     /// functions do not nest Rust calls: the callee becomes the running activation and the
-    /// caller waits on `vm_stack` (see [`CallRec`]); the loop returns when `root` ends.
+    /// caller waits on `vm_stack` (see [`St`]); the loop returns when `root` ends.
     fn vm_run<const LE: bool, const COUNT: bool>(&mut self, root: &mut St<'a>, start: u32) -> R<Exit> {
         let root: *mut St<'a> = root;
         // The calls made by this loop are the entries of `vm_stack` from here on.

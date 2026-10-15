@@ -106,7 +106,7 @@ make_in :: fn(a: Allocator, n: usize) -> AllocError![]u8 {
 }
 ```
 
-`make_in` declares no `Alloc` effect: it handles it itself with the allocator it was given. This is how arenas and fixed-buffer allocators work: some library provides a value of type `Allocator` (for example `arena.allocator()` as the specification's examples write it; the core library itself defines no arena type), and you install it for a region of code:
+`make_in` declares no `Alloc` effect: it handles it itself with the allocator it was given. This is how arenas and fixed-buffer allocators work: some library provides a value of type `Allocator`, and you install it for a region of code. The core library itself defines no arena type, but `std/arena` (`a := arena.new()`, then `a.allocator()`, released all at once by `a.deinit()`) and `std/fixed_buffer` (`fixed_buffer.over(store[..])` on a buffer you own) do. Here `arena` is such an `Allocator`:
 
 ```gamma
 scratch_demo :: fn(arena: Allocator) -> AllocError!() \ {Alloc} {

@@ -177,13 +177,13 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 }
 ```
 
-Built with `--mode=safe`, the program ends with Fil-C's own report (`filc safety error: …`) and exit status 134, the same as a Gamma trap. Source locations are not reported.
+Built with `gamma build --mode=safe` (or run with `gamma run --backend=c --mode=safe`), the program ends with Fil-C's own report (`filc safety error: …`) and exit status 134, the same as a Gamma trap. Source locations are not reported.
 
 The reference tool builds Safe through the C back end with [Fil-C](https://fil-c.org), a memory-safe implementation of C. That sets the requirements:
 
 - Linux on x86_64 or aarch64. The compiler looks for `filcc` on `PATH`, then in `/opt/fil/bin/filcc`; `CC` overrides. If the compiler it finds is not Fil-C, the build fails and says so. To install it, download a release from <https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball), extract it and run `sudo ./setup.sh`, which installs to `/opt/fil`.
 - Every C library you link must itself be built with Fil-C (it ships its own libc). `@asm` with pointer operands is rejected.
-- The interpreter, which has its own memory checks, treats Safe as Checked.
+- The interpreter, which has its own memory checks, treats Safe as Checked, so `gamma run --mode=safe` without `--backend=c` does not use Fil-C (a program with C sources of its own, or `--target`, is compiled natively instead). `--target` cannot be combined with `--mode=safe`.
 - `target.mode is .Safe` lets code adapt at compile time.
 
 **Granularity.** Safe builds protect allocations, not pieces of them. An allocator that carves objects out of one big block protects only the block, so an overrun into the next object is not caught. `std/arena` therefore gives every allocation its own block in Safe builds, and your own allocator can do the same with `when target.mode is .Safe { … }` ([chapter 9](09-memory.md)).

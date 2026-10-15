@@ -1,7 +1,7 @@
-//! Tests of the package manager: git dependencies, the lockfile, `gamma fetch`,
-//! `update`, `add`, `remove`, `new` and `init`. The repositories are local, made in a
-//! temporary directory, so the tests need `git` but not the network. Each test has a
-//! cache directory of its own.
+//! Tests of the package manager: git and archive dependencies, the lockfile, `gamma fetch`,
+//! `update`, `add`, `remove`, `new`, `init` and `cache`. The repositories and archives are
+//! local (`file://` URLs), made in a temporary directory, so the tests need `git` (and
+//! `curl` for archives) but not the network. Each test has a cache directory of its own.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

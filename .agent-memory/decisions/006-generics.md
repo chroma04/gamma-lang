@@ -1,7 +1,7 @@
 # 006 Generics design (M5)
 - Generic fn decl: type params → ParamId (Sema.type_params during sig resolution); comptime value
   params `N :: usize` → ParamId too (value params: treat as unknown constants; array len symbolic
-  → TyKind::Array len needs a symbolic form: add `ArrayLen::Param(ParamId)`? decide when doing).
+  → symbolic lengths are TyKind::ParamArray / LenExpr, decisions/007).
 - Body checked ONCE with TyKind::Param types; constraints (Eq/Ord/Num/Int/Signed/Float/Plain)
   stored per ParamId; ops on Param checked against constraints (Numeric/Ord obligations extend).
   Literals at Param T allowed with Num(T): checked per instantiation (error at the call site).

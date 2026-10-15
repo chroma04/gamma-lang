@@ -139,7 +139,7 @@ impl Types<'_> {
     }
 
     /// The suffix of the name of `t`'s view by which the gdb pretty printers
-    /// (`gdb_script`) recognize views they show differently.
+    /// (`debug::gdb_script_section`) recognize views they show differently.
     fn view_kind(&self, t: Ty) -> &'static str {
         match t.kind() {
             TyKind::Slice { elem, .. } if matches!(elem.kind(), TyKind::Int(i) if i.bits == 8) => "_string",

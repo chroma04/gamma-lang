@@ -237,7 +237,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolves the graph of the root package. Returns the resolution and the lock it
-    /// implies, or `None` if there are no git dependencies.
+    /// implies, or `None` if there are no git or archive dependencies.
     pub(super) fn run(&mut self) -> Result<Option<(Resolution, Lock)>, String> {
         let root = crate::source::canonicalize(&self.root)
             .map_err(|e| format!("cannot read {}: {}", self.root.display(), e))?;

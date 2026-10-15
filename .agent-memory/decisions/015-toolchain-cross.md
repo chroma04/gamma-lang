@@ -18,7 +18,7 @@ Context: c-backend-plan item 3. `Command::new($CC)` broke on `zig cc …`; layou
 - Verified: whole conformance + runtime suite with CC=aarch64-linux-gnu-gcc CFLAGS=-static
   under qemu-user binfmt (apt gcc-aarch64-linux-gnu qemu-user; register
   /usr/lib/binfmt.d/qemu-aarch64.conf into /proc/sys/fs/binfmt_misc/register).
-- Not done: `--target=` CLI flag; big-endian runtime; per-target runner env var.
+- `--target=`, big-endian and GAMMA_RUNNER: done in s10 (below).
 - `-fno-strict-aliasing` added to every native build: the aarch64 cross run crashed in
   es/store test at -O2 (gm list grow, typed struct copies over allocator memory); fine with
   -fno-strict-aliasing, -O1 or -fno-inline. Gamma memory is untyped, so TBAA is wrong anyway.

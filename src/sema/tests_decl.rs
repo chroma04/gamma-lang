@@ -1,6 +1,7 @@
-//! `test` declarations (§3.8): each body becomes a function `fn() -> E!()`
+//! `test` and `bench` declarations (§3.8, §3.9): each body becomes a function `fn() -> E!()`
 //! whose error type `E` is that of its first `try` (or `()` if it never fails),
-//! with an entry function that runs it under the test handlers.
+//! with an entry function that runs it under the test handlers (a benchmark: under the
+//! benchmark entry).
 
 use super::func::FnCx;
 use super::{DeclValue, FnSig, ModuleId, Sema};
@@ -13,9 +14,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 impl<'s> Sema<'s> {
-    /// Checks the tests of the root module and of the modules of its package
+    /// Checks the tests and benchmarks of the root module and of the modules of its package
     /// that it imports, and records them in the program: the root module's
-    /// first, then each other module's in the order of their paths (§3.8).
+    /// first, then each other module's in the order of their paths (§3.8, §3.9).
     pub(super) fn check_tests(&mut self, root: ModuleId) {
         let package = self.modules[root.0 as usize].package;
         // By module label; the root module's (`None`) sorts first.

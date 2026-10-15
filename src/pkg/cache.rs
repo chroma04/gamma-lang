@@ -2,7 +2,7 @@
 //!
 //! The cache holds, under [`crate::cgen::cache_dir`]:
 //!
-//! - `git/checkouts/<repo>/<rev>/` and `git/url/<name>/<hash>/`, read-only package trees,
+//! - `git/checkouts/<repo>/<rev>/` and `git/url/<name>-<hash>/<hash>/`, read-only package trees,
 //!   each with a `<rev>.used` stamp file next to it whose modification time is the last
 //!   time a build used the tree;
 //! - `git/db/<repo>/`, bare mirrors of repositories;

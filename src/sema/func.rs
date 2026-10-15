@@ -553,7 +553,8 @@ impl<'a, 's> FnCx<'a, 's> {
         self.scopes.iter().rev().flat_map(|s| s.iter().rev()).find(|(n, _)| *n == name).map(|(_, b)| b)
     }
 
-    /// Declares a local name, enforcing the no-shadowing rule (§4.6).
+    /// Declares a local name, enforcing the no-shadowing rule and the rule that a local may
+    /// not be named like a type visible here (§4.6).
     pub fn declare(&mut self, name: Symbol, binding: LocalBinding, span: Span) {
         if name.as_str() == "_" {
             return;
@@ -893,7 +894,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// steps falls back to run time; any other failure is a compile error.
     fn opportunistic_const(&mut self, b: &ast::Binding, annot: Option<Ty>, init: &Expr) -> Option<LocalBinding> {
         if matches!(b.init.kind, ExprKind::Uninit)
-            || !self.sema.type_params.is_empty()
+            || self.sema.type_params.iter().any(|&(_, t)| super::generics::has_param(t))
             || !self.sema.value_scope.is_empty()
             || !closed_const(init)
         {
@@ -1314,7 +1315,7 @@ impl<'a, 's> FnCx<'a, 's> {
         Expr { ty, kind: tir::ExprKind::Loop { label: id, cond, body, step: None }, span }
     }
 
-    /// Checks an `if`/`while` condition (§8.2). Binding parts are not supported yet.
+    /// Checks an `if`/`while` condition (§8.2): boolean parts and `pattern := value` binding parts.
     pub fn cond(&mut self, c: &ast::Cond) -> Vec<tir::CondPart> {
         let mut parts = vec![];
         for p in &c.parts {

@@ -30,7 +30,7 @@ demo :: fn() \ {Out} {
 }
 ```
 
-At the top level only immutable bindings exist, and each initializer is evaluated at compile time ([chapter 11](11-compile-time.md)). Mutable variables live inside function bodies. (The one exception, `#global`, is for C interop; see [chapter 14](14-interop.md).)
+At the top level only immutable bindings exist, and each initializer is evaluated at compile time ([chapter 11](11-compile-time.md)). Mutable variables live inside function bodies, where a `::` binding with a constant initializer is a local constant that compile-time expressions such as array lengths (`[N]u8`) may use. (The one exception, `#global`, is for C interop; see [chapter 14](14-interop.md).)
 
 Immutability is what it says. A `::` binding cannot be assigned, its fields cannot be assigned, and `&x` gives a `^const T` rather than a `^T`. It is shallow with respect to pointers: if `p :: &v` and `v` is mutable, `p` itself cannot be rebound, but `p^ = 3` still works.
 
@@ -52,7 +52,7 @@ digits_in :: fn(n: u32) -> u32 {
 
 ### Reserved words
 
-These 34 words are keywords everywhere and cannot name anything: `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl` and `resume` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`), and `type` and `cont` are reserved type names (§B.3).
+These 34 words are keywords everywhere and cannot name anything: `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl` and `resume` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`, `bench`), and `type` and `cont` are reserved type names (§B.3).
 
 ### No shadowing
 
@@ -80,7 +80,7 @@ ok :: fn(xs: []const i32, ys: []const i32) -> i32 {
 }
 ```
 
-A local *may* reuse a name from outside the function: a top-level name, an imported module's name or a predeclared name. It hides that name for its scope. The names of types are the exception: a local cannot be called `u8`, `string` or `Point` when those name types, and that includes every sized integer type, so `i1`, `u2` and `i24` are not available as variable names either.
+A local *may* reuse a name from outside the function: a top-level name, an imported module's name or a predeclared name. It hides that name for its scope. The names of types are the exception: a local, parameter or pattern binding cannot be called `u8`, `string` or `Point` when those name types (nor like a type parameter of the function), and that includes every sized integer type, so `i1`, `u2` and `i24` are not available as variable names either. Otherwise `x: u2` could change meaning halfway through a function.
 
 ### Uninitialized storage
 

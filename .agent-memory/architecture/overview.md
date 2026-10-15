@@ -1,42 +1,55 @@
-# Code map (current)
-src/main.rs        CLI: lex | parse [--dump] | check | run [program args];
-                   --diag-format=human|short. Exit 0 ok, 1 compile errors, 2 usage.
+# Code map (current, 2026-10-15). Contributor-facing description: docs/architecture.md.
+src/main.rs        CLI: lex|parse|check|run|build|test|bench|fmt|doc|new|init|fetch|update|add|
+                   remove|cache|repl|lsp|help|version. Exit 0 ok, 1 compile errors, 2 usage.
+                   new_session() picks toolchain/target/mode; test_native for C tests.
 src/lib.rs         module list
-src/source.rs      SourceMap, FileId, Span{file,lo,hi} (byte offsets), line_col
-src/diag.rs        Diagnostic{severity,message,span,labels,notes}, Diagnostics (suppress/truncate
-                   for speculative parsing), render(Human|Short)
-src/symbol.rs      Symbol interner (global Mutex, leaked strs; thread-safe)
-src/driver.rs      Session{sources,diags,ids,mode,debug_info,target}; load/lex/parse; dump_tokens; escape_bytes
-src/syntax/token.rs   Token/TokenKind/Keyword/Punct (incl IsNot, NotIn, Ellipsis, Uninit), literals
-src/syntax/lexer.rs   lex(file, src, diags) -> LexOutput{tokens, docs}; newline rules §2.8
-src/syntax/ast.rs     AST (types are Exprs); NodeId on every node; NodeIdGen shared per session
-src/syntax/parser/    parse_file(file, &LexOutput, &mut NodeIdGen, diags) -> ast::File
-src/syntax/ast_dump.rs  dump_file -> stable S-expr (golden tests)
-src/types.rs       hash-consed Ty/TyKind (global RwLock interner), AdtId/EffectId/ParamId names
-src/toolchain.rs   Toolchain (CC/CFLAGS/LDFLAGS), Toolchain::target probe (decisions/015)
-src/layout.rs      Target, Layouts (size/align/offsets; optional = payload+flag, result = tag+payload)
-src/float.rs       exact rational → f16/f32/f64 bits (round half even)
-src/tir.rs         typed IR + for_each_child(_mut) traversals
-src/sema/          semantic analysis (see architecture/sema-notes.md); cont_check.rs = static
-                   one-shot check of ctl continuations (§14.2), run after check_escapes
-src/interp/        interpreter: tree-walker + vm/ (bytecode: mod, compile, compile_flow, exec); run_main / eval_const; fiber.rs = fibers (threads);
-                   locals ≤16 B in frame slots (Slot::Reg) until their address is needed (decisions/019)
-src/cgen/          C back end (decisions/008); rtcache.rs = cached runtime objects (014); fiber.rs = with-on outlining, ctl thunks;
-                   values >16 B by address (types.rs by_ref/param_cty, func.rs c_abi_wrapper);
-                   debug.rs = `-g` (#line mapping, named frame fields, macro guards);
-                   views.rs = `-g` debugger views; gdb_printers.py embedded in .debug_gdb_scripts
-                   borrow.rs = pure fns / params read in place (decisions/016)
-                   constarg.rs = literal-only by_ref args in static gm_kN (PR #17)
-src/pkg/           package manager: manifest, lock, git store, resolver, add/remove edits,
-                   new/init scaffold, cli (decisions/023)
-src/lsp/           `gamma lsp` (transport, position, analysis, features, server); src/ide.rs
-                   index model; src/sema/ide/ builds it after checking (decisions/023)
+src/source.rs      SourceMap, FileId, Span{file,lo,hi}; source::canonicalize (never
+                   Path::canonicalize: Windows \\?\ paths)
+src/diag.rs        Diagnostic{severity,message,span,labels,notes}, render(Human|Short);
+                   LONG_LINE/WINDOW show long source lines as a window
+src/symbol.rs      Symbol interner (global Mutex, leaked strs)
+src/driver.rs      Session{sources,diags,ids,mode,debug_info,target,packages,overlays}; load/lex/parse
+src/syntax/        token.rs; lexer/{mod,literal,tests}.rs (newline rules §2.8); ast.rs (types
+                   are Exprs, NodeId per node); parser/{mod,expr,items,lits,pattern,stmt,types}.rs
+                   (MAX_POSTFIX_CHAIN in mod.rs); ast_dump.rs (S-expr goldens)
+src/types.rs       hash-consed Ty/TyKind (lock-free KINDS table), AdtId/EffectId/ParamId;
+                   mark/release_since for the LSP
+src/toolchain.rs   Toolchain (CC/CFLAGS/LDFLAGS, --target, Safe/filcc), target probe (decisions/015)
+src/layout.rs      Target, Layouts (size/align/offsets)
+src/float.rs       exact rational → f16/f32/f64 bits
+src/tir.rs         typed IR + traversals; frame_cost/STACK_RESERVE shared by interp + stack_size
+src/sema/          checking (architecture/sema-notes.md). One file per area, each with a //!
+                   header: decls, modules, imports, ty_expr (names_type), func (FnCx), expr,
+                   call, methods, construct, pattern/matching/exhaust, seq, effects,
+                   handler_decl, fnlit, generics, infer/finalize/untyped, consteval,
+                   stack_size, cont_check (§14.2), escape, foreign, tests_decl, adt, builtins;
+                   ide/ builds the editor index after checking (decisions/023)
+src/interp/        interpreter: vm/ (bytecode: mod, compile, compile_flow, exec, heap) is the
+                   default engine, tree-walker (eval, stmt, calls, ops, …) is the fallback
+                   (GAMMA_INTERP=tree forces it; decisions/020); memory.rs byte memory +
+                   provenance; fiber.rs (thread per fiber); threads.rs (GIL); ffi.rs (libffi,
+                   decisions/009); sys.rs (SysOps); coverage.rs; consts.rs (constants →
+                   ConstValue; eval_const in mod.rs); vm/heap.rs fast new/destroy
+src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, elementwise,
+                   types (typed C structs, blobs), helpers, fiber (with-on outlining, ctl
+                   thunks), borrow (pure-fn params read in place, 016), constarg (static
+                   gm_kN args), rtcache (cached runtime object + cached programs, 014),
+                   debug + views + gdb_printers.py (`-g`, 013), csrc (C sources from gamma.toml)
+src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
+                   build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli
+src/lsp/           `gamma lsp`: transport, position, workspace, analysis, features, refs,
+                   corelib, server; src/ide.rs = index model
+src/doc/           `gamma doc`: collect, markdown, html, md_html
+src/repl/          `gamma repl`: mod, input (classify), report
+src/fmt.rs         `gamma fmt`;  src/testing.rs `gamma test`/`bench`;  src/coverage.rs
+                   `--coverage`;  src/ice.rs internal-compiler-error reports
+runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handlers
+                   gm_node/gm_unw, fibers asm/ucontext, threads, Win32 + POSIX sys); rt_test.c
+lib/core/          prelude.gm, list.gm, map.gm, slice.gm (embedded via include_str!)
+lib/std/           std modules (GAMMA_STD, <prefix>/lib/gamma/std, or lib/std)
 editors/           vscode extension + TextMate grammar; tree-sitter-gamma (CI job "editors")
-tools/             package-release.sh, install.sh (release.yml), gen_*.py table generators
-runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handler
-                   structs gm_node/gm_unw, fibers + asm context switch); rt_test.c
-lib/core/prelude.gm  core declarations in Gamma (embedded via include_str!)
-lib/std/           std modules (GAMMA_STD or lib/std); collections/{deque,heap,bitset}
-tests/conformance.rs  harness (see decisions/004)
-tests/conformance/{lex,parse}/  .gm tests + goldens
-docs/              README-level docs (architecture.md, contributing.md, guide/)
+tools/             package-release.sh, install.sh/.ps1, gen_float_table.py, gen_text_tables.py
+tests/             conformance.rs (format in its header) + conformance/{lex,parse,check,run,
+                   test,safe}; per-tool suites (pkg, lsp, repl, doc, fmt, cross, native_build, …)
+docs/              architecture.md, contributing.md, versioning.md, lsp.md, editors.md,
+                   guide/ (16 chapters), std.md + std/ (generated by `gamma doc`)

@@ -52,7 +52,7 @@ pub fn unsupported<T>(span: Span, what: impl Into<String>) -> CResult<T> {
 /// Options of a C build.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Debug or Checked: checked operations trap (§1.4). Fast drops the checks.
+    /// Debug, Checked or Safe: checked operations trap (§1.4). Fast drops the checks.
     pub checks: bool,
     /// Debug: heap blocks are tracked so double and invalid frees trap.
     pub debug: bool,
@@ -730,7 +730,7 @@ impl<'a> Gen<'a> {
         may
     }
 
-    /// True if calls to `f` can leave by a non-local exit (§D.2).
+    /// True if calls to `f` can leave by a non-local exit (Appendix D.2).
     pub fn may_unwind(&self, f: FnId) -> bool {
         let def = &self.prog.fns[f.index()];
         match def.kind {

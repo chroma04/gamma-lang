@@ -408,7 +408,7 @@ GM_API int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds 
 GM_API void gm_clock_sleep(uint64_t ns);
 GM_API void gm_rand_fill(void *p, size_t n);
 /* Files and directories: the flags of gm_fs_open, and handles that are file descriptors
- * (files) or indexes into a table of open directories. */
+ * (files; C runtime descriptors on Windows) or indexes into a table of open directories. */
 enum { GM_FS_READ = 1, GM_FS_WRITE = 2, GM_FS_APPEND = 4, GM_FS_CREATE = 8, GM_FS_TRUNCATE = 16, GM_FS_EXCLUSIVE = 32 };
 GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags);
 GM_API int64_t gm_fs_close(int64_t f);
@@ -427,7 +427,7 @@ GM_API int64_t gm_fs_close_dir(int64_t d);
 GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
 GM_API int64_t gm_fs_sync(int64_t f);
 GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
-/* TCP sockets; handles are file descriptors. Host names are resolved with getaddrinfo;
+/* TCP sockets; handles are file descriptors (SOCKET values on Windows). Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
 GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port);
@@ -475,7 +475,7 @@ GM_API_VAR int gm_debug;
 /* memset, called through a volatile pointer so that filling a frame that is about to die
  * (Debug builds) is not removed as a dead store. */
 GM_API_VAR void *(*volatile gm_poison)(void *, int, size_t);
-/* Nonzero in Debug and Checked builds (set by the generated code). */
+/* Nonzero in Debug, Checked and Safe builds; zero in Fast ones (set by the generated code). */
 GM_API_VAR int gm_checks;
 
 /* ---- frames, handler contexts and non-local exits ----------------------------------
@@ -591,7 +591,6 @@ GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*sta
                               const char *file, uint32_t line, uint32_t col);
 /* Registers a new fiber as suspended on `w` (made by @fiber) and returns its continuation. */
 GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
-/* Checked builds: traps if a frame at address `p` is below the running fiber's limit. */
 /* Checked builds compare each frame's address with the lowest address the running stack
    may use: the fiber's limit, or the thread's (§14.1, §18). */
 #if defined(__SANITIZE_ADDRESS__)

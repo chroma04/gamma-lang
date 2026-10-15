@@ -251,7 +251,7 @@ impl Parser<'_> {
     }
 
     /// The right side of a binding or assignment with `targets` names or places. With
-    /// several, `a, b = b, a` means `a, b = (b, a)` (§4.2).
+    /// several, `a, b = b, a` means `a, b = (b, a)` (§4.7).
     fn parse_rhs(&mut self, targets: usize) -> PResult<Expr> {
         let first = self.parse_expr()?;
         if targets < 2 || !self.at(Punct::Comma) {

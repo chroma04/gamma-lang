@@ -33,7 +33,7 @@ Checking runs again after each change, once the editor stops sending changes. It
 does not need `main`, so any module can be checked. Test declarations are
 checked too.
 
-Git dependencies (see the packages chapter of the guide) are used as `gamma.lock`
+Git and archive dependencies (see the packages chapter of the guide) are used as `gamma.lock`
 pins them, from the package store. The server never uses the network and never
 changes `gamma.lock`: after adding a dependency, run `gamma fetch` once, and the
 server picks it up on the next check.
@@ -41,8 +41,8 @@ server picks it up on the next check.
 Find references and rename look beyond the open module. The modules to look at
 are all directories with `.gm` files under the package root (the nearest
 directory with a `gamma.toml`, or the directory of the open file if there is
-none) and under the roots of its path dependencies, minus hidden directories and
-`target`. Of these, only modules whose files mention the name are checked, and
+none) and under the roots of its path dependencies, minus hidden directories,
+`target` and `node_modules`. Of these, only modules whose files mention the name are checked, and
 the result of each check is kept until a file it read (or the list of files of
 its directory) changes. A dependency does not know the packages that use it, so
 from inside a dependency only the dependency's own modules are searched.
@@ -50,8 +50,8 @@ from inside a dependency only the dependency's own modules are searched.
 Declarations in the embedded core library are served from `lib/core/` next to the
 standard library when that directory exists with the same text as the compiler's
 copy; otherwise the text is written once to a read-only file under the cache
-directory (`$GAMMA_CACHE_DIR`, else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`)
-and the editor opens that.
+directory (the one `gamma cache dir` prints, in its `core` folder; a temporary
+directory if the cache is turned off) and the editor opens that.
 
 A `.gm` buffer that has not been saved is part of the module of its directory,
 and a buffer in a directory that does not exist yet is checked as a module of its

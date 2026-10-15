@@ -10,7 +10,10 @@
 - macOS CI compiles generated C with Apple clang; locally `cc` is gcc. clang rejects things gcc
   accepts (e.g. `(T){0}` for a zero-member struct → use `(T){}`). Before pushing C back-end
   changes run `CC=clang cargo test -q` too.
-- Worktree subagents (isolation: worktree) are created from the repo's default branch (old main here), not the session branch: brief them to `git reset --hard <session branch tip>` first.
+- Worktree subagents (isolation: worktree) are sometimes created from the LOCAL `main` ref, which
+  the fresh clone may leave stale (s14: at PR #34 while origin/main was #36). Before spawning:
+  `git fetch origin main && git branch -f main origin/main`, and brief every agent to
+  `git reset --hard <session branch tip>` first and verify a recent file exists.
 - Force-push is denied by the permission classifier: never push a commit you may want to drop.
   Never make memory-only commits (their messages can't avoid mentioning notes); fold memory
   edits into code commits.
@@ -44,3 +47,5 @@
 - CI uses the newest stable Rust (1.99 in Oct 2026); local is 1.97. Before pushing run CI's clippy: `RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/stable rustup run stable cargo clippy -q --all-targets` (stable toolchain installed in s12).
 - Tests run as root here; CI is not root, so permission bugs (read-only checkouts) hide locally. Check such tests with `runuser -u nobody -- env HOME=/tmp/x TMPDIR=/tmp <test binary>` (chmod 1777 target/tmp, o+x on the path).
 - Windows compile check without CI: `apt-get install gcc-mingw-w64-x86-64; rustup target add x86_64-pc-windows-gnu; cargo check --target x86_64-pc-windows-gnu` (libffi-sys needs the mingw gcc).
+- Brief agents never to `pkill -f "cargo build"` (or any shared pattern): it kills the other
+  agents' builds too (s14, twice).

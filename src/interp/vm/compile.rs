@@ -1220,7 +1220,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     // --- places ------------------------------------------------------------------------------------
 
-    /// The integer in `index` as an index word (§7.3: negative indexes are out of bounds).
+    /// The integer in `index` as an index word (§7.9: negative indexes are out of bounds).
     pub fn index_operand(&mut self, index: &'a Expr) -> C<(Reg, IntK)> {
         let v = self.expr(index)?;
         let Arg::Data { reg, .. } = v else { return Err(unsupported!()) };

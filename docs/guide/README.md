@@ -4,7 +4,7 @@ Gamma is a systems programming language meant to replace C. It keeps what makes 
 
 This guide is for experienced programmers, especially C programmers, who want to learn how to *use* Gamma. Each chapter introduces one area with short, realistic examples and a sentence or two on why the design is the way it is. It is a tutorial, not a reference: when you need the exact rule, the guide points to the numbered section of the [language specification](../../gamma-spec.md), which is the normative definition.
 
-> **Status of the implementation.** The reference implementation in this repository is under construction. The `gamma` tool type-checks programs, runs them with an interpreter (`gamma run file.gm`), and compiles them natively through C (`gamma build file.gm`, or `gamma run --backend=c file.gm`). The whole language works through C; the interpreter runs everything except calls to foreign code and inline assembly, for which `gamma run` compiles the program instead. [Chapter 1](01-getting-started.md) has the details.
+> **Status of the implementation.** The reference implementation in this repository implements the whole specification. The `gamma` tool type-checks programs, runs them with an interpreter (`gamma run file.gm`), and compiles them natively through C (`gamma build file.gm`, or `gamma run --backend=c file.gm`); both give the same results. The interpreter calls foreign C functions itself; for inline assembly, and the few foreign calls it cannot make ([chapter 14](14-interop.md)), `gamma run` compiles the program instead. [Chapter 1](01-getting-started.md) has the details.
 
 ## Contents
 

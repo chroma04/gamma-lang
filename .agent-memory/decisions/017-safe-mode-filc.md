@@ -1,6 +1,5 @@
 # 017 — Safe build mode via Fil-C (s6 thread "Fil-C memory safety", branch claude/project-thread-7tibkj)
 
-Design doc for the user: /mnt/project-files/design/safe-mode.md (deliberation + plan).
 
 ## Decision
 - 4th mode `--mode=safe` (optional per spec §1.4), NOT a rename of Checked. Semantics in §18.7:
@@ -32,7 +31,9 @@ Design doc for the user: /mnt/project-files/design/safe-mode.md (deliberation + 
   3. GM_INT_TO_PTR (to_ptr) = empty-asm-laundered cast: with typed loads LLVM folded
      inttoptr(ptrtoint p) → p (capability kept); zmkptr(NULL,n) made filcc -O1+ DROP the
      faulting access (exit 0!) — filcc deletes statically-failing checks.
-- Remaining: trees 16× (new/destroy = GC alloc + by-ref args like the 40-byte location
+- s12: place slices read in place (map/list 2–3x faster). Remaining: new/destroy ~4x
+  Checked (borrow.rs `site` copy; needs a static-constant-at-all-call-sites analysis).
+- Earlier remaining: trees 16× (new/destroy = GC alloc + by-ref args like the 40-byte location
   struct escaping), hmap 4.3×, sieve 3.9×. Uncaptured locals as C locals: done (few %,
   c-backend-plan.md end). By-address temps (same PR #17): by-value aggregates measured
   SLOWER under Fil-C (by_ref threshold 64: trees 3.9→5.2 s; microbench 40B by value 65 ns
