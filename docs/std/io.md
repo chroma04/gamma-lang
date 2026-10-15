@@ -193,7 +193,7 @@ longer lines.
 read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In}
 ```
 
-Reads all of `In` into `out`.
+Reads all of `In` into `out`, appending. A failure to grow the list is `.NoSpace`.
 
 ### `read_all`
 

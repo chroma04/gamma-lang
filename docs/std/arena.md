@@ -20,7 +20,9 @@ Arena :: struct {
 ```
 
 Allocates from chunks obtained from a parent allocator and releases them all at
-once with `deinit`. `free` and `resize` work only for the most recent allocation.
+once with `deinit`. Each new chunk is twice the size of the previous one (at least
+4096 bytes, and large enough for the request). `free` and `resize` work only for the
+most recent allocation (other blocks stay until `deinit`; shrinking is always allowed).
 
 ## Functions
 

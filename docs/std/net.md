@@ -19,7 +19,8 @@ Helpers over the `Net` effect (§21.7) for TCP connections.
 send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net}
 ```
 
-Sends all of `bytes` on `s`, retrying short sends.
+Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress (returns
+0) fails with `.Other(0)`.
 
 ### `recv_exact`
 

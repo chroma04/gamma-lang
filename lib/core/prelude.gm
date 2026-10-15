@@ -412,7 +412,7 @@ pub bytes :: fn(s: string) \ {Yield(u8)} {
 pub rune :: u32
 
 /// The code points of the UTF-8 text `s`. Each maximal ill-formed subsequence
-/// becomes one U+FFFD REPLACEMENT CHARACTER, as in the Unicode Standard (§3.9).
+/// becomes one U+FFFD REPLACEMENT CHARACTER, as in the Unicode Standard (section 3.9, "Unicode Encoding Forms").
 pub runes :: fn(s: string) \ {Yield(rune)} {
     i: usize = 0
     while i < s.len {

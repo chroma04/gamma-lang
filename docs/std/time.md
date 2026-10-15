@@ -257,11 +257,11 @@ digits, and then either `Z` or an offset `+HH:MM` / `-HH:MM`; the offset is appl
 so the result is UTC. The separator may be `T`, `t` or a space, and `Z` may be `z`.
 A leap second (`:60`) is out of range.
 
-Errors: `Syntax(i)` for the first byte that does not fit (or the length of the text,
-if it ended too early or has trailing bytes at `i`); otherwise `Range(i)` where `i`
-is the start of the first field that is out of range: month (5), day (8), hour (11),
-minute (14), second (17), or the offset's hour or minute; `Range(0)` if the offset moves
-the moment out of the years 0 to 9999.
+Errors: `Syntax(i)` for the first byte that does not fit (the length of the text if it
+ended too early, and the index of the first byte after a complete timestamp if there
+is more); otherwise `Range(i)` where `i` is the start of the first field that is out of
+range: month (5), day (8), hour (11), minute (14), second (17), or the offset's hour or
+minute; `Range(0)` if the offset moves the moment out of the years 0 to 9999.
 
 ### `format_duration`
 

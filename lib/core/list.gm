@@ -1,7 +1,8 @@
 // core/list: the growable list (§21.5). `List` and `list` are re-exported to
 // the universe scope; the other functions are reached as methods.
 
-/// A growable array that keeps the allocator it was created with.
+/// A growable array that keeps the allocator it was created with. `items` holds the
+/// elements, so `items.len` is the length and `for x in l.items` iterates.
 pub List :: struct(T: type) {
     pub items: []T
     cap: usize
@@ -62,7 +63,8 @@ pub extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!() {
     return ()
 }
 
-/// Inserts `x` at index `i` (at most the length), moving the later elements up.
+/// Inserts `x` at index `i`, moving the later elements up; traps if `i` is more than the
+/// length (`i` equal to the length appends).
 pub insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!() {
     if i > l.items.len { trap("insert: index out of bounds") }
     try reserve(T, l, 1)
@@ -78,7 +80,8 @@ pub insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!() {
     return ()
 }
 
-/// Removes and returns the element at index `i`, moving the later elements down.
+/// Removes and returns the element at index `i`, moving the later elements down. `i` must
+/// be less than the length.
 pub remove :: fn(T: type, l: ^List(T), i: usize) -> T {
     n := l.items.len
     x := l.items[i]
@@ -87,7 +90,8 @@ pub remove :: fn(T: type, l: ^List(T), i: usize) -> T {
     return x
 }
 
-/// Removes and returns the element at index `i`, moving the last element into its place.
+/// Removes and returns the element at index `i`, moving the last element into its place
+/// (constant time, but the order changes). `i` must be less than the length.
 pub swap_remove :: fn(T: type, l: ^List(T), i: usize) -> T {
     n := l.items.len
     x := l.items[i]

@@ -33,7 +33,7 @@ Thread :: struct {
 }
 ```
 
-A running thread, to be joined.
+A running thread, to be joined with `join` or let go with `detach`.
 
 ### `Mutex`
 
@@ -97,7 +97,8 @@ A wait group with nothing outstanding.
 spawn :: fn(T: type, f: ^fn(arg: ^T) \ {Sys}, arg: ^T) -> IoError!Thread \ {Sys}
 ```
 
-Starts a thread calling `f(arg)`.
+Starts a thread calling `f(arg)`; `arg` must stay valid until the thread is done with it.
+The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`.
 
 ### `join`
 
@@ -105,7 +106,7 @@ Starts a thread calling `f(arg)`.
 join :: fn(t: Thread) \ {Sys}
 ```
 
-Waits for `t` to finish.
+Waits for `t` to finish. A thread is joined or detached once, not both.
 
 ### `detach`
 

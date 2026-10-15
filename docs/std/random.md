@@ -140,4 +140,5 @@ weighted :: fn(weights: []const f64) -> ?usize \ {Rand}
 ```
 
 An index of `weights` chosen with probability proportional to its weight, or `null`
-if there are no weights or their sum is not greater than 0. Negative weights count as 0.
+if there are no weights or their sum is not greater than 0 (or is infinite). Negative
+weights count as 0.

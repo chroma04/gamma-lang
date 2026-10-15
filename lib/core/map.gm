@@ -136,7 +136,7 @@ pub Entry :: struct(K, V: type) {
 
 /// The entry for `k`, first storing `k` and `default` if `k` is absent. When it was absent
 /// (`found` is false), the stored key may be replaced by an equal one, such as a copy the
-/// map should own: `if not e.found { e.key^ = try str.dupe(word) }`.
+/// map should own: `if not e.found { e.key^ = try dupe(word) }`.
 pub entry :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
                 m: ^HashMap(K, V, hash, eq), k: K, default: V) -> AllocError!Entry(K, V) {
     if i := m.find(&k) { return Entry(K, V)(key: &m.slots[i].key, value: &m.slots[i].value, found: true) }
