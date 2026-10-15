@@ -53,6 +53,11 @@ pub(super) type PResult<T> = Result<T, Abort>;
 /// (protects the native stack).
 const MAX_DEPTH: u32 = 64;
 
+/// Maximum number of postfix operations (calls, subscripts, field accesses, `?`, `^`, `!`)
+/// applied one after another to one operand. The parser reads them in a loop, but every
+/// later pass recurses over the resulting chain.
+const MAX_POSTFIX_CHAIN: u32 = 100_000;
+
 /// Context-dependent restrictions on what the expression parser accepts.
 #[derive(Clone, Copy, Default, Debug)]
 pub(super) struct Restr {

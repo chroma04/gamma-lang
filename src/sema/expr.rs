@@ -333,8 +333,17 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn module_of(&mut self, e: &ast::Expr) -> Option<super::ModuleId> {
         // `m.n` where `n` is a public module binding of module `m`.
         if let ExprKind::Field { base, name } = &e.kind {
-            let m = self.module_of(base)?;
-            return self.sema.public_module_member(m, name.name);
+            // Remembering failures keeps a long field chain from being walked again at
+            // every link.
+            let key = e as *const ast::Expr as usize;
+            if self.not_module.contains(&key) {
+                return None;
+            }
+            let found = self.module_of(base).and_then(|m| self.sema.public_module_member(m, name.name));
+            if found.is_none() {
+                self.not_module.insert(key);
+            }
+            return found;
         }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
@@ -1112,7 +1121,7 @@ impl<'a, 's> FnCx<'a, 's> {
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
-        if let Some(e) = self.struct_field(b.clone(), name.name, span) {
+        if let Some(e) = self.struct_field(b, name.name, span) {
             return e;
         }
         self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
