@@ -24,7 +24,7 @@ collect :: fn(limit: i64, take: usize, out: []i64) -> usize \ {Out} {
     with (handler Emit {
         emit(x, k) => {
             if n is take {
-                discard k
+                cancel k
                 break
             }
             out[n] = x
@@ -114,7 +114,7 @@ handler Task for ^Sched \ {Alloc, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := pop_front(self)

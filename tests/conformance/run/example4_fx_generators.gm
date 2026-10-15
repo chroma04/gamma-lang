@@ -146,7 +146,7 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
     }
     with (handler Lock {
         begin(k) => {
-            discard k
+            cancel k
             lk = @fiber(producer, &la, stack_l[..])
             rk = @fiber(producer, &ra, stack_r[..])
             match step() {
@@ -180,14 +180,14 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
                     resume c()
                 }
                 .Stop => {
-                    if c := lk { discard c }
-                    if c := rk { discard c }
+                    if c := lk { cancel c }
+                    if c := rk { cancel c }
                     break
                 }
             }
         }
         finished(side, k) => {
-            discard k
+            cancel k
             if side is 0 { ldone = true } else { rdone = true }
             match step() {
                 .ResumeLeft => {
@@ -201,8 +201,8 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
                     resume c()
                 }
                 .Stop => {
-                    if c := lk { discard c }
-                    if c := rk { discard c }
+                    if c := lk { cancel c }
+                    if c := rk { cancel c }
                     break
                 }
             }

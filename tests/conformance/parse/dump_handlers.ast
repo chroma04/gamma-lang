@@ -42,7 +42,7 @@
       (clause done
         (params self k)
         (block
-          (discard (ident k))
+          (cancel (ident k))
           (expr (break))))))
   (item
     (binding const f

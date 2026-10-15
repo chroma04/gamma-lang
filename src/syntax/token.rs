@@ -118,8 +118,8 @@ macro_rules! keywords {
 }
 
 keywords! {
-    And = "and", Break = "break", Continue = "continue", Ctl = "ctl", Defer = "defer",
-    Discard = "discard", Effect = "effect", Else = "else", Errdefer = "errdefer", Esc = "esc",
+    And = "and", Break = "break", Cancel = "cancel", Continue = "continue", Ctl = "ctl",
+    Defer = "defer", Effect = "effect", Else = "else", Errdefer = "errdefer", Esc = "esc",
     False = "false", Fn = "fn", For = "for", Foreign = "foreign", Handler = "handler", If = "if",
     Import = "import", In = "in", Is = "is", Match = "match", Not = "not", Null = "null",
     Or = "or", Pub = "pub", Resume = "resume", Return = "return", Struct = "struct",

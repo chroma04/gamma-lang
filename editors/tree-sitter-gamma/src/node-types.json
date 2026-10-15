@@ -766,15 +766,15 @@
           "named": true
         },
         {
+          "type": "cancel_statement",
+          "named": true
+        },
+        {
           "type": "const_declaration",
           "named": true
         },
         {
           "type": "defer_statement",
-          "named": true
-        },
-        {
-          "type": "discard_statement",
           "named": true
         },
         {
@@ -870,6 +870,21 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "cancel_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -1081,21 +1096,6 @@
   },
   {
     "type": "dereference_expression",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
-      "types": [
-        {
-          "type": "_expression",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "discard_statement",
     "named": true,
     "fields": {},
     "children": {
@@ -3608,6 +3608,10 @@
     "named": false
   },
   {
+    "type": "cancel",
+    "named": false
+  },
+  {
     "type": "character_literal",
     "named": true
   },
@@ -3635,10 +3639,6 @@
   {
     "type": "discard",
     "named": true
-  },
-  {
-    "type": "discard",
-    "named": false
   },
   {
     "type": "doc_comment",

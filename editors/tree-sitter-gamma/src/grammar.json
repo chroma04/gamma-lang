@@ -829,7 +829,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "discard_statement"
+          "name": "cancel_statement"
         },
         {
           "type": "SYMBOL",
@@ -982,12 +982,12 @@
         }
       ]
     },
-    "discard_statement": {
+    "cancel_statement": {
       "type": "SEQ",
       "members": [
         {
           "type": "STRING",
-          "value": "discard"
+          "value": "cancel"
         },
         {
           "type": "SYMBOL",

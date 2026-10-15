@@ -22,8 +22,8 @@ main :: fn() {
     }
     s: [65536]u8 = ---
     c := false
-    with (handler Pause { pause(k) => { discard k; continue } }) on s[..] { g() } //~ ERROR a `ctl` clause cannot `continue`
-    with (handler Pause { pause(k) => if c { resume k() } else { discard k } }) on s[..] { g() } //~ ERROR a `ctl` clause must not finish normally
+    with (handler Pause { pause(k) => { cancel k; continue } }) on s[..] { g() } //~ ERROR a `ctl` clause cannot `continue`
+    with (handler Pause { pause(k) => if c { resume k() } else { cancel k } }) on s[..] { g() } //~ ERROR a `ctl` clause must not finish normally
     with (handler Pause { pause(k) => if c { resume k() } else { } }) on s[..] { g() } //~ ERROR a `ctl` clause must not finish normally
-    with (handler Pause { pause(k) => if c { resume k() } else { discard k; break } }) on s[..] { g() }
+    with (handler Pause { pause(k) => if c { resume k() } else { cancel k; break } }) on s[..] { g() }
 }

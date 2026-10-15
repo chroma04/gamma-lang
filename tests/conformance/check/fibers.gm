@@ -51,14 +51,14 @@ outside :: fn(k: cont(())) {
 }
 
 discard_outside :: fn(k: cont(())) {
-    discard k                                            //~ ERROR only in the body of a `ctl` clause
+    cancel k                                            //~ ERROR only in the body of a `ctl` clause
 }
 
 not_a_cont :: fn() {
     stack: [32768]u8 = ---
     with (handler Gen {
         emit(x, k) => {
-            discard x                                    //~ ERROR expected a continuation
+            cancel x                                    //~ ERROR expected a continuation
             resume k()
         }
     }) on stack[..] {

@@ -68,18 +68,18 @@ A few rules are visible in this small example. A `ctl` clause has type `never`: 
 
 `cont(R)` is the type of a one-shot continuation that expects an `R`. Unlike second-class functions, continuations are first-class: you can store them in variables, structs and queues. That is what lets a scheduler hold many suspended fibers. The rules that keep this safe:
 
-1. **One-shot.** Each suspension produces a continuation that must be consumed exactly once, by `resume` or `discard`. Consuming one twice, through any copy, is a checked error.
+1. **One-shot.** Each suspension produces a continuation that must be consumed exactly once, by `resume` or `cancel`. Consuming one twice, through any copy, is a checked error.
 2. **Bounded by its `with`.** Every continuation produced under a `with` must be consumed before the `with` completes.
 3. **Same `with`.** A continuation may only be consumed by code running in a `ctl` clause of a handler installed by the `with` that produced it.
 4. **Same thread.** It may only be consumed on the thread that created it.
 
-If a clause uses `k` only as the operand of `resume` or `discard`, never storing, copying or passing it, the compiler verifies statically that no path consumes it twice and that every path ending in `resume` or in a `break` out of the `with` has consumed it, so no run-time check is needed for it. The checks exist for the cases where you do store it, as a scheduler does.
+If a clause uses `k` only as the operand of `resume` or `cancel`, never storing, copying or passing it, the compiler verifies statically that no path consumes it twice and that every path ending in `resume` or in a `break` out of the `with` has consumed it, so no run-time check is needed for it. The checks exist for the cases where you do store it, as a scheduler does.
 
-Rule 2 has a convenient consequence for exits that go *past* the `with`: a `return`, a labeled `break` to an outer loop, or an `esc` operation handled outside. Such an exit discards every fiber the `with` still holds, running their `defer`s, before it continues. Only a plain `break` out of the `with` itself expects you to have consumed everything first.
+Rule 2 has a convenient consequence for exits that go *past* the `with`: a `return`, a labeled `break` to an outer loop, or an `esc` operation handled outside. Such an exit cancels every fiber the `with` still holds, running their `defer`s, before it continues. Only a plain `break` out of the `with` itself expects you to have consumed everything first.
 
-### Cancelling with `discard`
+### Cancelling with `cancel`
 
-`discard k` cancels the suspended fiber. Control switches to it, and its frames unwind from the point of suspension to the base of the fiber, running their `defer` and `errdefer` statements, exactly like an `esc` exit. Then control returns to the clause. This is how a handler abandons work without leaking whatever the work had acquired:
+`cancel k` cancels the suspended fiber. Control switches to it, and its frames unwind from the point of suspension to the base of the fiber, running their `defer` and `errdefer` statements, exactly like an `esc` exit. Then control returns to the clause. This is how a handler abandons work without leaking whatever the work had acquired:
 
 ```gamma
 Budget :: effect {
@@ -104,7 +104,7 @@ run_limited :: fn(limit: u32) \ {Out} {
         tick(k) => {
             seen += 1
             if seen > limit {
-                discard k                 // unwind the job, running its defers
+                cancel k                  // unwind the job, running its defers
                 break                     // then leave the `with`
             }
             resume k()
@@ -114,7 +114,7 @@ run_limited :: fn(limit: u32) \ {Out} {
 }
 ```
 
-`run_limited(2)` prints steps 1, 2 and 3 and then `job: cleanup`: the third `tick` exceeds the budget, `discard` runs the job's `defer`, and `break` ends the `with`. The job never prints "finished". Note that `tick(k)` has the continuation as its only parameter because the operation has none of its own; a `ctl` clause always gets one extra, final parameter for `k`.
+`run_limited(2)` prints steps 1, 2 and 3 and then `job: cleanup`: the third `tick` exceeds the budget, `cancel` runs the job's `defer`, and `break` ends the `with`. The job never prints "finished". Note that `tick(k)` has the continuation as its only parameter because the operation has none of its own; a `ctl` clause always gets one extra, final parameter for `k`.
 
 ## How a `with ... on` ends
 
@@ -123,9 +123,9 @@ A `with ... on` completes in one of two ways:
 - **The body finishes** on its fiber with a value. Control returns to the driver and the `with`'s value is that value.
 - **A `ctl` clause exits** with `break` (or a labeled `break`/`continue` or `return`, in a handler literal).
 
-In both cases, every continuation produced under the `with` must already have been consumed, or the program has violated rule 2: Debug and Checked builds trap with a message like "with completed while N fibers are suspended". To shut down cleanly, `discard` the suspended fibers first.
+In both cases, every continuation produced under the `with` must already have been consumed, or the program has violated rule 2: Debug and Checked builds trap with a message like "with completed while N fibers are suspended". To shut down cleanly, `cancel` the suspended fibers first.
 
-A third way is an exit that *crosses* the `with`: code on one of its fibers performs an `esc` operation whose target is outside the `with`. The fiber's frames are unwound, every other unconsumed continuation of the `with` is discarded (most recently created first), and then the exit continues. So exits never leave suspended fibers behind.
+A third way is an exit that *crosses* the `with`: code on one of its fibers performs an `esc` operation whose target is outside the `with`. The fiber's frames are unwound, every other unconsumed continuation of the `with` is cancelled (most recently created first), and then the exit continues. So exits never leave suspended fibers behind.
 
 ## Creating fibers: `@fiber`
 
@@ -135,7 +135,7 @@ A single fiber is enough for generators and cooperative sub-tasks. A scheduler n
 @fiber(f, arg, stack) -> cont(())
 ```
 
-`f` is a **function pointer** `^fn(a: A) -> never \ {S}`, `arg` is its argument, and `stack` is the memory for the new fiber. The result is a continuation which, when resumed, starts the call `f(arg)` on that stack. `A` must be a first-class type; a second-class closure cannot be smuggled into a fiber that may outlive the frame that made it, which is why fibers start from a function pointer plus a data argument, as threads do in C. `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause discards it (a library `spawn` wraps the user's function to do that). The new fiber runs in the handler context of the `with`'s body, so it can perform the effects that the `with` handles.
+`f` is a **function pointer** `^fn(a: A) -> never \ {S}`, `arg` is its argument, and `stack` is the memory for the new fiber. The result is a continuation which, when resumed, starts the call `f(arg)` on that stack. `A` must be a first-class type; a second-class closure cannot be smuggled into a fiber that may outlive the frame that made it, which is why fibers start from a function pointer plus a data argument, as threads do in C. `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause cancels it (a library `spawn` wraps the user's function to do that). The new fiber runs in the handler context of the `with`'s body, so it can perform the effects that the `with` handles.
 
 ## A scheduler sketch
 
@@ -167,7 +167,7 @@ handler Sched for ^Scheduler {
         resume k()
     }
     exit(self, k) => {
-        discard k                      // this task is over: unwind it
+        cancel k                       // this task is over: unwind it
         self.live -= 1
         if self.live is 0 {
             if j := self.joiner {
@@ -192,7 +192,7 @@ Several points of the design show up here:
 - The continuations are stored in a queue inside the scheduler, which is why `cont(())` is first-class.
 - `resume r()` is written with `r` bound to a name first. `resume k(v)` takes the continuation from a postfix expression *without its final call*, so you cannot write `resume self.next()()`.
 - Every clause ends in `resume`, and since `resume` transfers rather than calls, the scheduler can switch between any number of fibers **without its own stack growing**.
-- `exit` uses `discard` on the exiting task's continuation, because a fiber ends by being cancelled; this runs the task's `defer`s.
+- `exit` uses `cancel` on the exiting task's continuation, because a fiber ends by being cancelled; this runs the task's `defer`s.
 
 A program using it hands the scheduler a main stack, spawns tasks, and `join`s them. Because the `with` cannot complete while a task is suspended, `join` is what keeps it alive:
 
@@ -243,14 +243,14 @@ In this sketch a task can perform only `Sched`, because the type of `spawn`'s en
 >
 > - **A `ctl` handler without `on`, or `on` without a `ctl` handler.** The two must go together.
 > - **A stack that is too small, or that is reused** while the `with` is running.
-> - **Finishing the `with` with fibers still suspended.** `discard` them or `join` them first.
+> - **Finishing the `with` with fibers still suspended.** `cancel` them or `join` them first.
 > - **Consuming a continuation twice,** or from a clause of a different `with`.
 > - **A `ctl` clause that does not end by transferring or exiting.** Its type is `never`.
 
 ## Summary
 
 - `ctl` operations suspend the performer; `with h on stack { ... }` provides the stack for the fiber that runs the body.
-- A `ctl` clause gets a one-shot continuation and ends with `resume k(v)`, `discard k` plus an exit, or another exit.
+- A `ctl` clause gets a one-shot continuation and ends with `resume k(v)`, `cancel k` plus an exit, or another exit.
 - Continuations are first-class so schedulers can queue them; one-shot use is checked.
 - `@fiber(f, arg, stack)` starts new fibers from function pointers.
 - Nothing allocates: you provide every stack.

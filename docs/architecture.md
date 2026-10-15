@@ -344,7 +344,7 @@ other over channels, so exactly one runs at a time; the per-thread parts of the
 machine (temporaries, call depth, stack limits) are saved and restored at each
 switch. A `with … on` runs its body on a new fiber and then acts as the driver:
 it waits for a fiber to perform a `ctl` operation, runs the clause, and switches
-to the fiber that `resume` names. `discard` sends the fiber a cancellation that
+to the fiber that `resume` names. `cancel` sends the fiber a cancellation that
 unwinds it like an exit. A continuation is a fiber number and a suspension
 count, so consuming one twice, or from the wrong `with`, is detected. Each call
 is charged against the fiber's stack by `tir::frame_cost`, the same cost model
@@ -430,7 +430,7 @@ registers directly; calls to and from tree-walked code go through `Value`s.
   statement's code, a loop or `with` landing, or a guard that turns a flow
   escaping a deferred statement into a trap.
 - *Fallbacks.* A few constructs run on the tree-walker from inside compiled
-  code: `with … on`, `resume`, `discard`, `@fiber`, system calls, and a
+  code: `with … on`, `resume`, `cancel`, `@fiber`, system calls, and a
   statement whose value is too large for registers (over 64 KiB). Locals they
   mention live in the frame, where both engines see them. A function the
   compiler cannot handle at all runs on the tree-walker as a whole.
@@ -505,7 +505,7 @@ both use it. The files:
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `arith.rs`, `elementwise.rs`, `wide.rs` | checked scalar operators, elementwise array arithmetic (§7.4.6), integers wider than 128 bits |
 | `helpers.rs` | per-type equality, ordering and hashing |
-| `fiber.rs` | `with … on`, `ctl` performs, `resume`, `discard`, `@fiber` |
+| `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.rs`, `constarg.rs` | parameters read in place; static storage for constant arguments |
 | `rtcache.rs` | the cached runtime object of Debug and Safe builds |
 | `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
@@ -772,7 +772,7 @@ moved into a C function of its own, which reaches the enclosing function's frame
 through a pointer, and runs on a fiber whose stack is the given memory. The
 `with` itself becomes the driver loop. A `ctl` perform stores its arguments in a
 request on the fiber's stack and switches to the driver, which calls the clause
-through a small per-site thunk. `resume` and the cancellation by `discard` are
+through a small per-site thunk. `resume` and the cancellation by `cancel` are
 two more kinds of non-local exit: `resume` ends the clause and tells the driver
 which fiber to switch to; a cancelled fiber unwinds to its base and switches
 back. Fiber records come from a pool and are never freed, and each suspension

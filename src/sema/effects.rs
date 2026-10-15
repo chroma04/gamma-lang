@@ -601,7 +601,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.coerce(body, ret)
     }
 
-    /// Checks a continuation operand of `resume` or `discard`; returns it and its `R`.
+    /// Checks a continuation operand of `resume` or `cancel`; returns it and its `R`.
     fn cont_operand(&mut self, what: &str, k: &ast::Expr) -> Option<(Expr, Ty)> {
         if !self.in_ctl_clause() {
             self.error(k.span, format!("`{}` is permitted only in the body of a `ctl` clause (§14)", what));
@@ -643,10 +643,10 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(Ty::never(), tir::ExprKind::Resume { cont: Box::new(k), value: Box::new(v) }, span)
     }
 
-    /// `discard k` (§14.5).
-    pub fn discard_stmt(&mut self, k: &ast::Expr, span: Span) -> Expr {
-        match self.cont_operand("discard", k) {
-            Some((k, _)) => mk(Ty::unit(), tir::ExprKind::Discard(Box::new(k)), span),
+    /// `cancel k` (§14.5).
+    pub fn cancel_stmt(&mut self, k: &ast::Expr, span: Span) -> Expr {
+        match self.cont_operand("cancel", k) {
+            Some((k, _)) => mk(Ty::unit(), tir::ExprKind::Cancel(Box::new(k)), span),
             None => error_expr(span),
         }
     }

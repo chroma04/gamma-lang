@@ -72,7 +72,7 @@ run_outer :: fn(stop_at: u32) \ {Out} {
         tick(n, k) => {
             print("tick {}\n", n)
             if n >= stop_at {
-                discard k
+                cancel k
                 break
             }
             resume k()

@@ -566,7 +566,7 @@ struct gm_fiber {
     gm_with *susp_with;         /* while suspended: the `with` whose operation it performed */
     uintptr_t epoch;
     uint8_t state;              /* GM_FB_NEW, GM_FB_RUNNING, GM_FB_SUSPENDED or GM_FB_DONE */
-    uint8_t cancel;             /* set by `discard` before switching to it */
+    uint8_t cancel;             /* set by `cancel` before switching to it */
     uint8_t started;
     gm_fiber *susp_next, *susp_prev;
     gm_fiber *own_next;
@@ -627,7 +627,7 @@ GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb);
 /* Clause of `w`: consumes continuation *k for `resume`; returns where to store the value. */
 GM_API void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
 /* Clause of `w`: consumes continuation *k and cancels its fiber (§14.5). */
-GM_API void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
+GM_API void gm_cancel_cont(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
 /* Driver: completes `w`. `crossing`: an exit from a fiber is leaving the `with`, so the
  * suspended fibers are discarded; otherwise any suspended fiber is a checked error (§14.4).
  * Then the fibers return to the pool. */

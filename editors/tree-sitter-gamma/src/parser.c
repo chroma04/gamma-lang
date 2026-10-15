@@ -55,7 +55,7 @@ enum ts_symbol_identifiers {
   anon_sym_LT_LT_PIPE_EQ = 33,
   anon_sym_defer = 34,
   anon_sym_errdefer = 35,
-  anon_sym_discard = 36,
+  anon_sym_cancel = 36,
   anon_sym_while = 37,
   anon_sym_and = 38,
   sym_discard = 39,
@@ -171,7 +171,7 @@ enum ts_symbol_identifiers {
   sym__statement = 149,
   sym_assignment_statement = 150,
   sym_defer_statement = 151,
-  sym_discard_statement = 152,
+  sym_cancel_statement = 152,
   sym_when_statement = 153,
   sym_when_else_statement = 154,
   sym_while_statement = 155,
@@ -328,7 +328,7 @@ static const char * const ts_symbol_names[] = {
   [anon_sym_LT_LT_PIPE_EQ] = "<<|=",
   [anon_sym_defer] = "defer",
   [anon_sym_errdefer] = "errdefer",
-  [anon_sym_discard] = "discard",
+  [anon_sym_cancel] = "cancel",
   [anon_sym_while] = "while",
   [anon_sym_and] = "and",
   [sym_discard] = "discard",
@@ -444,7 +444,7 @@ static const char * const ts_symbol_names[] = {
   [sym__statement] = "_statement",
   [sym_assignment_statement] = "assignment_statement",
   [sym_defer_statement] = "defer_statement",
-  [sym_discard_statement] = "discard_statement",
+  [sym_cancel_statement] = "cancel_statement",
   [sym_when_statement] = "when_statement",
   [sym_when_else_statement] = "when_else_statement",
   [sym_while_statement] = "while_statement",
@@ -601,7 +601,7 @@ static const TSSymbol ts_symbol_map[] = {
   [anon_sym_LT_LT_PIPE_EQ] = anon_sym_LT_LT_PIPE_EQ,
   [anon_sym_defer] = anon_sym_defer,
   [anon_sym_errdefer] = anon_sym_errdefer,
-  [anon_sym_discard] = anon_sym_discard,
+  [anon_sym_cancel] = anon_sym_cancel,
   [anon_sym_while] = anon_sym_while,
   [anon_sym_and] = anon_sym_and,
   [sym_discard] = sym_discard,
@@ -717,7 +717,7 @@ static const TSSymbol ts_symbol_map[] = {
   [sym__statement] = sym__statement,
   [sym_assignment_statement] = sym_assignment_statement,
   [sym_defer_statement] = sym_defer_statement,
-  [sym_discard_statement] = sym_discard_statement,
+  [sym_cancel_statement] = sym_cancel_statement,
   [sym_when_statement] = sym_when_statement,
   [sym_when_else_statement] = sym_when_else_statement,
   [sym_while_statement] = sym_while_statement,
@@ -982,7 +982,7 @@ static const TSSymbolMetadata ts_symbol_metadata[] = {
     .visible = true,
     .named = false,
   },
-  [anon_sym_discard] = {
+  [anon_sym_cancel] = {
     .visible = true,
     .named = false,
   },
@@ -1446,7 +1446,7 @@ static const TSSymbolMetadata ts_symbol_metadata[] = {
     .visible = true,
     .named = true,
   },
-  [sym_discard_statement] = {
+  [sym_cancel_statement] = {
     .visible = true,
     .named = true,
   },
@@ -5721,12 +5721,12 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       if (lookahead == 'r') ADVANCE(20);
       END_STATE();
     case 4:
-      if (lookahead == 'o') ADVANCE(21);
-      if (lookahead == 't') ADVANCE(22);
+      if (lookahead == 'a') ADVANCE(21);
+      if (lookahead == 'o') ADVANCE(22);
+      if (lookahead == 't') ADVANCE(23);
       END_STATE();
     case 5:
-      if (lookahead == 'e') ADVANCE(23);
-      if (lookahead == 'i') ADVANCE(24);
+      if (lookahead == 'e') ADVANCE(24);
       END_STATE();
     case 6:
       if (lookahead == 'f') ADVANCE(25);
@@ -5789,13 +5789,13 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       if (lookahead == 'n') ADVANCE(52);
       END_STATE();
     case 22:
-      if (lookahead == 'l') ADVANCE(53);
+      if (lookahead == 'n') ADVANCE(53);
       END_STATE();
     case 23:
-      if (lookahead == 'f') ADVANCE(54);
+      if (lookahead == 'l') ADVANCE(54);
       END_STATE();
     case 24:
-      if (lookahead == 's') ADVANCE(55);
+      if (lookahead == 'f') ADVANCE(55);
       END_STATE();
     case 25:
       if (lookahead == 'f') ADVANCE(56);
@@ -5882,17 +5882,17 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       if (lookahead == 'a') ADVANCE(78);
       END_STATE();
     case 52:
-      if (lookahead == 's') ADVANCE(79);
-      if (lookahead == 't') ADVANCE(80);
+      if (lookahead == 'c') ADVANCE(79);
       END_STATE();
     case 53:
-      ACCEPT_TOKEN(anon_sym_ctl);
+      if (lookahead == 's') ADVANCE(80);
+      if (lookahead == 't') ADVANCE(81);
       END_STATE();
     case 54:
-      if (lookahead == 'e') ADVANCE(81);
+      ACCEPT_TOKEN(anon_sym_ctl);
       END_STATE();
     case 55:
-      if (lookahead == 'c') ADVANCE(82);
+      if (lookahead == 'e') ADVANCE(82);
       END_STATE();
     case 56:
       if (lookahead == 'e') ADVANCE(83);
@@ -5966,16 +5966,16 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       if (lookahead == 'k') ADVANCE(102);
       END_STATE();
     case 79:
-      if (lookahead == 't') ADVANCE(103);
+      if (lookahead == 'e') ADVANCE(103);
       END_STATE();
     case 80:
-      if (lookahead == 'i') ADVANCE(104);
+      if (lookahead == 't') ADVANCE(104);
       END_STATE();
     case 81:
-      if (lookahead == 'r') ADVANCE(105);
+      if (lookahead == 'i') ADVANCE(105);
       END_STATE();
     case 82:
-      if (lookahead == 'a') ADVANCE(106);
+      if (lookahead == 'r') ADVANCE(106);
       END_STATE();
     case 83:
       if (lookahead == 'c') ADVANCE(107);
@@ -6038,16 +6038,16 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       ACCEPT_TOKEN(anon_sym_break);
       END_STATE();
     case 103:
-      ACCEPT_TOKEN(anon_sym_const);
+      if (lookahead == 'l') ADVANCE(121);
       END_STATE();
     case 104:
-      if (lookahead == 'n') ADVANCE(121);
+      ACCEPT_TOKEN(anon_sym_const);
       END_STATE();
     case 105:
-      ACCEPT_TOKEN(anon_sym_defer);
+      if (lookahead == 'n') ADVANCE(122);
       END_STATE();
     case 106:
-      if (lookahead == 'r') ADVANCE(122);
+      ACCEPT_TOKEN(anon_sym_defer);
       END_STATE();
     case 107:
       if (lookahead == 't') ADVANCE(123);
@@ -6092,22 +6092,22 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       ACCEPT_TOKEN(anon_sym_while);
       END_STATE();
     case 121:
-      if (lookahead == 'u') ADVANCE(131);
+      ACCEPT_TOKEN(anon_sym_cancel);
       END_STATE();
     case 122:
-      if (lookahead == 'd') ADVANCE(132);
+      if (lookahead == 'u') ADVANCE(131);
       END_STATE();
     case 123:
       ACCEPT_TOKEN(anon_sym_effect);
       END_STATE();
     case 124:
-      if (lookahead == 'e') ADVANCE(133);
+      if (lookahead == 'e') ADVANCE(132);
       END_STATE();
     case 125:
-      if (lookahead == 'n') ADVANCE(134);
+      if (lookahead == 'n') ADVANCE(133);
       END_STATE();
     case 126:
-      if (lookahead == 'r') ADVANCE(135);
+      if (lookahead == 'r') ADVANCE(134);
       END_STATE();
     case 127:
       ACCEPT_TOKEN(anon_sym_import);
@@ -6122,24 +6122,21 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
       ACCEPT_TOKEN(anon_sym_struct);
       END_STATE();
     case 131:
-      if (lookahead == 'e') ADVANCE(136);
+      if (lookahead == 'e') ADVANCE(135);
       END_STATE();
     case 132:
-      ACCEPT_TOKEN(anon_sym_discard);
+      if (lookahead == 'r') ADVANCE(136);
       END_STATE();
     case 133:
-      if (lookahead == 'r') ADVANCE(137);
-      END_STATE();
-    case 134:
       ACCEPT_TOKEN(anon_sym_foreign);
       END_STATE();
-    case 135:
+    case 134:
       ACCEPT_TOKEN(anon_sym_handler);
       END_STATE();
-    case 136:
+    case 135:
       ACCEPT_TOKEN(anon_sym_continue);
       END_STATE();
-    case 137:
+    case 136:
       ACCEPT_TOKEN(anon_sym_errdefer);
       END_STATE();
     default:
@@ -8314,7 +8311,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_LT_LT_PIPE_EQ] = ACTIONS(1),
     [anon_sym_defer] = ACTIONS(1),
     [anon_sym_errdefer] = ACTIONS(1),
-    [anon_sym_discard] = ACTIONS(1),
+    [anon_sym_cancel] = ACTIONS(1),
     [anon_sym_while] = ACTIONS(1),
     [anon_sym_and] = ACTIONS(1),
     [sym_discard] = ACTIONS(1),
@@ -11080,7 +11077,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1604),
     [sym_assignment_statement] = STATE(1604),
     [sym_defer_statement] = STATE(1604),
-    [sym_discard_statement] = STATE(1604),
+    [sym_cancel_statement] = STATE(1604),
     [sym_when_statement] = STATE(1604),
     [sym_while_statement] = STATE(1604),
     [sym_label] = STATE(2092),
@@ -11140,7 +11137,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11197,7 +11194,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -11257,7 +11254,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11314,7 +11311,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -11374,7 +11371,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11431,7 +11428,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -11491,7 +11488,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11548,7 +11545,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1673),
     [sym_assignment_statement] = STATE(1673),
     [sym_defer_statement] = STATE(1673),
-    [sym_discard_statement] = STATE(1673),
+    [sym_cancel_statement] = STATE(1673),
     [sym_when_statement] = STATE(1673),
     [sym_while_statement] = STATE(1673),
     [sym_label] = STATE(2092),
@@ -11608,7 +11605,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11665,7 +11662,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1694),
     [sym_assignment_statement] = STATE(1694),
     [sym_defer_statement] = STATE(1694),
-    [sym_discard_statement] = STATE(1694),
+    [sym_cancel_statement] = STATE(1694),
     [sym_when_statement] = STATE(1694),
     [sym_while_statement] = STATE(1694),
     [sym_label] = STATE(2092),
@@ -11725,7 +11722,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11782,7 +11779,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1710),
     [sym_assignment_statement] = STATE(1710),
     [sym_defer_statement] = STATE(1710),
-    [sym_discard_statement] = STATE(1710),
+    [sym_cancel_statement] = STATE(1710),
     [sym_when_statement] = STATE(1710),
     [sym_while_statement] = STATE(1710),
     [sym_label] = STATE(2092),
@@ -11842,7 +11839,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -11899,7 +11896,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -11959,7 +11956,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12016,7 +12013,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -12076,7 +12073,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12133,7 +12130,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -12193,7 +12190,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12250,7 +12247,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1672),
     [sym_assignment_statement] = STATE(1672),
     [sym_defer_statement] = STATE(1672),
-    [sym_discard_statement] = STATE(1672),
+    [sym_cancel_statement] = STATE(1672),
     [sym_when_statement] = STATE(1672),
     [sym_while_statement] = STATE(1672),
     [sym_label] = STATE(2092),
@@ -12310,7 +12307,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12367,7 +12364,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1624),
     [sym_assignment_statement] = STATE(1624),
     [sym_defer_statement] = STATE(1624),
-    [sym_discard_statement] = STATE(1624),
+    [sym_cancel_statement] = STATE(1624),
     [sym_when_statement] = STATE(1624),
     [sym_while_statement] = STATE(1624),
     [sym_label] = STATE(2092),
@@ -12427,7 +12424,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12484,7 +12481,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1649),
     [sym_assignment_statement] = STATE(1649),
     [sym_defer_statement] = STATE(1649),
-    [sym_discard_statement] = STATE(1649),
+    [sym_cancel_statement] = STATE(1649),
     [sym_when_statement] = STATE(1649),
     [sym_while_statement] = STATE(1649),
     [sym_label] = STATE(2092),
@@ -12544,7 +12541,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12601,7 +12598,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -12661,7 +12658,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12718,7 +12715,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -12778,7 +12775,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12835,7 +12832,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -12895,7 +12892,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -12952,7 +12949,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1721),
     [sym_assignment_statement] = STATE(1721),
     [sym_defer_statement] = STATE(1721),
-    [sym_discard_statement] = STATE(1721),
+    [sym_cancel_statement] = STATE(1721),
     [sym_when_statement] = STATE(1721),
     [sym_while_statement] = STATE(1721),
     [sym_label] = STATE(2092),
@@ -13012,7 +13009,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13069,7 +13066,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13129,7 +13126,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13186,7 +13183,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13246,7 +13243,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13303,7 +13300,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13363,7 +13360,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13420,7 +13417,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1641),
     [sym_assignment_statement] = STATE(1641),
     [sym_defer_statement] = STATE(1641),
-    [sym_discard_statement] = STATE(1641),
+    [sym_cancel_statement] = STATE(1641),
     [sym_when_statement] = STATE(1641),
     [sym_while_statement] = STATE(1641),
     [sym_label] = STATE(2092),
@@ -13480,7 +13477,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13537,7 +13534,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1653),
     [sym_assignment_statement] = STATE(1653),
     [sym_defer_statement] = STATE(1653),
-    [sym_discard_statement] = STATE(1653),
+    [sym_cancel_statement] = STATE(1653),
     [sym_when_statement] = STATE(1653),
     [sym_while_statement] = STATE(1653),
     [sym_label] = STATE(2092),
@@ -13597,7 +13594,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13654,7 +13651,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13714,7 +13711,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13771,7 +13768,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13831,7 +13828,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -13888,7 +13885,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -13948,7 +13945,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -14005,7 +14002,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [sym__statement] = STATE(1878),
     [sym_assignment_statement] = STATE(1878),
     [sym_defer_statement] = STATE(1878),
-    [sym_discard_statement] = STATE(1878),
+    [sym_cancel_statement] = STATE(1878),
     [sym_when_statement] = STATE(1878),
     [sym_while_statement] = STATE(1878),
     [sym_label] = STATE(2092),
@@ -14064,7 +14061,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_for] = ACTIONS(127),
     [anon_sym_defer] = ACTIONS(305),
     [anon_sym_errdefer] = ACTIONS(305),
-    [anon_sym_discard] = ACTIONS(307),
+    [anon_sym_cancel] = ACTIONS(307),
     [anon_sym_while] = ACTIONS(309),
     [sym_discard] = ACTIONS(131),
     [sym_null] = ACTIONS(131),
@@ -74626,7 +74623,7 @@ static const uint16_t ts_small_parse_table[] = {
       anon_sym_for,
       anon_sym_defer,
       anon_sym_errdefer,
-      anon_sym_discard,
+      anon_sym_cancel,
       anon_sym_while,
       sym_discard,
       sym_null,
@@ -117574,7 +117571,7 @@ static const TSParseActionEntry ts_parse_actions[] = {
   [1722] = {.entry = {.count = 1, .reusable = false}}, REDUCE(aux_sym__attributes, 2, 0, 0),
   [1724] = {.entry = {.count = 2, .reusable = true}}, REDUCE(aux_sym__attributes, 2, 0, 0), SHIFT_REPEAT(959),
   [1727] = {.entry = {.count = 1, .reusable = true}}, REDUCE(aux_sym__attributes, 2, 0, 0),
-  [1729] = {.entry = {.count = 1, .reusable = true}}, REDUCE(sym_discard_statement, 2, 0, 0),
+  [1729] = {.entry = {.count = 1, .reusable = true}}, REDUCE(sym_cancel_statement, 2, 0, 0),
   [1731] = {.entry = {.count = 1, .reusable = true}}, REDUCE(sym_match_arm, 4, 0, 78),
   [1733] = {.entry = {.count = 1, .reusable = true}}, SHIFT(155),
   [1735] = {.entry = {.count = 1, .reusable = true}}, SHIFT(2035),

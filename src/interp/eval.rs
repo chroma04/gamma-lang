@@ -363,7 +363,7 @@ impl<'a> Machine<'a> {
             }
             ExprKind::With { label, handlers, on, body } => self.eval_with(a, e, *label, handlers, on.as_deref(), body),
             ExprKind::Resume { cont, value } => self.eval_resume(a, e.span, cont, value),
-            ExprKind::Discard(k) => self.eval_discard(a, e.span, k),
+            ExprKind::Cancel(k) => self.eval_cancel(a, e.span, k),
             ExprKind::Trap { message } => {
                 let m = self.eval_bytes(a, message)?;
                 let s = self.read_str(e.span, &m)?;

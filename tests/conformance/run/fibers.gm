@@ -56,7 +56,7 @@ first_big :: fn(limit: i32) -> i32 \ {Out} {
     r := with (handler Gen {
         emit(x, k) => {
             if x > limit {
-                discard k
+                cancel k
                 break x
             }
             resume k()
@@ -109,7 +109,7 @@ handler Task for ^Sched \ {Alloc, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := next_task(self)

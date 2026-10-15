@@ -250,7 +250,7 @@
         },
         {
           "name": "keyword.control.gamma",
-          "match": "\\b(?:if|else|match|while|for|break|continue|return|defer|errdefer|try|resume|discard|with|when)\\b"
+          "match": "\\b(?:if|else|match|while|for|break|continue|return|defer|errdefer|try|resume|cancel|with|when)\\b"
         },
         {
           "name": "keyword.operator.word.gamma",

@@ -14,9 +14,7 @@ pub enum VarKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fallback {
     I32,
-    /// Used as a shift amount.
-    U32,
-    /// Used as a range bound, array length, index or slicing bound.
+    /// Used as a range bound, array length, index, slicing bound or shift amount.
     Usize,
 }
 
@@ -232,7 +230,6 @@ impl InferTable {
                 let fixed = match (var.kind, var.fallback) {
                     (VarKind::Float, _) => Ty::f64(),
                     (VarKind::Int, Fallback::Usize) => Ty::usize(),
-                    (VarKind::Int, Fallback::U32) => Ty::u32(),
                     (VarKind::Int, Fallback::I32) if var.unsigned => Ty::u32(),
                     (VarKind::Int, Fallback::I32) => Ty::i32(),
                 };
@@ -251,7 +248,6 @@ impl InferTable {
                 let ty = match (v.kind, v.fallback) {
                     (VarKind::Float, _) => Ty::f64(),
                     (VarKind::Int, Fallback::Usize) => Ty::usize(),
-                    (VarKind::Int, Fallback::U32) => Ty::u32(),
                     (VarKind::Int, Fallback::I32) => {
                         if v.unsigned {
                             Ty::u32()

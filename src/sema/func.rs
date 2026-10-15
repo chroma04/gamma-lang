@@ -856,7 +856,7 @@ impl<'a, 's> FnCx<'a, 's> {
             StmtKind::While { label, cond, body } => Stmt::Expr(self.while_loop(*label, cond, body, s.span)),
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
             StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
-            StmtKind::Discard(e) => Stmt::Expr(self.discard_stmt(e, s.span)),
+            StmtKind::Cancel(e) => Stmt::Expr(self.cancel_stmt(e, s.span)),
             StmtKind::LetElse { value, .. } => {
                 self.error(s.span, "a binding with a pattern that can fail must be a statement of a block");
                 Stmt::Expr(self.expr(value, None))
@@ -1673,7 +1673,7 @@ fn never_cause(e: &Expr) -> Option<(Span, &'static str)> {
         K::Trap { .. } => Some((e.span, "this stops the program")),
         K::Try { .. } => Some((e.span, "this `try` always returns")),
         K::Resume { .. } => Some((e.span, "this `resume` ends the handler clause")),
-        K::Discard(_) => Some((e.span, "this `discard` ends the handler clause")),
+        K::Cancel(_) => Some((e.span, "this `cancel` ends the handler clause")),
         K::Call { callee: tir::Callee::Perform { .. }, .. } => {
             Some((e.span, "this operation never returns to its caller: its result type is `never`"))
         }

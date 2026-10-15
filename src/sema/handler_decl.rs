@@ -99,23 +99,38 @@ impl<'s> Sema<'s> {
                     continue;
                 }
             }
-            // Two generic declarations for the same type shape would both apply.
-            let shape = |sema: &mut Self, t: Ty, ps: &[ParamId]| {
-                let map: Vec<(ParamId, Ty)> = ps.iter().map(|p| (*p, Ty::unit())).collect();
-                sema.subst(t, &map)
-            };
+            // No type may match two declarations of one effect (§12.6): neither two for
+            // the same type, nor a specific one that a generic one also matches.
             let duplicate = if generics.is_empty() {
                 self.prog.handler_decls.iter().any(|d| d.effect == eref && d.for_ty == for_ty)
+                    || self.template_matches(&eref, for_ty)
             } else {
-                let mine = shape(self, for_ty, &generics);
-                let others: Vec<(EffectRef, Ty, Vec<ParamId>)> =
-                    self.handler_templates.iter().map(|t| (t.effect.clone(), t.for_ty, t.generics.clone())).collect();
-                others.into_iter().any(|(e, t, ps)| e.effect == eref.effect && shape(self, t, &ps) == mine)
+                let concrete: Vec<(EffectRef, Ty)> =
+                    self.prog.handler_decls.iter().map(|d| (d.effect.clone(), d.for_ty)).collect();
+                let tpl = HandlerTemplate {
+                    generics: generics.clone(),
+                    effect: eref.clone(),
+                    for_ty,
+                    effects: EffectSet::empty(),
+                    clauses: vec![],
+                    span: h.span,
+                };
+                concrete.into_iter().any(|(e, t)| self.template_instance_is(&tpl, &e, t))
+                    || self.handler_templates.iter().any(|t| {
+                        t.effect.effect == eref.effect
+                            && may_unify(t.for_ty, for_ty)
+                            && t.effect.args.len() == eref.args.len()
+                            && t.effect.args.iter().zip(eref.args.iter()).all(|(a, b)| arg_may_unify(a, b))
+                    })
             };
             if duplicate {
                 let d = Diagnostic::error(
                     h.span,
-                    format!("a handler of `{}` for `{}` is already declared", eref.effect.name(), for_ty),
+                    format!(
+                        "a handler of `{}` that applies to `{}` is already declared; a type may match only one declaration of an effect",
+                        eref.effect.name(),
+                        for_ty
+                    ),
                 );
                 self.emit(d);
                 continue;
@@ -369,7 +384,7 @@ impl<'s> Sema<'s> {
             if self.subst(for_ty, &map) != t {
                 continue;
             }
-            // One declaration per effect and type (§12.6): a concrete one wins.
+            // Declarations never overlap (§12.6), so this only skips a repeated match.
             if out.iter().any(|d| self.prog.handler_decls[d.index()].effect.effect == effect) {
                 continue;
             }
@@ -394,6 +409,87 @@ impl<'s> Sema<'s> {
             out.push(id);
         }
         out
+    }
+}
+
+impl Sema<'_> {
+    /// True if a generic declaration of the same effect also matches the specific
+    /// declaration `handler eref for t`.
+    fn template_matches(&mut self, eref: &EffectRef, t: Ty) -> bool {
+        let tpls: Vec<HandlerTemplate> = self
+            .handler_templates
+            .iter()
+            .map(|x| HandlerTemplate {
+                generics: x.generics.clone(),
+                effect: x.effect.clone(),
+                for_ty: x.for_ty,
+                effects: EffectSet::empty(),
+                clauses: vec![],
+                span: x.span,
+            })
+            .collect();
+        tpls.iter().any(|tpl| self.template_instance_is(tpl, eref, t))
+    }
+
+    /// True if instantiating `tpl` for the type `t` gives a handler of `eref`.
+    fn template_instance_is(&mut self, tpl: &HandlerTemplate, eref: &EffectRef, t: Ty) -> bool {
+        if tpl.effect.effect != eref.effect {
+            return false;
+        }
+        let mut binds = std::collections::HashMap::new();
+        super::effects::match_params_pub(tpl.for_ty, t, &mut binds);
+        let Some(args) = tpl.generics.iter().map(|p| binds.get(p).copied()).collect::<Option<Vec<Ty>>>() else {
+            return false;
+        };
+        let map: Vec<(ParamId, Ty)> = tpl.generics.iter().copied().zip(args).collect();
+        self.subst(tpl.for_ty, &map) == t && super::generics::subst_eref(&tpl.effect, &map) == *eref
+    }
+}
+
+/// Whether two types of generic handler declarations could be the same type for some
+/// arguments. A parameter matches anything; the check over-approximates when one
+/// parameter occurs twice.
+fn may_unify(a: Ty, b: Ty) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.kind(), b.kind()) {
+        (TyKind::Param(_), _) | (_, TyKind::Param(_)) => true,
+        (TyKind::ParamArray { elem: x, .. }, TyKind::ParamArray { elem: y, .. })
+        | (TyKind::ParamArray { elem: x, .. }, TyKind::Array { elem: y, .. })
+        | (TyKind::Array { elem: x, .. }, TyKind::ParamArray { elem: y, .. }) => may_unify(*x, *y),
+        (TyKind::Array { len: m, elem: x }, TyKind::Array { len: n, elem: y }) => m == n && may_unify(*x, *y),
+        (TyKind::Ptr { is_const: c, pointee: x }, TyKind::Ptr { is_const: d, pointee: y })
+        | (TyKind::Slice { is_const: c, elem: x }, TyKind::Slice { is_const: d, elem: y })
+        | (TyKind::ManyPtr { is_const: c, elem: x }, TyKind::ManyPtr { is_const: d, elem: y }) => {
+            c == d && may_unify(*x, *y)
+        }
+        (TyKind::Optional(x), TyKind::Optional(y)) | (TyKind::Cont(x), TyKind::Cont(y)) => may_unify(*x, *y),
+        (TyKind::Result { err: e1, ok: o1 }, TyKind::Result { err: e2, ok: o2 }) => {
+            may_unify(*e1, *e2) && may_unify(*o1, *o2)
+        }
+        (TyKind::Tuple { elems: x, names: n }, TyKind::Tuple { elems: y, names: m }) => {
+            n == m && x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| may_unify(*a, *b))
+        }
+        (TyKind::Adt(a, x), TyKind::Adt(b, y)) => {
+            a.template() == b.template()
+                && x.len() == y.len()
+                && x.iter().zip(y.iter()).all(|(p, q)| arg_may_unify(p, q))
+        }
+        // Function types may differ only in parts this check does not look into.
+        (TyKind::Fn(_), TyKind::Fn(_)) | (TyKind::FnPtr(_), TyKind::FnPtr(_)) => true,
+        _ => false,
+    }
+}
+
+fn arg_may_unify(a: &crate::types::GenericArg, b: &crate::types::GenericArg) -> bool {
+    use crate::types::GenericArg;
+    match (a, b) {
+        (GenericArg::Type(x), GenericArg::Type(y)) => may_unify(*x, *y),
+        (GenericArg::Value(x), GenericArg::Value(y)) => x == y,
+        (GenericArg::Type(t), GenericArg::Value(_)) | (GenericArg::Value(_), GenericArg::Type(t)) => {
+            matches!(t.kind(), TyKind::Param(_))
+        }
     }
 }
 

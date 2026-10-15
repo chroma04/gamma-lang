@@ -159,7 +159,7 @@ Identifiers are ASCII. They are case-sensitive. The identifier consisting of a s
 **Keywords** (reserved everywhere):
 
 ```
-and      break    continue ctl      defer    discard  effect   else
+and      break    cancel   continue ctl      defer    effect   else
 errdefer esc      false    fn       for      foreign  handler  if
 import   in       is       match    not      null     or       pub
 resume   return   struct   true     try      union    using    when
@@ -737,7 +737,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -1040,7 +1040,7 @@ A **constant expression** is an expression whose value is computed at compile ti
 block     = '{' { statement terminator } [ statement ] '}'
 statement = binding | assignment | expr | defer_stmt | when_stmt | while_stmt
           | 'return' [ expr ] | 'break' [ label ] [ expr ] | 'continue' [ label ]
-          | 'discard' expr
+          | 'cancel' expr
 ```
 
 `return`, `break`, `continue` and `resume` are expressions of type `never` (§5.17), so they can appear as operands, most usefully after `else`: `n = n *? 10 else return !.TooBig`. An operand after `return`/`break` extends to the end of the enclosing expression.
@@ -1548,7 +1548,7 @@ handler Log for ^FileLogger \ {Fs} {
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
 - Clauses of a handler declaration have no enclosing function, so labeled `break`/`continue` and captures are not available. A clause body behaves like a function body of its own: `return v` (and `try`, §10.5) ends the clause with the value `v`, which is the clause's result exactly as if it were the body's last expression. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
-- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
+- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). No type may match two declarations of one effect: a declaration for a specific type that a generic declaration of the same effect also matches is a compile error, and so are two generic declarations whose types could be the same type for some arguments (as `^Pair(T, u8)` and `^Pair(u8, T)` could). Finding a value's handlers is therefore a lookup, never a choice between candidates.
 
 ```
 Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0 }
@@ -1771,7 +1771,7 @@ If any handler installed by a `with` handles a `ctl` operation, the `with` must 
 
 ### 14.2 Continuations
 
-When code running on a fiber performs a `ctl` operation `op(args)` with result type `R`, the fiber is **suspended** at the perform, and the clause runs on the driver with the arguments and a **continuation** `k: cont(R)` as its final parameter. A continuation represents the suspended fiber — including any fibers of nested `with … on` blocks that are part of it — and can be **consumed** exactly once, by `resume` or `discard`.
+When code running on a fiber performs a `ctl` operation `op(args)` with result type `R`, the fiber is **suspended** at the perform, and the clause runs on the driver with the arguments and a **continuation** `k: cont(R)` as its final parameter. A continuation represents the suspended fiber — including any fibers of nested `with … on` blocks that are part of it — and can be **consumed** exactly once, by `resume` or `cancel`.
 
 `cont(R)` is a first-class type: a continuation can be stored in variables, structs and queues, copied, and passed around. The rules that keep this safe:
 
@@ -1780,7 +1780,7 @@ When code running on a fiber performs a `ctl` operation `op(args)` with result t
 3. **Same `with`.** A continuation may be consumed only by code running in a `ctl` clause of a handler installed by the same `with` that produced it.
 4. **Same thread.** A continuation may be consumed only on the thread that created it (checked).
 
-If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` discard it, §14.4); rules 1–3 then need no run-time check for it.
+If a clause uses `k` only as the operand of `resume` or `cancel` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` cancel it, §14.4); rules 1–3 then need no run-time check for it.
 
 ### 14.3 `resume`
 
@@ -1803,17 +1803,17 @@ A `with … on` completes in one of two ways:
 - **`B` finishes** on its fiber with value `w`. Control returns to the driver and the `with`'s value is `w`.
 - **A `ctl` clause exits** with `break`/`break v` to the installing `with`. The `with` completes with that value.
 
-A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the discarding of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
+A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the cancelling of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is cancelled (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
 
-In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, discard the suspended fibers first.)
+In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, cancel the suspended fibers first.)
 
-### 14.5 `discard`
+### 14.5 `cancel`
 
 ```
-discard k
+cancel k
 ```
 
-`discard k` is a statement, permitted only in a `ctl` clause. It **cancels** the suspended fiber: control switches to it, and its frames are unwound from the perform outward to the base of the fiber, running their `defer` and `errdefer` statements (§8.8) — exactly like an `esc` exit. Then control returns to the clause, which continues after the `discard`.
+`cancel k` is a statement, permitted only in a `ctl` clause. It **cancels** the suspended fiber: control switches to it, and its frames are unwound from the perform outward to the base of the fiber, running their `defer` and `errdefer` statements (§8.8) — exactly like an `esc` exit. Then control returns to the clause, which continues after the `cancel`.
 
 Deferred statements cannot perform `ctl` operations (§8.8), so cancellation cannot suspend. If `k` represents the fiber running `B`, discarding it unwinds `B`'s frames, including the parts of `B` that are lexically in the function containing the `with`.
 
@@ -1826,7 +1826,7 @@ Deferred statements cannot perform `ctl` operations (§8.8), so cancellation can
 `@fiber` may be used only inside the body of a `ctl` clause. `f` is a function pointer `^fn(a: A) -> never \ {S}`, `arg: A`, and `stack: []u8`. `A` must be a first-class type (§16.1): a second-class value cannot be smuggled into a fiber that may outlive its frame. It creates a new fiber belonging to the clause's `with`, whose initial state is "about to call `f(arg)` on `stack`", and returns its continuation; resuming it (with `()`) starts the call.
 
 - The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` other than the clause's own effect are part of the effects the handler requires, since the clause cannot know which other handlers its `with` installs: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects other than the declaration's own must be listed in its `\ {A}`. (A fiber that needs several `ctl` operations of its scheduler gets them from one effect, as `Async` in §14.7 does.)
-- `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause discards it (a library `spawn` wraps the user's function to do this).
+- `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause cancels it (a library `spawn` wraps the user's function to do this).
 - The stack rules of §14.1 apply to `stack`.
 
 ### 14.7 Example: a scheduler
@@ -1860,7 +1860,7 @@ handler Async for ^Scheduler \ {Sys} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
         r := self.next()
@@ -2934,7 +2934,7 @@ stmt          = { attribute } binding                           // §20.2 reject
               | 'return' [ expr ]
               | 'break' [ IDENT ] [ expr ]
               | 'continue' [ IDENT ]
-              | 'discard' expr
+              | 'cancel' expr
               | pattern ':=' expr 'else' expr                     // §4.5; not a plain name
               | intrinsic_call
               | block                                             // a nested scope
@@ -3073,7 +3073,7 @@ Assignment (`=` and compound forms) is a statement.
 
 ### B.3 Keywords
 
-**Reserved (34):** `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (34):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
 **Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 

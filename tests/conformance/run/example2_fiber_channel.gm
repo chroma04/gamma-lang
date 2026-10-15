@@ -1,4 +1,4 @@
-// Fibers: a round-robin scheduler of producer/consumer tasks over a bounded channel, using ctl operations, stored continuations and discard for cancellation.
+// Fibers: a round-robin scheduler of producer/consumer tasks over a bounded channel, using ctl operations, stored continuations and cancel for cancellation.
 STACK :: 32768
 NTASKS :: 4
 
@@ -60,7 +60,7 @@ handler Sched for ^Runtime \ {Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := dequeue(self)

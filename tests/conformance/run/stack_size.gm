@@ -90,7 +90,7 @@ main :: fn() \ {Out} {
                 resume f()
             }
             stop(k) => {
-                discard k
+                cancel k
                 s := starter?
                 starter = null
                 resume s()

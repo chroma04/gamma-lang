@@ -625,7 +625,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::With { label, handlers, on, body } => self.with_expr(e, *label, handlers, on.as_deref(), body),
             ExprKind::Resume { cont, value } => self.resume(e, cont, value),
-            ExprKind::Discard(k) => self.discard(e, k),
+            ExprKind::Cancel(k) => self.cancel(e, k),
             ExprKind::Trap { message } => {
                 let m = self.expr(message)?;
                 let a = self.addr_of(message.ty, &m);

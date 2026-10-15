@@ -37,6 +37,13 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** the keyword `discard` is now `cancel` (`cancel k` cancels a suspended
+  fiber, §14.5), so that "discard" keeps one meaning (`_ = e`).
+- **Breaking:** handler declarations may not overlap (§12.6): a declaration for a
+  specific type that a generic declaration of the same effect also matches is an error,
+  where the specific one used to take precedence.
+- An unconstrained untyped literal used as a shift amount now falls back to `usize`, like
+  other literals that count or position (§6.1), instead of `u32`.
 - **Breaking:** a local variable, constant, parameter, pattern or loop binding, or nested
   function may not have the name of a type visible where it is declared — a predeclared
   type (including every sized integer name such as `u2` or `i24`), a top-level type or

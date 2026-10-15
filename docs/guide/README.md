@@ -21,7 +21,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [9. Memory](09-memory.md) | Allocators and the `Alloc` effect, `new`/`make`/`free`, `List` and `HashMap`, cleanup with `defer` |
 | [10. Generics](10-generics.md) | Type parameters, inference, constraints, generic types, compile-time value parameters, life without traits |
 | [11. Compile time](11-compile-time.md) | Compile-time evaluation, constants, `when`, `target`, `@static_assert` |
-| [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `discard`, a scheduler sketch |
+| [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `cancel`, a scheduler sketch |
 | [13. Safety](13-safety.md) | Build modes, checked operations, traps, what is undefined behavior |
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access |
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |

@@ -698,7 +698,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             B::Shl(_) | B::Shr => {
                 let r = self.expr(rhs, None);
-                if !self.infer.require_unsigned(r.ty, Fallback::U32) && !r.ty.is_error() {
+                if !self.infer.require_unsigned(r.ty, Fallback::Usize) && !r.ty.is_error() {
                     let t = self.infer.resolve(r.ty);
                     self.error(r.span, format!("a shift amount must have an unsigned integer type, not `{}`", t));
                 }

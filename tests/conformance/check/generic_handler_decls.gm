@@ -15,9 +15,30 @@ handler(X: type) Ping for ^Box(X) { //~ ERROR is already declared
     ping(self) => {}
 }
 
-// A declaration for one instance takes precedence over the generic one.
-handler Ping for ^Box(u8) {
+// A declaration for one instance overlaps the generic one: a type may match only one.
+handler Ping for ^Box(u8) { //~ ERROR is already declared
     ping(self) => { self.v += 1 }
+}
+
+Pair :: struct(A: type, B: type) { a: A, b: B }
+
+handler(T: type) Ping for ^Pair(T, u8) {
+    ping(self) => {}
+}
+
+handler(T: type) Ping for ^Pair(u8, T) { //~ ERROR is already declared
+    ping(self) => {}
+}
+
+// Another effect, or a type the generic declaration does not match, is fine.
+Pong :: effect { pong: fn() }
+
+handler Pong for ^Box(u8) {
+    pong(self) => {}
+}
+
+handler Ping for ^Pair(u16, u16) {
+    ping(self) => {}
 }
 
 main :: fn() {}

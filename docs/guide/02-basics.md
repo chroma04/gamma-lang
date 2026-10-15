@@ -52,7 +52,7 @@ digits_in :: fn(n: u32) -> u32 {
 
 ### Reserved words
 
-These 34 words are keywords everywhere and cannot name anything: `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl` and `resume` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`, `bench`), and `type` and `cont` are reserved type names (§B.3).
+These 34 words are keywords everywhere and cannot name anything: `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl`, `resume` and `cancel` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`, `bench`), and `type` and `cont` are reserved type names (§B.3).
 
 ### No shadowing
 
@@ -174,7 +174,7 @@ index_demo :: fn(items: []const u8) -> usize {
 }
 ```
 
-If nothing constrains a literal, it falls back to `i32` (integers), `f64` (floats), `usize` (range bounds, array lengths, indexes and slice bounds) or `u32` (shift amounts). The order of statements does not matter. What never happens is a silent conversion: the variable gets exactly one type, and a literal that does not fit it is an error.
+If nothing constrains a literal, it falls back to `i32` (integers), `f64` (floats), or `usize` (anything that counts or positions: range bounds, array lengths, indexes, slice bounds and shift amounts). The order of statements does not matter. What never happens is a silent conversion: the variable gets exactly one type, and a literal that does not fit it is an error.
 
 ```gamma
 big: u8 = 256         // error: 256 does not fit u8

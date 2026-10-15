@@ -28,7 +28,7 @@
 //!
 //! # What is not compiled
 //!
-//! A few rare expressions (`with … on`, `resume`, `discard`, `@fiber` and the system
+//! A few rare expressions (`with … on`, `resume`, `cancel`, `@fiber` and the system
 //! services) are evaluated by the tree-walker from inside compiled code, in the same
 //! frame and handler context. A function the compiler cannot translate at all runs on
 //! the tree-walker entirely. `GAMMA_INTERP=tree` turns the bytecode engine off.

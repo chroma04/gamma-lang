@@ -957,8 +957,8 @@ pub enum ExprKind {
         cont: Box<Expr>,
         value: Box<Expr>,
     },
-    /// `discard k`.
-    Discard(Box<Expr>),
+    /// `cancel k`.
+    Cancel(Box<Expr>),
     /// `trap(msg)` or a failed `assert`/`@unreachable()`: stops the program.
     Trap {
         message: Box<Expr>,
@@ -1357,7 +1357,7 @@ impl Expr {
             | ExprKind::SliceLen(a)
             | ExprKind::SlicePtr(a)
             | ExprKind::MakeErr(a)
-            | ExprKind::Discard(a)
+            | ExprKind::Cancel(a)
             | ExprKind::ArrayFill(a)
             | ExprKind::Unary { operand: a, .. }
             | ExprKind::Coerce { expr: a, .. }
@@ -1535,7 +1535,7 @@ impl Expr {
             | ExprKind::SliceLen(a)
             | ExprKind::SlicePtr(a)
             | ExprKind::MakeErr(a)
-            | ExprKind::Discard(a)
+            | ExprKind::Cancel(a)
             | ExprKind::ArrayFill(a)
             | ExprKind::Unary { operand: a, .. }
             | ExprKind::Coerce { expr: a, .. }

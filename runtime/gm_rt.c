@@ -4234,7 +4234,7 @@ static void gm_cancel(gm_with *w, gm_fiber *fb, const char *file, uint32_t line,
     if (gm_unw.kind == GM_CANCEL || gm_unw.kind == GM_NONE) gm_unw = saved;
 }
 
-GM_API void gm_discard(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+GM_API void gm_cancel_cont(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
     gm_fiber *fb = gm_cont_take(w, k, file, line, col);
     gm_cancel(w, fb, file, line, col);
 }

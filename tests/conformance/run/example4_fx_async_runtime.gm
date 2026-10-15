@@ -107,18 +107,18 @@ handler Async for ^Runtime \ {Out} {
         report_deadlock(self)
         if j := self.joiner {
             self.joiner = null
-            discard j
+            cancel j
         }
         for i in 0..MAX_TASKS + 1 {
             if pk := self.parked[i] {
                 self.parked[i] = null
-                discard pk
+                cancel pk
             }
         }
         break
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 {
             if j := self.joiner {
@@ -131,12 +131,12 @@ handler Async for ^Runtime \ {Out} {
         report_deadlock(self)
         if j := self.joiner {
             self.joiner = null
-            discard j
+            cancel j
         }
         for i in 0..MAX_TASKS + 1 {
             if pk := self.parked[i] {
                 self.parked[i] = null
-                discard pk
+                cancel pk
             }
         }
         break
@@ -147,11 +147,11 @@ handler Async for ^Runtime \ {Out} {
         if r := pop_ready(self) { resume r() }
         self.joiner = null
         report_deadlock(self)
-        discard k
+        cancel k
         for i in 0..MAX_TASKS + 1 {
             if pk := self.parked[i] {
                 self.parked[i] = null
-                discard pk
+                cancel pk
             }
         }
         break

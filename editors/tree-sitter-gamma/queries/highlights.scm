@@ -160,7 +160,7 @@
   "break"
   "continue"
   "resume"
-  "discard"
+  "cancel"
   "with"
   "on"
 ] @keyword

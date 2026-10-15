@@ -60,7 +60,7 @@ handler Sched for ^Runtime \ {Net, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 {
             if j := self.joiner {

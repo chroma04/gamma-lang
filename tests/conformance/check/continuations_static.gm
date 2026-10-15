@@ -1,5 +1,5 @@
 //! stage: check
-// A clause that uses its continuation only with `resume` and `discard` must consume
+// A clause that uses its continuation only with `resume` and `cancel` must consume
 // it exactly once on every path (§14.2).
 Gen :: effect { emit: ctl(x: i32) }
 
@@ -13,7 +13,7 @@ run :: fn(stack: []u8) {
     with (handler Gen {
         emit(x, k) => {
             if x > 1 {
-                discard k
+                cancel k
                 break
             }
             resume k()
@@ -32,7 +32,7 @@ run :: fn(stack: []u8) {
     // Consumed twice on one path.
     with (handler Gen {
         emit(x, k) => {
-            if x > 1 { discard k }
+            if x > 1 { cancel k }
             resume k() //~ ERROR may already have been consumed
         }
     }) on stack {
@@ -43,7 +43,7 @@ run :: fn(stack: []u8) {
         emit(x, k) => {
             i := 0
             while i < x {
-                discard k //~ ERROR may already have been consumed
+                cancel k //~ ERROR may already have been consumed
                 i += 1
             }
             break //~ ERROR may be left unconsumed

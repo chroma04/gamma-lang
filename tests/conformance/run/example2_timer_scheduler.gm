@@ -1,4 +1,4 @@
-// Timer scheduler: tasks sleep on a virtual clock; sleeping continuations live in a generic binary heap keyed by wake time, and a deadline cancels laggards with discard.
+// Timer scheduler: tasks sleep on a virtual clock; sleeping continuations live in a generic binary heap keyed by wake time, and a deadline cancels laggards with cancel.
 STACK :: 24576
 
 Task :: effect {
@@ -85,12 +85,12 @@ handler Task for ^Kernel \ {Out} {
         if self.clock > self.deadline {
             print("  [t={}] deadline: cancelling a sleeper\n", self.clock)
             self.cancelled += 1
-            discard s.k
+            cancel s.k
             self.live -= 1
             // keep draining: cancel everything still asleep
             while rest := heap_pop(&self.sleepers) {
                 self.cancelled += 1
-                discard rest.k
+                cancel rest.k
                 self.live -= 1
             }
             break
@@ -106,7 +106,7 @@ handler Task for ^Kernel \ {Out} {
         resume k()
     }
     done(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         s := heap_pop(&self.sleepers) else break

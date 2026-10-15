@@ -208,7 +208,7 @@ module.exports = grammar({
       $.defer_statement,
       $.when_statement,
       $.while_statement,
-      $.discard_statement,
+      $.cancel_statement,
       $.block,
       $._expression,
     ),
@@ -224,7 +224,7 @@ module.exports = grammar({
       choice($.block, $.assignment_statement, $._expression),
     ),
 
-    discard_statement: $ => seq('discard', $._expression),
+    cancel_statement: $ => seq('cancel', $._expression),
 
     when_statement: $ => seq(
       'when',

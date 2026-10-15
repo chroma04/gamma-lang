@@ -147,8 +147,8 @@ pub enum StmtKind {
         cond: Cond,
         body: Block,
     },
-    /// `discard k` (§14.5).
-    Discard(Expr),
+    /// `cancel k` (§14.5).
+    Cancel(Expr),
     /// `pattern := value else fallback` with a refutable pattern (§4.5): binds the
     /// pattern's names for the rest of the block, or runs `fallback`, which must leave it.
     LetElse {
