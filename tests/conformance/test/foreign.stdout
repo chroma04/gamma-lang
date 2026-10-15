@@ -6,6 +6,7 @@ test "output is captured" ... FAILED
       at tests/conformance/test/foreign.gm:23:5 in test "output is captured"
 test "errors fail" ... FAILED
     error: .TooLong
+      at tests/conformance/test/foreign.gm:28:10 in test "errors fail"
 test "traps" ... FAILED
     before the trap
     index 5 out of bounds for length 3

@@ -7,6 +7,6 @@ sum :: fn(T: type, src: fn() \ {Yield(T)}) -> T where Num(T) {
 }
 main :: fn() \ {Out} {
     k: u32 = 5
-    print("{}\n", sum(u32, fn() => count_to(4)))
-    print("{}\n", sum(u32, fn() => count_to(k)))
+    print("{}\n", sum(T: u32, fn() => count_to(4)))
+    print("{}\n", sum(T: u32, fn() => count_to(k)))
 }

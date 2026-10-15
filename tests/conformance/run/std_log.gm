@@ -3,7 +3,7 @@ log :: import "std/log"
 
 work :: fn() \ {log.Log} {
     log.debug("starting")
-    log.info("loaded {} items from {}", (3, "cache"))
+    log.info("loaded {} items from {}", 3, "cache")
     log.warn("slow: {} ms", 250)
     log.error("failed with code {}", -2)
     log.log(.Info, "explicit level {}", true)
@@ -44,10 +44,10 @@ main :: fn() \ {Out, Alloc} {
         }
         log.info("outer last")
     }
-    print("-- nested outer\n{}-- nested inner\n{}", (out.items, inner.items))
+    print("-- nested outer\n{}-- nested inner\n{}", out.items, inner.items)
 
     // Levels order.
-    print("{} {} {}\n", (log.Level.Debug < log.Level.Info, log.Level.Error < log.Level.Warn, log.Level.Warn < log.Level.Error))
+    print("{} {} {}\n", log.Level.Debug < log.Level.Info, log.Level.Error < log.Level.Warn, log.Level.Warn < log.Level.Error)
 
     // A message with a brace-free template and no arguments, and an empty one.
     out.clear()

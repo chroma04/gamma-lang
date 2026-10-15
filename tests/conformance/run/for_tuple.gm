@@ -14,13 +14,13 @@ main :: fn() \ {Out} {
     for s in pair() { print("{}", s) }
     print("\n")
     // Named elements, patterns, labels, `break` and `continue`.
-    for i, v in (a: (1, 2), b: (3, 4), c: (5, 6)) { print("{}:{} ", (i, v)) }
+    for i, v in (a: (1, 2), b: (3, 4), c: (5, 6)) { print("{}:{} ", i, v) }
     print("\n")
     outer: for x in (1.5, 2.5, 3.5) {
         for y in ("p", "q") {
             if y is "q" { continue }
             if x > 2.0 { break outer }
-            print("{} {} ", (x, y))
+            print("{} {} ", x, y)
         }
     }
     print("\n")

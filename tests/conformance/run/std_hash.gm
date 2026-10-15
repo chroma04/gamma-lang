@@ -42,7 +42,7 @@ main :: fn() \ {Out} {
     raw: [1000]u8 = ---
     for n in [_]usize(0, 1, 54, 55, 56, 57, 63, 64, 65, 119, 120, 121, 1000) {
         data := pattern(raw[..], n)
-        print("{} {:08x} ", (n, crc32.checksum(data)))
+        print("{} {:08x} ", n, crc32.checksum(data))
         show(sha256.sum(data))
     }
 

@@ -25,7 +25,7 @@ vectors :: fn() \ {Out} {
     for s in inputs {
         encode_check(s, std_pad)
         encode_check(s, std_raw)
-        print("({} -> {})\n", (s.len, base64.encoded_len(s.len, std_pad)))
+        print("({} -> {})\n", s.len, base64.encoded_len(s.len, std_pad))
     }
 }
 
@@ -42,7 +42,7 @@ show_decode :: fn(label: string, src: string, o: base64.Options) \ {Out} {
     }
     ascii := true
     for b in data { if b >= 128 { ascii = false } }
-    if ascii { print("ok [{}]\n", data) } else { print("ok {} bytes, first {}, last {}\n", (data.len, data[0], data[data.len - 1])) }
+    if ascii { print("ok [{}]\n", data) } else { print("ok {} bytes, first {}, last {}\n", data.len, data[0], data[data.len - 1]) }
 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
@@ -59,7 +59,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("{}\n", base64.encode(raw[0..2], buf[..], url_raw))
     print("{}\n", base64.encode(raw[0..1], buf[..], url_raw))
     out: [16]u8 = ---
-    if d := base64.decode("-_-_Pj_-", out[..], url_pad) { print("{} bytes, same as the original: {}\n", (d.len, d is raw[..])) }
+    if d := base64.decode("-_-_Pj_-", out[..], url_pad) { print("{} bytes, same as the original: {}\n", d.len, d is raw[..]) }
 
     print("-- decoding accepts\n")
     show_decode("padded", "Zm9vYg==", std_pad)
@@ -139,7 +139,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("mismatches {}\n", bad)
     full := base64.encode(all[..], enc[..], std_pad)
     print("{}\n", full)
-    print("max len {} {} {} {}\n", (base64.decoded_len_max(0), base64.decoded_len_max(1),
-                                    base64.decoded_len_max(4), base64.decoded_len_max(344)))
+    print("max len {} {} {} {}\n", base64.decoded_len_max(0), base64.decoded_len_max(1),
+                                    base64.decoded_len_max(4), base64.decoded_len_max(344))
     return ()
 }

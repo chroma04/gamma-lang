@@ -19,10 +19,10 @@ pair :: fn(p: Pair) -> Pair => Pair(x: p.y, y: p.x)
 
 main :: fn() \ {Out, Sys} {
     r := libc.ldiv(-17, 5)
-    print("{} {}\n", (r.quot, r.rem))
+    print("{} {}\n", r.quot, r.rem)
     b := libc.dog_big(Big(a: 7, b: 1.0, c: 10, d: 200), 3)
-    print("{} {} {} {}\n", (b.a, b.b, b.c, b.d))
+    print("{} {} {} {}\n", b.a, b.b, b.c, b.d)
     p := libc.dog_pair(Pair(x: 1.0, y: 2.0))
-    print("{} {}\n", (p.x, p.y))
-    print("sizes {} {}\n", (@size_of(Big), @size_of(Pair)))
+    print("{} {}\n", p.x, p.y)
+    print("sizes {} {}\n", @size_of(Big), @size_of(Pair))
 }

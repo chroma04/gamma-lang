@@ -23,23 +23,23 @@ classify :: fn(x: u200) -> u8 => match x {
 arithmetic :: fn() \ {Out} {
     x: u200 = 12345678901234567890123456789012345678901234567890
     y: u200 = 3
-    print("{} {} {} {}\n", (x + y, x - y, x * y, x / y))
-    print("{} {}\n", (x % 1000, x % y))
+    print("{} {} {} {}\n", x + y, x - y, x * y, x / y)
+    print("{} {}\n", x % 1000, x % y)
     n: i256 = -5
     m: i256 = 7
-    print("{} {} {} {} {}\n", (n + m, n - m, n * m, n / m, n % m))
-    print("{} {}\n", (m / n, m % n))
+    print("{} {} {} {} {}\n", n + m, n - m, n * m, n / m, n % m)
+    print("{} {}\n", m / n, m % n)
     big: i1000 = 1
     big = (big << 998) - 1 + (big << 998)
     print("{}\n", big)
     print("{}\n", -big)
     print("{}\n", big / 1000000007)
     print("{}\n", big % 1000000007)
-    print("{} {}\n", (BIG, NEG))
+    print("{} {}\n", BIG, NEG)
     a129: u129 = 1 << 128
-    print("{} {}\n", (a129, a129 - 1))
+    print("{} {}\n", a129, a129 - 1)
     z: u192 = 0
-    print("{} {}\n", (z, z + 1))
+    print("{} {}\n", z, z + 1)
     w: i129 = ---
     w = -1
     print("{}\n", w)
@@ -48,42 +48,42 @@ arithmetic :: fn() \ {Out} {
 flavors :: fn() \ {Out} {
     mx: u200 = ((1 << 199) - 1) * 2 + 1
     print("{}\n", mx)
-    print("{} {} {}\n", (mx +% 1, mx +| 1, mx +? 1))
-    print("{} {}\n", (mx -% mx, 0 -| mx))
-    print("{} {} {}\n", (u200(0) -? 1, u200(5) -? 3, mx *? 2))
-    print("{} {} {}\n", (mx *% 3, mx *| 3, (mx / 2) *? 2))
+    print("{} {} {}\n", mx +% 1, mx +| 1, mx +? 1)
+    print("{} {}\n", mx -% mx, 0 -| mx)
+    print("{} {} {}\n", u200(0) -? 1, u200(5) -? 3, mx *? 2)
+    print("{} {} {}\n", mx *% 3, mx *| 3, (mx / 2) *? 2)
     lo: i256 = -(1 << 254) * 2
     hi: i256 = ((1 << 254) - 1) * 2 + 1
-    print("{}\n{}\n", (lo, hi))
-    print("{} {} {}\n", (hi +% 1 is lo, hi +| 1 is hi, lo -| 1 is lo))
-    print("{} {}\n", (hi +? 1, lo -? 1))
-    print("{} {}\n", (hi *| 2 is hi, lo *| 2 is lo))
-    print("{} {}\n", (lo *| -1 is hi, hi *| -1))
-    print("{} {}\n", (lo *% -1 is lo, lo *? -1))
-    print("{} {}\n", (i256(1) <<? 255, i256(1) <<? 254))
+    print("{}\n{}\n", lo, hi)
+    print("{} {} {}\n", hi +% 1 is lo, hi +| 1 is hi, lo -| 1 is lo)
+    print("{} {}\n", hi +? 1, lo -? 1)
+    print("{} {}\n", hi *| 2 is hi, lo *| 2 is lo)
+    print("{} {}\n", lo *| -1 is hi, hi *| -1)
+    print("{} {}\n", lo *% -1 is lo, lo *? -1)
+    print("{} {}\n", i256(1) <<? 255, i256(1) <<? 254)
     s: u200 = 3
-    print("{} {} {}\n", (s <<% 199, s <<| 199 is mx, s <<? 199))
-    print("{} {}\n", (s <<? 198 is not null, s << 100))
-    print("{} {} {}\n", (hi.abs(), lo +% 1.abs(), (lo + 1).abs()))
+    print("{} {} {}\n", s <<% 199, s <<| 199 is mx, s <<? 199)
+    print("{} {}\n", s <<? 198 is not null, s << 100)
+    print("{} {} {}\n", hi.abs(), lo +% 1.abs(), (lo + 1).abs())
 }
 
 bitwise :: fn() \ {Out} {
     a: u256 = 0xF0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0
     b: u256 = 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF
-    print("{}\n{}\n{}\n{}\n", (a & b, a | b, a ~ b, ~a))
-    print("{} {}\n", (a >> 130, a >> 255))
-    print("{} {}\n", (a << 0, b <<% 100))
+    print("{}\n{}\n{}\n{}\n", a & b, a | b, a ~ b, ~a)
+    print("{} {}\n", a >> 130, a >> 255)
+    print("{} {}\n", a << 0, b <<% 100)
     s: i256 = -(1 << 200) - 12345
-    print("{}\n{}\n{}\n", (s >> 3, s >> 200, s >> 255))
-    print("{} {}\n", (~s, ~i256(0)))
+    print("{}\n{}\n{}\n", s >> 3, s >> 200, s >> 255)
+    print("{} {}\n", ~s, ~i256(0))
     k: u32 = 70
     big_amount: u200 = 130
-    print("{} {}\n", (a >> k, a >> big_amount))
+    print("{} {}\n", a >> k, a >> big_amount)
     t: u8 = 1
     print("{}\n", (t << (big_amount.trunc(u8) - 129)) >> 7)
-    print("{} {} {}\n", (u200(1).bits(i200), i200(-1).bits(u200), @popcount(a)))
+    print("{} {} {}\n", u200(1).bits(i200), i200(-1).bits(u200), @popcount(a))
     zero256: u256 = 0
-    print("{} {} {}\n", (@clz(u200(1) << 100), @ctz(u200(1) << 100), @clz(zero256)))
+    print("{} {} {}\n", @clz(u200(1) << 100), @ctz(u200(1) << 100), @clz(zero256))
     print("{}\n", @bswap(a) is 0x0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F)
     print("{}\n", @bitreverse(u200(1)))
 }
@@ -93,47 +93,47 @@ comparisons :: fn() \ {Out} {
     b: i200 = (1 << 190)
     c: u200 = 1 << 190
     d: u200 = (1 << 190) + 1
-    print("{} {} {} {}\n", (a < b, a > b, a <= a, b >= b))
-    print("{} {} {} {}\n", (c < d, c > d, c <= d, d >= c))
-    print("{} {} {}\n", (a is a, a is b, a is not b))
-    print("{} {} {} {}\n", (a.min(b) is a, a.max(b) is b, b.clamp(a, a) is a, d.clamp(c, d) is d))
-    print("{} {}\n", (a.abs_diff(b), c.abs_diff(d)))
+    print("{} {} {} {}\n", a < b, a > b, a <= a, b >= b)
+    print("{} {} {} {}\n", c < d, c > d, c <= d, d >= c)
+    print("{} {} {}\n", a is a, a is b, a is not b)
+    print("{} {} {} {}\n", a.min(b) is a, a.max(b) is b, b.clamp(a, a) is a, d.clamp(c, d) is d)
+    print("{} {}\n", a.abs_diff(b), c.abs_diff(d))
     is_ := [3]i200(b, a, 0)
     us := [2]u200(d, c)
-    print("{} {}\n", (lowest(i200, is_[..]), lowest(u200, us[..])))
-    print("{} {} {}\n", (c in c..d, d in c..d, d in c..=d))
+    print("{} {}\n", lowest(is_[..]), lowest(us[..]))
+    print("{} {} {}\n", c in c..d, d in c..d, d in c..=d)
 }
 
 conversions :: fn() \ {Out} {
     x: u200 = 12345678901234567890123456789012345678901234567890
-    print("{} {} {}\n", (x.trunc(u8), x.trunc(u64), x.trunc(i128)))
-    print("{} {} {}\n", (x.checked(u64), x.checked(u256), x.checked(i200)))
-    print("{} {} {}\n", (x.sat(u64), x.sat(i128), x.sat(u300)))
-    print("{} {}\n", (x.sat(i200), (x << 1).sat(i200)))
+    print("{} {} {}\n", x.trunc(u8), x.trunc(u64), x.trunc(i128))
+    print("{} {} {}\n", x.checked(u64), x.checked(u256), x.checked(i200))
+    print("{} {} {}\n", x.sat(u64), x.sat(i128), x.sat(u300))
+    print("{} {}\n", x.sat(i200), (x << 1).sat(i200))
     n: i200 = -77
-    print("{} {} {}\n", (n.trunc(u8), n.sat(u8), n.checked(u128)))
-    print("{} {} {}\n", (n.trunc(u200), n.sat(u200), n.checked(i16)))
-    print("{} {}\n", (i256(n), i300(x)))
-    print("{} {} {}\n", (u200(7u8), u256(1234567890123456789u64), i200(-5i64)))
-    print("{} {}\n", (u200(u128(1) << 127), i256(i128(-1) << 127)))
-    print("{} {}\n", (u256(u200(5)), i256(u128(5))))
+    print("{} {} {}\n", n.trunc(u8), n.sat(u8), n.checked(u128))
+    print("{} {} {}\n", n.trunc(u200), n.sat(u200), n.checked(i16))
+    print("{} {}\n", i256(n), i300(x))
+    print("{} {} {}\n", u200(7u8), u256(1234567890123456789u64), i200(-5i64))
+    print("{} {}\n", u200(u128(1) << 127), i256(i128(-1) << 127))
+    print("{} {}\n", u256(u200(5)), i256(u128(5)))
     small: u8 = 200
     wide: u300 = small
     print("{}\n", wide)
-    print("{} {}\n", (x.to(f64), n.to(f32)))
-    print("{} {}\n", (x.to(f32), u200(1).to(f64)))
+    print("{} {}\n", x.to(f64), n.to(f32))
+    print("{} {}\n", x.to(f32), u200(1).to(f64))
     big: u256 = (1 << 255) + (1 << 202) + 1
-    print("{} {}\n", (big.to(f64), big.to(f32)))
+    print("{} {}\n", big.to(f64), big.to(f32))
     f: f64 = 1.5e60
-    print("{} {}\n", (f.trunc(u256), (-f).trunc(i256)))
-    print("{} {} {}\n", (f.checked(u256), f.checked(u128), (2.5).checked(u200)))
-    print("{} {} {}\n", (f.sat(u200), f.sat(i129), (-f).sat(u200)))
-    print("{} {}\n", ((2.5).round(u200), (-2.5).round(i200)))
-    print("{} {}\n", ((2.5).floor(u200), (-2.5).ceil(i200)))
+    print("{} {}\n", f.trunc(u256), (-f).trunc(i256))
+    print("{} {} {}\n", f.checked(u256), f.checked(u128), (2.5).checked(u200))
+    print("{} {} {}\n", f.sat(u200), f.sat(i129), (-f).sat(u200))
+    print("{} {}\n", (2.5).round(u200), (-2.5).round(i200))
+    print("{} {}\n", (2.5).floor(u200), (-2.5).ceil(i200))
     inf: f64 = 1e308 * 10
     nan: f64 = inf - inf
-    print("{} {} {}\n", (inf.sat(u200), (-inf).sat(i200), nan.sat(i200)))
-    print("{} {}\n", (inf.checked(u200), nan.checked(u200)))
+    print("{} {} {}\n", inf.sat(u200), (-inf).sat(i200), nan.sat(i200))
+    print("{} {}\n", inf.checked(u200), nan.checked(u200))
 }
 
 hashing :: fn() \ {Out} {
@@ -142,7 +142,7 @@ hashing :: fn() \ {Out} {
     h3 := @hash(u256(1) << 150, 7)
     h4 := @hash(-(i256(1) << 150), 7)
     h5 := @hash((u1000(0), i129(-1)), 3)
-    print("{} {} {} {} {}\n", (h1, h2, h3, h4, h5))
+    print("{} {} {} {} {}\n", h1, h2, h3, h4, h5)
     print("{}\n", u200(1).bits(i200) is 1)
 }
 
@@ -151,20 +151,20 @@ containers :: fn() \ {Out} {
     print("{}\n", w)
     v := w
     v.a += 5
-    print("{} {}\n", (v.a, w is v))
+    print("{} {}\n", v.a, w is v)
     arr := [3]u200(1, 1 << 100, (1 << 199) + 7)
     total: u200 = 0
     for x in arr { total += x }
-    print("{} {}\n", (arr, total))
-    print("{} {}\n", (arr +% arr, arr - arr))
+    print("{} {}\n", arr, total)
+    print("{} {}\n", arr +% arr, arr - arr)
     print("{}\n", -[2]i200(1, -(i200(1) << 190)))
     o: ?u200 = 1 << 130
     n: ?u200 = null
-    print("{} {}\n", (o, n))
-    print("{} {}\n", (o is 1 << 130, o is not null))
-    print("{} {} {} {}\n", (classify(0), classify(2), classify(500), classify(1 << 150)))
+    print("{} {}\n", o, n)
+    print("{} {}\n", o is 1 << 130, o is not null)
+    print("{} {} {} {}\n", classify(0), classify(2), classify(500), classify(1 << 150))
     top := (u200(1) << 199) - 1 + (u200(1) << 199)
-    print("{} {} {}\n", (classify(200000000000000000000000000000000000000000), classify(1 << 100), classify(top)))
+    print("{} {} {}\n", classify(200000000000000000000000000000000000000000), classify(1 << 100), classify(top))
     t: (u200, i129) = (5, -5)
     print("{}\n", t)
     sl := arr[..]
@@ -175,37 +175,37 @@ twice :: fn(T: type, x: T) -> T where Int(T) => x * 2
 
 library :: fn() \ {Out, Alloc} {
     start: u200 = (1 << 150) - 2
-    for i in range(u200, start, start + 5) {
+    for i in range(start, start + 5) {
         print("{} ", i)
     }
     print("\n")
-    for i in range_incl(i256, -2, 2) {
+    for i in range_incl(T: i256, -2, 2) {
         print("{} ", i)
     }
     print("\n")
-    m := map(u200, i129)
+    m := hash_map(u200, i129)
     defer m.deinit()
-    for i in range(u200, 0, 50) {
+    for i in range(T: u200, 0, 50) {
         _ = m.put((i << 100) + 1, i129(i.trunc(u64)) - 25)
     }
     total: i129 = 0
     for e in m.entries() { total += e.value }
-    print("{} {} {}\n", (m.len(), total, m.get((u200(7) << 100) + 1)))
+    print("{} {} {}\n", m.len(), total, m.get((u200(7) << 100) + 1))
     for e in m.entries() { print("{} ", e.value) }
     print("\n")
     x: u200 = (1 << 150) + 255
-    print("{}\n", twice(u300, x))
+    print("{}\n", twice(T: u300, x))
     arr := [4]u200(1, 2, 3, 4)
     idx: u200 = 2
     hi: u256 = 3
-    print("{} {} {}\n", (arr[idx], arr[1..hi], arr.get(usize(idx.trunc(u32)) + 5)))
+    print("{} {} {}\n", arr[idx], arr[1..hi], arr.get(usize(idx.trunc(u32)) + 5))
     f := fn(a: i200) -> i200 => a * a
     print("{}\n", f(-(i200(1) << 90)))
     cnt: u1000 = 0
     while cnt < 5 { cnt += 1 }
-    print("{} {}\n", (cnt, cnt.pow(10)))
-    print("{} {} {}\n", (i200(3).pow(100), u200(3).pow_wrap(300), i200(3).pow_checked(200)))
-    print("{} {} {}\n", (u200(3).pow_sat(300), i200(-3).pow_sat(301), u200(3).pow_checked(100)))
+    print("{} {}\n", cnt, cnt.pow(10))
+    print("{} {} {}\n", i200(3).pow(100), u200(3).pow_wrap(300), i200(3).pow_checked(200))
+    print("{} {} {}\n", u200(3).pow_sat(300), i200(-3).pow_sat(301), u200(3).pow_checked(100))
     u: ?u200 = 5
     if v := u and v > 3 { print("opt {}\n", v) }
 }

@@ -1,4 +1,4 @@
-// Coroutines: pull-style generators on fibers, early cancellation with discard running defers, an esc exit crossing a fiber, and @stack_size-sized stacks.
+// Coroutines: pull-style generators on fibers, early cancellation with cancel running defers, an esc exit crossing a fiber, and @stack_size-sized stacks.
 Gen :: effect { next: ctl(x: i64) }
 Abort :: effect { abort: esc(code: i32) -> never }
 
@@ -32,7 +32,7 @@ take :: fn(want: usize, limit: i64) -> i64 \ {Out} {
             sum += x
             seen += 1
             if seen is want {
-                discard k
+                cancel k
                 break
             }
             resume k()
@@ -62,7 +62,7 @@ two_step :: fn() \ {Out} {
     }
     // the body of the `with` was abandoned at its first `next`; it must be finished before leaving
     if k := parked.k {
-        print("  parked at {} after {} step(s)\n", (parked.value, steps))
+        print("  parked at {} after {} step(s)\n", parked.value, steps)
         parked.k = null
         _ = k
     }
@@ -82,7 +82,7 @@ guarded :: fn() -> i32 \ {Out} {
             risky(10)
         }
     }
-    print("  total {} code {}\n", (total, code))
+    print("  total {} code {}\n", total, code)
     return code
 }
 

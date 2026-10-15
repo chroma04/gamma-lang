@@ -54,11 +54,11 @@ when @size_of(usize) is 8 {
 @static_assert(PRIMES[24] is 97)
 
 main :: fn() \ {Out} {
-    print("{} primes, last {}, word name length {}\n", (NP, PRIMES[NP - 1], WORD.len))
+    print("{} primes, last {}, word name length {}\n", NP, PRIMES[NP - 1], WORD.len)
     print("{}\n", F20)
-    for i in 0..SHAPES.len { print("{}: {}\n", (NAMES[i], SHAPES[i])) }
+    for i in 0..SHAPES.len { print("{}: {}\n", NAMES[i], SHAPES[i]) }
     g := Grid(4, 3)(cells: [3][4]u8(fill: [4]u8(fill: 7)))
-    print("{} {}\n", (g.cells.len, @size_of(Grid(4, 3))))
+    print("{} {}\n", g.cells.len, @size_of(Grid(4, 3)))
     local :: count_primes(30)
     print("{}\n", local)
 }

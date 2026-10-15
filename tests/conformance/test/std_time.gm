@@ -4,7 +4,7 @@ time :: import "std/time"
 
 test "now follows the fake wall clock" {
     a := time.now()
-    sleep(secs(2))
+    Clock.sleep(secs(2))
     b := time.now()
     assert(a.date.year is 2023 and a.date.month is 11 and a.date.day is 14, "date")
     assert(a.hour is 22 and a.minute is 13 and a.second is 20, "time of day")
@@ -14,18 +14,18 @@ test "now follows the fake wall clock" {
 
 test "formatting the current time" {
     buf: [time.RFC3339_LEN]u8 = ---
-    sleep(ms(250))
+    Clock.sleep(ms(250))
     s := time.format_rfc3339(time.now(), buf[..])
     assert(s is "2023-11-14T22:13:20.250Z", "text")
-    t := try time.parse_rfc3339(s)
+    t := ok(time.parse_rfc3339(s))
     assert(t.nanosecond is 250_000_000, "parsed back")
 }
 
 test "an offset far from 1970 is applied by days" {
     buf: [time.RFC3339_LEN]u8 = ---
-    t := try time.parse_rfc3339("0001-01-01T00:00:00+01:00")
+    t := ok(time.parse_rfc3339("0001-01-01T00:00:00+01:00"))
     expect(time.format_rfc3339(t, buf[..]) is "0000-12-31T23:00:00Z", "early")
-    u := try time.parse_rfc3339("9999-12-31T22:30:00-01:00")
+    u := ok(time.parse_rfc3339("9999-12-31T22:30:00-01:00"))
     expect(time.format_rfc3339(u, buf[..]) is "9999-12-31T23:30:00Z", "late")
     past := false
     if v := time.parse_rfc3339("9999-12-31T23:30:00-01:00") { _ = v } else { past = true }

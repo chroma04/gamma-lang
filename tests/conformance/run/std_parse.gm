@@ -4,11 +4,11 @@ str :: import "std/str"
 fmt :: import "std/fmt"
 
 radix :: fn(T: type, s: string, base: u32) \ {Out} where Int(T) {
-    print("radix({}, {}): {}\n", (s, base, str.parse_radix(T, s, base)))
+    print("radix({}, {}): {}\n", s, base, str.parse_radix(T, s, base))
 }
 
 flt :: fn(s: string) \ {Out} {
-    print("{}: {}\n", (s, str.parse_float(f64, s)))
+    print("{}: {}\n", s, str.parse_float(f64, s))
 }
 
 // Parses `s` as an f64 and prints the number and its bits.
@@ -20,7 +20,7 @@ bits :: fn(s: string) \ {Out} {
 long_bits :: fn(n: u32, s: string) \ {Out} {
     hb: [48]u8 = ---
     b := str.builder(hb[..])
-    b.write("long {} ({} bytes)", (n, s.len))
+    b.write("long {} ({} bytes)", n, s.len)
     labelled(b.str(), s)
 }
 
@@ -28,9 +28,9 @@ labelled :: fn(label, s: string) \ {Out} {
     hb: [16]u8 = ---
     r := str.parse_float(f64, s)
     if x := r {
-        print("{}: {} 0x{}\n", (label, x, fmt.hex(x.bits(u64), hb[..])))
+        print("{}: {} 0x{}\n", label, x, fmt.hex(x.bits(u64), hb[..]))
     } else {
-        print("{}: {}\n", (label, r))
+        print("{}: {}\n", label, r)
     }
 }
 
@@ -253,10 +253,10 @@ main :: fn() \ {Out} {
     f7 := str.parse_float(f32, "16777217")
     f8 := str.parse_float(f32, "0.1")
     f9 := str.parse_float(f32, "-inf")
-    print("{} {} {} {} {} {} {} {} {}\n", (f1, f2, f3, f4, f5, f6, f7, f8, f9))
-    print("{} {}\n", (str.parse_float(f32, "1e39"), str.parse_float(f32, "1x")))
+    print("{} {} {} {} {} {} {} {} {}\n", f1, f2, f3, f4, f5, f6, f7, f8, f9)
+    print("{} {}\n", str.parse_float(f32, "1e39"), str.parse_float(f32, "1x"))
     // f16
-    print("{} {} {} {}\n", (str.parse_float(f16, "65504"), str.parse_float(f16, "65520"), str.parse_float(f16, "6e-8"), str.parse_float(f16, "0.1")))
+    print("{} {} {} {}\n", str.parse_float(f16, "65504"), str.parse_float(f16, "65520"), str.parse_float(f16, "6e-8"), str.parse_float(f16, "0.1"))
 
     // Printed values parse back to the same bits (print gives the shortest round trip).
     ok64 := true
@@ -280,7 +280,7 @@ main :: fn() \ {Out} {
             if not round_trip32(y) { ok32 = false }
         }
     }
-    print("round trips: f64 {} ({}), f32 {} ({})\n", (ok64, n64, ok32, n32))
-    print("{} {} {} {}\n", (round_trip64(0.1), round_trip64(5e-324), round_trip64(1.7976931348623157e308), round_trip64(-0.0)))
-    print("{} {} {}\n", (round_trip32(0.1), round_trip32(1e-45), round_trip32(3.4028235e38)))
+    print("round trips: f64 {} ({}), f32 {} ({})\n", ok64, n64, ok32, n32)
+    print("{} {} {} {}\n", round_trip64(0.1), round_trip64(5e-324), round_trip64(1.7976931348623157e308), round_trip64(-0.0))
+    print("{} {} {}\n", round_trip32(0.1), round_trip32(1e-45), round_trip32(3.4028235e38))
 }

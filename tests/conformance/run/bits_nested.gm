@@ -5,21 +5,21 @@ Reg :: #bits(u16) struct { i: Inner, y: u7, on: bool }
 
 main :: fn() \ {Out} {
     r := Reg(i: Inner(a: 1, b: 2), y: 4, on: false)
-    print("{} {} {} {}\n", (r.i.b, r.i.a, r.y, r.on))
+    print("{} {} {} {}\n", r.i.b, r.i.a, r.y, r.on)
     r.i.b = 9
     r.i.a += 3
     r.on = true
-    print("{} {} {}\n", (r.i.b, r.i.a, u16(r)))
+    print("{} {} {}\n", r.i.b, r.i.a, u16(r))
     p := &r
     p.i.b = 15
-    print("{} {}\n", (p.i.b, u16(r)))
+    print("{} {}\n", p.i.b, u16(r))
     back := Reg(u16(0x8123))
-    print("{} {} {} {}\n", (back.i.a, back.i.b, back.y, back.on))
+    print("{} {} {} {}\n", back.i.a, back.i.b, back.y, back.on)
     flipped := r ~ Reg(u16(0x00ff))
     print("{}\n", u16(flipped))
     raw: u16 = 0x0aa5
     view := raw.bits(Reg)
-    print("{} {}\n", (view.i.a, view.y))
+    print("{} {}\n", view.i.a, view.y)
     blank: Reg = ---
     blank = Reg(u16(0))
     print("{}\n", blank.i.b)

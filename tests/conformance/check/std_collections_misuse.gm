@@ -15,10 +15,10 @@ misuse :: fn() -> AllocError!() \ {Alloc} {
     // A heap ordered by `<` needs an element type that has an ordering.
     h := hp.heap(Job)                            //~ ERROR does not satisfy
     jobs := [_]Job(Job(priority: 1))
-    both := try hp.heap_from(Job, jobs[..])      //~ ERROR does not satisfy
+    both := try hp.heap_from(jobs[..])      //~ ERROR does not satisfy
 
     // A comparison function must take pointers to the element type.
-    w := hp.heap_by(Job, wrong_order)            //~ ERROR expected
+    w := hp.heap_by(T: Job, wrong_order)            //~ ERROR expected
 
     // A call that can fail must be handled.
     d := dq.deque(u32)

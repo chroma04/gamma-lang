@@ -26,7 +26,7 @@ words_for :: fn(n: usize) -> usize => n / 64 + (if n % 64 is 0 { 0 } else { 1 })
 
 /// An empty set that can hold the integers `0..n`, using the current allocator.
 pub bitset :: fn(n: usize) -> AllocError!BitSet \ {Alloc} {
-    a := current()
+    a := Alloc.current()
     count := words_for(n)
     if count is 0 { return BitSet(words: empty_slice(u64), cap: n, alloc: a) }
     raw := a.vt.alloc(a.data, 8 * count, 8) else return !.OutOfMemory

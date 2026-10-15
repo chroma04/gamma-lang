@@ -83,7 +83,7 @@ impl<'a> Gen<'a> {
             | ExprKind::Closure(_)
             | ExprKind::HandlerRef(_)
             | ExprKind::Resume { .. }
-            | ExprKind::Discard(_)
+            | ExprKind::Cancel(_)
             | ExprKind::Write { .. }
             | ExprKind::WriteDeferred { .. }
             | ExprKind::Global(_)

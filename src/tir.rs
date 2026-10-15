@@ -485,6 +485,8 @@ pub struct Ambient {
     pub fs: Option<EffectId>,
     /// `Net { connect, … }`
     pub net: Option<EffectId>,
+    /// `Test { note, fail }` (§3.8)
+    pub test: Option<EffectId>,
 }
 
 impl Program {
@@ -957,8 +959,8 @@ pub enum ExprKind {
         cont: Box<Expr>,
         value: Box<Expr>,
     },
-    /// `discard k`.
-    Discard(Box<Expr>),
+    /// `cancel k`.
+    Cancel(Box<Expr>),
     /// `trap(msg)` or a failed `assert`/`@unreachable()`: stops the program.
     Trap {
         message: Box<Expr>,
@@ -1285,9 +1287,6 @@ pub enum Builtin {
     CstrLen,
     /// `assert(cond, msg, loc)`: checked (removed in Fast builds).
     Assert,
-    /// `expect(cond, msg)` in a test: traps with `msg` if `cond` is false, in
-    /// every build mode.
-    Expect,
     /// `@hash(x, seed)`.
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).
@@ -1357,7 +1356,7 @@ impl Expr {
             | ExprKind::SliceLen(a)
             | ExprKind::SlicePtr(a)
             | ExprKind::MakeErr(a)
-            | ExprKind::Discard(a)
+            | ExprKind::Cancel(a)
             | ExprKind::ArrayFill(a)
             | ExprKind::Unary { operand: a, .. }
             | ExprKind::Coerce { expr: a, .. }
@@ -1535,7 +1534,7 @@ impl Expr {
             | ExprKind::SliceLen(a)
             | ExprKind::SlicePtr(a)
             | ExprKind::MakeErr(a)
-            | ExprKind::Discard(a)
+            | ExprKind::Cancel(a)
             | ExprKind::ArrayFill(a)
             | ExprKind::Unary { operand: a, .. }
             | ExprKind::Coerce { expr: a, .. }

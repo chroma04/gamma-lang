@@ -13,7 +13,7 @@ Trie :: struct {
 }
 
 new_node :: fn() -> ^Node \ {Alloc} {
-    return new(Node, Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
+    return new(Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
 }
 
 trie :: fn() -> Trie \ {Alloc} => Trie(root: new_node())
@@ -117,7 +117,7 @@ main :: fn() \ {Out, Alloc} {
     buf: [16]u8 = ---
     for w in all_words(&t, buf[..]) { print("{} ", w) }
     print("\n")
-    for p in [_]string("te", "t", "in", "x", "") { print("{}:{} ", (p, count_prefix(&t, p))) }
+    for p in [_]string("te", "t", "in", "x", "") { print("{}:{} ", p, count_prefix(&t, p)) }
     print("\n")
     first_long := for w in all_words(&t, buf[..]) { if w.len >= 4 { print("long: {}\n", w); break } }
     _ = first_long
@@ -126,10 +126,10 @@ main :: fn() \ {Out, Alloc} {
     pairs := [_](u32, u32)((0, 1), (2, 3), (1, 3), (4, 5), (0, 2), (5, 4))
     for p in pairs {
         merged := union_of(&d, p.0, p.1)
-        print("{}-{}:{} ", (p.0, p.1, merged))
+        print("{}-{}:{} ", p.0, p.1, merged)
     }
     print("\n")
     groups: u32 = 0
     for i in 0..6 { if root_of(&d, i.trunc(u32)) is i.trunc(u32) { groups += 1 } }
-    print("groups {}, size of 0's group {}\n", (groups, d.size[usize(root_of(&d, 0))]))
+    print("groups {}, size of 0's group {}\n", groups, d.size[usize(root_of(&d, 0))])
 }

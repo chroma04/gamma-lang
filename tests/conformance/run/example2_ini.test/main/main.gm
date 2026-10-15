@@ -30,16 +30,16 @@ handler ini.Warn for ^Counts \ {Out} {
     warn(self, line, msg) => {
         self.warnings += 1
         self.last_line = line
-        print("  warning (line {}): {}\n", (line, msg))
+        print("  warning (line {}): {}\n", line, msg)
     }
 }
 
 show :: fn(label: string, v: ?ini.Value) \ {Out} {
     match v {
         null => print("{}: (unset)\n", label)
-        .Int(n) => print("{}: int {}\n", (label, n))
-        .Bool(b) => print("{}: bool {}\n", (label, b))
-        .Text(t) => print("{}: text {}\n", (label, t))
+        .Int(n) => print("{}: int {}\n", label, n)
+        .Bool(b) => print("{}: bool {}\n", label, b)
+        .Text(t) => print("{}: text {}\n", label, t)
     }
 }
 
@@ -52,11 +52,11 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     counts := Counts()
     doc := with &counts { try ini.parse(CONFIG) }
     defer ini.free_doc(&doc)
-    print("{} warnings, last on line {}\n", (counts.warnings, counts.last_line))
+    print("{} warnings, last on line {}\n", counts.warnings, counts.last_line)
     for s in doc.sections.items {
-        print("[{}] {} entries\n", (s.name, s.entries.items.len))
+        print("[{}] {} entries\n", s.name, s.entries.items.len)
         for e in s.entries.items {
-            print("  {} = {} (line {})\n", (e.key, e.value, ini.line_of(e)))
+            print("  {} = {} (line {})\n", e.key, e.value, ini.line_of(e))
         }
     }
     root := ini.section(&doc, "")?
@@ -69,6 +69,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("{}\n", ini.section(&doc, "nope") is null)
     port := int_or(ini.lookup(srv, "port"), 80)
     workers := int_or(ini.lookup(srv, "workers"), 1)
-    print("{} workers on port {}\n", (workers, port))
+    print("{} workers on port {}\n", workers, port)
     return ()
 }

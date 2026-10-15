@@ -1,0 +1,15 @@
+test "mixed error types" ... ok
+test "a later error fails in place" ... FAILED
+    got 7
+    error: .Nope
+      at tests/conformance/test/ok_any_error_type.gm:31:10 in test "a later error fails in place"
+test "the first error still returns" ... FAILED
+    error: .Empty
+      at tests/conformance/test/ok_any_error_type.gm:36:9 in test "the first error still returns"
+test "a helper fails the test" ... FAILED
+    expectation failed: not positive
+      at tests/conformance/test/ok_any_error_type.gm:40:5 in check_positive
+test "inside a loop" ... FAILED
+    error: .Nope
+      at tests/conformance/test/ok_any_error_type.gm:51:13 in test "inside a loop"
+1 passed, 4 failed

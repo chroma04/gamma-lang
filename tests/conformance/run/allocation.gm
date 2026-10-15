@@ -2,21 +2,21 @@
 Grid :: struct { cells: [16]u8 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    p := try new(i32, 5)
+    p := try new(T: i32, 5)
     p^ += 1
     print("new: {}\n", p^)
-    destroy(i32, p)
+    destroy(p)
 
     // An uninitialized plain-data object.
-    g := try new(Grid, ---)
+    g := try new(T: Grid, ---)
     for i in 0..16 { g.cells[i] = i.trunc(u8) }
-    print("grid: {} {}\n", (g.cells[3], g.cells[15]))
-    destroy(Grid, g)
+    print("grid: {} {}\n", g.cells[3], g.cells[15])
+    destroy(g)
 
-    s := try make_fill(u8, 4, 7)
+    s := try make_fill(T: u8, 4, 7)
     s[1] = 9
-    print("make_fill: {} {} {}\n", (s[0], s[1], s.len))
-    free(u8, s)
+    print("make_fill: {} {} {}\n", s[0], s[1], s.len)
+    free(s)
 
     e := try make(u64, 0)
     print("empty: {}\n", e.len)
@@ -30,7 +30,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     total: i64 = 0
     for x in each(l.items) { total += x }
     print("sum {}\n", total)
-    print("pop {} len {}\n", (l.pop()?, l.items.len))
+    print("pop {} len {}\n", l.pop()?, l.items.len)
     l.clear()
     print("cleared {}\n", l.items.len)
     match l.pop() {

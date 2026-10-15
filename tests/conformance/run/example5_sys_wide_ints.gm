@@ -60,29 +60,29 @@ main :: fn() \ {Out} {
     // the struct with wide fields travels by address and is copied by the callee
     acc := Acc(v: 1, step: 7, n: 0)
     for i in 0..5 { acc = step_acc(acc, u256(i) + 100) }
-    print("acc {} {} {}\n", (acc.v, acc.step, acc.n))
+    print("acc {} {} {}\n", acc.v, acc.step, acc.n)
     alt := apply(step_acc, acc, 3)
-    print("alt {} {} orig {}\n", (alt.v, alt.n, acc.n))
+    print("alt {} {} orig {}\n", alt.v, alt.n, acc.n)
     // mixed widths and signs
     print("mix {}\n", mix(-5, 1 << 100, -(1 << 90)))
     // checked overflow: the largest u256 plus one does not fit
     zero: u256 = 0
     top := zero -% 1
     print("top {}\n", top)
-    print("wrap {} sat {}\n", (top +% 2, top.sat(u128)))
+    print("wrap {} sat {}\n", top +% 2, top.sat(u128))
     print("checked {}\n", top +? 1 is null)
     // effects with wide operands
     seen: u256 = 0
     total := with (handler Meter { observe(x) => { seen += x; x * 2 } }) {
         measured(1 << 128)
     }
-    print("meter {} {}\n", (total, seen))
+    print("meter {} {}\n", total, seen)
     stack: [STACK]u8 = ---
     got: u256 = 0
     r := with (handler Feed { feed(x, k) => { got += x; resume k(x * 10) } }) on stack[..] {
         pulled(7)
     }
-    print("feed {} {}\n", (r, got))
+    print("feed {} {}\n", r, got)
     i: i256 = -(1 << 200)
-    print("neg {} abs-shift {}\n", (i, (i >> 190)))
+    print("neg {} abs-shift {}\n", i, (i >> 190))
 }

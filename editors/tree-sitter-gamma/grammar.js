@@ -208,7 +208,7 @@ module.exports = grammar({
       $.defer_statement,
       $.when_statement,
       $.while_statement,
-      $.discard_statement,
+      $.cancel_statement,
       $.block,
       $._expression,
     ),
@@ -224,7 +224,7 @@ module.exports = grammar({
       choice($.block, $.assignment_statement, $._expression),
     ),
 
-    discard_statement: $ => seq('discard', $._expression),
+    cancel_statement: $ => seq('cancel', $._expression),
 
     when_statement: $ => seq(
       'when',
@@ -576,7 +576,7 @@ module.exports = grammar({
     _parameter: $ => choice($.parameter, '...', $._type_only_parameter),
     parameter: $ => seq(
       field('name', $.identifier),
-      optional(seq(choice(':', '::'), field('type', $._type))),
+      optional(seq(choice(':', '::', seq(':', field('rest', '..'))), field('type', $._type))),
       optional(seq('=', field('default', $._expression))),
     ),
     _type_only_parameter: $ => choice(

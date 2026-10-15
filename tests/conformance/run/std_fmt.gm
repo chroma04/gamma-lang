@@ -11,19 +11,19 @@ ints :: fn() \ {Out} {
     b := buf[..]
 
     // Zero and ordinary values in every named base.
-    show(fmt.dec(i32, 0, b))
-    show(fmt.dec(i32, 42, b))
-    show(fmt.dec(i32, -42, b))
-    show(fmt.hex(i32, 255, b))
-    show(fmt.hex_upper(i32, 255, b))
-    show(fmt.hex(u32, 0xdead_beef, b))
-    show(fmt.hex_upper(u32, 0xdead_beef, b))
-    show(fmt.oct(i32, 511, b))
-    show(fmt.bin(i32, 10, b))
-    show(fmt.hex(i32, -255, b))
-    show(fmt.oct(i32, -8, b))
-    show(fmt.bin(i32, -5, b))
-    show(fmt.bin(i32, 0, b))
+    show(fmt.dec(T: i32, 0, b))
+    show(fmt.dec(T: i32, 42, b))
+    show(fmt.dec(T: i32, -42, b))
+    show(fmt.hex(T: i32, 255, b))
+    show(fmt.hex_upper(T: i32, 255, b))
+    show(fmt.hex(T: u32, 0xdead_beef, b))
+    show(fmt.hex_upper(T: u32, 0xdead_beef, b))
+    show(fmt.oct(T: i32, 511, b))
+    show(fmt.bin(T: i32, 10, b))
+    show(fmt.hex(T: i32, -255, b))
+    show(fmt.oct(T: i32, -8, b))
+    show(fmt.bin(T: i32, -5, b))
+    show(fmt.bin(T: i32, 0, b))
 
     // The extremes of each width, in decimal, hex and binary.
     show(fmt.dec(i8(-128), b))
@@ -58,12 +58,12 @@ ints :: fn() \ {Out} {
     show(fmt.dec(i24(-8388608), b))
 
     // Arbitrary bases 2 to 36.
-    show(fmt.radix(i32, 35, 36, b))
-    show(fmt.radix(i32, 36, 36, b))
-    show(fmt.radix_upper(i32, 123456789, 36, b))
-    show(fmt.radix(i32, 123456789, 36, b))
-    show(fmt.radix(i32, -100, 7, b))
-    show(fmt.radix(i32, 1000, 3, b))
+    show(fmt.radix(T: i32, 35, 36, b))
+    show(fmt.radix(T: i32, 36, 36, b))
+    show(fmt.radix_upper(T: i32, 123456789, 36, b))
+    show(fmt.radix(T: i32, 123456789, 36, b))
+    show(fmt.radix(T: i32, -100, 7, b))
+    show(fmt.radix(T: i32, 1000, 3, b))
     show(fmt.radix(i8(-128), 36, b))
     show(fmt.radix(u64(18446744073709551615), 36, b))
     show(fmt.radix(u128(340282366920938463463374607431768211455), 36, b))
@@ -73,29 +73,29 @@ ints :: fn() \ {Out} {
     }
 
     // Prefixes.
-    show(fmt.prefixed(i32, 255, 16, b))
-    show(fmt.prefixed_upper(i32, 255, 16, b))
-    show(fmt.prefixed(i32, -255, 16, b))
-    show(fmt.prefixed(i32, 8, 8, b))
-    show(fmt.prefixed(i32, 5, 2, b))
-    show(fmt.prefixed(i32, 0, 16, b))
+    show(fmt.prefixed(T: i32, 255, 16, b))
+    show(fmt.prefixed_upper(T: i32, 255, 16, b))
+    show(fmt.prefixed(T: i32, -255, 16, b))
+    show(fmt.prefixed(T: i32, 8, 8, b))
+    show(fmt.prefixed(T: i32, 5, 2, b))
+    show(fmt.prefixed(T: i32, 0, 16, b))
     show(fmt.prefixed(u128(340282366920938463463374607431768211455), 2, b))
     show(fmt.prefixed(i128(-170141183460469231731687303715884105728), 2, b))
 
     // Thousands separators.
-    show(fmt.grouped(i32, 0, ',', b))
-    show(fmt.grouped(i32, 7, ',', b))
-    show(fmt.grouped(i32, 999, ',', b))
-    show(fmt.grouped(i32, 1000, ',', b))
-    show(fmt.grouped(i32, 1234567, ',', b))
-    show(fmt.grouped(i32, -1234567, '_', b))
-    show(fmt.grouped(i32, -999, ',', b))
-    show(fmt.grouped(i32, -1000, ' ', b))
+    show(fmt.grouped(T: i32, 0, ',', b))
+    show(fmt.grouped(T: i32, 7, ',', b))
+    show(fmt.grouped(T: i32, 999, ',', b))
+    show(fmt.grouped(T: i32, 1000, ',', b))
+    show(fmt.grouped(T: i32, 1234567, ',', b))
+    show(fmt.grouped(T: i32, -1234567, '_', b))
+    show(fmt.grouped(T: i32, -999, ',', b))
+    show(fmt.grouped(T: i32, -1000, ' ', b))
     show(fmt.grouped(i64(-9223372036854775808), ',', b))
     show(fmt.grouped(u128(340282366920938463463374607431768211455), '.', b))
     show(fmt.grouped(i8(-128), ',', b))
     show(fmt.grouped(u16(65535), ',', b))
-    print("{} {} {}\n", (fmt.max_int_len(u8), fmt.max_int_len(i128), fmt.max_grouped_len(u128)))
+    print("{} {} {}\n", fmt.max_int_len(u8), fmt.max_int_len(i128), fmt.max_grouped_len(u128))
 }
 
 padding :: fn() \ {Out} {
@@ -140,15 +140,15 @@ padding :: fn() \ {Out} {
 
     // Combining with the number formatters, in the same buffer and in two.
     num := [fmt.INT_BUF]u8(fill: 0)
-    show(fmt.pad_left(fmt.dec(i32, -7, num[..]), 6, ' ', b))
-    show(fmt.zero_pad(fmt.dec(i32, -7, num[..]), 6, b))
-    show(fmt.zero_pad(fmt.hex(i32, 255, num[..]), 6, b))
-    show(fmt.zero_pad(fmt.prefixed(i32, 255, 16, num[..]), 8, b))
+    show(fmt.pad_left(fmt.dec(T: i32, -7, num[..]), 6, ' ', b))
+    show(fmt.zero_pad(fmt.dec(T: i32, -7, num[..]), 6, b))
+    show(fmt.zero_pad(fmt.hex(T: i32, 255, num[..]), 6, b))
+    show(fmt.zero_pad(fmt.prefixed(T: i32, 255, 16, num[..]), 8, b))
     show(fmt.zero_pad(fmt.fixed(-2.5, 1, num[..]), 8, b))
-    show(fmt.pad_right(fmt.bin(i32, 5, b), 8, '0', b))
-    show(fmt.pad_left(fmt.hex_upper(i32, 48879, b), 8, '0', b))
-    show(fmt.center(fmt.dec(i32, 1, b), 5, '*', b))
-    show(fmt.zero_pad(fmt.dec(i32, -42, b), 8, b))
+    show(fmt.pad_right(fmt.bin(T: i32, 5, b), 8, '0', b))
+    show(fmt.pad_left(fmt.hex_upper(T: i32, 48879, b), 8, '0', b))
+    show(fmt.center(fmt.dec(T: i32, 1, b), 5, '*', b))
+    show(fmt.zero_pad(fmt.dec(T: i32, -42, b), 8, b))
 }
 
 fixed_cases :: fn() \ {Out} {
@@ -240,11 +240,11 @@ fixed_cases :: fn() \ {Out} {
     // expansion of 2^-1074 has 1074 decimals, the last being 5.
     huge := [fmt.fixed_buf_len(1080)]u8(fill: 0)
     s := fmt.fixed(5e-324, 1080, huge[..])
-    print("{} {} {}\n", (s.len, s[0..40], s[s.len - 8..]))
+    print("{} {} {}\n", s.len, s[0..40], s[s.len - 8..])
     s2 := fmt.fixed(5e-324, 1074, huge[..])
-    print("{} {}\n", (s2.len, s2[s2.len - 8..]))
+    print("{} {}\n", s2.len, s2[s2.len - 8..])
     s3 := fmt.fixed(5e-324, 750, huge[..])
-    print("{} {}\n", (s3.len, s3[s3.len - 8..]))
+    print("{} {}\n", s3.len, s3[s3.len - 8..])
 
     // Non-finite values.
     inf := 1.0 / 0.0
@@ -253,7 +253,7 @@ fixed_cases :: fn() \ {Out} {
     show(fmt.fixed(-inf, 2, b))
     show(fmt.fixed(nan, 2, b))
     show(fmt.fixed(inf, 0, b))
-    print("{} {}\n", (fmt.fixed_buf_len(0), fmt.fixed_buf_len(10)))
+    print("{} {}\n", fmt.fixed_buf_len(0), fmt.fixed_buf_len(10))
 }
 
 sci_cases :: fn() \ {Out} {
@@ -300,7 +300,7 @@ sci_cases :: fn() \ {Out} {
     show(fmt.sci(1.0 / 0.0, 3, b))
     show(fmt.sci(-1.0 / 0.0, 3, b))
     show(fmt.sci(0.0 / 0.0 * 0.0, 3, b))
-    print("{} {}\n", (fmt.sci_buf_len(0), fmt.sci_buf_len(20)))
+    print("{} {}\n", fmt.sci_buf_len(0), fmt.sci_buf_len(20))
 }
 
 general_cases :: fn() \ {Out} {
@@ -335,7 +335,7 @@ general_cases :: fn() \ {Out} {
     show(fmt.general(5e-324, 6, b))
     show(fmt.general(1.0 / 0.0, 6, b))
     show(fmt.general(-1.0 / 0.0, 6, b))
-    print("{} {}\n", (fmt.general_buf_len(0), fmt.general_buf_len(17)))
+    print("{} {}\n", fmt.general_buf_len(0), fmt.general_buf_len(17))
 }
 
 // Integers of any width (here 200 and 256 bits) in every base.

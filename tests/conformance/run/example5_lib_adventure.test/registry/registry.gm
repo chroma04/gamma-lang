@@ -5,7 +5,7 @@ pub Registry :: struct(T: type) {
 }
 
 pub registry :: fn(T: type) -> Registry(T) \ {Alloc} {
-    return Registry(T)(items: list(T), names: map(string, u16))
+    return Registry(T)(items: list(T), names: hash_map(string, u16))
 }
 
 pub deinit :: fn(T: type, r: ^Registry(T)) {

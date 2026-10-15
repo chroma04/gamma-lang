@@ -138,7 +138,7 @@ main :: fn() \ {Out} {
 
     reference := base
     reference[..].sort()
-    print("builtin sort ok: {}  checksum {}\n", (is_sorted(reference[..]), checksum(reference[..])))
+    print("builtin sort ok: {}  checksum {}\n", is_sorted(reference[..]), checksum(reference[..]))
 
     a := base
     insertion_sort(a[0..500])
@@ -166,19 +166,19 @@ main :: fn() \ {Out} {
     quick_sort(asc[..])
     quick_sort(desc[..])
     quick_sort(same[..])
-    print("degenerate quick sorts: {} {} {}\n", (is_sorted(asc[..]), is_sorted(desc[..]), is_sorted(same[..])))
+    print("degenerate quick sorts: {} {} {}\n", is_sorted(asc[..]), is_sorted(desc[..]), is_sorted(same[..]))
     heap_sort(desc[..])
     merge_sort(same[..], tmp[..])
-    print("degenerate heap/merge: {} {}\n", (is_sorted(desc[..]), is_sorted(same[..])))
+    print("degenerate heap/merge: {} {}\n", is_sorted(desc[..]), is_sorted(same[..]))
 
     // Searching the sorted data.
     sorted := reference[..]
     probe := sorted[1234]
     r := sorted.binary_search(probe)
-    print("binary_search(present): found={} value matches={}\n", (r.found, sorted[r.at] is probe))
+    print("binary_search(present): found={} value matches={}\n", r.found, sorted[r.at] is probe)
     miss := sorted.binary_search(1_000_000)
-    print("binary_search(absent): found={} at end={}\n", (miss.found, miss.at is N))
-    print("min {} max {} first {} last {}\n", (sorted.min()?, sorted.max()?, sorted.first()?, sorted.last()?))
+    print("binary_search(absent): found={} at end={}\n", miss.found, miss.at is N)
+    print("min {} max {} first {} last {}\n", sorted.min()?, sorted.max()?, sorted.first()?, sorted.last()?)
     print("index_of(probe) <= 1234: {}\n", sorted.index_of(probe)? <= 1234)
 
     // Floats (no NaN), strings and tuples sort with the same code.
@@ -205,5 +205,5 @@ main :: fn() \ {Out} {
     big: [N]i32 = ---
     fill_random(big[..], 99)
     big[..].sort_by(fn(x, y) => x^ > y^)
-    print("descending: {} {} {}\n", (big[0], big[1], big[N - 1]))
+    print("descending: {} {} {}\n", big[0], big[1], big[N - 1])
 }

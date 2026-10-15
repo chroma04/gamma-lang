@@ -219,7 +219,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() \ {Ex
 }
 
 new_build :: fn() -> Build \ {Alloc} {
-    return Build(cache: map(string, CacheEntry), outputs: map(string, u64))
+    return Build(cache: hash_map(string, CacheEntry), outputs: hash_map(string, u64))
 }
 
 drop :: fn(b: ^Build) {
@@ -274,27 +274,27 @@ main :: fn() \ {Out, Alloc} {
     with &exec, &disk, &ind {
         print("== clean build\n")
         r := build(&b, GRAPH[..], "all")
-        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        print("result {}; built {}, cached {}\n", r, b.stats.built, b.stats.cached)
         show_commands(&exec)
 
         print("== nothing changed\n")
         b.stats = Stats()
         r = build(&b, GRAPH[..], "all")
-        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        print("result {}; built {}, cached {}\n", r, b.stats.built, b.stats.cached)
         show_commands(&exec)
 
         print("== lib.c touched\n")
         touch(&disk, "lib.c")
         b.stats = Stats()
         r = build(&b, GRAPH[..], "all")
-        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        print("result {}; built {}, cached {}\n", r, b.stats.built, b.stats.cached)
         show_commands(&exec)
 
         print("== only the docs target\n")
         touch(&disk, "readme.txt")
         b.stats = Stats()
         r = build(&b, GRAPH[..], "docs")
-        print("result {}; built {}, cached {}\n", (r, b.stats.built, b.stats.cached))
+        print("result {}; built {}, cached {}\n", r, b.stats.built, b.stats.cached)
         show_commands(&exec)
     }
 
@@ -307,7 +307,7 @@ main :: fn() \ {Out, Alloc} {
         // (`with &ind, &dry` is rejected: the Log that dry's clauses need is not found.)
         with &dry {
             r := build(&fresh, GRAPH[..], "all")
-            print("result {}; would run {}\n", (r, dry.would_run))
+            print("result {}; would run {}\n", r, dry.would_run)
         }
     }
 
@@ -316,7 +316,7 @@ main :: fn() \ {Out, Alloc} {
         bb := new_build()
         defer drop(&bb)
         r := build(&bb, BROKEN[..], "root")
-        print("result {}; built {}\n", (r, bb.stats.built))
+        print("result {}; built {}\n", r, bb.stats.built)
         show_commands(&exec)
     }
 
@@ -325,7 +325,7 @@ main :: fn() \ {Out, Alloc} {
         cb := new_build()
         defer drop(&cb)
         r := build(&cb, CYCLIC[..], "x")
-        print("result {}; built {}\n", (r, cb.stats.built))
+        print("result {}; built {}\n", r, cb.stats.built)
         show_commands(&exec)
     }
 }

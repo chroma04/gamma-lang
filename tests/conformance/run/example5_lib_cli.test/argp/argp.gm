@@ -27,13 +27,13 @@ pub parse_or_exit :: fn(sp: ^const Spec) -> Matches \ {Env, Alloc, Out} {
         match e {
             .Help => {
                 help(sp)
-                exit(0)
+                Env.exit(0)
             }
             _ => {
                 print("{}: ", sp.program)
                 parsem.report(e)
                 usage(sp)
-                exit(2)
+                Env.exit(2)
             }
         }
     }

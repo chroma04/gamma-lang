@@ -37,16 +37,16 @@ fold :: fn(w: string, owned: ^List([]u8)) -> AllocError!string \ {Alloc} {
 emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
     match fmt {
         .Text => {
-            for r in rows { print("{} x{}\n", (r.word, r.n)) }
+            for r in rows { print("{} x{}\n", r.word, r.n) }
         }
         .Csv => {
-            for r in rows { print("{}{}{}\n", (r.word, sep, r.n)) }
+            for r in rows { print("{}{}{}\n", r.word, sep, r.n) }
         }
         .Json => {
             print("[")
             for i, r in enumerate(rows) {
                 if i > 0 { print(", ") }
-                print("{{\"{}\": {}}}", (r.word, r.n))
+                print("{{\"{}\": {}}}", r.word, r.n)
             }
             print("]\n")
         }
@@ -56,7 +56,7 @@ emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
 tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
     top := m.get(u8, "top") else 10
     min_len := m.get(u16, "min-len") else 1
-    fmt := m.pick(Format, "format", FORMAT_TABLE[..]) else .Text
+    fmt := m.pick(T: Format, "format", FORMAT_TABLE[..]) else .Text
     sep := m.text("sep") else ","
     fold_case := m.flag("ignore-case")
     verbose := m.count("verbose")
@@ -66,7 +66,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
         for b in owned.items { free(b) }
         owned.deinit()
     }
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     dropped: u32 = 0
     for arg in m.positionals() {
@@ -86,7 +86,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
     rows.items.sort_by_key(fn(r) => (~r.n, r.word))
     shown := rows.items[0..rows.items.len.min(usize(top))]
     emit(fmt, shown, sep)
-    if verbose >= 1 { print("{} distinct, {} shown\n", (rows.items.len, shown.len)) }
+    if verbose >= 1 { print("{} distinct, {} shown\n", rows.items.len, shown.len) }
     if verbose >= 2 { print("{} dropped by --min-len\n", dropped) }
 }
 

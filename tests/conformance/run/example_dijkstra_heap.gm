@@ -154,7 +154,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         if d is INF {
             print("node {}: unreachable\n", i)
         } else {
-            print("node {}: dist {} via ", (i, d))
+            print("node {}: dist {} via ", i, d)
             print_path(prev[..], i.trunc(u32))
         }
     }

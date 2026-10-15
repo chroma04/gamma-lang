@@ -16,18 +16,18 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    ids := map(string, u32)
+    ids := hash_map(string, u32)
     defer ids.deinit()
     try ids.put("ada", 1)
     try ids.put("grace", 2)
     try ids.put("ada", 3)
-    print("{} {} {} {}\n", (ids.get("ada"), ids.get("grace"), ids.get("alan"), ids.len()))
+    print("{} {} {} {}\n", ids.get("ada"), ids.get("grace"), ids.get("alan"), ids.len())
 
-    squares := map(i32, i64)
+    squares := hash_map(i32, i64)
     defer squares.deinit()
-    for i in range(i32, 0, 1000) { try squares.put(i, i64(i) * i64(i)) }
+    for i in range(T: i32, 0, 1000) { try squares.put(i, i64(i) * i64(i)) }
     removed := 0
-    for i in range(i32, 0, 1000) {
+    for i in range(T: i32, 0, 1000) {
         if i % 3 is 0 {
             _ = squares.remove(i)
             removed += 1
@@ -35,17 +35,17 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     }
     total: i64 = 0
     for e in squares.entries() { total += e.value }
-    print("{} {} {} {}\n", (squares.len(), removed, squares.get(999), total))
-    print("{} {}\n", (squares.contains(998), squares.contains(999)))
+    print("{} {} {} {}\n", squares.len(), removed, squares.get(999), total)
+    print("{} {}\n", squares.contains(998), squares.contains(999))
 
-    names := map_with(string, u32, hash: fold_hash, eq: fold_eq)
+    names := hash_map_with(hash: fold_hash, eq: fold_eq, K: string, u32)
     defer names.deinit()
     try names.put("Ada", 1)
-    print("{} {}\n", (names.get("ADA"), names.get("ada lovelace")))
+    print("{} {}\n", names.get("ADA"), names.get("ada lovelace"))
 
-    pairs := map((i32, bool), string)
+    pairs := hash_map((i32, bool), string)
     defer pairs.deinit()
     try pairs.put((1, true), "one-true")
-    print("{} {}\n", (pairs.get((1, true)), pairs.get((1, false))))
+    print("{} {}\n", pairs.get((1, true)), pairs.get((1, false)))
     return ()
 }

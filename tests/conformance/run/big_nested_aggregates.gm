@@ -85,42 +85,42 @@ main :: fn() \ {Out} {
 
     // Self-referencing assignments.
     g = Grid(n: g.last.y, cells: [4]Cell(g.cells[3], g.cells[2], g.cells[1], g.cells[0]), last: V(x: g.last.y, y: g.last.x))
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
     g = rev(g)
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
     g = rev(rev(g))
-    print("{} {}\n", (g.n, sum(g)))
+    print("{} {}\n", g.n, sum(g))
     g = via(&g)
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
     g = again(&g)
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
     g = rebuild(&g)
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
     g = Grid(n: 0, cells: [4]Cell(peek(&g, 3), peek(&g, 3), peek(&g, 2), peek(&g, 1)), last: g.cells[0].pos)
-    print("{} {} {} {}\n", (g.n, g.cells[0].id, g.cells[3].id, g.last))
+    print("{} {} {} {}\n", g.n, g.cells[0].id, g.cells[3].id, g.last)
 
     // Into a field and an element of something larger.
     w := wrap(3)
     w.mixed.c = cell(w.mixed.c.pos.x + 1)
     w.mixed.c.vals = [3]i64(w.mixed.c.vals[2], w.mixed.c.vals[1], w.mixed.c.vals[0])
-    print("{} {} {}\n", (w.tag, w.mixed.c.id, w.mixed.c.vals))
+    print("{} {} {}\n", w.tag, w.mixed.c.id, w.mixed.c.vals)
     gs := [3]Grid(grid(1), grid(2), grid(3))
     gs[1] = rev(gs[2])
     gs[2] = Grid(n: gs[0].n, cells: gs[1].cells, last: gs[1].last)
-    print("{} {} {}\n", (sum(gs[0]), sum(gs[1]), sum(gs[2])))
+    print("{} {} {}\n", sum(gs[0]), sum(gs[1]), sum(gs[2]))
     p := &gs[0]
     p^ = rev(p^)
     print("{}\n", sum(gs[0]))
 
     // Elements built from locals and calls.
     m := mix(5)
-    print("{} {} {} {} {}\n", (m.n, m.cells[0].pos, m.cells[2].pos, m.cells[3].id, m.last))
+    print("{} {} {} {} {}\n", m.n, m.cells[0].pos, m.cells[2].pos, m.cells[3].id, m.last)
 
     // Padding, packed and bits members inside a large struct.
     mx := pad(4)
     mx.p.b += 1
     mx.f.lo = 5
-    print("{} {} {} {} {} {}\n", (mx.p.a, mx.p.b, mx.f.lo, mx.f.hi, mx.c.vals, mx.tail))
+    print("{} {} {} {} {} {}\n", mx.p.a, mx.p.b, mx.f.lo, mx.f.hi, mx.c.vals, mx.tail)
     print("{}\n", mx)
 
     // Unions with large payloads.

@@ -29,11 +29,11 @@ collect_into :: fn(T: type, c: ^Collector(T, 3), src: fn() \ {Yield(T)}) {
 main :: fn() \ {Out} {
     c := Collector(u32, 4)(items: [4]u32(fill: 0))
     with &c { squares(6) }
-    print("{} {} {} {}\n", (c.len, c.items[3], c.dropped, c.items[0]))
+    print("{} {} {} {}\n", c.len, c.items[3], c.dropped, c.items[0])
     w := Collector(string, 3)(items: [3]string(fill: ""))
-    collect_into(string, &w, words)
-    print("{} {}\n", (w.items[2], w.len))
+    collect_into(&w, words)
+    print("{} {}\n", w.items[2], w.len)
     t := Tally(i64)()
     with &t { log(i64(5)); log(i64(7)) }
-    print("{} {}\n", (t.n, t.last))
+    print("{} {}\n", t.n, t.last)
 }

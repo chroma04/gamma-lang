@@ -40,6 +40,6 @@ main :: fn() \ {Out} {
     print("{}\n", map_all(xs[..], fn(x) => validate(x * 50)))
     k := 7
     print("{}\n", map_all(xs[..], fn(x) -> E!i32 { v := try validate(x + k); return v * 2 }))
-    print("{} {} {}\n", (opt_chain(1, 2), opt_chain(null, 2), opt_chain(1, null)))
-    print("{} {}\n", (in_clause(5), in_clause(-5)))
+    print("{} {} {}\n", opt_chain(1, 2), opt_chain(null, 2), opt_chain(1, null))
+    print("{} {}\n", in_clause(5), in_clause(-5))
 }

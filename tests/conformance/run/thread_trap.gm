@@ -9,7 +9,7 @@ boom :: fn(n: ^u8) \ {Sys} {
 main :: fn() -> IoError!() \ {Out, Sys} {
     print("before\n")
     n: u8 = 100
-    t := try thread.spawn(u8, boom, &n)
+    t := try thread.spawn(boom, &n)
     t.join()
     print("unreachable\n")
 }

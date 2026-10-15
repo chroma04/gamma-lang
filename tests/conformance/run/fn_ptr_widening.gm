@@ -15,8 +15,8 @@ main :: fn() \ {Out} {
     with (handler Log { log(s) => print("log: {}\n", s) }) {
         p: ^fn(x: i32) -> i32 = twice
         q: ^fn(x: i32) -> i32 \ {Log} = p
-        print("{} {}\n", (apply(q, 4), apply(shout, 4)))
-        print("{} {}\n", (apply(twice, 5), apply_fn(twice, 6)))
+        print("{} {}\n", apply(q, 4), apply(shout, 4))
+        print("{} {}\n", apply(twice, 5), apply_fn(twice, 6))
         r: ?^fn(x: i32) -> i32 = twice
         if f := r { print("{}\n", f(7)) }
     }

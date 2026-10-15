@@ -109,11 +109,31 @@ first_of :: fn(xs: []const u8) -> u8 {
 
 > **Common mistake.** Never put the work you need inside `assert`. `assert(advance() is not null)` does not call `advance` in a Fast build. Compute the value first, then assert on the result.
 
-`expect(cond, msg)` is for tests: it may only be called from a `test`, and a false condition fails the test and stops it.
+`expect(cond, msg)` is for tests: a false condition fails the test. It is not a check that build modes remove; it performs the `Test` effect, described next.
 
 ## Tests
 
-A `test` block is compiled only when building tests, runs with replacement handlers for the ambient effects ([chapter 7](07-effects.md)), and passes if it completes. It fails if an `expect` is false, a trap occurs, an error is returned, or the leak-checking allocator finds a leak. `try` works inside a test.
+A `test` block is compiled only when building tests, runs with replacement handlers for the ambient effects ([chapter 7](07-effects.md)), and passes if it completes. It fails if it performs `Test.fail` (which `expect`, `expect_eq` and `ok` do when their check fails), a trap occurs, or the leak-checking allocator finds a leak.
+
+Failing a test is itself an effect. A test body may perform `Test`, whose `fail` operation is an `esc`: it unwinds the test, running its `defer`s, and the test handler reports the failure with its location. `expect(cond)`, `expect_eq(actual, expected)` and `ok(result)` are ordinary functions that perform it. `ok` returns the success value of a result or fails the test with the error, so it is how a test uses functions that can fail; a test returns nothing, so `try` cannot propagate from it. Because `Test` is an effect, a helper can check things on a test's behalf, and its signature says so:
+
+```gamma
+str :: import "std/str"
+
+check_sorted :: fn(xs: []const i32) \ {Test} {
+    for i in 1..xs.len {
+        expect(xs[i - 1] <= xs[i], "not sorted")
+    }
+}
+
+test "sort" {
+    xs := [_]i32(3, 1, 2)
+    xs[..].sort()
+    check_sorted(xs[..])
+    n := ok(str.parse_int(i32, "42"))
+    expect_eq(n, 42)
+}
+```
 
 ```gamma
 test "saturating arithmetic" {
@@ -131,7 +151,7 @@ test "narrowing conversions" {
 }
 ```
 
-A failing `expect` reports its source location. Test names within a module must be distinct. Because tests replace `Out`, `Fs`, `Clock` and the rest, they are deterministic without any mocking code of your own.
+A failure runs the test's `defer`s, then reports the source location of the `expect`, `expect_eq` or `ok` that failed, and the function it is in; `expect_eq` also prints both values. Unlike a trap, it is an ordinary exit, so cleanup happens. Test names within a module must be distinct. Because tests replace `Out`, `Fs`, `Clock` and the rest, they are deterministic without any mocking code of your own.
 
 ## Undefined behavior: the closed list
 
@@ -171,7 +191,7 @@ A Safe build (§18.7) performs every check of a Checked build and also checks ev
 
 ```gamma
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    p := try new(i32, 7)
+    p := try new(T: i32, 7)
     destroy(p)
     print("{}\n", p^)    // Checked: undefined behavior. Safe: traps.
 }

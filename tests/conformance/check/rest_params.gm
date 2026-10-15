@@ -1,0 +1,17 @@
+//! stage: check
+// Rest parameters (§11.3) and the arguments for them.
+bad1 :: fn(xs: ..i32) {}                     //~ ERROR a rest parameter is one name with an unnamed tuple type or a type parameter
+bad2 :: fn(A: type, xs: ..A, n: i32) {}       //~ ERROR a rest parameter must be the last parameter
+bad3 :: fn(A: type, a, b: ..A) {}             //~ ERROR a rest parameter is one name
+pair :: fn(xs: ..(i32, i32)) -> i32 => xs.0 + xs.1
+any :: fn(A: type, head: i32, xs: ..A) {}
+
+main :: fn() \ {Out} {
+    _ = pair(1, 2, 3)                         //~ ERROR
+    _ = pair(xs: (1, 2))                      //~ ERROR the rest parameter `xs` takes the remaining positional arguments
+    t := (1, 2)
+    any(..t, 3)                               //~ ERROR a function with a rest parameter takes a spread only as its whole rest arguments
+    any(1, 2, ..t)                            //~ ERROR a spread passes the rest arguments only on its own
+    print("{} {}\n", 1)                       //~ ERROR the template has 2 placeholders, but 1 value is given
+    print("{}\n", 1, 2)                       //~ ERROR the template has 1 placeholder, but 2 values are given
+}

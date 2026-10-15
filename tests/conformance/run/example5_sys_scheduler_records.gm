@@ -76,7 +76,7 @@ handler Sched for ^Runtime {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := dequeue(self)
@@ -108,9 +108,9 @@ main :: fn() \ {Out} {
         for i in 0..NTASKS { spawn(task, &slots[i]) }
         exit()
     }
-    print("switches {} live {}\n", (rt.switches, rt.live))
+    print("switches {} live {}\n", rt.switches, rt.live)
     for s in slots {
-        print("task {} done {} history {} round {} sum {}\n", (s.id, s.done, s.history, s.mine.round, checksum(s.mine)))
+        print("task {} done {} history {} round {} sum {}\n", s.id, s.done, s.history, s.mine.round, checksum(s.mine))
     }
-    print("mailbox owner {} round {} sum {}\n", (rt.mailbox.owner, rt.mailbox.round, checksum(rt.mailbox)))
+    print("mailbox owner {} round {} sum {}\n", rt.mailbox.owner, rt.mailbox.round, checksum(rt.mailbox))
 }

@@ -1,12 +1,12 @@
 # The Gamma Language Specification
 
-Version 1.0. Gamma is a systems programming language intended to replace C: simple, fast and sensible, with algebraic effects for allocation, I/O, iteration, early exit and coroutines.
+Version 1.0. Gamma is a systems programming language intended to replace C: C in which everything a function depends on appears in its signature, with algebraic effects carrying the context that C leaves implicit — allocation, I/O, iteration, early exit and coroutines.
 
 This specification is self-contained. Chapters 1–22 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
 
 | § | Chapter |
 | --- | --- |
-| 1 | [Introduction](#1-introduction): goals, notation, terms, build modes |
+| 1 | [Introduction](#1-introduction): the idea and the principles, notation, terms, build modes |
 | 2 | [Lexical structure](#2-lexical-structure) |
 | 3 | [Programs, modules and top-level declarations](#3-programs-modules-and-top-level-declarations) |
 | 4 | [Bindings, scopes and mutability](#4-bindings-scopes-and-mutability) |
@@ -37,13 +37,21 @@ This specification is self-contained. Chapters 1–22 and Appendices A–B are n
 
 ## 1. Introduction
 
-Gamma is a systems programming language intended as a replacement for C. Its goals, in priority order:
+Gamma is a systems programming language intended as a replacement for C. Its design follows from one idea:
 
-1. **Sensible.** Every construct has one meaning that can be stated in a sentence. Rules that read the same in different places mean the same thing. Footguns inherited from C (implicit conversions, octal literals, `x & 1 == 0`, fallthrough, null by default, undefined signed overflow) are removed.
-2. **Fast.** Nothing costs more than the equivalent C unless the program asks for a check, and every check can be removed by a build mode. Abstractions (generics, effects, iteration) compile away when their implementation is known statically.
-3. **Simple.** A small number of orthogonal features. Where two features could do one job, one is removed.
+> **Gamma is C in which everything a function depends on appears in its signature.** Its inputs are in its parameter list, its failures in `E!T`, its absences in `?T`, and its *context* — the allocator, input and output, the clock, randomness, the consumer of the values it produces, its scheduler, the outside world — in its effect set, after `\`. Handlers supply that context, so it is explicit without being passed by hand.
 
-Gamma's distinguishing feature is **algebraic effects with handlers**, used for the things C does with globals, callbacks, `setjmp`, and hand-written state machines: allocation, I/O, logging, iteration, early exit, and coroutines.
+C programs reach their context through globals, `errno`, callbacks with a `void *`, `setjmp` and hand-written state machines. Gamma expresses all of these with **algebraic effects and handlers**, which the type system tracks and which tests can replace. Five principles follow from the three words *modern C alternative* and *algebraic effects*; every rule of this specification is meant to be derivable from one of them, and Appendix C gives the derivations.
+
+| | Principle | What it means |
+| --- | --- | --- |
+| **P1** | **Data is bytes you can lay out.** (*C*) | Values have C layout, copy bitwise, own nothing and run no code when copied or dropped (§5, §15). |
+| **P2** | **Cost is visible where it is paid.** (*C*) | No construct allocates, calls user code, converts, suspends or checks unless its syntax or its signature says so. Nothing costs more than the equivalent C unless the program asks for a check, and every check can be removed by a build mode (§15.3, §18). |
+| **P3** | **Context is an effect.** (*algebraic effects*) | Anything a function uses that it is not passed is in its effect set and is supplied by a handler; `Sys` marks the edge of the model (§12). |
+| **P4** | **Mistakes are rejected, not interpreted.** (*modern*) | Ambiguous text is a compile error, invalid states are not representable (no null, tagged unions, exhaustive `match`), a failed run-time check traps, and arithmetic is never undefined. C's footguns — implicit conversions, octal literals, `x & 1 == 0`, fallthrough, null by default, undefined overflow — are gone. |
+| **P5** | **Every rule is local.** (*modern*) | Legality never depends on global resolution or on how clever the compiler's analysis is. Generics are checked once where they are written, and a reader can tell from a call which code runs. |
+
+One rule breaks ties: **when two features could do one job, one is removed.** "Fast" and "simple" are consequences rather than goals of their own: abstractions (generics, effects, iteration) compile away when their implementation is known statically (P2), and the language stays small because every feature must earn its place against the others.
 
 ### 1.1 Status of this document
 
@@ -159,7 +167,7 @@ Identifiers are ASCII. They are case-sensitive. The identifier consisting of a s
 **Keywords** (reserved everywhere):
 
 ```
-and      break    continue ctl      defer    discard  effect   else
+and      break    cancel   continue ctl      defer    effect   else
 errdefer esc      false    fn       for      foreign  handler  if
 import   in       is       match    not      null     or       pub
 resume   return   struct   true     try      union    using    when
@@ -342,7 +350,7 @@ binding  = ident '::' expr
          | ident ':' type ':' expr
 ```
 
-Every top-level binding is immutable and its initializer is evaluated at compile time (§17). The kinds of value a top-level binding can denote are: a constant of any type whose value is known at compile time, a function, a type (`struct`, `union`, an alias), an effect, a module (`import`), and a foreign block. The `#global` attribute (§19.3) introduces the only kind of mutable top-level storage.
+Every top-level binding is immutable and its initializer is evaluated at compile time (§17). The kinds of value a top-level binding can denote are: a constant of any type whose value is known at compile time, a function, a type (`struct`, `union`, an alias), an effect, a named effect set (§12.3), a module (`import`), and a foreign block. The `#global` attribute (§19.3) introduces the only kind of mutable top-level storage.
 
 Top-level declarations are mutually visible regardless of order. Their dependency graph — *A* depends on *B* if evaluating *A*'s initializer or computing *A*'s type requires *B*'s value — must be acyclic, except that functions may refer to each other (including recursively) and types may refer to each other through pointers. A cycle is a compile error naming every declaration in it.
 
@@ -387,10 +395,22 @@ Command-line arguments and the environment are obtained through the `Env` effect
 ```
 test "parse rejects letters" {
     expect(parse_u16("12a") is !.BadDigit(at: 2))
+    expect_eq(ok(parse_u16("42")), 42)
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value; wherever a test writes an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() \ {…}` that returns nothing, so `return` ends the test and `try` cannot propagate from it. It may perform any ambient effect, each handled by the **test handler** listed in §12.9, and the effect `Test`, through which the body, or any function that declares `Test`, fails the test:
+
+```
+Test :: effect {
+    note: fn(bytes: []const u8)                          // part of a failure report
+    fail: esc(msg: string, loc: SourceLocation) -> never   // fail the test here
+}
+```
+
+`expect`, `expect_eq` and `ok` (§21.6) are ordinary functions that perform `Test`: `expect(c)` fails the test unless `c` holds, `expect_eq(a, e)` unless `a is e`, and `ok(x)` returns the success value of a result `x` or fails the test, reporting the error. A helper that checks something on a test's behalf declares `\ {Test}`, which says in its signature that it can fail a test. Because `fail` is an `esc` operation, a failure unwinds the test's frames, running their `defer`s, and ends the test; the test handler then writes the report: the `note`s, the message, and the location with the function containing it. Wherever a test reports an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). Only test and benchmark bodies are given a handler for `Test`; `main` cannot perform it.
+
+Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if it performs `fail`, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call (a test that failed is not also checked for leaks). Test names in a module must be distinct.
 
 The tool runs tests one at a time in the order they are found, or several at a time on request; either way each test has its own handlers and its own leak check, and the results are reported in that order. It can also run the tests of every module of the package, imported or not, and count which source lines the tests ran (a coverage report); these options do not change what a test means.
 
@@ -403,7 +423,7 @@ bench "push 1000 items" {
 }
 ```
 
-A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), without the leak check, so it measures the real system. It fails if its body returns an error or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
+A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), plus one for `Test`, without the leak check, so it measures the real system. It fails if its body performs `Test.fail` (as through `ok` or `expect`) or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
 
 A compiler may remove work whose result is unused or compute it at compile time, which makes a benchmark measure nothing. `@black_box(x)` (§20) returns `x` while hiding from the optimizer both that the value is known and that it is used: pass inputs and results through it.
 
@@ -450,7 +470,7 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 
 *Note:* Debug builds fill `---` storage with a recognizable pattern (`0xAA` bytes).
 
-`---` may also be used as the value of a struct field in a constructor, or as an argument, with the same restriction on the field's or parameter's type: `Buf(len: 0, data: ---)`, `new(Page, ---)`. Inside a generic function, `---` at type `T` requires the constraint `Plain(T)` (§16.3).
+`---` may also be used as the value of a struct field in a constructor, or as an argument, with the same restriction on the field's or parameter's type: `Buf(len: 0, data: ---)`, `new(T: Page, ---)`. Inside a generic function, `---` at type `T` requires the constraint `Plain(T)` (§16.3).
 
 ### 4.5 Destructuring
 
@@ -474,7 +494,7 @@ The statement means `if P := e { rest of the block } else { d }`. A pattern bind
 Scopes nest: the universe scope (predeclared names, §21.1) contains each module's top-level scope, which contains function bodies, which contain blocks.
 
 - A local binding is in scope from the end of its declaration to the end of the enclosing block. A binding's own initializer cannot refer to it.
-- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias. (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely: the effect operations of §21.1 (`current`, `write_out`, `yield`, …) are ordinary predeclared function names, so a program may declare its own `current` or bind a local `now` (the operation stays reachable as `Alloc.current`, `Clock.now`).
+- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias. (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely. The operations of the predeclared effects other than `yield` are not in the universe at all (§21.1), so a program may name its own declarations `now`, `read` or `exit` freely.
 - Function literals and handler literals are part of their enclosing function for this rule.
 - Top-level names in one module must be distinct, across all files of the module.
 - `_` never introduces a binding and may be used any number of times.
@@ -737,7 +757,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index or a slicing bound; `u32` if it was used as a shift amount; otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -857,6 +877,8 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
 A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
+
+These rules follow one principle: **mutation of an argument is visible at the call.** An argument passed for read-only access (`^const T`, `[]const T`) may be a temporary or an array, which the compiler adapts, since nothing can change through it; an argument passed for mutation must be a mutable place, written explicitly (`&x`, `a[..]`). The one exception is the receiver of a method call (§7.10), which is the subject of the call: `names.push(x)` visibly acts on `names`.
 
 ### 7.3 Operator summary
 
@@ -997,7 +1019,7 @@ Indexing a `string` gives a `u8`.
 
 A struct type may not have both a field and a method candidate with the same name: declaring a function `f` in `S`'s module whose first run-time parameter has type `S`, `^S` or `^const S` is a compile error if `S` has a field `f`.
 
-**Receiver rules.** The receiver fills the function's first run-time parameter: compile-time parameters (types and `::` parameters) are skipped and inferred (§16.2, §16.5). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
+**Receiver rules.** The receiver fills the function's first run-time parameter; compile-time parameters before it are inferred or, if not inferable, bound by the other arguments as in any call (§11.3, §16.2). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
 
 Methods cannot be added to types declared in other modules; write a free function instead.
 
@@ -1040,7 +1062,7 @@ A **constant expression** is an expression whose value is computed at compile ti
 block     = '{' { statement terminator } [ statement ] '}'
 statement = binding | assignment | expr | defer_stmt | when_stmt | while_stmt
           | 'return' [ expr ] | 'break' [ label ] [ expr ] | 'continue' [ label ]
-          | 'discard' expr
+          | 'cancel' expr
 ```
 
 `return`, `break`, `continue` and `resume` are expressions of type `never` (§5.17), so they can appear as operands, most usefully after `else`: `n = n *? 10 else return !.TooBig`. An operand after `return`/`break` extends to the end of the enclosing expression.
@@ -1058,7 +1080,7 @@ capture   = ident '=>' ( block | expr )
 
 The condition is a `bool` expression, or a **binding condition** `pattern := e`, or several of these joined by `and`.
 
-- A binding condition succeeds if `e`'s value matches `pattern` (§9), binding the pattern's names. Refutable patterns are the point: `if user := find(id)` (an irrefutable binding pattern on an optional matches only a present value, §9.3), `if .Circle(r) := shape`, `if f := open(path)` on a result (matches only success).
+- A binding condition succeeds if `e`'s value matches `pattern` (§9), binding the pattern's names. Refutable patterns are the point: `if user := find(id)` (an irrefutable binding pattern on an optional matches only a present value, §9.3), `if .Circle(r) := shape`, `if f := Fs.open(path, opts)` on a result (matches only success).
 - In a chain `c1 and c2 and …`, parts are evaluated left to right and the chain stops at the first failure. Names bound by a part are in scope in the later parts and in the `then` block — not in `else` branches.
 - Binding conditions may not be combined with `or` or negated with `not`.
 - **Error capture.** If the *last* part of an `if` condition is a binding condition on a result, the final `else` may be `else e => …`, which binds the error value to `e`. This is permitted only when the `if` has exactly one condition part.
@@ -1328,9 +1350,9 @@ greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
 ```
 fn_lit     = 'fn' '(' [ param % ',' ] ')' [ '->' type ] [ '\' effect_set ] [ where_clause ] fn_body
 fn_body    = block | '=>' expr
-param      = ident { ',' ident } [ ( ':' | '::' ) type ] [ '=' expr ]
+param      = ident { ',' ident } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]   // ': ..T' is a rest parameter (§11.2)
 effect_set = '{' [ effect % ',' ] '}'
-effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6)
+effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6) or a named set (§12.3)
 ```
 
 - `a, b: i32` declares two parameters of one type.
@@ -1346,18 +1368,32 @@ Parameters are immutable bindings. Each parameter is a **distinct object** initi
 
 *Implementation note:* an implementation may pass a large argument by reference instead of copying when this is unobservable. See Appendix D.
 
-A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it, and it is not counted among the non-inferable parameters of §16.2.
+A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it.
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
+
+**Rest parameters.** The last parameter of a function literal (other than parameters whose default is `@caller_location()`) may be declared `name: ..T`, where `T` is an unnamed tuple type or a type parameter. It takes the **rest arguments**, the positional arguments after those of the parameters before it, as one tuple of type `T`; if `T` is a type parameter, it is inferred as the tuple of the rest arguments' types (§16.2). A rest parameter cannot be named in a call and has no default: with no rest arguments it is `()`.
+
+```
+show :: fn(A: type, label: string, args: ..A) \ {Out} {
+    print("{}: {}\n", label, args)
+}
+
+show("none")                // args is ()
+show("two", 5, "x")         // args is (5, "x"): A is (i32, string)
+```
+
+Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
 
 ### 11.3 Calls
 
 A call `f(args)` binds arguments to parameters:
 
-1. **Positional** arguments bind to parameters in order. Inferable parameters (§16.2) are skipped by positional binding when the call omits them; see §16.2 for the rule.
-2. **Named** arguments `name: e` bind to the parameter of that name. They follow all positional arguments.
-3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments.
-4. Each parameter must be bound exactly once, or have a default, which is used.
+1. **Named** arguments `name: e` bind to the parameter of that name. They may be written anywhere in the argument list.
+2. **Positional** arguments bind, in order, the **positional parameters**: every parameter except those a named argument names, inferable compile-time parameters (§16.2), which are never bound positionally, and parameters whose default is `@caller_location()`.
+3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments. A positional argument may not follow a spread that supplies names.
+4. If the function has a rest parameter (§11.2), the positional arguments left over after the positional parameters before it are its rest arguments.
+5. Each parameter must be bound exactly once, or have a default, which is used.
 
 Each argument is coerced to its parameter's type (§6.4). Arguments are evaluated left to right in the order written, then the call is made.
 
@@ -1399,7 +1435,7 @@ retry :: fn(times: u32, op: fn() -> IoError!()) -> IoError!() {
     return op()                         // last attempt: its error is ours
 }
 
-try retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
+try retry(3, fn() => Net.send(conn, packet))   // Net is handled by retry's caller
 ```
 
 `retry` performs no effects of its own and needs no effect annotation to accept callbacks that perform any. A callee that wants to *provide* an effect lists it:
@@ -1467,7 +1503,7 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`) or effect sets (`effect(E: effects)`, §16.6); an effect is instantiated by applying it to arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`, and through an instantiation or an alias of one as `E(T).op` or `Ev.op` (with `Ev :: E(T)`), which performs that instantiation without inference. A name clash between an operation and another top-level name of `M` is a compile error.
+Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and effect set `{E(…)}`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`, and through an instantiation or an alias of one as `E(T).op` or `Ev.op` (with `Ev :: E(T)`), which performs that instantiation without inference. A name clash between an operation and another top-level name of `M` is a compile error. Outside `M`, an operation is reached as `m.op` or `m.E.op` (with `m` the import of `M`); for the predeclared effects, whose operations the universe leaves out, as `E.op` (§21.1).
 
 ### 12.2 Operation kinds
 
@@ -1485,6 +1521,8 @@ An `esc` or `ctl` operation with result type `never` can never return to the per
 
 An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Yield(i32)`). Two instantiations of a generic effect with different arguments are different effects; `{Yield(i32), Yield(u8)}` is a valid set. Order and duplicates are irrelevant.
 
+**Named effect sets.** A top-level binding whose initializer is an effect set names it: `Io :: \ {Fs, Alloc, Err}`. `..Io` in an effect set stands for its effects, so `\ {..Io, Clock}` is `\ {Fs, Alloc, Err, Clock}`; it may be `pub`, aliased (`Console :: Io`), reached through a module (`..m.Io`) and given as the argument of an effect-set parameter (`Sched(Io)`, §16.6). A named effect set is a compile-time name for a list of effects, nothing more: it is not a type, not a value, and it cannot mention an effect-set parameter. It exists so that the effects a family of functions performs are written once.
+
 **Performed effects.** The effects an expression *performs* are:
 
 - for a call to a function or function pointer with effect set `S`: `S`;
@@ -1495,7 +1533,7 @@ An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Y
 
 **Checking.** For every function, the effects its body performs must be a subset of its declared effect set. A `test` body and `main` are checked against the ambient set (§3.7). A top-level constant's initializer must perform no effects.
 
-**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
+**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There is no other subtyping on effect sets, and no effect variables in the types of values: a generic function may abstract over a set with an effect-set parameter, fixed per instantiation (§12.8, §16.6).
 
 ### 12.4 Handlers
 
@@ -1536,7 +1574,7 @@ decl_clause  = ident '(' ident { ',' ident } ')' '=>' ( expr | block )
 ```
 
 ```
-FileLogger :: struct { file: File, min: Level }
+FileLogger :: struct { file: fs.File, min: Level }
 
 handler Log for ^FileLogger \ {Fs} {
     log(self, level, msg) => if level >= self.min { _ = fs.write_all_to(self.file, msg) }
@@ -1548,7 +1586,7 @@ handler Log for ^FileLogger \ {Fs} {
 - A handler declaration must appear in the module that declares `E` or the module that declares `T` (or, if `T` is `^S`/`^const S`, the module that declares `S`). For each `E` and `T` there is at most one declaration.
 - Clauses of a handler declaration have no enclosing function, so labeled `break`/`continue` and captures are not available. A clause body behaves like a function body of its own: `return v` (and `try`, §10.5) ends the clause with the value `v`, which is the clause's result exactly as if it were the body's last expression. Unlabeled `break` (for `esc` and `ctl` operations) exits the installing `with` (§12.7).
 - A value of type `T` used in `with` installs a handler for every effect `E` that has a declaration `handler E for T`.
-- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). A declaration for a specific type takes precedence over a generic one that also matches it, and two generic declarations of one effect may not have the same type shape.
+- **Generic types.** `handler(P1: K1, …) E for T { … }` declares handlers for every instance of a generic type: the parameters (type parameters `T: type` or compile-time values `N: usize`, as for generic types, §16.4) may appear in `E`, `T`, the effect set and the clause bodies, and each must appear in `T`. A value whose type matches `T` installs the declaration instantiated with the matching arguments; the clauses are checked once, like generic functions (§16.1). No type may match two declarations of one effect: a declaration for a specific type that a generic declaration of the same effect also matches is a compile error, and so are two generic declarations whose types could be the same type for some arguments (as `^Pair(T, u8)` and `^Pair(u8, T)` could). Finding a value's handlers is therefore a lookup, never a choice between candidates.
 
 ```
 Collector :: struct(T: type, N: usize) { items: [N]T, len: usize = 0 }
@@ -1596,7 +1634,7 @@ When an operation is performed, its handler's clause runs with the operation's a
 
 ### 12.8 Effect polymorphism
 
-Gamma has no effect variables in the types of values. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. A function *pointer* type has a fixed effect set, but a generic function, type, effect or handler may abstract over one with an effect-set parameter (`E: effects`, §16.6), which is fixed per instantiation.
+Gamma is effect-polymorphic in two ways, and has no effect variables in the types of run-time values. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. A function *pointer* type has a fixed effect set, but a generic function, type, effect or handler may abstract over one with an effect-set parameter (`E: effects`, §16.6), which is fixed per instantiation.
 
 Generic effects (`Yield(T)`) and effect sets mentioning type parameters (`\ {Yield(T)}`) or effect-set parameters (`\ {..E}`) are allowed; the set is fixed per instantiation.
 
@@ -1616,7 +1654,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | no arguments and no variables; `exit` ends the test, which passes only with code 0 |
 | `Sys` | none (§12.10) | — | not replaceable |
 
-Any of these may also be handled by user handlers; only `Sys` cannot.
+Any of these may also be handled by user handlers; only `Sys` cannot. `Test` (§3.8) is predeclared too but is not ambient: only test and benchmark bodies are given a handler for it.
 
 ### 12.10 `Sys`
 
@@ -1714,7 +1752,7 @@ for p in each_ptr(scores) { p^ = p^ +| 10 }
 for i, x in enumerate(names) { … }
 ```
 
-Any user function with `Yield(T)` in its effect set is an iterator; there is no other iterator protocol.
+Any user function with `Yield(T)` in its effect set is an iterator; `for` knows no other iterator protocol. (The cursors of §13.4 are ordinary methods that `while` uses through binding conditions.)
 
 ### 13.4 Lockstep iteration
 
@@ -1771,7 +1809,7 @@ If any handler installed by a `with` handles a `ctl` operation, the `with` must 
 
 ### 14.2 Continuations
 
-When code running on a fiber performs a `ctl` operation `op(args)` with result type `R`, the fiber is **suspended** at the perform, and the clause runs on the driver with the arguments and a **continuation** `k: cont(R)` as its final parameter. A continuation represents the suspended fiber — including any fibers of nested `with … on` blocks that are part of it — and can be **consumed** exactly once, by `resume` or `discard`.
+When code running on a fiber performs a `ctl` operation `op(args)` with result type `R`, the fiber is **suspended** at the perform, and the clause runs on the driver with the arguments and a **continuation** `k: cont(R)` as its final parameter. A continuation represents the suspended fiber — including any fibers of nested `with … on` blocks that are part of it — and can be **consumed** exactly once, by `resume` or `cancel`.
 
 `cont(R)` is a first-class type: a continuation can be stored in variables, structs and queues, copied, and passed around. The rules that keep this safe:
 
@@ -1780,7 +1818,7 @@ When code running on a fiber performs a `ctl` operation `op(args)` with result t
 3. **Same `with`.** A continuation may be consumed only by code running in a `ctl` clause of a handler installed by the same `with` that produced it.
 4. **Same thread.** A continuation may be consumed only on the thread that created it (checked).
 
-If a clause uses `k` only as the operand of `resume` or `discard` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` discard it, §14.4); rules 1–3 then need no run-time check for it.
+If a clause uses `k` only as the operand of `resume` or `cancel` — never storing, copying or passing it — the compiler verifies statically that no path consumes it twice, and that every path ending in `resume` or in a `break` to the installing `with` has consumed it (paths that exit past the `with` cancel it, §14.4); rules 1–3 then need no run-time check for it.
 
 ### 14.3 `resume`
 
@@ -1803,17 +1841,17 @@ A `with … on` completes in one of two ways:
 - **`B` finishes** on its fiber with value `w`. Control returns to the driver and the `with`'s value is `w`.
 - **A `ctl` clause exits** with `break`/`break v` to the installing `with`. The `with` completes with that value.
 
-A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the discarding of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is discarded (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
+A third way is an **exit that crosses the `with … on`**: an exit whose target lies outside the `with`, taken by code on one of its fibers or by one of its clauses — a labeled `break`/`continue` or `return` in a clause of a handler literal, an `esc` operation (performed on a fiber or in a clause) whose handler is installed outside the `with`, or the cancelling of a continuation that a fiber of an enclosing `with … on` is suspended in. When it starts on a fiber, the unwinding (§12.7.1) proceeds through that fiber's frames to its base. Then every unconsumed continuation produced under the `with` is cancelled (§14.5), most recently created first, and the exit continues on the driver. Exits therefore never leave suspended fibers behind.
 
-In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, discard the suspended fibers first.)
+In the first two cases, every continuation produced under this `with` must already have been consumed; otherwise the program has violated rule 2 of §14.2. This is a checked error: it traps in Debug and Checked builds ("with completed while N fibers are suspended") and is undefined behavior in Fast builds. (To shut down, cancel the suspended fibers first.)
 
-### 14.5 `discard`
+### 14.5 `cancel`
 
 ```
-discard k
+cancel k
 ```
 
-`discard k` is a statement, permitted only in a `ctl` clause. It **cancels** the suspended fiber: control switches to it, and its frames are unwound from the perform outward to the base of the fiber, running their `defer` and `errdefer` statements (§8.8) — exactly like an `esc` exit. Then control returns to the clause, which continues after the `discard`.
+`cancel k` is a statement, permitted only in a `ctl` clause. It **cancels** the suspended fiber: control switches to it, and its frames are unwound from the perform outward to the base of the fiber, running their `defer` and `errdefer` statements (§8.8) — exactly like an `esc` exit. Then control returns to the clause, which continues after the `cancel`.
 
 Deferred statements cannot perform `ctl` operations (§8.8), so cancellation cannot suspend. If `k` represents the fiber running `B`, discarding it unwinds `B`'s frames, including the parts of `B` that are lexically in the function containing the `with`.
 
@@ -1826,7 +1864,7 @@ Deferred statements cannot perform `ctl` operations (§8.8), so cancellation can
 `@fiber` may be used only inside the body of a `ctl` clause. `f` is a function pointer `^fn(a: A) -> never \ {S}`, `arg: A`, and `stack: []u8`. `A` must be a first-class type (§16.1): a second-class value cannot be smuggled into a fiber that may outlive its frame. It creates a new fiber belonging to the clause's `with`, whose initial state is "about to call `f(arg)` on `stack`", and returns its continuation; resuming it (with `()`) starts the call.
 
 - The new fiber runs in the handler context of the `with`'s body: the handlers installed by the `with`, plus the context outside it. The effects in `S` other than the clause's own effect are part of the effects the handler requires, since the clause cannot know which other handlers its `with` installs: for a handler literal, they must be available where it is written; for a handler declaration, `S` is determined by the operation's parameter type and the effects other than the declaration's own must be listed in its `\ {A}`. (A fiber that needs several `ctl` operations of its scheduler gets them from one effect, as `Async` in §14.7 does.)
-- `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause discards it (a library `spawn` wraps the user's function to do this).
+- `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause cancels it (a library `spawn` wraps the user's function to do this).
 - The stack rules of §14.1 apply to `stack`.
 
 ### 14.7 Example: a scheduler
@@ -1860,7 +1898,7 @@ handler Async for ^Scheduler \ {Sys} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { if j := self.joiner { self.joiner = null; resume j() } }
         r := self.next()
@@ -2003,15 +2041,16 @@ max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 At a call, type parameters may be omitted when they can be **inferred** from the value arguments:
 
-- A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
-- Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
+- A compile-time parameter (a type parameter, an effect-set parameter or a compile-time value parameter) is **inferable** if the type of another parameter mentions it (other than inside a computed array length, §16.5). An inferable parameter is **never bound positionally**: it is inferred from the run-time arguments, or written by name when the arguments do not determine it or determine another type than wanted: `make_fill(T: u8, 64, 0)`. Positional arguments bind the remaining parameters in order (§11.3), so `max(scores)` passes `scores` and `max(i32, scores)` is an error. A compile-time parameter that is not inferable, such as `T` in `list(T: type) -> List(T)`, is an ordinary positional parameter: `list(string)`.
+- Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(T: u16, 1, 300)` or convert. The arguments are matched in an order that does not depend on how they are written: a function literal is matched after the other run-time arguments, so its parameter types can come from them (`apply_n(fn(w) => w + 1, 3, v)` takes `w`'s type from `v`).
 - In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
-- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
-- A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
+- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: ..A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", 5, 1.5)` has `A = (i32, f64)`.
+- Writing an inferable parameter by name fixes it: the run-time arguments are then coerced to the types it gives, as at any coercion site (§6.4).
 
 ```
 biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
-names   := list(string)              // T written explicitly
+names   := list(string)              // T is not inferable: a positional parameter
+bytes   := make_fill(T: u8, 64, 0)   // T by name: the literals alone would make it i32
 try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted (§7.10)
 ```
 
@@ -2030,7 +2069,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
-| `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
+| `Signed(T)` | signed integer and float types (floats have a sign) | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
@@ -2049,10 +2088,10 @@ HashMap :: struct(K, V: type,
     …
 }
 
-ids := map(string, u32)                                // @hash and `is`
+ids := hash_map(string, u32)                                // @hash and `is`
 try ids.put("ada", 1)
 
-names := map_with(string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2068,7 +2107,7 @@ A function parameter declared with `::` instead of `:` is a **compile-time value
 
 ```
 rotate :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T { … }
-print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
+print  :: fn(A: type, template :: string, args: ..A) \ {Out}
 ```
 
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
@@ -2076,7 +2115,7 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
 - Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ^` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression up to folding constant subexpressions and the order of the operands of `+ * & | ^` (`[A + B]T` and `[B + A]T` are one type, `[2 * N]T` and `[N + N]T` are not). Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
 - A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
-- A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
+- A type parameter used only by an omitted defaulted parameter takes the default's type: with `f :: fn(A: type, x: A = ())`, `f()` has `A = ()`.
 
 ### 16.6 Generic effects and effect-set parameters
 
@@ -2096,7 +2135,7 @@ Sched :: effect(E: effects) {
 ```
 
 - Inside an effect set, `..E` stands for the effects of `E`; after instantiation it is replaced by them (duplicates merge). `E` itself is not a type and may appear only as `..E` or as the argument of another effect-set parameter (`Sched(E)`, `Scheduler(E)`).
-- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), or as another effect-set parameter. A function's effect-set parameter takes a positional argument only where one written this way stands; otherwise it is inferred, like a type parameter (§16.2), from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
+- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), a named effect set (§12.3), or another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2); an inferable one is written by name or inferred from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
 - The body is checked once, with `..E` as an opaque member of the sets that mention it: `apply` may call `f` because its own set includes `..E`. Since `E` might include any effect, a `with` may not handle anything around code that performs `..E` (the next paragraph's rule, for effect sets).
 
 This is how a stored function pointer can be polymorphic in its effects without effect variables in the types of values: `std/fiber`'s `Sched(E)` lets tasks perform the effects `E`, which the scheduler's handler, `handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}`, requires where it is installed (§14.6).
@@ -2109,7 +2148,7 @@ This is how a stored function pointer can be polymorphic in its effects without 
 ### 16.7 Restrictions
 
 - `when` conditions may not depend on type parameters or compile-time value parameters of an enclosing generic function or type (that would make "checked once" impossible). Use separate functions.
-- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)`. An argument for a type parameter must be a type, which tells `f(u8)` from a call such as `id(x)`; a function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
+- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, positionally or by name as §11.3 binds them, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)` (`T` is not inferable there, so it is positional), `q: ^fn(x: u8) -> u8 = double(T: u8)` for `double :: fn(T: type, x: T) -> T`. A function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
 - Recursion between generic instantiations must terminate: an instantiation that (transitively) requires an instantiation with a strictly larger type argument is a compile error after an implementation-defined depth (at least 64).
 
 ### 16.8 Structural hashing
@@ -2124,7 +2163,7 @@ The algorithm is implementation-defined, need not be stable across builds or tar
 
 Gamma has no user-defined traits, interfaces or typeclasses: no declaration that lets a type promise to provide named operations, and no mechanism that finds an implementation implicitly. The closed constraints of §16.3 are fixed by the language.
 
-*Rationale.* Traits combine five jobs. Four are already done by other features, each with its cost visible at the use site; the fifth — implicit, compositional resolution of implementations — is what Gamma deliberately omits, because its rules (coherence, orphan rules, overlap, associated types, effect sets on trait methods) would be the largest and least predictable part of the language, and because a reader could not tell from a call which code runs. See Appendix C.4.
+*Rationale.* Traits combine five jobs. Four are already done by other features, each with its cost visible at the use site; the fifth — implicit, compositional resolution of implementations — is what Gamma deliberately omits, because its rules (coherence, orphan rules, overlap, associated types, effect sets on trait methods) would be the largest and least predictable part of the language, and because a reader could not tell from a call which code runs. Handler declarations (§12.6) are the one, confined, place where a type supplies an implementation. See Appendix C.6.
 
 The idiomatic replacements:
 
@@ -2135,7 +2174,7 @@ The idiomatic replacements:
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
 | Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type: `BTree(K, V, less: by_name)` |
-| Print or log any value | `print("{} at {}", (name, pos))`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
+| Print or log any value | `print("{} at {}", name, pos)`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
 | Run-time dispatch over a closed set of cases | a tagged union and `match` |
 | Run-time dispatch over an open set (plugins, drivers) | a struct holding a data pointer and a `^const` vtable of `^fn`s, as `Allocator` does (§15.2) |
 | An implementation supplied by the caller's context | an effect and a handler (§12) |
@@ -2220,7 +2259,7 @@ Every run-time check in Gamma follows one rule: **it traps in Debug, Checked and
 | `@min_stack` and fiber stack overflow | enough stack | undefined behavior |
 | `@unreachable()` | never evaluated | undefined behavior |
 | consuming a continuation twice; `with` completing with unconsumed continuations; consuming on the wrong `with` or thread | §14.2 rules | undefined behavior |
-| `expect`, `assert` (§21.6) | condition is true | `assert`: removed; `expect`: tests only |
+| `assert` (§21.6) | condition is true | removed |
 | integer `/`, `%` | divisor ≠ 0; not `MIN / -1` | **always traps** |
 
 An *unspecified value* is a valid value of the result type (§1.3): using it cannot by itself cause UB. However, an unspecified *pointer* (from `x?` on a null `?^T` in Fast builds) may be dereferenced only at the risk of UB, as with any invalid pointer.
@@ -2328,7 +2367,7 @@ libc :: foreign "c" {
 - `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
 - Parameter and result types must be C-compatible.
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
-- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
+- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions use rest parameters (§11.2) instead.
 - Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
 - An interpreter may call foreign functions itself, with the semantics of a native call: C sees the memory the pointers it is given point to, and what C writes there is visible afterwards. Where it cannot give a call those semantics (a library it cannot load, a signature it cannot pass), it must run the program natively instead.
 - **Calling convention**: the target's C ABI by default. `#callconv(.X)` selects another: `.C` (the target's C ABI, the default, so it only states the default), `.SysV` (the System V AMD64 ABI) and `.Win64` (the Microsoft x64 ABI). `.SysV` and `.Win64` exist only where `target.arch` is `.X86_64`; naming them on another architecture, or naming any other convention, is an error. On the supported x86-64 targets the C ABI is System V, so `.SysV` means exactly `.C`; only `.Win64` differs.
@@ -2471,7 +2510,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@static_assert(c, msg)` | `()` | yes | 17.7 |
 | `@compile_error(msg)` | `never`; a compile error if the call is in a taken `when` branch or compiled code | yes | — |
 | `@hash(x, seed: u64)` | `u64`; structural hash, for `Eq` types | yes | 16.8 |
-| `@write(sink, template, args)` | `()`; structural formatting into a sink | yes, if `sink` is | 21.6 |
+| `@write(sink, template, values…)` | `()`; structural formatting into a sink | yes, if `sink` is | 21.6 |
 | `@stack_size(f)` | `usize` | yes | 14.8 |
 | `@min_stack` | `usize` | yes | 14.1 |
 | `@fiber(f, arg, stack)` | `cont(())` | no | 14.6 |
@@ -2494,15 +2533,17 @@ The core library is the part of the standard library that the language definitio
 
 ### 21.1 The universe scope
 
-These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name, including the effects and the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
+These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names.
+
+The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation of a predeclared effect is reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write_out(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are also called as methods (`f.read_from(buf)`, §21.7). The universe also leaves out the types of `Fs` and `Net`, which the standard modules `std/fs` and `std/net` export (`fs.File`, `net.Socket`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
 
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
-| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
-| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`, `Test` |
+| operations | `yield` only; the others are reached through their effects |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2518,7 +2559,7 @@ destroy      :: fn(T: type, p: ^const T) \ {Alloc}
 dupe         :: fn(T: type, s: []const T) -> AllocError![]T \ {Alloc}
 ```
 
-`make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
+`make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T: X, ---)` is allowed when `X` is plain-data (§4.4).
 
 `free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op. Storage from `make_aligned(T, n, align)` is released with `free_aligned(s, align)`, passing the same `align`, so that the allocator gets back the alignment it allocated with.
 
@@ -2568,7 +2609,7 @@ nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 
 ### 21.5 Containers (summary)
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `map` and `map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `hash_map` and `hash_map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
 
 ```
 // core/list
@@ -2586,14 +2627,14 @@ clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
 into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
 collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!()   // appends what `it` yields
-write  :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!()  // @write into the list
+write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
 
 // core/map
 HashMap  :: struct(K, V: type,
                    hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
                    eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
 map      :: fn(K, V: type) -> HashMap(K, V) \ {Alloc} where Eq(K)
-map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
+hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc}
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
 get      :: fn(m: ^const HashMap(…), k: K) -> ?V
@@ -2618,33 +2659,29 @@ Signatures are abbreviated: the `HashMap` functions take the map type's paramete
 ```
 trap   :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never
 assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation = @caller_location())
-expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location())
-expect_eq :: fn(T: type, actual: T, expected: T)
-print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
-eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
+expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) \ {Test}
+expect_eq :: fn(T: type, actual: T, expected: T) \ {Test}
+ok     :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T \ {Test}
+print  :: fn(A: type, template :: string, args: ..A) \ {Out}
+eprint :: fn(A: type, template :: string, args: ..A) \ {Err}
 ```
 
 - `trap` traps in every build mode (§18.5).
 - `assert` is a checked operation: it traps on `false` in Debug and Checked builds and is removed (its argument not evaluated) in Fast builds.
-- `expect` may be called only directly in the body of a test (not in a function a test calls); on `false` it fails the current test (reporting the location) and stops it.
-- `expect_eq(actual, expected)` may be called only directly in the body of a test; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
-- `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
+- `expect(cond, msg)` performs `Test.fail` (§3.8) when `cond` is `false`, reporting `msg` (prefixed `expectation failed: ` unless it is the default) and its caller's location.
+- `expect_eq(actual, expected)`, unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), writes `expected: ` and `actual: ` lines with both values through `Test.note`, then performs `Test.fail` with `expectation failed: the values differ` and its own location.
+- `ok(x)` is the success value of `x`; if `x` is an error, it writes `error: ` and the error value through `Test.note` and performs `Test.fail` with its caller's location.
+- `print(t, args…)` is `@write(fn(b) => Out.write_out(b), t, args…)`, and `eprint` likewise with `Err.write_err`.
 
 #### 21.6.1 Formatting: `@write`
 
 ```
-@write(sink, template, args)
+@write(sink, template, values…)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
-
-- *n* = 0: `args` must be `()`.
-- *n* = 1: `args` is the one argument, whatever its type (a tuple prints as a tuple).
-- *n* ≥ 2: `args` must be a tuple of exactly *n* elements, the arguments in order.
-
-Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
+**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
 **Display rules.** Each argument is written according to its type:
 
@@ -2689,13 +2726,13 @@ kind  = 'x' | 'X' | 'o' | 'b' | 'e'
 A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
 
 ```
-print("{:<10}|{:>6}|{:6.2}\n", (name, count, ratio))         // Ada       |    12|  0.83
-print("{:08.3} {:+} {:#06x} {:b}\n", (-3.14159, 5, 255, 5))  // -003.142 +5 0x00ff 101
+print("{:<10}|{:>6}|{:6.2}\n", name, count, ratio)         // Ada       |    12|  0.83
+print("{:08.3} {:+} {:#06x} {:b}\n", -3.14159, 5, 255, 5)  // -003.142 +5 0x00ff 101
 ```
 
 ```
 print("hello, world\n")
-print("{} scored {} ({})\n", (player.name, score, rank))     // Ada scored 1200 (.Gold)
+print("{} scored {} ({})\n", player.name, score, rank)     // Ada scored 1200 (.Gold)
 print("{}\n", pos)                                           // Vec2(x: 1.5, y: -2)
 ```
 
@@ -2806,7 +2843,7 @@ Reasons:
 Requirements:
 
 1. **Settled design.** There is one obvious interface, preferably fixed by an external standard (an RFC, ISO 8601, a Unicode annex, a FIPS publication), and it does not impose a policy that reasonable programs would choose differently (an output style, a protocol framework, a configuration format with dialects).
-2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, reflection, macros, overloading); a module that would need one is not admitted until the language has it.
+2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, run-time reflection, macros, overloading; the compile-time introspection of a type's shape, such as `@variants`, is part of the language); a module that would need one is not admitted until the language has it.
 3. **Not a second way.** It does not duplicate a core facility or another module, and it is not an alias that only saves keystrokes. A function that is a composition of two or three existing calls is admitted only on reason 1 with strong evidence (it appears in most programs of its domain) or on reason 2.
 4. **Bounded size and cost.** A module has one concern and a surface that its reference documentation can describe in a page. Nothing is paid by programs that do not import it: no global state, no initialization at start-up, no effect on the core.
 5. **Quality.** It is written in Gamma (foreign code only behind `std/c`-style boundaries), documented in the library reference, covered by tests that run in the interpreter and through the C back end, and conforms to its external standard where it has one.
@@ -2884,7 +2921,7 @@ fn_type_param = [ IDENT { ',' IDENT } ':' ] type | '...'                       /
 tuple_type    = '(' ')' | '(' type ',' ')' | '(' type ',' type { ',' type } [ ',' ] ')'
               | '(' IDENT ':' type { ',' IDENT ':' type } [ ',' ] ')'
 effect_set    = '{' [ effect_entry % ',' ] '}'
-effect_entry  = effect_ref | '..' IDENT                          // '..E' (§16.6)
+effect_entry  = effect_ref | '..' postfix_expr                   // '..E' (§16.6), '..Io' (§12.3)
 effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net, Sched(\ {Out})
 
 struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'
@@ -2908,7 +2945,7 @@ In the parameter lists of `struct`, `union` and `effect` literals and of generic
 fn_lit        = 'fn' '(' [ param_list ] ')' [ '->' type ] [ '\' effect_set ] [ where_clause ] fn_body
 fn_body       = block | '=>' expr
 param_list    = param % ','
-param         = IDENT { ',' IDENT } [ ( ':' | '::' ) type ] [ '=' expr ]     // '::' = compile-time (§16.5)
+param         = IDENT { ',' IDENT } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]  // '::' compile-time (§16.5); ': ..' rest (§11.2)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
 handler_decl  = 'handler' [ '(' param_list ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
@@ -2934,7 +2971,7 @@ stmt          = { attribute } binding                           // §20.2 reject
               | 'return' [ expr ]
               | 'break' [ IDENT ] [ expr ]
               | 'continue' [ IDENT ]
-              | 'discard' expr
+              | 'cancel' expr
               | pattern ':=' expr 'else' expr                     // §4.5; not a plain name
               | intrinsic_call
               | block                                             // a nested scope
@@ -3067,13 +3104,13 @@ Assignment (`=` and compound forms) is a statement.
 | `:` | naming | `x: T`, `x := e`, `x :: e`, `x: T : e`, `label:` |
 | `=>` | maps to | expression bodies, match arms, handler clauses, `else e =>` |
 | `\` | effects | `-> T \ {E1, E2}` |
-| `..` | span | ranges `a..b`, slicing `a[i..]`, spread `f(..t)` |
+| `..` | span, splice | ranges `a..b`, slicing `a[i..]`, spread `f(..t)`, rest parameters `args: ..A`, effect sets `\ {..E}` |
 | `@` / `#` | intrinsic / attribute | `@size_of(T)`, `#packed` |
 | `---` | don't care | uninitialized plain data |
 
 ### B.3 Keywords
 
-**Reserved (34):** `and` `break` `continue` `ctl` `defer` `discard` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (34):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
 **Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
@@ -3090,40 +3127,75 @@ Assignment (`=` and compound forms) is a statement.
 
 ## Appendix C. Design rationale
 
-This appendix is non-normative. It explains why Gamma is the way it is and lists the main alternatives it rejects, with the reasons.
+This appendix is non-normative. It derives the design from the thesis and the principles of §1 — **P1** data is bytes you can lay out, **P2** cost is visible where it is paid, **P3** context is an effect, **P4** mistakes are rejected, not interpreted, **P5** every rule is local, and the tie-breaker *one feature per job* — and lists, under the principle they would violate, the main alternatives Gamma rejects.
 
-The goals of §1 are applied in priority order: **sensible**, then **fast**, then **simple**. When they conflict, the earlier one wins; when two features could do one job, one is removed.
+### C.1 The thesis: everything a function depends on is in its signature
 
-### C.1 Syntax
+A Gamma signature `fn(path: string) -> LoadError!Config \ {Alloc, Fs}` says what the function takes, how it can fail, and what it asks of its context. C says the first and leaves the rest to globals, `errno`, conventions and comments. Each part of the signature has one job:
 
-- **`::` names everything; `T(...)` makes everything; sigils describe shapes and words describe logic.** A reader learns three patterns and then reads declarations, construction and control flow uniformly. `?`, `!` and `^` each tell one story across types, operators and unwrapping.
-- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. `is` is always value equality; for slices (and so strings) that means content, because `name is "admin"` comparing addresses would be a trap.
-- **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses. These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Comparisons do not chain.
-- **Binary `~` is exclusive-or.** `^` is the pointer sigil, and pointers are far more common than XOR.
-- **Newlines end statements** except where a line obviously continues. Inside `( )` and `[ ]` newlines are ignored. A line starting with `.` continues a method chain, except at the start of a match arm, where `.Variant` begins a new arm.
-- **Struct construction is by name only.** Reordering fields can never silently change a constructor's meaning, and `S(x)` with one positional argument is always a conversion.
+| What a function depends on | Where it is written | In C |
+| --- | --- | --- |
+| its inputs | parameters, copied as values (§11.2) | parameters |
+| whether a result may be absent | `?T` (§10) | a null pointer, a sentinel |
+| how it can fail, for its caller to decide | `E!T` (§10) | a return code and `errno` |
+| the context it uses | the effect set `\ {…}` (§12) | globals, callbacks with `void *`, `setjmp` |
+
+**Results versus effects.** Failure could be an effect too, and Gamma deliberately does not make it one. The rule is: *if the nearest caller is the right one to decide, return a result; if whoever installed the context is, perform an `esc` operation.* A parse error or a missing file is the caller's business, so it is data (P1) in the return type (P2) and costs a branch, as an error code does in C. Abort this request, exit the process (`Env.exit`), fail this test (`Test.fail`, §3.8), stop this iteration (`yield`, §13) are decisions made far up the stack, so they are `esc` operations, whose cost — the exit-flag protocol of Appendix D — the signature shows. `try` and lifting (§10.5, §10.6) make results cheap to propagate, so neither mechanism is stretched to do the other's job.
+
+### C.2 P1 — Data is bytes you can lay out
+
+- **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
+- **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
+- **Arbitrary-width integers** (`u1` … `u65535`, as C23's `_BitInt`) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
+- **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
+- **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
+- **Threads follow the C11 memory model**, with atomics as intrinsics (§19.6). Existing knowledge and tools apply unchanged.
+
+### C.3 P2 — Cost is visible where it is paid
+
+- **No hidden allocation.** No construct allocates (§15.3). The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is freed through the allocator that produced it (§15.2).
+- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` is the one operator whose cost grows with the data it compares — slices compare by content, so that `name is "admin"` means what it says (§7.6) — and it is still a loop over the values, never user code.
+- **The kind of an effect operation is its cost** (§12.2): `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use, and `with … on stack` makes the program provide the stack a suspension needs (§14.1).
+- **No hidden conversions.** Lossless widening happens only at coercion sites and on the right of a compound assignment; `T(x)` converts only when lossless for every value of the source *type*; lossy conversions are named methods (`trunc`, `round`, `checked`, `sat`, `bits`, §6). The one implicit conversion between two distinct nominal types is error lifting (§10.6): a `try` or `return` wraps an error in the one variant of the function's error union that carries it. It is allowed because it is decided at the site, by one unambiguous variant, and is a compile error when ambiguous.
+- **Second-class closures.** `fn(…)` values capture by reference, cost no allocation, and can be passed down but never stored or returned; `^fn(…)` is a plain code pointer, first-class and C-compatible (§11.6, §11.7). Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
+- **Mutation of an argument is visible at the call** (§7.2). A read-only argument may be a temporary, or an array passed for a `[]const T` — the compiler adapts it, since nothing can change — but a mutable one must be a named mutable place written explicitly (`a[..]`, `&x`). The one exception is the receiver of a method call, which is the subject of the call: `names.push(x)` visibly acts on `names`.
+- **Rest parameters, not varargs** (§11.2). `print("{} of {}", n, total)` takes a typed, counted tuple; nothing is allocated and nothing is unchecked. The same `..` that spreads a tuple into arguments collects arguments into one, and splices effect sets.
+- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway (§18.1).
+
+### C.4 P3 — Context is an effect
+
+- **Why effects at all.** C programs express allocation policy, logging, I/O, iteration, early exit and coroutines with globals, callback-plus-`void *` pairs, `setjmp` and hand-written state machines. Effects express all six with one mechanism that the type system tracks and that tests can replace (§12).
+- **`Sys` marks the edge of the model.** Foreign calls, globals, volatile memory and threads all perform `Sys`, which cannot be handled; a function without it has no hidden state (§12.10). This is what makes **compile-time evaluation** an ordinary call of a function whose effect set is empty (§17), and **test handlers** sound (§12.9). It is not purity: such functions may still write through pointers they are given.
+- **Iteration is an effect.** `for` is a `with` that installs a handler for `Yield` (§13.2); ranges, slices and user iterators are one mechanism, and there is no iterator protocol. Cursors (§13.4) are ordinary methods that `while` uses; `for` knows only `Yield`.
+- **Testing is an effect.** A test fails by performing `Test.fail`, an `esc` operation, so a helper that checks something on a test's behalf says so in its signature (`\ {Test}`), and a failure unwinds the test, running its `defer`s (§3.8).
+- **Calls show the context they use.** The universe holds the predeclared effects but not their operations, except `yield` (§21.1): `Clock.now()`, `Alloc.current()`, `Fs.open(path, opts)` say at the call that they reach into the context, and names like `now`, `read` and `exit` stay free.
+- **A clause never handles its own performs.** Clauses run in the context outside their handler (§12.5). This makes an iterator written as a loop over another iterator correct, and makes nested handlers for the same effect compose predictably.
+- **Exits are explicit control flow.** An `esc` clause leaves by `break` (the `with` is an expression, so this can carry a value), and the frames in between run their `defer`s (§12.7). There are no exceptions, unwinding tables or `setjmp`.
+- **Structured lifetime for fibers.** A `with … on` cannot complete while any fiber it created is suspended; an exit that crosses it cancels the remaining fibers first (§14.4). Continuations are first-class so schedulers can queue them, with one-shot use checked at run time where it cannot be checked statically. Fibers start from a function pointer and an argument, never from a second-class closure, since a fiber can outlive the frame that would have created the closure (§14.6).
+- **Effect polymorphism, in two forms.** Higher-order functions are polymorphic in their callbacks' effects through second-class parameters: a callback's effects are handled where it was written, except those its parameter type lists, which the callee handles (§11.6), so `retry(3, fn() => Net.send(c, p))` needs no annotation. Stored function pointers are polymorphic through effect-set parameters (`E: effects`, §16.6), fixed per instantiation like type parameters. What Gamma rejects is effect variables in the types of run-time *values*, which would need a run-time representation of effect rows. **Named effect sets** (§12.3) keep long sets readable without adding anything to the type system: `\ {..Io}` is only an abbreviation.
+- **Generic effect instances must be distinguishable** when checked once (§16.6), so `\ {Yield(T), Yield(U)}` is rejected: which handler a `yield` reaches must not depend on the instantiation (P5).
+
+### C.5 P4 — Mistakes are rejected, not interpreted
+
+- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. Words describe logic (`and`, `or`, `not`, `is`, `in`), sigils describe shapes: `?` maybe absent, `!` may have failed, `^` a pointer, each telling one story across types, operators and unwrapping (§B.2). Freeing `!` from "not" lets it mean "failed" everywhere.
+- **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses; comparisons do not chain (§7.3). These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Binary `~` is exclusive-or, since `^` is the pointer sigil and pointers are far more common than XOR.
+- **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other and wrap implicitly, so success paths read like plain code (§10).
+- **Unions are tagged and matches exhaustive** (§8.6). Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range.
+- **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks; undefined behavior is confined to a closed list of memory and concurrency errors that cannot be checked cheaply (§18.4). The overflow flavors are spelled by the sigil story: `+%` wraps, `+|` saturates, `+?` gives an optional; their method forms follow the conversions, where a method that gives an optional is named `checked` (`x.checked(T)`, `x.pow_checked(n)`).
+- **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used, and a literal that does not fit its type is an error, not a wrap (§6.1). Only a literal that nothing constrains falls back: to `usize` if it counts or positions something (a range bound, a length, an index, a shift amount), otherwise `i32` or `f64`.
+- **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one (§5.1).
+- **Ignored results must be discarded explicitly** (`_ = f()`), so an unhandled error is always visible in the source (§7.14).
+- **Struct construction is by name only**, so reordering fields can never silently change a constructor's meaning, and `S(x)` with one positional argument is always a conversion (§7.11).
 - **No octal-by-leading-zero, no implicit string concatenation, no fallthrough, no truthiness.** Each is a classic C bug with no compensating benefit.
+- **Newlines end statements** except where a line obviously continues; inside `( )` and `[ ]` newlines are ignored (§2.8).
 
-### C.2 Types and values
+### C.6 P5 — Every rule is local
 
-- **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used anywhere in the function; only a literal nothing constrains falls back (`i32`, `f64`, or `usize` for ranges and array lengths). This keeps the common case unannotated while never converting between types: a literal that does not fit its inferred type is an error, not a wrap.
-- **No implicit numeric conversion in expressions.** Lossless widening happens only at coercion sites (assignment, arguments, return) and on the right of a compound assignment (`total += x`). `T(x)` converts only when lossless for every value of the source *type*; legality never depends on how clever the compiler's range analysis is. Lossy conversions are named methods: `trunc`, `round`, `checked`, `sat`, `bits`.
-- **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one.
-- **Arbitrary-width integers** make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified (unlike C bitfields).
-- **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other, and wrap implicitly so success paths read like plain code.
-- **Unions are tagged** and matches are exhaustive. Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range.
-- **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so no invalid value can arise from forgetting to.
-- **Ignored results must be discarded explicitly** (`_ = f()`), so an unhandled error is always visible in the source.
+Generic code is ordinary code with compile-time parameters, **checked once** where it is written and monomorphized (§16.1). Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) that describe which built-in operators a body may use; `Signed` covers the float types because they have a sign and unary `-`.
 
-### C.3 Functions
+**Inference never depends on reading order or on positions** (§16.2). A compile-time parameter that another parameter's type mentions is inferred, or written by name; it is never bound by position, so a reader can tell which argument binds which parameter without counting. Function literals are matched after the other arguments, so writing them first or last does not change what a call means.
 
-- **Two kinds of function value.** `fn(…)` is second-class: it may capture locals by reference, costs no allocation, and can be passed down but never stored or returned. `^fn(…)` is a plain code pointer: first-class, C-compatible, capturing nothing. Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
-- **Effect polymorphism without effect variables.** A second-class callback's effects are handled where it was written, except those its parameter type lists, which the callee handles. So `retry(3, fn() => send(p))` needs no annotation for `send`'s effects, while `capture_output(body: fn() \ {Out})` can provide an effect to its callback.
-- **Parameters are distinct objects.** Passing a large value by reference is an optimization the implementation may make when unobservable, never a semantic the programmer must reason about.
-
-### C.4 Generics, and why there are no traits
-
-Generic code is ordinary code with compile-time parameters, checked once where it is written and monomorphized. Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) that describe what built-in operators a body may use.
+**`T(x)` is legal by type, never by value** (§6.5), and `@hash`, `is` and formatting are derived from a type's structure, which nothing can override and nothing needs to resolve (§7.6, §16.8, §21.6). Compile-time introspection of a type's *shape* (`@size_of`, `@variants`, `@type_name`) is part of this structural derivation; open run-time reflection is not part of the language.
 
 **Gamma has no user-defined traits, interfaces or typeclasses.** Traits combine five jobs:
 
@@ -3135,70 +3207,43 @@ Generic code is ordinary code with compile-time parameters, checked once where i
 | Implementation supplied by context | effects and handlers |
 | Implementation found **implicitly** and **composed** (`Hash` for `(A, B)` from `Hash` for `A` and `B`) | deliberately absent |
 
-The first four already exist, each with its cost and its code visible where it is used. The fifth is the part that makes a trait system: it requires coherence and orphan rules, overlap resolution, associated types, conditional implementations, and — in a language with effects — either fixed effect sets on trait methods (rigid) or effect variables (the row polymorphism Gamma rejects). It is the largest and least predictable component of the languages that have it, and it means a reader cannot tell from `m.put(k, v)` which code runs.
+The first four already exist, each with its cost and its code visible where it is used. The fifth is the part that makes a trait system: coherence and orphan rules, overlap resolution, associated types, conditional implementations, and — in a language with effects — either fixed effect sets on trait methods or effect variables in value types. It is the largest and least predictable component of the languages that have it, and it means a reader cannot tell from `m.put(k, v)` which code runs. What implicit composition is usually *for* is covered structurally instead: hashing (§16.8), ordering by key tuples (`xs.sort_by_key(fn(p) => (p.last, p.first))`; structs are not ordered, since their field order records layout, not priority), and printing (§21.6.1). What remains costs one explicit argument, such as a constant struct of operations for generic arithmetic over user-defined number types (§16.9).
 
-What implicit composition is usually *for* is covered structurally instead, by rules the compiler derives from a type's shape, which nothing can override and nothing needs to resolve:
+**Handler declarations are the one place a type supplies an implementation** (§12.6): `with x` installs the handlers declared for `x`'s type. This is type-directed, and it is admitted because it is confined: it happens only at a `with`, a syntactically marked site; it is resolved against one value's static type; it is never composed from other declarations; and declarations may not overlap, so finding a value's handlers is a lookup, never a choice between candidates. A declaration lives in the module of the effect or of the type, as methods live in the type's module (§7.10).
 
-- **Hashing**: `@hash` is defined for every `Eq` type and agrees with `is` (§16.8), so `HashMap((string, u32), V)` needs no code.
-- **Ordering**: tuples, arrays and slices compare lexicographically, so structs are ordered by an explicit key tuple: `xs.sort_by_key(fn(p) => (p.last, p.first))`. Structs themselves are not ordered: their field order records layout, not priority.
-- **Printing**: `print("{}", x)` formats every type structurally (§21.6.1). Custom presentation is an ordinary function returning a string.
+### C.7 One feature per job
 
-What remains costs one explicit argument: generic arithmetic over user-defined number types passes its operations as a constant struct (`dot(FIXED_RING, xs, ys)`), and combining two unrelated libraries takes a small adapter function. That is the price of knowing what every call does.
+- **`::` names everything, `T(...)` makes everything.** A reader learns three patterns and then reads declarations, construction and control flow uniformly (§3.4, §7.11).
+- **`else` means "otherwise" everywhere**: an `if` chain, a fallback `x else d`, an error capture `else e => …`, a pattern binding `P := e else d` (§10.4, §4.5).
+- **`..` means "span or splice"**: ranges and slicing, spreading arguments, rest parameters, effect-set splicing.
+- **One mechanism for context** (effects), **one for failure the caller decides** (results), **one for iteration** (`Yield`), **one for generics** (compile-time parameters).
+- **The standard library obeys the same rules** (§22): no hidden allocation, I/O through effects, nothing that needs a mechanism the language lacks.
 
-Operator overloading is excluded for the same reason: an operator never calls user code, so `a + b` always costs what it looks like it costs. Arrays have elementwise arithmetic for the common numeric case.
+### C.8 Alternatives considered and rejected
 
-### C.5 Effects
+| Alternative | Violates | Reason |
+| --- | --- | --- |
+| User-defined traits / interfaces / typeclasses | P5 | implicit, global resolution (C.6) |
+| Operator overloading | P2 | operators would hide calls and costs |
+| Move semantics, destructors or a `#no_copy` marker | P1 | an ownership system; Debug tagging catches the double frees it would prevent |
+| Lexicographic ordering of structs | P4 | field order records layout, not priority; order key tuples instead |
+| Bitwise equality for floats (to find NaN keys) | one feature per job | two notions of equality is worse than one documented caveat |
+| A default literal type without inference | P4 | `i := 0; while i < xs.len` would fail or wrap |
+| `T(x)` succeeding when the *value* is provably in range | P5 | legality would depend on the compiler's analysis |
+| Binding inferred type arguments by position | P5 | which argument binds which parameter would depend on counting them |
+| Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | P4 | would make naming conventions part of the grammar |
+| Effect variables in the types of run-time values | P2 | needs a run-time representation of effect rows; second-class callbacks and effect-set parameters cover the uses (C.4) |
+| Multi-shot continuations | P1 | require copying stacks; break pointers into them |
+| Exceptions | P3, P2 | `esc` exits and results cover early exit and failure, visibly (C.1) |
+| C-style variadic functions | P2, P4 | untyped and unchecked; rest parameters are typed tuples |
+| Implicit allocation for closures | P2 | second-class closures need none |
+| Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
+| Effect operations in the universe scope | P3 | a bare `now()` hides that it reaches into the context |
 
-- **Why effects at all.** C programs express allocation policy, logging, I/O, iteration, early exit and coroutines with globals, callback-plus-`void*` pairs, `setjmp`, and hand-written state machines. Effects express all six with one mechanism that the type system tracks, and that tests can replace.
-- **Three operation kinds** (`fn`, `esc`, `ctl`) make the worst case visible in the signature: `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use.
-- **A clause never handles its own performs.** Clauses run in the context outside their handler. This makes an iterator written as a loop over another iterator correct, and makes nested handlers for the same effect compose predictably.
-- **Exits are explicit control flow.** An `esc` clause leaves by `break` (the `with` is an expression, so this can carry a value), and the frames in between run their `defer`s. There are no exceptions, unwinding tables or `setjmp`.
-- **`Sys` marks the boundary of the model.** Foreign calls, globals, volatile memory and threads all need `Sys`; a function without it has no hidden state. This is what makes compile-time evaluation and test handlers sound. It is not purity: such functions may still write through pointers they are given.
-- **Generic effect instances must be distinguishable** when checked once, so `\ {Yield(T), Yield(U)}` is rejected: which handler a `yield` reaches must not depend on the instantiation.
-
-### C.6 Fibers and continuations
-
-- **One-shot, stack-switching continuations.** Multi-shot continuations would require copying stacks, which invalidates pointers into them. One-shot continuations on caller-provided stacks allocate nothing and keep pointers stable.
-- **`resume` is a transfer, not a call.** `ctl` clauses run on the `with`'s own stack and `resume` (type `never`) switches away. A scheduler can switch between any number of fibers without its stack growing.
-- **Structured lifetime.** A `with … on` cannot complete while any fiber it created is suspended; an exit that crosses it cancels the remaining fibers first. Continuations are first-class so schedulers can queue them, with one-shot use checked at run time where it cannot be checked statically.
-- **Fibers start from a function pointer and an argument**, never from a second-class closure, since a fiber can outlive the frame that would have created the closure.
-
-### C.7 Memory and safety
-
-- **Allocation is explicit.** No construct allocates behind the program's back. The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is always freed through the allocator that produced it.
-- **No ownership system.** Values copy bitwise like C; there are no destructors or move semantics. `defer`/`errdefer` structure cleanup, and Debug builds tag allocations, poison freed memory and detect leaks. Ownership tracking would make Gamma a different language.
-- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway.
-- **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks. Undefined behavior is confined to a closed list (§18.4) of memory and concurrency errors that cannot be checked cheaply.
-- **Compile-time evaluation is ordinary code** whose empty effect set proves it touches nothing outside. The evaluator checks everything, so a compile-time bug is a compile error, never compiler misbehavior. Constants contain only read-only pointers into static data.
-
-### C.8 Interoperability and threads
-
-- **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer. Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C.
-- **Exported functions install their own handlers**, because C cannot pass any.
-- **Threads follow the C11 memory model**, with atomics as intrinsics. Existing knowledge and tools apply unchanged. Handlers, second-class values and continuations are per-thread, so nothing captured by reference is shared implicitly.
-
-### C.9 Alternatives considered and rejected
-
-| Alternative | Reason for rejection |
-| --- | --- |
-| User-defined traits / interfaces / typeclasses | C.4 |
-| Operator overloading | operators would hide calls and costs (C.4) |
-| Move semantics or a `#no_copy` marker | an ownership system; Debug tagging catches the double frees it would prevent |
-| Lexicographic ordering of structs | field order records layout, not priority; order key tuples instead |
-| Bitwise equality for floats (to find NaN keys) | two notions of equality is worse than one documented caveat |
-| A default literal type without inference | `i := 0; while i < xs.len` would fail |
-| `T(x)` succeeding when the *value* is provably in range | legality would depend on the compiler's analysis |
-| Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | would make naming conventions part of the grammar |
-| Effect variables / row polymorphism | second-class callbacks provide effect polymorphism with no syntax |
-| Multi-shot continuations | require copying stacks; break pointers into them |
-| Exceptions | `esc` exits and results cover early exit and failure, visibly |
-| Implicit allocation for closures | second-class closures need none |
-| Macros | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
-
-### C.10 Future directions
+### C.9 Future directions
 
 - A `Send`-like rule that would let fibers migrate between threads.
-- Stored function values polymorphic in their effects at run time (effect variables or existential handlers); effect-set parameters (§16.6) cover the compile-time case.
+- Stored function values polymorphic in their effects at run time (existential handlers), if a representation can be found that keeps P2.
 - SIMD vector types with guaranteed code generation.
 - If experience shows heavy dictionary-passing boilerplate for user-defined numeric types, a compile-time parameter defaulting to a constant found by name in the type's own module — which would still involve no global resolution.
 

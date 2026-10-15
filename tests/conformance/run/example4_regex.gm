@@ -424,7 +424,7 @@ replace_all :: fn(re: ^const Regex, text, repl: string, out: ^str.Builder) {
 report :: fn(pattern, text: string) \ {Out, Alloc} {
     re := compile(pattern) else e => {
         match e {
-            .Syntax(msg, at) => print("/{}/: syntax error at {}: {}\n", (pattern, at, msg))
+            .Syntax(msg, at) => print("/{}/: syntax error at {}: {}\n", pattern, at, msg)
             .TooBig => print("/{}/: program too big\n", pattern)
             .Alloc(_) => print("/{}/: out of memory\n", pattern)
         }
@@ -435,14 +435,14 @@ report :: fn(pattern, text: string) \ {Out, Alloc} {
     nsteps: u64 = 0
     a := bt_find(&re, text, &bsteps)
     b := nfa_find_from(&re, text, 0, &nsteps)
-    print("/{}/ on \"{}\": ", (pattern, text))
+    print("/{}/ on \"{}\": ", pattern, text)
     if m := b {
-        print("nfa [{}, {})", (m.start, m.end))
+        print("nfa [{}, {})", m.start, m.end)
     } else {
         print("nfa no match")
     }
     if m := a {
-        print(", backtrack [{}, {})", (m.start, m.end))
+        print(", backtrack [{}, {})", m.start, m.end)
     } else {
         print(", backtrack no match")
     }
@@ -490,7 +490,7 @@ main :: fn() \ {Out, Alloc} {
         nsteps: u64 = 0
         a := bt_find(&re, text[0..n + 1], &bsteps)
         b := nfa_find_from(&re, text[0..n + 1], 0, &nsteps)
-        print("n={}: match={} backtrack steps={} nfa steps={}\n", (n, a is not null or b is not null, bsteps, nsteps))
+        print("n={}: match={} backtrack steps={} nfa steps={}\n", n, a is not null or b is not null, bsteps, nsteps)
         n += 4
     }
 
@@ -499,7 +499,7 @@ main :: fn() \ {Out, Alloc} {
     defer deinit(&nums)
     text := "a1b22c333d"
     for m in find_all(&nums, text) {
-        print("number at [{}, {}): {}\n", (m.start, m.end, text[m.start..m.end]))
+        print("number at [{}, {}): {}\n", m.start, m.end, text[m.start..m.end])
     }
     buf: [64]u8 = ---
     out := str.builder(buf[..])
@@ -511,7 +511,7 @@ main :: fn() \ {Out, Alloc} {
     count := 0
     for m in find_all(&empties, "abba") {
         count += 1
-        print("b* match [{}, {})\n", (m.start, m.end))
+        print("b* match [{}, {})\n", m.start, m.end)
     }
     print("{} matches\n", count)
 }

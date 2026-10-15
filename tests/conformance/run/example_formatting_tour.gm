@@ -71,37 +71,37 @@ invoice :: fn(items: []const Item) \ {Out} {
 
 main :: fn() \ {Out} {
     // ---- every type through `print` -------------------------------------------------
-    print("{} {} {}\n", (42, -7i8, 255u8))
-    print("{} {} {}\n", (u64(18446744073709551615), i128(-170141183460469231731687303715884105728), u128(1) << 100))
-    print("{} {} {} {}\n", (1.5, 0.1 + 0.2, 1e21, 1.0e-7))
-    print("{} {} {}\n", (f32(0.1), f32(16777216), 100.0 / 3.0))
-    print("{} {}\n", (true, not true))
-    print("{} {}\n", (Color.Red, Color.Blue))
-    print("{} {} {} {}\n", (Shape.Circle(1.5), Shape.Rect(w: 2, h: 3), Shape.Named("sq\"uare"), Shape.Empty))
+    print("{} {} {}\n", 42, -7i8, 255u8)
+    print("{} {} {}\n", u64(18446744073709551615), i128(-170141183460469231731687303715884105728), u128(1) << 100)
+    print("{} {} {} {}\n", 1.5, 0.1 + 0.2, 1e21, 1.0e-7)
+    print("{} {} {}\n", f32(0.1), f32(16777216), 100.0 / 3.0)
+    print("{} {}\n", true, not true)
+    print("{} {}\n", Color.Red, Color.Blue)
+    print("{} {} {} {}\n", Shape.Circle(1.5), Shape.Rect(w: 2, h: 3), Shape.Named("sq\"uare"), Shape.Empty)
     print("{}\n", Point(x: -1, y: 2))
     print("{}\n", Line(from: Point(x: 0, y: 0), to: Point(x: 3, y: 4)))
     print("{}\n", Line(from: Point(x: 1, y: 1), to: Point(x: 2, y: 2), label: "diag", color: .Blue))
     print("{}\n", Flags(read: true, write: false))
-    print("{} {}\n", ("plain", (1, "in tuple")))
+    print("{} {}\n", "plain", (1, "in tuple"))
     arr := [_]string("a", "b\n", "c")
-    print("{} {}\n", (arr, arr[1..]))
+    print("{} {}\n", arr, arr[1..])
     nums := [_]i16(1, -2, 3)
-    print("{} {}\n", (nums, nums[..2]))
+    print("{} {}\n", nums, nums[..2])
     opt1: ?i32 = 5
     opt2: ?i32 = null
     opt3: ?string = "text"
-    print("{} {} {}\n", (opt1, opt2, opt3))
+    print("{} {} {}\n", opt1, opt2, opt3)
     res1: IoError!u32 = 9
     res2: IoError!u32 = !.NotFound
     res3: IoError!u32 = !.Other(13)
-    print("{} {} {}\n", (res1, res2, res3))
+    print("{} {} {}\n", res1, res2, res3)
     nested: ??i32 = ?i32(null)
-    print("{} {}\n", (nested, nested is null))
+    print("{} {}\n", nested, nested is null)
     print("{{braces}} {}\n", "ok")
     unit := ()
-    print("{} {}\n", (unit, (7,)))
+    print("{} {}\n", unit, (7,))
     named := (lo: 1, hi: 10)
-    print("{} {}\n", (named, named.hi - named.lo))
+    print("{} {}\n", named, named.hi - named.lo)
 
     // ---- std/fmt presentations ---------------------------------------------------------
     b: [fmt.INT_BUF]u8 = ---
@@ -126,9 +126,9 @@ main :: fn() \ {Out} {
     // ---- capture output of a formatter into a buffer --------------------------------
     store: [64]u8 = ---
     cap := io.Capture(buf: store[..])
-    with &cap { print("{}-{}", (Point(x: 1, y: 2), Color.Green)) }
+    with &cap { print("{}-{}", Point(x: 1, y: 2), Color.Green) }
     text := cap.text()
-    print("captured {} bytes: {}\n", (text.len, text))
+    print("captured {} bytes: {}\n", text.len, text)
 
     // ---- an aligned report -----------------------------------------------------------------
     items := [_]Item(

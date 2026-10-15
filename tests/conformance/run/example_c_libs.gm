@@ -34,8 +34,8 @@ cmp_u32 :: fn(a, b: rawptr) -> c.c_int {
 
 main :: fn() \ {Out, Sys} {
     d := libc.ldiv(1_000_000_000_007, 1000)
-    print("{} {}\n", (d.quot, d.rem))
-    print("{} {}\n", (libc.strtod(c"3.25e2xyz", null), libc.atoi(c"  -42abc")))
+    print("{} {}\n", d.quot, d.rem)
+    print("{} {}\n", libc.strtod(c"3.25e2xyz", null), libc.atoi(c"  -42abc"))
     print("{}\n", libc.getenv(c"GAMMA_SURELY_NOT_SET_12345") is null)
     src := [4]u8(1, 2, 3, 4)
     dst := [4]u8(fill: 0)
@@ -44,13 +44,13 @@ main :: fn() \ {Out, Sys} {
     t: c.c_long = 86400 * 365
     tm := Tm(sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: null)
     if p := libc.gmtime_r(&t, &tm) {
-        print("{}-{}-{} wday {} yday {}\n", (1900 + p.year, p.mon + 1, p.mday, p.wday, p.yday))
+        print("{}-{}-{} wday {} yday {}\n", 1900 + p.year, p.mon + 1, p.mday, p.wday, p.yday)
     }
     hay := c"hello world"
     if hit := libc.strchr(hay, 119) {
         print("found at offset {}\n", hit.addr() - hay.addr())
     }
-    print("{} {}\n", (libm.hypot(3.0, 4.0), libm.fmodf(7.5, 2.0)))
+    print("{} {}\n", libm.hypot(3.0, 4.0), libm.fmodf(7.5, 2.0))
     sorted := [_]u32(2, 4, 8, 16, 32)
     key: u32 = 16
     if p := libc.bsearch(&key, &sorted, sorted.len, @size_of(u32), cmp_u32) {

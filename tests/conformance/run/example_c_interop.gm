@@ -69,19 +69,19 @@ parse_ints :: fn(text: cstring, out: []i64) -> usize \ {Sys} {
 
 main :: fn() \ {Out, Sys} {
     s := c"gamma-lang"
-    print("strlen = {}, view = {}\n", (libc.strlen(s), view(s)))
-    print("strcmp: {} {} {}\n", (sgn(libc.strcmp(c"abc", c"abc")), sgn(libc.strcmp(c"abc", c"abd")), sgn(libc.strcmp(c"b", c"a"))))
+    print("strlen = {}, view = {}\n", libc.strlen(s), view(s))
+    print("strcmp: {} {} {}\n", sgn(libc.strcmp(c"abc", c"abc")), sgn(libc.strcmp(c"abc", c"abd")), sgn(libc.strcmp(c"b", c"a")))
 
     up: [16]u8 = ---
     print("shout: {}\n", shout("mixed Case 42", up[..]))
 
     d := libc.div(-17, 5)
-    print("div(-17, 5) = {} rem {}; abs = {}\n", (d.quot, d.rem, libc.abs(-99)))
+    print("div(-17, 5) = {} rem {}; abs = {}\n", d.quot, d.rem, libc.abs(-99))
 
     // snprintf with every kind of variadic argument
     buf: [96]u8 = ---
     n := libc.snprintf(buf[..].ptr, buf.len, c"%d|%5.2f|%s|%x|%c|%lld", c.c_int(-5), 3.14159, c"str", c.c_uint(255), c.c_int(65), i64(1) << 40)
-    print("snprintf wrote {}: {}\n", (n, buf[0..n.trunc(usize)]))
+    print("snprintf wrote {}: {}\n", n, buf[0..n.trunc(usize)])
 
     // memcmp / memset on Gamma arrays
     a := [8]u8(fill: 7)
@@ -101,9 +101,9 @@ main :: fn() \ {Out, Sys} {
         Record(id: 5, score: 7.25, tag: [4]u8('m', 'n', 'o', 0)),
     )
     libc.qsort(&recs, recs.len, @size_of(Record), by_score_desc)
-    for r in recs { print("{}:{} ", (r.id, r.score)) }
+    for r in recs { print("{}:{} ", r.id, r.score) }
     print("\n")
-    print("sizeof Record = {}, align = {}\n", (@size_of(Record), @align_of(Record)))
+    print("sizeof Record = {}, align = {}\n", @size_of(Record), @align_of(Record))
 
     words := [_]cstring(c"pear", c"apple", c"fig", c"banana", c"cherry")
     libc.qsort(&words, words.len, @size_of(cstring), by_cstr)
@@ -112,5 +112,5 @@ main :: fn() \ {Out, Sys} {
 
     nums: [8]i64 = ---
     cnt := parse_ints(c"12 -7 0x1f 300 junk 5", nums[..])
-    print("parsed {}: {}\n", (cnt, nums[0..cnt]))
+    print("parsed {}: {}\n", cnt, nums[0..cnt])
 }

@@ -133,18 +133,18 @@ sum_main :: fn(p: ^Pipe) \ {Sys} {
 }
 
 pipeline :: fn() -> IoError!() \ {Out, Sys} {
-    p := Pipe(a: mailbox(i64, 4, 0), b: mailbox(i64, 3, 0), count: 0, sum: 0,
+    p := Pipe(a: mailbox(T: i64, 4, 0), b: mailbox(T: i64, 3, 0), count: 0, sum: 0,
               source_log: ActorLog(storage: [256]u8(fill: 0)),
               square_log: ActorLog(storage: [256]u8(fill: 0)),
               sum_log: ActorLog(storage: [256]u8(fill: 0)))
-    t1 := try thread.spawn(Pipe, sum_main, &p)
-    t2 := try thread.spawn(Pipe, square_main, &p)
-    t3 := try thread.spawn(Pipe, source_main, &p)
+    t1 := try thread.spawn(sum_main, &p)
+    t2 := try thread.spawn(square_main, &p)
+    t3 := try thread.spawn(source_main, &p)
     t1.join()
     t2.join()
     t3.join()
-    print("pipeline: {} values, sum of squares {}\n", (p.count, p.sum))
-    print("  source: {}\n  squarer: {}\n  summer: {}\n", (text(&p.source_log), text(&p.square_log), text(&p.sum_log)))
+    print("pipeline: {} values, sum of squares {}\n", p.count, p.sum)
+    print("  source: {}\n  squarer: {}\n  summer: {}\n", text(&p.source_log), text(&p.square_log), text(&p.sum_log))
 }
 
 // ---- Stage 2: fan-in ------------------------------------------------------------
@@ -179,16 +179,16 @@ consumer_main :: fn(f: ^FanIn) \ {Sys} {
 }
 
 fan_in :: fn() -> IoError!() \ {Out, Sys} {
-    f := FanIn(box: mailbox(u64, 2, 0), producers_left: 3, total: 0, received: 0)
+    f := FanIn(box: mailbox(T: u64, 2, 0), producers_left: 3, total: 0, received: 0)
     args := [3]ProducerArg(fill: ProducerArg(f: &f, id: 0))
     for i in 0..3 { args[i] = ProducerArg(f: &f, id: u64(i) + 1) }
-    c := try thread.spawn(FanIn, consumer_main, &f)
+    c := try thread.spawn(consumer_main, &f)
     ts: [3]thread.Thread = ---
-    for i in 0..3 { ts[i] = try thread.spawn(ProducerArg, producer_main, &args[i]) }
+    for i in 0..3 { ts[i] = try thread.spawn(producer_main, &args[i]) }
     for i in 0..3 { ts[i].join() }
     c.join()
     // 50 messages each from ids 1, 2 and 3: sum of (id*1000 + i) over i in 0..50.
-    print("fan-in: {} messages, total {}\n", (f.received, f.total))
+    print("fan-in: {} messages, total {}\n", f.received, f.total)
 }
 
 // ---- Stage 3: request and reply -------------------------------------------------
@@ -247,15 +247,15 @@ await :: fn(reply: ^Reply) -> u64 \ {Sys} {
 }
 
 request_reply :: fn() -> IoError!() \ {Out, Sys} {
-    s := Server(inbox: mailbox(?Request, 4, null), served: 0, log: ActorLog(storage: [256]u8(fill: 0)))
-    t := try thread.spawn(Server, server_main, &s)
+    s := Server(inbox: mailbox(T: ?Request, 4, null), served: 0, log: ActorLog(storage: [256]u8(fill: 0)))
+    t := try thread.spawn(server_main, &s)
     replies := [6]Reply(fill: Reply(ready: 0, value: 0))
     ns := [6]u32(10, 20, 30, 50, 70, 90)
     for i in 0..6 { ask(&s, ns[i], &replies[i]) }
-    for i in 0..6 { print("fib({}) = {}\n", (ns[i], await(&replies[i]))) }
+    for i in 0..6 { print("fib({}) = {}\n", ns[i], await(&replies[i])) }
     shut(&s.inbox)
     t.join()
-    print("server handled {} requests; log: {}\n", (s.served, text(&s.log)))
+    print("server handled {} requests; log: {}\n", s.served, text(&s.log))
 }
 
 main :: fn() -> IoError!() \ {Out, Sys} {

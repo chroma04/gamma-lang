@@ -2,16 +2,17 @@
 // std/io under the in-memory file system: `FileOut` buffers output until it is flushed or
 // the buffer would overflow, and keeps the first error; `ListOut` builds strings.
 io :: import "std/io"
+fs :: import "std/fs"
 
-WRITE :: OpenOptions(read: false, write: true, create: true, truncate: true)
+WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
 
 // The size of the file at `path` as the file system sees it now.
 size_of_file :: fn(path: string) -> IoError!u64 \ {Fs} {
-    return (try stat(path)).size
+    return (try Fs.stat(path)).size
 }
 
 slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
-    f := try open(path, OpenOptions())
+    f := try Fs.open(path, fs.OpenOptions())
     defer f.close()
     total: usize = 0
     while true {
@@ -23,92 +24,92 @@ slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
 }
 
 test "output waits for flush" {
-    f := try open("out.txt", WRITE)
+    f := ok(Fs.open("out.txt", WRITE))
     out := io.file_out(f)
     with &out {
         print("hello, ")
-        print("{} and {}\n", (1, true))
+        print("{} and {}\n", 1, true)
     }
-    expect(try size_of_file("out.txt") is 0, "nothing written yet")
-    try out.flush()
+    expect(ok(size_of_file("out.txt")) is 0, "nothing written yet")
+    ok(out.flush())
     buf: [64]u8 = ---
-    n := try slurp("out.txt", buf[..])
+    n := ok(slurp("out.txt", buf[..]))
     expect(buf[0..n] is "hello, 1 and true\n")
     // Flushing again writes nothing more.
-    try out.flush()
-    expect(try size_of_file("out.txt") is 18)
+    ok(out.flush())
+    expect(ok(size_of_file("out.txt")) is 18)
     f.close()
 }
 
 test "Out and Err share the buffer in order" {
-    f := try open("both.txt", WRITE)
+    f := ok(Fs.open("both.txt", WRITE))
     out := io.file_out(f)
     with &out {
         print("one ")
         eprint("two ")
         print("three")
     }
-    try out.flush()
+    ok(out.flush())
     buf: [32]u8 = ---
-    n := try slurp("both.txt", buf[..])
+    n := ok(slurp("both.txt", buf[..]))
     expect(buf[0..n] is "one two three")
     f.close()
 }
 
 test "a full buffer is written out" {
-    f := try open("big.txt", WRITE)
+    f := ok(Fs.open("big.txt", WRITE))
     out := io.file_out(f)
     chunk: [1000]u8 = ---
     chunk[..].fill('a')
     with &out {
-        for _ in 0..4 { write_out(chunk[..]) }
+        for _ in 0..4 { Out.write_out(chunk[..]) }
     }
     // 4000 bytes fit the 4096-byte buffer.
-    expect(try size_of_file("big.txt") is 0)
+    expect(ok(size_of_file("big.txt")) is 0)
     more: [200]u8 = ---
     more[..].fill('b')
-    with &out { write_out(more[..]) }
+    with &out { Out.write_out(more[..]) }
     // The 200 bytes would overflow it: the 4000 are written first, then they are buffered.
-    expect(try size_of_file("big.txt") is 4000)
-    try out.flush()
-    expect(try size_of_file("big.txt") is 4200)
+    expect(ok(size_of_file("big.txt")) is 4000)
+    ok(out.flush())
+    expect(ok(size_of_file("big.txt")) is 4200)
     check: [4200]u8 = ---
-    n := try slurp("big.txt", check[..])
+    n := ok(slurp("big.txt", check[..]))
     expect(n is 4200)
     expect(check[3999] is 'a' and check[4000] is 'b' and check[4199] is 'b')
     f.close()
 }
 
 test "a piece that exactly fills the buffer stays buffered" {
-    f := try open("exact.txt", WRITE)
+    f := ok(Fs.open("exact.txt", WRITE))
     out := io.file_out(f)
     chunk: [4096]u8 = ---
     chunk[..].fill('x')
-    with &out { write_out(chunk[..]) }
-    expect(try size_of_file("exact.txt") is 0)
-    with &out { write_out("y") }
-    expect(try size_of_file("exact.txt") is 4096)
-    try out.flush()
-    expect(try size_of_file("exact.txt") is 4097)
+    with &out { Out.write_out(chunk[..]) }
+    expect(ok(size_of_file("exact.txt")) is 0)
+    with &out { Out.write_out("y") }
+    expect(ok(size_of_file("exact.txt")) is 4096)
+    ok(out.flush())
+    expect(ok(size_of_file("exact.txt")) is 4097)
     f.close()
 }
 
 test "a piece larger than the buffer is written directly, after what precedes it" {
-    f := try open("huge.txt", WRITE)
+    f := ok(Fs.open("huge.txt", WRITE))
     out := io.file_out(f)
     huge: [10000]u8 = ---
     huge[..].fill('h')
     with &out {
-        write_out("head:")
-        write_out(huge[..])
+        Out.write_out("head:")
+        Out.write_out(huge[..])
     }
-    expect(try size_of_file("huge.txt") is 10005, "written without flush")
-    with &out { write_out(":tail") }
-    expect(try size_of_file("huge.txt") is 10005)
-    try out.flush()
-    expect(try size_of_file("huge.txt") is 10010)
+    expect(ok(size_of_file("huge.txt")) is 10005, "written without flush")
+    with &out { Out.write_out(":tail") }
+    expect(ok(size_of_file("huge.txt")) is 10005)
+    ok(out.flush())
+    expect(ok(size_of_file("huge.txt")) is 10010)
     check: [10010]u8 = ---
-    n := try slurp("huge.txt", check[..])
+    n := ok(slurp("huge.txt", check[..]))
     expect(n is 10010)
     expect(check[0..5] is "head:" and check[5] is 'h' and check[10004] is 'h')
     expect(check[10005..10010] is ":tail")
@@ -116,10 +117,10 @@ test "a piece larger than the buffer is written directly, after what precedes it
 }
 
 test "the first error is kept and later output is dropped" {
-    w := try open("ro.txt", WRITE)
+    w := ok(Fs.open("ro.txt", WRITE))
     w.close()
     // A file opened for reading cannot be written.
-    f := try open("ro.txt", OpenOptions())
+    f := ok(Fs.open("ro.txt", fs.OpenOptions()))
     out := io.file_out(f)
     with &out { print("lost") }
     expect(out.err is null, "no error until the buffer is written")
@@ -131,13 +132,13 @@ test "the first error is kept and later output is dropped" {
 }
 
 test "an error on a large piece is kept" {
-    f := try open("ro2.txt", WRITE)
+    f := ok(Fs.open("ro2.txt", WRITE))
     f.close()
-    r := try open("ro2.txt", OpenOptions())
+    r := ok(Fs.open("ro2.txt", fs.OpenOptions()))
     out := io.file_out(r)
     huge: [5000]u8 = ---
     huge[..].fill('q')
-    with &out { write_out(huge[..]) }
+    with &out { Out.write_out(huge[..]) }
     expect(out.err is .Other(9))
     expect(out.flush() is !.Other(9))
     r.close()
@@ -148,7 +149,7 @@ test "ListOut appends printed text" {
     defer text.deinit()
     lo := io.ListOut(list: &text)
     with &lo {
-        print("{}-{}", (1, "two"))
+        print("{}-{}", 1, "two")
         eprint("!")
     }
     expect(lo.err is null)

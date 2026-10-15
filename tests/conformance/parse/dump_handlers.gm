@@ -15,7 +15,7 @@ handler Async for ^Scheduler \ {Sys} {
     spawn(self, k) => resume k()
     exit(self, v, k) => resume k(v + 1)
     done(self, k) => {
-        discard k
+        cancel k
         break
     }
 }

@@ -1,5 +1,5 @@
 // Exits that cross a `with … on` discard its suspended fibers, running their defers:
-// from a clause that performs an outer `esc` operation, and through a discard (§14.4).
+// from a clause that performs an outer `esc` operation, and through a cancel (§14.4).
 Inner :: effect { inner: ctl(n: u32) }
 Abort :: effect { abort: esc(code: u32) -> never }
 body :: fn() \ {Inner, Out} { defer print("inner body cleanup\n"); inner(1) }
@@ -21,7 +21,7 @@ work :: fn() \ {Inner, Out} {
 second :: fn() \ {Out} {
     s1: [65536]u8 = ---
     s2: [32768]u8 = ---
-    with (handler Outer { outer(k) => { discard k; break } }) on s1[..] {
+    with (handler Outer { outer(k) => { cancel k; break } }) on s1[..] {
         defer print("outer body cleanup\n")
         with (handler Inner { inner(n, k2) => { outer(); resume k2() } }) on s2[..] { work() }
     }

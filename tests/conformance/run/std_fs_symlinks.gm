@@ -2,6 +2,7 @@
 // `lstat` does not follow a final symbolic link and `stat` does, on the real file system
 // (the links are made with the C library's `symlink`, which Windows does not have).
 c :: import "std/c"
+fs :: import "std/fs"
 
 libc :: foreign "c" {
     symlink :: fn(target: cstring, link: cstring) -> c.c_int
@@ -29,23 +30,23 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Sys} {
     p: [600]u8 = ---
     lb: [600]u8 = ---
     cb: [600]u8 = ---
-    try make_dir(at(p[..], root, "a"))
-    f := try open(at(p[..], root, "a/two.txt"), OpenOptions(write: true, create: true))
+    try Fs.make_dir(at(p[..], root, "a"))
+    f := try Fs.open(at(p[..], root, "a/two.txt"), fs.OpenOptions(write: true, create: true))
     _ = try f.write_to("22")
-    close(f)
+    Fs.close(f)
 
     link := at(lb[..], root, "link")
     made := libc.symlink(cpath(cb[..], at(p[..], root, "a/two.txt")), cpath(lb[..], link)) is 0
     print("symlink made: {}\n", made)
-    ln := try lstat(link)
-    print("lstat link: {} {}\n", (ln.kind is .Symlink, ln.size is not 2))
-    sf := try stat(link)
-    print("stat link: {} {}\n", (sf.kind is .File, sf.size))
+    ln := try Fs.lstat(link)
+    print("lstat link: {} {}\n", ln.kind is .Symlink, ln.size is not 2)
+    sf := try Fs.stat(link)
+    print("stat link: {} {}\n", sf.kind is .File, sf.size)
     dl := at(cb[..], root, "dirlink")
     _ = libc.symlink(cpath(p[..], at(lb[..], root, "a")), cpath(cb[..], dl))
-    print("lstat dir link: {} stat dir link: {}\n", ((try lstat(dl)).kind is .Symlink, (try stat(dl)).kind is .Dir))
+    print("lstat dir link: {} stat dir link: {}\n", (try Fs.lstat(dl)).kind is .Symlink, (try Fs.stat(dl)).kind is .Dir)
     _ = libc.symlink(cpath(p[..], "no/such/target"), cpath(lb[..], at(cb[..], root, "dangling")))
-    print("lstat dangling: {} stat dangling: {}\n", ((try lstat(at(cb[..], root, "dangling"))).kind is .Symlink, stat(at(cb[..], root, "dangling")) is !.NotFound))
+    print("lstat dangling: {} stat dangling: {}\n", (try Fs.lstat(at(cb[..], root, "dangling"))).kind is .Symlink, Fs.stat(at(cb[..], root, "dangling")) is !.NotFound)
 }
 
 cleanup :: fn(root: string) \ {Fs, Sys} {
@@ -54,15 +55,15 @@ cleanup :: fn(root: string) \ {Fs, Sys} {
     for rel in [_]string("link", "dirlink", "dangling") {
         _ = libc.unlink(cpath(p[..], at(lb[..], root, rel)))
     }
-    _ = remove(at(p[..], root, "a/two.txt"))
-    _ = remove_dir(at(p[..], root, "a"))
-    _ = remove_dir(root)
+    _ = Fs.remove(at(p[..], root, "a/two.txt"))
+    _ = Fs.remove_dir(at(p[..], root, "a"))
+    _ = Fs.remove_dir(root)
 }
 
 main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env, Sys} {
-    tmp := var("TMPDIR") else "/tmp"
+    tmp := Env.var("TMPDIR") else "/tmp"
     r: [6]u8 = ---
-    fill(r[..])
+    Rand.fill(r[..])
     name: [24]u8 = ---
     name[0..12].copy_from("gamma-links-")
     for i in 0..6 {
@@ -71,9 +72,9 @@ main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env, Sys} {
     }
     root_buf: [600]u8 = ---
     root := at(root_buf[..], tmp, name[..])
-    try make_dir(root)
+    try Fs.make_dir(root)
     result := scenario(root)
     cleanup(root)
-    print("cleaned up: {}\n", stat(root) is !.NotFound)
+    print("cleaned up: {}\n", Fs.stat(root) is !.NotFound)
     return result
 }

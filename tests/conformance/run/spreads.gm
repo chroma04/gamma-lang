@@ -37,7 +37,7 @@ main :: fn() \ {Out} {
     print("{}\n", area(..t))
     win := Window(title: "main")
     // A struct spreads its fields as named arguments; a later named argument overrides.
-    print("{} {}\n", (area(w: win.w, h: win.h), area(..(w: 2, h: 5))))
+    print("{} {}\n", area(w: win.w, h: win.h), area(..(w: 2, h: 5)))
     print("{}\n", describe(..win, title: "other"))
     print("{}\n", sub3(note("a", 10), ..pair("b")))
     print("\n")
@@ -47,7 +47,7 @@ main :: fn() \ {Out} {
     // Methods and effect operations.
     p := P(x: 1, y: 2)
     print("{}\n", p.norm1(..(4,)))
-    with (handler Log { log(level, msg) => print("[{}] {}\n", (level, msg)) }) {
+    with (handler Log { log(level, msg) => print("[{}] {}\n", level, msg) }) {
         entry: (u8, string) = (3, "spread into an operation")
         log(..entry)
     }
@@ -58,5 +58,5 @@ main :: fn() \ {Out} {
     // Constructions.
     a := [3]i32(1, ..t)
     tup := (i32, i32, i32)(..t, 9)
-    print("{} {}\n", (a, tup))
+    print("{} {}\n", a, tup)
 }

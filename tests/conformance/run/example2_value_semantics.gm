@@ -22,11 +22,11 @@ main :: fn() \ {Out} {
     x[i], x[j] = (x[j], x[i])
     print("{}\n", x)
     i, j = (j, i)
-    print("{} {}\n", (i, j))
+    print("{} {}\n", i, j)
     a := 1
     b := 2
     a, b = (b, a + b)
-    print("{} {}\n", (a, b))
+    print("{} {}\n", a, b)
 
     big := make_big(5)
     big = twist(big)
@@ -37,7 +37,7 @@ main :: fn() \ {Out} {
     print("{}\n", arr)
     y := arr
     y[0].n = -1
-    print("{} {}\n", (arr[0].n, y[0].n))
+    print("{} {}\n", arr[0].n, y[0].n)
     p := &arr[1]
     p.n = 77
     print("{}\n", arr[1].n)
@@ -54,5 +54,5 @@ main :: fn() \ {Out} {
     }
     v := [_]i32(10, 20, 30, 40)
     v[idx(&k)] += v[idx(&k)]
-    print("{} {}\n", (v, k))
+    print("{} {}\n", v, k)
 }

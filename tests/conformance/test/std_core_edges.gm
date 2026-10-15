@@ -8,8 +8,8 @@ arena :: import "std/arena"
 test "extend with the list's own items after growth" {
     l := list(u32)
     defer l.deinit()
-    for i in 1..5 { try l.push(i) }
-    try l.extend(l.items)
+    for i in 1..5 { ok(l.push(i)) }
+    ok(l.extend(l.items))
     expect_eq(l.items.len, 8)
     expect_eq(l.items[0], 1)
     expect_eq(l.items[3], 4)
@@ -20,9 +20,9 @@ test "extend with the list's own items after growth" {
 test "extend with a part of the list's own bytes" {
     s := list(u8)
     defer s.deinit()
-    try s.extend("abcd")
-    try s.extend(s.items[1..3])
-    try s.extend(s.items)
+    ok(s.extend("abcd"))
+    ok(s.extend(s.items[1..3]))
+    ok(s.extend(s.items))
     expect(string(s.items) is "abcdbcabcdbc", "bytes")
 }
 
@@ -32,7 +32,7 @@ test "allocation sizes that overflow are out of memory" {
         free(s)
         expect(false, "make")
     }
-    if s := make_fill(u64, n, 0) {
+    if s := make_fill(T: u64, n, 0) {
         free(s)
         expect(false, "make_fill")
     }
@@ -57,7 +57,7 @@ test "allocation sizes that overflow are out of memory" {
     // Zero-sized elements never overflow.
     z := list(())
     defer z.deinit()
-    try z.reserve(n)
+    ok(z.reserve(n))
 }
 
 test "a range has a length" {
@@ -73,16 +73,16 @@ test "a range has a length" {
 }
 
 test "a map full of tombstones is rehashed without growing" {
-    m := map(u32, u32)
+    m := hash_map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
-        try m.put(i, i)
+        ok(m.put(i, i))
         if i >= 1 { _ = m.remove(i - 1) }
     }
     expect_eq(m.len(), 1)
     expect(m.get(999) is 999, "live entry")
     // 8 slots hold a handful of live entries: the table did not double a hundred times.
-    for i in 0..4 { try m.put(2000 + i, i) }
+    for i in 0..4 { ok(m.put(2000 + i, i)) }
     expect_eq(m.len(), 5)
     for i in 0..4 { expect(m.get(2000 + i) is i, "entry kept") }
 }

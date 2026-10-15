@@ -1,9 +1,9 @@
 //! stage: check
 // A template given as a compile-time parameter is checked in each instantiation (§16.1).
-log :: fn(A: type, template :: string, args: A) \ {Out} { print(template, args) }
+log :: fn(A: type, template :: string, args: ..A) \ {Out} { print(template, ..args) }
 
 main :: fn() \ {Out} {
-    log("{} {}\n", 5)                 //~ ERROR the template has 2 placeholders, so the arguments must be a tuple of 2 values
+    log("{} {}\n", 5)                 //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
     log("x{\n", 1)                    //~ ERROR invalid template (in an instantiation used here)
     log("{}\n", "fine")
 }

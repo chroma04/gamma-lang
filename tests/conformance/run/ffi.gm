@@ -28,6 +28,6 @@ main :: fn() \ {Out, Sys} {
     xs := [5]i32(5, 3, 9, 1, 4)
     libc.qsort(&xs, 5, @size_of(i32), by_value)
     print("{}\n", xs)
-    print("{} {}\n", (bump(), bump()))
+    print("{} {}\n", bump(), bump())
     print("{}\n", libc.absolute(-7))
 }

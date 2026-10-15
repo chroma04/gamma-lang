@@ -100,7 +100,7 @@ main :: fn() \ {Out} {
 
     ages: [5]u32 = ---
     m := map_into(people[..], ages[..], fn(p) => p.age)
-    print("ages: {} (n={})\n", (ages, m))
+    print("ages: {} (n={})\n", ages, m)
 
     if p := find(people[..], fn(p) => p.name.len > 5) {
         print("first long name: {}\n", p.name)
@@ -110,10 +110,10 @@ main :: fn() \ {Out} {
     // sort by (dept, name) and by age descending, stable ordering by tuple key
     sorted := people
     sorted[..].sort_by_key(fn(p) => (p.dept, p.name))
-    for p in sorted { print("{}/{} ", (p.dept, p.name)) }
+    for p in sorted { print("{}/{} ", p.dept, p.name) }
     print("\n")
     sorted[..].sort_by(fn(a, b) => a.age > b.age or (a.age is b.age and a.name < b.name))
-    for p in sorted { print("{}:{} ", (p.name, p.age)) }
+    for p in sorted { print("{}:{} ", p.name, p.age) }
     print("\n")
 
     // iterators composing with for loops and closures capturing mutable locals
@@ -130,7 +130,7 @@ main :: fn() \ {Out} {
         if s > best { best = s; best_at = idx }
         idx += 1
     }
-    print("best window of 3 starts at {} with sum {}\n", (best_at, best))
+    print("best window of 3 starts at {} with sum {}\n", best_at, best)
 
     steps: u32 = 0
     last: u32 = 0
@@ -139,7 +139,7 @@ main :: fn() \ {Out} {
         last = t
         if t > 40 { break }
     }
-    print("triangular numbers: {} steps, last {}\n", (steps, last))
+    print("triangular numbers: {} steps, last {}\n", steps, last)
 
     ops := [_]Op(
         Op(sym: "+", apply: add), Op(sym: "-", apply: sub),
@@ -147,11 +147,11 @@ main :: fn() \ {Out} {
         Op(sym: "avg*2", apply: fn(a, b: i64) -> i64 => (a + b)),
     )
     for op in ops {
-        print("{} {} {} = {}\n", (7, op.sym, 5, op.apply(7, 5)))
+        print("{} {} {} = {}\n", 7, op.sym, 5, op.apply(7, 5))
     }
     inc := make_counter_fn(1)
     bump := make_counter_fn(2)
-    print("{} {} {}\n", (inc(5), bump(5), inc is bump))
+    print("{} {} {}\n", inc(5), bump(5), inc is bump)
 
     // closure that mutates captured state, passed down
     seen: u32 = 0
@@ -161,5 +161,5 @@ main :: fn() \ {Out} {
         total += i64(x) * i64(seen)
         return acc + 1
     })
-    print("weighted total {} over {} items\n", (total, seen))
+    print("weighted total {} over {} items\n", total, seen)
 }

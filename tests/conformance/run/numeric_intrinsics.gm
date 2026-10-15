@@ -3,12 +3,12 @@
 main :: fn() \ {Out} {
     x: u16 = 0x00f0
     y: u64 = 1
-    print("{} {} {} {} {}\n", (@clz(x), @ctz(x), @popcount(x), @bswap(x), @bitreverse(x)))
-    print("{} {} {}\n", (@clz(y), @ctz(y << 40), @bswap(0x0102030405060708u64)))
-    print("{} {} {}\n", (@sqrt(2.0f32), @sqrt(f64(2)), @fma(0.1, 10.0, -1.0)))
+    print("{} {} {} {} {}\n", @clz(x), @ctz(x), @popcount(x), @bswap(x), @bitreverse(x))
+    print("{} {} {}\n", @clz(y), @ctz(y << 40), @bswap(0x0102030405060708u64))
+    print("{} {} {}\n", @sqrt(2.0f32), @sqrt(f64(2)), @fma(0.1, 10.0, -1.0))
     z: i8 = -1
-    print("{} {}\n", (@popcount(z), @bitreverse(i8(1))))
+    print("{} {}\n", @popcount(z), @bitreverse(i8(1)))
     zero: u16 = 0
     wide: u128 = 0
-    print("{} {} {} {}\n", (@clz(zero), @ctz(zero), @clz(wide), @ctz(wide)))
+    print("{} {} {} {}\n", @clz(zero), @ctz(zero), @clz(wide), @ctz(wide))
 }

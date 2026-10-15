@@ -150,7 +150,7 @@ expect :: fn(p: ^Parser, kind: Kind, what: string) -> Failure!Token {
 }
 
 mk :: fn(pos: usize, kind: NodeKind) -> Failure!^Node \ {Alloc} {
-    return try new(Node, Node(pos: pos, kind: kind))
+    return try new(Node(pos: pos, kind: kind))
 }
 
 // Binding powers: (left, right). Right-associative operators have right < left.
@@ -412,8 +412,8 @@ show_failure :: fn(src: string, pos: usize, msg: string) \ {Out} {
     }
     line_end := line_start
     while line_end < src.len and src[line_end] is not '\n' { line_end += 1 }
-    print("error: {}\n --> line {}, column {}\n", (msg, line, pos - line_start + 1))
-    print("  {} | {}\n", (line, src[line_start..line_end]))
+    print("error: {}\n --> line {}, column {}\n", msg, line, pos - line_start + 1)
+    print("  {} | {}\n", line, src[line_start..line_end])
     print("  {} | ", line)
     for _ in 0..pos - line_start { print(" ") }
     print("^\n")
@@ -489,7 +489,7 @@ main :: fn() \ {Out, Alloc} {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
-        it := Interp(globals: map(string, i64), funcs: map(string, Def))
+        it := Interp(globals: hash_map(string, i64), funcs: hash_map(string, Def))
         run_source(&it, PROGRAM_OK)
         print("({} calls)\n", it.calls)
 
@@ -515,6 +515,6 @@ main :: fn() \ {Out, Alloc} {
             print("--- {}\n", src)
             run_source(&it, src)
         }
-        print("globals: {}, functions: {}\n", (it.globals.len(), it.funcs.len()))
+        print("globals: {}, functions: {}\n", it.globals.len(), it.funcs.len())
     }
 }

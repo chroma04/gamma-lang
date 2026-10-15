@@ -1,11 +1,11 @@
 // An argument whose parameter type the explicit type arguments fix is checked against
 // that type, also inside a generic body: `g(?T, null)` passes a `?T`.
 g :: fn(T: type, x: ?T) -> bool { return x is not null }
-f :: fn(T: type, x: T) -> bool { return g(?T, null) }
+f :: fn(T: type, x: T) -> bool { return g(T: ?T, null) }
 h :: fn(T: type, x: T) -> bool {
     y: ??T = x
-    return g(?T, y)
+    return g(y)
 }
 main :: fn() \ {Out} {
-    print("{} {} {}\n", (g(u8, null), f(u8, 1), h(u8, 1)))
+    print("{} {} {}\n", g(T: u8, null), f(T: u8, 1), h(T: u8, 1))
 }

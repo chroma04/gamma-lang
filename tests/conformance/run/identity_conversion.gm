@@ -6,7 +6,7 @@ main :: fn() \ {Out} {
     b: Bytes = s
     e: E = .B(4)
     n: i32 = 7
-    print("{} {} {} {}\n", (string(s), Bytes(b), E(e), i32(n)))
+    print("{} {} {} {}\n", string(s), Bytes(b), E(e), i32(n))
     t := string(s)
     print("{}\n", t.len)
 }

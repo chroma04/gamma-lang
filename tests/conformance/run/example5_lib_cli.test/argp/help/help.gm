@@ -67,17 +67,17 @@ pub help :: fn(sp: ^const spec.Spec) \ {Out} {
         for p in pos {
             b := str.builder(buf[..])
             b.write("<{}>", p.name)
-            print("  {}  {}\n", (fmt.pad_right(b.str(), width, ' ', pad[..]), p.help))
+            print("  {}  {}\n", fmt.pad_right(b.str(), width, ' ', pad[..]), p.help)
         }
     }
     print("\nOptions:\n")
     for i in 0..opts.len {
         b := str.builder(buf[..])
         left_of(&opts[i], &b)
-        print("  {}  {}", (fmt.pad_right(b.str(), width, ' ', pad[..]), opts[i].help))
+        print("  {}  {}", fmt.pad_right(b.str(), width, ' ', pad[..]), opts[i].help)
         if d := opts[i].default { print(" [default: {}]", d) }
         if opts[i].required { print(" [required]") }
         print("\n")
     }
-    print("  {}  {}\n", (fmt.pad_right("-h, --help", width, ' ', pad[..]), "Show this help"))
+    print("  {}  {}\n", fmt.pad_right("-h, --help", width, ' ', pad[..]), "Show this help")
 }

@@ -21,7 +21,7 @@ pub(super) const TYPE_NAMES: &[&str] = &[
     "type", "u16", "u32", "u64", "u8", "usize",
 ];
 
-pub(super) const BUILTIN_FNS: &[&str] = &["assert", "eprint", "expect", "expect_eq", "print", "trap"];
+pub(super) const BUILTIN_FNS: &[&str] = &["assert", "eprint", "expect_eq", "print", "trap"];
 
 impl<'s> Sema<'s> {
     pub(super) fn src(&self, span: Span) -> String {
@@ -174,7 +174,10 @@ impl<'s> Sema<'s> {
                 .scope
                 .values()
                 .copied()
-                .filter(|d| self.decls[d.0 as usize].item.is_pub)
+                .filter(|d| {
+                    let decl = &self.decls[d.0 as usize];
+                    decl.item.is_pub && !self.universe_hidden(*d) && decl.name.name.as_str() != "core"
+                })
                 .collect();
             ds.sort();
             items.extend(ds.into_iter().map(|d| self.decl_item(d)));

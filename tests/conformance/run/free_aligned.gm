@@ -22,15 +22,15 @@ rec_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 RECORDER :: AllocVtable(alloc: rec_alloc, resize: rec_resize, free: rec_free)
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    r := Recorder(inner: current(), alloc_align: 0, free_align: 0, frees: 0)
+    r := Recorder(inner: Alloc.current(), alloc_align: 0, free_align: 0, frees: 0)
     with Allocator(data: (&r).cast(rawptr), vt: &RECORDER) {
         s := try make_aligned(u32, 4, 64)
         print("aligned: {}\n", s.ptr.addr() % 64 is 0)
         free_aligned(s, 64)
-        print("alloc {} free {}\n", (r.alloc_align, r.free_align))
+        print("alloc {} free {}\n", r.alloc_align, r.free_align)
         t := try make_aligned(u64, 2, 2)      // the type's own alignment wins
         free_aligned(t, 2)
-        print("alloc {} free {}\n", (r.alloc_align, r.free_align))
+        print("alloc {} free {}\n", r.alloc_align, r.free_align)
         e := try make_aligned(u8, 0, 128)     // empty: nothing allocated or freed
         free_aligned(e, 128)
     }

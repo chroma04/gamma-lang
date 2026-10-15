@@ -19,9 +19,9 @@ range_it :: fn(lo, hi: i32) \ {Yield(i32)} {
 
 main :: fn() \ {Out} {
     k := 3
-    evens :: fn() \ {Yield(i32)} { filter_it(i32, fn() \ {Yield(i32)} { range_it(0, 20) }, fn(x) => x % 2 is 0) }
-    scaled :: fn() \ {Yield(i32)} { map_it(i32, evens, fn(x) => x * k) }
-    total := fold(i32, i32, scaled, 0, fn(a, x) => a + x)
+    evens :: fn() \ {Yield(i32)} { filter_it(T: i32, fn() \ {Yield(i32)} { range_it(0, 20) }, fn(x) => x % 2 is 0) }
+    scaled :: fn() \ {Yield(i32)} { map_it(T: i32, evens, fn(x) => x * k) }
+    total := fold(Acc: i32, scaled, 0, fn(a, x) => a + x)
     print("{}\n", total)
     for x in scaled() { print("{} ", x) }
     print("\n")

@@ -49,7 +49,7 @@ use_optional :: fn(xs: []const i32) \ {Out} {
     // 4. Assert that it cannot be absent. Traps if it is.
     z := first_even(xs)?
 
-    print("{} {} {}\n", (n, w, z))
+    print("{} {} {}\n", n, w, z)
 }
 ```
 
@@ -154,7 +154,7 @@ handle_results :: fn(text: string) \ {Out} {
     // Assert success. Traps (reporting the error value) if it failed.
     c := parse_u16("443")!
 
-    print("{} {} {}\n", (a, b, c))
+    print("{} {} {}\n", a, b, c)
 }
 ```
 
@@ -215,7 +215,7 @@ Some rules for `try`:
 - Unparenthesized `try x else d` is an error because it could mean either `(try x) else d` or `try (x else d)`. Write the one you mean.
 - Inside a function literal or a handler clause, `try` returns from the literal's function or, for a handler literal's clause, from the enclosing function ([chapter 7](07-effects.md)).
 
-> **Common mistake: `try` in `main` with no result.** `try` needs somewhere to send the error. In `main :: fn() \ {Out} { ... }` there is nowhere, so `try` is a compile error. Either declare `-> E!()` for `main` (above), or handle the result with `else`, `match` or `if`.
+> **Common mistake: `try` in `main` with no result.** `try` needs somewhere to send the error. In `main :: fn() \ {Out} { ... }` there is nowhere, so `try` is a compile error. Either declare `-> E!()` for `main` (above), or handle the result with `else`, `match` or `if`. The same holds for a `test` body, which returns nothing: use `ok(x)`, which gives the success value of a result or fails the test with the error ([chapter 13](13-safety.md)).
 
 ## Optional chains and iterators
 
@@ -228,6 +228,10 @@ try for token in tokens(src) {
 ```
 
 (`tokens` is an iterator you would write, returning a result, and `use_token` is any function; [chapter 8](08-iteration.md) explains why a `for` can have a value.)
+
+## Results or effects?
+
+Gamma has algebraic effects, so you might expect failure to be one. It is not, and the line between the two is simple: **if the nearest caller is the right one to decide what to do, return a result; if whoever set up the context is, perform an `esc` operation** ([chapter 7](07-effects.md)). A parse error or a missing file is the caller's business, so it is a value in the return type, and propagating it costs a branch, like an error code in C. Abandoning a whole request, exiting the process (`Env.exit`), failing a test (`ok`, `expect`, [chapter 13](13-safety.md)) and stopping an iteration (`break` out of a `for`) are decided far up the stack, so they are `esc` operations, and the frames in between run their `defer`s on the way out.
 
 ## Summary
 

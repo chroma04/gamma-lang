@@ -5,9 +5,9 @@ store :: import "../store"
 
 report :: fn(label: string, r: store.Failure!()) \ {Out} {
     match r {
-        !.Stock(.Insufficient(have, want)) => print("{}: only {} in stock, wanted {}\n", (label, have, want))
-        !.Stock(.Unknown(sku)) => print("{}: unknown sku {}\n", (label, sku))
-        !.Stock(.Duplicate(sku)) => print("{}: sku {} already registered\n", (label, sku))
+        !.Stock(.Insufficient(have, want)) => print("{}: only {} in stock, wanted {}\n", label, have, want)
+        !.Stock(.Unknown(sku)) => print("{}: unknown sku {}\n", label, sku)
+        !.Stock(.Duplicate(sku)) => print("{}: sku {} already registered\n", label, sku)
         !.Memory(_) => print("{}: out of memory\n", label)
         _ => print("{}: ok\n", label)
     }
@@ -32,9 +32,9 @@ main :: fn() \ {Out, Alloc} {
     }
     print("--- stock ---\n")
     for it in s.items.items {
-        print("{} {} ({}): {} units, worth {} cents\n", (it.sku, it.name, model.label(it.category), it.quantity(), it.value()))
+        print("{} {} ({}): {} units, worth {} cents\n", it.sku, it.name, model.label(it.category), it.quantity(), it.value())
     }
     print("total value: {} cents\n", s.total_value())
     sm := store.summary(&journal)
-    print("audit: {} added, {} removed, {} rejected ({} events kept, {} dropped)\n", (sm.added, sm.removed, sm.rejected, journal.count, journal.dropped))
+    print("audit: {} added, {} removed, {} rejected ({} events kept, {} dropped)\n", sm.added, sm.removed, sm.rejected, journal.count, journal.dropped)
 }

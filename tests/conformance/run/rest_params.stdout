@@ -1,0 +1,11 @@
+10
+2
+none: ()
+one: (5,)
+two: (5, "x")
+named first: (1,)
+fwd: (1, 2)
+spread: (7, 8)
+[log] 1 + 2 = 3
+[log] plain
+(true, 97) at line 35

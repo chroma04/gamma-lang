@@ -6,7 +6,7 @@ Ind :: struct { n: u32 = 0 }
 handler Log for ^Ind \ {Out} {
     note(self, msg) => {
         self.n += 1
-        print("{} {}\n", (self.n, msg))
+        print("{} {}\n", self.n, msg)
     }
 }
 Dry :: struct { n: u32 = 0 }

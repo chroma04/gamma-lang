@@ -2,5 +2,5 @@
 str :: import "std/str"
 
 main :: fn() \ {Out} {
-    print("{} {}\n", (str.trim("  a  "), shout(" b ")))
+    print("{} {}\n", str.trim("  a  "), shout(" b "))
 }

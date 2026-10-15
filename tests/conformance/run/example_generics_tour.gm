@@ -49,7 +49,7 @@ apply_n :: fn(T: type, f: fn(T) -> T, n: u32, x: T) -> T {
 
 nested :: fn(base: i32) -> i32 {
     add := base
-    return twice(i32, fn(v) => apply_n(i32, fn(w) => w + add, 3, v), 1)
+    return twice(T: i32, fn(v) => apply_n(fn(w) => w + add, 3, v), 1)
 }
 
 Wrapper :: struct(T: type) {
@@ -61,23 +61,23 @@ wrap :: fn(T: type, v: T) -> Wrapper(T) => Wrapper(T)(value: v)
 
 main :: fn() \ {Out} {
     s := stack(i32, 3)
-    print("{} {} {} {}\n", (push(&s, 1), push(&s, 2), push(&s, 3), push(&s, 4)))
+    print("{} {} {} {}\n", push(&s, 1), push(&s, 2), push(&s, 3), push(&s, 4))
     while v := pop(&s) { print("{} ", v) }
     print("\n")
     s2 := stack(u8, 2)
     _ = push(&s2, 200)
-    print("{} {}\n", (s2.len, @size_of(Stack(u8, 2))))
+    print("{} {}\n", s2.len, @size_of(Stack(u8, 2)))
 
     xs := [_]i32(1, -2, 3, -4, 5, 6)
     ls: [6]i32 = ---
     rs: [6]string = [6]string(fill: "")
-    n := partition(i32, i32, string, xs[..], fn(x) => if x > 0 { Either(i32, string).Left(x * 10) } else { Either(i32, string).Right("neg") }, ls[..], rs[..])
-    print("{} {} {} {}\n", (n, ls[0..n.0], rs[0..n.1], @type_name(Either(i32, string))))
+    n := partition(xs[..], fn(x) => if x > 0 { Either(i32, string).Left(x * 10) } else { Either(i32, string).Right("neg") }, ls[..], rs[..])
+    print("{} {} {} {}\n", n, ls[0..n.0], rs[0..n.1], @type_name(Either(i32, string)))
 
-    r := compose(i32, i64, string, fn(x) => i64(x) * 1000000, fn(y) => if y > 5000000 { "big" } else { "small" }, 7)
-    print("{} {}\n", (r, nested(10)))
+    r := compose(A: i32, B: i64, C: string, fn(x) => i64(x) * 1000000, fn(y) => if y > 5000000 { "big" } else { "small" }, 7)
+    print("{} {}\n", r, nested(10))
     w := wrap(wrap(i32(3)))
-    print("{} {}\n", (w, w.value.value))
+    print("{} {}\n", w, w.value.value)
     e: Either(u8, ?string) = .Right(null)
     print("{}\n", e)
 }

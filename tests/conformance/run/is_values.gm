@@ -3,9 +3,9 @@
 main :: fn() \ {Out} {
     x: u8 = 3
     t: u32 = 259
-    print("{} {} {}\n", (x is t.trunc(u8), x is (t + 0).trunc(u8), x is u8(3)))
+    print("{} {} {}\n", x is t.trunc(u8), x is (t + 0).trunc(u8), x is u8(3))
     s: Shape = .Circle(2.0)
-    print("{} {}\n", (s is Shape.Circle(_), s is .Rect(_, _)))
+    print("{} {}\n", s is Shape.Circle(_), s is .Rect(_, _))
 }
 
 Shape :: union { Circle: f64, Rect: (w: f64, h: f64) }

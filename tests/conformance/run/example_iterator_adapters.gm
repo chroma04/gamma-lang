@@ -66,8 +66,8 @@ main :: fn() \ {Out} {
         for x in filter_iter(squares, fn(v) => v < limit) { yield(x) }
     }
     n = collect(small, out[..])
-    print("{} squares below {}: {}\n", (n, limit, out[0..n]))
+    print("{} squares below {}: {}\n", n, limit, out[0..n])
     limit = 30
     n = collect(small, out[..])
-    print("{} squares below {}: {}\n", (n, limit, out[0..n]))
+    print("{} squares below {}: {}\n", n, limit, out[0..n])
 }

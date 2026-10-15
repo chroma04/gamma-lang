@@ -105,12 +105,12 @@ main :: fn() \ {Out} {
     none := for x in ring_scan(&r) { if x > 400 { break x } }
     print("none {}\n", none)
 
-    h := heap(Job, 8, job_less)
+    h := heap(T: Job, 8, job_less)
     ps := [_]u32(5, 1, 4, 1, 3)
     for i in 0..ps.len { _ = heap_push(&h, Job(prio: ps[i], id: i.trunc(u32))) }
-    for j in drain(&h) { print("job {} prio {}\n", (j.id, j.prio)) }
+    for j in drain(&h) { print("job {} prio {}\n", j.id, j.prio) }
 
-    mx := heap(i32, 4, int_greater)
+    mx := heap(T: i32, 4, int_greater)
     for v in [_]i32(3, 9, 2, 7, 8) {
         ok := heap_push(&mx, v)
         if not ok { print("heap full, dropped {}\n", v) }

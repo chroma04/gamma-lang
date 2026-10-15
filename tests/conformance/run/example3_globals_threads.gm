@@ -13,7 +13,7 @@ worker :: fn(arg: ^u32) \ {Sys} {
     for _ in 0..1000 { _ = @atomic_add(&hits, 1, .Relaxed) }
     tl += id
     thread.defaults(fn() {
-        print("worker {} tl {}\n", (id, tl))
+        print("worker {} tl {}\n", id, tl)
     })
     _ = @atomic_swap(&flag, true, .SeqCst)
 }
@@ -21,14 +21,14 @@ worker :: fn(arg: ^u32) \ {Sys} {
 main :: fn() -> IoError!() \ {Out, Sys} {
     ids := [_]u32(1, 2, 3)
     ts: [3]thread.Thread = ---
-    for i in 0..3 { ts[i] = try thread.spawn(u32, worker, &ids[i]); ts[i].join() }
-    print("hits {} flag {} tl {}\n", (@atomic_load(&hits, .SeqCst), @atomic_load(&flag, .SeqCst), tl))
+    for i in 0..3 { ts[i] = try thread.spawn(worker, &ids[i]); ts[i].join() }
+    print("hits {} flag {} tl {}\n", @atomic_load(&hits, .SeqCst), @atomic_load(&flag, .SeqCst), tl)
     table[2] = 30
-    print("{} {}\n", (table[2], msg.cstr_len()))
+    print("{} {}\n", table[2], msg.cstr_len())
     x: u32 = 9
     ptr = &x
     if p := ptr { print("{}\n", p^) }
     m := thread.mutex()
-    print("try {} {}\n", (m.try_lock(), m.try_lock()))
+    print("try {} {}\n", m.try_lock(), m.try_lock())
     m.unlock()
 }

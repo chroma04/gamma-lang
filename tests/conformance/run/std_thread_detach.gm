@@ -21,7 +21,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     j := Job(wg: thread.wait_group(), sum: 0)
     j.wg.add(8)
     for i in 0..8 {
-        t := try thread.spawn(Job, work, &j)
+        t := try thread.spawn(work, &j)
         thread.detach(t)
     }
     j.wg.wait()
@@ -31,7 +31,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     k := Job(wg: thread.wait_group(), sum: 0)
     for round in 0..50 {
         k.wg.add(1)
-        thread.detach(try thread.spawn(Job, work, &k))
+        thread.detach(try thread.spawn(work, &k))
         k.wg.wait()
     }
     print("after 50 rounds: {}\n", k.sum)
@@ -39,14 +39,14 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     // Joined and detached threads together.
     m := Job(wg: thread.wait_group(), sum: 0)
     m.wg.add(2)
-    a := try thread.spawn(Job, work, &m)
-    b := try thread.spawn(Job, work, &m)
+    a := try thread.spawn(work, &m)
+    b := try thread.spawn(work, &m)
     thread.detach(a)
     b.join()
     m.wg.wait()
     print("mixed: {}\n", m.sum)
 
     // This one is still running when main returns.
-    thread.detach(try thread.spawn(Job, forever, &m))
+    thread.detach(try thread.spawn(forever, &m))
     print("main returns\n")
 }

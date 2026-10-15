@@ -9,7 +9,7 @@ main :: fn() \ {Out} {
     ptrs := [3]^Node(fill: &n)
     opts := [2]?^Node(fill: null)
     ptrs[1].v = 5
-    print("{} {} {}\n", (ptrs[0].v, opts[1] is null, n.v))
+    print("{} {} {}\n", ptrs[0].v, opts[1] is null, n.v)
     last := Item(next: null, v: 3)
     first := Item(next: &last, v: 2)
     cur: Link = &first

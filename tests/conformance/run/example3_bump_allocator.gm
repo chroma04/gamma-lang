@@ -50,17 +50,17 @@ main :: fn() \ {Out, Alloc} {
     al := Allocator(data: &b, vt: &VT)
     l := with al { list(u64) }
     for i in 0..40 { l.push(u64(i)) else { print("oom at {}\n", i); break } }
-    print("len {} resized {} allocs {}\n", (l.items.len, b.resized, b.log_n))
-    for i in 0..b.log_n.trunc(usize) { print("alloc {} align {}\n", (b.sizes[i], b.aligns[i])) }
+    print("len {} resized {} allocs {}\n", l.items.len, b.resized, b.log_n)
+    for i in 0..b.log_n.trunc(usize) { print("alloc {} align {}\n", b.sizes[i], b.aligns[i]) }
     l.deinit()
     print("freed {}\n", b.freed)
     with al {
         w := make_aligned(u8, 10, 256) else return
-        print("aligned256 {} len {}\n", (w.ptr.addr() % 256, w.len))
-        free_aligned(u8, w, 256)
-        s := make_fill(u32, 3, 9) else return
-        print("{} {} {}\n", (s[0], s[1], s[2]))
-        free(u32, s)
+        print("aligned256 {} len {}\n", w.ptr.addr() % 256, w.len)
+        free_aligned(w, 256)
+        s := make_fill(T: u32, 3, 9) else return
+        print("{} {} {}\n", s[0], s[1], s[2])
+        free(s)
         m := make(u8, 100000)
         print("{}\n", m is !.OutOfMemory)
     }

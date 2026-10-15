@@ -151,15 +151,15 @@ run_gen :: fn(start: Vm, code: []const Instr) -> Vm \ {Gen} {
 main :: fn() \ {Out} {
     code := program[..]
     a := run(fresh(), code)
-    print("switch: out {} steps {} sum {}\n", (a.out[0], a.steps, a.regs[2]))
+    print("switch: out {} steps {} sum {}\n", a.out[0], a.steps, a.regs[2])
     b := run_table(fresh(), code)
-    print("table: out {} steps {} same {}\n", (b.out[0], b.steps, a is b))
+    print("table: out {} steps {} same {}\n", b.out[0], b.steps, a is b)
     cfg := Config(limit: [8]u32(fill: 100000), name: [16]u8(fill: 120), scale: 3)
     c := with cfg { run_effect(fresh(), code) }
-    print("effect: out {} steps {} same {}\n", (c.out[0], c.steps, a is c))
+    print("effect: out {} steps {} same {}\n", c.out[0], c.steps, a is c)
     short := Config(limit: [8]u32(1, 2, 3, 150, 5, 6, 7, 8), name: [16]u8(fill: 121), scale: 1)
     d := with short { run_effect(fresh(), code) }
-    print("effect cut: steps {} halted {} out {}\n", (d.steps, d.halted, d.nout))
+    print("effect cut: steps {} halted {} out {}\n", d.steps, d.halted, d.nout)
     // Snapshot and restore: resume from a copy taken mid-run.
     mid := fresh()
     for _ in 0..40 { mid = step(mid, code[usize(mid.pc)]) }
@@ -167,12 +167,12 @@ main :: fn() \ {Out} {
     mid = set(mid, 0, 1000)
     e := run(snap, code)
     f := run(mid, code)
-    print("snapshot: {} {} {} {}\n", (snap.pc, e.out[0], f.nout, snap.regs[0] is mid.regs[0]))
+    print("snapshot: {} {} {} {}\n", snap.pc, e.out[0], f.nout, snap.regs[0] is mid.regs[0])
     // The same machine on a fiber.
     stack: [32768]u8 = ---
     given: i64 = 0
     g := with (handler Gen { give(v, k) => { given += v + 1; resume k() } }) on stack[..] {
         run_gen(fresh(), code)
     }
-    print("fiber: out {} given {} steps {}\n", (g.out[0], given, g.steps))
+    print("fiber: out {} given {} steps {}\n", g.out[0], given, g.steps)
 }

@@ -342,7 +342,7 @@ own :: foreign \"c\" {
 }
 
 main :: fn() \\ {Out, Sys} {
-    print(\"{} {}\\n\", (wrap.value(), own.own_value()))
+    print(\"{} {}\\n\", wrap.value(), own.own_value())
 }
 ";
 

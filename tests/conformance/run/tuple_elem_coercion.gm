@@ -16,8 +16,8 @@ e :: fn(ok: bool) -> u8!(i64, string) {
     return (5, "five")
 }
 main :: fn() \ {Out} {
-    print("{} {} {} {}\n", (f(0), g(), h(), k(1)))
-    print("{} {}\n", (k(0), e(true)))
+    print("{} {} {} {}\n", f(0), g(), h(), k(1))
+    print("{} {}\n", k(0), e(true))
     t: (f64, ?i64) = (1, 2)
     print("{}\n", t)
 }

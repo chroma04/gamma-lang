@@ -143,6 +143,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         span,
                         default: None,
                         generic: None,
+                        rest: false,
                     })
                     .collect();
                 let module = self.module;
@@ -269,6 +270,27 @@ impl<'a, 's> FnCx<'a, 's> {
         span: Span,
         what: &str,
     ) -> (Vec<Expr>, Vec<Stmt>) {
+        let named_names: Vec<crate::symbol::Symbol> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Named(n, _) => Some(n.name),
+                _ => None,
+            })
+            .collect();
+        let packed =
+            pack_rest_args(params, |i| !params[i].is_site() && !named_names.contains(&params[i].name), args, span);
+        let packed_args;
+        let args = match packed {
+            Some(Ok(v)) => {
+                packed_args = v;
+                &packed_args[..]
+            }
+            Some(Err((sp, msg))) => {
+                self.error(sp, msg);
+                return (params.iter().map(|_| error_expr(span)).collect(), vec![]);
+            }
+            None => args,
+        };
         let mut bound: Vec<Option<Expr>> = vec![None; params.len()];
         let mut next_positional = 0;
         let mut seen_named = false;
@@ -288,17 +310,33 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut stmts = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
-        // Positional arguments never bind a `@caller_location()` parameter.
-        let positional_max = params.iter().filter(|p| !p.is_site()).count();
+        // Positional arguments bind, in order, the parameters that no named argument names
+        // (§11.3); never a `@caller_location()` parameter.
+        let named_here: Vec<crate::symbol::Symbol> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Named(n, _) => Some(n.name),
+                _ => None,
+            })
+            .collect();
+        let positional_slot = |p: &ParamInfo| !p.is_site() && !named_here.contains(&p.name);
+        let positional_max = params.iter().filter(|p| positional_slot(p)).count();
+        let skip_named = |mut i: usize| {
+            while i < params.len() && !positional_slot(&params[i]) {
+                i += 1;
+            }
+            i
+        };
         // After a spread fails, missing arguments are not reported again.
         let mut spread_failed = false;
         for arg in args {
             match &arg.kind {
                 ArgKind::Positional(e) => {
                     if seen_named {
-                        self.error(arg.span, "positional arguments must come before named arguments");
+                        self.error(arg.span, "positional arguments must come before a spread that supplies names");
                     }
-                    if next_positional >= positional_max {
+                    next_positional = skip_named(next_positional);
+                    if next_positional >= params.len() {
                         self.error(arg.span, format!("too many arguments: the {} takes {}", what, positional_max));
                         let _ = self.expr(e, None);
                         continue;
@@ -312,7 +350,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     next_positional += 1;
                 }
                 ArgKind::Named(name, e) => {
-                    seen_named = true;
                     let Some(i) = params.iter().position(|p| p.name == name.name) else {
                         self.error(name.span, format!("the {} has no parameter named `{}`", what, name.name));
                         let _ = self.expr(e, None);
@@ -339,11 +376,15 @@ impl<'a, 's> FnCx<'a, 's> {
                             // An unnamed tuple's elements are positional arguments.
                             None => {
                                 if seen_named {
-                                    self.error(e.span, "positional arguments must come before named arguments");
+                                    self.error(
+                                        e.span,
+                                        "positional arguments must come before a spread that supplies names",
+                                    );
                                     spread_failed = true;
                                     break;
                                 }
-                                if next_positional >= positional_max {
+                                next_positional = skip_named(next_positional);
+                                if next_positional >= params.len() {
                                     self.error(
                                         e.span,
                                         format!("too many arguments: the {} takes {}", what, positional_max),
@@ -586,12 +627,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span)
             }
             BuiltinFn::ExpectEq => self.expect_eq(args, span),
-            BuiltinFn::Assert | BuiltinFn::Expect => {
-                let is_expect = b == BuiltinFn::Expect;
-                let what = if is_expect { "expect" } else { "assert" };
-                if is_expect && !self.sema.in_test {
-                    self.error(span, "`expect` may be called only in tests (§21.6)");
-                }
+            BuiltinFn::Assert => {
+                let what = "assert";
                 let (cond, msg) = match args {
                     [ast::Arg { kind: ArgKind::Positional(c), .. }] => (c, None),
                     [ast::Arg { kind: ArgKind::Positional(c), .. }, ast::Arg { kind: ArgKind::Positional(m), .. }] => {
@@ -609,30 +646,22 @@ impl<'a, 's> FnCx<'a, 's> {
                         let v = self.expr(m, Some(Ty::string()));
                         self.coerce(v, Ty::string())
                     }
-                    None => {
-                        let text: &[u8] = if is_expect { b"expectation failed" } else { b"assertion failed" };
-                        mk(Ty::string(), tir::ExprKind::Str(Rc::from(text)), span)
-                    }
+                    None => mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"assertion failed"[..])), span),
                 };
-                let op = if is_expect { tir::Builtin::Expect } else { tir::Builtin::Assert };
-                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vec![c, m] }, span)
+                mk(Ty::unit(), tir::ExprKind::Builtin { op: tir::Builtin::Assert, args: vec![c, m] }, span)
             }
         }
     }
 
-    /// `expect_eq(actual, expected)` (§21.6): in a test, fails it unless the two are equal
-    /// by `is`, writing both values to `Err` first.
+    /// `expect_eq(actual, expected)` (§21.6): unless the two are equal by `is`, writes both
+    /// values into the failure report and fails the current test, performing `Test`.
     fn expect_eq(&mut self, args: &[ast::Arg], span: Span) -> Expr {
-        if !self.sema.in_test {
-            self.error(span, "`expect_eq` may be called only in tests (§21.6)");
-            return error_expr(span);
-        }
         let [ast::Arg { kind: ArgKind::Positional(a), .. }, ast::Arg { kind: ArgKind::Positional(b), .. }] = args
         else {
             self.error(span, "`expect_eq` takes the actual value and the expected one");
             return error_expr(span);
         };
-        let Some(effect) = self.sema.prog.ambient.err else {
+        let Some(effect) = self.sema.prog.ambient.test else {
             return error_expr(span);
         };
         let l = self.expr(a, None);
@@ -648,10 +677,11 @@ impl<'a, 's> FnCx<'a, 's> {
         );
         let eref = EffectRef { effect, args: Box::new([]) };
         self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
+        // `Test.note` (operation 0) takes the report; `Test.fail` (operation 1) ends it.
         let write = mk(
             Ty::unit(),
             tir::ExprKind::Write {
-                sink: WriteSink::Perform { effect: eref, op: 0 },
+                sink: WriteSink::Perform { effect: eref.clone(), op: 0 },
                 pieces: vec![Rc::from(&b"expected: "[..]), Rc::from(&b"\nactual:   "[..]), Rc::from(&b"\n"[..])],
                 specs: vec![tir::FmtSpec::default(); 2],
                 args: vec![local(y, rt), local(x, lt)],
@@ -659,7 +689,13 @@ impl<'a, 's> FnCx<'a, 's> {
             span,
         );
         let msg = mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"expectation failed: the values differ"[..])), span);
-        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
+        let function = self.location_function();
+        let loc = self.sema.source_location(span, function);
+        let stop = mk(
+            Ty::never(),
+            tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op: 1 }, args: vec![msg, loc] },
+            span,
+        );
         let fail = tir::Block { stmts: vec![Stmt::Expr(write)], tail: Some(stop), span };
         let check = mk(
             Ty::unit(),
@@ -675,17 +711,14 @@ impl<'a, 's> FnCx<'a, 's> {
         super::func::block_of(stmts, span)
     }
 
-    /// `print(template, args)` (§21.6, §21.6.1).
+    /// `print(template, args…)` (§21.6, §21.6.1).
     fn print(&mut self, to_out: bool, args: &[ast::Arg], span: Span) -> Expr {
-        let positional: Vec<&ast::Expr> = args
-            .iter()
-            .filter_map(|a| match &a.kind {
-                ArgKind::Positional(e) => Some(e),
-                _ => None,
-            })
-            .collect();
-        if positional.len() != args.len() || positional.is_empty() || positional.len() > 2 {
-            self.error(span, "`print` takes a template string and, optionally, the arguments");
+        let Some(ast::Arg { kind: ArgKind::Positional(template), .. }) = args.first() else {
+            self.error(span, "`print` takes a template string and the values for its placeholders");
+            return error_expr(span);
+        };
+        if args.iter().any(|a| matches!(a.kind, ArgKind::Named(..))) {
+            self.error(span, "`print` takes a template string and the values for its placeholders");
             return error_expr(span);
         }
         let (effect, name) =
@@ -696,16 +729,36 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let eref = EffectRef { effect, args: Box::new([]) };
         self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
-        self.build_write(WriteSink::Perform { effect: eref, op: 0 }, positional[0], positional.get(1).copied(), span)
+        self.build_write(WriteSink::Perform { effect: eref, op: 0 }, template, &args[1..], span)
     }
 
-    /// A write of `template` with `args` to `sink`. A template that is a compile-time
-    /// `string` parameter is split in each instance of the generic function (§16.1).
-    fn build_write(&mut self, sink: WriteSink, template: &ast::Expr, args: Option<&ast::Expr>, span: Span) -> Expr {
+    /// A write of `template` with the values `rest` (the arguments after the template:
+    /// one per placeholder, or a single spread of a tuple of them) to `sink`. A template
+    /// that is a compile-time `string` parameter is split in each instance of the generic
+    /// function (§16.1).
+    fn build_write(&mut self, sink: WriteSink, template: &ast::Expr, rest: &[ast::Arg], span: Span) -> Expr {
         if let ExprKind::Ident(_) = template.kind {
             let t = self.expr(template, Some(Ty::string()));
             if let tir::ExprKind::ValueParam(_) = t.kind {
-                let args = args.map(|a| Box::new(self.expr(a, None)));
+                let args = match rest {
+                    [] => None,
+                    [ast::Arg { kind: ArgKind::Spread(e), .. }] => Some(Box::new(self.expr(e, None))),
+                    _ => {
+                        let mut elems = vec![];
+                        for a in rest {
+                            match &a.kind {
+                                ArgKind::Positional(e) => elems.push(self.expr(e, None)),
+                                _ => {
+                                    self.error(a.span, "a spread passes a template's values only on its own");
+                                    return error_expr(span);
+                                }
+                            }
+                        }
+                        let tys: Vec<Ty> = elems.iter().map(|e| self.infer.resolve(e.ty)).collect();
+                        let ty = Ty::intern(TyKind::Tuple { elems: tys.into_boxed_slice(), names: None });
+                        Some(Box::new(mk(ty, tir::ExprKind::Aggregate(elems), span)))
+                    }
+                };
                 let ty = args.as_ref().map_or(Ty::unit(), |a| self.infer.resolve(a.ty));
                 let tmp = self.temp(ty, span);
                 let kind = tir::ExprKind::WriteDeferred { sink, template: Box::new(t), args, tmp };
@@ -728,7 +781,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         };
-        let Some((pieces, specs, values, mut stmts)) = self.template_args(&bytes, template.span, args, span) else {
+        let Some((pieces, specs, values, mut stmts)) = self.template_args(&bytes, template.span, rest, span) else {
             return error_expr(span);
         };
         let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, specs, args: values }, span);
@@ -745,7 +798,7 @@ impl<'a, 's> FnCx<'a, 's> {
         &mut self,
         template: &[u8],
         template_span: Span,
-        args: Option<&ast::Expr>,
+        rest: &[ast::Arg],
         span: Span,
     ) -> Option<TemplateArgs> {
         let (pieces, specs) = match parse_template(template) {
@@ -757,58 +810,57 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let n = pieces.len() - 1;
         let mut stmts = vec![];
-        let values: Vec<Expr> = match (n, args) {
-            (0, None) => vec![],
-            (0, Some(a)) => {
+        let placeholders = |n: usize| if n == 1 { "1 placeholder".to_string() } else { format!("{} placeholders", n) };
+        let values: Vec<Expr> = match rest {
+            // `..t`: a tuple holding one value per placeholder.
+            [ast::Arg { kind: ArgKind::Spread(a), .. }] => {
                 let v = self.expr(a, None);
-                if !self.infer.resolve(v.ty).is_unit() {
-                    self.error(a.span, "the template has no `{}` placeholders, so the arguments must be `()`");
-                }
-                vec![]
-            }
-            (1, Some(a)) => vec![self.expr(a, None)],
-            (_, Some(a)) => {
-                if let ExprKind::Tuple(elems) = &a.kind
-                    && elems.iter().all(|e| e.name.is_none())
-                {
-                    if elems.len() != n {
+                let t = self.infer.resolve(v.ty);
+                match t.kind() {
+                    TyKind::Tuple { elems, .. } if elems.len() == n => {
+                        let elems = elems.clone();
+                        let tmp = self.temp(t, a.span);
+                        stmts.push(Stmt::Let { local: tmp, init: Some(v) });
+                        (0..n)
+                            .map(|i| {
+                                let base = mk(t, tir::ExprKind::Local(tmp), a.span);
+                                mk(elems[i], tir::ExprKind::Field { base: Box::new(base), index: i as u32 }, a.span)
+                            })
+                            .collect()
+                    }
+                    TyKind::Error => return None,
+                    _ => {
                         self.error(
                             a.span,
-                            format!("the template has {} placeholders but {} arguments are given", n, elems.len()),
+                            format!(
+                                "the template has {}, so this spread must be a tuple of {} values, not `{}`",
+                                placeholders(n),
+                                n,
+                                t
+                            ),
                         );
                         return None;
                     }
-                    elems.iter().map(|e| self.expr(&e.value, None)).collect()
-                } else {
-                    let v = self.expr(a, None);
-                    let t = self.infer.resolve(v.ty);
-                    match t.kind() {
-                        TyKind::Tuple { elems, .. } if elems.len() == n => {
-                            let tmp = self.temp(t, a.span);
-                            stmts.push(Stmt::Let { local: tmp, init: Some(v) });
-                            (0..n)
-                                .map(|i| {
-                                    let base = mk(t, tir::ExprKind::Local(tmp), a.span);
-                                    mk(elems[i], tir::ExprKind::Field { base: Box::new(base), index: i as u32 }, a.span)
-                                })
-                                .collect()
-                        }
+                }
+            }
+            _ => {
+                let mut vals = vec![];
+                for a in rest {
+                    match &a.kind {
+                        ArgKind::Positional(e) => vals.push(e),
                         _ => {
-                            self.error(
-                                a.span,
-                                format!(
-                                    "the template has {} placeholders, so the arguments must be a tuple of {} values",
-                                    n, n
-                                ),
-                            );
+                            self.error(a.span, "a spread passes a template's values only on its own");
                             return None;
                         }
                     }
                 }
-            }
-            (_, None) => {
-                self.error(span, format!("the template has {} placeholder(s) but no arguments are given", n));
-                return None;
+                if vals.len() != n {
+                    let given =
+                        if vals.len() == 1 { "1 value is".to_string() } else { format!("{} values are", vals.len()) };
+                    self.error(span, format!("the template has {}, but {} given", placeholders(n), given));
+                    return None;
+                }
+                vals.iter().map(|e| self.expr(e, None)).collect()
             }
         };
         for (spec, v) in specs.iter().zip(&values) {
@@ -832,7 +884,7 @@ impl<'a, 's> FnCx<'a, 's> {
         Some((pieces, specs, values, stmts))
     }
 
-    /// `@write(sink, template, args)` (§21.6.1): formatting into a second-class function.
+    /// `@write(sink, template, args…)` (§21.6.1): formatting into a second-class function.
     pub fn write_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
         let positional: Vec<&ast::Expr> = args
             .iter()
@@ -841,8 +893,12 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => None,
             })
             .collect();
-        if positional.len() != args.len() || !(2..=3).contains(&positional.len()) {
-            self.error(span, "`@write` takes a sink, a template string and, optionally, the arguments");
+        if positional.len() < 2
+            || !matches!(args[0].kind, ArgKind::Positional(_))
+            || !matches!(args[1].kind, ArgKind::Positional(_))
+            || args.iter().any(|a| matches!(a.kind, ArgKind::Named(..)))
+        {
+            self.error(span, "`@write` takes a sink, a template string and the values for its placeholders");
             return error_expr(span);
         }
         let bytes = Ty::intern(TyKind::Slice { elem: Ty::int(false, 8), is_const: true });
@@ -869,7 +925,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 return error_expr(span);
             }
         }
-        self.build_write(WriteSink::Fn(Box::new(sink)), positional[1], positional.get(2).copied(), span)
+        self.build_write(WriteSink::Fn(Box::new(sink)), positional[1], &args[2..], span)
     }
 }
 
@@ -1117,6 +1173,80 @@ pub(super) fn is_const_ref_arg(e: &ast::Expr, ty: Ty) -> bool {
         ExprKind::Slice { .. } => matches!(ty.kind(), TyKind::Slice { is_const: true, .. }),
         _ => false,
     }
+}
+
+/// Packs the arguments for a rest parameter (§11.3): the positional arguments after those
+/// of the positional parameters before it become one tuple argument, or, when the only
+/// one is a spread `..t`, `t` itself. `slot(i)` tells whether parameter `i` is bound
+/// positionally. `None` if `params` has no rest parameter.
+pub fn pack_rest_args(
+    params: &[ParamInfo],
+    slot: impl Fn(usize) -> bool,
+    args: &[ast::Arg],
+    span: Span,
+) -> Option<Result<Vec<ast::Arg>, (Span, String)>> {
+    let r = params.iter().position(|p| p.rest)?;
+    let before = (0..r).filter(|&i| slot(i)).count();
+    let mut out = vec![];
+    let mut rest: Vec<&ast::Arg> = vec![];
+    let mut seen = 0;
+    for a in args {
+        match &a.kind {
+            ArgKind::Named(n, _) if n.name == params[r].name => {
+                return Some(Err((
+                    a.span,
+                    format!(
+                        "the rest parameter `{}` takes the remaining positional arguments; it cannot be named",
+                        n.name
+                    ),
+                )));
+            }
+            ArgKind::Named(..) => out.push(a.clone()),
+            ArgKind::Positional(_) if seen < before => {
+                seen += 1;
+                out.push(a.clone());
+            }
+            ArgKind::Spread(_) if seen < before => {
+                return Some(Err((
+                    a.span,
+                    "a function with a rest parameter takes a spread only as its whole rest arguments".to_string(),
+                )));
+            }
+            ArgKind::Positional(_) | ArgKind::Spread(_) => rest.push(a),
+        }
+    }
+    let synthetic = |kind: ast::ExprKind, span: Span| ast::Expr { id: ast::NodeId(u32::MAX), kind, span };
+    let packed = match rest[..] {
+        [ast::Arg { kind: ArgKind::Spread(e), span }] => ast::Arg { kind: ArgKind::Positional(e.clone()), span: *span },
+        _ => {
+            if let Some(a) = rest.iter().find(|a| matches!(a.kind, ArgKind::Spread(_))) {
+                return Some(Err((
+                    a.span,
+                    "a spread passes the rest arguments only on its own: `f(a, ..t)`".to_string(),
+                )));
+            }
+            let elems: Vec<ast::TupleElem> = rest
+                .iter()
+                .map(|a| match &a.kind {
+                    ArgKind::Positional(e) => ast::TupleElem { name: None, value: e.clone() },
+                    _ => unreachable!(),
+                })
+                .collect();
+            let sp = match (rest.first(), rest.last()) {
+                (Some(f), Some(l)) => Span { file: f.span.file, lo: f.span.lo, hi: l.span.hi },
+                _ => Span { file: span.file, lo: span.hi.saturating_sub(1), hi: span.hi.saturating_sub(1) },
+            };
+            ast::Arg { kind: ArgKind::Positional(synthetic(ast::ExprKind::Tuple(elems), sp)), span: sp }
+        }
+    };
+    // The rest arguments go where the first of them stood (named arguments keep their places).
+    let pos = args
+        .iter()
+        .position(|a| rest.first().is_some_and(|f| std::ptr::eq(a, *f)))
+        .map(|k| args[..k].iter().filter(|a| !rest.iter().any(|x| std::ptr::eq(*x, *a))).count())
+        .unwrap_or(out.len());
+    out.insert(pos.min(out.len()), packed);
+    Some(Ok(out))
 }
 
 #[cfg(test)]

@@ -5,5 +5,5 @@ main :: fn() \ {Out} {
     a := (i64, i64)(..p)
     b := P(..p)
     c := (?u8, i32)(null, 4)
-    print("{} {} {}\n", (a, b, c))
+    print("{} {} {}\n", a, b, c)
 }

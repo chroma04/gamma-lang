@@ -6,7 +6,7 @@ main :: fn() \ {Out, Alloc} {
     cb := b.cursor()
     while x := ca.next() {
         y := cb.next() else break
-        print("{}{} ", (x, y))
+        print("{}{} ", x, y)
     }
     print("\n")
     l := list(string)

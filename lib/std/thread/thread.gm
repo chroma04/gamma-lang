@@ -174,7 +174,7 @@ pub Channel :: struct(T: type) {
 /// A channel holding up to `capacity` (at least 1) values, using the current allocator.
 pub channel :: fn(T: type, capacity: usize) -> AllocError!Channel(T) \ {Alloc} {
     assert(capacity >= 1, "a channel needs room for at least one value")
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * capacity, @align_of(T)) else return !.OutOfMemory
     return Channel(T)(
         buf: raw.cast([^]T)[0..capacity], head: 0, count: 0, closed: false,

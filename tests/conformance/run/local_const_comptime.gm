@@ -25,5 +25,5 @@ main :: fn() \ {Out} {
         e: [L + K]u8 = ---
         print("{}\n", e.len)
     }
-    print("{} {} {} {} {}\n", (a.len, b.len, r.len, c.len, d.len))
+    print("{} {} {} {} {}\n", a.len, b.len, r.len, c.len, d.len)
 }

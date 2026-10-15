@@ -8,6 +8,9 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Named effect sets: `Io :: \ {Fs, Alloc, Err}` names a list of effects, spliced into
+  an effect set as `\ {..Io, Clock}`, and usable as the argument of an effect-set
+  parameter (§12.3).
 - Windows (x86_64): the interpreter and the C back end (`gamma build`, `--backend=c`,
   `gamma test`) run on Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is
   not supported). The runtime has Win32 implementations of fibers, threads, the futex,
@@ -37,6 +40,41 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** the universe scope holds the predeclared effects but not their
+  operations, except `yield`: write `Clock.now()`, `Alloc.current()`, `Env.args()`,
+  `Fs.open(path, opts)` (methods on files and sockets are unchanged). The types of `Fs`
+  and `Net` (`File`, `OpenOptions`, `Socket`, …) are exported by `std/fs` and `std/net`
+  instead, and the methods of `Instant` and `Duration` are reached only as methods. An
+  unknown name that is one of these says how to reach it (§21.1).
+- **Breaking:** `map` and `map_with` are renamed `hash_map` and `hash_map_with`.
+- **Breaking:** rest parameters. The last parameter of a function may be declared
+  `args: ..A`; it takes the remaining positional arguments as one typed tuple, and a spread
+  passes one on (`print(template, ..args)`). `print`, `eprint`, `@write`, `List.write`,
+  `std/str`'s `write` and `format`, and `std/log` take their values this way:
+  `print("{} of {}", n, total)` instead of `print("{} of {}", (n, total))`. A tuple given
+  as one value is printed as a tuple (§11.2, §21.6.1).
+- **Breaking:** an inferable compile-time parameter (one that another parameter's type
+  mentions) is never bound positionally: it is inferred, or written by name
+  (`new(T: Page, ---)`, `make_fill(T: u8, 64, 0)`, `double(T: u8)` as a function pointer). This
+  replaces the rule that counted positional arguments to decide whether type arguments
+  were given (§16.2). Non-inferable ones, such as `list(string)`, stay positional.
+- Named arguments may be written anywhere in an argument list; positional arguments bind,
+  in order, the parameters that no named argument names (§11.3).
+- Generic inference matches function-literal arguments after the other arguments, so a
+  literal's parameter types can come from a later argument.
+- **Breaking:** failing a test is an effect. The predeclared `Test` effect
+  (`note`, and `fail: esc(…) -> never`) is given to test and benchmark bodies; `expect`,
+  `expect_eq` and the new `ok(x)` perform it, so helper functions that declare `\ {Test}`
+  can check things on a test's behalf, and a failure runs the test's `defer`s. A test body
+  returns nothing: `try` no longer works in one (write `ok(x)`), and the rule that the
+  first `try` decides a test's error type is gone (§3.8, §21.6).
+- **Breaking:** the keyword `discard` is now `cancel` (`cancel k` cancels a suspended
+  fiber, §14.5), so that "discard" keeps one meaning (`_ = e`).
+- **Breaking:** handler declarations may not overlap (§12.6): a declaration for a
+  specific type that a generic declaration of the same effect also matches is an error,
+  where the specific one used to take precedence.
+- An unconstrained untyped literal used as a shift amount now falls back to `usize`, like
+  other literals that count or position (§6.1), instead of `u32`.
 - **Breaking:** a local variable, constant, parameter, pattern or loop binding, or nested
   function may not have the name of a type visible where it is declared — a predeclared
   type (including every sized integer name such as `u2` or `i24`), a top-level type or

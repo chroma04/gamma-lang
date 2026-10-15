@@ -1,7 +1,6 @@
-//! `test` and `bench` declarations (§3.8, §3.9): each body becomes a function `fn() -> E!()`
-//! whose error type `E` is that of its first `try` (or `()` if it never fails),
-//! with an entry function that runs it under the test handlers (a benchmark: under the
-//! benchmark entry).
+//! `test` and `bench` declarations (§3.8, §3.9): each body becomes a function `fn()` that
+//! may perform the ambient effects and `Test`, with an entry function that runs it under
+//! the test handlers (a benchmark: under the benchmark entry).
 
 use super::func::FnCx;
 use super::{DeclValue, FnSig, ModuleId, Sema};
@@ -75,115 +74,87 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// The effects a test may perform: the ambient effects (§12.9).
-    fn test_effects(&self, with_alloc: bool) -> EffectSet {
+    /// The effects the entry of a test may perform: what `run_test` needs.
+    fn test_entry_effects(&self) -> EffectSet {
         let a = &self.prog.ambient;
-        let ids = [
-            a.out,
-            a.err,
-            a.env,
-            a.sys,
-            if with_alloc { a.alloc } else { None },
-            if with_alloc { a.input } else { None },
-            if with_alloc { a.clock } else { None },
-            if with_alloc { a.rand } else { None },
-            if with_alloc { a.fs } else { None },
-            if with_alloc { a.net } else { None },
-        ];
+        let ids = [a.out, a.err, a.env, a.sys];
         EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
     }
 
+    /// The effects a benchmark's entry may perform: the ambient effects (§12.9).
+    fn ambient_effects(&self) -> EffectSet {
+        let a = &self.prog.ambient;
+        let ids = [a.out, a.err, a.env, a.sys, a.alloc, a.input, a.clock, a.rand, a.fs, a.net];
+        EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
+    }
+
+    /// The effects the body of a test or benchmark may perform: the ambient effects and
+    /// `Test` (§3.8).
+    fn test_body_effects(&self) -> EffectSet {
+        let mut ids: Vec<EffectRef> = self.ambient_effects().effects.to_vec();
+        if let Some(t) = self.prog.ambient.test {
+            ids.push(EffectRef { effect: t, args: Box::new([]) });
+        }
+        EffectSet::new(ids)
+    }
+
     fn check_test(&mut self, module: ModuleId, name: &str, span: Span, body: &ast::Block, bench: bool) -> Option<FnId> {
-        let effects = self.test_effects(true);
+        let effects = self.test_body_effects();
         let sym = Symbol::intern(&format!("{} \"{}\"", if bench { "bench" } else { "test" }, name));
         let sig = FnSig { module, params: vec![], ret: Ty::unit(), effects: effects.clone(), generics: vec![] };
         let f = self.new_fn(sym, span, sig, tir::FnKind::Named);
-        // First pass: the error type comes from the first `try`. A body without
-        // one is checked again as `fn()`.
-        let mark = self.sess.diags.len();
-        let (mut ret, mut checked) = self.check_test_body(f, module, body, Ty::result(Ty::error(), Ty::unit()), true);
-        if let TyKind::Result { err, .. } = ret.kind()
-            && err.is_error()
-        {
-            self.sess.diags.truncate(mark);
-            (ret, checked) = self.check_test_body(f, module, body, Ty::unit(), false);
-        }
-        let (body, locals) = checked;
-        self.sigs.get_mut(&f).unwrap().ret = ret;
-        let def = &mut self.prog.fns[f.index()];
-        def.ret = ret;
-        def.locals = locals;
-        def.body = Some(body);
-        if bench { self.bench_entry(f, ret, span) } else { self.test_entry(f, ret, span) }
-    }
-
-    fn check_test_body(
-        &mut self,
-        f: FnId,
-        module: ModuleId,
-        body: &ast::Block,
-        ret: Ty,
-        infer: bool,
-    ) -> (Ty, (tir::Expr, Vec<tir::LocalDecl>)) {
-        let effects = self.test_effects(true);
         self.in_test = true;
         self.checking.push(f);
-        let mut cx = FnCx::new(self, module, ret, effects);
+        let mut cx = FnCx::new(self, module, Ty::unit(), effects);
         cx.fn_id = Some(f);
-        cx.infer_test_error = infer;
         let b = cx.fn_body(&ast::FnBody::Block(body.clone()));
-        let ret = cx.ret;
-        let out = cx.finish(b);
+        let (body, locals) = cx.finish(b);
         self.checking.pop();
         self.in_test = false;
-        (ret, out)
+        let def = &mut self.prog.fns[f.index()];
+        def.locals = locals;
+        def.body = Some(body);
+        if bench { self.bench_entry(f, span) } else { self.test_entry(f, span) }
     }
 
-    /// `run_test(E, &test)` or `run_test_unit(&test)` from the core prelude:
-    /// installs the leak-checking allocator and reports a failure.
-    fn test_entry(&mut self, f: FnId, ret: Ty, span: Span) -> Option<FnId> {
-        let (_, call) = self.runner_call(f, ret, span, if ret == Ty::unit() { "run_test_unit" } else { "run_test" })?;
+    /// `run_test(&test)` from the core prelude: installs the test handlers and reports a
+    /// failure.
+    fn test_entry(&mut self, f: FnId, span: Span) -> Option<FnId> {
+        let call = self.runner_call(f, span, "run_test")?;
         let module = self.sigs[&f].module;
-        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(false), generics: vec![] };
+        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_entry_effects(), generics: vec![] };
         let entry = self.new_fn(Symbol::intern("<entry>"), span, sig, tir::FnKind::Named);
         self.prog.fns[entry.index()].body = Some(call);
         Some(entry)
     }
 
-    /// `run_bench(E, &bench)` or `run_bench_unit(&bench)`: times the body. Unlike a test, a
-    /// benchmark runs under the system's handlers, as `main` does, so the entry is wrapped
-    /// like `main`'s.
-    fn bench_entry(&mut self, f: FnId, ret: Ty, span: Span) -> Option<FnId> {
-        let (_, call) =
-            self.runner_call(f, ret, span, if ret == Ty::unit() { "run_bench_unit" } else { "run_bench" })?;
+    /// `run_bench(&bench)`: times the body. Unlike a test, a benchmark runs under the
+    /// system's handlers, as `main` does, so the entry is wrapped like `main`'s.
+    fn bench_entry(&mut self, f: FnId, span: Span) -> Option<FnId> {
+        let call = self.runner_call(f, span, "run_bench")?;
         let module = self.sigs[&f].module;
-        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.test_effects(true), generics: vec![] };
+        let sig = FnSig { module, params: vec![], ret: Ty::u8(), effects: self.ambient_effects(), generics: vec![] };
         let inner = self.new_fn(Symbol::intern("<bench>"), span, sig.clone(), tir::FnKind::Named);
         self.prog.fns[inner.index()].body = Some(call);
         Some(self.entry_point(inner, &sig))
     }
 
-    /// The call of the core prelude function `runner` on the function `f` returning `ret`.
-    fn runner_call(&mut self, f: FnId, ret: Ty, span: Span, runner: &str) -> Option<(FnId, tir::Expr)> {
+    /// The call of the core prelude function `runner` on the test or benchmark body `f`.
+    fn runner_call(&mut self, f: FnId, span: Span, runner: &str) -> Option<tir::Expr> {
         let d = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&Symbol::intern(runner)).copied())?;
         let DeclValue::Fn(g) = self.resolve_decl(d) else { return None };
-        let callee = match ret.kind() {
-            TyKind::Result { err, .. } => self.instantiate(g, vec![*err], span),
-            _ => g,
-        };
         let fn_ty = Ty::intern(TyKind::FnPtr(Box::new(FnTy {
             params: Box::new([]),
-            ret,
-            effects: self.test_effects(true),
+            ret: Ty::unit(),
+            effects: self.test_body_effects(),
             variadic: false,
             callconv: Default::default(),
         })));
         let arg = tir::Expr { ty: fn_ty, kind: tir::ExprKind::FnRef(f), span };
-        let call = tir::Expr {
+        Some(tir::Expr {
             ty: Ty::u8(),
-            kind: tir::ExprKind::Call { callee: tir::Callee::Fn(callee), args: vec![arg] },
+            kind: tir::ExprKind::Call { callee: tir::Callee::Fn(g), args: vec![arg] },
             span,
-        };
-        Some((callee, call))
+        })
     }
 }

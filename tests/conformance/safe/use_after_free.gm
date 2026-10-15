@@ -3,7 +3,7 @@
 // Safe builds trap on use after free (§18.7), which Checked builds leave undefined.
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    p := try new(u64, 7)
+    p := try new(T: u64, 7)
     print("before {}\n", p^)
     destroy(p)
     print("after {}\n", p^)

@@ -66,7 +66,7 @@ largest_by :: fn(T: type, xs: []const T, better: fn(a, b: T) -> bool) -> ?T {
 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    table := map_with(string, Cmd, fold_hash, fold_eq)
+    table := hash_map_with(K: string, Cmd, fold_hash, fold_eq)
     defer table.deinit()
     try table.put("ADD", Cmd(name: "add", arity: 1, run: cmd_add))
     try table.put("reset", Cmd(name: "reset", arity: 0, run: cmd_reset))
@@ -84,11 +84,11 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for line in script {
         if cmd := table.get(line[0]) {
             if line.len - 1 < cmd.arity {
-                print("{}: needs {} args\n", (cmd.name, cmd.arity))
+                print("{}: needs {} args\n", cmd.name, cmd.arity)
                 continue
             }
             if err := cmd.run(&ctx, line[1..]) {
-                print("{}: error: {}\n", (cmd.name, err))
+                print("{}: error: {}\n", cmd.name, err)
             }
         } else {
             print("unknown command {}\n", line[0])

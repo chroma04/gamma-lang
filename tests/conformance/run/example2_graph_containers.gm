@@ -5,7 +5,7 @@ Graph :: struct {
     adj: HashMap(Pt, List(Pt))
 }
 
-graph :: fn() -> Graph \ {Alloc} => Graph(adj: map(Pt, List(Pt)))
+graph :: fn() -> Graph \ {Alloc} => Graph(adj: hash_map(Pt, List(Pt)))
 
 add_edge :: fn(g: ^Graph, a, b: Pt) -> AllocError!() \ {Alloc} {
     la := (try g.adj.entry(a, list(Pt))).value
@@ -24,7 +24,7 @@ deinit :: fn(g: ^Graph) {
 
 // BFS distances from `start`; the queue is a fixed ring.
 bfs :: fn(g: ^Graph, start: Pt, goal: Pt) -> ?u32 \ {Alloc} {
-    dist := map(Pt, u32)
+    dist := hash_map(Pt, u32)
     defer dist.deinit()
     ring: [64]Pt = ---
     head: usize = 0
@@ -65,13 +65,13 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("dist {}\n", bfs(&g, Pt(x: 0, y: 0), Pt(x: 3, y: 3)))
     print("dist {}\n", bfs(&g, Pt(x: 0, y: 0), Pt(x: 9, y: 9)))
 
-    tuples := map((u8, bool), string)
+    tuples := hash_map((u8, bool), string)
     defer tuples.deinit()
     try tuples.put((1, true), "a")
     try tuples.put((1, false), "b")
     try tuples.put((1, true), "c")
-    print("{} {} {}\n", (tuples.len(), tuples.get((1, true)), tuples.get((2, true))))
-    names := map(string, List(u32))
+    print("{} {} {}\n", tuples.len(), tuples.get((1, true)), tuples.get((2, true)))
+    names := hash_map(string, List(u32))
     defer {
         for e in names.entries() { l := e.value; l.deinit() }
         names.deinit()
@@ -81,5 +81,5 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         try l.push(l.items.len.trunc(u32))
     }
     a := names.get("a")?
-    print("{} {}\n", (a.items, names.len()))
+    print("{} {}\n", a.items, names.len())
 }

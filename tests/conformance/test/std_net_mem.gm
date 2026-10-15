@@ -4,37 +4,37 @@
 net :: import "std/net"
 
 // A connected pair: the client end and the accepted server end.
-Pair :: struct { client: Socket, server: Socket, port: u16 }
+Pair :: struct { client: net.Socket, server: net.Socket, port: u16 }
 
 connected :: fn() -> IoError!Pair \ {Net} {
-    l := try listen("127.0.0.1", 0)
+    l := try Net.listen("127.0.0.1", 0)
     port := try l.local_port()
-    c := try connect("127.0.0.1", port)
+    c := try Net.connect("127.0.0.1", port)
     s := try l.accept()
     return Pair(client: c, server: s, port: port)
 }
 
 test "send_all and recv_exact" {
-    p := try connected()
-    try net.send_all(p.client, "hello, network")
+    p := ok(connected())
+    ok(net.send_all(p.client, "hello, network"))
     first: [5]u8 = ---
-    try net.recv_exact(p.server, first[..])
+    ok(net.recv_exact(p.server, first[..]))
     expect(first[..] is "hello")
     rest: [9]u8 = ---
-    try net.recv_exact(p.server, rest[..])
+    ok(net.recv_exact(p.server, rest[..]))
     expect(rest[..] is ", network")
     // Nothing more to read, but the peer is open: it would block.
     one: [1]u8 = ---
     expect(net.recv_exact(p.server, one[..]) is !.WouldBlock)
     // An empty buffer or an empty message needs nothing.
-    try net.recv_exact(p.server, empty_slice(u8))
-    try net.send_all(p.client, "")
+    ok(net.recv_exact(p.server, empty_slice(u8)))
+    ok(net.send_all(p.client, ""))
 }
 
 test "recv_exact reports a peer that closed early" {
-    p := try connected()
-    try net.send_all(p.client, "abc")
-    close_socket(p.client)
+    p := ok(connected())
+    ok(net.send_all(p.client, "abc"))
+    Net.close_socket(p.client)
     buf: [5]u8 = ---
     expect(net.recv_exact(p.server, buf[..]) is !.UnexpectedEof)
     // A closed peer: sending fails.
@@ -42,69 +42,69 @@ test "recv_exact reports a peer that closed early" {
 }
 
 test "shutdown of the write side ends the peer's stream" {
-    p := try connected()
-    try net.send_all(p.client, "request")
-    try p.client.shutdown(.Write)
+    p := ok(connected())
+    ok(net.send_all(p.client, "request"))
+    ok(p.client.shutdown(.Write))
     buf: [16]u8 = ---
-    n := try p.server.recv(buf[..])
+    n := ok(p.server.recv(buf[..]))
     expect(buf[0..n] is "request")
-    expect(try p.server.recv(buf[..]) is 0)
+    expect(ok(p.server.recv(buf[..])) is 0)
     // The other direction still works.
-    try net.send_all(p.server, "reply")
-    n = try p.client.recv(buf[..])
+    ok(net.send_all(p.server, "reply"))
+    n = ok(p.client.recv(buf[..]))
     expect(buf[0..n] is "reply")
     // Sending after shutting down the write side fails.
     expect(p.client.send("more") is !.BrokenPipe)
 }
 
 test "shutdown of the read side" {
-    p := try connected()
-    try net.send_all(p.server, "ignored")
-    try p.client.shutdown(.Read)
+    p := ok(connected())
+    ok(net.send_all(p.server, "ignored"))
+    ok(p.client.shutdown(.Read))
     buf: [16]u8 = ---
-    expect(try p.client.recv(buf[..]) is 0)
+    expect(ok(p.client.recv(buf[..])) is 0)
     // Writing still works.
-    try net.send_all(p.client, "ok")
-    n := try p.server.recv(buf[..])
+    ok(net.send_all(p.client, "ok"))
+    n := ok(p.server.recv(buf[..]))
     expect(buf[0..n] is "ok")
 }
 
 test "shutdown of both sides" {
-    p := try connected()
-    try p.server.shutdown(.Both)
+    p := ok(connected())
+    ok(p.server.shutdown(.Both))
     buf: [4]u8 = ---
-    expect(try p.server.recv(buf[..]) is 0)
-    expect(try p.client.recv(buf[..]) is 0)
+    expect(ok(p.server.recv(buf[..])) is 0)
+    expect(ok(p.client.recv(buf[..])) is 0)
     expect(p.server.send("x") is !.BrokenPipe)
-    close_socket(p.server)
+    Net.close_socket(p.server)
     expect(p.server.shutdown(.Both) is !.Other(9))
 }
 
 test "set_timeouts is accepted and nothing blocks" {
-    p := try connected()
-    try p.client.set_timeouts(ms(50), null)
-    try p.client.set_timeouts(null, secs(1))
-    try p.client.set_timeouts(null, null)
+    p := ok(connected())
+    ok(p.client.set_timeouts(ms(50), null))
+    ok(p.client.set_timeouts(null, secs(1)))
+    ok(p.client.set_timeouts(null, null))
     buf: [4]u8 = ---
     expect(p.client.recv(buf[..]) is !.WouldBlock)
-    close_socket(p.client)
+    Net.close_socket(p.client)
     expect(p.client.set_timeouts(null, null) is !.Other(9))
 }
 
 test "peer reports the address of the other end" {
-    p := try connected()
+    p := ok(connected())
     buf: [32]u8 = ---
-    n := try p.client.peer(buf[..])
+    n := ok(p.client.peer(buf[..]))
     // The client's peer is the listener's port.
     expect(buf[0..4] is "127.")
     expect(n > 10)
     expect(buf[0..n].ends_with(":49152"))
     expect(p.port is 49152)
-    m := try p.server.peer(buf[..])
+    m := ok(p.server.peer(buf[..]))
     expect(buf[0..10] is "127.0.0.1:")
     expect(m > 10)
     small: [4]u8 = ---
     expect(p.client.peer(small[..]) is !.InvalidInput)
-    close_socket(p.server)
+    Net.close_socket(p.server)
     expect(p.server.peer(buf[..]) is !.Other(9))
 }

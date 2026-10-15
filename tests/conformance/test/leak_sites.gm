@@ -2,14 +2,14 @@
 //! exit: 1
 // A leak report lists the leaked blocks with the sites that allocated them (§3.8).
 test "leaks" {
-    a := try make(u8, 10)
-    b := try new(u32, 7)
+    a := ok(make(u8, 10))
+    b := ok(new(T: u32, 7))
     l := list(i32)
-    try l.push(1)
-    c := try dupe("xyz")
+    ok(l.push(1))
+    c := ok(dupe("xyz"))
     free(c)
 }
 test "clean" {
-    a := try make(u8, 10)
+    a := ok(make(u8, 10))
     free(a)
 }

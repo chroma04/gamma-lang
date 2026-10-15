@@ -2,8 +2,8 @@
 // Each call needs an instantiation with a larger type argument (§16.7).
 nest :: fn(T: type, n: u32, x: T) -> u32 {
     if n is 0 { return 0 }
-    return 1 + nest(?T, n - 1, null)
+    return 1 + nest(T: ?T, n - 1, null)
 }
 main :: fn() {
-    _ = nest(u8, 3, 1) //~ ERROR generic instantiations nest more than 256 deep
+    _ = nest(T: u8, 3, 1) //~ ERROR generic instantiations nest more than 256 deep
 }

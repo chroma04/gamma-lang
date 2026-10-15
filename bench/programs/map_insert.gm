@@ -1,6 +1,6 @@
 // 20000 inserts into a HashMap, then lookups.
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    m := map(u32, u32)
+    m := hash_map(u32, u32)
     defer m.deinit()
     for i in 0..20000 {
         try m.put(i, i * 2)

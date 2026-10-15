@@ -41,19 +41,21 @@ generic_demo :: fn(scores: []const i32) -> i32 {
     p: i32 = 1
     q: i32 = 2
     swap_values(&p, &q)                    // T = i32, inferred from ^i32
-    swap_values(i32, &p, &q)               // or written explicitly
+    swap_values(T: i32, &p, &q)            // or written, by name
     return largest(scores) else 0          // T = i32, from the slice
 }
 ```
 
 ### Inference, precisely
 
-The rules are short and strict (§16.2):
+The rules are short and strict (§16.2, §11.3):
 
+- A compile-time parameter is **inferable** if the type of another parameter mentions it: `T` in `swap_values` and `largest` is inferable, because `a: ^T` and `xs: []const T` mention it. An inferable parameter is **never bound positionally**. Either the arguments determine it, or you write it by name: `largest(scores)` or `largest(T: i32, scores)`. Writing `largest(i32, scores)` is an error: `i32` would be taken for the slice.
+- A parameter that no other parameter's type mentions cannot be inferred, so it is an ordinary positional parameter. That is why you write `list(string)`, `make(u8, 64)` and `parse_int(u8, s)`: the type appears only in the result, or nowhere.
 - Inference matches each argument's type against its parameter's type structurally. A type parameter must be determined by at least one argument, and all determinations must agree **exactly**. No widening is applied.
-- Untyped literals do not determine a type parameter; they take the type that the other arguments infer. If nothing but literals could determine it, it takes the literals' fallback type (`i32` for integers, `f64` for floats).
-- A type parameter that appears only in the result type, or nowhere, cannot be inferred and must be written. That is why you write `list(string)` and `make(u8, 64)`.
-- When you do write type arguments, you write them all, first: `swap_values(i32, &p, &q)`.
+- Untyped literals do not determine a type parameter; they take the type that the other arguments infer. If nothing but literals could determine it, it takes the literals' fallback type (`i32` for integers, `f64` for floats), and to get another type you write the parameter by name: `make_fill(T: u8, 64, 0)`.
+- A function literal argument is checked after the others, so its parameter types can come from them. In `count_if(scores, fn(s) => s >= cutoff)` below, `s` has the element type of `scores`.
+- Named arguments may stand anywhere in the argument list; the positional ones bind, in order, the parameters that no named argument names and that are not inferable. By convention the named type arguments come first: `swap_values(T: i32, &p, &q)`.
 
 ```gamma
 pair_max :: fn(T: type, a, b: T) -> T where Ord(T) => if a > b { a } else { b }
@@ -62,7 +64,7 @@ mistakes :: fn(x: u8, y: u16) {
     _ = pair_max(x, y)             // error: T would be both u8 and u16
     _ = pair_max(x, 4)             // fine: T = u8, and the literal takes that type
     _ = pair_max(3, 4)             // fine: nothing else determines T, so it is i32
-    _ = pair_max(u16, x, y)        // fine: x widens to u16 at the argument
+    _ = pair_max(T: u16, x, y)     // fine: T is written, so x and y widen to u16
 }
 ```
 
@@ -224,7 +226,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 case_insensitive_demo :: fn() -> AllocError!() \ {Alloc} {
-    names := map_with(string, u32, hash: fold_hash, eq: fold_eq)
+    names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     return ()
@@ -269,7 +271,7 @@ apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
 }
 ```
 
-`E` is usually inferred from the argument (`apply(noisy, 4)` with `noisy :: fn(x: i32) -> i32 \ {Out}` gives `E = {Out}`, so that call performs `Out`). An explicit argument is an effect set literal such as `\ {Out, Alloc}` or a single effect (`apply(Out, noisy, 4)`), and an `E` that is neither given nor inferred is empty. Generic types, effects and handlers take such parameters too, which is what lets a *stored* function pointer be polymorphic in its effects:
+`E` is inferable here (the type of `f` mentions it), so, like a type parameter, it is never positional. It is usually inferred from the argument (`apply(noisy, 4)` with `noisy :: fn(x: i32) -> i32 \ {Out}` gives `E = {Out}`, so that call performs `Out`). To give it, write it by name, as an effect set literal such as `\ {Out, Alloc}` or a single effect (`apply(E: Out, noisy, 4)`), and an `E` that is neither given nor inferred is empty. Generic types, effects and handlers take such parameters too, which is what lets a *stored* function pointer be polymorphic in its effects:
 
 ```gamma
 Holder :: struct(E: effects) { f: ^fn(x: i32) -> i32 \ {..E} }
@@ -279,12 +281,26 @@ run_holder :: fn(E: effects, h: Holder(E), x: i32) -> i32 \ {..E} => h.f(x)
 
 `std/fiber`'s `Sched(E)` is the main example: it lets fiber tasks perform the effects `E`, handled outside the scheduler.
 
+When the same group of effects is written in many signatures, give it a name. A top-level binding whose value is an effect set is a **named effect set**, spliced with `..` like a parameter, and it can be the argument of an effect-set parameter:
+
+```gamma
+Io :: \ {Fs, Alloc, Err}
+
+report :: fn(msg: string) \ {..Io, Clock} {
+    // may perform Fs, Alloc, Err and Clock
+}
+
+run_holder_io :: fn(h: Holder(Io), x: i32) -> i32 \ {..Io} => h.f(x)
+```
+
+A named set is only a compile-time name for a list of effects: it is not a type or a value, and it cannot mention an effect-set parameter.
+
 The same once-checked rule applies: `..E` performed inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type, so it cannot appear outside an effect set.
 
 ## Restrictions
 
 - A `when` condition may not depend on a type parameter or compile-time value parameter of an enclosing generic function ([chapter 11](11-compile-time.md)). Use separate functions.
-- A generic function is not a value by itself, but one instantiation is: give every compile-time argument and leave out the run-time ones (`p: ^fn(s: string) -> ?u8 = parse_int(u8)`), or assign the bare name where a function pointer type is expected, and the type arguments are taken from that type (`q: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`). There is no other partial application of type arguments; write a non-generic wrapper: `largest_i32 :: fn(xs: []const i32) -> ?i32 => largest(xs)`.
+- A generic function is not a value by itself, but one instantiation is: give every compile-time argument and leave out the run-time ones (`p: ^fn(s: string) -> ?u8 = parse_int(u8)`, or `q: ^fn(x: u8) -> u8 = double(T: u8)` where `T` is inferable and so written by name), or assign the bare name where a function pointer type is expected, and the type arguments are taken from that type (`r: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`). There is no other partial application of type arguments; write a non-generic wrapper: `largest_i32 :: fn(xs: []const i32) -> ?i32 => largest(xs)`.
 - Type arguments must be first-class, run-time types. A second-class `fn(...)` type cannot be a type argument, so you cannot store a closure in `Box(fn() -> i32)`.
 - Recursion between instantiations must terminate: an instantiation that keeps requiring a strictly larger type argument is a compile error after an implementation-defined depth.
 
@@ -336,7 +352,7 @@ The cost is one explicit argument. In exchange, every call tells you exactly whi
 ## Summary
 
 - A generic function or type has `type` or `::` parameters; it is checked once and monomorphized.
-- Type arguments are inferred from value arguments, exactly; literals do not determine them.
+- Type arguments are inferred from value arguments, exactly; literals do not determine them. An inferable parameter is never positional: infer it, or write it by name (`largest(T: i32, xs)`).
 - Constraints (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) are a closed set; for anything else pass a function or a constant struct.
 - Generic types take compile-time parameters, including function pointers, which is how maps customize hashing.
 - There are no traits; the table above lists what to use instead.

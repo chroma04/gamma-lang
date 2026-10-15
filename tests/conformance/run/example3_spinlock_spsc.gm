@@ -92,29 +92,29 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NT]thread.Thread = ---
     for i in 0..NT {
         ws[i] = Worker(sh: &sh, id: i.trunc(u32))
-        ts[i] = try thread.spawn(Worker, work, &ws[i])
+        ts[i] = try thread.spawn(work, &ws[i])
     }
     for i in 0..NT { ts[i].join() }
-    print("plain counter {} (expected {})\n", (sh.plain, NT * ITER))
+    print("plain counter {} (expected {})\n", sh.plain, NT * ITER)
     print("max seen {}\n", sh.maxseen)
-    print("bits {} parity {}\n", (sh.bits, sh.parity))
+    print("bits {} parity {}\n", sh.bits, sh.parity)
 
     ring := Ring(slots: [RING]u32(fill: 0), head: 0, tail: 0, sum: 0, received: 0)
-    p := try thread.spawn(Ring, producer, &ring)
-    c := try thread.spawn(Ring, consumer, &ring)
+    p := try thread.spawn(producer, &ring)
+    c := try thread.spawn(consumer, &ring)
     p.join()
     c.join()
     expected: u64 = 0
     for n in 0..COUNT { expected += u64(n) * u64(n) }
-    print("received {} sum {} (expected {})\n", (ring.received, ring.sum, expected))
-    print("head {} tail {}\n", (ring.head, ring.tail))
+    print("received {} sum {} (expected {})\n", ring.received, ring.sum, expected)
+    print("head {} tail {}\n", ring.head, ring.tail)
 
     x: u32 = 10
     old := @atomic_swap(&x, 20, .AcqRel)
     miss := @atomic_cas(&x, 99, 1, .SeqCst, .SeqCst)
     hit := @atomic_cas(&x, 20, 30, .SeqCst, .SeqCst)
     @fence(.SeqCst)
-    print("swap old {} miss {} hit {} now {}\n", (old, miss, hit, @atomic_load(&x, .SeqCst)))
-    print("sub {} min {} and {}\n", (@atomic_sub(&x, 5, .Relaxed), @atomic_min(&x, 7, .Relaxed), @atomic_and(&x, 0b110, .Relaxed)))
+    print("swap old {} miss {} hit {} now {}\n", old, miss, hit, @atomic_load(&x, .SeqCst))
+    print("sub {} min {} and {}\n", @atomic_sub(&x, 5, .Relaxed), @atomic_min(&x, 7, .Relaxed), @atomic_and(&x, 0b110, .Relaxed))
     print("final {}\n", x)
 }

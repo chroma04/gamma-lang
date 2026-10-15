@@ -70,26 +70,26 @@ is_prime :: fn(n: i64) -> bool {
 }
 
 primes :: fn() \ {Yield(i64), Out} {
-    filtered(i64, fn() { naturals() }, is_prime)
+    filtered(T: i64, fn() { naturals() }, is_prime)
 }
 
 show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
     print("{}:", label)
     for x in src() { print(" {}", x) }
-    print("\n", ())
+    print("\n")
 }
 
 adapters :: fn() \ {Out} {
     print("-- adapters\n")
-    show_stream("first 10 primes", fn() { taking(i64, 10, primes) })
+    show_stream("first 10 primes", fn() { taking(T: i64, 10, primes) })
     show_stream("squares of 1..5", fn() {
-        taking(i64, 5, fn() { mapped(i64, i64, naturals, fn(x: i64) -> i64 => x * x) })
+        taking(T: i64, 5, fn() { mapped(T: i64, U: i64, naturals, fn(x: i64) -> i64 => x * x) })
     })
-    show_stream("fibs from the 10th, 6 of them", fn() { taking(i64, 6, fn() { skipping(i64, 10, fibs) }) })
-    show_stream("fibs below 100", fn() { taking_while(i64, fibs, fn(x: i64) -> bool => x < 100) })
+    show_stream("fibs from the 10th, 6 of them", fn() { taking(T: i64, 6, fn() { skipping(T: i64, 10, fibs) }) })
+    show_stream("fibs below 100", fn() { taking_while(T: i64, fibs, fn(x: i64) -> bool => x < 100) })
     // The same stream consumed twice by different loops is two independent runs.
     total: i64 = 0
-    for p in taking(i64, 100, primes) { total += p }
+    for p in taking(T: i64, 100, primes) { total += p }
     print("sum of the first 100 primes: {}\n", total)
 }
 
@@ -146,7 +146,7 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
     }
     with (handler Lock {
         begin(k) => {
-            discard k
+            cancel k
             lk = @fiber(producer, &la, stack_l[..])
             rk = @fiber(producer, &ra, stack_r[..])
             match step() {
@@ -180,14 +180,14 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
                     resume c()
                 }
                 .Stop => {
-                    if c := lk { discard c }
-                    if c := rk { discard c }
+                    if c := lk { cancel c }
+                    if c := rk { cancel c }
                     break
                 }
             }
         }
         finished(side, k) => {
-            discard k
+            cancel k
             if side is 0 { ldone = true } else { rdone = true }
             match step() {
                 .ResumeLeft => {
@@ -201,8 +201,8 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
                     resume c()
                 }
                 .Stop => {
-                    if c := lk { discard c }
-                    if c := rk { discard c }
+                    if c := lk { cancel c }
+                    if c := rk { cancel c }
                     break
                 }
             }
@@ -244,7 +244,7 @@ lockstep_demo :: fn() \ {Out} {
     lockstep(naturals, short, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
             if b := r {
-                print("  ({}, {})\n", (a, b))
+                print("  ({}, {})\n", a, b)
                 n += 1
                 return 3
             }
@@ -258,7 +258,7 @@ lockstep_demo :: fn() \ {Out} {
     lockstep(squares, fibs, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
             if b := r {
-                print("  {} + {} = {}\n", (a, b, a + b))
+                print("  {} + {} = {}\n", a, b, a + b)
                 n += 1
                 if n is 4 { return 0 }
                 return 3
@@ -268,7 +268,7 @@ lockstep_demo :: fn() \ {Out} {
     })
 
     print("-- merge of the multiples of 3 and of 5 below 40, without duplicates\n")
-    print(" ", ())
+    print(" ")
     last: i64 = 0
     lockstep(multiples_of_3, multiples_of_5, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
@@ -287,7 +287,7 @@ lockstep_demo :: fn() \ {Out} {
         }
         return 0
     })
-    print("\n", ())
+    print("\n")
 }
 
 main :: fn() \ {Out} {

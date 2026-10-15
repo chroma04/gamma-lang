@@ -24,7 +24,7 @@ collect :: fn(limit: i64, take: usize, out: []i64) -> usize \ {Out} {
     with (handler Emit {
         emit(x, k) => {
             if n is take {
-                discard k
+                cancel k
                 break
             }
             out[n] = x
@@ -114,7 +114,7 @@ handler Task for ^Sched \ {Alloc, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := pop_front(self)
@@ -126,7 +126,7 @@ worker :: fn(id: u32) -> never \ {Task, Out} {
     defer print("  worker {} cleaned up\n", id)
     steps := id + 1
     for i in 0..steps {
-        print("  worker {} step {}/{}\n", (id, i + 1, steps))
+        print("  worker {} step {}/{}\n", id, i + 1, steps)
         yield_now()
     }
     exit()
@@ -143,7 +143,7 @@ run_scheduler :: fn() \ {Out, Alloc} {
         print("  main spawned 3 workers\n")
         exit()
     }
-    print("  all done: {} stacks, {} switches, ready queue {}\n", (s.used, s.switches, s.ready.items.len))
+    print("  all done: {} stacks, {} switches, ready queue {}\n", s.used, s.switches, s.ready.items.len)
     s.ready.deinit()
 }
 
@@ -151,12 +151,12 @@ main :: fn() \ {Out, Alloc} {
     vals: [64]i64 = ---
     print("take 10 of fib:\n")
     n := collect(1_000_000, 10, vals[..])
-    print("  {} values: {}\n", (n, vals[0..n]))
+    print("  {} values: {}\n", n, vals[0..n])
     print("take all fib <= 100:\n")
     n = collect(100, 64, vals[..])
-    print("  {} values: {}\n", (n, vals[0..n]))
+    print("  {} values: {}\n", n, vals[0..n])
     r := pipeline(1000)
-    print("pipeline: {} evens, sum {}\n", (r.count, r.sum))
+    print("pipeline: {} evens, sum {}\n", r.count, r.sum)
     print("scheduler:\n")
     run_scheduler()
 }

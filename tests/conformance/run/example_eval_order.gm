@@ -6,7 +6,7 @@ next :: fn(c: ^Counter) -> usize {
 }
 
 trace :: fn(c: ^Counter, label: string, v: i32) -> i32 \ {Out} {
-    print("{}{} ", (label, c.n))
+    print("{}{} ", label, c.n)
     c.n += 1
     return v
 }
@@ -21,7 +21,7 @@ main :: fn() \ {Out} {
     arr := [_]i32(10, 20, 30, 40)
     arr[next(&c)] += 5
     arr[next(&c)] *= 2
-    print("{} calls={}\n", (arr, c.n))
+    print("{} calls={}\n", arr, c.n)
 
     // evaluation order
     c.n = 0
@@ -34,18 +34,18 @@ main :: fn() \ {Out} {
     a, b := (1, 2)
     a, b = (b, a)
     arr[0], arr[3] = (arr[3], arr[0])
-    print("{} {} {}\n", (a, b, arr))
+    print("{} {} {}\n", a, b, arr)
 
     // short circuit
     c.n = 0
     ok := trace(&c, "s", 0) is 1 and trace(&c, "t", 1) is 1
     ok2 := trace(&c, "u", 1) is 1 or trace(&c, "v", 1) is 1
-    print("{} {} n={}\n", (ok, ok2, c.n))
+    print("{} {} n={}\n", ok, ok2, c.n)
 
     // parameters are distinct objects
     orig := [3]i32(1, 2, 3)
     r := modify(orig, &orig)
-    print("{} {}\n", (r, orig))
+    print("{} {}\n", r, orig)
 
     // defer in loops sees the variable's value at exit time
     total: u32 = 0
@@ -64,9 +64,9 @@ main :: fn() \ {Out} {
 
     // checked arithmetic in narrow types
     m: i8 = -128
-    print("{} {} {}\n", (m +% -1, m -| 1, m *? 2))
+    print("{} {} {}\n", m +% -1, m -| 1, m *? 2)
     print("{}\n", (m.checked(i8)))
     k: u8 = 255
-    print("{} {}\n", (k <<% 1, k <<? 1))
-    print("{} {}\n", (i16(-32768) +? i16(-1) else 7, -7 % 3))
+    print("{} {}\n", k <<% 1, k <<? 1)
+    print("{} {}\n", i16(-32768) +? i16(-1) else 7, -7 % 3)
 }

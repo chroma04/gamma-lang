@@ -9,16 +9,16 @@ handler Out for ^Indenter \ {Out} {
         start: usize = 0
         for i in 0..bytes.len {
             if self.at_start and bytes[i] is not '\n' {
-                write_out(self.pad)
+                Out.write_out(self.pad)
                 self.at_start = false
             }
             if bytes[i] is '\n' {
-                write_out(bytes[start..=i])
+                Out.write_out(bytes[start..=i])
                 start = i + 1
                 self.at_start = true
             }
         }
-        if start < bytes.len { write_out(bytes[start..]) }
+        if start < bytes.len { Out.write_out(bytes[start..]) }
     }
 }
 
@@ -32,7 +32,7 @@ handler Out for ^Numberer \ {Out} {
                 print("{}| ", self.n)
                 self.at_start = false
             }
-            write_out(bytes[i..i + 1])
+            Out.write_out(bytes[i..i + 1])
             if bytes[i] is '\n' { self.at_start = true }
         }
     }

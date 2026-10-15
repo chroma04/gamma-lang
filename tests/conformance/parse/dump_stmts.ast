@@ -40,7 +40,7 @@
             (block
               (expr (call (ident a)))
               (expr (call (ident b)))))
-          (discard (ident k))
+          (cancel (ident k))
           (block
             (binding var nested (int 1)))
           (when-stmt (ident A)

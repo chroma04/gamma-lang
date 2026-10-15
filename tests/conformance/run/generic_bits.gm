@@ -9,7 +9,7 @@ from_u :: fn(T: type, x: u32) -> T where Plain(T) {
     return x.bits(T)
 }
 main :: fn() \ {Out} {
-    print("{}\n", reinterp(f32, u32, 1.0))
-    print("{}\n", to_u(i32, -1))
+    print("{}\n", reinterp(T: f32, u32, 1.0))
+    print("{}\n", to_u(T: i32, -1))
     print("{}\n", from_u(f32, 0x3f800000))
 }

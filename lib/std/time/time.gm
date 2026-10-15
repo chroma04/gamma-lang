@@ -161,7 +161,7 @@ pub to_unix :: fn(t: DateTime) -> i64 {
 }
 
 /// The current date and time from the `Clock`'s wall clock.
-pub now :: fn() -> DateTime \ {Clock} => from_unix(wall())
+pub now :: fn() -> DateTime \ {Clock} => from_unix(Clock.wall())
 
 // ---------------------------------------------------------------------------------
 // Writing text

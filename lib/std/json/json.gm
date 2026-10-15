@@ -405,7 +405,7 @@ parse_number :: fn(p: ^Parser) -> ParseError!Number \ {Alloc} {
         while i < t.len and is_digit(t[i]) { i += 1 }
     }
     p.pos = i
-    return Number(text: try dupe(u8, t[start..i]))
+    return Number(text: try dupe(t[start..i]))
 }
 
 // The value of the hexadecimal digit `c`, or 255.

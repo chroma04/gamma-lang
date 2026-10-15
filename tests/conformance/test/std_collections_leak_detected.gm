@@ -8,21 +8,21 @@ bs :: import "std/collections/bitset"
 
 test "a deque without deinit leaks" {
     d := dq.deque(u32)
-    try d.push_back(1)
+    ok(d.push_back(1))
 }
 
 test "a heap without deinit leaks" {
     h := hp.heap(u32)
-    try h.push(1)
+    ok(h.push(1))
 }
 
 test "a bit set without deinit leaks" {
-    s := try bs.bitset(10)
+    s := ok(bs.bitset(10))
     s.insert(1)
 }
 
 test "an empty bit set and an unused deque leak nothing" {
-    s := try bs.bitset(0)
+    s := ok(bs.bitset(0))
     _ = s
     d := dq.deque(u32)
     _ = d

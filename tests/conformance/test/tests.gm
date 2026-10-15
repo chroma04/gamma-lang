@@ -1,6 +1,6 @@
 //! stage: test
 //! exit: 1
-// Tests (§3.8): error types from `try`, expect, captured output, leak checking.
+// Tests (§3.8): results checked with `ok`, expect, captured output, leak checking.
 ParseError :: union { Empty, BadDigit: (at: usize) }
 
 parse_u16 :: fn(s: string) -> ParseError!u16 {
@@ -15,7 +15,7 @@ parse_u16 :: fn(s: string) -> ParseError!u16 {
 }
 
 test "parse accepts digits" {
-    expect(try parse_u16("123") is 123)
+    expect(ok(parse_u16("123")) is 123)
 }
 
 test "parse rejects letters" {
@@ -24,7 +24,7 @@ test "parse rejects letters" {
 }
 
 test "errors propagate" {
-    n := try parse_u16("9x")
+    n := ok(parse_u16("9x"))
     print("unreachable {}\n", n)
 }
 
@@ -34,7 +34,7 @@ test "expectations fail" {
 }
 
 test "leaks are caught" {
-    p := new(i32, 5) else return
+    p := new(T: i32, 5) else return
     _ = p
 }
 

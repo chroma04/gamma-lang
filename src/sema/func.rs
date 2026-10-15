@@ -93,9 +93,6 @@ pub struct FnCx<'a, 's> {
     pub performed: Vec<(EffectRef, Span)>,
     /// The calls of functions whose effects include `Yield`, as opposed to `yield` itself.
     pub iterator_calls: Vec<Span>,
-    /// Calls of an operation that hides a universe operation of the same name, with the
-    /// explanation to add to errors about them.
-    pub hiding_op_calls: Vec<(Span, String)>,
     pub labels: Vec<LabelInfo>,
     pub next_label: u32,
     pub pending: Vec<PendingCoercion>,
@@ -136,9 +133,6 @@ pub struct FnCx<'a, 's> {
     pub clause: Option<ClauseInfo>,
     /// Effects handled by enclosing `with`s (and `for` loops) of this body.
     pub handled: Vec<EffectRef>,
-    /// While checking a test's body: its error type is taken from the first
-    /// `try` (§3.8), so `ret` starts as `<error>!()`.
-    pub infer_test_error: bool,
     /// The `break`s to each label, keyed by the frame depth and the label, with the
     /// type and span of the value given (`()` for loops). Taken out when the labeled
     /// construct is finished: a `with` checks the values.
@@ -308,7 +302,6 @@ impl<'a, 's> FnCx<'a, 's> {
             declared,
             performed: vec![],
             iterator_calls: vec![],
-            hiding_op_calls: vec![],
             labels: vec![],
             next_label: 0,
             pending: vec![],
@@ -330,7 +323,6 @@ impl<'a, 's> FnCx<'a, 's> {
             nested: vec![],
             clause: None,
             handled: vec![],
-            infer_test_error: false,
             label_breaks: Default::default(),
         }
     }
@@ -634,11 +626,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// does not declare.
     pub fn undeclared_effect(&mut self, e: &EffectRef, span: Span, declared: &EffectSet) {
         let msg = self.undeclared_effect_message(e, span, declared);
-        let before = self.sema.sess.diags.len();
         self.error(span, msg);
-        if let Some((_, why)) = self.hiding_op_calls.iter().find(|(s, _)| *s == span) {
-            self.sema.sess.diags.note_since(before, span, why);
-        }
     }
 
     // --- bodies, blocks and statements ---
@@ -856,7 +844,7 @@ impl<'a, 's> FnCx<'a, 's> {
             StmtKind::While { label, cond, body } => Stmt::Expr(self.while_loop(*label, cond, body, s.span)),
             StmtKind::Block(b) => Stmt::Expr(self.block(b, false)),
             StmtKind::When(w) => Stmt::Expr(self.when_stmt(w)),
-            StmtKind::Discard(e) => Stmt::Expr(self.discard_stmt(e, s.span)),
+            StmtKind::Cancel(e) => Stmt::Expr(self.cancel_stmt(e, s.span)),
             StmtKind::LetElse { value, .. } => {
                 self.error(s.span, "a binding with a pattern that can fail must be a statement of a block");
                 Stmt::Expr(self.expr(value, None))
@@ -1673,7 +1661,7 @@ fn never_cause(e: &Expr) -> Option<(Span, &'static str)> {
         K::Trap { .. } => Some((e.span, "this stops the program")),
         K::Try { .. } => Some((e.span, "this `try` always returns")),
         K::Resume { .. } => Some((e.span, "this `resume` ends the handler clause")),
-        K::Discard(_) => Some((e.span, "this `discard` ends the handler clause")),
+        K::Cancel(_) => Some((e.span, "this `cancel` ends the handler clause")),
         K::Call { callee: tir::Callee::Perform { .. }, .. } => {
             Some((e.span, "this operation never returns to its caller: its result type is `never`"))
         }

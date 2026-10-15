@@ -19,18 +19,18 @@ tree :: fn() -> IoError!() \ {Fs} {
 }
 
 test "entries lists a directory with kinds" {
-    try tree()
+    ok(tree())
     files: u32 = 0
     dirs: u32 = 0
     for r in fs.entries("t") {
-        e := try r
+        e := ok(r)
         match e.kind {
             .File => { files += 1 }
             .Dir => { dirs += 1 }
             _ => expect(false, "unexpected kind")
         }
     }
-    print("{} files, {} directories\n", (files, dirs))
+    print("{} files, {} directories\n", files, dirs)
     expect(files is 2 and dirs is 2)
 }
 
@@ -41,34 +41,34 @@ test "entries yields an open error once" {
         expect(r is !.NotFound)
     }
     expect(n is 1)
-    try put("plain", "x")
+    ok(put("plain", "x"))
     for r in fs.entries("plain") { expect(r is !.Other(20)) }
 }
 
 test "entries closes the directory when left early" {
-    try tree()
+    ok(tree())
     for r in fs.entries("t") {
-        _ = try r
+        _ = ok(r)
         break
     }
     // The directory handle was closed: removing and recreating things still works.
     n: u32 = 0
     for r in fs.entries("t") {
-        _ = try r
+        _ = ok(r)
         n += 1
     }
     expect(n is 4)
 }
 
 test "walk visits every entry in pre-order" {
-    try tree()
+    ok(tree())
     order := [_]string("t/a.txt", "t/sub", "t/sub/b.txt", "t/sub/deep", "t/sub/deep/c.txt",
                        "t/sub/deep/d.txt", "t/other", "t/z.txt")
     depths := [_]u32(0, 0, 1, 1, 2, 2, 0, 0)
     at: [8]i32 = [8]i32(fill: -1)
     count: i32 = 0
     for r in fs.walk("t") {
-        e := try r
+        e := ok(r)
         found: i32 = -1
         for i in 0..order.len {
             if e.path is order[i] { found = i.trunc(i32) }
@@ -90,11 +90,11 @@ test "walk visits every entry in pre-order" {
 }
 
 test "walk with a trailing slash and an empty tree" {
-    try fs.make_dir_all("e")
-    for r in fs.walk("e/") { _ = try r; expect(false, "nothing to visit") }
-    try put("e/x", "1")
+    ok(fs.make_dir_all("e"))
+    for r in fs.walk("e/") { _ = ok(r); expect(false, "nothing to visit") }
+    ok(put("e/x", "1"))
     for r in fs.walk("e/") {
-        e := try r
+        e := ok(r)
         expect(e.path is "e/x")
         expect(e.depth is 0)
     }
@@ -110,78 +110,78 @@ test "walk reports a missing root once" {
 }
 
 test "walk frees everything when left early" {
-    try tree()
+    ok(tree())
     for r in fs.walk("t") {
-        e := try r
+        e := ok(r)
         if e.depth is 2 { break }
     }
     n: u32 = 0
     for r in fs.walk("t") {
-        _ = try r
+        _ = ok(r)
         n += 1
     }
     expect(n is 8)
 }
 
 test "make_dir_all" {
-    try fs.make_dir_all("a/b/c")
-    try fs.make_dir_all("a/b/c")
-    try fs.make_dir_all("/a//b/./c/")
-    expect((try stat("a/b/c")).kind is .Dir)
-    try fs.make_dir_all("")
-    try fs.make_dir_all("/")
-    try put("a/file", "x")
+    ok(fs.make_dir_all("a/b/c"))
+    ok(fs.make_dir_all("a/b/c"))
+    ok(fs.make_dir_all("/a//b/./c/"))
+    expect((ok(Fs.stat("a/b/c"))).kind is .Dir)
+    ok(fs.make_dir_all(""))
+    ok(fs.make_dir_all("/"))
+    ok(put("a/file", "x"))
     expect(fs.make_dir_all("a/file") is !.AlreadyExists)
     expect(fs.make_dir_all("a/file/inner") is !.AlreadyExists)
 }
 
 test "write_atomic replaces the file and leaves no temporary" {
-    try put("cfg", "old contents, longer")
-    try fs.write_atomic("cfg", "new")
-    data := try fs.read_all("cfg")
+    ok(put("cfg", "old contents, longer"))
+    ok(fs.write_atomic("cfg", "new"))
+    data := ok(fs.read_all("cfg"))
     expect(data is "new")
     free(data)
-    try fs.write_atomic("fresh", "created")
+    ok(fs.write_atomic("fresh", "created"))
     n: u32 = 0
     for r in fs.entries("/") {
-        _ = try r
+        _ = ok(r)
         n += 1
     }
     expect(n is 2, "only the two files")
     expect(fs.write_atomic("missing/dir/file", "x") is !.NotFound)
     n = 0
     for r in fs.entries("/") {
-        _ = try r
+        _ = ok(r)
         n += 1
     }
     expect(n is 2, "a failure leaves nothing behind")
     // Replacing a directory fails and removes the temporary.
-    try make_dir("d")
+    ok(Fs.make_dir("d"))
     expect(fs.write_atomic("d", "x") is !.Other(21))
     n = 0
     for r in fs.entries("/") {
-        _ = try r
+        _ = ok(r)
         n += 1
     }
     expect(n is 3)
 }
 
 test "truncate and sync" {
-    f := try open("f", OpenOptions(read: true, write: true, create: true))
-    _ = try f.write_to("hello world")
-    try f.sync()
-    try f.truncate(5)
-    expect((try stat("f")).size is 5)
-    try f.truncate(8)
-    expect((try stat("f")).size is 8)
-    _ = try f.seek(0, .Start)
+    f := ok(Fs.open("f", fs.OpenOptions(read: true, write: true, create: true)))
+    _ = ok(f.write_to("hello world"))
+    ok(f.sync())
+    ok(f.truncate(5))
+    expect((ok(Fs.stat("f"))).size is 5)
+    ok(f.truncate(8))
+    expect((ok(Fs.stat("f"))).size is 8)
+    _ = ok(f.seek(0, .Start))
     buf: [16]u8 = ---
-    n := try f.read_from(buf[..])
+    n := ok(f.read_from(buf[..]))
     expect(n is 8)
     expect(buf[0..8] is "hello\0\0\0")
-    try f.truncate(0)
-    expect((try stat("f")).size is 0)
-    ro := try open("f", OpenOptions())
+    ok(f.truncate(0))
+    expect((ok(Fs.stat("f"))).size is 0)
+    ro := ok(Fs.open("f", fs.OpenOptions()))
     expect(ro.truncate(1) is !.Other(9))
     ro.close()
     expect(f.truncate(MEM_TOO_BIG) is !.NoSpace)
@@ -193,45 +193,45 @@ test "truncate and sync" {
 MEM_TOO_BIG :: 1 << 40
 
 test "lstat is stat, and cwd is the root" {
-    try put("f", "abc")
-    try make_dir("d")
-    a := try lstat("f")
+    ok(put("f", "abc"))
+    ok(Fs.make_dir("d"))
+    a := ok(Fs.lstat("f"))
     expect(a.kind is .File and a.size is 3)
-    expect((try lstat("d")).kind is .Dir)
-    expect(lstat("nothing") is !.NotFound)
+    expect((ok(Fs.lstat("d"))).kind is .Dir)
+    expect(Fs.lstat("nothing") is !.NotFound)
     buf: [8]u8 = ---
-    n := try cwd(buf[..])
+    n := ok(Fs.cwd(buf[..]))
     expect(buf[0..n] is "/")
     empty := empty_slice(u8)
-    expect(cwd(empty) is !.InvalidInput)
+    expect(Fs.cwd(empty) is !.InvalidInput)
 }
 
 test "next_entry reports kinds" {
-    try tree()
-    d := try open_dir("t")
+    ok(tree())
+    d := ok(Fs.open_dir("t"))
     defer d.close_dir()
     buf: [16]u8 = ---
     dirs: u32 = 0
     while true {
-        e := (try d.next_entry(buf[..])) else break
+        e := (ok(d.next_entry(buf[..]))) else break
         if e.kind is .Dir { dirs += 1 }
     }
     expect(dirs is 2)
 }
 
 test "copying a file onto itself keeps it" {
-    try fs.write_all("self.txt", "precious data")
-    try fs.copy("self.txt", "self.txt")
-    d := try fs.read_all("self.txt")
+    ok(fs.write_all("self.txt", "precious data"))
+    ok(fs.copy("self.txt", "self.txt"))
+    d := ok(fs.read_all("self.txt"))
     defer free(d)
     expect(string(d) is "precious data", "content")
 }
 
 test "copy replaces a longer file" {
-    try fs.write_all("long.txt", "a much longer old content")
-    try fs.write_all("short.txt", "new")
-    try fs.copy("short.txt", "long.txt")
-    d := try fs.read_all("long.txt")
+    ok(fs.write_all("long.txt", "a much longer old content"))
+    ok(fs.write_all("short.txt", "new"))
+    ok(fs.copy("short.txt", "long.txt"))
+    d := ok(fs.read_all("long.txt"))
     defer free(d)
     expect(string(d) is "new", "content")
 }

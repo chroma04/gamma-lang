@@ -64,7 +64,7 @@ main :: fn() \ {Out} {
         y.tag += 1
         return y
     }, b)
-    print("closure {} {}\n", (c.tag, total(c)))
+    print("closure {} {}\n", c.tag, total(c))
     seen: i64 = 0
     r := with (handler Log {
         note(v) => {
@@ -76,7 +76,7 @@ main :: fn() \ {Out} {
     }) {
         logged(b)
     }
-    print("op {} {}\n", (seen, r))
+    print("op {} {}\n", seen, r)
     stack: [32768]u8 = ---
     got: i64 = 0
     q := with (handler Pull {
@@ -87,12 +87,12 @@ main :: fn() \ {Out} {
     }) on stack[..] {
         producer()
     }
-    print("ctl {} {}\n", (got, q))
+    print("ctl {} {}\n", got, q)
     s := Scaler(by: [6]i64(fill: 4))
     with s {
         print("self {}\n", scale(5))
     }
     arr: [16]u32 = [16]u32(fill: 9)
     tup := (arr, b, 7)
-    print("tuple {} {}\n", (tup.0[15], total(tup.1)))
+    print("tuple {} {}\n", tup.0[15], total(tup.1))
 }

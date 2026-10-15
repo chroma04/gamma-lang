@@ -8,5 +8,5 @@ main :: fn() \ {Out} {
     c := eff.Counter(total: 10)
     with &c { work() }
     with (handler eff.Gen(i32) { emit(x) => print("emit {}\n", x) }) { gen() }
-    print("{} {}\n", (total, c.total))
+    print("{} {}\n", total, c.total)
 }

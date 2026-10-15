@@ -108,7 +108,7 @@ nothing:
 
 ```gamma
 total: usize = 0
-@write(fn(b) { total += b.len }, "{} items at {:.2}\n", (n, price))   // measures the text
+@write(fn(b) { total += b.len }, "{} items at {:.2}\n", n, price)   // measures the text
 ```
 
 For text you keep, `List(u8).write` appends to a list, `str.format` returns a new

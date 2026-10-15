@@ -1,7 +1,7 @@
 //! stage: lex
 //! dump
 // Identifiers are ASCII; keywords are reserved; contextual words are identifiers.
-and break continue ctl defer discard effect else
+and break cancel continue ctl defer effect else
 errdefer esc false fn for foreign handler if
 import in is match not null or pub
 resume return struct true try union using when

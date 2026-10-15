@@ -18,7 +18,7 @@ show :: fn(args: []const string) \ {Out} {
     table := opts
     for a in cli.parse(args, table[..]) {
         match a {
-            .Opt(o) => print(" opt{}({})", (o.index, o.value))
+            .Opt(o) => print(" opt{}({})", o.index, o.value)
             .Pos(p) => print(" pos({})", p)
             .Unknown(u) => print(" unknown({})", u)
             .MissingValue(i) => print(" missing{}", i)

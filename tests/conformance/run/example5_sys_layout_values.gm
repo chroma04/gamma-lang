@@ -63,17 +63,17 @@ fiber_line :: fn() -> u64 \ {Gen} {
 
 main :: fn() \ {Out} {
     l := line(7)
-    print("line {} {}\n", (align_of_param(l), through(l, &l)))
+    print("line {} {}\n", align_of_param(l), through(l, &l))
     print("after {}\n", l.data[0])
-    print("page {} {}\n", (page_param(ret_page(4)), ret_page(9).bytes[63]))
+    print("page {} {}\n", page_param(ret_page(4)), ret_page(9).bytes[63])
     pk := pk_make(3)
-    print("packed {} size {}\n", (pk_sum(pk), @size_of(Pk)))
+    print("packed {} size {}\n", pk_sum(pk), @size_of(Pk))
     print("empty {}\n", empty_arg(Empty(), Holder(e: Empty(), z: [0]u64(), v: 5), 7))
     n := num_make(10)
-    print("union {} {}\n", (num_sum(n), n.i[2]))
+    print("union {} {}\n", num_sum(n), n.i[2])
     f := Flags(a: true, b: 100, c: 1000, _: 0)
     g := flags_roundtrip(f)
-    print("flags {} {} {} / {}\n", (g.a, g.b, g.c, u64(g)))
+    print("flags {} {} {} / {}\n", g.a, g.b, g.c, u64(g))
     stack: [65536]u8 = ---
     r := with (handler Gen {
         give(ln, k) => {

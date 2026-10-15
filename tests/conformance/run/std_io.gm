@@ -6,12 +6,12 @@ walk :: fn(r: ^io.Reader) \ {In, Out} {
     n: u32 = 1
     while true {
         next := r.next_line() else e => {
-            print("  line {}: error {}\n", (n, e))
+            print("  line {}: error {}\n", n, e)
             n += 1
             continue
         }
         line := next else break
-        print("  line {}: {} bytes", (n, line.len))
+        print("  line {}: {} bytes", n, line.len)
         if line.len > 0 { print(", starts {}", line[0..1]) }
         print("\n")
         n += 1
@@ -22,7 +22,7 @@ main :: fn() -> io.ReadError!() \ {In, Out, Alloc} {
     // Everything on standard input.
     data := try io.read_all()
     defer free(data)
-    print("read_all: {} bytes, ends {}\n", (data.len, data[data.len - 4..data.len]))
+    print("read_all: {} bytes, ends {}\n", data.len, data[data.len - 4..data.len])
 
     // The same text through readers with different buffers.
     s := io.StringIn(data: data)
@@ -76,10 +76,10 @@ main :: fn() -> io.ReadError!() \ {In, Out, Alloc} {
     defer text.deinit()
     lo := io.ListOut(list: &text)
     with &lo {
-        print("{} + {} = {}\n", (1, 2, 3))
+        print("{} + {} = {}\n", 1, 2, 3)
         eprint("(err) ")
         for i in 0..3 { print("{} ", i) }
     }
-    print("list: {} err {}\n", (text.items, lo.err))
+    print("list: {} err {}\n", text.items, lo.err)
     return ()
 }

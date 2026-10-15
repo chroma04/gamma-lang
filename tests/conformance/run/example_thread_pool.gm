@@ -87,7 +87,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NWORKERS]thread.Thread = ---
     for i in 0..NWORKERS {
         args[i] = JobArg(job: &job, id: i.trunc(u32))
-        ts[i] = try thread.spawn(JobArg, worker, &args[i])
+        ts[i] = try thread.spawn(worker, &args[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
 
@@ -95,15 +95,15 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     chunks_done: u32 = 0
     for c in job.counts { total += c }
     for d in job.done_by { chunks_done += d }
-    print("primes below {}: {}\n", (LIMIT, total))
-    print("chunks processed: {} of {}\n", (chunks_done, NCHUNKS))
+    print("primes below {}: {}\n", LIMIT, total)
+    print("chunks processed: {} of {}\n", chunks_done, NCHUNKS)
     print("first chunks: {}\n", job.counts[0..6])
 
     bank := Bank(m: thread.mutex(), balance: [4]i64(1000, 1000, 1000, 1000), transfers: 0)
     targs := [NWORKERS]TransferArg(fill: TransferArg(bank: &bank, seed: 0))
     for i in 0..NWORKERS {
         targs[i] = TransferArg(bank: &bank, seed: 12345 + i.trunc(u32) * 7919)
-        ts[i] = try thread.spawn(TransferArg, transfer, &targs[i])
+        ts[i] = try thread.spawn(transfer, &targs[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
     sum: i64 = 0

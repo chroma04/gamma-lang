@@ -12,7 +12,7 @@
 //! new fiber, and then acts as the *driver*: it waits for messages from the
 //! fibers. A fiber that performs a `ctl` operation sends `Perform` and waits;
 //! the driver runs the clause, which ends with `resume` (a [`Flow::Resume`]
-//! naming the fiber to switch to), `discard` + an exit, or an exit. A fiber
+//! naming the fiber to switch to), `cancel` + an exit, or an exit. A fiber
 //! whose base frame returns or exits sends `Done`.
 
 use super::machine::*;
@@ -472,8 +472,8 @@ impl<'a> Machine<'a> {
         Err(Box::new(Flow::Resume { fiber, value: v }))
     }
 
-    /// `discard k` (§14.5).
-    pub fn eval_discard(&mut self, a: Act, span: Span, cont: &Expr) -> R {
+    /// `cancel k` (§14.5).
+    pub fn eval_cancel(&mut self, a: Act, span: Span, cont: &Expr) -> R {
         let k = self.eval_bytes(a, cont)?;
         let (fiber, w) = self.consume(span, a.fr, &k)?;
         self.cancel(span, w, fiber)?;

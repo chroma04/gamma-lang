@@ -4,7 +4,7 @@
 // gives a pointer that grants no access (§6.6, §18.7).
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    p := try new(u32, 5)
+    p := try new(T: u32, 5)
     defer destroy(p)
     n := p.addr()
     q := n.to_ptr(^u32)?

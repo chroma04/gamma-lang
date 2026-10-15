@@ -11,7 +11,7 @@ m :: fn(p: ^const P, a: i32, b: i32) -> i32 => p.x + a * 10 + b
 main :: fn() \ {Out} {
     print("{}\n", f(c: order("c", 3), a: order("a", 1), b: order("b", 2)))
     print("{}\n", f(order("a", 1), c: order("c", 3), b: order("b", 2)))
-    print("{}\n", g(i32, b: order("b", 2), a: order("a", 1)))
+    print("{}\n", g(T: i32, b: order("b", 2), a: order("a", 1)))
     p := P(x: 100)
     print("{}\n", p.m(b: order("b", 2), a: order("a", 1)))
 }

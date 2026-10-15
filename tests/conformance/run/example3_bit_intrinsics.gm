@@ -1,25 +1,25 @@
 // Bit intrinsics on odd and wide integer widths (u3, u24, i24, u48, u200, u128): rotates, counts, bit reversal and wrapping arithmetic.
 main :: fn() \ {Out} {
     a: u24 = 0xABCDEF
-    print("{} {}\n", (a, @rotl(a, 4)))
-    print("{} {} {}\n", (@clz(a), @ctz(a), @popcount(a)))
+    print("{} {}\n", a, @rotl(a, 4))
+    print("{} {} {}\n", @clz(a), @ctz(a), @popcount(a))
     b: u3 = 5
-    print("{} {}\n", (b +% 4, b *% 3))
+    print("{} {}\n", b +% 4, b *% 3)
     print("{}\n", @rotl(b, 1))
     print("{}\n", @bitreverse(b))
     c: i24 = -8_000_000
-    print("{} {}\n", (c -% 1_000_000, c >> 4))
+    print("{} {}\n", c -% 1_000_000, c >> 4)
     d: u200 = 1
     d = (d << 199) +% (d << 199)
     print("{}\n", d)
     e: u200 = (u200(1) << 150) | 0xFF
-    print("{} {}\n", (@popcount(e), @clz(e)))
+    print("{} {}\n", @popcount(e), @clz(e))
     f: u48 = 0x1234_5678_9ABC
-    print("{} {}\n", (f, @rotr(f, 8)))
+    print("{} {}\n", f, @rotr(f, 8))
     g: i7 = -64
-    print("{} {}\n", (g -% 1, g.trunc(i4)))
+    print("{} {}\n", g -% 1, g.trunc(i4))
     h: u128 = 0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF
-    print("{} {}\n", (@bswap(h), @rotl(h, 100)))
+    print("{} {}\n", @bswap(h), @rotl(h, 100))
     print("{}\n", @bitreverse(u16(0x0001)))
     sh: u8 = 3
     print("{}\n", u32(1) << sh)

@@ -246,7 +246,7 @@ main :: fn() \ {Out, Alloc} {
             print("input: {}\n", src)
             match parse(src) {
                 !.Eof(at) => print("error: unexpected end at {}\n", at)
-                !.Unexpected(pos: at, ch: c) => print("error: unexpected '{}' at {}\n", (c, at))
+                !.Unexpected(pos: at, ch: c) => print("error: unexpected '{}' at {}\n", c, at)
                 !.BadEscape(at) => print("error: bad escape at {}\n", at)
                 !.BadNumber(at) => print("error: bad number at {}\n", at)
                 !.Trailing(at) => print("error: trailing input at {}\n", at)

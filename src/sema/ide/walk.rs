@@ -514,7 +514,7 @@ impl<'a, 's> Walker<'a, 's> {
                 places.iter().for_each(|p| self.expr(p));
                 self.expr(value);
             }
-            StmtKind::Expr(e) | StmtKind::Discard(e) => self.expr(e),
+            StmtKind::Expr(e) | StmtKind::Cancel(e) => self.expr(e),
             StmtKind::Defer { body, .. } => self.stmt(body),
             StmtKind::When(w) => self.when_stmt(w),
             StmtKind::While { label, cond, body } => {

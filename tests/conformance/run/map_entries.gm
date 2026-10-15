@@ -24,18 +24,18 @@ count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() \ {Al
 }
 
 main :: fn() \ {Out, Alloc} {
-    m := map(string, u32)
+    m := hash_map(string, u32)
     count_words(&m, "the cat and the hat and the bat") else trap()
     words := list(string)
     words.collect(fn() => m.keys()) else trap()
     words.items.sort()
-    for w in words.items { print("{} {}\n", (w, m.get(w) else 0)) }
+    for w in words.items { print("{} {}\n", w, m.get(w) else 0) }
     words.deinit()
     total: u32 = 0
     for v in m.values() { total += v }
     print("total {}\n", total)
     if r := m.remove_entry("the") {
-        print("removed {} {}\n", (r.key, r.value))
+        print("removed {} {}\n", r.key, r.value)
         free(r.key)
     }
     print("{}\n", m.remove_entry("dog"))

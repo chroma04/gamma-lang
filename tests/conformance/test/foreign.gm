@@ -25,7 +25,7 @@ test "output is captured" {
 
 test "errors fail" {
     r: ParseError!usize = !.TooLong
-    n := try r
+    n := ok(r)
     print("unreachable {}\n", n)
 }
 
@@ -37,13 +37,13 @@ test "traps" {
 }
 
 test "leaks are caught" {
-    p := new(i32, 5) else return
+    p := new(T: i32, 5) else return
     _ = p
 }
 
 test "allocation is balanced" {
-    p := new(i32, 5) else return
-    defer destroy(i32, p)
+    p := new(T: i32, 5) else return
+    defer destroy(p)
     p^ = c.c_int(libc.absolute(-3))
     expect(p^ is 3)
 }

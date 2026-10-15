@@ -23,21 +23,21 @@ Word :: #c_union union {
 
 main :: fn() \ {Out} {
     m := Mode(read: true, write: false, exec: true, kind: 9, level: -2, sort: .Odd)
-    print("{} {}\n", (m.bits(u16), m))
+    print("{} {}\n", m.bits(u16), m)
     m.write = true
     m.level = 3
     m.kind = 15
-    print("{} {} {} {}\n", (m.write, m.level, m.kind, m.sort))
+    print("{} {} {} {}\n", m.write, m.level, m.kind, m.sort)
     f := Flags(0xff)
-    print("{} {}\n", (f, u8(f)))
+    print("{} {}\n", f, u8(f))
     f.n = 5
-    print("{} {}\n", (u8(f), f is Flags(a: true, b: true, n: 5)))
+    print("{} {}\n", u8(f), f is Flags(a: true, b: true, n: 5))
     w := Word(as_f32: 1.0)
     // The bytes of 1.0f in memory order.
     when target.endian is .Little {
-        print("{} {}\n", (w.as_u32, w.bytes))
+        print("{} {}\n", w.as_u32, w.bytes)
     } else {
-        print("{} [{}, {}, {}, {}]\n", (w.as_u32, w.bytes[3], w.bytes[2], w.bytes[1], w.bytes[0]))
+        print("{} [{}, {}, {}, {}]\n", w.as_u32, w.bytes[3], w.bytes[2], w.bytes[1], w.bytes[0])
     }
     w.as_u32 = 0x40490fdb
     print("{}\n", w.as_f32)

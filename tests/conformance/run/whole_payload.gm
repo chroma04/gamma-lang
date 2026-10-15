@@ -14,8 +14,8 @@ area :: fn(n: Node) -> u32 => match n {
     .Leaf(x) => x
 }
 main :: fn() \ {Out} {
-    print("{} {} {}\n", (size(.Cat(a: 2, b: 3)), size(.Leaf(7)), size(.Pair(4, 5))))
-    print("{} {} {} {}\n", (area(.Cat(a: 0, b: 3)), area(.Cat(a: 2, b: 3)), area(.Pair(4, 1)), area(.Pair(4, 5))))
+    print("{} {} {}\n", size(.Cat(a: 2, b: 3)), size(.Leaf(7)), size(.Pair(4, 5)))
+    print("{} {} {} {}\n", area(.Cat(a: 0, b: 3)), area(.Cat(a: 2, b: 3)), area(.Pair(4, 1)), area(.Pair(4, 5)))
     n := Node.Cat(a: 1, b: 1)
     if .Cat(c) := n { print("{}\n", c) }
     .Cat(whole) := n else return

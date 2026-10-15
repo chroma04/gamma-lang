@@ -12,7 +12,7 @@ fn run_sum(name: &str, n: usize, term: &str) -> String {
     let sum = vec![term; n].join(" + ");
     std::fs::write(
         &src,
-        format!("main :: fn() \\ {{Out}} {{\n    y := 1\n    x := {sum}\n    print(\"{{}} {{}}\\n\", (x, y))\n}}\n"),
+        format!("main :: fn() \\ {{Out}} {{\n    y := 1\n    x := {sum}\n    print(\"{{}} {{}}\\n\", x, y)\n}}\n"),
     )
     .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_gamma")).arg("run").arg(&src).output().unwrap();

@@ -1,0 +1,19 @@
+//! stage: test
+// `ok` inside the body of a `for` over an iterator, which is a handler clause of the test.
+words :: fn(text: string) \ {Yield(string)} {
+    yield(text)
+}
+
+test "ok in a loop over an iterator" {
+    got := list(string)
+    defer got.deinit()
+    for w in words("x y") { ok(got.push(w)) }
+    expect(got.items.len is 1)
+}
+
+test "ok in a loop over an array" {
+    got := list(string)
+    defer got.deinit()
+    for w in [2]string("x", "y") { ok(got.push(w)) }
+    expect(got.items.len is 2)
+}

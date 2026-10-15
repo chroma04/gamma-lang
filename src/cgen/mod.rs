@@ -696,7 +696,7 @@ impl<'a> Gen<'a> {
             }
             // Handlers change the context, and fibers and continuations exit through the
             // runtime.
-            ExprKind::With { .. } | ExprKind::Resume { .. } | ExprKind::Discard(_) => return true,
+            ExprKind::With { .. } | ExprKind::Resume { .. } | ExprKind::Cancel(_) => return true,
             ExprKind::Builtin { op: crate::tir::Builtin::Fiber, .. } => return true,
             // The sink is a perform or a function value.
             ExprKind::Write { .. } => return true,

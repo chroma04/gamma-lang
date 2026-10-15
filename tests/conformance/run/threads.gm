@@ -31,23 +31,23 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     s := Shared(atomic_total: 0, locked_total: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
     for i in 0..4 {
-        ts[i] = try thread.spawn(Shared, work, &s)
+        ts[i] = try thread.spawn(work, &s)
     }
     for i in 0..4 { ts[i].join() }
-    print("{} {}\n", (s.atomic_total, s.locked_total))
+    print("{} {}\n", s.atomic_total, s.locked_total)
 
     // One at a time, so the output order is fixed.
     for k in 1..4 {
         n: u32 = k
-        t := try thread.spawn(u32, greet, &n)
+        t := try thread.spawn(greet, &n)
         t.join()
     }
     flags := [2]u32(0, 0)
-    p := try thread.spawn([2]u32, ping, &flags)
+    p := try thread.spawn(ping, &flags)
     @atomic_store(&flags[0], 1, .Release)
     while @atomic_load(&flags[1], .Acquire) is 0 { thread.yield_now() }
     p.join()
     print("handshake: {}\n", flags[1])
-    print("try_lock: {} {}\n", (s.m.try_lock(), s.m.try_lock()))
+    print("try_lock: {} {}\n", s.m.try_lock(), s.m.try_lock())
     s.m.unlock()
 }

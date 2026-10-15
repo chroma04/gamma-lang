@@ -14,7 +14,7 @@ pub Matches :: struct {
 }
 
 pub matches :: fn() -> Matches \ {Alloc} {
-    return Matches(vals: map(string, Value), rest: list(string))
+    return Matches(vals: hash_map(string, Value), rest: list(string))
 }
 
 pub deinit :: fn(m: ^Matches) {

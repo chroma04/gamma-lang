@@ -56,7 +56,7 @@ Editor :: struct {
 }
 
 release :: fn(s: string) \ {Alloc} {
-    free(u8, s.ptr.cast([^]u8)[0..s.len])
+    free(T: u8, s.ptr.cast([^]u8)[0..s.len])
 }
 
 copy_of :: fn(s: string) -> AllocError!string \ {Alloc} {
@@ -165,7 +165,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
             hits: u32 = 0
             for i, l in enumerate(ed.lines.items) {
                 if str.contains(l, rest) {
-                    print("  match at {}: {}\n", (i, l))
+                    print("  match at {}: {}\n", i, l)
                     hits += 1
                 }
             }
@@ -173,7 +173,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
         }
         "list" => {
             if ed.lines.items.len is 0 { print("  (empty)\n") }
-            for i, l in enumerate(ed.lines.items) { print("  {}: {}\n", (i, l)) }
+            for i, l in enumerate(ed.lines.items) { print("  {}: {}\n", i, l) }
         }
         "undo" => {
             u := ed.undo.items.last() else return !.NothingToUndo
@@ -189,7 +189,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
             }
             _ = ed.undo.pop()
         }
-        "mem" => print("  {} of {} bytes live, {} denied\n", (ed.budget.live, ed.budget.limit, ed.budget.denied))
+        "mem" => print("  {} of {} bytes live, {} denied\n", ed.budget.live, ed.budget.limit, ed.budget.denied)
         "quit" => return true
         _ => return !.Unknown(cmd)
     }
@@ -197,7 +197,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
 }
 
 main :: fn() -> IoError!() \ {Out, In, Alloc} {
-    budget := Budget(limit: 260, inner: current())
+    budget := Budget(limit: 260, inner: Alloc.current())
     ed := with Allocator(data: &budget, vt: &BUDGET_VT) { Editor(lines: list(string), undo: list(Undo), budget: &budget) }
     defer {
         for l in ed.lines.items { release(l) }
@@ -210,7 +210,7 @@ main :: fn() -> IoError!() \ {Out, In, Alloc} {
             }
         }
         ed.undo.deinit()
-        print("bye: {} edits, {} denied, {} bytes still live\n", (ed.edits, budget.denied, budget.live))
+        print("bye: {} edits, {} denied, {} bytes still live\n", ed.edits, budget.denied, budget.live)
     }
     r := io.reader()
     n: u32 = 0
@@ -225,9 +225,9 @@ main :: fn() -> IoError!() \ {Out, In, Alloc} {
             .Unknown(c) => print("  unknown command: {}\n", c)
             .Usage(u) => print("  usage: {}\n", u)
             .BadNumber(pe) => print("  bad number: {}\n", pe)
-            .OutOfRange(index: i, len: l) => print("  index {} out of range (have {} lines)\n", (i, l))
+            .OutOfRange(index: i, len: l) => print("  index {} out of range (have {} lines)\n", i, l)
             .NothingToUndo => print("  nothing to undo\n")
-            .Memory(_) => print("  out of memory ({} of {} bytes live)\n", (budget.live, budget.limit))
+            .Memory(_) => print("  out of memory ({} of {} bytes live)\n", budget.live, budget.limit)
         }
     }
     print("processed {} lines\n", n)

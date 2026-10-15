@@ -57,7 +57,7 @@ A **handler literal** supplies one *clause* for each operation. A `with` express
 ```gamma
 main :: fn() \ {Out} {
     printer :: handler Log {
-        log(level, msg) => print("[{}] {}\n", (level, msg))
+        log(level, msg) => print("[{}] {}\n", level, msg)
     }
     ok := with printer { connect("example.org") }
     print("ok = {}\n", ok)
@@ -128,7 +128,7 @@ ids_demo :: fn() \ {Out} {
     with ids {
         a := next_id()
         b := next_id()
-        print("{} {}\n", (a, b))           // 101 102
+        print("{} {}\n", a, b)           // 101 102
     }
 }
 ```
@@ -214,7 +214,7 @@ work :: fn() \ {Log} {
 stats_demo :: fn() \ {Out} {
     stats := CountingLog()
     with &stats { work() }
-    print("{} warnings, {} errors\n", (stats.warnings, stats.errors))
+    print("{} warnings, {} errors\n", stats.warnings, stats.errors)
 }
 ```
 
@@ -236,22 +236,26 @@ collect_demo :: fn() \ {Out} {
 }
 ```
 
+Declarations may not overlap. A type may match only one declaration of a given effect, so finding the handlers of a value is a lookup and never a choice between candidates. A specific `handler Yield(u8) for ^Collector(u8, 4)` next to the generic one above is therefore a compile error, and so are two generic declarations that could match the same type for some arguments.
+
 ## Ambient effects
 
 Some effects are predeclared, and the runtime installs a default handler for each before calling `main`:
 
 | Effect | Operations | Default handler | In tests |
 | --- | --- | --- | --- |
-| `Alloc` | `current: fn() -> Allocator` | the system heap | leak-checking heap |
-| `Out`, `Err` | `write_out` / `write_err` bytes | stdout, stderr | captured |
-| `In` | `read` into a buffer | stdin | empty input |
-| `Clock` | `now`, `wall`, `sleep` | system clock | fake clock |
-| `Rand` | `fill` a buffer | OS-seeded generator | fixed seed |
-| `Fs`, `Net` | files, sockets | the real ones | in-memory fakes |
-| `Env` | `args`, `var`, `exit` | process environment | empty |
+| `Alloc` | `Alloc.current()` gives the current allocator | the system heap | leak-checking heap |
+| `Out`, `Err` | `Out.write_out(b)` / `Err.write_err(b)` write bytes | stdout, stderr | captured |
+| `In` | `In.read(buf)` reads into a buffer | stdin | empty input |
+| `Clock` | `Clock.now()`, `Clock.wall()`, `Clock.sleep(d)` | system clock | fake clock |
+| `Rand` | `Rand.fill(buf)` fills a buffer | OS-seeded generator | fixed seed |
+| `Fs`, `Net` | `Fs.open(path, opts)`, `Net.connect(host, port)` and so on: files, sockets | the real ones | in-memory fakes |
+| `Env` | `Env.args()`, `Env.var(name)`, `Env.exit(code)` | process environment | empty |
 | `Sys` | none | none | not replaceable |
 
-`main` and `test` bodies can perform any of these without handling them. Everything else must either handle them or declare them. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
+`main` and `test` bodies can perform any of these without handling them. Everything else must either handle them or declare them. Another predeclared effect, `Test`, is different: only test and benchmark bodies get a handler for it, and it is how a test fails ([chapter 13](13-safety.md)).
+
+The universe scope holds these effects but not their operations (except `yield`, [chapter 8](08-iteration.md)): you call an operation through its effect, as `Clock.now()`, `Alloc.current()`, `Env.args()` or `Fs.open(path, opts)`, so every call that reaches into the context says so where it is written. The names `now`, `read`, `exit` and the rest stay free for your own functions. Operations on a file or socket are also methods: `f.read_from(buf)`. The types of the file system and the network (`File`, `OpenOptions`, `Socket`, …) come from `std/fs` and `std/net`. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
 
 Here is a function that runs a callback and counts the bytes it would print, by installing its own handler for `Out` around the callback:
 
@@ -272,6 +276,19 @@ measure_demo :: fn() \ {Out} {
 ```
 
 The hello is swallowed by `counter` and never reaches standard output.
+
+### Naming a set of effects
+
+Effect sets get long when a family of functions does the same kinds of things. A top-level binding can name a set, and `..` splices it into another:
+
+```gamma
+Io :: \ {Fs, Alloc, Err}
+
+load :: fn(path: string) -> fs.ReadError![]u8 \ {..Io} { … }
+save :: fn(path: string, data: []const u8) -> IoError!() \ {..Io, Clock} { … }
+```
+
+A named effect set is only a name for a list of effects: `\ {..Io, Clock}` is exactly `\ {Fs, Alloc, Err, Clock}`. It can be `pub`, imported, aliased, and given where an effect-set parameter is expected ([chapter 10](10-generics.md)).
 
 ### `Sys`: the edge of the model
 

@@ -15,7 +15,7 @@ rec :: fn(l: ^Log, x: u32) {
 dump :: fn(title: string, l: ^Log) \ {Out} {
     print("{}:", title)
     for i in 0..l.n { print(" {}", l.events[i]) }
-    print("\n", ())
+    print("\n")
 }
 
 // Event `name * 10 + round` for each round; `name * 10 + 9` when the task's defer runs.
@@ -38,7 +38,7 @@ parent :: fn(j: ^Job) \ {fiber.Sched} {
     rec(j.log, 100)
     child := Job(log: j.log, name: 9, rounds: 2)
     stack: [20000]u8 = ---
-    fiber.spawn(Job, worker, &child, stack[..])
+    fiber.spawn(worker, &child, stack[..])
     fiber.yield_now()
     rec(j.log, 101)
     for i in 0..3 { fiber.yield_now() }
@@ -66,9 +66,9 @@ interleave :: fn() \ {Out, Alloc} {
     b := Job(log: &log, name: 2, rounds: 2)
     c := Job(log: &log, name: 3, rounds: 1)
     with &s on main_stack[..] {
-        fiber.spawn(Job, worker, &a, sa[..])
-        fiber.spawn(Job, worker, &b, sb[..])
-        fiber.spawn(Job, worker, &c, sc[..])
+        fiber.spawn(worker, &a, sa[..])
+        fiber.spawn(worker, &b, sb[..])
+        fiber.spawn(worker, &c, sc[..])
         rec(&log, 0)
         fiber.join()
         rec(&log, 1)
@@ -84,7 +84,7 @@ nested :: fn() \ {Out, Alloc} {
     st: [40000]u8 = ---
     j := Job(log: &log, name: 0, rounds: 0)
     with &s on main_stack[..] {
-        fiber.spawn(Job, parent, &j, st[..])
+        fiber.spawn(parent, &j, st[..])
         fiber.join()
     }
     dump("nested", &log)
@@ -99,11 +99,11 @@ sums :: fn() \ {Out, Alloc} {
     t1 := Total(sum: 0)
     t2 := Total(sum: 100)
     with &s on main_stack[..] {
-        fiber.spawn(Total, adder, &t1, s1[..])
-        fiber.spawn(Total, adder, &t2, s2[..])
+        fiber.spawn(adder, &t1, s1[..])
+        fiber.spawn(adder, &t2, s2[..])
         fiber.join()
     }
-    print("sums {} {}\n", (t1.sum, t2.sum))
+    print("sums {} {}\n", t1.sum, t2.sum)
 }
 
 // Join with nothing spawned returns at once; main can yield with nobody else ready.
@@ -116,7 +116,7 @@ idle :: fn() \ {Out, Alloc} {
         fiber.yield_now()
         fiber.join()
     }
-    print("idle ok\n", ())
+    print("idle ok\n")
 }
 
 main :: fn() \ {Out, Alloc} {

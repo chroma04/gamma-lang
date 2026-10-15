@@ -10,7 +10,7 @@ count :: fn() -> IoError!(lines: u32, longest: usize) \ {In, Out} {
     longest: usize = 0
     while true {
         next := r.next_line() else e => {
-            print("line {}: {}\n", (lines + 1, e))
+            print("line {}: {}\n", lines + 1, e)
             lines += 1
             continue
         }
@@ -26,22 +26,22 @@ hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
     // Standard input, then a string, through the same function.
     c := try count()
-    print("stdin: {} lines, longest {}\n", (c.lines, c.longest))
+    print("stdin: {} lines, longest {}\n", c.lines, c.longest)
     s := io.StringIn(data: "one\r\ntwo\n\nlast without newline")
     with &s {
         c2 := try count()
-        print("string: {} lines, longest {}\n", (c2.lines, c2.longest))
+        print("string: {} lines, longest {}\n", c2.lines, c2.longest)
     }
 
     // Capture output in a buffer.
     store: [32]u8 = ---
     cap := io.Capture(buf: store[..])
-    with &cap { print("captured {} and {}", (1, true)) }
+    with &cap { print("captured {} and {}", 1, true) }
     print("[{}]\n", cap.text())
 
     // A unique scratch directory.
     r: [6]u8 = ---
-    fill(r[..])
+    Rand.fill(r[..])
     name := [_]u8('t', 'a', 'r', 'g', 'e', 't', '/', 'g', 'a', 'm', 'm', 'a', '-', 'i', 'o', '-',
                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     for i in 0..6 {
@@ -49,44 +49,44 @@ main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
         name[17 + 2 * i] = hex(r[i] & 15)
     }
     dir := name[..]
-    try make_dir(dir)
+    try Fs.make_dir(dir)
     pbuf: [64]u8 = ---
     path := join(pbuf[..], dir, "out.txt")
     qbuf: [64]u8 = ---
     copy_path := join(qbuf[..], dir, "copy.txt")
 
     // `print` into a file, then read it back as `In`.
-    f := try open(path, OpenOptions(read: false, write: true, create: true))
+    f := try Fs.open(path, fs.OpenOptions(read: false, write: true, create: true))
     out := io.file_out(f)
     with &out {
         for i in 1..4 { print("line {}\n", i) }
     }
     try out.flush()
-    close(f)
+    Fs.close(f)
     print("write error: {}\n", out.err)
     try fs.append(path, "appended\n")
-    g := try open(path, OpenOptions())
+    g := try Fs.open(path, fs.OpenOptions())
     with io.FileIn(f: g) {
         c3 := try count()
-        print("file: {} lines, longest {}\n", (c3.lines, c3.longest))
+        print("file: {} lines, longest {}\n", c3.lines, c3.longest)
     }
-    close(g)
+    Fs.close(g)
 
     // Whole files.
     try fs.copy(path, copy_path)
     data := try fs.read_all(copy_path)
-    print("copy: {} bytes, starts {}\n", (data.len, data[0..6]))
+    print("copy: {} bytes, starts {}\n", data.len, data[0..6])
     free(data)
     try fs.write_all(copy_path, "short")
     small := try fs.read_all(copy_path)
     print("rewritten: {}\n", small)
     free(small)
-    print("exists: {} {}\n", (fs.exists(copy_path), fs.exists("target/definitely/not/here")))
+    print("exists: {} {}\n", fs.exists(copy_path), fs.exists("target/definitely/not/here"))
     if !e := fs.read_all("target/definitely/not/here") { print("missing: {}\n", e) }
 
-    try remove(path)
-    try remove(copy_path)
-    try remove_dir(dir)
+    try Fs.remove(path)
+    try Fs.remove(copy_path)
+    try Fs.remove_dir(dir)
 }
 
 join :: fn(buf: []u8, a: string, b: string) -> string {

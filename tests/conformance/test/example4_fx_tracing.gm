@@ -38,8 +38,8 @@ error :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Error, msg, f
 // Runs `body` inside a named span and reports how long it took on the Clock.
 span :: fn(name: string, body: fn() \ {Trace}) \ {Trace, Clock} {
     enter(name)
-    t0 := now()
-    defer leave(name, now().since(t0))
+    t0 := Clock.now()
+    defer leave(name, Clock.now().since(t0))
     body()
 }
 
@@ -59,32 +59,32 @@ TextSink :: struct {
 }
 
 indent :: fn(n: u32) \ {Out} {
-    for _ in 0..n { print("  ", ()) }
+    for _ in 0..n { print("  ") }
 }
 
 handler Trace for ^TextSink \ {Out, Clock} {
     event(self, level, msg, fields) => {
-        print("[{}ms] ", now().ns / 1_000_000)
+        print("[{}ms] ", Clock.now().ns / 1_000_000)
         indent(self.depth)
-        print("{} {}", (level_name(level), msg))
+        print("{} {}", level_name(level), msg)
         for f in fields {
             print(" {}=", f.key)
             put_value(f.val)
         }
-        print("\n", ())
+        print("\n")
         self.lines += 1
     }
     enter(self, name) => {
-        print("[{}ms] ", now().ns / 1_000_000)
+        print("[{}ms] ", Clock.now().ns / 1_000_000)
         indent(self.depth)
         print("-> {}\n", name)
         self.depth += 1
     }
     leave(self, name, elapsed) => {
         self.depth -= 1
-        print("[{}ms] ", now().ns / 1_000_000)
+        print("[{}ms] ", Clock.now().ns / 1_000_000)
         indent(self.depth)
-        print("<- {} took {}ms\n", (name, elapsed.to_ms()))
+        print("<- {} took {}ms\n", name, elapsed.to_ms())
     }
 }
 
@@ -175,7 +175,7 @@ handler Trace for ^Counter \ {Trace} {
 fetch_user :: fn(id: i64) \ {Trace, Clock} {
     f := [_]Field(fi("id", id))
     debug("cache miss", f[..])
-    sleep(ms(12))
+    Clock.sleep(ms(12))
     info("loaded user", f[..])
 }
 
@@ -183,7 +183,7 @@ handle_request :: fn(path: string, user: i64) \ {Trace, Clock} {
     f := [_]Field(fs("path", path), fb("auth", user > 0))
     info("request", f[..])
     span("auth", fn() {
-        sleep(ms(2))
+        Clock.sleep(ms(2))
         if user <= 0 {
             warn("anonymous caller", NONE[..])
         }
@@ -191,7 +191,7 @@ handle_request :: fn(path: string, user: i64) \ {Trace, Clock} {
     if user > 0 {
         span("db", fn() {
             fetch_user(user)
-            sleep(ms(3))
+            Clock.sleep(ms(3))
         })
     } else {
         error("denied", f[..])
@@ -285,7 +285,7 @@ test "context and filter and counter stack in order" {
                         f := [_]Field(fs("path", "/profile"), fb("auth", true))
                         info("request", f[..])
                         debug("never shown", NONE[..])
-                        sleep(ms(2))
+                        Clock.sleep(ms(2))
                         g := [_]Field(fi("id", 7))
                         info("loaded user", g[..])
                     }

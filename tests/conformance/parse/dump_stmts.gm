@@ -37,7 +37,7 @@ f :: fn() {
     defer cleanup()
     errdefer x = 0
     defer { a(); b() }
-    discard k
+    cancel k
     { nested := 1 }
     when A { a() } else when B { b() } else { c() }
     lbl: while true { break lbl }

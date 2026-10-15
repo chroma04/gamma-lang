@@ -22,16 +22,16 @@ main :: fn() \ {Out, Alloc} {
     line := "alpha beta  gamma"
     words := collect(str.fields(line)) else trap()
     defer words.deinit()
-    print("{} {}\n", (words.items.len, words.items))
+    print("{} {}\n", words.items.len, words.items)
     print("{}\n", count(str.fields(line)))
-    print("{} {}\n", (nth(str.fields(line), 1), nth(str.fields(line), 3)))
+    print("{} {}\n", nth(str.fields(line), 1), nth(str.fields(line), 3))
     data := [6]i32(1, 2, 3, 4, 5, 6)
     print("{}\n", sum_of(evens(data[..])))
     print("{}\n", sum_of(range(u64(1), 101)))
     print("{}\n", count((evens(data[..]))))
     // `nth` stops the iterator at the value it returns.
     calls: u32 = 0
-    print("{} {}\n", (nth(numbers(1000, &calls), 3), calls))
+    print("{} {}\n", nth(numbers(1000, &calls), 3), calls)
     // The call runs each time the callee calls the parameter.
     _ = count(numbers(2, &calls))
     print("{}\n", calls)
@@ -43,7 +43,7 @@ main :: fn() \ {Out, Alloc} {
     print("{}\n", l.items)
     names := [3]string("ann", "bo", "cy")
     ages := [2]u8(31, 47)
-    for n, a in zip(names[..], ages[..]) { print("{}: {}\n", (n, a)) }
+    for n, a in zip(names[..], ages[..]) { print("{}: {}\n", n, a) }
     print("{}\n", count(zip(names[..], data[..])))
     // A local named like a universe function hides it.
     count := 3

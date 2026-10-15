@@ -22,17 +22,17 @@ Four conventions hold across the library, so that learning one module teaches th
 
 ## Formatted output
 
-`print` writes to `Out` and `eprint` to `Err`. The template is a compile-time string with `{}` placeholders; with one placeholder the argument stands alone, with several it is a tuple. Any value prints, structs and unions included:
+`print` writes to `Out` and `eprint` to `Err`. The template is a compile-time string with `{}` placeholders; each placeholder takes one value, passed as a rest argument (`print("{} of {}\n", n, total)`), and a template without placeholders takes none (`print("hi\n")`). A tuple given as one value prints as a tuple: `print("{}\n", (n, total))` writes `(3, 10)`. Any value prints, structs and unions included:
 
 ```gamma
 Point :: struct { x, y: f64 }
 
 main :: fn() \ {Out} {
-    print("{} scored {}\n", ("Ada", 1200))
+    print("{} scored {}\n", "Ada", 1200)
     print("{}\n", Point(x: 1.5, y: -2))
-    print("{} {} {}\n", ([_]u8(1, 2, 3), Maybe.Some(4), "text"))
-    print("{:<8}|{:>6}|{:^7}|\n", ("left", 42, "mid"))
-    print("{:08.3} {:+} {:#06x} {:b} {:.2e}\n", (-3.14159, 5, 255, 5, 1234.5))
+    print("{} {} {}\n", [_]u8(1, 2, 3), Maybe.Some(4), "text")
+    print("{:<8}|{:>6}|{:^7}|\n", "left", 42, "mid")
+    print("{:08.3} {:+} {:#06x} {:b} {:.2e}\n", -3.14159, 5, 255, 5, 1234.5)
     print("{{braces}} and a tab:\t.\n")
 }
 
@@ -52,16 +52,16 @@ A spec after the colon sets alignment (`<`, `>`, `^`) with an optional fill char
 
 ### `@write`: formatting into your own sink
 
-`print` is `@write` aimed at `Out`. `@write(sink, template, args)` takes the same template and arguments, but calls a function you give it with the pieces of output. It allocates nothing, which makes it the base of every formatting function:
+`print` is `@write` aimed at `Out`. `@write(sink, template, ..args)` takes the same template and arguments, but calls a function you give it with the pieces of output. It allocates nothing, which makes it the base of every formatting function:
 
 ```gamma
 main :: fn() \ {Out} {
     total: usize = 0
-    @write(fn(b) { total += b.len }, "{} items at {:.2}\n", (3, 9.5))
+    @write(fn(b) { total += b.len }, "{} items at {:.2}\n", 3, 9.5)
     print("that text is {} bytes\n", total)
 
     // Pieces go to the sink as they are produced.
-    @write(fn(b) { print("[{}]", b) }, "{}-{}", (12, "x"))
+    @write(fn(b) { print("[{}]", b) }, "{}-{}", 12, "x")
     print("\n")
 }
 ```
@@ -71,17 +71,17 @@ that text is 16 bytes
 [12][-][x]
 ```
 
-The template of a function that forwards to `print` or `@write` is a compile-time parameter, so a mistake in it is reported at the call that wrote it:
+A function that forwards to `print` or `@write` takes the values as a rest parameter (`args: ..A`, [chapter 6](06-functions.md#rest-parameters)) and passes them on with a spread. Its template is a compile-time parameter, so a mistake in it is reported at the call that wrote it:
 
 ```gamma
-shout :: fn(A: type, template :: string, args: A = ()) \ {Out} {
-    print("!! ", ())
-    print(template, args)
-    print("\n", ())
+shout :: fn(A: type, template :: string, args: ..A) \ {Out} {
+    print("!! ")
+    print(template, ..args)
+    print("\n")
 }
 
 main :: fn() \ {Out} {
-    shout("disk {} is {}% full", ("sda", 91))
+    shout("disk {} is {}% full", "sda", 91)
 }
 ```
 
@@ -93,11 +93,11 @@ str :: import "std/str"
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     line := list(u8)
     defer line.deinit()
-    try line.write("{:>5}|{:<5}|", (42, "ab"))
+    try line.write("{:>5}|{:<5}|", 42, "ab")
     try line.write("{}", true)
     print("{}\n", line.items)
 
-    s := try str.format("{} + {} = {}", (2, 3, 5))
+    s := try str.format("{} + {} = {}", 2, 3, 5)
     defer free(s)
     print("{}\n", s)
 }
@@ -141,19 +141,19 @@ Numbers, arrays, slices, strings and pointers have methods built into the langua
 main :: fn() \ {Out} {
     // Integers: conversions say what they do on overflow.
     big: i32 = 300
-    print("{} {} {}\n", (big.trunc(u8), big.checked(u8), big.sat(u8)))
-    print("{} {} {}\n", (big.min(7), big.clamp(0, 255), (-5).abs()))
+    print("{} {} {}\n", big.trunc(u8), big.checked(u8), big.sat(u8))
+    print("{} {} {}\n", big.min(7), big.clamp(0, 255), (-5).abs())
     print("{}\n", big.to(f64) / 7)
 
     // Floats.
-    print("{} {} {}\n", (2.7.round(i32), 2.7.floor(i32), 9.0.sqrt()))
+    print("{} {} {}\n", 2.7.round(i32), 2.7.floor(i32), 9.0.sqrt())
 
     // Slices and arrays.
     xs := [_]i32(5, -3, 9, 0, 7)
     xs[..].sort()
     print("{}\n", xs)
-    print("{} {} {}\n", (xs.first(), xs.last(), xs.get(10)))
-    print("{} {}\n", (xs[..].min(), xs[..].max()))
+    print("{} {} {}\n", xs.first(), xs.last(), xs.get(10))
+    print("{} {}\n", xs[..].min(), xs[..].max())
     print("{}\n", xs[..].binary_search(7))
     print("{}\n", xs[..].index_of(9))
 
@@ -168,8 +168,8 @@ main :: fn() \ {Out} {
 
     // Strings are byte slices, so these work on them too.
     path := "src/main.gm"
-    print("{} {} {}\n", (path.starts_with("src/"), path.ends_with(".gm"), path.index_of('/')))
-    print("{} {}\n", (path.utf8_valid(), path < "tests"))
+    print("{} {} {}\n", path.starts_with("src/"), path.ends_with(".gm"), path.index_of('/'))
+    print("{} {}\n", path.utf8_valid(), path < "tests")
 }
 ```
 
@@ -186,19 +186,19 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try names.push("ada")
     try names.extend([_]string("grace", "alan"))
     names.items.sort()
-    print("{} {}\n", (names.items.len, names.items))
+    print("{} {}\n", names.items.len, names.items)
 
     last := names.pop()
-    print("{} {}\n", (last, names.remove(0)))
+    print("{} {}\n", last, names.remove(0))
 
     // Word counts: `entry` stores 0 for a new key and points at the value.
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     for w in [_]string("a", "b", "a", "c", "a", "b") {
         e := try counts.entry(w, 0)
         e.value^ += 1
     }
-    print("a={} b={} z={}\n", (counts.get("a"), counts.get("b"), counts.get("z")))
+    print("a={} b={} z={}\n", counts.get("a"), counts.get("b"), counts.get("z"))
 
     // Maps are unordered; sort the keys when the order matters.
     keys := try collect(fn() => counts.keys())
@@ -228,7 +228,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     with fb.allocator() {
         small := list(u8)
         for i in 0..100 { try small.push(i.trunc(u8)) }
-        print("{} of {} bytes used\n", (fb.bytes_used() > 100, store.len))
+        print("{} of {} bytes used\n", fb.bytes_used() > 100, store.len)
         r := make(u8, 1000)
         print("a 1000-byte block: {}\n", r)
     }
@@ -249,17 +249,17 @@ The iterators of the core library are `range`, `each`, `enumerate`, `reversed`, 
 str :: import "std/str"
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    for i, name in enumerate([_]string("ada", "grace")) { print("{}:{} ", (i, name)) }
+    for i, name in enumerate([_]string("ada", "grace")) { print("{}:{} ", i, name) }
     print("\n")
 
-    for a, b in zip([_]u32(1, 2, 3), [_]string("one", "two")) { print("{}={} ", (a, b)) }
+    for a, b in zip([_]u32(1, 2, 3), [_]string("one", "two")) { print("{}={} ", a, b) }
     print("\n")
 
     text := "alpha beta  gamma\ndelta"
     fields := try collect(str.fields(text))         // an iterator is passed as a call
     defer fields.deinit()
-    print("{} fields, the third is {}\n", (fields.items.len, fields.items[2]))
-    print("{} lines, second {}\n", (count(str.lines(text)), nth(str.lines(text), 1)))
+    print("{} fields, the third is {}\n", fields.items.len, fields.items[2])
+    print("{} lines, second {}\n", count(str.lines(text)), nth(str.lines(text), 1))
 
     // Early exit: the iterator stops and runs its cleanup.
     for w in str.split("a,b,c,d", ",") {
@@ -281,10 +281,10 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     s := "  key = value  "
     print("[{}]\n", str.trim(s))
     if kv := str.split_once(str.trim(s), "=") {
-        print("[{}] [{}]\n", (str.trim(kv.before), str.trim(kv.after)))
+        print("[{}] [{}]\n", str.trim(kv.before), str.trim(kv.after))
     }
-    print("{} {} {}\n", (str.find("hello", "ll"), str.contains("hello", "z"), str.count("banana", "an")))
-    print("{} {}\n", (str.strip_prefix("--verbose", "--"), str.strip_suffix("a.txt", ".md")))
+    print("{} {} {}\n", str.find("hello", "ll"), str.contains("hello", "z"), str.count("banana", "an"))
+    print("{} {}\n", str.strip_prefix("--verbose", "--"), str.strip_suffix("a.txt", ".md"))
     print("{}\n", str.eq_ignore_case("Gamma", "gAMMA"))
 
     buf: [16]u8 = ---
@@ -319,7 +319,7 @@ main :: fn() \ {Out} {
     // A Builder formats into a buffer you own.
     buf: [32]u8 = ---
     b := str.builder(buf[..])
-    b.write("{}/{}", (3, 4))
+    b.write("{}/{}", 3, 4)
     b.push_byte('!')
     print("{}\n", b.str())
 }
@@ -345,8 +345,8 @@ main :: fn() \ {Out} {
     s := "e\u{301}🇫🇷👨\u{200d}👩\u{200d}👧!"
     n: usize = 0
     for g in text.graphemes(s) { n += 1 }
-    print("{} bytes, {} scalar values, {} characters as a reader sees them\n", (s.len, count(runes(s)), n))
-    if r := text.decode_rune("€5") { print("U+{:X} takes {} bytes\n", (r.rune, r.len)) }
+    print("{} bytes, {} scalar values, {} characters as a reader sees them\n", s.len, count(runes(s)), n)
+    if r := text.decode_rune("€5") { print("U+{:X} takes {} bytes\n", r.rune, r.len) }
     buf: [4]u8 = ---
     print("{}\n", text.encode_rune(0x1F600, buf[..]))
 }
@@ -356,7 +356,7 @@ main :: fn() \ {Out} {
 
 ## Files, paths and standard input
 
-File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations (`open`, `read_from`, `write_to`, `seek`, `stat`, `lstat`, ...) are in the core:
+File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read_from(buf)`, `f.write_to(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
 
 ```gamma
 fs :: import "std/fs"
@@ -372,23 +372,23 @@ main :: fn() -> fs.ReadError!() \ {Out, Fs, Rand, Alloc} {
     try fs.append(file, "third\n")
     data := try fs.read_all(file)
     defer free(data)
-    print("{} bytes, {} lines\n", (data.len, count(lines_of(data))))
+    print("{} bytes, {} lines\n", data.len, count(lines_of(data)))
 
-    info := try stat(file)
-    print("size {} kind {}\n", (info.size, info.kind))
+    info := try Fs.stat(file)
+    print("size {} kind {}\n", info.size, info.kind)
 
     // write_atomic: readers see the old file or the new one, never half of it.
     try fs.write_atomic(file, "replaced\n")
 
     for r in fs.entries(dir) {
         e := try r
-        print("entry {} ({})\n", (e.name, path.extension(e.name)))
+        print("entry {} ({})\n", e.name, path.extension(e.name))
     }
 
     if !e := fs.read_all("/tmp/gamma-tour-16/missing") { print("error: {}\n", e) }
 
-    try remove(file)
-    try remove_dir(dir)
+    try Fs.remove(file)
+    try Fs.remove_dir(dir)
 }
 
 lines_of :: fn(data: []const u8) \ {Yield(string)} {
@@ -409,12 +409,12 @@ path :: import "std/path"
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     p := "/usr/lib/libc.so.6"
-    print("{} {} {} {}\n", (path.base_name(p), path.dir_name(p), path.extension(p), path.stem(p)))
+    print("{} {} {} {}\n", path.base_name(p), path.dir_name(p), path.extension(p), path.stem(p))
     buf: [64]u8 = ---
     print("{}\n", path.clean("a//b/./c/../d", buf[..]))
     joined := try path.join_alloc([_]string("data", "2026", "report.txt"))
     defer free(joined)
-    print("{} {}\n", (joined, path.relative_to("/srv/www/css", "/srv/www")))
+    print("{} {}\n", joined, path.relative_to("/srv/www/css", "/srv/www"))
 }
 ```
 
@@ -448,14 +448,14 @@ Durations and instants are core; `Clock` is the effect that supplies them (a tes
 time :: import "std/time"
 
 main :: fn() -> time.ParseError!() \ {Out, Clock} {
-    started := now()
-    sleep(ms(5))
-    took := now().since(started)
+    started := Clock.now()
+    Clock.sleep(ms(5))
+    took := Clock.now().since(started)
     print("slept at least 5 ms: {}\n", took.to_ms() >= 5)
 
     t := time.from_unix(1_700_000_000 * 1_000_000_000)
     buf: [time.RFC3339_LEN]u8 = ---
-    print("{} {}\n", (time.format_rfc3339(t, buf[..]), time.weekday(t.date)))
+    print("{} {}\n", time.format_rfc3339(t, buf[..]), time.weekday(t.date))
 
     d := try time.parse_date("2024-01-31")
     db: [10]u8 = ---
@@ -475,11 +475,11 @@ random :: import "std/random"
 main :: fn() \ {Out} {
     r := random.seeded(42)
     with &r {
-        print("{} {}\n", (random.range(u8, 1, 7), random.below(u32, 100)))
+        print("{} {}\n", random.range(T: u8, 1, 7), random.below(T: u32, 100))
         xs := [_]u32(1, 2, 3, 4, 5, 6)
-        random.shuffle(u32, xs[..])
+        random.shuffle(T: u32, xs[..])
         print("{}\n", xs)
-        print("{}\n", random.choice(string, [_]string("rock", "paper", "scissors")))
+        print("{}\n", random.choice(T: string, [_]string("rock", "paper", "scissors")))
     }
 }
 ```
@@ -496,7 +496,7 @@ log :: import "std/log"
 work :: fn() \ {log.Log} {
     log.debug("not shown at the default level")
     log.info("starting {}", "up")
-    log.warn("{} of {} retries used", (2, 3))
+    log.warn("{} of {} retries used", 2, 3)
 }
 
 main :: fn() \ {Out, Err, Alloc} {
@@ -542,7 +542,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
 
     j.pending.add(3)
     for _ in 0..3 {
-        t := try thread.spawn(Job, worker, &j)
+        t := try thread.spawn(worker, &j)
         t.detach()                          // never joined; `pending` says when it is done
     }
     j.pending.wait()                        // all three have sent
@@ -555,7 +555,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
     // A mutex-protected counter, with joined threads.
     c := Counter(n: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
-    for i in 0..4 { ts[i] = try thread.spawn(Counter, count_up, &c) }
+    for i in 0..4 { ts[i] = try thread.spawn(count_up, &c) }
     for i in 0..4 { ts[i].join() }
     print("counter {}\n", c.n)
 }
@@ -605,10 +605,10 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try d.push_back(2)
     try d.push_back(3)
     try d.push_front(1)
-    print("{} {} {}\n", (d.pop_front(), d.pop_back(), d.len()))
+    print("{} {} {}\n", d.pop_front(), d.pop_back(), d.len())
 
     // A priority queue: the cheapest job first.
-    h := hp.heap_by(Job, fn(a, b: ^const Job) -> bool => a.cost < b.cost)
+    h := hp.heap_by(fn(a, b: ^const Job) -> bool => a.cost < b.cost)
     defer h.deinit()
     try h.push(Job(name: "compile", cost: 30))
     try h.push(Job(name: "lint", cost: 5))
@@ -621,7 +621,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer seen.deinit()
     seen.insert(42)
     seen.insert(7)
-    print("{} {} {}\n", (seen.contains(42), seen.contains(8), seen.count()))
+    print("{} {} {}\n", seen.contains(42), seen.contains(8), seen.count())
     for i in seen.items() { print("{} ", i) }
     print("\n")
 
@@ -632,8 +632,8 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try m.put(10, "ten")
     try m.put(20, "twenty")
     try m.put(40, "forty")
-    print("{} {}\n", (m.first(), m.last()))
-    for e in m.range(15, 40) { print("{}={} ", (e.key, e.value)) }   // 15 <= key < 40
+    print("{} {}\n", m.first(), m.last())
+    for e in m.range(15, 40) { print("{}={} ", e.key, e.value) }   // 15 <= key < 40
     print("\n")
     for e in m.entries() { print("{} ", e.key) }
     print("\n")
@@ -654,8 +654,8 @@ base64 :: import "std/encoding/base64"
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     packet := list(u8)
     defer packet.deinit()
-    try bytes.append_int(u16, &packet, 0xCAFE, .Big)
-    try bytes.append_int(u32, &packet, 7, .Little)
+    try bytes.append_int(T: u16, &packet, 0xCAFE, .Big)
+    try bytes.append_int(T: u32, &packet, 7, .Little)
     try packet.extend("hi")
 
     hexbuf: [32]u8 = ---
@@ -665,7 +665,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     magic := r.int(u16, .Big) else return ()
     len := r.int(u32, .Little) else return ()
     body := r.take(2) else return ()
-    print("{:x} {} {}\n", (magic, len, body))
+    print("{:x} {} {}\n", magic, len, body)
     print("{}\n", r.take(5))                                       // too few bytes left: null
 
     b64: [32]u8 = ---
@@ -741,7 +741,7 @@ main :: fn() -> json.WriteError!() \ {Out, Alloc} {
         match t {
             .Number(n) => {
                 f := n.to_f64()
-                print("{} exact={}\n", (f.value, f.exact))
+                print("{} exact={}\n", f.value, f.exact)
             }
             _ => {}
         }
@@ -751,7 +751,7 @@ main :: fn() -> json.WriteError!() \ {Out, Alloc} {
     bad := "[1, 2,]"
     if !e := json.parse(bad) {
         p := json.position(bad, 6)
-        print("{} at line {} column {}\n", (e, p.line, p.column))
+        print("{} at line {} column {}\n", e, p.line, p.column)
     }
 
     // Write the tree back (the last argument is the indent; 0 is compact).
@@ -793,7 +793,7 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | --- | --- |
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
 | `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
-| `std/net` | `send_all` and `recv_exact` over the `Net` effect (tests get an in-memory network) |
+| `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
 | `std/c` | C's platform-dependent types (`c_int`, `c_long`, ...) for [foreign declarations](14-interop.md) |
 
@@ -811,14 +811,14 @@ main :: fn() \ {Out} {
     given := [_]string("-vo", "out.txt", "input.gm", "--colour")
     for a in cli.parse(given[..], opts[..]) {
         match a {
-            .Opt(o) => print("option {} value '{}'\n", (opts[o.index].long, o.value))
+            .Opt(o) => print("option {} value '{}'\n", opts[o.index].long, o.value)
             .Pos(p) => print("file {}\n", p)
             .Unknown(u) => print("unknown {}\n", u)
             .MissingValue(i) => print("--{} needs a value\n", opts[i].long)
             .UnexpectedValue(i) => print("--{} takes no value\n", opts[i].long)
         }
     }
-    print("{:.4} {:.4} {}\n", (math.sin(1.0), math.exp(1.0), math.pow(2.0, 10.0)))
+    print("{:.4} {:.4} {}\n", math.sin(1.0), math.exp(1.0), math.pow(2.0, 10.0))
 }
 ```
 

@@ -31,8 +31,8 @@ describe :: fn(s: string) -> u16 => parse(s) else e => match e {
 }
 
 main :: fn() \ {Out} {
-    print("{} {} {} {}\n", (area(.Circle(1)), area(.Rect(w: 2, h: 2)), area(.Rect(w: 2, h: 5)), area(.Empty)))
-    print("{} {} {}\n", (describe("123"), describe(""), describe("12a")))
+    print("{} {} {} {}\n", area(.Circle(1)), area(.Rect(w: 2, h: 2)), area(.Rect(w: 2, h: 5)), area(.Empty))
+    print("{} {} {}\n", describe("123"), describe(""), describe("12a"))
     print("{}\n", parse("70000"))
     if v := parse("42") and v > 40 { print("big {}\n", v) }
     x: ?u8 = null

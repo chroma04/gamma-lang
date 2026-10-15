@@ -359,14 +359,14 @@ test "the nesting limit" {
     for i in 0..600 { deep[i] = '[' }
     expect(fails(deep[0..600]) is .TooDeep(512))
     // Exactly at the limit, closed again.
-    ok: [1024]u8 = ---
+    at_limit: [1024]u8 = ---
     for i in 0..512 {
-        ok[i] = '['
-        ok[1023 - i] = ']'
+        at_limit[i] = '['
+        at_limit[1023 - i] = ']'
     }
-    expect(parses(ok[..]))
-    expect(fails(ok[..]) is null)
-    doc := try json.parse("[[[]]]", 3)
+    expect(parses(at_limit[..]))
+    expect(fails(at_limit[..]) is null)
+    doc := ok(json.parse("[[[]]]", 3))
     doc.deinit()
     expect(json.parse("[[[[]]]]", 3) is !.TooDeep(3))
 }
@@ -382,7 +382,7 @@ test "positions" {
 }
 
 test "the tree" {
-    doc := try json.parse(" {\"a\": [1, true, null, \"x\\ny\"], \"b\": {\"c\": -2.5e1}, \"a\": 7} ")
+    doc := ok(json.parse(" {\"a\": [1, true, null, \"x\\ny\"], \"b\": {\"c\": -2.5e1}, \"a\": 7} "))
     defer doc.deinit()
     // Duplicate keys are kept; `get` finds the last.
     obj := doc.root
@@ -415,7 +415,7 @@ test "the tree" {
 }
 
 test "arrays and strings" {
-    doc := try json.parse("[1, true, null, \"x\\ny\", \"\\u00e9\\ud83d\\ude00\\\"\", \"\", []]")
+    doc := ok(json.parse("[1, true, null, \"x\\ny\", \"\\u00e9\\ud83d\\ude00\\\"\", \"\", []]"))
     defer doc.deinit()
     expect(doc.root.at(1) is .Bool(true))
     expect(doc.root.at(2) is .Null)
@@ -506,7 +506,7 @@ dump :: fn(v: json.Value, indent: usize) -> []u8 \ {Alloc} {
 }
 
 test "writing a tree" {
-    doc := try json.parse("{\"a\":[1,2.50,{\"b\":null}],\"c\":\"\\u0001\\\"\\\\\\/\",\"d\":[],\"e\":{}}")
+    doc := ok(json.parse("{\"a\":[1,2.50,{\"b\":null}],\"c\":\"\\u0001\\\"\\\\\\/\",\"d\":[],\"e\":{}}"))
     defer doc.deinit()
     compact := dump(doc.root, 0)
     defer free(compact)
@@ -515,7 +515,7 @@ test "writing a tree" {
     defer free(pretty)
     expect(pretty is "{\n  \"a\": [\n    1,\n    2.50,\n    {\n      \"b\": null\n    }\n  ],\n  \"c\": \"\\u0001\\\"\\\\/\",\n  \"d\": [],\n  \"e\": {}\n}")
     // Round trip: parsing the output gives the same output.
-    again := try json.parse(compact)
+    again := ok(json.parse(compact))
     defer again.deinit()
     compact2 := dump(again.root, 0)
     defer free(compact2)
@@ -526,34 +526,34 @@ test "the writer" {
     out := list(u8)
     defer out.deinit()
     w := json.writer(&out, 0)
-    try w.begin_object()
-    try w.key("name")
-    try w.write_string("tab\there \u{e9}\u{7}")
-    try w.key("n")
-    try w.write_int(-12)
-    try w.key("big")
-    try w.write_int(u64(18446744073709551615))
-    try w.key("f")
-    try w.write_float(0.1)
-    try w.key("g")
-    try w.write_float(1.0e21)
-    try w.key("h")
-    try w.write_float(f32(0.5))
-    try w.key("ok")
-    try w.write_bool(true)
-    try w.key("nothing")
-    try w.write_null()
-    try w.key("list")
-    try w.begin_array()
-    try w.write_int(1)
-    try w.begin_array()
-    try w.end_array()
-    try w.write_string("")
-    try w.end_array()
-    try w.end_object()
+    ok(w.begin_object())
+    ok(w.key("name"))
+    ok(w.write_string("tab\there \u{e9}\u{7}"))
+    ok(w.key("n"))
+    ok(w.write_int(-12))
+    ok(w.key("big"))
+    ok(w.write_int(u64(18446744073709551615)))
+    ok(w.key("f"))
+    ok(w.write_float(0.1))
+    ok(w.key("g"))
+    ok(w.write_float(1.0e21))
+    ok(w.key("h"))
+    ok(w.write_float(f32(0.5)))
+    ok(w.key("ok"))
+    ok(w.write_bool(true))
+    ok(w.key("nothing"))
+    ok(w.write_null())
+    ok(w.key("list"))
+    ok(w.begin_array())
+    ok(w.write_int(1))
+    ok(w.begin_array())
+    ok(w.end_array())
+    ok(w.write_string(""))
+    ok(w.end_array())
+    ok(w.end_object())
     expect(out.items is "{\"name\":\"tab\\there \u{e9}\\u0007\",\"n\":-12,\"big\":18446744073709551615,\"f\":0.1,\"g\":1e21,\"h\":0.5,\"ok\":true,\"nothing\":null,\"list\":[1,[],\"\"]}")
     // Written text parses back.
-    doc := try json.parse(out.items)
+    doc := ok(json.parse(out.items))
     doc.deinit()
 }
 
@@ -574,13 +574,13 @@ test "indented writer output" {
     out := list(u8)
     defer out.deinit()
     w := json.writer(&out, 4)
-    try w.begin_array()
-    try w.write_int(1)
-    try w.begin_object()
-    try w.key("k")
-    try w.write_string("v")
-    try w.end_object()
-    try w.end_array()
+    ok(w.begin_array())
+    ok(w.write_int(1))
+    ok(w.begin_object())
+    ok(w.key("k"))
+    ok(w.write_string("v"))
+    ok(w.end_object())
+    ok(w.end_array())
     expect(out.items is "[\n    1,\n    {\n        \"k\": \"v\"\n    }\n]")
 }
 
@@ -589,12 +589,12 @@ test "running out of memory is an error" {
     // succeeds or reports `Memory`, never anything else.
     text := list(u8)
     defer text.deinit()
-    try text.extend("[")
+    ok(text.extend("["))
     for i in 0..100 {
-        if i > 0 { try text.extend(",") }
-        try text.write("{{\"id\":{},\"name\":\"item {}\",\"tags\":[\"a\",\"b\"]}}", (i, i))
+        if i > 0 { ok(text.extend(",")) }
+        ok(text.write("{{\"id\":{},\"name\":\"item {}\",\"tags\":[\"a\",\"b\"]}}", i, i))
     }
-    try text.extend("]")
+    ok(text.extend("]"))
     store: [100000]u8 = ---
     failed: u32 = 0
     worked: u32 = 0
@@ -665,22 +665,22 @@ test "random documents survive writing and parsing" {
         compact := list(u8)
         defer compact.deinit()
         w := json.writer(&compact, 0)
-        try generate(&w, &seed, 4)
-        doc := try json.parse(compact.items)
+        ok(generate(&w, &seed, 4))
+        doc := ok(json.parse(compact.items))
         defer doc.deinit()
         // Writing the parsed tree gives the same text, indented or not.
         again := list(u8)
         defer again.deinit()
-        try json.write(&again, doc.root, 0)
+        ok(json.write(&again, doc.root, 0))
         expect(again.items is compact.items)
         pretty := list(u8)
         defer pretty.deinit()
-        try json.write(&pretty, doc.root, 1 + round % 4)
-        doc2 := try json.parse(pretty.items)
+        ok(json.write(&pretty, doc.root, 1 + round % 4))
+        doc2 := ok(json.parse(pretty.items))
         defer doc2.deinit()
         back := list(u8)
         defer back.deinit()
-        try json.write(&back, doc2.root, 0)
+        ok(json.write(&back, doc2.root, 0))
         expect(back.items is compact.items)
     }
 }

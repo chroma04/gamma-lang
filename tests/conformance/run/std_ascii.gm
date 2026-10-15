@@ -10,25 +10,25 @@ count :: fn(pred: fn(c: u8) -> bool) -> usize {
 }
 
 main :: fn() \ {Out} {
-    print("alpha {} digit {} alnum {} space {}\n", (count(ascii.is_alpha), count(ascii.is_digit), count(ascii.is_alnum), count(ascii.is_space)))
-    print("upper {} lower {} hex {} punct {}\n", (count(ascii.is_upper), count(ascii.is_lower), count(ascii.is_hex_digit), count(ascii.is_punct)))
-    print("print {} control {}\n", (count(ascii.is_print), count(ascii.is_control)))
+    print("alpha {} digit {} alnum {} space {}\n", count(ascii.is_alpha), count(ascii.is_digit), count(ascii.is_alnum), count(ascii.is_space))
+    print("upper {} lower {} hex {} punct {}\n", count(ascii.is_upper), count(ascii.is_lower), count(ascii.is_hex_digit), count(ascii.is_punct))
+    print("print {} control {}\n", count(ascii.is_print), count(ascii.is_control))
 
     // The edges of each class.
-    print("{} {} {} {}\n", (ascii.is_alpha('@'), ascii.is_alpha('A'), ascii.is_alpha('Z'), ascii.is_alpha('[')))
-    print("{} {} {} {}\n", (ascii.is_alpha('`'), ascii.is_alpha('a'), ascii.is_alpha('z'), ascii.is_alpha('{')))
-    print("{} {} {} {}\n", (ascii.is_digit('/'), ascii.is_digit('0'), ascii.is_digit('9'), ascii.is_digit(':')))
-    print("{} {} {} {}\n", (ascii.is_hex_digit('f'), ascii.is_hex_digit('g'), ascii.is_hex_digit('F'), ascii.is_hex_digit('G')))
-    print("{} {} {} {}\n", (ascii.is_space(' '), ascii.is_space('\t'), ascii.is_space(0x0b), ascii.is_space(0x85)))
-    print("{} {} {} {}\n", (ascii.is_control(0x1f), ascii.is_control(0x20), ascii.is_control(0x7f), ascii.is_control(0x80)))
-    print("{} {} {} {}\n", (ascii.is_punct('!'), ascii.is_punct('~'), ascii.is_punct(' '), ascii.is_punct('_')))
-    print("{} {} {}\n", (ascii.is_print(' '), ascii.is_print('~'), ascii.is_print(0x7f)))
+    print("{} {} {} {}\n", ascii.is_alpha('@'), ascii.is_alpha('A'), ascii.is_alpha('Z'), ascii.is_alpha('['))
+    print("{} {} {} {}\n", ascii.is_alpha('`'), ascii.is_alpha('a'), ascii.is_alpha('z'), ascii.is_alpha('{'))
+    print("{} {} {} {}\n", ascii.is_digit('/'), ascii.is_digit('0'), ascii.is_digit('9'), ascii.is_digit(':'))
+    print("{} {} {} {}\n", ascii.is_hex_digit('f'), ascii.is_hex_digit('g'), ascii.is_hex_digit('F'), ascii.is_hex_digit('G'))
+    print("{} {} {} {}\n", ascii.is_space(' '), ascii.is_space('\t'), ascii.is_space(0x0b), ascii.is_space(0x85))
+    print("{} {} {} {}\n", ascii.is_control(0x1f), ascii.is_control(0x20), ascii.is_control(0x7f), ascii.is_control(0x80))
+    print("{} {} {} {}\n", ascii.is_punct('!'), ascii.is_punct('~'), ascii.is_punct(' '), ascii.is_punct('_'))
+    print("{} {} {}\n", ascii.is_print(' '), ascii.is_print('~'), ascii.is_print(0x7f))
 
     // Case.
-    print("{} {} {} {}\n", (ascii.to_lower('A'), ascii.to_lower('Z'), ascii.to_lower('a'), ascii.to_lower('@')))
-    print("{} {} {} {}\n", (ascii.to_upper('a'), ascii.to_upper('z'), ascii.to_upper('A'), ascii.to_upper('{')))
-    print("{} {}\n", (ascii.to_lower(0xc4), ascii.to_upper(0xe4)))
+    print("{} {} {} {}\n", ascii.to_lower('A'), ascii.to_lower('Z'), ascii.to_lower('a'), ascii.to_lower('@'))
+    print("{} {} {} {}\n", ascii.to_upper('a'), ascii.to_upper('z'), ascii.to_upper('A'), ascii.to_upper('{'))
+    print("{} {}\n", ascii.to_lower(0xc4), ascii.to_upper(0xe4))
 
     // Digit values.
-    print("{} {} {} {} {} {}\n", (ascii.digit_value('0'), ascii.digit_value('9'), ascii.digit_value('a'), ascii.digit_value('Z'), ascii.digit_value('-'), ascii.digit_value(0xe4)))
+    print("{} {} {} {} {} {}\n", ascii.digit_value('0'), ascii.digit_value('9'), ascii.digit_value('a'), ascii.digit_value('Z'), ascii.digit_value('-'), ascii.digit_value(0xe4))
 }

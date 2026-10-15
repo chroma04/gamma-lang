@@ -17,7 +17,7 @@ arrays_demo :: fn() \ {Out} {
     zeros := [8]u8(fill: 0)
     copy := v                          // a copy, not an alias
     copy[0] = 99                       // v[0] is still 1
-    print("{} {} {}\n", (sum, twice, zeros.len))
+    print("{} {} {}\n", sum, twice, zeros.len)
     print("{}\n", copy is v)                // false: `is` compares arrays element by element
 }
 ```
@@ -42,7 +42,7 @@ slices_demo :: fn() \ {Out} {
     head := data[..2]                  // open-ended bounds only appear in brackets
     tail := data[4..]
     all := data[..]
-    print("{} {} {} {}\n", (mid, head, tail, all.len))
+    print("{} {} {} {}\n", mid, head, tail, all.len)
 }
 ```
 
@@ -101,9 +101,9 @@ tuples_demo :: fn() \ {Out} {
     point := (x: 1.5, y: 2.5)               // named; both elements default to f64
     single := (7,)                          // a one-element tuple needs the comma
     unit := ()                              // the empty tuple, also the type `()`
-    print("{} {} {} {}\n", (pair.0, pair.1, point.x, point.y))
+    print("{} {} {} {}\n", pair.0, pair.1, point.x, point.y)
     n, label := pair                        // destructure
-    print("{} {}\n", (n, label))
+    print("{} {}\n", n, label)
 }
 ```
 
@@ -134,7 +134,7 @@ structs_demo :: fn() \ {Out} {
     w2 := Window(..w, title: "other")             // w with a different title
     w2.open = false                               // fields are assignable on a mutable variable
     print("{}\n", v)                              // Vec2(x: 1.5, y: -2)
-    print("{} {}\n", (w2.title, w2.open))
+    print("{} {}\n", w2.title, w2.open)
 }
 ```
 
@@ -220,7 +220,7 @@ unions_demo :: fn(s: Shape) \ {Out} {
     box: Shape = .Rect(w: 2, h: 3)
     if s is .Circle(_) { print("a circle\n") }
     if s is .Empty { print("nothing\n") }
-    if .Rect(w, h) := box { print("{} by {}\n", (w, h)) }
+    if .Rect(w, h) := box { print("{} by {}\n", w, h) }
     print("{}\n", unit_circle)                     // .Circle(1)
 }
 
@@ -365,7 +365,7 @@ lossy_demo :: fn(big: u32, f: f64, g: f32) \ {Out} {
     d := f.trunc(i32)                     // 3.7 -> 3 (traps if out of range or NaN)
     e := f.round(i32)                     // 3.7 -> 4
     raw := g.bits(u32)                    // the IEEE bit pattern of an f32
-    print("{} {} {} {} {} {}\n", (a, b, c, d, e, raw))
+    print("{} {} {} {} {} {}\n", a, b, c, d, e, raw)
 }
 ```
 

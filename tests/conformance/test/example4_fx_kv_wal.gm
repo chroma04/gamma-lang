@@ -40,7 +40,7 @@ MemKv :: struct {
     m: HashMap(Key, i64)
 }
 
-mem_new :: fn() -> MemKv \ {Alloc} => MemKv(m: map(Key, i64))
+mem_new :: fn() -> MemKv \ {Alloc} => MemKv(m: hash_map(Key, i64))
 
 mem_put :: fn(s: ^MemKv, key: string, val: i64) -> KvError!() {
     k := try key_of(key)
@@ -89,7 +89,7 @@ describe :: fn(s: ^MemKv, out: []u8) -> string \ {Alloc} {
     defer l.deinit()
     for e in l.items {
         if b.len() > 0 { b.push(" ") }
-        b.write("{}={}", (e.key.bytes[0..e.key.len], e.val))
+        b.write("{}={}", e.key.bytes[0..e.key.len], e.val)
     }
     return b.str()
 }
@@ -106,7 +106,7 @@ checksum :: fn(s: string) -> u32 {
 append_record :: fn(path: string, body: string) -> KvError!() \ {Fs} {
     buf: [128]u8 = ---
     b := str.builder(buf[..])
-    b.write("{} #{}\n", (body, checksum(body)))
+    b.write("{} #{}\n", body, checksum(body))
     try fs.append(path, b.str())
 }
 
@@ -120,7 +120,7 @@ handler Kv for ^DiskKv \ {Fs} {
         _ = try key_of(key)          // reject bad keys before they reach the log
         buf: [96]u8 = ---
         b := str.builder(buf[..])
-        b.write("SET {} {}", (key, val))
+        b.write("SET {} {}", key, val)
         // Log first, then apply: a crash in between loses nothing that was acknowledged.
         try append_record(WAL, b.str())
         self.records += 1
@@ -212,11 +212,11 @@ recover :: fn(rep: ^Report) -> KvError!DiskKv \ {Fs, Alloc} {
     db := DiskKv(mem: mem_new())
     snap_rep := Report()
     if data := try slurp(SNAP) {
-        defer free(u8, data)
+        defer free(data)
         try replay(&db.mem, data, &snap_rep)
     }
     if data := try slurp(WAL) {
-        defer free(u8, data)
+        defer free(data)
         try replay(&db.mem, data, rep)
         if rep.torn or rep.bad {
             try fs.write_all(WAL, data[0..rep.valid_len])
@@ -237,11 +237,11 @@ compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool \ {Fs, Alloc} {
     for e in l.items {
         buf: [96]u8 = ---
         b := str.builder(buf[..])
-        b.write("SET {} {}", (e.key.bytes[0..e.key.len], e.val))
+        b.write("SET {} {}", e.key.bytes[0..e.key.len], e.val)
         try append_record(SNAP_TMP, b.str())
     }
     if crash is .AfterTmp { return false }
-    try rename(SNAP_TMP, SNAP)
+    try Fs.rename(SNAP_TMP, SNAP)
     if crash is .AfterRename { return false }
     try fs.write_all(WAL, "")
     db.records = 0
@@ -269,10 +269,10 @@ fresh :: fn() -> DiskKv \ {Alloc} => DiskKv(mem: mem_new())
 test "the same workload runs against both handlers" {
     mem := mem_new()
     defer mem.m.deinit()
-    a := try with &mem { workload() }
+    a := ok(with &mem { workload() })
     disk := fresh()
     defer disk.mem.m.deinit()
-    b := try with &disk { workload() }
+    b := ok(with &disk { workload() })
     expect(a is 14)           // apple 4 + fig 7 + three live keys
     expect(b is 14)
     buf: [64]u8 = ---
@@ -280,44 +280,44 @@ test "the same workload runs against both handlers" {
     expect(describe(&disk.mem, buf[..]) is "apple=4 fig=7 kiwi=-2")
     expect(disk.records is 7)
     // The log is plain text with a checksum on every line.
-    data := try read_whole(WAL)
-    defer free(u8, data)
+    data := ok(read_whole(WAL))
+    defer free(data)
     expect(data.starts_with("SET apple 3 #"))
 }
 
 test "recovery replays the log after a crash" {
     db := fresh()
-    _ = try with &db { workload() }
+    _ = ok(with &db { workload() })
     buf: [64]u8 = ---
     expect(describe(&db.mem, buf[..]) is "apple=4 fig=7 kiwi=-2")
     // The process dies: the in-memory state is gone, the files stay.
     db.mem.m.deinit()
     rep := Report()
-    db2 := try recover(&rep)
+    db2 := ok(recover(&rep))
     defer db2.mem.m.deinit()
     expect(rep.applied is 7)
     expect(not rep.torn and not rep.bad)
     expect(describe(&db2.mem, buf[..]) is "apple=4 fig=7 kiwi=-2")
     // The recovered store keeps logging to the same file.
-    with &db2 { try put("plum", 1) }
+    with &db2 { ok(put("plum", 1)) }
     expect(db2.records is 8)
 }
 
 test "a torn last record is dropped and the log repaired" {
     db := fresh()
     with &db {
-        try put("a", 1)
-        try put("b", 2)
-        try put("c", 3)
+        ok(put("a", 1))
+        ok(put("b", 2))
+        ok(put("c", 3))
     }
     db.mem.m.deinit()
     // Tear the last record in half, as a power cut would.
-    data := try read_whole(WAL)
+    data := ok(read_whole(WAL))
     cut := data.len - 6
-    try fs.write_all(WAL, data[0..cut])
-    free(u8, data)
+    ok(fs.write_all(WAL, data[0..cut]))
+    free(data)
     rep := Report()
-    db2 := try recover(&rep)
+    db2 := ok(recover(&rep))
     defer db2.mem.m.deinit()
     expect(rep.applied is 2)
     expect(rep.torn)
@@ -325,10 +325,10 @@ test "a torn last record is dropped and the log repaired" {
     buf: [64]u8 = ---
     expect(describe(&db2.mem, buf[..]) is "a=1 b=2")
     // The repair cut the log back to the last good record.
-    info := try stat(WAL)
+    info := ok(Fs.stat(WAL))
     expect(info.size.trunc(usize) is rep.valid_len)
     rep2 := Report()
-    db3 := try recover(&rep2)
+    db3 := ok(recover(&rep2))
     defer db3.mem.m.deinit()
     expect(rep2.applied is 2 and not rep2.torn)
 }
@@ -336,19 +336,19 @@ test "a torn last record is dropped and the log repaired" {
 test "a corrupt record stops the replay" {
     db := fresh()
     with &db {
-        try put("x", 10)
-        try put("y", 20)
-        try put("z", 30)
+        ok(put("x", 10))
+        ok(put("y", 20))
+        ok(put("z", 30))
     }
     db.mem.m.deinit()
-    data := try read_whole(WAL)
+    data := ok(read_whole(WAL))
     // Flip one digit of the second record's value: the checksum no longer matches.
     at := str.find(data, "SET y 20") else trap("record not found")
     data[at + 6] = '9'
-    try fs.write_all(WAL, data)
-    free(u8, data)
+    ok(fs.write_all(WAL, data))
+    free(data)
     rep := Report()
-    db2 := try recover(&rep)
+    db2 := ok(recover(&rep))
     defer db2.mem.m.deinit()
     expect(rep.applied is 1)
     expect(rep.bad)
@@ -363,43 +363,43 @@ test "compaction shrinks the log and survives crashes at every step" {
             kbuf: [8]u8 = ---
             b := str.builder(kbuf[..])
             b.write("k{}", i % 5)
-            try put(b.str(), i.trunc(i64))
+            ok(put(b.str(), i.trunc(i64)))
         }
-        _ = try del("k3")
+        _ = ok(del("k3"))
     }
     expect(db.records is 41)
     buf: [96]u8 = ---
     want := "k0=35 k1=36 k2=37 k4=39"
     expect(describe(&db.mem, buf[..]) is want)
-    before := (try stat(WAL)).size
+    before := (ok(Fs.stat(WAL))).size
 
     // Crash 1: the temporary snapshot is written but never renamed.
-    expect(not try compact(&db, .AfterTmp))
+    expect(not ok(compact(&db, .AfterTmp)))
     rep := Report()
-    r1 := try recover(&rep)
+    r1 := ok(recover(&rep))
     expect(describe(&r1.mem, buf[..]) is want)
     expect(rep.applied is 41)
     r1.mem.m.deinit()
 
     // Crash 2: the snapshot is in place but the log still holds every record.
-    expect(not try compact(&db, .AfterRename))
+    expect(not ok(compact(&db, .AfterRename)))
     rep = Report()
-    r2 := try recover(&rep)
+    r2 := ok(recover(&rep))
     expect(describe(&r2.mem, buf[..]) is want)
     expect(rep.applied is 45)         // four snapshot records, then the log replayed over them
     r2.mem.m.deinit()
 
     // A clean compaction.
-    expect(try compact(&db, .Never))
+    expect(ok(compact(&db, .Never)))
     expect(db.records is 0)
-    after := (try stat(WAL)).size
+    after := (ok(Fs.stat(WAL))).size
     expect(before > 500 and after is 0)
     rep = Report()
-    r3 := try recover(&rep)
+    r3 := ok(recover(&rep))
     defer r3.mem.m.deinit()
     expect(rep.applied is 4)
     expect(describe(&r3.mem, buf[..]) is want)
-    with &r3 { try put("k9", 99) }
+    with &r3 { ok(put("k9", 99)) }
     expect(r3.records is 1)
     db.mem.m.deinit()
 }

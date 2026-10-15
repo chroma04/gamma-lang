@@ -6,7 +6,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer words.deinit()
     try words.push(buf[..])
     try words.push(buf[1..3])
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     try counts.put(buf[..2], 7)
     s := string(buf[2..])
@@ -14,6 +14,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     wide := list(u32)
     defer wide.deinit()
     try wide.push(small)
-    print("{} {} {} {} {}\n", (words.items[0], words.items[1], counts.get("he"), s, wide.items[0]))
+    print("{} {} {} {} {}\n", words.items[0], words.items[1], counts.get("he"), s, wide.items[0])
     return ()
 }

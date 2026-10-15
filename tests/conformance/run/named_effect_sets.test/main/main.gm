@@ -1,0 +1,29 @@
+// Named effect sets (§12.3): spliced into effect sets with `..`, aliased, imported, and
+// given as the argument of an effect-set parameter (§16.6).
+fx :: import "../fx"
+fiber :: import "std/fiber"
+
+Io :: fx.Console
+Wider :: \ {..fx.Timed, Rand}
+
+greet :: fn(name: string) \ {..Io} {
+    l := list(u8)
+    defer l.deinit()
+    l.write("hi {}", name) else return
+    print("{}\n", string(l.items))
+}
+
+later :: fn() \ {..Wider} {
+    _ = Clock.now()
+    greet("later")
+}
+
+apply :: fn(E: effects, f: ^fn(s: string) \ {..E}, s: string) \ {..E} => f(s)
+
+main :: fn() \ {..Io, Clock, Rand} {
+    greet("ada")
+    later()
+    apply(greet, "a pointer")
+    s := fiber.scheduler(Io)
+    s.deinit()
+}

@@ -2,7 +2,7 @@
 text :: import "std/text"
 
 show :: fn(s: string) \ {Out} {
-    for g in text.graphemes(s) { print("[{} {}]", (g, g.len)) }
+    for g in text.graphemes(s) { print("[{} {}]", g, g.len) }
     print("\n")
 }
 
@@ -23,7 +23,7 @@ main :: fn() \ {Out} {
     show("\u{600}1") // a prepended concatenation mark
     lens("a\xffb\xe2\x82\u{301}") // ill-formed bytes come back as they are
     show("")
-    print("{} {} {}\n", (text.grapheme_len(""), text.grapheme_len("e\u{301}x"), text.grapheme_len("\r\n")))
+    print("{} {} {}\n", text.grapheme_len(""), text.grapheme_len("e\u{301}x"), text.grapheme_len("\r\n"))
     n: usize = 0
     for _ in text.graphemes("नमस्ते") { n += 1 }
     print("{}\n", n)

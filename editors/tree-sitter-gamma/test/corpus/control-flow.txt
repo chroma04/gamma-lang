@@ -720,11 +720,11 @@ f :: fn() {
             (integer_literal)))))))
 
 ================================================================================
-Discard
+Cancel
 ================================================================================
 
 f :: fn() {
-    discard k
+    cancel k
     _ = compute()
 }
 
@@ -736,7 +736,7 @@ f :: fn() {
     (function_expression
       (parameters)
       (block
-        (discard_statement
+        (cancel_statement
           (identifier))
         (assignment_statement
           (discard)

@@ -35,17 +35,17 @@ main :: fn() \ {Out} {
     m := Msg(kind: 1, payload: Value(f: 1.0), tail: 9)
     print("{}\n", m.payload.i is 0x3FF0000000000000)
     m.payload.v = Vec2(x: 1.0, y: 2.0)
-    print("{} {}\n", (m.payload.h[0], m.payload.h[1]))
+    print("{} {}\n", m.payload.h[0], m.payload.h[1])
     m.payload.b[HI] = 0x40
     print("{}\n", m.payload.h[1])
     p := PMsg(kind: 1, payload: Value(i: -1), tail: 2)
-    print("{} {} {}\n", (@size_of(Msg), @size_of(PMsg), @size_of(Buf)))
+    print("{} {} {}\n", @size_of(Msg), @size_of(PMsg), @size_of(Buf))
     v := p.payload
-    print("{} {}\n", (v.i, p.tail))
+    print("{} {}\n", v.i, p.tail)
     arr := [_]Value(Value(i: 1), Value(f: 2.0))
     print("{}\n", arr[1].i is 0x4000000000000000)
     w := arr[0]
     w.i += 1
-    print("{} {}\n", (w.i, arr[0].i))
+    print("{} {}\n", w.i, arr[0].i)
     print("{}\n", @size_of(Value))
 }

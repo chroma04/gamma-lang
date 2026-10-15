@@ -374,7 +374,6 @@ impl<'a> Machine<'a> {
             | Builtin::Sys(_)
             | Builtin::HeapFree
             | Builtin::Assert
-            | Builtin::Expect
             | Builtin::AtomicLoad
             | Builtin::AtomicStore
             | Builtin::AtomicSwap

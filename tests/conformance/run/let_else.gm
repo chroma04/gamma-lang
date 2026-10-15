@@ -41,10 +41,10 @@ lengths :: fn(items: []const string) -> u32 {
 }
 
 main :: fn() \ {Out} {
-    print("{} {}\n", (num(.Num(4)), num(.Nil)))
+    print("{} {}\n", num(.Num(4)), num(.Nil))
     print("{}\n", sum_pair(.Pair(a: 2, b: 3)))
     print("{}\n", sum_pair(.Num(1)))
     xs := [_]i64(12, 40, 7, 3)
     words := [_]string("ab", "cde", "", "zz")
-    print("{} {}\n", (first_small(xs[..]), lengths(words[..])))
+    print("{} {}\n", first_small(xs[..]), lengths(words[..]))
 }

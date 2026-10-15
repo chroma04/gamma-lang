@@ -2,6 +2,7 @@
 // An HTTP-like server and two clients in one test over the loopback Net handler: request parsing, routing, WouldBlock handled by a fiber scheduler.
 str :: import "std/str"
 io :: import "std/io"
+net :: import "std/net"
 
 STACK :: 65536
 
@@ -14,7 +15,7 @@ Sched :: effect {
 
 // Shared state of the whole scenario; tasks reach it through a pointer.
 Ctx :: struct {
-    listener: Listener
+    listener: net.Listener
     port: u16
     name: string
     served: u32 = 0
@@ -60,7 +61,7 @@ handler Sched for ^Runtime \ {Net, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 {
             if j := self.joiner {
@@ -81,7 +82,7 @@ handler Sched for ^Runtime \ {Net, Out} {
 
 // ---- Wire helpers ---------------------------------------------------------------
 
-send_all :: fn(s: Socket, bytes: string) -> IoError!() \ {Net, Sched} {
+send_all :: fn(s: net.Socket, bytes: string) -> IoError!() \ {Net, Sched} {
     done: usize = 0
     while done < bytes.len {
         match s.send(bytes[done..bytes.len]) {
@@ -93,7 +94,7 @@ send_all :: fn(s: Socket, bytes: string) -> IoError!() \ {Net, Sched} {
 }
 
 // Reads until `buf` holds a complete message (headers plus Content-Length bytes) or the peer closes.
-read_message :: fn(s: Socket, buf: []u8) -> IoError!string \ {Net, Sched} {
+read_message :: fn(s: net.Socket, buf: []u8) -> IoError!string \ {Net, Sched} {
     have: usize = 0
     while have < buf.len {
         match s.recv(buf[have..]) {
@@ -177,15 +178,15 @@ reason :: fn(code: u32) -> string => match code {
     _ => "Unknown"
 }
 
-respond :: fn(s: Socket, code: u32, body: string) -> IoError!() \ {Net, Sched} {
+respond :: fn(s: net.Socket, code: u32, body: string) -> IoError!() \ {Net, Sched} {
     buf: [512]u8 = ---
     b := str.builder(buf[..])
-    b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", (code, reason(code), body.len))
+    b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", code, reason(code), body.len)
     b.push(body)
     try send_all(s, b.str())
 }
 
-route :: fn(ctx: ^Ctx, req: Request, s: Socket) -> IoError!() \ {Net, Sched} {
+route :: fn(ctx: ^Ctx, req: Request, s: net.Socket) -> IoError!() \ {Net, Sched} {
     body: [128]u8 = ---
     b := str.builder(body[..])
     if req.path is "/hello" {
@@ -236,7 +237,7 @@ server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
         raw := read_message(conn, buf[..]) else ""
         ctx.served += 1
         if req := parse_request(raw) {
-            print("server: {} {}\n", (req.method, req.path))
+            print("server: {} {}\n", req.method, req.path)
             _ = route(ctx, req, conn)
         } else {
             print("server: malformed request\n")
@@ -249,7 +250,7 @@ server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
 
 // One request on a fresh connection; prints the status line and body.
 fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
-    conn := try connect("localhost", ctx.port)
+    conn := try Net.connect("localhost", ctx.port)
     defer conn.close_socket()
     try send_all(conn, request)
     buf: [512]u8 = ---
@@ -260,7 +261,7 @@ fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
         status = line
         break
     }
-    print("{}: [{}] {}\n", (ctx.name, status, parts.after))
+    print("{}: [{}] {}\n", ctx.name, status, parts.after)
 }
 
 get :: fn(ctx: ^Ctx, target: string) -> IoError!() \ {Net, Sched, Out} {
@@ -310,8 +311,8 @@ bob: [HTTP/1.1 400 Bad Request] malformed
 `
 
 test "two clients talk to one server" {
-    l := try listen("127.0.0.1", 0)
-    port := try l.local_port()
+    l := ok(Net.listen("127.0.0.1", 0))
+    port := ok(l.local_port())
     expect(port is 49152)
     alice_ctx := Ctx(listener: l, port: port, name: "alice", limit: 9)
     bob_ctx := Ctx(listener: l, port: port, name: "bob", limit: 9)
@@ -336,14 +337,14 @@ test "two clients talk to one server" {
 }
 
 test "a lone client sees a refused connection when nobody listens" {
-    expect(connect("localhost", 9) is !.ConnectionRefused)
-    l := try listen("localhost", 9000)
-    c := try connect("localhost", 9000)
+    expect(Net.connect("localhost", 9) is !.ConnectionRefused)
+    l := ok(Net.listen("localhost", 9000))
+    c := ok(Net.connect("localhost", 9000))
     // Nobody accepted yet: the listener has a pending connection, and the client reads nothing.
     buf: [8]u8 = ---
     expect(c.recv(buf[..]) is !.WouldBlock)
-    s := try l.accept()
+    s := ok(l.accept())
     expect(s.recv(buf[..]) is !.WouldBlock)
     c.close_socket()
-    expect(try s.recv(buf[..]) is 0)
+    expect(ok(s.recv(buf[..])) is 0)
 }

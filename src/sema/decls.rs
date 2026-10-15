@@ -21,6 +21,8 @@ pub enum DeclValue {
     Effect(EffectId),
     /// A generic effect with its arguments: `Ev :: Events(Msg)` (§3.5).
     EffectInst(EffectRef),
+    /// A named effect set: `Io :: \ {Fs, Alloc}` (§12.3), spliced as `\ {..Io}`.
+    EffectSet(EffectSet),
     /// A (non-generic) function.
     Fn(FnId),
     /// An effect operation, callable like a function (§12.1).
@@ -339,6 +341,15 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
+            // `Io :: \ {Fs, Alloc}`: a named effect set (§12.3).
+            ExprKind::EffectSet(list) if b.ty.is_none() => {
+                let set = self.resolve_effect_set(module, list);
+                if set.has_splice() {
+                    self.error(init.span, "a named effect set cannot contain an effect-set parameter");
+                    return DeclValue::Error;
+                }
+                DeclValue::EffectSet(set)
+            }
             ExprKind::Handler(_) => {
                 self.error(
                     init.span,
@@ -508,7 +519,7 @@ impl<'s> Sema<'s> {
                     self.value_params.insert(pid, ty);
                     self.value_scope.push((n.name, pid));
                     let default = p.default.clone().map(Rc::new);
-                    params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: Some(pid) });
+                    params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: Some(pid), rest: false });
                 }
                 continue;
             }
@@ -539,6 +550,7 @@ impl<'s> Sema<'s> {
                         span: n.span,
                         default: None,
                         generic: Some(pid),
+                        rest: false,
                     });
                 }
                 continue;
@@ -550,12 +562,47 @@ impl<'s> Sema<'s> {
                 self.error(p.span, "parameters with defaults may be followed only by parameters with defaults");
             }
             if p.names.is_empty() {
-                params.push(ParamInfo { name: Symbol::intern("_"), ty, span: p.span, default: None, generic: None });
+                params.push(ParamInfo {
+                    name: Symbol::intern("_"),
+                    ty,
+                    span: p.span,
+                    default: None,
+                    generic: None,
+                    rest: false,
+                });
+            }
+            let mut rest = p.rest;
+            if p.rest {
+                // `args: ..A` (§11.3): one name, a tuple type or a type parameter, no default.
+                let ok_ty = matches!(ty.kind(), TyKind::Tuple { names: None, .. } | TyKind::Param(_) | TyKind::Error);
+                rest = false;
+                if !literal {
+                    self.error(p.span, "a function type cannot have a rest parameter");
+                    ok = false;
+                } else if p.names.len() != 1 || p.default.is_some() || !ok_ty {
+                    self.error(
+                        p.span,
+                        "a rest parameter is one name with an unnamed tuple type or a type parameter, and no default: `args: ..A`",
+                    );
+                    ok = false;
+                } else {
+                    rest = true;
+                }
             }
             for n in &p.names {
                 let default = p.default.clone().map(Rc::new);
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None });
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None, rest });
             }
+        }
+        // A rest parameter is the last one, but for those bound only by name (§11.3).
+        if let Some(r) = params.iter().position(|p| p.rest)
+            && params[r + 1..].iter().any(|p| p.rest || !p.is_site())
+        {
+            self.error(
+                params[r].span,
+                "a rest parameter must be the last parameter (other than `@caller_location()` ones)",
+            );
+            ok = false;
         }
         if sig.variadic && !self.allow_variadic {
             self.error(sig.span, "variadic parameters are allowed only in foreign functions");
@@ -612,6 +659,13 @@ impl<'s> Sema<'s> {
     pub fn resolve_effect_set(&mut self, module: ModuleId, list: &[ast::Expr]) -> EffectSet {
         let mut v = vec![];
         for e in list {
+            // `..Io`: the effects of a named effect set.
+            if let ExprKind::EffectSplice(inner) = &e.kind
+                && let Some(set) = self.named_effect_set(module, inner)
+            {
+                v.extend(set.effects.iter().cloned());
+                continue;
+            }
             if let Some(r) = self.resolve_effect_ref(module, e) {
                 v.push(r);
             }
@@ -619,15 +673,37 @@ impl<'s> Sema<'s> {
         EffectSet::new(v)
     }
 
+    /// The effects of the named effect set that `e` names (`Io`, `m.Io`), if it names one.
+    pub fn named_effect_set(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectSet> {
+        let d = match &e.kind {
+            ExprKind::Ident(id) => self.lookup_module_name(module, id.name)?,
+            ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                self.module_member(m, *name)?
+            }
+            _ => return None,
+        };
+        match self.resolve_decl(d) {
+            DeclValue::EffectSet(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn resolve_effect_ref(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectRef> {
         // `..E`: the effects of an effect-set parameter (§16.6).
         if let ExprKind::EffectSplice(inner) = &e.kind {
             return match self.effect_param_named(inner) {
                 Some(p) => Some(EffectRef::splice(p)),
+                None if matches!(&inner.kind, ExprKind::Ident(id) if self.lookup_module_name(module, id.name).is_none()) =>
+                {
+                    let ExprKind::Ident(id) = &inner.kind else { unreachable!() };
+                    self.error(inner.span, format!("unknown effect set `{}`", id.name));
+                    None
+                }
                 None => {
                     self.error(
                         inner.span,
-                        "only an effect-set parameter (`E: effects`) can be spliced with `..` (§16.6)",
+                        "only a named effect set or an effect-set parameter (`E: effects`) can be spliced with `..` (§12.3, §16.6)",
                     );
                     None
                 }
@@ -674,6 +750,16 @@ impl<'s> Sema<'s> {
                     DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
                     DeclValue::EffectInst(r) => Some(r),
                     DeclValue::Error => None,
+                    DeclValue::EffectSet(_) => {
+                        self.error(
+                            e.span,
+                            format!(
+                                "`{}` is an effect set; splice it into the set as `..{}` (§12.3)",
+                                id.name, id.name
+                            ),
+                        );
+                        None
+                    }
                     _ => {
                         self.error(e.span, format!("`{}` is not an effect", id.name));
                         None
@@ -734,6 +820,9 @@ impl<'s> Sema<'s> {
         if let Some(p) = self.effect_param_named(e) {
             return p;
         }
+        if let Some(set) = self.named_effect_set(module, e) {
+            return Ty::intern(TyKind::Effects(set));
+        }
         if let ExprKind::EffectSet(list) = &e.kind {
             let set = self.resolve_effect_set(module, list);
             return Ty::intern(TyKind::Effects(set));
@@ -785,7 +874,14 @@ impl<'s> Sema<'s> {
                     }
                 };
                 for n in &p.names {
-                    params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None });
+                    params.push(ParamInfo {
+                        name: n.name,
+                        ty,
+                        span: n.span,
+                        default: None,
+                        generic: None,
+                        rest: false,
+                    });
                 }
             }
             let ret = op.ret.as_ref().map_or(Ty::unit(), |r| self.resolve_type(module, r));
@@ -815,6 +911,7 @@ impl<'s> Sema<'s> {
             | DeclValue::GenericType(_)
             | DeclValue::Effect(_)
             | DeclValue::EffectInst(_)
+            | DeclValue::EffectSet(_)
             | DeclValue::Fn(_)
             | DeclValue::Op(..)
             | DeclValue::Module(_)

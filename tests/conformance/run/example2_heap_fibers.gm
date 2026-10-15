@@ -34,7 +34,7 @@ handler Task for ^Sched \ {Alloc, Out} {
         resume k()
     }
     exit(self, k) => {
-        discard k
+        cancel k
         self.live -= 1
         if self.live is 0 { break }
         r := pop_front(self)
@@ -54,7 +54,7 @@ fib_task :: fn(j: ^Job) -> never \ {Task, Alloc, Out} {
         if i % 5 is 4 { yield_now() }
     }
     j.result = scratch[0]
-    print("job {} -> {}\n", (j.id, j.result))
+    print("job {} -> {}\n", j.id, j.result)
     exit()
 }
 

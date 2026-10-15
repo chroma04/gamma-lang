@@ -68,7 +68,7 @@ clamp_add :: fn(a, b: i32, lo: i32 = 0, hi: i32 = 100) -> i32 {
 }
 ```
 
-At a call, **positional** arguments bind in order, then **named** arguments (`name: value`) bind by name, and every parameter must end up bound exactly once or have a default. Named arguments always come after positional ones:
+At a call, **named** arguments (`name: value`) bind by name, wherever they are written, and **positional** arguments bind, in order, the parameters that no named argument names. Every parameter must end up bound exactly once or have a default:
 
 ```gamma
 call_demo :: fn() -> i32 {
@@ -96,19 +96,43 @@ spread_demo :: fn() -> i32 {
 
 Spread works in struct construction too, which is how you write "this value, but with one field changed": `Window(..w, title: "new")`.
 
-A parameter's default may also be `@caller_location()`, which is evaluated at each *call site*. This is how `assert` and `trap` know where they were called from, and you can use it the same way:
+A parameter's default may also be `@caller_location()`, which is evaluated at each *call site*. This is how `assert` and `trap` know where they were called from, and you can use it the same way. Such a parameter is bound only by name, so positional arguments skip it:
 
 ```gamma
 require :: fn(ok: bool, msg: string = "requirement failed",
               loc: SourceLocation = @caller_location()) \ {Err} {
     if not ok {
-        eprint("{} (line {})\n", (msg, loc.line))
+        eprint("{} (line {})\n", msg, loc.line)
         trap(msg)
     }
 }
 ```
 
 (Newlines inside the parentheses are ignored, so a long parameter list can wrap freely.)
+
+### Rest parameters
+
+C's variadic functions take any number of arguments of unchecked types. Gamma's equivalent is a **rest parameter**, declared `name: ..T`: it takes the remaining positional arguments as one tuple, so they keep their types and their count is known at compile time. With a type parameter for `T`, the tuple's type is inferred from the arguments:
+
+```gamma
+show :: fn(A: type, label: string, values: ..A) \ {Out} {
+    print("{}: {}\n", label, values)
+}
+
+rest_demo :: fn() \ {Out} {
+    show("nothing")                 // values is ()
+    show("pair", 1, "one")          // values is (1, "one")
+}
+```
+
+`A` is a type parameter that another parameter's type mentions, so it is inferred from the arguments and never written positionally ([chapter 10](10-generics.md) covers the rare case where you write one by name). Inside the function a rest parameter is an ordinary tuple. To pass it on to another function with a rest parameter, spread it: `print(template, ..values)`. This is how `print`, `eprint`, `@write` and the logging and formatting functions of the standard library take the values for their templates, and how you write your own wrappers around them:
+
+```gamma
+log_line :: fn(A: type, template :: string, values: ..A) \ {Out} {
+    print("[log] ")
+    print(template, ..values)
+}
+```
 
 ## Methods without classes
 
@@ -201,7 +225,7 @@ table_demo :: fn() \ {Out} {
         Op(name: "inc", apply: fn(x: i32) -> i32 => x + 1),   // captures nothing, so it converts
     )
     for op in ops {
-        print("{}: {}\n", (op.name, op.apply(10)))
+        print("{}: {}\n", op.name, op.apply(10))
     }
 }
 ```
@@ -247,7 +271,7 @@ mix :: fn(a, b, t: f32) -> f32 => lerp(a, b, t)
 ## Summary
 
 - Functions are values bound with `::`. `-> R` is required unless the function returns `()`, and `\ {...}` lists its effects.
-- Calls take positional, then named arguments; defaults must be constants; `..e` spreads tuples and structs.
+- Calls mix positional and named arguments (named ones may appear anywhere); defaults must be constants; `..e` spreads tuples and structs; a last parameter `name: ..A` collects the remaining arguments as a tuple.
 - Methods are module functions called with dot syntax; receiver adjustments are limited to taking or dereferencing one address.
 - `fn(...)` values capture by reference but only flow downward; `^fn(...)` values capture nothing and can go anywhere.
 

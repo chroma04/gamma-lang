@@ -111,9 +111,9 @@ impl Parser<'_> {
             }
             TokenKind::Keyword(Keyword::When) => StmtKind::When(self.parse_when_stmt()?),
             TokenKind::Keyword(Keyword::While) => self.parse_while(None)?,
-            TokenKind::Keyword(Keyword::Discard) => {
+            TokenKind::Keyword(Keyword::Cancel) => {
                 self.bump();
-                StmtKind::Discard(self.parse_expr()?)
+                StmtKind::Cancel(self.parse_expr()?)
             }
             TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.parse_block()?),
             TokenKind::Ident(_) | TokenKind::Underscore => self.parse_name_stmt()?,

@@ -633,9 +633,36 @@ pub SourceLocation :: struct {
     pub function: string
 }
 
-// Running tests (§3.8, §12.9): `gamma test` calls `run_test` or `run_test_unit`
-// for each test. The test's allocations go through a tracking allocator, and
-// memory still allocated when the test ends fails it.
+/// What a test or benchmark can ask of the code that runs it (§3.8). Its body may perform
+/// it, and so may any function that lists it, such as a helper that checks a result.
+pub Test :: effect {
+    /// Writes part of a failure report; `fail` ends the report.
+    note: fn(bytes: []const u8)
+    /// Fails the current test, reporting `msg` and the location `loc`. The test's frames
+    /// are unwound, running their `defer`s.
+    fail: esc(msg: string, loc: SourceLocation) -> never
+}
+
+/// Fails the current test unless `cond` holds, reporting `msg` and where `expect` was
+/// called (§21.6).
+pub expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) \ {Test} {
+    if cond { return }
+    if msg is not "expectation failed" { note("expectation failed: ") }
+    fail(msg, loc)
+}
+
+/// The success value of `x`. If `x` is an error, fails the current test, reporting the
+/// error and where `ok` was called (§21.6).
+pub ok :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T \ {Test} {
+    return x else e => {
+        @write(fn(b) => note(b), "error: {}", e)
+        fail("", loc)
+    }
+}
+
+// Running tests (§3.8, §12.9): `gamma test` calls `run_test` for each test. The test's
+// allocations go through a tracking allocator, and memory still allocated when the test
+// ends fails it.
 
 /// A block the test allocator handed out: its size and, when `new`, `make`, `make_fill`
 /// or `dupe` allocated it, where they were called.
@@ -652,7 +679,7 @@ TestTracker :: struct {
 
 test_tracker :: fn() -> TestTracker {
     heap := heap_allocator()
-    return TestTracker(live: 0, inner: heap, blocks: with heap { map(usize, LiveBlock) })
+    return TestTracker(live: 0, inner: heap, blocks: with heap { hash_map(usize, LiveBlock) })
 }
 
 track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
@@ -696,7 +723,7 @@ leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
         if s.line is 0 {
             eprint("  {} bytes allocated by a container (List, HashMap, …) or an Allocator directly\n", s.size)
         } else {
-            eprint("  {} bytes allocated at {}:{}:{}\n", (s.size, s.file, s.line, s.column))
+            eprint("  {} bytes allocated at {}:{}:{}\n", s.size, s.file, s.line, s.column)
         }
         shown += 1
     }
@@ -1475,31 +1502,39 @@ handler Net for ^TestIo {
     peer(self, s, buf) => mem_peer(&self.net, s, buf)
 }
 
-/// Runs a test that can fail with an error: 0 if it passed, 1 if it failed.
-run_test :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
+// What `main` may perform (§12.9), and a test or benchmark body besides `Test` (§3.8).
+Ambient :: \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}
+
+/// Reports a failure of a test or benchmark: the message, then where it happened.
+report_failure :: fn(msg: string, loc: SourceLocation) \ {Err} {
+    eprint("{}\n  at {}:{}:{} in {}\n", msg, loc.file, loc.line, loc.column, loc.function)
+}
+
+/// Runs a test: 0 if it passed, 1 if it failed.
+run_test :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {Out, Err, Env} {
     t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
-    r := with Allocator(data: &t, vt: &TRACKING), &io { body() }
+    checks :: handler Test {
+        note(bytes) => write_err(bytes)
+        fail(msg, loc) => {
+            report_failure(msg, loc)
+            break true
+        }
+    }
+    failed := with Allocator(data: &t, vt: &TRACKING), &io, checks {
+        body()
+        false
+    }
     mem_fs_free(&io.fs)
     mem_net_free(&io.net)
-    if !e := r {
-        eprint("error: {}\n", e)
+    if failed {
+        t.blocks.deinit()
         return 1
     }
     return leaked(&t)
 }
 
-/// Runs a test that cannot fail with an error: 0 if it passed, 1 if it failed.
-run_test_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Env} {
-    t := test_tracker()
-    io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
-    with Allocator(data: &t, vt: &TRACKING), &io { body() }
-    mem_fs_free(&io.fs)
-    mem_net_free(&io.net)
-    return leaked(&t)
-}
-
-// Running benchmarks (§3.9): `gamma bench` calls `run_bench` or `run_bench_unit` for each
+// Running benchmarks (§3.9): `gamma bench` calls `run_bench` for each
 // benchmark. They time batches of runs of the body with the `Clock` effect and print the
 // measurements on one line that `gamma bench` summarizes.
 
@@ -1518,72 +1553,43 @@ bench_next_iters :: fn(iters: u64, elapsed: u64) -> u64 {
     return next
 }
 
-/// Runs a benchmark that can fail with an error: 0 if it completed, 1 if it failed.
-run_bench :: fn(E: type, body: ^fn() -> E!() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net} {
-    iters: u64 = 1
-    while true {
-        t0 := now()
-        i: u64 = 0
-        while i < iters {
-            r := body()
-            if !e := r {
-                eprint("error: {}\n", e)
-                return 1
+/// Runs a benchmark: 0 if it completed, 1 if it failed.
+run_bench :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {..Ambient} {
+    checks :: handler Test {
+        note(bytes) => write_err(bytes)
+        fail(msg, loc) => {
+            report_failure(msg, loc)
+            break 1u8
+        }
+    }
+    return with checks {
+        iters: u64 = 1
+        while true {
+            t0 := now()
+            i: u64 = 0
+            while i < iters {
+                body()
+                i += 1
             }
-            i += 1
+            elapsed := since(now(), t0).ns
+            if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
+            iters = bench_next_iters(iters, elapsed)
         }
-        elapsed := since(now(), t0).ns
-        if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
-        iters = bench_next_iters(iters, elapsed)
-    }
-    print("gamma-bench: {}", iters)
-    s: u64 = 0
-    while s < BENCH_SAMPLES {
-        t0 := now()
-        i: u64 = 0
-        while i < iters {
-            r := body()
-            if !e := r {
-                eprint("error: {}\n", e)
-                return 1
+        print("gamma-bench: {}", iters)
+        s: u64 = 0
+        while s < BENCH_SAMPLES {
+            t0 := now()
+            i: u64 = 0
+            while i < iters {
+                body()
+                i += 1
             }
-            i += 1
+            print(" {}", since(now(), t0).ns)
+            s += 1
         }
-        print(" {}", since(now(), t0).ns)
-        s += 1
+        print("\n")
+        0u8
     }
-    print("\n")
-    return 0
-}
-
-/// Runs a benchmark that cannot fail with an error: 0 if it completed.
-run_bench_unit :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}) -> u8 \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net} {
-    iters: u64 = 1
-    while true {
-        t0 := now()
-        i: u64 = 0
-        while i < iters {
-            body()
-            i += 1
-        }
-        elapsed := since(now(), t0).ns
-        if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
-        iters = bench_next_iters(iters, elapsed)
-    }
-    print("gamma-bench: {}", iters)
-    s: u64 = 0
-    while s < BENCH_SAMPLES {
-        t0 := now()
-        i: u64 = 0
-        while i < iters {
-            body()
-            i += 1
-        }
-        print(" {}", since(now(), t0).ns)
-        s += 1
-    }
-    print("\n")
-    return 0
 }
 
 /// The memory order of an atomic operation (§19.6), as in C11.

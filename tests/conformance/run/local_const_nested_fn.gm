@@ -5,5 +5,5 @@ main :: fn() \ {Out} {
     twice :: fn(x: u32) -> u32 { return sq(x) + sq(x) }
     X :: sq(7)
     Y :: twice(2)
-    print("{} {}\n", (X, Y))
+    print("{} {}\n", X, Y)
 }

@@ -60,7 +60,7 @@ bar :: fn(n: u32, out: []u8) -> string {
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     a := arena.new()
     defer a.deinit()
-    counts := map(string, u32)
+    counts := hash_map(string, u32)
     defer counts.deinit()
     total: u32 = 0
     nlines: u32 = 0
@@ -76,7 +76,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             }
         }
     }
-    print("{} lines, {} words, {} distinct\n", (nlines, total, counts.len()))
+    print("{} lines, {} words, {} distinct\n", nlines, total, counts.len())
 
     entries := list(Entry)
     defer entries.deinit()
@@ -92,7 +92,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         pad1: [8]u8 = ---
         pad2: [16]u8 = ---
         rank := fmt.pad_left(fmt.dec(i + 1, num[..]), 2, ' ', pad1[..])
-        print("{}. {} {}\n", (rank, fmt.pad_right(e.word, 8, '.', pad2[..]), e.count))
+        print("{}. {} {}\n", rank, fmt.pad_right(e.word, 8, '.', pad2[..]), e.count)
     }
 
     // Histogram of word lengths, weighted by occurrences.
@@ -104,7 +104,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     line: [32]u8 = ---
     for n in 1..hist.len {
         if hist[n] is 0 { continue }
-        print("{}{} {}\n", (n, if n is hist.len - 1 { "+" } else { " " }, bar(hist[n], line[..])))
+        print("{}{} {}\n", n, if n is hist.len - 1 { "+" } else { " " }, bar(hist[n], line[..]))
     }
 
     // Loops with values: the first long word seen once, if any.
@@ -112,7 +112,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         if e.count is 1 { break e }
     }
     if s := singles {
-        print("first long word seen once: {} (len {})\n", (s.word, s.word.len))
+        print("first long word seen once: {} (len {})\n", s.word, s.word.len)
     } else {
         print("no long word is unique\n")
     }

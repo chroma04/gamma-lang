@@ -78,7 +78,7 @@ main :: fn() \ {Out} {
     show(sum_all(xs[..]))
     ys := [_]string("10", "2z", "3")
     show(sum_all(ys[..]))
-    print("{} {} {}\n", (opts(1, 2), opts(null, 5), opts(5, null)))
+    print("{} {} {}\n", opts(1, 2), opts(null, 5), opts(5, null))
     c := mk(Cfg(), scale: 2)
     print("{}\n", c)
     d := mk(Cfg(name: "x", bold: true), 1)

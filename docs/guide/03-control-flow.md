@@ -166,7 +166,7 @@ for_demo :: fn(xs: []const i32) \ {Out} {
         print("{}\n", x)
     }
     for i, x in enumerate(xs) {          // (index, element) pairs
-        print("{}: {}\n", (i, x))
+        print("{}: {}\n", i, x)
     }
 }
 ```

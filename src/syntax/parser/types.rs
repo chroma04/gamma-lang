@@ -282,6 +282,7 @@ impl Parser<'_> {
                     sig.params.push(Param {
                         names: vec![],
                         comptime: false,
+                        rest: false,
                         ty: Some(ty),
                         default: None,
                         span: n.span,
@@ -342,6 +343,7 @@ impl Parser<'_> {
             return Ok(Param {
                 names: vec![],
                 comptime: false,
+                rest: false,
                 ty: Some(ty),
                 default: None,
                 span: self.span_from(start),
@@ -355,15 +357,21 @@ impl Parser<'_> {
             names.push(self.parse_name("a parameter name")?);
         }
         let mut comptime = false;
+        let mut rest = false;
         let ty = if self.at(Punct::Colon) || self.at(Punct::ColonColon) {
             comptime = self.at(Punct::ColonColon);
             self.bump();
+            // `args: ..A`: a rest parameter (§11.3).
+            if !comptime && self.at(Punct::DotDot) {
+                self.bump();
+                rest = true;
+            }
             Some(self.parse_type()?)
         } else {
             None
         };
         let default = if self.eat(Punct::Assign) { Some(self.parse_expr()?) } else { None };
-        Ok(Param { names, comptime, ty, default, span: self.span_from(start) })
+        Ok(Param { names, comptime, rest, ty, default, span: self.span_from(start) })
     }
 
     /// `\ { E1, E2 }`.

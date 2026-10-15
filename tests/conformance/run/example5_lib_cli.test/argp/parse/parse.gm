@@ -22,9 +22,9 @@ pub report :: fn(e: Error) \ {Out} {
     match e {
         .Unknown(a) => print("unknown option `{}`\n", a)
         .MissingValue(n) => print("option --{} needs a value\n", n)
-        .BadValue(v) => print("option --{}: `{}` is not a number\n", (v.name, v.text))
-        .OutOfRange(v) => print("option --{}: {} is out of range\n", (v.name, v.text))
-        .NotAChoice(v) => print("option --{}: `{}` is not one of the allowed values\n", (v.name, v.text))
+        .BadValue(v) => print("option --{}: `{}` is not a number\n", v.name, v.text)
+        .OutOfRange(v) => print("option --{}: {} is out of range\n", v.name, v.text)
+        .NotAChoice(v) => print("option --{}: `{}` is not one of the allowed values\n", v.name, v.text)
         .NoValueAllowed(n) => print("option --{} takes no value\n", n)
         .MissingRequired(n) => print("option --{} is required\n", n)
         .MissingPositional(n) => print("missing argument <{}>\n", n)
@@ -161,4 +161,4 @@ pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Mat
 }
 
 /// Parses the process arguments, as the `Env` effect supplies them.
-pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, args())
+pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, Env.args())

@@ -7,5 +7,5 @@ named :: fn() -> (n: usize, point: usize) {
     return (0, 7)
 }
 main :: fn() \ {Out} {
-    print("{} {} {} {}\n", (low(u32(300)), widen(i8, 200), fl(f64(2.7)), named()))
+    print("{} {} {} {}\n", low(u32(300)), widen(i8, 200), fl(f64(2.7)), named())
 }

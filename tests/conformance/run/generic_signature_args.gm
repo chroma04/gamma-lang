@@ -5,5 +5,5 @@ add2 :: fn(T: type, p: Num2(T)) -> T where Num(T) => p.a + p.b
 count :: fn(N :: usize, T: type, a: [N]T) -> usize => N
 main :: fn() \ {Out} {
     print("{}\n", add2(Num2(f32)(a: 1.5, b: 2)))
-    print("{} {} {}\n", (count(3, i8, [3]i8(1, 2, 3)), count(N: 3, T: i8, a: [3]i8(1, 2, 3)), count(T: i8, N: 3, a: [3]i8(1, 2, 3))))
+    print("{} {} {}\n", count(N: 3, T: i8, [3]i8(1, 2, 3)), count(N: 3, T: i8, a: [3]i8(1, 2, 3)), count(T: i8, N: 3, a: [3]i8(1, 2, 3)))
 }

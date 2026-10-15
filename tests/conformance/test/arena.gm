@@ -9,7 +9,7 @@ test "an arena releases every chunk" {
     defer a.deinit()
     with a.allocator() {
         for i in 0..200 {
-            s := try make(u8, 1000 + i)
+            s := ok(make(u8, 1000 + i))
             s[0] = 1
         }
     }
@@ -17,9 +17,9 @@ test "an arena releases every chunk" {
 
 test "an arena can be reused after deinit" {
     a := arena.new()
-    with a.allocator() { _ = try make(u8, 10_000) }
+    with a.allocator() { _ = ok(make(u8, 10_000)) }
     a.deinit()
-    with a.allocator() { _ = try make(u8, 10) }
+    with a.allocator() { _ = ok(make(u8, 10)) }
     a.deinit()
 }
 
@@ -28,7 +28,7 @@ test "a fixed buffer allocates nothing from the parent" {
     fb := fixed_buffer.over(store[..])
     with fb.allocator() {
         l := list(u16)
-        for i in 0..20 { try l.push(i) }
+        for i in 0..20 { ok(l.push(i)) }
         expect(l.items[19] is 19)
     }
 }

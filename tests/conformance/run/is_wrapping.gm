@@ -3,5 +3,5 @@ main :: fn() \ {Out} {
     a: ?i32 = 5
     b: ?u8 = null
     r: bool!u16 = 7
-    print("{} {} {} {} {}\n", (a is 5, 5 is a, b is 1, r is 7, a is not 6))
+    print("{} {} {} {} {}\n", a is 5, 5 is a, b is 1, r is 7, a is not 6)
 }

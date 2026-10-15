@@ -27,6 +27,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     big := list(u8)
     defer big.deinit()
     for i in 0..100 { try big.insert(0, i.trunc(u8)) }
-    print("{} {} {}\n", (big.items.len, big.items[0], big.items[99]))
+    print("{} {} {}\n", big.items.len, big.items[0], big.items[99])
     return ()
 }

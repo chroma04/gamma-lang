@@ -9,18 +9,18 @@ meth :: fn(self: Pt, q: ^const Pt) -> i32 => q.x
 meth2 :: fn(self: ^const Pt, q: ^const Pt) -> i32 => q.y
 Log :: effect { note: fn(p: ^const Pt) -> i32 }
 main :: fn() \ {Out} {
-    print("{} {}\n", (rd(&mk()), rd(&(mk()))))
+    print("{} {}\n", rd(&mk()), rd(&(mk())))
     // Named arguments, in parameter order and out of it, and defaults around them.
-    print("{} {} {} {}\n", (rdn(1, &mk()), rdn(a: 1, p: &mk()), rdn(p: &mk(), a: 1, b: 5), rdn(1, &mk(), b: 3)))
+    print("{} {} {} {}\n", rdn(1, &mk()), rdn(a: 1, p: &mk()), rdn(p: &mk(), a: 1, b: 5), rdn(1, &mk(), b: 3))
     // Generic calls, with the type parameter given or inferred.
-    print("{} {} {} {}\n", (gen(Pt, &mk(), 0), gen(&mk(), n: 4), gen(n: 4, p: &mk()), gen(p: &mk(), n: 4)))
+    print("{} {} {} {}\n", gen(T: Pt, &mk(), 0), gen(&mk(), n: 4), gen(n: 4, p: &mk()), gen(p: &mk(), n: 4))
     // Methods, with the temporary as the receiver as well.
     m := mk()
-    print("{} {} {}\n", (m.meth(&mk()), mk().meth(&mk()), mk().meth2(&mk())))
+    print("{} {} {}\n", m.meth(&mk()), mk().meth(&mk()), mk().meth2(&mk()))
     // Function values and operations.
     f := rd
     g := fn(p: ^const Pt) -> i32 => p.y
-    print("{} {} {}\n", (f(&mk()), g(&mk()), (rd)(&mk())))
+    print("{} {} {}\n", f(&mk()), g(&mk()), (rd)(&mk()))
     r := with (handler Log { note(p) => p.x + 10 }) {
         note(&mk())
     }

@@ -363,7 +363,7 @@ impl<'a> Machine<'a> {
             }
             ExprKind::With { label, handlers, on, body } => self.eval_with(a, e, *label, handlers, on.as_deref(), body),
             ExprKind::Resume { cont, value } => self.eval_resume(a, e.span, cont, value),
-            ExprKind::Discard(k) => self.eval_discard(a, e.span, k),
+            ExprKind::Cancel(k) => self.eval_cancel(a, e.span, k),
             ExprKind::Trap { message } => {
                 let m = self.eval_bytes(a, message)?;
                 let s = self.read_str(e.span, &m)?;
@@ -785,17 +785,6 @@ impl<'a> Machine<'a> {
                     None => "assertion failed".to_string(),
                 };
                 let msg = if msg == "assertion failed" { msg } else { format!("assertion failed: {}", msg) };
-                self.trap(e.span, msg)
-            }
-            // `expect` (§21.6) stays in every build mode.
-            Builtin::Expect => {
-                let c = self.eval_bytes(a, &args[0])?;
-                if self.truthy(&c) {
-                    return Ok(Value::unit());
-                }
-                let mb = self.eval_bytes(a, &args[1])?;
-                let msg = String::from_utf8_lossy(&self.read_str(e.span, &mb)?).into_owned();
-                let msg = if msg == "expectation failed" { msg } else { format!("expectation failed: {}", msg) };
                 self.trap(e.span, msg)
             }
             Builtin::Cover(id) => {

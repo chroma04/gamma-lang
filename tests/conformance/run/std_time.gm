@@ -53,14 +53,14 @@ show_date_parse :: fn(s: string) \ {Out} {
 
 dur :: fn(ns: u64) \ {Out} {
     buf: [time.DURATION_LEN]u8 = ---
-    print("{} = {}\n", (ns, time.format_duration(Duration(ns: ns), buf[..])))
+    print("{} = {}\n", ns, time.format_duration(Duration(ns: ns), buf[..]))
 }
 
 main :: fn() \ {Out} {
     // Leap years and month lengths.
-    print("leap: {} {} {} {} {}\n", (time.is_leap_year(2000), time.is_leap_year(1900), time.is_leap_year(2024), time.is_leap_year(2023), time.is_leap_year(-4)))
-    print("days: {} {} {} {}\n", (time.days_in_month(2024, 2), time.days_in_month(1900, 2), time.days_in_month(2023, 4), time.days_in_month(2023, 12)))
-    print("valid: {} {} {} {} {} {}\n", (time.is_valid(date(2000, 2, 29)), time.is_valid(date(1900, 2, 29)), time.is_valid(date(2023, 13, 1)), time.is_valid(date(2023, 0, 1)), time.is_valid(date(2023, 4, 31)), time.is_valid(date(2023, 4, 0))))
+    print("leap: {} {} {} {} {}\n", time.is_leap_year(2000), time.is_leap_year(1900), time.is_leap_year(2024), time.is_leap_year(2023), time.is_leap_year(-4))
+    print("days: {} {} {} {}\n", time.days_in_month(2024, 2), time.days_in_month(1900, 2), time.days_in_month(2023, 4), time.days_in_month(2023, 12))
+    print("valid: {} {} {} {} {} {}\n", time.is_valid(date(2000, 2, 29)), time.is_valid(date(1900, 2, 29)), time.is_valid(date(2023, 13, 1)), time.is_valid(date(2023, 0, 1)), time.is_valid(date(2023, 4, 31)), time.is_valid(date(2023, 4, 0)))
 
     // Day numbers.
     print("epoch: {}\n", time.days_from_civil(date(1970, 1, 1)))
@@ -99,7 +99,7 @@ main :: fn() \ {Out} {
     print("round trips: {}\n", ok)
 
     // Weekdays.
-    print("weekdays: {} {} {} {} {}\n", (name(time.weekday(date(1970, 1, 1))), name(time.weekday(date(2000, 1, 1))), name(time.weekday(date(2024, 2, 29))), name(time.weekday(date(1969, 7, 20))), name(time.weekday(date(1600, 1, 1)))))
+    print("weekdays: {} {} {} {} {}\n", name(time.weekday(date(1970, 1, 1))), name(time.weekday(date(2000, 1, 1))), name(time.weekday(date(2024, 2, 29))), name(time.weekday(date(1969, 7, 20))), name(time.weekday(date(1600, 1, 1))))
     print("weekday sunday: {}\n", name(time.weekday(date(2023, 12, 31))))
 
     // Adding days and months.
@@ -172,7 +172,7 @@ main :: fn() \ {Out} {
     t.nanosecond = 999_999_999
     print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
     t.nanosecond = 7
-    print("{} {}\n", (time.format_rfc3339(t, fmt_buf[..]), time.format_rfc3339(t, fmt_buf[..]).len))
+    print("{} {}\n", time.format_rfc3339(t, fmt_buf[..]), time.format_rfc3339(t, fmt_buf[..]).len)
     t.date = date(7, 1, 2)
     print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
     t.date = date(9999, 12, 31)
@@ -181,7 +181,7 @@ main :: fn() \ {Out} {
     t.second = 59
     print("{}\n", time.format_rfc3339(t, fmt_buf[..]))
     print("{}\n", time.RFC3339_LEN)
-    print("{} {}\n", (time.format_rfc3339(t, fmt_buf[..]).len, time.format_date(date(0, 1, 1), fmt_buf[..])))
+    print("{} {}\n", time.format_rfc3339(t, fmt_buf[..]).len, time.format_date(date(0, 1, 1), fmt_buf[..]))
 
     // Parsing RFC 3339.
     show_parse("2024-05-07T09:03:00Z")

@@ -147,8 +147,8 @@ pub enum StmtKind {
         cond: Cond,
         body: Block,
     },
-    /// `discard k` (§14.5).
-    Discard(Expr),
+    /// `cancel k` (§14.5).
+    Cancel(Expr),
     /// `pattern := value else fallback` with a refutable pattern (§4.5): binds the
     /// pattern's names for the rest of the block, or runs `fallback`, which must leave it.
     LetElse {
@@ -583,6 +583,9 @@ pub struct Param {
     pub names: Vec<Ident>,
     /// Declared with `::` — a compile-time value parameter (§16.5).
     pub comptime: bool,
+    /// Declared `name: ..T` — a rest parameter, which takes the remaining positional
+    /// arguments as a tuple (§11.3).
+    pub rest: bool,
     pub ty: Option<Expr>,
     pub default: Option<Expr>,
     pub span: Span,

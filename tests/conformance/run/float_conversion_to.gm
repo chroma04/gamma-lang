@@ -15,6 +15,6 @@ main :: fn() \ {Out} {
     print("{}\n", f32(0.1).to(f64))
     print("{}\n", 1e300.to(f32))
     print("{}\n", mean([_]u8(1, 2, 4)))
-    print("{} {} {}\n", (i8(-128).unsigned_abs(), i32(-7).unsigned_abs(), u16(9).unsigned_abs()))
+    print("{} {} {}\n", i8(-128).unsigned_abs(), i32(-7).unsigned_abs(), u16(9).unsigned_abs())
     print("{}\n", @min_value(i64).unsigned_abs())
 }

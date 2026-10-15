@@ -26,5 +26,5 @@ main :: fn() \ {Out} {
     print("{}\n", r)
     a := Keyed(u32)(k: 4)
     b := Keyed(u32, key: ident)(k: 4)
-    print("{} {}\n", (hash_of(a), hash_of(b)))
+    print("{} {}\n", hash_of(a), hash_of(b))
 }

@@ -21,7 +21,7 @@ wait_status :: fn(mask: u32, tries: u32) -> DriverError!() \ {Mmio, Clock} {
         s := read(REG_STATUS)
         if s & STATUS_ERROR is not 0 { return !.Framing }
         if s & mask is mask { return () }
-        sleep(ms(1))
+        Clock.sleep(ms(1))
     }
     return !.Timeout
 }
@@ -97,13 +97,13 @@ test "send waits for the transmitter" {
     script := [_]u32(0, 0, STATUS_TX_READY)
     f := Fake(status_script: script[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
     with &f {
-        n := try send("ok")
+        n := ok(send("ok"))
         expect(n is 2)
     }
     expect(f.logged is 2)
     expect(f.log[0..2] is "ok")
     // Two sleeps of 1 ms before the first byte: the fake clock moved, no real time passed.
-    expect(now().ns is 2_000_000)
+    expect(Clock.now().ns is 2_000_000)
     expect(f.polls is 4)
 }
 
@@ -114,7 +114,7 @@ test "timeouts and framing errors" {
         expect(send("x") is !.Timeout)
     }
     expect(f.polls is 5)
-    expect(now().ns is 5_000_000)
+    expect(Clock.now().ns is 5_000_000)
     bad := [_]u32(STATUS_ERROR | STATUS_TX_READY)
     g := Fake(status_script: bad[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
     with &g {
@@ -128,39 +128,39 @@ test "receive stops when the line goes quiet" {
     f := Fake(status_script: idle[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "ping", rx_pos: 0)
     buf: [8]u8 = ---
     with &f {
-        n := try recv_into(buf[..])
+        n := ok(recv_into(buf[..]))
         expect(n is 4)
         expect(buf[0..n] is "ping")
     }
     // Three polls, 1 ms asleep after each failed one: the final wait gives up.
-    expect(now().ns is 3_000_000)
+    expect(Clock.now().ns is 3_000_000)
 }
 
 test "a memory-backed device" {
     dev := Device(regs: [4]u32(fill: 0), writes: 0)
     dev.regs[REG_STATUS] = STATUS_TX_READY
     with &dev {
-        n := try send("abc")
+        n := ok(send("abc"))
         expect(n is 3)
     }
     expect(dev.writes is 3)
     expect(dev.regs[REG_DATA] is u32('c'))
-    expect(now().ns is 0, "a ready device never sleeps")
+    expect(Clock.now().ns is 0, "a ready device never sleeps")
 }
 
 test "leak checking applies to driver buffers" {
     buf := make(u8, 64) else return
-    defer free(u8, buf)
+    defer free(buf)
     buf.fill(0x55)
     expect(buf[63] is 0x55)
 }
 
 test "env and rand are test doubles" {
-    expect(args().len is 0)
-    expect(var("HOME") is null)
+    expect(Env.args().len is 0)
+    expect(Env.var("HOME") is null)
     a: [4]u8 = ---
     b: [4]u8 = ---
-    fill(a[..])
-    fill(b[..])
+    Rand.fill(a[..])
+    Rand.fill(b[..])
     expect(a is not b, "the generator advances")
 }

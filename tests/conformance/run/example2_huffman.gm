@@ -57,7 +57,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             try nodes.push(Node(weight: freq[s], sym: s.trunc(u8)))
         }
     }
-    print("{} symbols, {} bytes\n", (live.items.len, TEXT.len))
+    print("{} symbols, {} bytes\n", live.items.len, TEXT.len)
     // Merge the two lightest nodes until one remains. The list is kept sorted heaviest first,
     // so the two lightest are popped from the end; ties go to the older node.
     while live.items.len > 1 {
@@ -74,12 +74,12 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 
     total_bits: usize = 0
     for c in bytes(TEXT) { total_bits += usize(table[c].len) }
-    print("{} bits, {} bytes packed, {} tree nodes\n", (total_bits, (total_bits + 7) / 8, nodes.items.len))
+    print("{} bits, {} bytes packed, {} tree nodes\n", total_bits, (total_bits + 7) / 8, nodes.items.len)
 
     for s in bytes(" etoasi") {
         c := table[s]
         buf: [32]u8 = ---
-        print("{}: len {} bits {}\n", (s, c.len, fmt.bin(c.bits, buf[..])))
+        print("{}: len {} bits {}\n", s, c.len, fmt.bin(c.bits, buf[..]))
     }
 
     packed := try make(u8, (total_bits + 7) / 8)
@@ -111,6 +111,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             at = root
         }
     }
-    print("decoded {} bytes, round trip {}\n", (n, decoded[0..n] is TEXT))
+    print("decoded {} bytes, round trip {}\n", n, decoded[0..n] is TEXT)
     return ()
 }

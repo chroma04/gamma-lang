@@ -12,19 +12,19 @@ main :: fn() \ {Out} {
     n: u8 = 10
     s := 2..=n
     c: Range(i64) = -1..2
-    print("{} {} {} {}\n", (r, r.lo, s, c))
+    print("{} {} {} {}\n", r, r.lo, s, c)
     for i in r { print("{} ", i) }
     print("\n")
     print("{}\n", total(1..=4))
-    print("{} {} {}\n", (5 in r, 8 in r, 10 in s))
+    print("{} {} {}\n", 5 in r, 8 in r, 10 in s)
     print("{}\n", -2 not in c)
     word := "abcdefgh"
     sp := Span(name: "mid", r: 2..5)
-    print("{} {}\n", (sp.name, word[sp.r]))
+    print("{} {}\n", sp.name, word[sp.r])
     a := [6]i32(1, 2, 3, 4, 5, 6)
     part := a[1..=3]
     whole := a[RangeIncl(usize)(lo: 0, hi: 5)]
-    print("{} {}\n", (part, whole.len))
+    print("{} {}\n", part, whole.len)
     e := 4..4
     for i in e { print("never {}\n", i) }
 }

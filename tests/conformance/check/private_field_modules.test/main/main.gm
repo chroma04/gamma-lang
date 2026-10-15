@@ -8,9 +8,9 @@ peek :: fn(T: type, b: box.Box(T)) -> T {
 }
 
 main :: fn() {
-    a := box.make(i32, 1)
-    b := box.make(u8, 2)
-    c := box.make(string, "x")
+    a := box.make(T: i32, 1)
+    b := box.make(T: u8, 2)
+    c := box.make("x")
     _ = peek(a)
     _ = peek(b)
     _ = peek(c)

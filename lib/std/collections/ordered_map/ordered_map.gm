@@ -6,7 +6,7 @@
 //!     defer m.deinit()
 //!     try m.put("pear", 3)
 //!     try m.put("apple", 5)
-//!     for e in m.entries() { print("{} {}\n", (e.key, e.value)) }     // apple, then pear
+//!     for e in m.entries() { print("{} {}\n", e.key, e.value) }     // apple, then pear
 //!     for e in m.range("b", null) { … }             // keys from "b" on
 //!     print("{}\n", m.first())                      // (key: "apple", value: 5)
 //!
@@ -48,14 +48,14 @@ pub OrderedMap :: struct(K, V: type) {
 
 /// An empty map ordered by `<`, using the current allocator.
 pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K) {
-    return ordered_map_by(K, V, fn(a, b: ^const K) -> bool => a^ < b^)
+    return ordered_map_by(K: K, V, fn(a, b: ^const K) -> bool => a^ < b^)
 }
 
 /// An empty map ordered by `less`, using the current allocator. `less(a, b)` says that
 /// `a` comes before `b`; it should be a strict weak ordering. It is stored in the map, so it
 /// is a plain function pointer: it cannot capture variables.
 pub ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) \ {Alloc} {
-    return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: current())
+    return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: Alloc.current())
 }
 
 // The index of the first key of `x` that does not come before `k`.

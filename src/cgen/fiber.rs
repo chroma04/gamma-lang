@@ -1,4 +1,4 @@
-//! Fibers in generated C (§14): `with … on`, `ctl` performs, `resume`, `discard`
+//! Fibers in generated C (§14): `with … on`, `ctl` performs, `resume`, `cancel`
 //! and `@fiber`. The run-time half (context switching, the fiber pool, the
 //! checks on continuations) is in `runtime/gm_rt.c`.
 //!
@@ -184,12 +184,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
         Ok(self.zero(e.ty))
     }
 
-    /// `discard k` (§14.5).
-    pub fn discard(&mut self, e: &'a Expr, cont: &'a Expr) -> CResult<String> {
+    /// `cancel k` (§14.5).
+    pub fn cancel(&mut self, e: &'a Expr, cont: &'a Expr) -> CResult<String> {
         let k = self.expr(cont)?;
         let ka = self.addr_of(cont.ty, &k);
         let loc = self.loc(e);
-        self.line(&format!("gm_discard(inst->fw, {}, {});", ka, loc));
+        self.line(&format!("gm_cancel_cont(inst->fw, {}, {});", ka, loc));
         self.check_unwind();
         Ok(self.unit())
     }

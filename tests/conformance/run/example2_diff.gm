@@ -82,7 +82,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer b.deinit()
     try split_lines(OLD, &a)
     try split_lines(NEW, &b)
-    print("{} lines -> {} lines\n", (a.items.len, b.items.len))
+    print("{} lines -> {} lines\n", a.items.len, b.items.len)
 
     ops := list(Op)
     defer ops.deinit()
@@ -107,7 +107,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             }
         }
     }
-    print("{} kept, {} removed, {} added\n", (kept, removed, added))
+    print("{} kept, {} removed, {} added\n", kept, removed, added)
 
     // Applying the script to the old text must give the new text.
     rebuilt := list(string)

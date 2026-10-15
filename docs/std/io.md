@@ -31,7 +31,7 @@ of 4096 bytes kept inside the `Reader`; `reader_with` reads through a buffer you
 
 ```gamma
 FileIn :: struct {
-    pub f: File
+    pub f: fs.File
 }
 ```
 
@@ -41,7 +41,7 @@ A handler for `In` that reads the file `f`.
 
 ```gamma
 FileOut :: struct {
-    pub f: File
+    pub f: fs.File
     pub err: ?IoError = null
     // private fields omitted
 }
@@ -206,7 +206,7 @@ All of `In`, in memory from the current allocator; release it with `free(data)`.
 ### `file_out`
 
 ```gamma
-file_out :: fn(f: File) -> FileOut
+file_out :: fn(f: fs.File) -> FileOut
 ```
 
 A buffered output handler for the file `f`, with nothing buffered yet.

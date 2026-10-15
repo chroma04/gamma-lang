@@ -7,7 +7,7 @@ test "doubles" {
 }
 
 test "maps free their storage" {
-    m := map(string, i32)
+    m := hash_map(string, i32)
     defer m.deinit()
     m.put("a", 1) else return
     expect(m.get("a") is 1)

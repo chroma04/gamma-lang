@@ -148,7 +148,7 @@ main :: fn() \ {Out} {
     print("dice:")
     total: u32 = 0
     for s in 2..13 {
-        print(" {}:{}", (s, counts[s]))
+        print(" {}:{}", s, counts[s])
         total += counts[s]
     }
     print("\ntotal {}\n", total)

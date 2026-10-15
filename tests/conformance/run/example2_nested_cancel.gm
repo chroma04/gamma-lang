@@ -1,4 +1,4 @@
-// Cancelling an outer fiber that contains a running inner fiber: discard unwinds both, innermost defers first.
+// Cancelling an outer fiber that contains a running inner fiber: cancel unwinds both, innermost defers first.
 Outer :: effect { outer: ctl(n: u32) -> u32 }
 Inner :: effect { inner: ctl(n: u32) }
 
@@ -34,7 +34,7 @@ main :: fn() \ {Out} {
         outer(n, k) => {
             print("outer clause {}\n", n)
             total += n
-            if n >= 20 { discard k; break }
+            if n >= 20 { cancel k; break }
             resume k(n + 1)
         }
     }) on stack[..] {

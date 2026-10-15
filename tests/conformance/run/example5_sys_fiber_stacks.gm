@@ -86,7 +86,7 @@ main :: fn() \ {Out} {
     }) on stack[..] {
         fiber_main(4)
     }
-    print("result {} seen {} hold.pc {} hold.flags {}\n", (r, seen, hold.pc, hold.flags))
+    print("result {} seen {} hold.pc {} hold.flags {}\n", r, seen, hold.pc, hold.flags)
     // Same work with the stack split from a larger arena, twice in a row on the same memory.
     arena: [STACK * 2]u8 = ---
     for round in 0..2 {
@@ -95,6 +95,6 @@ main :: fn() \ {Out} {
         }) on arena[STACK * round..STACK * (round + 1)] {
             fiber_main(3)
         }
-        print("round {} -> {}\n", (round, t))
+        print("round {} -> {}\n", round, t)
     }
 }

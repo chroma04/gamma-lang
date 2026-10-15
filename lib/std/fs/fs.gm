@@ -1,5 +1,26 @@
 //! Whole-file operations over the `Fs` effect (§21.7).
 
+/// An open file: a handle that the `Fs` effect's operations take (§21.7).
+pub File :: core.File
+
+/// An open directory, read with `Fs.next_entry`.
+pub Dir :: core.Dir
+
+/// How `Fs.open` opens a file: `OpenOptions(write: true, create: true)`.
+pub OpenOptions :: core.OpenOptions
+
+/// What a path names: a file, a directory, a symbolic link, or something else.
+pub FileKind :: core.FileKind
+
+/// What `Fs.stat` and `Fs.lstat` report about a path.
+pub FileInfo :: core.FileInfo
+
+/// A directory entry from `Fs.next_entry`: the length of its name, and what it is.
+pub DirEntry :: core.DirEntry
+
+/// Where `Fs.seek` counts from.
+pub SeekFrom :: core.SeekFrom
+
 /// Why reading a whole file failed.
 pub ReadError :: union {
     Io: IoError
@@ -9,9 +30,9 @@ pub ReadError :: union {
 /// The contents of the file at `path`, in memory from the current allocator; release it
 /// with `free(data)`.
 pub read_all :: fn(path: string) -> ReadError![]u8 \ {Fs, Alloc} {
-    f := try open(path, OpenOptions())
-    defer close(f)
-    size := (try stat(path)).size.trunc(usize)
+    f := try Fs.open(path, OpenOptions())
+    defer Fs.close(f)
+    size := (try Fs.stat(path)).size.trunc(usize)
     // One byte more than the reported size, so reaching the end needs no second buffer.
     cap := size + 1
     data := try make(u8, cap)
@@ -59,33 +80,33 @@ pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
 
 /// Replaces the contents of the file at `path` with `bytes`, creating it if needed.
 pub write_all :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
-    f := try open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
-    defer close(f)
+    f := try Fs.open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
+    defer Fs.close(f)
     return write_all_to(f, bytes)
 }
 
 /// Appends `bytes` to the file at `path`, creating it if needed.
 pub append :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
-    f := try open(path, OpenOptions(read: false, append: true, create: true))
-    defer close(f)
+    f := try Fs.open(path, OpenOptions(read: false, append: true, create: true))
+    defer Fs.close(f)
     return write_all_to(f, bytes)
 }
 
 /// Whether something exists at `path`. A symbolic link counts only if its target exists.
 pub exists :: fn(path: string) -> bool \ {Fs} {
-    _ = stat(path) else return false
+    _ = Fs.stat(path) else return false
     return true
 }
 
 /// Copies the file at `from` to `to`, replacing `to`. Copying a file onto itself leaves it
 /// unchanged.
 pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
-    src := try open(from, OpenOptions())
-    defer close(src)
+    src := try Fs.open(from, OpenOptions())
+    defer Fs.close(src)
     // `to` is cut to the copied length at the end rather than emptied first, so that a file
     // given as both `from` and `to` is not lost.
-    dst := try open(to, OpenOptions(read: false, write: true, create: true))
-    defer close(dst)
+    dst := try Fs.open(to, OpenOptions(read: false, write: true, create: true))
+    defer Fs.close(dst)
     buf: [4096]u8 = ---
     total: u64 = 0
     while true {
@@ -94,7 +115,7 @@ pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
         try write_all_to(dst, buf[0..n])
         total += u64(n)
     }
-    try truncate(dst, total)
+    try Fs.truncate(dst, total)
     return ()
 }
 
@@ -119,11 +140,11 @@ pub Entry :: struct {
 ///         print("{}\n", e.name)
 ///     }
 pub entries :: fn(path: string) \ {Yield(IoError!Entry), Fs} {
-    d := open_dir(path) else e => {
+    d := Fs.open_dir(path) else e => {
         yield(!e)
         return
     }
-    defer close_dir(d)
+    defer Fs.close_dir(d)
     // NAME_MAX is 255 on POSIX systems.
     buf: [256]u8 = ---
     while true {
@@ -151,7 +172,7 @@ Frame :: struct {
 }
 
 close_frames :: fn(frames: ^List(Frame)) \ {Fs} {
-    for f in frames.items { close_dir(f.dir) }
+    for f in frames.items { Fs.close_dir(f.dir) }
     frames.deinit()
 }
 
@@ -177,12 +198,12 @@ pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
         yield(!.NoSpace)
         return
     }
-    first := open_dir(path.items) else e => {
+    first := Fs.open_dir(path.items) else e => {
         yield(!e)
         return
     }
     frames.push(Frame(dir: first, path_len: root.len)) else {
-        close_dir(first)
+        Fs.close_dir(first)
         yield(!.NoSpace)
         return
     }
@@ -194,7 +215,7 @@ pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
             return
         }
         ent := next else {
-            close_dir(top.dir)
+            Fs.close_dir(top.dir)
             _ = frames.pop()
             continue
         }
@@ -211,12 +232,12 @@ pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
         }
         yield(WalkEntry(path: path.items, kind: ent.kind, depth: (frames.items.len - 1).trunc(u32)))
         if ent.kind is .Dir {
-            sub := open_dir(path.items) else e => {
+            sub := Fs.open_dir(path.items) else e => {
                 yield(!e)
                 continue
             }
             frames.push(Frame(dir: sub, path_len: path.items.len)) else {
-                close_dir(sub)
+                Fs.close_dir(sub)
                 yield(!.NoSpace)
                 return
             }
@@ -235,9 +256,9 @@ pub make_dir_all :: fn(path: string) -> IoError!() \ {Fs} {
         if i >= path.len { break }
         while i < path.len and path[i] is not '/' { i += 1 }
         prefix := path[0..i]
-        make_dir(prefix) else e => {
+        Fs.make_dir(prefix) else e => {
             if e is not .AlreadyExists { return !e }
-            info := try stat(prefix)
+            info := try Fs.stat(prefix)
             if info.kind is not .Dir { return !e }
         }
     }
@@ -262,12 +283,12 @@ pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Ran
     f: File = ---
     while true {
         r: [4]u8 = ---
-        fill(r[..])
+        Rand.fill(r[..])
         for i in 0..4 {
             tmp[path.len + 5 + 2 * i] = hex_digit(r[i] >> 4)
             tmp[path.len + 6 + 2 * i] = hex_digit(r[i] & 15)
         }
-        f = open(tmp, opts) else e => {
+        f = Fs.open(tmp, opts) else e => {
             // A name that is taken: try another.
             if e is .AlreadyExists and tries < 8 {
                 tries += 1
@@ -278,13 +299,13 @@ pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Ran
         break
     }
     fill_temp(f, bytes) else e => {
-        close(f)
-        _ = remove(tmp)
+        Fs.close(f)
+        _ = Fs.remove(tmp)
         return !e
     }
-    close(f)
-    rename(tmp, path) else e => {
-        _ = remove(tmp)
+    Fs.close(f)
+    Fs.rename(tmp, path) else e => {
+        _ = Fs.remove(tmp)
         return !e
     }
     return ()

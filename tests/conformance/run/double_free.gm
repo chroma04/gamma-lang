@@ -2,7 +2,7 @@
 // Freeing a block twice traps in debug mode.
 main :: fn() \ {Out, Alloc} {
     s := make(u8, 8) else return
-    free(u8, s)
+    free(s)
     print("freed once\n")
-    free(u8, s)
+    free(s)
 }

@@ -16,20 +16,20 @@ S :: struct { a: u8, p: rawptr, c: u16 }
 
 main :: fn() \\ {Out} {
     when target.arch is .Aarch64 {
-        print(\"aarch64\\n\", ())
+        print(\"aarch64\\n\")
     } else when target.arch is .X86_64 {
-        print(\"x86_64\\n\", ())
+        print(\"x86_64\\n\")
     } else when target.arch is .S390x {
-        print(\"s390x\\n\", ())
+        print(\"s390x\\n\")
     } else {
-        print(\"other\\n\", ())
+        print(\"other\\n\")
     }
     when target.endian is .Big {
-        print(\"big\\n\", ())
+        print(\"big\\n\")
     } else {
-        print(\"little\\n\", ())
+        print(\"little\\n\")
     }
-    print(\"{} {} {}\\n\", (target.ptr_bits, @size_of(S), @offset_of(S, c)))
+    print(\"{} {} {}\\n\", target.ptr_bits, @size_of(S), @offset_of(S, c))
 }
 ";
 

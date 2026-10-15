@@ -18,7 +18,7 @@ neighbors :: fn(c: Cell) \ {Yield(Cell)} {
 }
 
 step :: fn(l: ^Life) -> AllocError!() \ {Alloc} {
-    counts := map(Cell, u32)
+    counts := hash_map(Cell, u32)
     defer counts.deinit()
     for e in l.alive.entries() {
         for n in neighbors(e.key) {
@@ -26,7 +26,7 @@ step :: fn(l: ^Life) -> AllocError!() \ {Alloc} {
             try counts.put(n, old + 1)
         }
     }
-    next := map(Cell, bool)
+    next := hash_map(Cell, bool)
     errdefer next.deinit()
     for e in counts.entries() {
         n := e.value
@@ -69,7 +69,7 @@ draw :: fn(l: ^const Life) \ {Out} {
 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    life := Life(alive: map(Cell, bool))
+    life := Life(alive: hash_map(Cell, bool))
     defer life_free(&life)
     // a glider
     glider := [_]Cell(Cell(x: 1, y: 0), Cell(x: 2, y: 1), Cell(x: 0, y: 2), Cell(x: 1, y: 2), Cell(x: 2, y: 2))
@@ -78,14 +78,14 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     draw(&life)
     for g in 1..=4 {
         try step(&life)
-        print("gen {}: {} cells\n", (g, life.alive.len()))
+        print("gen {}: {} cells\n", g, life.alive.len())
     }
     draw(&life)
     b := bounds(&life)
     print("bounds {}\n", b)
 
     // inverted index: word -> list of line numbers
-    index := map(string, List(u32))
+    index := hash_map(string, List(u32))
     defer {
         for e in index.entries() {
             l := e.value
@@ -115,29 +115,29 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     keys := [_]string("a", "b", "c", "d", "e", "z")
     for k in keys {
         if l := index.get(k) {
-            print("{}: {}\n", (k, l.items))
+            print("{}: {}\n", k, l.items)
         } else {
             print("{}: absent\n", k)
         }
     }
 
     // nested optionals from a map of optionals
-    opt := map(string, ?i32)
+    opt := hash_map(string, ?i32)
     defer opt.deinit()
     try opt.put("some", 5)
     try opt.put("none", null)
-    print("{} {} {}\n", (opt.get("some"), opt.get("none"), opt.get("missing")))
+    print("{} {} {}\n", opt.get("some"), opt.get("none"), opt.get("missing"))
     r := opt.get("none")
     print("present key with null value: {}\n", r is not null)
     print("missing key: {}\n", opt.get("missing") is null)
 
     // tuple keys and removal
-    pairs := map((u8, u8), string)
+    pairs := hash_map((u8, u8), string)
     defer pairs.deinit()
     try pairs.put((1, 2), "one-two")
     try pairs.put((2, 1), "two-one")
     try pairs.put((1, 2), "again")
-    print("{} {} {}\n", (pairs.len(), pairs.get((1, 2)), pairs.get((9, 9))))
-    print("removed {}, then {}\n", (pairs.remove((2, 1)), pairs.remove((2, 1))))
+    print("{} {} {}\n", pairs.len(), pairs.get((1, 2)), pairs.get((9, 9)))
+    print("removed {}, then {}\n", pairs.remove((2, 1)), pairs.remove((2, 1)))
     print("len {}\n", pairs.len())
 }

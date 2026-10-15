@@ -3,17 +3,17 @@
 str :: import "std/str"
 
 show_any :: fn(s, seps: string) \ {Out} {
-    print("split_any({}, {}):", (s, seps))
+    print("split_any({}, {}):", s, seps)
     for p in str.split_any(s, seps) { print(" <{}>", p) }
-    print("\n", ())
+    print("\n")
 }
 
 show_into :: fn(s, sep: string, n: usize) \ {Out} {
     parts := [_]string("", "", "", "", "", "")
     k := str.split_into(s, sep, parts[0..n])
-    print("split_into({}, {}, {}) = {}:", (s, sep, n, k))
+    print("split_into({}, {}, {}) = {}:", s, sep, n, k)
     for i in 0..k { print(" <{}>", parts[i]) }
-    print("\n", ())
+    print("\n")
 }
 
 show_replace :: fn(s, from, to: string) -> AllocError!() \ {Out, Alloc} {
@@ -23,31 +23,31 @@ show_replace :: fn(s, from, to: string) -> AllocError!() \ {Out, Alloc} {
     a := try str.replace_alloc(s, from, to)
     defer free(a)
     same := a.len is out.items.len and str.find(a, out.items) is 0
-    print("replace({}, {}, {}) = <{}> {}\n", (s, from, to, a, same))
+    print("replace({}, {}, {}) = <{}> {}\n", s, from, to, a, same)
 }
 
 show_repeat :: fn(s: string, n: usize) -> AllocError!() \ {Out, Alloc} {
     out := list(u8)
     defer out.deinit()
     try str.repeat(&out, s, n)
-    print("repeat({}, {}) = <{}>\n", (s, n, out.items))
+    print("repeat({}, {}) = <{}>\n", s, n, out.items)
 }
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     // strip_prefix, strip_suffix
-    print("{} {} {}\n", (str.strip_prefix("foobar", "foo"), str.strip_prefix("foobar", "bar"), str.strip_prefix("foo", "foobar")))
-    print("{} {} {}\n", (str.strip_suffix("foobar", "bar"), str.strip_suffix("foobar", "foo"), str.strip_suffix("bar", "foobar")))
-    print("{} {} {}\n", (str.strip_prefix("foo", "foo"), str.strip_prefix("foo", ""), str.strip_suffix("", "")))
+    print("{} {} {}\n", str.strip_prefix("foobar", "foo"), str.strip_prefix("foobar", "bar"), str.strip_prefix("foo", "foobar"))
+    print("{} {} {}\n", str.strip_suffix("foobar", "bar"), str.strip_suffix("foobar", "foo"), str.strip_suffix("bar", "foobar"))
+    print("{} {} {}\n", str.strip_prefix("foo", "foo"), str.strip_prefix("foo", ""), str.strip_suffix("", ""))
 
     // find_ignore_case
-    print("{} {} {}\n", (str.find_ignore_case("Hello World", "WORLD"), str.find_ignore_case("Hello World", "o w"), str.find_ignore_case("Hello", "xyz")))
-    print("{} {} {}\n", (str.find_ignore_case("abc", ""), str.find_ignore_case("", ""), str.find_ignore_case("ab", "abc")))
-    print("{} {}\n", (str.find_ignore_case("ÄäA", "ä"), str.find_ignore_case("xxAbAB", "ABab")))
+    print("{} {} {}\n", str.find_ignore_case("Hello World", "WORLD"), str.find_ignore_case("Hello World", "o w"), str.find_ignore_case("Hello", "xyz"))
+    print("{} {} {}\n", str.find_ignore_case("abc", ""), str.find_ignore_case("", ""), str.find_ignore_case("ab", "abc"))
+    print("{} {}\n", str.find_ignore_case("ÄäA", "ä"), str.find_ignore_case("xxAbAB", "ABab"))
 
     // count
-    print("{} {} {}\n", (str.count("abababab", "ab"), str.count("aaa", "aa"), str.count("aaaa", "aa")))
-    print("{} {} {}\n", (str.count("hello", "z"), str.count("", "a"), str.count("abc", "abc")))
-    print("{} {}\n", (str.count("a,b,,c,", ","), str.count("ab", "abc")))
+    print("{} {} {}\n", str.count("abababab", "ab"), str.count("aaa", "aa"), str.count("aaaa", "aa"))
+    print("{} {} {}\n", str.count("hello", "z"), str.count("", "a"), str.count("abc", "abc"))
+    print("{} {}\n", str.count("a,b,,c,", ","), str.count("ab", "abc"))
 
     // replace
     try show_replace("hello world", "o", "0")
@@ -80,9 +80,9 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     show_into("a,b", ",", 0)
 
     // nth_field
-    print("{} {} {}\n", (str.nth_field("a,b,c", ",", 0), str.nth_field("a,b,c", ",", 2), str.nth_field("a,b,c", ",", 3)))
-    print("{} {} {}\n", (str.nth_field("a,,c", ",", 1), str.nth_field("", ",", 0), str.nth_field("", ",", 1)))
-    print("{} {}\n", (str.nth_field("abc", "", 0), str.nth_field("abc", "", 1)))
+    print("{} {} {}\n", str.nth_field("a,b,c", ",", 0), str.nth_field("a,b,c", ",", 2), str.nth_field("a,b,c", ",", 3))
+    print("{} {} {}\n", str.nth_field("a,,c", ",", 1), str.nth_field("", ",", 0), str.nth_field("", ",", 1))
+    print("{} {}\n", str.nth_field("abc", "", 0), str.nth_field("abc", "", 1))
 
     // split_any
     show_any("a, b;c", ", ;")
@@ -98,9 +98,9 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer free(s)
     e := try dupe("")
     defer free(e)
-    print("<{}> {} <{}> {}\n", (s, s.len, e, e.len))
+    print("<{}> {} <{}> {}\n", s, s.len, e, e.len)
 
     // Ordering and the builtin methods that str leaves to the language.
-    print("{} {} {}\n", ("abc" < "abd", "ab" < "abc", "b" > "abc"))
-    print("{} {}\n", ("foobar".starts_with("foo"), "foobar".ends_with("bar")))
+    print("{} {} {}\n", "abc" < "abd", "ab" < "abc", "b" > "abc")
+    print("{} {}\n", "foobar".starts_with("foo"), "foobar".ends_with("bar"))
 }

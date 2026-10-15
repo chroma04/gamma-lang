@@ -1,11 +1,11 @@
 4:1 keyword and
 4:5 keyword break
-4:11 keyword continue
-4:20 keyword ctl
-4:24 keyword defer
-4:30 keyword discard
-4:38 keyword effect
-4:45 keyword else
+4:11 keyword cancel
+4:18 keyword continue
+4:27 keyword ctl
+4:31 keyword defer
+4:37 keyword effect
+4:44 keyword else
 5:1 keyword errdefer
 5:10 keyword esc
 5:14 keyword false

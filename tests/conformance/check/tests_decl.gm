@@ -1,9 +1,10 @@
 //! stage: check
-// `test` declarations are skipped by `gamma check`; `expect` belongs to tests.
+// `test` declarations are skipped by `gamma check`; `expect` performs `Test`,
+// which only tests and functions that declare it may perform.
 test "not compiled here" {
     no_such_function()
 }
 
 main :: fn() {
-    expect(true)              //~ ERROR may be called only in tests
+    expect(true)              //~ ERROR performs the effect `Test`
 }

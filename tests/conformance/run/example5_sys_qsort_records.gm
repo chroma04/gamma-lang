@@ -65,7 +65,7 @@ main :: fn() \ {Out, Sys} {
     recs: [N]Rec = ---
     for i in 0..N { recs[i] = make_rec(i.trunc(u32)) }
     orig := recs
-    print("size {} align {}\n", (@size_of(Rec), @align_of(Rec)))
+    print("size {} align {}\n", @size_of(Rec), @align_of(Rec))
 
     // Sort two copies the C way and one the Gamma way.
     a := recs
@@ -83,8 +83,8 @@ main :: fn() \ {Out, Sys} {
     for i in 0..N {
         if order(a[i], sorted[i]) is not 0 or order(b[i], sorted[i]) is not 0 { ok = false }
     }
-    print("same order {} {} (compared {})\n", (ok, same_ab, compares > 0))
-    print("first {} last {}\n", (describe(a[0]), describe(a[N - 1])))
+    print("same order {} {} (compared {})\n", ok, same_ab, compares > 0)
+    print("first {} last {}\n", describe(a[0]), describe(a[N - 1]))
 
     // bsearch for each key that exists, with a whole record as the search key.
     found := 0
@@ -103,6 +103,6 @@ main :: fn() \ {Out, Sys} {
     last := a[N - 1]
     _ = libc.memcpy(&b[1], &a[0], @size_of(Rec) * (N - 1))
     b[0] = last
-    print("rotated {} {} {}\n", (b[0].key is a[N - 1].key, b[1].key is a[0].key, b[N - 1].key is a[N - 2].key))
+    print("rotated {} {} {}\n", b[0].key is a[N - 1].key, b[1].key is a[0].key, b[N - 1].key is a[N - 2].key)
     print("orig untouched {}\n", libc.memcmp(&orig, &recs, @size_of(Rec) * N) is 0)
 }

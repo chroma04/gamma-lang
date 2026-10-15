@@ -114,7 +114,7 @@ describe :: fn(e: StoreError) \ {Out} {
             .Empty => print("empty value\n")
             .MissingEquals(at) => print("no '=' in {}-byte line\n", at)
             .BadNumber(s) => print("bad number '{}'\n", s)
-            .Range(lo, hi) => print("out of range [{}, {}]\n", (lo, hi))
+            .Range(lo, hi) => print("out of range [{}, {}]\n", lo, hi)
         }
     }
 }
@@ -130,7 +130,7 @@ main :: fn() \ {Out} {
             describe(e)
         }
     }
-    print("stored {}: a={} b={} g={} z={}\n", (store.len, get(&store, "a"), get(&store, "b"), get(&store, "g"), get(&store, "z")))
+    print("stored {}: a={} b={} g={} z={}\n", store.len, get(&store, "a"), get(&store, "b"), get(&store, "g"), get(&store, "z"))
 
     // optional chaining via else
     z := get(&store, "z") else get(&store, "g") else 0

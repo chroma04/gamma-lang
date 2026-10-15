@@ -6,11 +6,11 @@ math :: import "std/math"
 NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
 
 p1 :: fn(name: string, x: f64, r: f64) \ {Out} {
-    print("{}({}) = {}\n", (name, x, r))
+    print("{}({}) = {}\n", name, x, r)
 }
 
 p2 :: fn(name: string, x: f64, y: f64, r: f64) \ {Out} {
-    print("{}({}, {}) = {}\n", (name, x, y, r))
+    print("{}({}, {}) = {}\n", name, x, y, r)
 }
 
 constants :: fn() \ {Out} {

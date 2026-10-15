@@ -4,29 +4,29 @@ S :: struct { a: u7, b: i5 }
 main :: fn() \ {Out} {
     x: u8 = @black_box(0xFF)
     y := x.bits(u7)
-    print("{} {} {}\n", (y is 127, y >> 1u8, y.trunc(u32)))
+    print("{} {} {}\n", y is 127, y >> 1u8, y.trunc(u32))
     q := (&x).cast(^u7)
-    print("{} {}\n", (q^ is 127, q^ >> 1u8))
+    print("{} {}\n", q^ is 127, q^ >> 1u8)
 
     z := (@black_box(0x1Fu8)).bits(i5)
-    print("{} {} {} {}\n", (z, z is -1, z < 0, z >> 1u8))
+    print("{} {} {} {}\n", z, z is -1, z < 0, z >> 1u8)
     w := (@black_box(0xFFF1u16)).bits(i12)
-    print("{} {} {}\n", (w, w is 1, w < 0))
+    print("{} {} {}\n", w, w is 1, w < 0)
     a := (@black_box(0xFFFFFFu32)).bits(i24)
     b := (@black_box(0xFFFFFFu32)).bits(u24)
-    print("{} {} {}\n", (a, a < 0, b))
+    print("{} {} {}\n", a, a < 0, b)
     k: u64 = @black_box(0xFFFFFFFFFFFFFFFF)
     c := k.bits(u40)
     d := k.bits(i40)
-    print("{} {} {} {}\n", (c, c is 1099511627775, d, d < 0))
+    print("{} {} {} {}\n", c, c is 1099511627775, d, d < 0)
 
     arr := [2]u8(@black_box(0xFF), 0xFF)
     qa := (&arr).cast(^[2]i5)
-    print("{} {}\n", (qa^[0] is -1, qa^[1] < 0))
+    print("{} {}\n", qa^[0] is -1, qa^[1] < 0)
     t := qa^
     print("{}\n", t)
 
     u: u16 = @black_box(0xFFFF)
     v := u.bits(S)
-    print("{} {} {}\n", (v.a is 127, v.b is -1, v.a >> 1u8))
+    print("{} {} {}\n", v.a is 127, v.b is -1, v.a >> 1u8)
 }

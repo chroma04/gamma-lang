@@ -109,27 +109,27 @@ swap_parts :: fn(z: Complex) -> Complex => Complex(re: z.im, im: z.re)
 
 main :: fn() \ {Out} {
     d := libc.div(17, 5)
-    print("div {} {}\n", (d.quot, d.rem))
+    print("div {} {}\n", d.quot, d.rem)
     l := libc.ldiv(-1000000007, 10)
-    print("ldiv {} {}\n", (l.quot, l.rem))
+    print("ldiv {} {}\n", l.quot, l.rem)
     z := Complex(re: 3.0, im: 4.0)
     print("cabs {}\n", libm.cabs(z))
     w := libm.conj(z)
-    print("conj {} {}\n", (w.re, w.im))
+    print("conj {} {}\n", w.re, w.im)
     // On s390x a `float complex` travels as two floats in separate registers, which a struct
     // of two floats does not.
     when target.arch is .S390x {
-        print("cabsf 10\n", ())
+        print("cabsf 10\n")
     } else {
         print("cabsf {}\n", libm.cabsf(ComplexF(re: 6.0, im: 8.0)))
     }
     m := libc.gm_test_mix(Mixed(id: 41, p: Pair(a: 21, b: 1.5), xs: [3]i16(1, -2, 3), ok: false), 3.0)
-    print("mixed {} {} {} {} {}\n", (m.id, m.p.a, m.p.b, m.xs, m.ok))
+    print("mixed {} {} {} {} {}\n", m.id, m.p.a, m.p.b, m.xs, m.ok)
     b := libc.gm_test_big(Big(v: [6]u64(1, 2, 3, 4, 5, 6), tag: 9))
-    print("big {} {}\n", (b.v, b.tag))
+    print("big {} {}\n", b.v, b.tag)
     print("word {}\n", libc.gm_test_word(Word(as_u32: 7), Flags(a: true, b: false, n: 5)))
     pk := libc.gm_test_layout(Packed(a: 1, b: 50000, c: 7), Aligned(x: 2, y: 3))
-    print("layout {} {} {} {}\n", (pk.a, pk.b, pk.c, @size_of(Packed)))
+    print("layout {} {} {} {}\n", pk.a, pk.b, pk.c, @size_of(Packed))
     s := apply(swap_parts, z)
-    print("apply {} {}\n", (s.re, s.im))
+    print("apply {} {}\n", s.re, s.im)
 }

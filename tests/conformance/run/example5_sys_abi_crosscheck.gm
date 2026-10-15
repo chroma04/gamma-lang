@@ -63,25 +63,25 @@ lib :: foreign "c" {
 
 main :: fn() \ {Out} {
     // Memory class: three eightbytes on the stack after the six register arguments.
-    print("sum9 {} {}\n", (sum9(1, 2, 3, 4, 5, 6, 7, 8, 9), lib.sum9s(1, 2, 3, 4, 5, 6, S3(x: 7, y: 8, z: 9))))
+    print("sum9 {} {}\n", sum9(1, 2, 3, 4, 5, 6, 7, 8, 9), lib.sum9s(1, 2, 3, 4, 5, 6, S3(x: 7, y: 8, z: 9)))
     // SSE, SSE.
-    print("two {} {}\n", (two_doubles(1.5, 2.5), lib.two_doubles_s(V2(x: 1.5, y: 2.5))))
+    print("two {} {}\n", two_doubles(1.5, 2.5), lib.two_doubles_s(V2(x: 1.5, y: 2.5)))
     // INTEGER, SSE, then another register argument.
-    print("mixed {} {}\n", (mixed(3, 0.25, 7), lib.mixed_s(IF(n: 3, f: 0.25), 7)))
+    print("mixed {} {}\n", mixed(3, 0.25, 7), lib.mixed_s(IF(n: 3, f: 0.25), 7))
     // Two floats share one SSE register.
     p := F2(a: 1.0, b: -2.0)
     print("f32 pair {}\n", lib.pair_f32_s(p))
-    print("f32 bits {} {}\n", (p.a.bits(u32), p.b.bits(u32)))
+    print("f32 bits {} {}\n", p.a.bits(u32), p.b.bits(u32))
     // A memory-class result is written through a hidden pointer.
     s := lib.fill_s(5)
-    print("fill {} {} {}\n", (s.x, s.y, s.z))
+    print("fill {} {} {}\n", s.x, s.y, s.z)
     // 128-bit integers travel in two registers.
     v: u128 = (u128(7) << 64) | u128(100)
     print("u128 {}\n", lib.take_u128_s(v))
     r := lib.ret_pair_s(40, 50)
-    print("ret pair {} {}\n", ((r & 0xffff_ffff_ffff_ffff).trunc(u64), (r >> 64).trunc(u64)))
+    print("ret pair {} {}\n", (r & 0xffff_ffff_ffff_ffff).trunc(u64), (r >> 64).trunc(u64))
     // A struct of 16 bytes: INTEGER, INTEGER.
     print("mixed pair {}\n", lib.mixed_pair_s(Mixed(a: 3, b: 4, c: 9), 2))
     d := lib.ldiv(-17, 5)
-    print("ldiv {} {}\n", (d.quot, d.rem))
+    print("ldiv {} {}\n", d.quot, d.rem)
 }

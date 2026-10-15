@@ -11,6 +11,32 @@ Helpers over the `Net` effect (§21.7) for TCP connections.
     reply: [5]u8 = ---
     try net.recv_exact(s, reply[..])
 
+## Type aliases
+
+### `Socket`
+
+```gamma
+Socket :: core.Socket
+```
+
+A TCP connection (§21.7).
+
+### `Listener`
+
+```gamma
+Listener :: core.Listener
+```
+
+A TCP socket listening for connections.
+
+### `Shutdown`
+
+```gamma
+Shutdown :: core.Shutdown
+```
+
+Which direction of a connection `Net.shutdown` closes.
+
 ## Functions
 
 ### `send_all`

@@ -62,14 +62,14 @@ main :: fn() \ {Out} {
     o: ?Big = mk(1)
     if v := o {
         o = mk(2)
-        print("opt copy {} now {}\n", (sum(v), sum(o?)))
+        print("opt copy {} now {}\n", sum(v), sum(o?))
     }
     // union payload binding is a copy
     s: Shape = .Box(mk(3))
     match s {
         .Box(b) => {
             s = .Box(mk(4))
-            print("match copy {} now {}\n", (sum(b), box_sum(s)))
+            print("match copy {} now {}\n", sum(b), box_sum(s))
         }
         _ => {}
     }
@@ -82,7 +82,7 @@ main :: fn() \ {Out} {
     t := (mk(5), mk(6))
     x, y := t
     t.0.a[0] = 100
-    print("destructure {} {} {}\n", (x.a[0], y.a[0], t.0.a[0]))
+    print("destructure {} {} {}\n", x.a[0], y.a[0], t.0.a[0])
     // results with big errors and payloads, try and defer
     for pair in [3]Big(Big(a: [6]i64(1, 2, 3, 4, 5, 6)), Big(a: [6]i64(fill: -1)), Big(a: [6]i64(fill: 0))) {
         a := pair.a[0]
@@ -90,7 +90,7 @@ main :: fn() \ {Out} {
         if r := chain(a, b) {
             print("chain ok {}\n", sum(r))
         } else e => {
-            print("chain err {} {}\n", (e.code, e.ctx[7]))
+            print("chain err {} {}\n", e.code, e.ctx[7])
         }
     }
     r1 := chain(2, 3) else e => mk(e.ctx[0])
@@ -107,10 +107,10 @@ main :: fn() \ {Out} {
         }
     }
     // optional tuples
-    if p := opt_pair(3) { print("pair {} {}\n", (p.0.a[0], p.1.a[0])) }
+    if p := opt_pair(3) { print("pair {} {}\n", p.0.a[0], p.1.a[0]) }
     print("pair none {}\n", opt_pair(-1) is null)
     // wide optionals and results
-    print("wide opt {} {}\n", (wide_opt(0) is null, wide_opt(1 << 100)?))
+    print("wide opt {} {}\n", wide_opt(0) is null, wide_opt(1 << 100)?)
     wr := wide_res(5)
     if v := wr { print("wide res {}\n", v) }
     wr2 := wide_res(500)

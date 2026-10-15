@@ -7,7 +7,7 @@ Counter :: struct { seen: u32, prefix: string }
 handler Log for ^Counter \ {Out} {
     log(self, msg) => {
         self.seen += 1
-        print("{}{}: {}\n", (self.prefix, self.seen, msg))
+        print("{}{}: {}\n", self.prefix, self.seen, msg)
     }
 }
 
@@ -29,7 +29,7 @@ step :: fn(n: i32) -> i32 \ {Log, Fail} {
 main :: fn() \ {Out} {
     c := Counter(seen: 0, prefix: "#")
     a := with &c, Bail(code: -1) { step(1) + step(2) }
-    print("a = {}, seen {}\n", (a, c.seen))
+    print("a = {}, seen {}\n", a, c.seen)
     b := with &c, Bail(code: -1) { step(3) }
-    print("b = {}, seen {}\n", (b, c.seen))
+    print("b = {}, seen {}\n", b, c.seen)
 }

@@ -1,5 +1,5 @@
 //! The static check of continuations (§14.2): when a `ctl` clause uses its
-//! continuation `k` only as the operand of `resume` and `discard`, every path
+//! continuation `k` only as the operand of `resume` and `cancel`, every path
 //! through the clause must consume it exactly once.
 //!
 //! The analysis walks the clause body in evaluation order with a small state:
@@ -21,7 +21,7 @@ const DONE: u8 = 2;
 
 impl Sema<'_> {
     /// Checks every `ctl` clause whose continuation is used only by `resume` and
-    /// `discard` (§14.2).
+    /// `cancel` (§14.2).
     pub(super) fn check_continuations(&mut self) {
         let mut errors = vec![];
         for (i, def) in self.prog.fns.iter().enumerate() {
@@ -53,7 +53,7 @@ impl Sema<'_> {
     }
 }
 
-/// True if every use of `k` in `e` is the operand of `resume` or `discard`, outside
+/// True if every use of `k` in `e` is the operand of `resume` or `cancel`, outside
 /// deferred statements.
 fn only_consumed(e: &Expr, k: LocalId) -> bool {
     match &e.kind {
@@ -64,7 +64,7 @@ fn only_consumed(e: &Expr, k: LocalId) -> bool {
             false
         }
         ExprKind::Resume { cont, value } if is_k(cont, k) => only_consumed(value, k),
-        ExprKind::Discard(c) if is_k(c, k) => true,
+        ExprKind::Cancel(c) if is_k(c, k) => true,
         _ => {
             let mut ok = true;
             e.for_each_child(&mut |c| ok &= only_consumed(c, k));
@@ -137,7 +137,7 @@ impl Check {
                 }
                 0
             }
-            ExprKind::Discard(c) if is_k(c, self.k) => {
+            ExprKind::Cancel(c) if is_k(c, self.k) => {
                 self.consume(s, e.span);
                 DONE
             }

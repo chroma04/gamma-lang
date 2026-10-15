@@ -18,7 +18,7 @@ main :: fn() \ {Out} {
         (1, 2) => "yes"
         _ => "no"
     }
-    print("{} {} {} {}\n", (n, r, r2, r3))
+    print("{} {} {} {}\n", n, r, r2, r3)
     // The type is fixed after the `match`: `b` is a `u8`, so these arms are exhaustive.
     b := 255
     match b {
@@ -32,5 +32,5 @@ main :: fn() \ {Out} {
         _ => 0
     }
     big: i64 = c
-    print("{} {} {}\n", (m, w, big))
+    print("{} {} {}\n", m, w, big)
 }

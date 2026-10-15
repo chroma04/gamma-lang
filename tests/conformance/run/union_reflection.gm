@@ -19,13 +19,13 @@ name_of :: fn(T: type, o: Opt(T)) -> string => @variant_name(o)
 
 main :: fn() \ {Out} {
     for c in @variants(Color) {
-        print("{} {}\n", (@variant_name(c), c.tag()))
+        print("{} {}\n", @variant_name(c), c.tag())
     }
-    print("{} {}\n", (@variants(Color).len, COUNT))
+    print("{} {}\n", @variants(Color).len, COUNT)
     print("{}\n", @variant_name(ALL[2]))
-    print("{} {} {}\n", (@variant_name(Shape.Circle(2.0)), @variant_name(Shape.Rect(w: 1, h: 2)), @variant_name(Shape.Empty)))
+    print("{} {} {}\n", @variant_name(Shape.Circle(2.0)), @variant_name(Shape.Rect(w: 1, h: 2)), @variant_name(Shape.Empty))
     n: u32 = 0
     print("{}\n", @variant_name(next(&n)))
     print("{}\n", n)
-    print("{} {}\n", (name_of(i32, Opt(i32).Some(3)), name_of(string, Opt(string).None)))
+    print("{} {}\n", name_of(T: i32, Opt(i32).Some(3)), name_of(T: string, Opt(string).None))
 }

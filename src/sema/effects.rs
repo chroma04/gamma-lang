@@ -141,15 +141,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Calling an effect operation performs it (§12.1).
     pub fn perform_op(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
-        let hides = self.sema.hidden_universe_op(eff, op);
-        let errors_before = self.sema.sess.diags.len();
-        let call = self.perform_op_inner(eff, op, args, span);
-        if let Some(why) = hides {
-            // Errors about the call itself (its arguments) get the explanation too.
-            self.sema.sess.diags.note_since(errors_before, span, &why);
-            self.hiding_op_calls.push((span, why));
-        }
-        call
+        self.perform_op_inner(eff, op, args, span)
     }
 
     /// Performs operation `op` of the given instantiation of its effect (`Yield(u8).yield(x)`).
@@ -601,7 +593,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.coerce(body, ret)
     }
 
-    /// Checks a continuation operand of `resume` or `discard`; returns it and its `R`.
+    /// Checks a continuation operand of `resume` or `cancel`; returns it and its `R`.
     fn cont_operand(&mut self, what: &str, k: &ast::Expr) -> Option<(Expr, Ty)> {
         if !self.in_ctl_clause() {
             self.error(k.span, format!("`{}` is permitted only in the body of a `ctl` clause (§14)", what));
@@ -643,10 +635,10 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(Ty::never(), tir::ExprKind::Resume { cont: Box::new(k), value: Box::new(v) }, span)
     }
 
-    /// `discard k` (§14.5).
-    pub fn discard_stmt(&mut self, k: &ast::Expr, span: Span) -> Expr {
-        match self.cont_operand("discard", k) {
-            Some((k, _)) => mk(Ty::unit(), tir::ExprKind::Discard(Box::new(k)), span),
+    /// `cancel k` (§14.5).
+    pub fn cancel_stmt(&mut self, k: &ast::Expr, span: Span) -> Expr {
+        match self.cont_operand("cancel", k) {
+            Some((k, _)) => mk(Ty::unit(), tir::ExprKind::Cancel(Box::new(k)), span),
             None => error_expr(span),
         }
     }
@@ -780,7 +772,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.sema.prog.handlers.push(tir::HandlerLit { effect: eref.clone(), clauses: vec![] });
         // The clause `yield(x) => { p :: x; B }`.
         let x = Symbol::intern("<item>");
-        let params = vec![ParamInfo { name: x, ty: elem, span, default: None, generic: None }];
+        let params = vec![ParamInfo { name: x, ty: elem, span, default: None, generic: None, rest: false }];
         let sig = FnSig {
             module: self.module,
             params: params.clone(),
