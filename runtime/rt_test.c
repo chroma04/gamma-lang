@@ -1017,7 +1017,7 @@ static void test_wide_misc(void) {
 
     /* bswap */
     for (int i = 0; i < 32; i++) *gm_wbp(a, (size_t)i) = (uint8_t)i;
-    gm_wbswap(r, a, 256);
+    gm_wbswap(r, a, 256, false);
     CHECK(*gm_wbp(r, 0) == 31 && *gm_wbp(r, 31) == 0 && *gm_wbp(r, 15) == 16);
 }
 

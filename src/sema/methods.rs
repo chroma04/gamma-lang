@@ -29,16 +29,21 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         }
         // 1. A field (holding a function pointer).
-        let derefed = self.auto_deref(recv.clone());
-        if let Some(fields) = self.sema.struct_fields(derefed.ty)
+        let derefed_ty = match self.infer.shallow(recv.ty).kind() {
+            TyKind::Ptr { pointee, .. } => *pointee,
+            _ => recv.ty,
+        };
+        if let Some(fields) = self.sema.struct_fields(derefed_ty)
             && let Some(i) = fields.iter().position(|f| f.name == name.name)
         {
             let fty = fields[i].ty;
+            let derefed = self.auto_deref(recv);
             let callee = mk(fty, tir::ExprKind::Field { base: Box::new(derefed), index: i as u32 }, span);
             return self.call_value(callee, args, span);
         }
         // 2. A builtin method.
-        if let Some(e) = self.builtin_method(recv.clone(), name, args, span) {
+        let mut recv = recv;
+        if let Some(e) = self.builtin_method(&mut recv, name, args, span) {
             return e;
         }
         // `r.len()` of a range is a function of the core library (§21.3).
@@ -98,7 +103,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// The builtin methods of §21.3 and the conversions of §6.6.
-    fn builtin_method(&mut self, recv: Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
+    fn builtin_method(&mut self, recv: &mut Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
         let n = name.name.as_str();
         let rty = self.infer.resolve(recv.ty);
         // A type parameter constrained `Int` or `Float` has the methods of its types (§16.3).
@@ -140,7 +145,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         self.error(span, format!("`.{}` cannot convert to `{}`", n, t));
                     }
                     let ty = if op == Builtin::Checked { Ty::optional(t) } else { t };
-                    return Some(b(op, ty, vec![recv]));
+                    return Some(b(op, ty, vec![take_expr(recv)]));
                 }
                 // `x.to(F)`: the nearest value of float type `F` (§6.6).
                 "to" => {
@@ -154,7 +159,7 @@ impl<'a, 's> FnCx<'a, 's> {
                             format!("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", t),
                         );
                     }
-                    return Some(b(Builtin::Round, t, vec![recv]));
+                    return Some(b(Builtin::Round, t, vec![take_expr(recv)]));
                 }
                 "unsigned_abs" if is_int => {
                     self.arity(args, 0, n, span);
@@ -168,14 +173,14 @@ impl<'a, 's> FnCx<'a, 's> {
                     let ty = recv.ty;
                     let zero = mk(ty, tir::ExprKind::Int(num_bigint::BigInt::from(0)), span);
                     let rty = unsigned_of(self.infer.resolve(ty));
-                    return Some(b(Builtin::AbsDiff, rty, vec![recv, zero]));
+                    return Some(b(Builtin::AbsDiff, rty, vec![take_expr(recv), zero]));
                 }
                 "bits" => {
                     if !self.arity(args, 1, n, span) {
                         return Some(error_expr(span));
                     }
                     let t = self.type_arg(args, 0, span)?;
-                    return Some(self.bits_cast(recv, t, span));
+                    return Some(self.bits_cast(take_expr(recv), t, span));
                 }
                 "min" | "max" | "abs_diff" => {
                     if !self.arity(args, 1, n, span) {
@@ -198,7 +203,7 @@ impl<'a, 's> FnCx<'a, 's> {
                             (Builtin::AbsDiff, unsigned_of(self.infer.resolve(ty)))
                         }
                     };
-                    return Some(b(op, rty, vec![recv, y]));
+                    return Some(b(op, rty, vec![take_expr(recv), y]));
                 }
                 "clamp" => {
                     if !self.arity(args, 2, n, span) {
@@ -208,7 +213,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     let hi = self.value_arg(args, 1, recv.ty, span);
                     let ty = self.unify_operands(recv.ty, lo.ty, span, "the arguments of `.clamp`");
                     self.unify_operands(ty, hi.ty, span, "the arguments of `.clamp`");
-                    return Some(b(Builtin::Clamp, ty, vec![recv, lo, hi]));
+                    return Some(b(Builtin::Clamp, ty, vec![take_expr(recv), lo, hi]));
                 }
                 "abs" => {
                     self.arity(args, 0, n, span);
@@ -220,7 +225,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         signed_only: true,
                     });
                     let ty = recv.ty;
-                    return Some(b(Builtin::Abs, ty, vec![recv]));
+                    return Some(b(Builtin::Abs, ty, vec![take_expr(recv)]));
                 }
                 "pow" | "pow_wrap" | "pow_sat" | "pow_checked" if is_int => {
                     if !self.arity(args, 1, n, span) {
@@ -234,7 +239,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         _ => ast::Flavor::Opt,
                     };
                     let ty = if flavor == ast::Flavor::Opt { Ty::optional(recv.ty) } else { recv.ty };
-                    return Some(b(Builtin::Pow(flavor), ty, vec![recv, e]));
+                    return Some(b(Builtin::Pow(flavor), ty, vec![take_expr(recv), e]));
                 }
                 "is_nan" | "is_inf" | "is_finite" | "sign_bit" if is_float => {
                     self.arity(args, 0, n, span);
@@ -244,16 +249,16 @@ impl<'a, 's> FnCx<'a, 's> {
                         "is_finite" => Builtin::IsFinite,
                         _ => Builtin::SignBit,
                     };
-                    return Some(b(op, Ty::bool(), vec![recv]));
+                    return Some(b(op, Ty::bool(), vec![take_expr(recv)]));
                 }
                 "sqrt" if is_float => {
                     self.arity(args, 0, n, span);
                     let ty = recv.ty;
-                    return Some(b(Builtin::Sqrt, ty, vec![recv]));
+                    return Some(b(Builtin::Sqrt, ty, vec![take_expr(recv)]));
                 }
                 "to_ptr" if rty == Ty::usize() => {
                     let t = self.type_arg(args, 0, span)?;
-                    return Some(b(Builtin::ToPtr, Ty::optional(t), vec![recv]));
+                    return Some(b(Builtin::ToPtr, Ty::optional(t), vec![take_expr(recv)]));
                 }
                 _ => return None,
             }
@@ -261,7 +266,7 @@ impl<'a, 's> FnCx<'a, 's> {
         match (rty.kind(), n) {
             (TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_), "addr") => {
                 self.arity(args, 0, n, span);
-                Some(b(Builtin::Addr, Ty::usize(), vec![recv]))
+                Some(b(Builtin::Addr, Ty::usize(), vec![take_expr(recv)]))
             }
             (
                 TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) | TyKind::Optional(_),
@@ -295,7 +300,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.error(span, format!("cannot cast `{}` to `{}`: {}", rty, t, why));
                     return Some(error_expr(span));
                 }
-                Some(b(Builtin::Cast, t, vec![recv]))
+                Some(b(Builtin::Cast, t, vec![take_expr(recv)]))
             }
             // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.
             (TyKind::Ptr { is_const, pointee }, "downcast_unchecked") => {
@@ -306,12 +311,16 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.error(span, format!("`{}` does not embed `{}` with `using`", outer, pointee));
                     return Some(error_expr(span));
                 }
-                Some(mk(target, tir::ExprKind::Coerce { kind: tir::Coercion::PtrToPtr, expr: Box::new(recv) }, span))
+                Some(mk(
+                    target,
+                    tir::ExprKind::Coerce { kind: tir::Coercion::PtrToPtr, expr: Box::new(take_expr(recv)) },
+                    span,
+                ))
             }
             // The length of a C string, up to its NUL (§5.7).
             (TyKind::ManyPtr { elem, .. }, "cstr_len") if *elem == Ty::u8() => {
                 self.arity(args, 0, n, span);
-                Some(b(Builtin::CstrLen, Ty::usize(), vec![recv]))
+                Some(b(Builtin::CstrLen, Ty::usize(), vec![take_expr(recv)]))
             }
             // Reinterpreting bytes (§6.6): any plain-data or `#bits` value as plain data.
             (_, "bits") if self.is_plain_data(rty) || rty.is_bool() || self.sema.bits_struct_ty(rty).is_some() => {
@@ -319,34 +328,34 @@ impl<'a, 's> FnCx<'a, 's> {
                     return Some(error_expr(span));
                 }
                 let t = self.type_arg(args, 0, span)?;
-                Some(self.bits_cast(recv, t, span))
+                Some(self.bits_cast(take_expr(recv), t, span))
             }
             (TyKind::Adt(..), "tag") if self.sema.union_variants(rty).is_some() => {
                 self.arity(args, 0, n, span);
                 let (_, tag) = self.sema.union_variants(rty).unwrap();
-                Some(b(Builtin::Tag, tag, vec![recv]))
+                Some(b(Builtin::Tag, tag, vec![take_expr(recv)]))
             }
             _ => self.collection_method(recv, rty, n, args, span),
         }
     }
 
-    fn collection_method(&mut self, recv: Expr, rty: Ty, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
+    fn collection_method(&mut self, recv: &mut Expr, rty: Ty, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
         // Methods of arrays and slices; a pointer to an array also works.
         let (base, elem, is_const) = match rty.kind() {
-            TyKind::Slice { elem, is_const } => (recv, *elem, *is_const),
+            TyKind::Slice { elem, is_const } => (take_expr(recv), *elem, *is_const),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {
-                let m = self.place_mutability(&recv);
+                let m = self.place_mutability(recv);
                 let c = m != Some(true);
                 if m.is_none() && matches!(n, "get_ptr" | "fill" | "swap" | "copy_from") {
                     self.error(span, format!("`.{}` needs an array variable, not a temporary", n));
                 }
-                (recv, *elem, c)
+                (take_expr(recv), *elem, c)
             }
             TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
                 let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
                     unreachable!()
                 };
-                let d = mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span);
+                let d = mk(*pointee, tir::ExprKind::Deref(Box::new(take_expr(recv))), span);
                 (d, *elem, *is_const)
             }
             _ => return None,
@@ -633,4 +642,10 @@ fn fn_cast_mismatch(from: &crate::types::FnTy, to: &crate::types::FnTy) -> Optio
         return Some(format!("the results `{}` and `{}` differ and are not both pointers", from.ret, to.ret));
     }
     None
+}
+
+/// Moves the expression out of `e`, leaving a placeholder.
+fn take_expr(e: &mut Expr) -> Expr {
+    let span = e.span;
+    std::mem::replace(e, error_expr(span))
 }

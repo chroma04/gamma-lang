@@ -30,3 +30,13 @@
 ## s8 (bug hunt) leftovers
 (#39, #40 fixed: deferred match exhaustiveness via FnCx.deferred_matches; pending handler
  literals checked at first `with`, FnCx.pending_handlers + shielded_performs.)
+## s13 (bug sweep) leftovers
+41–47 fixed in s13 (decisions/024; CLI/lock; postfix chains linear + MAX_POSTFIX_CHAIN
+100k in parser/mod.rs; print/@write to Out/Err via shared GM_NOINLINE stubs gm_pfN, integer
+@black_box as empty asm). Left:
+48. gcc time still superlinear in the size of ONE C function (9.4k-line main: ~20 s at -O1;
+    -O0 much worse). Real fix: outline long statement runs into functions sharing the frame
+    (like fiber.rs with-on outlining; defers, gm_unw exits, backtrace, stack accounting).
+    Remaining C ≈14 lines/statement (checked-arith option memsets, ie/ix labels, F.lN).
+49. gcc superlinear / segfaults on very deep nested C expressions (60k `.abs()` chain: 12 s,
+    100k: gcc crash, reported cleanly). Flatten emitted expression chains into statements.

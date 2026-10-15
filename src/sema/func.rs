@@ -77,6 +77,8 @@ pub enum Obligation {
 pub struct FnCx<'a, 's> {
     pub sema: &'a mut Sema<'s>,
     pub module: ModuleId,
+    /// Field expressions known not to name a module member.
+    pub not_module: std::collections::HashSet<ast::NodeId>,
     pub locals: Vec<tir::LocalDecl>,
     /// Block scopes, innermost last.
     pub scopes: Vec<Vec<(Symbol, LocalBinding)>>,
@@ -127,7 +129,7 @@ pub struct FnCx<'a, 's> {
     scope_depths: Vec<u32>,
     /// For each scope, the length of `sema.type_params` when it began: local type
     /// aliases are visible to type expressions through that list.
-    scope_types: Vec<(usize, usize)>,
+    scope_types: Vec<(usize, usize, usize)>,
     /// Nested function bodies, finalized together with the enclosing body.
     pub nested: Vec<NestedFn>,
     /// Set while checking a handler clause (§12.5): how its exits behave.
@@ -218,7 +220,7 @@ impl<'s> Sema<'s> {
         let ExprKind::Fn(lit) = &b.init.kind else { return };
         let sig = self.sigs[&fn_id].clone();
         self.checking.push(fn_id);
-        let outer_fns = std::mem::take(&mut self.local_fns);
+        let outer = self.enter_module_scope();
         // A generic body is checked once, with its type parameters opaque (§16.1).
         let scope_len = self.type_params.len();
         let value_scope_len = self.value_scope.len();
@@ -256,7 +258,7 @@ impl<'s> Sema<'s> {
         let (body, locals) = cx.finish(body);
         self.type_params.truncate(scope_len);
         self.value_scope.truncate(value_scope_len);
-        self.local_fns = outer_fns;
+        self.leave_module_scope(outer);
         self.checking.pop();
         let def = &mut self.prog.fns[fn_id.index()];
         def.params = params;
@@ -296,6 +298,7 @@ impl<'a, 's> FnCx<'a, 's> {
         FnCx {
             sema,
             module,
+            not_module: Default::default(),
             locals: vec![],
             scopes: vec![vec![]],
             infer: InferTable::default(),
@@ -557,6 +560,14 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         if self.lookup_local(name).is_some() {
             self.error(span, format!("`{}` is already declared in this function; locals may not be shadowed", name));
+        } else if !matches!(binding, LocalBinding::Type(_) | LocalBinding::Label) {
+            let module = self.module;
+            if self.sema.names_type(module, name) {
+                self.error(span, format!("`{}` names a type; a local may not have the name of a type (§4.6)", name));
+            }
+        }
+        if matches!(binding, LocalBinding::Untyped(_) | LocalBinding::Const { .. }) {
+            self.sema.local_consts.push((name, binding.clone()));
         }
         self.scopes.last_mut().unwrap().push((name, binding));
     }
@@ -564,15 +575,16 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn push_scope(&mut self) {
         self.scopes.push(vec![]);
         self.scope_depths.push(self.depth());
-        self.scope_types.push((self.sema.type_params.len(), self.sema.local_fns.len()));
+        self.scope_types.push((self.sema.type_params.len(), self.sema.local_fns.len(), self.sema.local_consts.len()));
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
         self.scope_depths.pop();
-        if let Some((n, f)) = self.scope_types.pop() {
+        if let Some((n, f, c)) = self.scope_types.pop() {
             self.sema.type_params.truncate(n);
             self.sema.local_fns.truncate(f);
+            self.sema.local_consts.truncate(c);
         }
     }
 
@@ -898,9 +910,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if cex.ty.is_error() || super::decls::non_constant_part(cex.ty).is_some() {
             return None;
         }
+        let n = self.sema.sess.diags.len();
         let value = match self.sema.try_eval_const(&cex) {
             Ok(v) => v,
-            Err(None) => return None,
+            // What cannot be evaluated yet (it calls a function nested in this one) runs.
+            Err(None) => {
+                self.sema.sess.diags.truncate(n);
+                return None;
+            }
             Err(Some(t)) if t.message.contains("step budget") => return None,
             Err(Some(t)) => {
                 self.sema.report_eval_failure(&cex, &t);
@@ -1124,12 +1141,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let immutable = match self.lookup_local_at(id.name) {
             Some((LocalBinding::Var(l), depth)) => !self.local_at(depth, l).mutable,
             Some(_) => true,
-            // A `#global` is mutable storage (§19.3).
+            // A `#global` is mutable storage (§19.3); a declaration with errors was reported.
             None => {
                 let module = self.module;
                 !matches!(
                     self.sema.lookup_module_name(module, id.name).map(|d| self.sema.resolve_decl(d)),
-                    Some(super::decls::DeclValue::Global { .. })
+                    Some(super::decls::DeclValue::Global { .. } | super::decls::DeclValue::Error)
                 )
             }
         };

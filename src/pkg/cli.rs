@@ -4,7 +4,7 @@
 
 use super::cache;
 use super::edit::{self, NewDep};
-use super::manifest::{Manifest, is_identifier};
+use super::manifest::{Manifest, name_problem};
 use super::{Options, Refresh, find_root, resolve, scaffold, sync};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -160,11 +160,8 @@ fn add(args: &[String]) -> Result<(), Failure> {
     let [name] = p.pos.as_slice() else {
         return Err(Failure::Usage("`add` needs exactly one dependency name".into()));
     };
-    if !is_identifier(name) {
-        return Err(Failure::Error(format!(
-            "invalid dependency name `{}`: use letters, digits and `_`, not starting with a digit",
-            name
-        )));
+    if let Some(problem) = name_problem(name, "dependency") {
+        return Err(Failure::Error(problem));
     }
     let root = root_of(Path::new(p.values.get("dir").map_or(".", |s| s.as_str())))?;
     let refs: Vec<&str> =
@@ -344,18 +341,26 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
     } else if !dir.is_dir() {
         return Err(Failure::Error(format!("{} is not a directory (`gamma new` creates one)", dir.display())));
     }
+    let mut derived_from = None;
     let name = match p.values.get("name") {
-        Some(n) if is_identifier(n) => n.clone(),
-        Some(n) => {
-            return Err(Failure::Error(format!(
-                "invalid package name `{}`: use letters, digits and `_`, not starting with a digit",
-                n
-            )));
-        }
+        Some(n) => match name_problem(n, "package") {
+            None => n.clone(),
+            Some(problem) => return Err(Failure::Error(problem)),
+        },
         None => {
             let abs = crate::source::canonicalize(&dir)
                 .map_err(|e| Failure::Error(format!("cannot use {}: {}", dir.display(), e)))?;
-            scaffold::sanitize_name(&abs.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned()))
+            let dir_name = abs.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned());
+            let name = scaffold::sanitize_name(&dir_name);
+            if let Some(problem) = name_problem(&name, "package") {
+                return Err(Failure::Error(format!(
+                    "the directory name `{dir_name}` gives the package name `{name}`: {problem}; choose one with `--name`"
+                )));
+            }
+            if name != dir_name {
+                derived_from = Some(dir_name);
+            }
+            name
         }
     };
     let report = scaffold::scaffold(&dir, &name, git)?;
@@ -366,7 +371,18 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
         println!("     Nothing to create in {}", dir.display());
         return Ok(());
     }
-    println!("     Created package `{}` in {}", name, dir.display());
+    if report.skipped.iter().any(|f| f == "gamma.toml") {
+        println!(
+            "     Created {} in {} (the existing gamma.toml is unchanged)",
+            report.created.join(", "),
+            dir.display()
+        );
+    } else {
+        println!("     Created package `{}` in {}", name, dir.display());
+    }
+    if let Some(dir_name) = derived_from {
+        println!("        Note: `{dir_name}` is not a valid package name; use `--name` to choose another");
+    }
     if report.git_initialized {
         println!("     Initialized a git repository");
     }

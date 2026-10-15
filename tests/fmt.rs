@@ -264,3 +264,49 @@ fn pattern_bindings_starting_with_a_dot_are_statements() {
         "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n",
     );
 }
+
+#[test]
+fn missing_final_newline_is_added() {
+    assert_eq!(format_source("a :: 1").unwrap(), "a :: 1\n");
+    assert_eq!(format_source("f :: fn() {\n    g()\n}").unwrap(), "f :: fn() {\n    g()\n}\n");
+    assert_eq!(format_source("a :: 1 // done").unwrap(), "a :: 1 // done\n");
+}
+
+#[test]
+fn aligned_padding_is_decided_the_same_after_reindenting() {
+    // The lines are aligned at the same source column but indented differently, so the
+    // first pass used to keep the padding and the second to collapse it.
+    for src in [
+        "main :: fn() {\n\ta   :: 1\n  bc :: 2\n}\n",
+        "main :: fn() {\n  bc :: 2\n\ta   :: 1\n}\n",
+        "T :: struct {\n\tab:   i32\n  c:  i32\n}\n",
+    ] {
+        let once = format_source(src).unwrap();
+        assert_eq!(format_source(&once).unwrap(), once, "not idempotent on {:?}", src);
+    }
+}
+
+#[test]
+fn directory_walk_skips_hidden_directories_and_package_target() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fmt_walk");
+    let _ = std::fs::remove_dir_all(&root);
+    let ugly = "main::fn(){\n}\n";
+    for d in ["src", ".git", "target", "src/target", ".claude/x"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+        std::fs::write(root.join(d).join("a.gm"), ugly).unwrap();
+    }
+    std::fs::write(root.join("gamma.toml"), "[package]\nname = \"w\"\nversion = \"0.1.0\"\n").unwrap();
+    let gamma = |args: &[&Path]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_gamma")).arg("fmt").args(args).output().unwrap()
+    };
+    assert!(gamma(&[&root]).status.success());
+    let read = |d: &str| std::fs::read_to_string(root.join(d).join("a.gm")).unwrap();
+    assert_ne!(read("src"), ugly);
+    assert_ne!(read("src/target"), ugly, "only the package's own target directory is skipped");
+    for d in [".git", "target", ".claude/x"] {
+        assert_eq!(read(d), ugly, "{} must be left alone", d);
+    }
+    // A file named explicitly is always formatted.
+    assert!(gamma(&[&root.join("target/a.gm")]).status.success());
+    assert_ne!(read("target"), ugly);
+}

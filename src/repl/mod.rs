@@ -345,19 +345,19 @@ impl Repl {
         self.run(&c, !self.recs.is_empty());
     }
 
-    fn load(&mut self, path: &str) {
+    fn load(&mut self, path: &str) -> bool {
         let path = path.trim();
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("error: cannot read {}: {}", path, e);
-                return;
+                return false;
             }
         };
         let c = input::classify(&text);
         let Some(items) = c.items else {
             eprint!("{}", input::syntax_errors(&text, self.opts.format));
-            return;
+            return false;
         };
         let (main, rest): (Vec<&ItemInfo>, Vec<&ItemInfo>) =
             items.iter().partition(|i| i.names.iter().any(|n| n == "main"));
@@ -373,7 +373,9 @@ impl Repl {
             .collect();
         if let Err(msg) = self.try_decls(&text, &owned) {
             eprint!("{}", msg);
+            return false;
         }
+        true
     }
 
     fn list(&self) {
@@ -424,7 +426,9 @@ pub fn run(mut opts: Options) -> ExitCode {
     let quiet = opts.quiet;
     let mut repl = Repl::new(opts);
     for p in preload {
-        repl.load(&p.to_string_lossy());
+        if !repl.load(&p.to_string_lossy()) {
+            return ExitCode::FAILURE;
+        }
     }
     if !quiet {
         println!("gamma {} repl; :help for commands, :quit to leave", env!("CARGO_PKG_VERSION"));

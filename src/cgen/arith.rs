@@ -70,7 +70,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// `v` reduced to `bits` bits (two's complement wrap), as a C expression.
-    fn normalize(&self, ii: IntInfo, v: &str) -> String {
+    pub(super) fn normalize(&self, ii: IntInfo, v: &str) -> String {
         if ii.exact() {
             return v.to_string();
         }
@@ -472,6 +472,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     "memset(&{r}, 0, sizeof {r}); memcpy(&{r}, {a}, sizeof {r} < {sz} ? sizeof {r} : {sz});",
                     sz = self.g.ty.size(at)
                 ));
+                if let Some(ii) = self.int_info(t)
+                    && self.wide(t).is_none()
+                    && !ii.exact()
+                {
+                    let v = self.normalize(ii, &r);
+                    self.line(&format!("{r} = {v};"));
+                }
                 Ok(r)
             }
             Builtin::Cast => {
@@ -734,9 +741,24 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 if t.is_unit() {
                     return Ok(vals[0].clone());
                 }
-                // The value goes through memory behind a volatile pointer, so the compiler can
-                // assume nothing about what it reads back.
+                // The compiler must assume nothing about the value. An integer or a boolean
+                // goes through an empty `asm` that may change it, which needs no stack slot
+                // (a program with thousands of sites would give the C compiler thousands of
+                // slots to lay out); any other value goes through memory behind a volatile
+                // pointer.
                 let c = self.g.ty.cty(t);
+                let in_register = self.g.ty.wide(t).is_none()
+                    && !self.g.prog.target.filc
+                    && match self.g.ty.repr(t) {
+                        Repr::Int { storage, .. } => storage <= 8,
+                        Repr::Bool => true,
+                        _ => false,
+                    };
+                if in_register {
+                    let v = self.tmp(t, &vals[0]);
+                    self.line(&format!("__asm__ volatile (\"\" : \"+r\"({v}));"));
+                    return Ok(v);
+                }
                 let slot = self.tmp(t, &vals[0]);
                 let p = format!("t{}", self.fresh());
                 self.line(&format!("{c} *volatile {p} = &{slot};"));

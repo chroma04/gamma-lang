@@ -128,6 +128,7 @@ fn generate_entries(
         handler_done: vec![false; prog.handlers.len()],
         decl_done: vec![false; prog.handler_decls.len()],
         line_paths: HashMap::new(),
+        stubs: HashMap::new(),
     };
     for &entry in entries {
         g.queue(entry);
@@ -194,6 +195,8 @@ pub struct Gen<'a> {
     pub sources: &'a SourceMap,
     pub opts: Options,
     effect_ids: HashMap<EffectRef, u32>,
+    /// The shared functions that perform an ambient output effect, by signature.
+    pub stubs: HashMap<String, String>,
     /// Static byte arrays by content.
     statics: HashMap<Vec<u8>, usize>,
     static_defs: String,

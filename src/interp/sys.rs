@@ -328,14 +328,45 @@ impl<'a> Machine<'a> {
                 let path = self.path_arg(e, &vals[0])?;
                 let flags = self.int_arg(&args[1], &vals[1]) as u32;
                 let has = |f: u32| flags & f != 0;
-                let r = std::fs::OpenOptions::new()
-                    .read(has(tir::FS_READ))
-                    .write(has(tir::FS_WRITE))
-                    .append(has(tir::FS_APPEND))
-                    .create(has(tir::FS_CREATE) && !has(tir::FS_EXCLUSIVE))
-                    .create_new(has(tir::FS_EXCLUSIVE))
-                    .truncate(has(tir::FS_TRUNCATE))
-                    .open(path);
+                // Like POSIX, an access mode with neither write nor append is read-only; there
+                // `create`, `exclusive` and `truncate` are passed to open(2) as they are.
+                let write = has(tir::FS_WRITE) || has(tir::FS_APPEND);
+                let mut o = std::fs::OpenOptions::new();
+                o.read(has(tir::FS_READ) || !write).write(has(tir::FS_WRITE)).append(has(tir::FS_APPEND));
+                if write {
+                    o.create(has(tir::FS_CREATE) && !has(tir::FS_EXCLUSIVE))
+                        .create_new(has(tir::FS_EXCLUSIVE))
+                        .truncate(has(tir::FS_TRUNCATE));
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        let mut fl = 0;
+                        if has(tir::FS_CREATE) || has(tir::FS_EXCLUSIVE) {
+                            fl |= libc::O_CREAT;
+                        }
+                        if has(tir::FS_EXCLUSIVE) {
+                            fl |= libc::O_EXCL;
+                        }
+                        if has(tir::FS_TRUNCATE) {
+                            fl |= libc::O_TRUNC;
+                        }
+                        o.custom_flags(fl);
+                    }
+                    // Windows: ask for write access to pass the standard library's checks of
+                    // the creation flags, then open with read access only.
+                    #[cfg(windows)]
+                    if has(tir::FS_CREATE) || has(tir::FS_EXCLUSIVE) || has(tir::FS_TRUNCATE) {
+                        use std::os::windows::fs::OpenOptionsExt;
+                        const GENERIC_READ: u32 = 0x8000_0000;
+                        o.write(true)
+                            .create(has(tir::FS_CREATE) && !has(tir::FS_EXCLUSIVE))
+                            .create_new(has(tir::FS_EXCLUSIVE))
+                            .truncate(has(tir::FS_TRUNCATE))
+                            .access_mode(GENERIC_READ);
+                    }
+                }
+                let r = o.open(path);
                 let sys = &mut self.sys;
                 code(r.map(|f| {
                     let h = sys.handle();

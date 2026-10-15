@@ -52,7 +52,45 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma repl <file>` exits with status 1 when the file cannot be loaded.
+- `--mode=`, `--backend=` and `--diag-format=` with a bad value report the value and what is
+  accepted, instead of "unknown option".
+- `gamma fmt <directory>` skips hidden directories and a package's `target` directory.
+- `gamma lsp` with an unknown option reports it (status 2).
+- A hand-edited `version` or `checksum` in `gamma.lock` is noticed: a plain run repairs the
+  version, `--locked` fails, and the checksum of a cached checkout is verified against the
+  lock. An empty `gamma.lock` counts as missing.
 - A local type alias can be passed as the type argument of a generic function.
+- `math.atan2` no longer returns NaN when an operand is of magnitude 2^1023 or more.
+- The interpreter opens a file with neither `write` nor `append` read-only, like the C back
+  end, instead of failing with `InvalidInput`.
+- An allocation too large for the host is an `AllocError` in the interpreter, as in the C
+  back end, instead of a trap; `std/arena` no longer overflows on huge requests.
+- `json.Writer` supports the nesting depth `json.parse` accepts by default (512), and a
+  `write_string` or `key` that fails on invalid UTF-8 leaves the writer unchanged.
+- `fmt.zero_pad` keeps the sign and prefix when the text is a slice of the output buffer.
+- `time.to_unix` no longer traps for the earliest representable instant.
+- `bytes.read_int` and `bytes.write_int` work for odd widths such as `u24`.
+- `str.Builder.write` accepts a template without arguments.
+- The `std/io` example for `StringIn` compiles.
+- The REPL reports a stray closing bracket or an unfinished block comment on a line of its
+  own at once, instead of swallowing the following lines.
+- `gamma lsp` answers requests before `initialize` with error -32002, survives a huge
+  `Content-Length`, and does not format a document that has syntax errors.
+- Package and dependency names that can never be imported (keywords, `_`, builtin type
+  names, `std`, `core`) are rejected; `gamma new` notes when it changes the directory name,
+  and `gamma init` no longer says it created a package over an existing `gamma.toml`.
+- `gamma fmt` formats files that do not end in a line break, and formatting is stable when
+  aligned lines are re-indented.
+- `gamma doc` renders code spans with several backticks and `***bold italic***`, and
+  demotes headings of doc comments in Markdown output as in HTML.
+- C back end: `@bswap` of wide integers whose width is not a multiple of 64, and loads of
+  integers of odd widths (`u7`, `i24`, …) whose padding bits are set.
+- Compile-time evaluation may install declared handlers (including an allocator's), no
+  longer crashes on a local constant that calls a nested function or on initializers with
+  type errors.
+- Rejected at compile time: handler literals in tuples or behind `&`, function literals
+  that perform effects outside their type used as data, `&` of a `#bits` field.
 
 ## 0.1.0 (not yet tagged)
 

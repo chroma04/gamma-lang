@@ -220,6 +220,9 @@ pub struct Sema<'s> {
     /// The capture-free nested functions in scope in the body being checked: like
     /// top-level functions, they may be compile-time arguments (§11.8).
     pub local_fns: Vec<(Symbol, FnId)>,
+    /// The constants (`K :: 4`) of the function being checked that are in scope, for
+    /// compile-time expressions in it (§17.2): only `Untyped` and `Const` bindings.
+    pub local_consts: Vec<(Symbol, func::LocalBinding)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
@@ -238,6 +241,8 @@ pub struct Sema<'s> {
     pub decl_with_checks: Vec<(Vec<usize>, Ty, Span)>,
     /// Handler declarations (§12.6) found while loading modules.
     handler_items: Vec<(ModuleId, Rc<ast::Item>)>,
+    /// Clauses of registered handler declarations whose bodies are not checked yet.
+    pending_clauses: Vec<handler_decl::PendingClause>,
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
     /// its clauses may perform.
     pub handler_decl_effects: Vec<EffectSet>,
@@ -370,6 +375,7 @@ impl<'s> Sema<'s> {
             import_edges: vec![],
             type_params: vec![],
             local_fns: vec![],
+            local_consts: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
             effect_params: Default::default(),
@@ -378,6 +384,7 @@ impl<'s> Sema<'s> {
             decl_clause_breaks: HashMap::new(),
             decl_with_checks: vec![],
             handler_items: vec![],
+            pending_clauses: vec![],
             handler_decl_effects: vec![],
             handler_templates: vec![],
             handler_instances: HashMap::new(),
@@ -538,13 +545,14 @@ impl<'s> Sema<'s> {
                 self.error(item.span, "only `@static_assert` may appear as a top-level declaration");
             }
         }
-        let clauses = self.declare_handlers();
+        self.ensure_handlers_declared();
         if self.tests_enabled {
             self.check_tests(root);
         } else {
             self.find_main(root);
         }
         self.drain_bodies();
+        let clauses = std::mem::take(&mut self.pending_clauses);
         self.check_handler_clauses(clauses);
         self.drain_bodies();
         self.check_decl_breaks();

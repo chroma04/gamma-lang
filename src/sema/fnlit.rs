@@ -24,11 +24,16 @@ impl<'a, 's> FnCx<'a, 's> {
             );
             return error_expr(span);
         }
-        let expected = expect.map(|t| self.infer.resolve(t)).and_then(|t| match t.kind() {
+        // A literal written for `?^fn(…)` is the function pointer it wraps.
+        let target = expect.map(|t| self.infer.resolve(t)).map(|t| match t.kind() {
+            TyKind::Optional(inner) if matches!(inner.kind(), TyKind::FnPtr(_)) => *inner,
+            _ => t,
+        });
+        let expected = target.and_then(|t| match t.kind() {
             TyKind::Fn(sig) | TyKind::FnPtr(sig) => Some((**sig).clone()),
             _ => None,
         });
-        let wants_pointer = expect.is_some_and(|t| matches!(t.kind(), TyKind::FnPtr(_)));
+        let wants_pointer = target.is_some_and(|t| matches!(t.kind(), TyKind::FnPtr(_)));
         // Parameter types come from annotations, or from the expected function type.
         let mut params: Vec<ParamInfo> = vec![];
         for p in &lit.sig.params {
@@ -214,6 +219,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.sema.prog.fns[fn_id.index()].parent = parent;
         // The value carries the handler context where it is written for its own effects,
         // so the function takes that context like any effectful function.
+        let carries_context = !own.is_empty();
         if !own.is_empty() {
             let mut all: Vec<EffectRef> = effects.effects.to_vec();
             all.extend(own);
@@ -247,7 +253,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             mk(Ty::intern(TyKind::Fn(Box::new(fty))), tir::ExprKind::Closure(fn_id), span)
         } else {
-            let ty = if expect.is_some_and(|t| matches!(t.kind(), TyKind::Fn(_))) {
+            // A literal that performs effects outside its type carries the handlers where
+            // it is written, so it is second-class like one that captures (§11.6).
+            let ty = if carries_context || expect.is_some_and(|t| matches!(t.kind(), TyKind::Fn(_))) {
                 Ty::intern(TyKind::Fn(Box::new(fty)))
             } else {
                 Ty::intern(TyKind::FnPtr(Box::new(fty)))

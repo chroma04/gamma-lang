@@ -517,6 +517,12 @@ impl Ty {
     pub fn is_error(self) -> bool {
         matches!(self.kind(), TyKind::Error)
     }
+    /// Whether the error type occurs anywhere in this type (`[3]<error>`, say).
+    pub fn mentions_error(self) -> bool {
+        let mut found = false;
+        self.walk(&mut |t| found |= t.is_error());
+        found
+    }
     pub fn is_never(self) -> bool {
         matches!(self.kind(), TyKind::Never)
     }

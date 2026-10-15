@@ -149,9 +149,11 @@ impl Lock {
         Ok(lock)
     }
 
-    /// Reads `path`; a missing file is `Ok(None)`.
+    /// Reads `path`; a missing or empty file is `Ok(None)`.
     pub fn read(path: &Path) -> Result<Option<Lock>, String> {
         match std::fs::read_to_string(path) {
+            // An empty file is no lock: it is made again.
+            Ok(t) if t.trim().is_empty() => Ok(None),
             Ok(t) => Lock::parse(&t).map(Some).map_err(|e| format!("{}: {}", path.display(), e)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("cannot read {}: {}", path.display(), e)),

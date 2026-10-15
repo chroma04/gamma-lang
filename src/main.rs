@@ -47,8 +47,8 @@ options:
   --all                       (test, bench) also run those of the modules of the package
                               that nothing imports (every directory with `.gm` files)
   --show-output               (test, bench) also print the output of the tests that pass
-  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; the output is
-                              still in order)
+  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
+                              the output is still in order)
   --time                      (test, bench) print how long each test took and the total
   --coverage[=<file>]         (test) count the lines of the package that the tests run, with
                               the interpreter; print a table, and with <file> write LCOV
@@ -140,6 +140,10 @@ fn parse_jobs(text: &str) -> Result<usize, String> {
     }
 }
 
+fn invalid_value(option: &str, value: &str, expected: &str) -> String {
+    format!("invalid value `{}` for {} (expected {})", value, option, expected)
+}
+
 fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| "missing command".to_string())?;
@@ -196,17 +200,21 @@ fn parse_args() -> Result<Options, String> {
             a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
             "--backend=c" => opts.c_backend = true,
             "--backend=interp" => opts.c_backend = false,
+            a if a.starts_with("--backend=") => {
+                return Err(invalid_value("--backend", &a["--backend=".len()..], "c or interp"));
+            }
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
             "-g" => {
                 opts.debug_info = true;
                 opts.debug_info_given = true;
             }
-            "--mode=debug" | "--mode=checked" | "--mode=safe" | "--mode=fast" => {
-                opts.mode = match arg.as_str() {
-                    "--mode=debug" => gamma::interp::Mode::Debug,
-                    "--mode=checked" => gamma::interp::Mode::Checked,
-                    "--mode=safe" => gamma::interp::Mode::Safe,
-                    _ => gamma::interp::Mode::Fast,
+            a if a.starts_with("--mode=") => {
+                opts.mode = match &a["--mode=".len()..] {
+                    "debug" => gamma::interp::Mode::Debug,
+                    "checked" => gamma::interp::Mode::Checked,
+                    "safe" => gamma::interp::Mode::Safe,
+                    "fast" => gamma::interp::Mode::Fast,
+                    v => return Err(invalid_value("--mode", v, "debug, checked, safe or fast")),
                 };
                 opts.mode_given = true;
             }
@@ -219,6 +227,9 @@ fn parse_args() -> Result<Options, String> {
             }
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
+            a if a.starts_with("--diag-format=") => {
+                return Err(invalid_value("--diag-format", &a["--diag-format=".len()..], "human or short"));
+            }
             a if a.starts_with("--target=") => {
                 let triple = &a["--target=".len()..];
                 if triple.is_empty() {
@@ -292,6 +303,10 @@ fn compiler_main() -> ExitCode {
         return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
     }
     if std::env::args().nth(1).as_deref() == Some("lsp") {
+        if let Some(a) = std::env::args().nth(2) {
+            eprintln!("gamma: unknown option `{}`\n\n{}", a, USAGE);
+            return ExitCode::from(2);
+        }
         return match gamma::lsp::run_stdio() {
             Ok(code) => ExitCode::from(code),
             Err(e) => {
@@ -876,19 +891,26 @@ fn fmt_command(args: Vec<String>) -> ExitCode {
 }
 
 /// Adds `path` (a file) or every `.gm` file below it (a directory) to `out`, in name order.
+/// A file named explicitly is always included; the walk of a directory skips hidden
+/// directories (`.git`, …) and the `target` directory of a package.
 fn collect_gm_files(path: &std::path::Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if path.is_dir() {
-        let mut entries: Vec<PathBuf> =
-            std::fs::read_dir(path)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
-        entries.sort();
-        for e in entries {
-            if e.is_dir() || e.extension().is_some_and(|x| x == "gm") {
-                collect_gm_files(&e, out)?;
+    if path.is_dir() { collect_dir(path, out) } else { std::fs::metadata(path).map(|_| out.push(path.to_path_buf())) }
+}
+
+fn collect_dir(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
+    entries.sort();
+    let package_root = dir.join("gamma.toml").is_file();
+    for e in entries {
+        let name = e.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if e.is_dir() {
+            if name.starts_with('.') || (package_root && name == "target") {
+                continue;
             }
+            collect_dir(&e, out)?;
+        } else if e.extension().is_some_and(|x| x == "gm") {
+            out.push(e);
         }
-    } else {
-        std::fs::metadata(path)?;
-        out.push(path.to_path_buf());
     }
     Ok(())
 }

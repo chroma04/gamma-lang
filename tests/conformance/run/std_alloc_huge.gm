@@ -1,0 +1,25 @@
+// An allocation no allocator can provide is an `AllocError` value, never a trap.
+arena :: import "std/arena"
+
+ok_alloc :: fn(n: usize) -> bool \ {Alloc} {
+    p := make(u8, n) else return false
+    free(p)
+    return true
+}
+
+main :: fn() \ {Out, Alloc} {
+    print("{}\n", ok_alloc(1 << 62))
+    print("{}\n", ok_alloc(0xFFFF_FFFF_FFFF_FFF0))
+    print("{}\n", ok_alloc(100))
+    l := list(u64)
+    defer l.deinit()
+    print("{}\n", l.reserve(1 << 60))
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        print("{}\n", ok_alloc(0xFFFF_FFFF_FFFF_FFF0))
+        print("{}\n", ok_alloc(0xFFFF_FFFF_FFFF_F000))
+        print("{}\n", ok_alloc(1 << 62))
+        print("{}\n", ok_alloc(100))
+    }
+}

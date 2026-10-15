@@ -892,7 +892,10 @@ impl<'a> Machine<'a> {
                 if !align.is_power_of_two() {
                     return self.trap(span, format!("allocation alignment {} is not a power of two", align));
                 }
-                let addr = self.alloc_mem(span, size as usize, align, super::memory::AllocKind::Heap, true)?;
+                // An allocation the host cannot provide is a null result, not a trap.
+                let Ok(addr) = self.mem.alloc(size, align, super::memory::AllocKind::Heap, true) else {
+                    return Ok(Value::Bytes(self.make_none(res_ty)));
+                };
                 // Fresh storage is unspecified; Debug builds fill it with a pattern (§18.3).
                 if self.mode == super::Mode::Debug && size > 0 {
                     let fill = vec![0xAAu8; size as usize];

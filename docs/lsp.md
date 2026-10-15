@@ -17,7 +17,7 @@ server is part of the `gamma` binary and needs no configuration.
 | Completion | Locals in scope, the module's declarations, the core library, builtin types and keywords. After a `.`: fields and methods of a value, the `pub` names of a module, the variants of a union type, the operations of an effect. |
 | Signature help | The parameters of the function being called, with the current argument marked. |
 | Document symbols | The outline of a file: declarations, with fields, variants and operations nested in them. |
-| Formatting | The whole document, as `gamma fmt` formats it. A document that does not parse is left alone. |
+| Formatting | The whole document, as `gamma fmt` formats it. A document that has syntax errors is left alone (no edits), although `gamma fmt` formats any text that lexes. |
 
 Positions use UTF-16 code units, as the protocol says. If the client offers
 UTF-8, the server uses byte offsets instead.

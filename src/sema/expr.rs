@@ -269,6 +269,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
             return mk(self.sema.value_params[&pid], tir::ExprKind::ValueParam(pid), span);
         }
+        // A constant of the body whose compile-time expression this is (§17.2).
+        if let Some((_, b)) = self.sema.local_consts.iter().rev().find(|(n, _)| *n == name) {
+            match b.clone() {
+                LocalBinding::Untyped(v) => return self.untyped_literal(&v, span),
+                LocalBinding::Const { ty, id } => return mk(ty, tir::ExprKind::Const(id), span),
+                _ => {}
+            }
+        }
         // A nested function of the body whose compile-time argument this is.
         if let Some(&(_, f)) = self.sema.local_fns.iter().rev().find(|(n, _)| *n == name) {
             return self.fn_ref(f, span);
@@ -298,7 +306,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("expected a value, found the type `{}`", name));
                 error_expr(span)
             }
-            DeclValue::Effect(_) => {
+            DeclValue::Effect(_) | DeclValue::EffectInst(_) => {
                 self.error(span, format!("expected a value, found the effect `{}`", name));
                 error_expr(span)
             }
@@ -325,8 +333,17 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn module_of(&mut self, e: &ast::Expr) -> Option<super::ModuleId> {
         // `m.n` where `n` is a public module binding of module `m`.
         if let ExprKind::Field { base, name } = &e.kind {
-            let m = self.module_of(base)?;
-            return self.sema.public_module_member(m, name.name);
+            // Remembering failures keeps a long field chain from being walked again at
+            // every link. Synthetic nodes share one id and are not remembered.
+            let key = e.id;
+            if self.not_module.contains(&key) {
+                return None;
+            }
+            let found = self.module_of(base).and_then(|m| self.sema.public_module_member(m, name.name));
+            if found.is_none() && key.0 != u32::MAX {
+                self.not_module.insert(key);
+            }
+            return found;
         }
         let ExprKind::Ident(id) = &e.kind else { return None };
         if self.lookup_local(id.name).is_some() {
@@ -398,16 +415,17 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
-    /// Reports a second-class function value used as `what`, which would let it outlive
-    /// its captures (§11.6). True if it was reported.
+    /// Reports a second-class value (a function or handler literal) used as `what`, which
+    /// would let it outlive its captures (§11.6). True if it was reported.
     fn reject_second_class(&mut self, v: &Expr, what: &str) -> bool {
-        if !matches!(self.infer.resolve(v.ty).kind(), TyKind::Fn(_)) {
-            return false;
-        }
-        self.error(
-            v.span,
-            format!("a second-class function cannot be {}; use a function pointer `^fn(…)` (§11.6)", what),
-        );
+        let msg = match self.infer.resolve(v.ty).kind() {
+            TyKind::Fn(_) => {
+                format!("a second-class function cannot be {}; use a function pointer `^fn(…)` (§11.6)", what)
+            }
+            TyKind::Handler(_) => format!("a handler literal is second-class and cannot be {} (§11.6)", what),
+            _ => return false,
+        };
+        self.error(v.span, msg);
         true
     }
 
@@ -523,6 +541,16 @@ impl<'a, 's> FnCx<'a, 's> {
                 let temp_ok = std::mem::take(&mut self.temp_ref_arg);
                 let v = self.expr(operand, None);
                 if self.reject_second_class(&v, "the target of `&`") {
+                    return error_expr(span);
+                }
+                if let tir::ExprKind::Field { base, .. } = &v.kind
+                    && let TyKind::Adt(id, _) = base.ty.kind()
+                    && matches!(
+                        self.sema.prog.adts.get(id).map(|d| &d.kind),
+                        Some(tir::AdtKind::Struct { bits: Some(_), .. })
+                    )
+                {
+                    self.error(span, "the fields of a `#bits` struct have no address (§5.10.5)");
                     return error_expr(span);
                 }
                 match self.place_mutability(&v) {
@@ -1093,7 +1121,7 @@ impl<'a, 's> FnCx<'a, 's> {
             (TyKind::Error, _) => return error_expr(span),
             _ => {}
         }
-        if let Some(e) = self.struct_field(b.clone(), name.name, span) {
+        if let Some(e) = self.struct_field(b, name.name, span) {
             return e;
         }
         self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));

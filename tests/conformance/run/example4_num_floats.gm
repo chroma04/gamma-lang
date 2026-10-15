@@ -76,12 +76,12 @@ main :: fn() \ {Out} {
     print("sat: {} {} {} {}\n", ((3.0e9).sat(i32), (-3.0e9).sat(i32), (300.7).sat(u8), nan.sat(u8)))
 
     // Integer to float: rounds to nearest even when the integer is too wide.
-    i53: u64 = 9007199254740993
-    print("2^53+1 -> {}\n", i53.to(f64))
+    big53: u64 = 9007199254740993
+    print("2^53+1 -> {}\n", big53.to(f64))
     imax: i64 = 9223372036854775807
     print("i64 max -> {}\n", imax.to(f64))
-    i24: i32 = 16777217
-    print("2^24+1 -> f32 {}\n", i24.to(f32))
+    big24: i32 = 16777217
+    print("2^24+1 -> f32 {}\n", big24.to(f32))
     wide: u128 = 340282366920938463463374607431768211455
     print("u128 max -> {}\n", wide.to(f64))
 

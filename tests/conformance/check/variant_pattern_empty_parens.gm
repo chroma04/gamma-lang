@@ -1,0 +1,14 @@
+//! stage: check
+// Empty parentheses after a variant with a payload are an error, not a crash.
+E :: union { A: i32, B, C: (i32, i32) }
+
+f :: fn(e: E) {
+    match e {
+        .A() => {} //~ ERROR single payload
+        .B => {}
+        .C(_) => {}
+    }
+    if .A() := e {} //~ ERROR single payload
+}
+
+main :: fn() {}

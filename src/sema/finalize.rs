@@ -204,7 +204,8 @@ impl<'a, 's> FnCx<'a, 's> {
                             if !self.failed_coercions.contains(&inner.span) {
                                 self.error(inner.span, format!("expected `{}`, found `{}`", target, inner.ty));
                             }
-                            inner
+                            // Nothing may evaluate a value of the wrong type.
+                            super::func::error_expr(inner.span)
                         }
                     }
                 };

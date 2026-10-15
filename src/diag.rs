@@ -163,6 +163,11 @@ pub enum DiagFormat {
 }
 
 /// Renders one diagnostic in the given format.
+/// Source lines longer than this (in characters) are shown as a window of `WINDOW`
+/// characters around the location of a diagnostic.
+const LONG_LINE: u32 = 200;
+const WINDOW: u32 = 120;
+
 pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
     let mut out = String::new();
     let loc = if d.span == Span::DUMMY {
@@ -198,16 +203,26 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
                 let gutter = line.to_string().len().max(2);
                 let pad = " ".repeat(gutter);
                 let _ = writeln!(out, "{}--> {}:{}:{}", pad, f.path.display(), line, col);
-                let text = f.line_text(line);
-                let _ = writeln!(out, "{} |", pad);
-                let _ = writeln!(out, "{:>w$} | {}", line, text.replace('\t', " "), w = gutter);
+                let text = f.line_text(line).replace('\t', " ");
+                let len = text.chars().count() as u32;
                 let (end_line, end_col) = f.line_col(d.span.hi);
-                let width = if end_line == line {
-                    (end_col - col).max(1)
+                let mut width = if end_line == line { (end_col - col).max(1) } else { (len + 1 - col).max(1) };
+                // A very long line is shown as a window around the location, so that many
+                // errors on one line do not repeat all of it.
+                let (shown, caret) = if len > LONG_LINE {
+                    let start = (col - 1).saturating_sub(WINDOW / 3);
+                    let end = (start + WINDOW).min(len);
+                    let body: String = text.chars().skip(start as usize).take((end - start) as usize).collect();
+                    let pre = if start > 0 { "…" } else { "" };
+                    let post = if end < len { "…" } else { "" };
+                    width = width.min(end + 1 - col);
+                    (format!("{pre}{body}{post}"), col - 1 - start + pre.chars().count() as u32)
                 } else {
-                    (text.chars().count() as u32 + 1 - col).max(1)
+                    (text, col - 1)
                 };
-                let _ = writeln!(out, "{} | {}{}", pad, " ".repeat(col as usize - 1), "^".repeat(width as usize));
+                let _ = writeln!(out, "{} |", pad);
+                let _ = writeln!(out, "{:>w$} | {}", line, shown, w = gutter);
+                let _ = writeln!(out, "{} | {}{}", pad, " ".repeat(caret as usize), "^".repeat(width.max(1) as usize));
             }
             for l in &d.labels {
                 if l.span == Span::DUMMY {
@@ -223,4 +238,25 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::SourceMap;
+
+    #[test]
+    fn long_lines_are_shown_around_the_location() {
+        let mut sm = SourceMap::new();
+        let line = format!("x := {}y{}", "a".repeat(1000), "b".repeat(1000));
+        let f = sm.add("t.gm", line.clone());
+        let at = line.find('y').unwrap() as u32;
+        let out = render(&sm, &Diagnostic::error(Span { file: f, lo: at, hi: at + 1 }, "here"), DiagFormat::Human);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[3].chars().count() < 140, "{}", lines[3]);
+        assert!(lines[3].contains("…a") && lines[3].contains("b…"), "{}", lines[3]);
+        // The caret is under the `y`.
+        let caret = lines[4].find('^').unwrap();
+        assert_eq!(lines[3].chars().nth(lines[4][..caret].chars().count()), Some('y'), "{}", out);
+    }
 }

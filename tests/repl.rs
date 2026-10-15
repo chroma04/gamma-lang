@@ -184,3 +184,28 @@ fn main_is_reserved() {
     let (_, err) = repl("main :: fn() {}\n");
     assert!(err.contains("`main` is reserved"), "{}", err);
 }
+
+#[test]
+fn a_stray_closing_bracket_is_reported_at_once() {
+    let (out, err) = repl("}\n3\n4\n");
+    assert_eq!(out, "3\n4\n");
+    assert!(err.contains("unmatched"), "{err}");
+}
+
+#[test]
+fn a_line_opening_a_block_comment_is_not_blank() {
+    let (out, err) = repl("/* a\n*/\n5\n");
+    assert_eq!(out, "5\n");
+    assert_eq!(err, "");
+}
+
+#[test]
+fn a_missing_preload_file_is_an_error_status() {
+    let out = Command::new(GAMMA)
+        .args(["repl", "definitely_missing_file.gm"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("cannot start gamma");
+    assert_eq!(out.status.code(), Some(1), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
+}

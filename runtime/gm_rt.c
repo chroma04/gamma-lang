@@ -642,13 +642,16 @@ GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits) {
     return c;
 }
 
-GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits) {
-    size_t sz = GM_WBYTES(bits);
-    for (size_t i = 0; i < sz / 2; i++) {
-        uint8_t x = *gm_wbp(a, i), y = *gm_wbp(a, sz - 1 - i);
-        *gm_wbp(r, i) = y;
-        *gm_wbp(r, sz - 1 - i) = x;
-    }
+GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
+    size_t n = bits / 8, sz = GM_WBYTES(bits);
+    uint64_t stack[GM_WSTACK];
+    uint64_t *t = gm_wscratch(stack, GM_WSTACK, sz / 8);
+    uint8_t *tb = (uint8_t *)t;
+    memset(tb, 0, sz);
+    for (size_t i = 0; i < n; i++) *gm_wbp(tb, i) = *gm_wbp(a, n - 1 - i);
+    memcpy(r, tb, sz);
+    gm_wfix(r, bits, sgn);
+    gm_wscratch_free(t, stack);
 }
 
 GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn) {
@@ -3123,6 +3126,9 @@ GM_API void *gm_heap_alloc(size_t size, size_t align) {
 #ifdef __FILC__
     /* Under Fil-C a block is an allocation of its own, so the capability of the pointer
        covers exactly the block, and freeing it revokes every pointer into it. */
+    /* Fil-C stops the program on a request larger than it can ever serve; no address
+       space holds 2^47 bytes, so such a request fails like any other. */
+    if ((uint64_t)size >= ((uint64_t)1 << 47)) return NULL;
     uint8_t *p = (uint8_t *)zgc_aligned_alloc(align, size);
     if (p == NULL) return NULL;
     uintptr_t a = (uintptr_t)p;

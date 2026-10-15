@@ -17,6 +17,28 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// Moves the headings of Markdown `text` down by `by` levels (to at most 6), so that
+/// they sit below the heading of the item they document. Fenced code is left alone.
+pub fn demote_headings(text: &str, by: usize) -> String {
+    let mut in_fence = false;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let t = line.trim_start();
+            if t.starts_with("```") {
+                in_fence = !in_fence;
+            }
+            match heading(t) {
+                Some((level, title)) if !in_fence && !is_indented(line) => {
+                    format!("{} {}", "#".repeat((level + by).min(6)), title)
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect();
+    lines.join("\n")
+}
+
 /// Renders Markdown `text` to HTML.
 pub fn render(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -193,16 +215,50 @@ fn table(lines: &[&str], mut i: usize, out: &mut String) -> usize {
 /// Inline Markdown: code spans, strong, emphasis and links.
 pub fn inline(s: &str) -> String {
     let mut out = String::new();
-    let mut rest = s;
-    while let Some(start) = rest.find('`') {
-        let after = &rest[start + 1..];
-        let Some(len) = after.find('`') else { break };
-        out.push_str(&emphasis(&rest[..start]));
-        out.push_str(&format!("<code>{}</code>", escape(&after[..len])));
-        rest = &after[len + 1..];
+    let rest = s;
+    let mut plain_from = 0;
+    let mut pos = 0;
+    while let Some(off) = rest[pos..].find('`') {
+        let start = pos + off;
+        let n = rest[start..].chars().take_while(|&c| c == '`').count();
+        let after = start + n;
+        match closing_run(&rest[after..], n) {
+            Some(len) => {
+                out.push_str(&emphasis(&rest[plain_from..start]));
+                out.push_str(&format!("<code>{}</code>", escape(&code_span(&rest[after..after + len]))));
+                plain_from = after + len + n;
+                pos = plain_from;
+            }
+            // No matching run: the backticks are literal text.
+            None => pos = after,
+        }
     }
-    out.push_str(&emphasis(rest));
+    out.push_str(&emphasis(&rest[plain_from..]));
     out
+}
+
+/// The offset of the next run of exactly `n` backticks in `s`.
+fn closing_run(s: &str, n: usize) -> Option<usize> {
+    let mut i = 0;
+    while let Some(off) = s[i..].find('`') {
+        let start = i + off;
+        let len = s[start..].chars().take_while(|&c| c == '`').count();
+        if len == n {
+            return Some(start);
+        }
+        i = start + len;
+    }
+    None
+}
+
+/// The text of a code span: one space is removed from each end if both have one and
+/// the span is not only spaces.
+fn code_span(s: &str) -> String {
+    if s.len() > 2 && s.starts_with(' ') && s.ends_with(' ') && s.chars().any(|c| c != ' ') {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Strong, emphasis and links in text without code spans.
@@ -222,13 +278,17 @@ fn emphasis(s: &str) -> String {
             }
             i = next;
         } else if c == '*' {
-            let n = if chars.get(i + 1) == Some(&'*') { 2 } else { 1 };
+            let n = chars[i..].iter().take(3).take_while(|&&c| c == '*').count();
             let opens = chars.get(i + n).is_some_and(|c| !c.is_whitespace() && *c != '*');
             let close = if opens { find_close(&chars, i + n, n) } else { None };
             if let Some(j) = close {
                 let inner: String = chars[i + n..j].iter().collect();
-                let tag = if n == 2 { "strong" } else { "em" };
-                out.push_str(&format!("<{0}>{1}</{0}>", tag, emphasis(&inner)));
+                let (open, close) = match n {
+                    1 => ("<em>", "</em>"),
+                    2 => ("<strong>", "</strong>"),
+                    _ => ("<em><strong>", "</strong></em>"),
+                };
+                out.push_str(&format!("{}{}{}", open, emphasis(&inner), close));
                 i = j + n;
             } else {
                 out.push('*');

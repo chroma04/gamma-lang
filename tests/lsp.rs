@@ -561,7 +561,32 @@ fn formatting_returns_a_whole_document_edit() {
     lsp.change(&path, 3, "main :: fn( {\n");
     let edits = lsp.result("textDocument/formatting", json!({"textDocument": {"uri": uri(&path)}, "options": {}}));
     assert_eq!(edits, Value::Null);
+    // Parse errors that the lexer accepts also leave the document alone.
+    lsp.change(&path, 4, "x ::= \n");
+    let edits = lsp.result("textDocument/formatting", json!({"textDocument": {"uri": uri(&path)}, "options": {}}));
+    assert_eq!(edits, Value::Null);
     assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn requests_before_initialize_are_refused() {
+    let mut lsp = Lsp::start();
+    let r = lsp.request("textDocument/hover", json!({}));
+    assert_eq!(r["error"]["code"], -32002);
+    // Notifications are dropped; the server still initializes normally.
+    lsp.notify("textDocument/didOpen", json!({}));
+    lsp.initialize();
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn a_huge_content_length_does_not_crash_the_server() {
+    let mut lsp = Lsp::start();
+    lsp.stdin.write_all(b"Content-Length: 99999999999999\r\n\r\n{}").unwrap();
+    lsp.stdin.flush().unwrap();
+    drop(lsp.stdin);
+    // It stops cleanly (an exit code, not an abort by a signal).
+    assert!(lsp.child.wait().unwrap().code().is_some());
 }
 
 #[test]

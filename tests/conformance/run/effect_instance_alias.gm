@@ -1,0 +1,25 @@
+// An alias may name an instantiation of a generic effect (§3.5), and an operation may be
+// performed through an instantiation or its alias: `EvI.ev(x)`, `Yield(u8).yield(x)` (§12.1).
+Ev :: effect(T: type) { ev: fn(x: T) }
+EvI :: Ev(i32)
+EvS :: Ev(string)
+Bytes :: Yield(u8)
+
+g :: fn() \ {EvI, EvS} {
+    EvI.ev(5)
+    EvS.ev("five")
+    Ev(i32).ev(6)
+}
+
+gen :: fn() \ {Bytes} {
+    yield(u8(3))
+    Yield(u8).yield(4)
+    Bytes.yield(5)
+}
+
+main :: fn() \ {Out} {
+    with (handler EvI { ev(x) => print("int {}\n", x) }) {
+        with (handler EvS { ev(s) => print("str {}\n", s) }) { g() }
+    }
+    for x in gen() { print("{}\n", x) }
+}

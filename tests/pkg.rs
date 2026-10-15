@@ -844,6 +844,50 @@ fn init_never_overwrites() {
 }
 
 #[test]
+fn init_does_not_claim_to_create_a_package_over_an_existing_manifest() {
+    let w = World::outside("init_invalid_manifest");
+    w.write("proj/gamma.toml", "[package\n");
+    let out = run_ok(&w, "proj", &["init", "--vcs=none"]);
+    assert!(out.stdout.contains("Skipped gamma.toml (already exists)"), "{}", out.stdout);
+    assert!(!out.stdout.contains("Created package"), "{}", out.stdout);
+    assert!(out.stdout.contains("main.gm"), "{}", out.stdout);
+    assert_eq!(w.read("proj/gamma.toml"), "[package\n");
+}
+
+#[test]
+fn names_that_cannot_be_imported_are_rejected() {
+    let w = World::outside("bad_names");
+    for name in ["fn", "import", "true", "_", "i32", "u8", "bool", "string", "std", "core"] {
+        let out = w.gamma(".", &["new", "--vcs=none", &format!("--name={name}"), "d"]).failure();
+        assert!(out.stderr.contains("invalid package name"), "{name}: {}", out.stderr);
+        assert!(!w.path("d/gamma.toml").exists(), "{name}");
+        std::fs::remove_dir_all(w.path("d")).ok();
+    }
+    // The directory name is used when it is one of them, unless `--name` says otherwise.
+    let out = w.gamma(".", &["new", "--vcs=none", "fn"]).failure();
+    assert!(out.stderr.contains("--name"), "{}", out.stderr);
+    run_ok(&w, ".", &["new", "--vcs=none", "std", "--name=mystd"]);
+    w.write("app/gamma.toml", "[package]\nname = \"app\"\n\n[dependencies]\n");
+    for name in ["true", "i32", "std", "core", "_"] {
+        let out = w.gamma("app", &["add", name, "--path", "../mystd"]).failure();
+        assert!(out.stderr.contains("invalid dependency name"), "{name}: {}", out.stderr);
+    }
+    w.write("bad/gamma.toml", "[package]\nname = \"std\"\n");
+    w.write("bad/main.gm", "main :: fn() {}\n");
+    assert!(w.gamma("bad", &["check", "."]).failure().stderr.contains("invalid package name"));
+}
+
+#[test]
+fn a_directory_name_that_is_changed_is_reported() {
+    let w = World::outside("name_note");
+    let out = run_ok(&w, ".", &["new", "--vcs=none", "ünï-cödé"]);
+    assert!(out.stdout.contains("Created package `_n__c_d_`"), "{}", out.stdout);
+    assert!(out.stdout.contains("is not a valid package name"), "{}", out.stdout);
+    let out = run_ok(&w, ".", &["new", "--vcs=none", "plain"]);
+    assert!(!out.stdout.contains("Note"), "{}", out.stdout);
+}
+
+#[test]
 fn init_leaves_an_enclosing_repository_alone() {
     need_git!();
     let w = World::new("init_in_repo");
@@ -1345,4 +1389,56 @@ fn archive_subdirectories_add_and_bad_archives() {
 fn file_url(p: &std::path::Path) -> String {
     let s = p.display().to_string().replace('\\', "/");
     if s.starts_with('/') { format!("file://{s}") } else { format!("file:///{s}") }
+}
+
+#[test]
+fn a_hand_edited_lock_is_noticed() {
+    need_git!();
+    let w = World::new("edited_lock");
+    w.lib("a", 1, Some("v1.2.3"));
+    sum_app(&w, &format!("a = {{ git = \"{}\", version = \"1\" }}\n", w.url("a")), &["a"]);
+    w.gamma("app", &["fetch"]).success();
+    let lock = w.read("app/gamma.lock");
+    assert_eq!(lock_field(&lock, "a", "version").as_deref(), Some("1.2.3"));
+    let sum = lock_field(&lock, "a", "checksum").unwrap();
+
+    // An edited version: --locked refuses, a plain run repairs it.
+    w.write("app/gamma.lock", &lock.replace("version = \"1.2.3\"", "version = \"9.9.9\""));
+    let out = w.gamma("app", &["run", "--locked", "."]).failure();
+    assert!(out.stderr.contains("needs to be updated"), "{}", out.stderr);
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
+
+    // A removed version is restored the same way.
+    w.write("app/gamma.lock", &lock.replace("version = \"1.2.3\"\n", ""));
+    w.gamma("app", &["run", "--locked", "."]).failure();
+    w.gamma("app", &["run", "."]).success();
+    assert_eq!(w.read("app/gamma.lock"), lock);
+
+    // An edited checksum is caught against the checkout already in the cache.
+    let bad = lock.replace(&sum, &format!("sha256:{}", "0".repeat(64)));
+    for args in [&["run", "--locked", "."][..], &["run", "."]] {
+        w.write("app/gamma.lock", &bad);
+        let out = w.gamma("app", args).failure();
+        assert!(out.stderr.contains("checksum mismatch for package a"), "{}", out.stderr);
+        assert_eq!(w.read("app/gamma.lock"), bad);
+    }
+    w.write("app/gamma.lock", &lock);
+    w.gamma("app", &["run", "--locked", "."]).success();
+}
+
+#[test]
+fn an_empty_lock_is_a_missing_lock() {
+    need_git!();
+    let w = World::new("empty_lock");
+    w.lib("a", 1, Some("v1.0.0"));
+    sum_app(&w, &format!("a = {{ git = \"{}\", version = \"1\" }}\n", w.url("a")), &["a"]);
+    w.gamma("app", &["fetch"]).success();
+    let lock = w.read("app/gamma.lock");
+    w.write("app/gamma.lock", " \n");
+    let out = w.gamma("app", &["run", "--locked", "."]).failure();
+    assert!(out.stderr.contains("gamma.lock is missing"), "{}", out.stderr);
+    w.write("app/gamma.lock", "");
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
+    assert_eq!(w.read("app/gamma.lock"), lock);
 }

@@ -43,3 +43,4 @@
 - Workers share the scratchpad: give each its own subdirectory name (they deleted mine once).
 - CI uses the newest stable Rust (1.99 in Oct 2026); local is 1.97. Before pushing run CI's clippy: `RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/stable rustup run stable cargo clippy -q --all-targets` (stable toolchain installed in s12).
 - Tests run as root here; CI is not root, so permission bugs (read-only checkouts) hide locally. Check such tests with `runuser -u nobody -- env HOME=/tmp/x TMPDIR=/tmp <test binary>` (chmod 1777 target/tmp, o+x on the path).
+- Windows compile check without CI: `apt-get install gcc-mingw-w64-x86-64; rustup target add x86_64-pc-windows-gnu; cargo check --target x86_64-pc-windows-gnu` (libffi-sys needs the mingw gcc).

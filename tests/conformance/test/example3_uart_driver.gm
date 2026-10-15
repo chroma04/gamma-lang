@@ -108,8 +108,8 @@ test "send waits for the transmitter" {
 }
 
 test "timeouts and framing errors" {
-    never := [_]u32(0)
-    f := Fake(status_script: never[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
+    never_ready := [_]u32(0)
+    f := Fake(status_script: never_ready[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
     with &f {
         expect(send("x") is !.Timeout)
     }

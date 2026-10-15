@@ -1,0 +1,25 @@
+// Local constants may be used where a compile-time value is needed (§17.2): array
+// lengths, local type aliases, static assertions, `when` and compile-time arguments.
+mk :: fn(N :: usize) -> [N]u8 { return [N]u8(fill: 7) }
+
+square :: fn(x: usize) -> usize => x * x
+
+main :: fn() \ {Out} {
+    K :: 4
+    Z: usize : 3
+    S :: square(3)
+    a: [K]u8 = ---
+    b := [K * 2]u8(fill: 1)
+    Row :: [Z]u16
+    r: Row = Row(fill: 2)
+    @static_assert(K is 4, "K is four")
+    c := mk(K)
+    d := [S]bool(fill: true)
+    when K is 4 { print("four\n") }
+    {
+        L :: 5
+        e: [L + K]u8 = ---
+        print("{}\n", e.len)
+    }
+    print("{} {} {} {} {}\n", (a.len, b.len, r.len, c.len, d.len))
+}

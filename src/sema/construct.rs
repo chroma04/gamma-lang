@@ -398,6 +398,7 @@ impl<'a, 's> FnCx<'a, 's> {
             && n != values.len() as u64
         {
             self.error(span, format!("`[{}]{}` needs exactly {} elements, but {} are given", n, elem, n, values.len()));
+            return error_expr(span);
         }
         let t = Ty::array(values.len() as u64, elem);
         let arr = mk(t, tir::ExprKind::Array(values), span);

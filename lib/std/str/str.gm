@@ -764,7 +764,7 @@ pub reset :: fn(b: ^Builder) {
 
 /// Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
 /// `b.write("{} of {}", (n, total))`. Traps like `push` if the result does not fit.
-pub write :: fn(A: type, b: ^Builder, template :: string, args: A) {
+pub write :: fn(A: type, b: ^Builder, template :: string, args: A = ()) {
     @write(fn(bytes: []const u8) => push(b, bytes), template, args)
 }
 

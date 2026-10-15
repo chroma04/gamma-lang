@@ -633,8 +633,10 @@ pub WriteError :: union {
     InvalidUtf8
 }
 
-/// The deepest nesting a `Writer` supports.
-pub MAX_WRITE_DEPTH :: 256
+/// The deepest nesting a `Writer` supports. It equals the default `max_depth` of `parse`, so
+/// every document `parse` accepts with the default limit can be written back; a document
+/// parsed with a larger `max_depth` may be too deep for a `Writer`.
+pub MAX_WRITE_DEPTH :: 512
 
 /// Appends JSON text to a list. It tracks commas, colons, indentation and the nesting, so
 /// the output is well formed as long as the calls are: values go where a value is
@@ -645,8 +647,8 @@ pub Writer :: struct {
     out: ^List(u8)
     indent: usize
     depth: usize
-    in_object: [256]bool
-    has_items: [256]bool
+    in_object: [MAX_WRITE_DEPTH]bool
+    has_items: [MAX_WRITE_DEPTH]bool
     after_key: bool
 }
 
@@ -656,7 +658,7 @@ pub Writer :: struct {
 pub writer :: fn(out: ^List(u8), indent: usize = 0) -> Writer {
     return Writer(
         out: out, indent: indent, depth: 0,
-        in_object: [256]bool(fill: false), has_items: [256]bool(fill: false), after_key: false)
+        in_object: [MAX_WRITE_DEPTH]bool(fill: false), has_items: [MAX_WRITE_DEPTH]bool(fill: false), after_key: false)
 }
 
 // A line break and the indentation for `depth` levels.
@@ -691,7 +693,7 @@ before_value :: fn(w: ^Writer) -> WriteError!() {
 /// Starts an object.
 pub begin_object :: fn(w: ^Writer) -> WriteError!() {
     try before_value(w)
-    assert(w.depth < 256, "json.Writer: nesting too deep")
+    assert(w.depth < MAX_WRITE_DEPTH, "json.Writer: nesting too deep")
     try w.out.push('{')
     w.in_object[w.depth] = true
     w.has_items[w.depth] = false
@@ -702,7 +704,7 @@ pub begin_object :: fn(w: ^Writer) -> WriteError!() {
 /// Starts an array.
 pub begin_array :: fn(w: ^Writer) -> WriteError!() {
     try before_value(w)
-    assert(w.depth < 256, "json.Writer: nesting too deep")
+    assert(w.depth < MAX_WRITE_DEPTH, "json.Writer: nesting too deep")
     try w.out.push('[')
     w.in_object[w.depth] = false
     w.has_items[w.depth] = false
@@ -728,6 +730,7 @@ pub end_array :: fn(w: ^Writer) -> WriteError!() => end(w, false, ']')
 /// Writes an object member's name; its value follows.
 pub key :: fn(w: ^Writer, name: string) -> WriteError!() {
     assert(w.depth > 0 and w.in_object[w.depth - 1] and not w.after_key, "json.Writer: a key belongs in an object, before its value")
+    if not name.utf8_valid() { return !.InvalidUtf8 }
     try separate(w)
     try write_quoted(w, name)
     try w.out.push(':')
@@ -785,6 +788,7 @@ pub write_bool :: fn(w: ^Writer, b: bool) -> WriteError!() {
 /// Writes a string, escaping `"`, `\` and the control characters. Everything else,
 /// non-ASCII text included, is written as it is. The string must be valid UTF-8.
 pub write_string :: fn(w: ^Writer, s: string) -> WriteError!() {
+    if not s.utf8_valid() { return !.InvalidUtf8 }
     try before_value(w)
     try write_quoted(w, s)
     return ()

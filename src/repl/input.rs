@@ -47,6 +47,14 @@ pub fn lex(text: &str) -> (Vec<Token>, bool) {
     (out.tokens, unfinished)
 }
 
+/// Whether `text` has a closing bracket that matches no opening one.
+fn has_stray_closer(text: &str) -> bool {
+    let mut s = Session::new();
+    let id = s.sources.add("<repl>", text.to_string());
+    s.lex(id);
+    s.diags.iter().any(|d| d.message.contains("unmatched closing"))
+}
+
 /// How deeply the brackets of `text` are nested at its end.
 fn depth(tokens: &[Token]) -> i32 {
     let mut d = 0;
@@ -98,6 +106,11 @@ pub fn classify(text: &str) -> Classified {
     let (tokens, unfinished) = lex(text);
     if unfinished || depth(&tokens) > 0 {
         return Classified { incomplete: true, ..Classified::default() };
+    }
+    if has_stray_closer(text) {
+        // A stray closing bracket can never be completed by more lines: let the
+        // syntax error show at once.
+        return Classified::default();
     }
     let mut c = Classified::default();
     let (items_ast, items_err) = parse_items(text);
@@ -159,10 +172,14 @@ pub fn classify(text: &str) -> Classified {
     c
 }
 
-/// Whether `text` is empty apart from whitespace and comments.
+/// Whether `text` is empty apart from whitespace and comments. Input with a
+/// lexical error (a stray closing bracket, an unfinished comment) is not blank:
+/// the error is for the user to see.
 pub fn is_blank(text: &str) -> bool {
-    let (tokens, _) = lex(text);
-    tokens.iter().all(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
+    let mut s = Session::new();
+    let id = s.sources.add("<repl>", text.to_string());
+    let out = s.lex(id);
+    !s.diags.has_errors() && out.tokens.iter().all(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
 }
 
 /// Whether the expression `text` may change variables: it takes an address
@@ -218,10 +235,14 @@ pub fn syntax_errors(text: &str, format: crate::diag::DiagFormat) -> String {
     let (_, items_err) = parse_items(text);
     let (_, stmts_err) = parse_stmts(text);
     let pre = STMT_PREFIX.len() as u32;
-    if stmts_err.is_some_and(|p| p >= pre + text.trim_end().len() as u32) && items_err.is_some() {
+    if !has_stray_closer(text)
+        && stmts_err.is_some_and(|p| p >= pre + text.trim_end().len() as u32)
+        && items_err.is_some()
+    {
         return "error: the input ends where more is expected\n".to_string();
     }
     let use_stmts = match (items_err, stmts_err) {
+        _ if has_stray_closer(text) => false,
         (Some(i), Some(s)) => s.saturating_sub(pre) > i,
         _ => false,
     };

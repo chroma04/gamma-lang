@@ -19,6 +19,7 @@ pub type Incoming = Result<Value, String>;
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
+const SERVER_NOT_INITIALIZED: i64 = -32002;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 const REQUEST_FAILED: i64 = -32803;
@@ -42,6 +43,8 @@ pub struct Server<W: Write> {
     /// The other modules of the packages of the open documents.
     workspace: Workspace,
     shutdown: bool,
+    /// Whether `initialize` has been received.
+    initialized: bool,
     /// Free the compiler's types after each analysis (see [`Analysis::run`]).
     pub recycle: bool,
 }
@@ -66,6 +69,7 @@ impl<W: Write> Server<W> {
             published: HashMap::new(),
             workspace: Workspace::default(),
             shutdown: false,
+            initialized: false,
             recycle: false,
         }
     }
@@ -113,6 +117,15 @@ impl<W: Write> Server<W> {
             return Flow::Continue;
         };
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        if !self.initialized && method != "initialize" {
+            // Before `initialize`, requests fail and notifications (except `exit`) are dropped.
+            match msg.get("id").cloned() {
+                Some(id) => self.respond_error(id, SERVER_NOT_INITIALIZED, "the server is not initialized"),
+                None if method == "exit" => return self.notification(&method, params),
+                None => {}
+            }
+            return Flow::Continue;
+        }
         // A bug in a handler must not stop the server: answer with an error and go on.
         let guarded = catch_unwind(AssertUnwindSafe(|| match msg.get("id").cloned() {
             Some(id) => {
@@ -295,6 +308,7 @@ impl<W: Write> Server<W> {
         }
         match method {
             "initialize" => {
+                self.initialized = true;
                 let result = self.initialize(&params);
                 self.respond(id, result)
             }
@@ -408,6 +422,13 @@ impl<W: Write> Server<W> {
 
     fn formatting(&mut self, path: &Path) -> Result<Value, (i64, String)> {
         let Some(doc) = self.docs.get(path) else { return Ok(Value::Null) };
+        // A document that does not parse is left alone.
+        let mut session = crate::driver::Session::new();
+        let id = session.sources.add("<format>", doc.text.clone());
+        let _ = session.parse(id);
+        if session.diags.has_errors() {
+            return Ok(Value::Null);
+        }
         match crate::fmt::format_source(&doc.text) {
             Ok(new) if new == doc.text => Ok(json!([])),
             Ok(new) => Ok(features::full_edit(&doc.text, &new, self.enc)),

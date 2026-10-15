@@ -1,0 +1,40 @@
+// The writer takes every document the parser accepts by default, and a failed write
+// leaves its state alone.
+json :: import "std/json"
+
+main :: fn() \ {Out, Alloc} {
+    d := list(u8)
+    defer d.deinit()
+    for _ in 0..512 { d.push('[') else return }
+    for _ in 0..512 { d.push(']') else return }
+    doc := json.parse(d.items) else e => {
+        print("parse {}\n", e)
+        return
+    }
+    defer doc.deinit()
+    out := list(u8)
+    defer out.deinit()
+    json.write(&out, doc.root, 0) else e => {
+        print("write {}\n", e)
+        return
+    }
+    print("{}\n", out.items.len)
+
+    out.clear()
+    w := json.writer(&out, 0)
+    _ = w.begin_array()
+    _ = w.write_int(i32, 1)
+    print("{}\n", w.write_string("bad\xff"))
+    _ = w.write_null()
+    _ = w.end_array()
+    print("{}\n", out.items)
+
+    out.clear()
+    w2 := json.writer(&out, 0)
+    _ = w2.begin_object()
+    print("{}\n", w2.key("bad\xff"))
+    _ = w2.key("k")
+    _ = w2.write_bool(true)
+    _ = w2.end_object()
+    print("{}\n", out.items)
+}

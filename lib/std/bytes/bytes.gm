@@ -31,23 +31,25 @@ pub Endian :: union {
 pub read_int :: fn(T: type, b: []const u8, e: Endian) -> T where Int(T) {
     n := @size_of(T)
     if b.len < n { trap("bytes: not enough bytes to read an integer") }
-    x: T = 0
+    // Computed in 128 bits, since an odd width such as `u24` occupies more bytes than bits.
+    x: u128 = 0
     for i in 0..n {
         k := if e is .Big { n - 1 - i } else { i }
         sh: u32 = (8 * k).trunc(u32)
-        x |= b[i].trunc(T) <<% sh
+        x |= b[i].trunc(u128) << sh
     }
-    return x
+    return x.trunc(T)
 }
 
 /// Stores `x` in the first `@size_of(T)` bytes of `b`. Traps if `b` is shorter.
 pub write_int :: fn(T: type, b: []u8, x: T, e: Endian) where Int(T) {
     n := @size_of(T)
     if b.len < n { trap("bytes: not enough room to write an integer") }
+    wide := x.trunc(u128)
     for i in 0..n {
         k := if e is .Big { n - 1 - i } else { i }
         sh: u32 = (8 * k).trunc(u32)
-        b[i] = (x >> sh).trunc(u8)
+        b[i] = (wide >> sh).trunc(u8)
     }
 }
 
