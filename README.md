@@ -34,7 +34,7 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 | Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
 | Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x) |
 | Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
-| Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 24 modules: `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread`, `std/c` |
+| Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 30 modules (see [`docs/std/`](docs/std/index.md)): `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/hash` (with `crc32` and `sha256`), `std/json`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset, ordered_map), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread` (with `wait_group`), `std/c` |
 | Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
 | Editors | a language server (`gamma lsp`), a VS Code extension, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
 
@@ -81,7 +81,7 @@ cargo build --release
 ## Using it
 
 ```sh
-gamma new hello              # create a package: gamma.toml, main.gm with a test, .gitignore
+gamma new hello              # create a package: gamma.toml, main.gm with a test, .gitignore (and a git repository)
 gamma run hello              # type-check and run a program (a file or a module directory)
 gamma test hello             # run the `test` declarations of a module and its imports
 gamma run --backend=c file.gm  # compile through C and run
@@ -94,6 +94,8 @@ gamma bench hello            # run the `bench` declarations and report the time 
 gamma add json --git https://github.com/someone/json-gm  # add a dependency
 gamma fetch                  # download the dependencies, writing gamma.lock
 gamma update                 # move the dependencies to their newest allowed versions
+gamma remove json             # remove a dependency
+gamma cache clean --older-than=30  # drop unused fetched packages and native builds
 gamma fmt file.gm            # format source files in place (files or directories)
 gamma fmt --check dir        # list the files that are not formatted; exit 1 if any
 gamma doc dir                # API documentation of a module, as Markdown (--format=html, -o, --all)
@@ -103,7 +105,7 @@ gamma lex file.gm            # print the token stream
 gamma parse --dump file.gm   # print the syntax tree
 ```
 
-`run`, `build` and `test` also take `--mode=debug|checked|safe|fast` (default `debug`). Safe builds check every memory access and need [Fil-C](https://fil-c.org) on Linux (see the [safety chapter](docs/guide/13-safety.md)).
+`run`, `build`, `test` and `bench` also take `--mode=debug|checked|safe|fast` (default `debug`; `bench` defaults to `fast`) and `--profile=<name>` (a `[profile.<name>]` of `gamma.toml`). `gamma help` lists every option; `gamma help packages` and `gamma help doc` list those of the package commands and of `doc`. Safe builds check every memory access and need [Fil-C](https://fil-c.org) on Linux (see the [safety chapter](docs/guide/13-safety.md)).
 
 ## Testing
 
