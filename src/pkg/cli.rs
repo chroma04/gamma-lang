@@ -372,7 +372,11 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
         return Ok(());
     }
     if report.skipped.iter().any(|f| f == "gamma.toml") {
-        println!("     Created {} in {} (the existing gamma.toml is unchanged)", report.created.join(", "), dir.display());
+        println!(
+            "     Created {} in {} (the existing gamma.toml is unchanged)",
+            report.created.join(", "),
+            dir.display()
+        );
     } else {
         println!("     Created package `{}` in {}", name, dir.display());
     }

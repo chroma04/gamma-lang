@@ -271,3 +271,17 @@ fn missing_final_newline_is_added() {
     assert_eq!(format_source("f :: fn() {\n    g()\n}").unwrap(), "f :: fn() {\n    g()\n}\n");
     assert_eq!(format_source("a :: 1 // done").unwrap(), "a :: 1 // done\n");
 }
+
+#[test]
+fn aligned_padding_is_decided_the_same_after_reindenting() {
+    // The lines are aligned at the same source column but indented differently, so the
+    // first pass used to keep the padding and the second to collapse it.
+    for src in [
+        "main :: fn() {\n\ta   :: 1\n  bc :: 2\n}\n",
+        "main :: fn() {\n  bc :: 2\n\ta   :: 1\n}\n",
+        "T :: struct {\n\tab:   i32\n  c:  i32\n}\n",
+    ] {
+        let once = format_source(src).unwrap();
+        assert_eq!(format_source(&once).unwrap(), once, "not idempotent on {:?}", src);
+    }
+}
