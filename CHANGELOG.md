@@ -29,9 +29,20 @@ Versions and what each kind of change means are described in
 - Standard library: `std/hash` (CRC-32, SHA-256), `std/json` (RFC 8259),
   `std/collections/ordered_map` (a B-tree), `thread.detach`; a guide chapter touring the
   library (`docs/guide/16-standard-library.md`).
+- Local constants (`K :: 4`, `Z: usize : 3`, `S :: f()` evaluated at compile time) can be
+  used where a compile-time value is needed: array lengths, local type aliases,
+  `@static_assert`, `when` and compile-time arguments.
+- `Bytes :: Yield(u8)` names an instantiation of a generic effect; it can be used in
+  effect sets and handler literals, and `Bytes.yield(x)` performs that instantiation.
 
 ### Changed
 
+- **Breaking:** a local variable, constant, parameter, pattern or loop binding, or nested
+  function may not have the name of a type visible where it is declared — a predeclared
+  type (including every sized integer name such as `u2` or `i24`), a top-level type or
+  alias, a type parameter or a local alias (§4.6, §21.1).
+- A top-level function never infers its return type: without `-> R` it returns `()`
+  (§11.1).
 - **Breaking:** `HashMap.get_or_put` is removed; use `entry` (§21.5).
 - **Breaking:** `WaitGroup.wait_all` is renamed `wait`.
 - **Breaking:** `std/log`'s `ErrLog` no longer takes a `time` field and needs only `Err`;
@@ -49,9 +60,22 @@ Versions and what each kind of change means are described in
   micro-benchmarks.
 - Safe builds run hash map inserts about 2.7 times and list pushes about 2 times faster:
   slices are read in place instead of copied, which under Fil-C costs a runtime call.
+- C back end: writes to the ambient output and `@black_box` are calls of small shared
+  functions instead of being expanded at every site, so functions with thousands of
+  prints compile many times faster.
+- Diagnostics on a very long source line show a window of the line around the location.
 
 ### Fixed
 
+- A top-level declaration resolved while a function body is being checked no longer sees
+  that body's type parameters or local constants.
+- Long chains of field accesses and method calls are checked in linear time; a chain of
+  more than 100 000 links is reported as nested too deeply instead of overflowing the
+  stack.
+- An allocation larger than the address space can hold is an `AllocError` in Safe builds
+  too, instead of stopping the program.
+- The interpreter on Windows opens a file read-only when `create`, `truncate` or
+  `exclusive` is given without `write`, as on other systems.
 - `gamma repl <file>` exits with status 1 when the file cannot be loaded.
 - `--mode=`, `--backend=` and `--diag-format=` with a bad value report the value and what is
   accepted, instead of "unknown option".

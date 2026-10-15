@@ -7,5 +7,6 @@
   Start simpler if needed, but keep the layout-faithful byte memory as the target design.
 - Effects: handler stack passed explicitly; esc exits = Rust `Err(Unwind{target})` propagated
   through eval, running defers; returns/breaks similarly as control-flow enum.
-- Fibers (M8): open question — options: (a) corosensei crate (stackful coroutines),
-  (b) OS thread per fiber with baton passing, (c) CPS/explicit-stack VM. Lean (a).
+- Fibers: chosen OS thread per fiber with strict handoff (decisions/010).
+- Since s9 the default engine is a bytecode VM over the same memory; the tree-walker is the
+  fallback (decisions/020).

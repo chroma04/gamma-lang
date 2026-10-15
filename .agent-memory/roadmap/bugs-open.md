@@ -1,42 +1,30 @@
-# Open implementation bugs (dogfooding, session 2). Delete entries when fixed.
-7. (perf) C big values: s6 gm_out results + in-place construction + borrowed params of pure
-   fns (decisions/016). Left: nested aggregate elements still go through a temp; gcc SRA is weak
+# Open implementation bugs, gaps and wishes (current; delete entries when fixed)
+Numbers are stable ids (gaps are fixed entries). Checked 2026-10-15.
+
+## Performance
+7. C big values: gm_out results + in-place construction + borrowed params of pure fns
+   (decisions/016). Left: nested aggregate elements still go through a temp; gcc SRA is weak
    on uint8_t-array blobs (bigcopy bench: gcc 1.9 s vs clang 0.13 s).
-11. Interpreter speed: s3 fast paths (interp/fast.rs: ≤64-bit ints as i128, word loads/stores,
-    inline small allocs, address cache, &TyInfo, frame pool) took a simple loop from 700 to
-    ~180 ns/iteration. Fiber switches: s4 recv_soon (poll before blocking) 12 µs → ~2 µs.
+24. Interpreter: the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
+    is dispatch/call-bound (~15 ns/op), plus `new`/`destroy` spread over builtins. Follow-ups
+    listed in decisions/020.
+48. gcc time superlinear in the size of ONE C function (9.4k-line main: ~20 s at -O1; -O0
+    worse). Real fix: outline long statement runs into functions sharing the frame (like
+    fiber.rs with-on outlining; defers, gm_unw exits, backtrace, stack accounting). Remaining
+    C ≈14 lines/statement (checked-arith option memsets, ie/ix labels, F.lN).
+49. gcc superlinear / segfaults on very deep nested C expressions (60k `.abs()` chain: 12 s;
+    100k: gcc crash, reported cleanly). Flatten emitted expression chains into statements.
+- Safe mode: new/destroy ≈ 4x Checked (GC alloc of `new`; `&key` in std maps escapes).
+
+## Behaviour differences (allowed, documented)
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
     §21.6.1 (shortest round-trip) but differs from Ryu/Python.
-## Dogfood round 4 (s4) leftovers (13–22 fixed in s4)
-23. Wishes (let-else done s4: StmtKind::LetElse lowered in block_expected; lexer line_binds); bind a whole
-    tuple payload (`.Cat(c)` for a 2-tuple payload); interp `new` ~10 µs each (Alloc perform
-    + vtable + AllocError!^T); block-bodied closure return inference; `&rvalue` for ^const
-    params; i.to_f64-style helper; std channels/queue/generator; print from passing tests.
-24. Interp speed: perform ≈ 0.7 µs vs call 0.1 µs, new+destroy ≈ 4 µs (s4 callgrind:
-    spread over eval_small/call_function/frames; no single hotspot). Real fix = bytecode VM
-    (future project); cheap bits: perform clones CtxNode, args Vec, ctl_ops SipHash lookup.
-## Round 5 (s4) leftovers
-27. (fixed s4: perform_op checks args against the single available instance)
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
-30. Wishes (@min_value/@max_value done s4, tir IntLimit folded in mono): generic fn → ^fn once instantiated (`parse_int(u8)`), library tests
-    runnable from a root (`gamma test --all`?), @fn_cast.
-## s7 leftovers
-35. std/log ErrLog requires Clock even when time is false.
-36. WaitGroup wait is `wait_all` (name clash in module); lstat on symlinks untested.
-37. HashMap keeps get_or_put next to entry (second way; consider removing per §22).
-38. Later (must clear §22): reflection, JSON, hashes, ordered maps.
-## s8 (bug hunt) leftovers
-(#39, #40 fixed: deferred match exhaustiveness via FnCx.deferred_matches; pending handler
- literals checked at first `with`, FnCx.pending_handlers + shielded_performs.)
-## s13 (bug sweep) leftovers
-41–47 fixed in s13 (decisions/024; CLI/lock; postfix chains linear + MAX_POSTFIX_CHAIN
-100k in parser/mod.rs; print/@write to Out/Err via shared GM_NOINLINE stubs gm_pfN, integer
-@black_box as empty asm). Left:
-48. gcc time still superlinear in the size of ONE C function (9.4k-line main: ~20 s at -O1;
-    -O0 much worse). Real fix: outline long statement runs into functions sharing the frame
-    (like fiber.rs with-on outlining; defers, gm_unw exits, backtrace, stack accounting).
-    Remaining C ≈14 lines/statement (checked-arith option memsets, ie/ix labels, F.lN).
-49. gcc superlinear / segfaults on very deep nested C expressions (60k `.abs()` chain: 12 s,
-    100k: gcc crash, reported cleanly). Flatten emitted expression chains into statements.
+
+## Wishes (unscheduled; each must clear §22 if it is a library addition)
+23. std channels/queue/generator; lstat on symlinks untested; reflection.
+30. Library tests runnable from a dependency root (only same-package modules run today).
+- Name-check gap: field-access aliases (`T :: m.U`) are not recognized as types by the
+  locals-not-named-like-types rule (decisions/024).

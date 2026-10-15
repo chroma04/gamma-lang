@@ -2,10 +2,10 @@
 Module `src/cgen/` (codegen) + runtime `runtime/gm_rt.h`, `runtime/gm_rt.c` (embedded via
 include_str!, concatenated into ONE translation unit with the generated code). Build: write
 `<tmp>/prog.c`, run `cc -std=gnu11 -O2 -w -fno-strict-aliasing prog.c -o out -lm` ($CC overrides). GNU C needed
-(statement exprs, zero-size arrays, __int128, __builtin_*_overflow). Host target only.
+(statement exprs, zero-size arrays, __int128, __builtin_*_overflow). Targets: decisions/015.
 
 ## Values
-- Scalars native: ints by storage (u8..u64, __int128 for 65..128; >128 unsupported for now),
+- Scalars native: ints by storage (u8..u64, __int128 for 65..128; >128 via runtime gm_w*),
   usize/isize = uintptr_t/intptr_t, f32/f64 (f16 = _Float16), bool = uint8_t, all data pointers
   and fn pointers = `void*` (cast at use).
 - Everything else (slices, arrays, tuples, optionals, results, structs, unions, unit) is a blob
@@ -38,7 +38,7 @@ include_str!, concatenated into ONE translation unit with the generated code). B
 - Closure call: ctx = closure.cx + nodes for the fn type's effects found in caller cx (copies
   pushed on stack), as interp call_value.
 - Native ambient: Out/Err write, Env args/var/exit — runtime functions. Alloc via prelude.
-- `with … on`, ctl, resume/discard, foreign calls: "not supported by the C backend yet".
+- `with … on`, ctl, resume/discard: decisions/010; foreign calls: decisions/009.
 
 ## Other
 - @write: runtime gm_format(buf, &type_desc, ptr, top) driven by generated static type
@@ -47,7 +47,7 @@ include_str!, concatenated into ONE translation unit with the generated code). B
 - Integer checks inline via __builtin_*_overflow + range checks for odd widths; Fast mode drops
   them; div-by-zero/MIN/-1/bounds always checked.
 - `gamma build [-o out] file`, `gamma run --backend=c`. Harness runs every run test on both
-  backends (skip list tests/conformance/c-skip.txt, to shrink to empty).
+  backends (no skip list; `//! native:` marks C-only tests).
 - s9: aggregates are typed C structs (cgen/types.rs: real member types at Gamma offsets, explicit
   uint8_t padding, unions for payloads, _Static_assert layout, shared by shape). Still blobs:
   #packed/#bits, zero-size, >128-bit ints, Fil-C, 32-bit targets. Field access still memcpy at
