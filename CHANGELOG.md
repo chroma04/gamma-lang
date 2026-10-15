@@ -37,6 +37,12 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** failing a test is an effect. The predeclared `Test` effect
+  (`note`, and `fail: esc(…) -> never`) is given to test and benchmark bodies; `expect`,
+  `expect_eq` and the new `ok(x)` perform it, so helper functions that declare `\ {Test}`
+  can check things on a test's behalf, and a failure runs the test's `defer`s. A test body
+  returns nothing: `try` no longer works in one (write `ok(x)`), and the rule that the
+  first `try` decides a test's error type is gone (§3.8, §21.6).
 - **Breaking:** the keyword `discard` is now `cancel` (`cancel k` cancels a suspended
   fiber, §14.5), so that "discard" keeps one meaning (`_ = e`).
 - **Breaking:** handler declarations may not overlap (§12.6): a declaration for a

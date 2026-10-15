@@ -387,10 +387,22 @@ Command-line arguments and the environment are obtained through the `Env` effect
 ```
 test "parse rejects letters" {
     expect(parse_u16("12a") is !.BadDigit(at: 2))
+    expect_eq(ok(parse_u16("42")), 42)
 }
 ```
 
-A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() -> E!()` for an inferred error type `E` (or `()` if it never fails), so `try` and `return` work in it. `E` is the error type of the first `try` in the body (in source order); a later `try` whose error type is `E` or lifts into it (§10.6) returns the error, as in any function returning `E!()`. A `try` on any other error type does not return: on an error it writes `error: ` and the error value to `Err` and stops the test there, as a failed `expect` does, so a test can use functions with unrelated error types directly. Returning an error fails the test, reporting the error value; wherever a test writes an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). The body may perform any ambient effect, each handled by the **test handler** listed in §12.9. Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if `expect` or `expect_eq` fails, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call. Test names in a module must be distinct.
+A `test` declaration is compiled only when building tests. Its body is the body of an anonymous function of type `fn() \ {…}` that returns nothing, so `return` ends the test and `try` cannot propagate from it. It may perform any ambient effect, each handled by the **test handler** listed in §12.9, and the effect `Test`, through which the body, or any function that declares `Test`, fails the test:
+
+```
+Test :: effect {
+    note: fn(bytes: []const u8)                          // part of a failure report
+    fail: esc(msg: string, loc: SourceLocation) -> never   // fail the test here
+}
+```
+
+`expect`, `expect_eq` and `ok` (§21.6) are ordinary functions that perform `Test`: `expect(c)` fails the test unless `c` holds, `expect_eq(a, e)` unless `a is e`, and `ok(x)` returns the success value of a result `x` or fails the test, reporting the error. A helper that checks something on a test's behalf declares `\ {Test}`, which says in its signature that it can fail a test. Because `fail` is an `esc` operation, a failure unwinds the test's frames, running their `defer`s, and ends the test; the test handler then writes the report: the `note`s, the message, and the location with the function containing it. Wherever a test reports an error value it is formatted as by `{}` (§21.6.1), so a union value is `.Name`, without the type name that `main` adds (§3.7). Only test and benchmark bodies are given a handler for `Test`; `main` cannot perform it.
+
+Running a program's tests runs those of its root module and of every module of the same package that the root module imports, directly or indirectly; the tests of the standard library and of dependency packages run only when one of their modules is the root. A test passes if its body completes; it fails if it performs `fail`, if a trap occurs, or if the test `Alloc` handler detects a leak, which it reports with the size of each block still allocated and, for blocks from `new`, `make`, `make_fill` and `dupe`, the source location of that call (a test that failed is not also checked for leaks). Test names in a module must be distinct.
 
 The tool runs tests one at a time in the order they are found, or several at a time on request; either way each test has its own handlers and its own leak check, and the results are reported in that order. It can also run the tests of every module of the package, imported or not, and count which source lines the tests ran (a coverage report); these options do not change what a test means.
 
@@ -403,7 +415,7 @@ bench "push 1000 items" {
 }
 ```
 
-A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), without the leak check, so it measures the real system. It fails if its body returns an error or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
+A `bench` declaration has the same form and body as a `test` (§3.8) and is compiled only when building tests or benchmarks, but it measures instead of checking. The tool runs the body repeatedly: first in batches that grow until one takes long enough to time, then in a fixed number of timed samples of that many runs each, and reports the mean time per run with its relative standard deviation. A benchmark times everything in its body, including setup, so the body should do only what is to be measured. Unlike a test, a benchmark runs under the same handlers as `main` (§3.7), plus one for `Test`, without the leak check, so it measures the real system. It fails if its body performs `Test.fail` (as through `ok` or `expect`) or traps, and passes otherwise. Benchmark names in a module must be distinct, and may repeat the name of a test. Tests do not run benchmarks, but they type-check them.
 
 A compiler may remove work whose result is unused or compute it at compile time, which makes a benchmark measure nothing. `@black_box(x)` (§20) returns `x` while hiding from the optimizer both that the value is known and that it is used: pass inputs and results through it.
 
@@ -1616,7 +1628,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | no arguments and no variables; `exit` ends the test, which passes only with code 0 |
 | `Sys` | none (§12.10) | — | not replaceable |
 
-Any of these may also be handled by user handlers; only `Sys` cannot.
+Any of these may also be handled by user handlers; only `Sys` cannot. `Test` (§3.8) is predeclared too but is not ambient: only test and benchmark bodies are given a handler for it.
 
 ### 12.10 `Sys`
 
@@ -2220,7 +2232,7 @@ Every run-time check in Gamma follows one rule: **it traps in Debug, Checked and
 | `@min_stack` and fiber stack overflow | enough stack | undefined behavior |
 | `@unreachable()` | never evaluated | undefined behavior |
 | consuming a continuation twice; `with` completing with unconsumed continuations; consuming on the wrong `with` or thread | §14.2 rules | undefined behavior |
-| `expect`, `assert` (§21.6) | condition is true | `assert`: removed; `expect`: tests only |
+| `assert` (§21.6) | condition is true | removed |
 | integer `/`, `%` | divisor ≠ 0; not `MIN / -1` | **always traps** |
 
 An *unspecified value* is a valid value of the result type (§1.3): using it cannot by itself cause UB. However, an unspecified *pointer* (from `x?` on a null `?^T` in Fast builds) may be dereferenced only at the risk of UB, as with any invalid pointer.
@@ -2500,9 +2512,9 @@ These names are predeclared in every module, without import. The type names in t
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap`, and the types of the reference `Fs` and `Net` (§21.7): `File`, `Dir`, `OpenOptions`, `FileKind`, `FileInfo`, `DirEntry`, `SeekFrom`, `Socket`, `Listener`, `Shutdown` |
-| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` |
-| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`, `Test` |
+| operations (from the effects) | `yield`, `current`, `write_out`, `write_err`, `read`, `now`, `wall`, `sleep`, `fill`, `args`, `var`, `exit`, `note`, `fail`, and the operations of `Fs` and `Net` (each effect's operations, §12.1, §21.7) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `map`, `map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, the methods of `Instant` and `Duration` (§21.7), and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2618,16 +2630,18 @@ Signatures are abbreviated: the `HashMap` functions take the map type's paramete
 ```
 trap   :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never
 assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation = @caller_location())
-expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location())
-expect_eq :: fn(T: type, actual: T, expected: T)
+expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) \ {Test}
+expect_eq :: fn(T: type, actual: T, expected: T) \ {Test}
+ok     :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T \ {Test}
 print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 ```
 
 - `trap` traps in every build mode (§18.5).
 - `assert` is a checked operation: it traps on `false` in Debug and Checked builds and is removed (its argument not evaluated) in Fast builds.
-- `expect` may be called only directly in the body of a test (not in a function a test calls); on `false` it fails the current test (reporting the location) and stops it.
-- `expect_eq(actual, expected)` may be called only directly in the body of a test; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
+- `expect(cond, msg)` performs `Test.fail` (§3.8) when `cond` is `false`, reporting `msg` (prefixed `expectation failed: ` unless it is the default) and its caller's location.
+- `expect_eq(actual, expected)`, unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), writes `expected: ` and `actual: ` lines with both values through `Test.note`, then performs `Test.fail` with `expectation failed: the values differ` and its own location.
+- `ok(x)` is the success value of `x`; if `x` is an error, it writes `error: ` and the error value through `Test.note` and performs `Test.fail` with its caller's location.
 - `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
 
 #### 21.6.1 Formatting: `@write`

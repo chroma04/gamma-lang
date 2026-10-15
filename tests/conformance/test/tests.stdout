@@ -2,6 +2,7 @@ test "parse accepts digits" ... ok
 test "parse rejects letters" ... ok
 test "errors propagate" ... FAILED
     error: .BadDigit(at: 1)
+      at tests/conformance/test/tests.gm:27:10 in test "errors propagate"
 test "expectations fail" ... FAILED
     some output
     expectation failed: math

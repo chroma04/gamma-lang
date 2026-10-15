@@ -11,7 +11,7 @@ wait_and_measure :: fn() -> Duration \ {Clock} {
 
 test "input is empty" {
     buf: [8]u8 = ---
-    n := try read(buf[..])
+    n := ok(read(buf[..]))
     expect(n is 0)
 }
 

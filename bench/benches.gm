@@ -46,7 +46,7 @@ bench "1000 performs of a handled operation" {
 bench "1000 new + destroy of a small struct" {
     s: i64 = 0
     for i in 0..1000 {
-        p := try new(P, P(a: @black_box(i), b: 1))
+        p := ok(new(P, P(a: @black_box(i), b: 1)))
         s += p.a + p.b
         destroy(P, p)
     }
@@ -56,7 +56,7 @@ bench "1000 new + destroy of a small struct" {
 bench "1000 List pushes and a sum" {
     l := list(i64)
     defer l.deinit()
-    for i in 0..1000 { try l.push(@black_box(i)) }
+    for i in 0..1000 { ok(l.push(@black_box(i))) }
     total: i64 = 0
     for x in each(l.items) { total += x }
     _ = @black_box(total)
@@ -66,7 +66,7 @@ bench "1000 HashMap inserts and lookups" {
     m := map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
-        try m.put(i, i * 2)
+        ok(m.put(i, i * 2))
     }
     total: u64 = 0
     for i in 0..1000 {

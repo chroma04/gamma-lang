@@ -342,9 +342,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let t = e.ty;
         let loc = self.loc(e);
         match op {
-            Builtin::Assert | Builtin::Expect => {
+            Builtin::Assert => {
                 // Fast builds remove `assert`, argument and all (§21.6).
-                if op == Builtin::Assert && !self.checks() {
+                if !self.checks() {
                     return Ok(self.unit());
                 }
                 let c = self.expr(&args[0])?;
@@ -353,7 +353,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let m = self.expr(&args[1])?;
                 let a = self.addr_of(args[1].ty, &m);
                 let (p, l) = (self.slice_ptr(&a), self.slice_len(&a));
-                let prefix = if op == Builtin::Assert { "assertion failed" } else { "expectation failed" };
+                let prefix = "assertion failed";
                 self.line(&format!(
                     "gm_buf mb = {{0}}; size_t ml = {l}; const uint8_t *mp = {p}; if (ml == {n} && memcmp(mp, \"{prefix}\", {n}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{prefix}: \", {n2}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {loc});",
                     n = prefix.len(),

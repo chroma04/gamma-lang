@@ -208,7 +208,7 @@ It also makes leak checking practical. Tests run with a heap that notices leaks,
 test "list of names" {
     names := list(string)
     defer names.deinit()
-    try names.push("ada")
+    ok(names.push("ada"))
     expect(names.items.len is 1)
 }
 ```

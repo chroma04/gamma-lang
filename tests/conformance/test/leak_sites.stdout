@@ -1,7 +1,7 @@
 test "leaks" ... FAILED
     leaked 30 bytes
       16 bytes allocated by a container (List, HashMap, …) or an Allocator directly
-      10 bytes allocated at tests/conformance/test/leak_sites.gm:5:14
-      4 bytes allocated at tests/conformance/test/leak_sites.gm:6:14
+      10 bytes allocated at tests/conformance/test/leak_sites.gm:5:13
+      4 bytes allocated at tests/conformance/test/leak_sites.gm:6:13
 test "clean" ... ok
 1 passed, 1 failed

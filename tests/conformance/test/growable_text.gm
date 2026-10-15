@@ -6,46 +6,46 @@ str :: import "std/str"
 test "write appends formatted text" {
     l := list(u8)
     defer l.deinit()
-    try l.write("{}={:>3};", ("a", 1))
-    try l.write("{:.2}", 0.5)
-    try l.write("!")
+    ok(l.write("{}={:>3};", ("a", 1)))
+    ok(l.write("{:.2}", 0.5))
+    ok(l.write("!"))
     expect(l.items is "a=  1;0.50!")
 }
 
 test "into_slice hands over the storage" {
     l := list(u8)
-    try l.write("hello, {}", "world")
-    s := try l.into_slice()
+    ok(l.write("hello, {}", "world"))
+    s := ok(l.into_slice())
     expect(s is "hello, world")
     expect(l.items.len is 0)
     free(s)
     empty := list(i32)
-    z := try empty.into_slice()
+    z := ok(empty.into_slice())
     expect(z.len is 0)
 }
 
 test "collect gathers an iterator" {
     m := map(u32, u32)
     defer m.deinit()
-    for i in 0u32..5 { try m.put(i, i * i) }
+    for i in 0u32..5 { ok(m.put(i, i * i)) }
     vs := list(u32)
     defer vs.deinit()
-    try vs.collect(fn() => m.values())
+    ok(vs.collect(fn() => m.values()))
     vs.items.sort()
     want := [_]u32(0, 1, 4, 9, 16)
     expect(vs.items is want[..])
 }
 
 test "dupe copies" {
-    a := try dupe("text")
+    a := ok(dupe("text"))
     defer free(a)
-    b := try dupe([_]u16(7, 8))
+    b := ok(dupe([_]u16(7, 8)))
     defer free(b)
     expect(a is "text" and b[1] is 8)
 }
 
 test "format allocates" {
-    s := try str.format("{:x}/{}", (255, true))
+    s := ok(str.format("{:x}/{}", (255, true)))
     defer free(s)
     expect(s is "ff/true")
 }

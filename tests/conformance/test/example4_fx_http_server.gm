@@ -310,8 +310,8 @@ bob: [HTTP/1.1 400 Bad Request] malformed
 `
 
 test "two clients talk to one server" {
-    l := try listen("127.0.0.1", 0)
-    port := try l.local_port()
+    l := ok(listen("127.0.0.1", 0))
+    port := ok(l.local_port())
     expect(port is 49152)
     alice_ctx := Ctx(listener: l, port: port, name: "alice", limit: 9)
     bob_ctx := Ctx(listener: l, port: port, name: "bob", limit: 9)
@@ -337,13 +337,13 @@ test "two clients talk to one server" {
 
 test "a lone client sees a refused connection when nobody listens" {
     expect(connect("localhost", 9) is !.ConnectionRefused)
-    l := try listen("localhost", 9000)
-    c := try connect("localhost", 9000)
+    l := ok(listen("localhost", 9000))
+    c := ok(connect("localhost", 9000))
     // Nobody accepted yet: the listener has a pending connection, and the client reads nothing.
     buf: [8]u8 = ---
     expect(c.recv(buf[..]) is !.WouldBlock)
-    s := try l.accept()
+    s := ok(l.accept())
     expect(s.recv(buf[..]) is !.WouldBlock)
     c.close_socket()
-    expect(try s.recv(buf[..]) is 0)
+    expect(ok(s.recv(buf[..])) is 0)
 }

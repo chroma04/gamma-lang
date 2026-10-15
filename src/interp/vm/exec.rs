@@ -1716,8 +1716,6 @@ impl<'a> Machine<'a> {
                     TrapKind::Plain => s,
                     TrapKind::Assert if s == "assertion failed" => s,
                     TrapKind::Assert => format!("assertion failed: {}", s),
-                    TrapKind::Expect if s == "expectation failed" => s,
-                    TrapKind::Expect => format!("expectation failed: {}", s),
                 };
                 return self.trap(span, msg);
             }

@@ -1746,15 +1746,13 @@ impl<'m, 'a> Compiler<'m, 'a> {
     fn builtin(&mut self, e: &'a Expr, op: Builtin, args: &'a [Expr], want: Option<Arg>) -> C<Arg> {
         let span = e.span;
         match op {
-            Builtin::Assert | Builtin::Expect => {
+            Builtin::Assert => {
                 let ok = self.label();
-                if op == Builtin::Assert {
-                    self.emit(Op::JmpFast { t: ok }, span);
-                }
+                self.emit(Op::JmpFast { t: ok }, span);
                 let c = self.expr(&args[0])?;
                 let Arg::Data { reg, .. } = c else { return Err(unsupported!()) };
                 self.emit(Op::JmpIf { c: reg, t: ok }, span);
-                let kind = if op == Builtin::Assert { TrapKind::Assert } else { TrapKind::Expect };
+                let kind = TrapKind::Assert;
                 match args.get(1) {
                     Some(m) => {
                         let v = self.expr(m)?;

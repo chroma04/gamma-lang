@@ -49,46 +49,46 @@ list_dir :: fn(path: string, name: string) -> IoError!Listing \ {Fs} {
 }
 
 test "a written file reads back" {
-    try put("greeting.txt", "hello, world")
-    expect(try holds("greeting.txt", "hello, world"))
-    expect(not try holds("greeting.txt", "hello"))
-    info := try stat("greeting.txt")
+    ok(put("greeting.txt", "hello, world"))
+    expect(ok(holds("greeting.txt", "hello, world")))
+    expect(not ok(holds("greeting.txt", "hello")))
+    info := ok(stat("greeting.txt"))
     expect(info.size is 12)
     expect(info.kind is .File)
     print("size {}\n", info.size)
 }
 
 test "the root is an empty directory" {
-    info := try stat("/")
+    info := ok(stat("/"))
     expect(info.kind is .Dir)
     expect(info.size is 0)
-    expect((try stat("")).kind is .Dir)
-    l := try list_dir("/", "")
+    expect((ok(stat(""))).kind is .Dir)
+    l := ok(list_dir("/", ""))
     expect(l.count is 0)
 }
 
 test "modified is the fake clock at the last write" {
     sleep(secs(5))
-    try put("a", "x")
+    ok(put("a", "x"))
     t0 := wall()
-    expect((try stat("a")).modified is t0)
+    expect((ok(stat("a"))).modified is t0)
     sleep(secs(2))
-    expect((try stat("a")).modified is t0)
-    f := try open("a", OpenOptions(read: false, write: true))
-    _ = try f.write_to("y")
+    expect((ok(stat("a"))).modified is t0)
+    f := ok(open("a", OpenOptions(read: false, write: true)))
+    _ = ok(f.write_to("y"))
     f.close()
-    expect((try stat("a")).modified is t0 + 2_000_000_000)
-    expect((try stat("a")).modified is wall())
+    expect((ok(stat("a"))).modified is t0 + 2_000_000_000)
+    expect((ok(stat("a"))).modified is wall())
 }
 
 test "paths are normalized" {
-    try make_dir("a")
-    try make_dir("/a/b")
-    try put("a//b/./c", "deep")
-    expect(try holds("a/b/c", "deep"))
-    expect(try holds("/a/b/c", "deep"))
-    expect(try holds("./a/./b//c/", "deep"))
-    expect((try stat("a/b")).kind is .Dir)
+    ok(make_dir("a"))
+    ok(make_dir("/a/b"))
+    ok(put("a//b/./c", "deep"))
+    expect(ok(holds("a/b/c", "deep")))
+    expect(ok(holds("/a/b/c", "deep")))
+    expect(ok(holds("./a/./b//c/", "deep")))
+    expect((ok(stat("a/b"))).kind is .Dir)
     expect(open("a/../a/b/c", OpenOptions()) is !.InvalidInput)
     expect(stat("..") is !.InvalidInput)
 }
@@ -104,59 +104,59 @@ test "opening a missing file" {
 }
 
 test "create, exclusive and truncate" {
-    f := try open("f", OpenOptions(read: false, write: true, create: true))
-    _ = try f.write_to("abcdef")
+    f := ok(open("f", OpenOptions(read: false, write: true, create: true)))
+    _ = ok(f.write_to("abcdef"))
     f.close()
     // `create` on an existing file keeps its contents.
-    g := try open("f", OpenOptions(read: false, write: true, create: true))
+    g := ok(open("f", OpenOptions(read: false, write: true, create: true)))
     g.close()
-    expect(try holds("f", "abcdef"))
+    expect(ok(holds("f", "abcdef")))
     expect(open("f", OpenOptions(write: true, exclusive: true)) is !.AlreadyExists)
     expect(open("f", OpenOptions(write: true, create: true, exclusive: true)) is !.AlreadyExists)
-    h := try open("fresh", OpenOptions(write: true, exclusive: true))
+    h := ok(open("fresh", OpenOptions(write: true, exclusive: true)))
     h.close()
-    expect((try stat("fresh")).size is 0)
+    expect((ok(stat("fresh"))).size is 0)
     expect(open("fresh", OpenOptions(write: true, exclusive: true)) is !.AlreadyExists)
-    t := try open("f", OpenOptions(write: true, truncate: true))
+    t := ok(open("f", OpenOptions(write: true, truncate: true)))
     t.close()
-    expect((try stat("f")).size is 0)
+    expect((ok(stat("f"))).size is 0)
 }
 
 test "append writes go to the end" {
-    try put("log", "one")
-    f := try open("log", OpenOptions(read: false, append: true))
+    ok(put("log", "one"))
+    f := ok(open("log", OpenOptions(read: false, append: true)))
     defer f.close()
-    _ = try f.seek(0, .Start)
-    _ = try f.write_to(",two")
-    _ = try f.seek(0, .Start)
-    _ = try f.write_to(",three")
-    expect(try holds("log", "one,two,three"))
+    _ = ok(f.seek(0, .Start))
+    _ = ok(f.write_to(",two"))
+    _ = ok(f.seek(0, .Start))
+    _ = ok(f.write_to(",three"))
+    expect(ok(holds("log", "one,two,three")))
 }
 
 test "access modes are enforced" {
-    try put("f", "data")
+    ok(put("f", "data"))
     buf: [4]u8 = ---
-    w := try open("f", OpenOptions(read: false, write: true))
+    w := ok(open("f", OpenOptions(read: false, write: true)))
     expect(w.read_from(buf[..]) is !.Other(9))
     w.close()
-    r := try open("f", OpenOptions())
+    r := ok(open("f", OpenOptions()))
     expect(r.write_to("x") is !.Other(9))
     expect(r.read_from(buf[..]) is 4)
     r.close()
-    a := try open("f", OpenOptions(read: false, append: true))
+    a := ok(open("f", OpenOptions(read: false, append: true)))
     expect(a.read_from(buf[..]) is !.Other(9))
     a.close()
-    rw := try open("f", OpenOptions(write: true))
+    rw := ok(open("f", OpenOptions(write: true)))
     expect(rw.read_from(buf[..]) is 4)
     expect(rw.write_to("x") is 1)
     rw.close()
-    expect(try holds("f", "datax"))
+    expect(ok(holds("f", "datax")))
 }
 
 test "each handle has its own position" {
-    try put("f", "0123456789")
-    a := try open("f", OpenOptions())
-    b := try open("f", OpenOptions())
+    ok(put("f", "0123456789"))
+    a := ok(open("f", OpenOptions()))
+    b := ok(open("f", OpenOptions()))
     buf: [4]u8 = ---
     expect(a.read_from(buf[..]) is 4)
     expect(buf[0] is '0')
@@ -174,8 +174,8 @@ test "each handle has its own position" {
 }
 
 test "seek from the start, the current position and the end" {
-    try put("f", "0123456789")
-    f := try open("f", OpenOptions(write: true))
+    ok(put("f", "0123456789"))
+    f := ok(open("f", OpenOptions(write: true)))
     defer f.close()
     buf: [3]u8 = ---
     expect(f.seek(4, .Start) is 4)
@@ -200,159 +200,159 @@ test "seek from the start, the current position and the end" {
 }
 
 test "writing past the end fills the gap with zeros" {
-    try put("f", "ab")
-    f := try open("f", OpenOptions(write: true))
-    _ = try f.seek(5, .Start)
-    _ = try f.write_to("cd")
+    ok(put("f", "ab"))
+    f := ok(open("f", OpenOptions(write: true)))
+    _ = ok(f.seek(5, .Start))
+    _ = ok(f.write_to("cd"))
     f.close()
     buf: [16]u8 = ---
-    n := try slurp("f", buf[..])
+    n := ok(slurp("f", buf[..]))
     expect(n is 7)
     expect(buf[0..n] is "ab\0\0\0cd")
-    expect((try stat("f")).size is 7)
+    expect((ok(stat("f"))).size is 7)
     // Overwriting in the middle does not change the size.
-    g := try open("f", OpenOptions(write: true))
-    _ = try g.seek(1, .Start)
-    _ = try g.write_to("XY")
+    g := ok(open("f", OpenOptions(write: true)))
+    _ = ok(g.seek(1, .Start))
+    _ = ok(g.write_to("XY"))
     g.close()
-    n = try slurp("f", buf[..])
+    n = ok(slurp("f", buf[..]))
     expect(buf[0..n] is "aXY\0\0cd")
 }
 
 test "making directories" {
-    try make_dir("d")
+    ok(make_dir("d"))
     expect(make_dir("d") is !.AlreadyExists)
     expect(make_dir("/") is !.AlreadyExists)
     expect(make_dir("x/y") is !.NotFound)
-    try put("file", "x")
+    ok(put("file", "x"))
     expect(make_dir("file") is !.AlreadyExists)
     expect(make_dir("file/sub") is !.Other(20))
     expect(open("file/sub", OpenOptions(write: true, create: true)) is !.Other(20))
     expect(stat("file/sub") is !.Other(20))
-    try make_dir("d/e")
-    expect((try stat("d/e")).kind is .Dir)
+    ok(make_dir("d/e"))
+    expect((ok(stat("d/e"))).kind is .Dir)
     // A file cannot be created over a directory, nor a directory written.
     expect(open("d", OpenOptions(read: false, write: true)) is !.Other(21))
     expect(open("d", OpenOptions(write: true, create: true)) is !.Other(21))
     expect(open("d", OpenOptions(write: true, truncate: true)) is !.Other(21))
     expect(open("d", OpenOptions(write: true, exclusive: true)) is !.AlreadyExists)
     // It can be opened for reading, but not read.
-    f := try open("d", OpenOptions())
+    f := ok(open("d", OpenOptions()))
     buf: [4]u8 = ---
     expect(f.read_from(buf[..]) is !.Other(21))
     f.close()
 }
 
 test "removing files" {
-    try put("f", "x")
-    try make_dir("d")
+    ok(put("f", "x"))
+    ok(make_dir("d"))
     expect(remove("nothing") is !.NotFound)
     expect(remove("d") is !.Other(21))
     expect(remove("/") is !.Other(21))
     expect(remove("f/g") is !.Other(20))
-    try remove("f")
+    ok(remove("f"))
     expect(stat("f") is !.NotFound)
     expect(remove("f") is !.NotFound)
-    expect((try stat("d")).kind is .Dir)
+    expect((ok(stat("d"))).kind is .Dir)
 }
 
 test "an open file survives its removal" {
-    try put("f", "still here")
-    f := try open("f", OpenOptions())
-    try remove("f")
+    ok(put("f", "still here"))
+    f := ok(open("f", OpenOptions()))
+    ok(remove("f"))
     expect(stat("f") is !.NotFound)
     buf: [16]u8 = ---
     expect(f.read_from(buf[..]) is 10)
     f.close()
     // The name can be used again.
-    try put("f", "new")
-    expect(try holds("f", "new"))
+    ok(put("f", "new"))
+    expect(ok(holds("f", "new")))
 }
 
 test "removing directories" {
-    try make_dir("d")
-    try make_dir("d/e")
-    try put("d/e/f", "x")
+    ok(make_dir("d"))
+    ok(make_dir("d/e"))
+    ok(put("d/e/f", "x"))
     expect(remove_dir("nothing") is !.NotFound)
     expect(remove_dir("d") is !.Other(39))
     expect(remove_dir("d/e") is !.Other(39))
     expect(remove_dir("d/e/f") is !.Other(20))
     expect(remove_dir("/") is !.Other(16))
-    try remove("d/e/f")
-    try remove_dir("d/e")
+    ok(remove("d/e/f"))
+    ok(remove_dir("d/e"))
     expect(stat("d/e") is !.NotFound)
-    try remove_dir("d")
+    ok(remove_dir("d"))
     expect(stat("d") is !.NotFound)
     // Removing the entries one by one empties the root again.
-    expect((try list_dir("/", "")).count is 0)
+    expect((ok(list_dir("/", ""))).count is 0)
 }
 
 test "renaming files" {
-    try put("a", "aaa")
-    try put("b", "bbbb")
-    try make_dir("d")
-    try rename("a", "c")
+    ok(put("a", "aaa"))
+    ok(put("b", "bbbb"))
+    ok(make_dir("d"))
+    ok(rename("a", "c"))
     expect(stat("a") is !.NotFound)
-    expect(try holds("c", "aaa"))
+    expect(ok(holds("c", "aaa")))
     // An existing file at the destination is replaced.
-    try rename("c", "b")
+    ok(rename("c", "b"))
     expect(stat("c") is !.NotFound)
-    expect(try holds("b", "aaa"))
-    expect((try stat("b")).size is 3)
+    expect(ok(holds("b", "aaa")))
+    expect((ok(stat("b"))).size is 3)
     // Into a directory, and onto itself.
-    try rename("b", "d/moved")
-    expect(try holds("d/moved", "aaa"))
-    try rename("d/moved", "d/./moved")
-    expect(try holds("d/moved", "aaa"))
+    ok(rename("b", "d/moved"))
+    expect(ok(holds("d/moved", "aaa")))
+    ok(rename("d/moved", "d/./moved"))
+    expect(ok(holds("d/moved", "aaa")))
     expect(rename("nothing", "x") is !.NotFound)
     expect(rename("d/moved", "nodir/x") is !.NotFound)
     expect(rename("d/moved", "d") is !.Other(21))
     expect(rename("d", "d/moved") is !.InvalidInput)
     expect(rename("d/moved", "d/moved/x") is !.Other(20))
-    try make_dir("e")
+    ok(make_dir("e"))
     expect(rename("e", "d") is !.Other(39))
     expect(rename("/", "x") is !.Other(16))
-    expect(try holds("d/moved", "aaa"))
+    expect(ok(holds("d/moved", "aaa")))
 }
 
 test "renaming directories moves their contents" {
-    try make_dir("src")
-    try make_dir("src/sub")
-    try put("src/one", "1")
-    try put("src/sub/two", "22")
-    try rename("src", "dst")
+    ok(make_dir("src"))
+    ok(make_dir("src/sub"))
+    ok(put("src/one", "1"))
+    ok(put("src/sub/two", "22"))
+    ok(rename("src", "dst"))
     expect(stat("src") is !.NotFound)
     expect(stat("src/one") is !.NotFound)
-    expect(try holds("dst/one", "1"))
-    expect(try holds("dst/sub/two", "22"))
-    expect((try list_dir("dst", "one")).count is 2)
+    expect(ok(holds("dst/one", "1")))
+    expect(ok(holds("dst/sub/two", "22")))
+    expect((ok(list_dir("dst", "one"))).count is 2)
     // A directory replaces an empty directory but not a file or a full one.
-    try make_dir("empty")
-    try rename("dst", "empty")
-    expect(try holds("empty/sub/two", "22"))
-    try put("file", "f")
-    try make_dir("other")
-    try put("other/x", "x")
+    ok(make_dir("empty"))
+    ok(rename("dst", "empty"))
+    expect(ok(holds("empty/sub/two", "22")))
+    ok(put("file", "f"))
+    ok(make_dir("other"))
+    ok(put("other/x", "x"))
     expect(rename("empty", "file") is !.Other(20))
     expect(rename("empty", "other") is !.Other(39))
     // Not into itself.
     expect(rename("empty", "empty/sub/inside") is !.InvalidInput)
     expect(rename("empty", "empty/inside") is !.InvalidInput)
-    expect(try holds("empty/sub/two", "22"))
+    expect(ok(holds("empty/sub/two", "22")))
 }
 
 test "listing a directory" {
-    try make_dir("d")
-    try make_dir("d/sub")
-    try put("d/a.txt", "a")
-    try put("d/b.txt", "b")
-    try put("d/sub/deep", "x")
+    ok(make_dir("d"))
+    ok(make_dir("d/sub"))
+    ok(put("d/a.txt", "a"))
+    ok(put("d/b.txt", "b"))
+    ok(put("d/sub/deep", "x"))
     seen: u8 = 0
-    d := try open_dir("d")
+    d := ok(open_dir("d"))
     buf: [16]u8 = ---
     count: usize = 0
     while true {
-        e := (try d.next_entry(buf[..])) else break
+        e := (ok(d.next_entry(buf[..]))) else break
         n := e.len
         count += 1
         which: usize = 3
@@ -371,17 +371,17 @@ test "listing a directory" {
     print("{} entries\n", count)
     expect(open_dir("nothing") is !.NotFound)
     expect(open_dir("d/a.txt") is !.Other(20))
-    expect((try list_dir("d/sub", "deep")).found)
+    expect((ok(list_dir("d/sub", "deep"))).found)
 }
 
 test "a name longer than the buffer" {
-    try put("a-rather-long-name", "x")
-    d := try open_dir("/")
+    ok(put("a-rather-long-name", "x"))
+    d := ok(open_dir("/"))
     defer d.close_dir()
     small: [4]u8 = ---
     expect(d.next_entry(small[..]) is !.InvalidInput)
     big: [32]u8 = ---
-    if e := try d.next_entry(big[..]) {
+    if e := ok(d.next_entry(big[..])) {
         expect(e.len is 18)
         expect(e.kind is .File)
     } else {
@@ -391,66 +391,66 @@ test "a name longer than the buffer" {
 }
 
 test "closed and unknown handles" {
-    try put("f", "x")
+    ok(put("f", "x"))
     buf: [4]u8 = ---
-    f := try open("f", OpenOptions(write: true))
+    f := ok(open("f", OpenOptions(write: true)))
     f.close()
     expect(f.read_from(buf[..]) is !.Other(9))
     expect(f.write_to("y") is !.Other(9))
     expect(f.seek(0, .Start) is !.Other(9))
     f.close()
     // A new handle is a different one.
-    g := try open("f", OpenOptions())
+    g := ok(open("f", OpenOptions()))
     expect(f.read_from(buf[..]) is !.Other(9))
     expect(g.read_from(buf[..]) is 1)
     g.close()
-    d := try open_dir("/")
+    d := ok(open_dir("/"))
     d.close_dir()
     expect(d.next_entry(buf[..]) is !.Other(9))
     d.close_dir()
 }
 
 test "the file system is fresh in every test: write" {
-    try put("leftover.txt", "from the previous test")
-    try make_dir("leftover-dir")
-    expect(try holds("leftover.txt", "from the previous test"))
+    ok(put("leftover.txt", "from the previous test"))
+    ok(make_dir("leftover-dir"))
+    expect(ok(holds("leftover.txt", "from the previous test")))
 }
 
 test "the file system is fresh in every test: read" {
     expect(stat("leftover.txt") is !.NotFound)
     expect(stat("leftover-dir") is !.NotFound)
-    expect((try list_dir("/", "")).count is 0)
+    expect((ok(list_dir("/", ""))).count is 0)
 }
 
 test "many files" {
-    try make_dir("many")
+    ok(make_dir("many"))
     name: [16]u8 = ---
     for i in 0..200 {
         s := format_name(name[..], i)
-        f := try open(s, OpenOptions(read: false, write: true, create: true, exclusive: true))
-        _ = try f.write_to(s[5..])
+        f := ok(open(s, OpenOptions(read: false, write: true, create: true, exclusive: true)))
+        _ = ok(f.write_to(s[5..]))
         f.close()
     }
-    expect((try list_dir("many", "")).count is 200)
+    expect((ok(list_dir("many", ""))).count is 200)
     for i in 0..200 {
         s := format_name(name[..], i)
-        expect(try holds(s, s[5..]))
+        expect(ok(holds(s, s[5..])))
     }
-    expect((try list_dir("many", "f0042")).found)
-    expect((try list_dir("many", "f0199")).found)
-    expect(not (try list_dir("many", "f0200")).found)
+    expect((ok(list_dir("many", "f0042"))).found)
+    expect((ok(list_dir("many", "f0199"))).found)
+    expect(not (ok(list_dir("many", "f0200"))).found)
     // Remove half of them, then add some more that reuse the space.
     for i in 0..100 {
-        try remove(format_name(name[..], i * 2))
+        ok(remove(format_name(name[..], i * 2)))
     }
-    expect((try list_dir("many", "")).count is 100)
+    expect((ok(list_dir("many", ""))).count is 100)
     for i in 200..250 {
-        try put(format_name(name[..], i), "new")
+        ok(put(format_name(name[..], i), "new"))
     }
-    expect((try list_dir("many", "")).count is 150)
+    expect((ok(list_dir("many", ""))).count is 150)
     expect(stat(format_name(name[..], 42)) is !.NotFound)
-    expect(try holds(format_name(name[..], 43), "f0043"))
-    expect(try holds(format_name(name[..], 249), "new"))
+    expect(ok(holds(format_name(name[..], 43), "f0043")))
+    expect(ok(holds(format_name(name[..], 249), "new")))
     print("many ok\n")
 }
 
@@ -466,19 +466,19 @@ format_name :: fn(buf: []u8, i: usize) -> string {
 }
 
 test "large writes and reads" {
-    f := try open("big", WRITE)
+    f := ok(open("big", WRITE))
     chunk: [100]u8 = ---
     chunk[..].fill('z')
     for i in 0..50 {
-        _ = try f.write_to(chunk[..])
+        _ = ok(f.write_to(chunk[..]))
     }
     f.close()
-    expect((try stat("big")).size is 5000)
-    r := try open("big", OpenOptions())
+    expect((ok(stat("big"))).size is 5000)
+    r := ok(open("big", OpenOptions()))
     defer r.close()
     total: usize = 0
     while true {
-        n := try r.read_from(chunk[..])
+        n := ok(r.read_from(chunk[..]))
         if n is 0 { break }
         total += n
     }
@@ -486,11 +486,11 @@ test "large writes and reads" {
 }
 
 test "other effects still work next to the file system" {
-    try put("f", "x")
+    ok(put("f", "x"))
     sleep(ms(1))
     expect(now().ns is 1_000_000)
     l := list(u8)
     defer l.deinit()
-    l.push(7) else return !.NoSpace
+    ok(l.push(7))
     expect(l.items.len is 1)
 }

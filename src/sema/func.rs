@@ -136,9 +136,6 @@ pub struct FnCx<'a, 's> {
     pub clause: Option<ClauseInfo>,
     /// Effects handled by enclosing `with`s (and `for` loops) of this body.
     pub handled: Vec<EffectRef>,
-    /// While checking a test's body: its error type is taken from the first
-    /// `try` (§3.8), so `ret` starts as `<error>!()`.
-    pub infer_test_error: bool,
     /// The `break`s to each label, keyed by the frame depth and the label, with the
     /// type and span of the value given (`()` for loops). Taken out when the labeled
     /// construct is finished: a `with` checks the values.
@@ -330,7 +327,6 @@ impl<'a, 's> FnCx<'a, 's> {
             nested: vec![],
             clause: None,
             handled: vec![],
-            infer_test_error: false,
             label_breaks: Default::default(),
         }
     }

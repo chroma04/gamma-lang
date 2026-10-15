@@ -485,6 +485,8 @@ pub struct Ambient {
     pub fs: Option<EffectId>,
     /// `Net { connect, … }`
     pub net: Option<EffectId>,
+    /// `Test { note, fail }` (§3.8)
+    pub test: Option<EffectId>,
 }
 
 impl Program {
@@ -1285,9 +1287,6 @@ pub enum Builtin {
     CstrLen,
     /// `assert(cond, msg, loc)`: checked (removed in Fast builds).
     Assert,
-    /// `expect(cond, msg)` in a test: traps with `msg` if `cond` is false, in
-    /// every build mode.
-    Expect,
     /// `@hash(x, seed)`.
     Hash,
     /// `@unreachable()`: traps when reached (checked, §18).

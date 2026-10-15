@@ -787,17 +787,6 @@ impl<'a> Machine<'a> {
                 let msg = if msg == "assertion failed" { msg } else { format!("assertion failed: {}", msg) };
                 self.trap(e.span, msg)
             }
-            // `expect` (§21.6) stays in every build mode.
-            Builtin::Expect => {
-                let c = self.eval_bytes(a, &args[0])?;
-                if self.truthy(&c) {
-                    return Ok(Value::unit());
-                }
-                let mb = self.eval_bytes(a, &args[1])?;
-                let msg = String::from_utf8_lossy(&self.read_str(e.span, &mb)?).into_owned();
-                let msg = if msg == "expectation failed" { msg } else { format!("expectation failed: {}", msg) };
-                self.trap(e.span, msg)
-            }
             Builtin::Cover(id) => {
                 cover_hit(id);
                 Ok(Value::unit())

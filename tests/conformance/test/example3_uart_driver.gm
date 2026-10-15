@@ -97,7 +97,7 @@ test "send waits for the transmitter" {
     script := [_]u32(0, 0, STATUS_TX_READY)
     f := Fake(status_script: script[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "", rx_pos: 0)
     with &f {
-        n := try send("ok")
+        n := ok(send("ok"))
         expect(n is 2)
     }
     expect(f.logged is 2)
@@ -128,7 +128,7 @@ test "receive stops when the line goes quiet" {
     f := Fake(status_script: idle[..], polls: 0, log: [16]u8(fill: 0), logged: 0, rx: "ping", rx_pos: 0)
     buf: [8]u8 = ---
     with &f {
-        n := try recv_into(buf[..])
+        n := ok(recv_into(buf[..]))
         expect(n is 4)
         expect(buf[0..n] is "ping")
     }
@@ -140,7 +140,7 @@ test "a memory-backed device" {
     dev := Device(regs: [4]u32(fill: 0), writes: 0)
     dev.regs[REG_STATUS] = STATUS_TX_READY
     with &dev {
-        n := try send("abc")
+        n := ok(send("abc"))
         expect(n is 3)
     }
     expect(dev.writes is 3)

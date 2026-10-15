@@ -4,7 +4,7 @@ str :: import "std/str"
 
 test "join does not leak" {
     parts := [_]string("a", "b", "c")
-    j := try str.join(parts[..], "-")
+    j := ok(str.join(parts[..], "-"))
     defer free(j)
     assert(j.len is 5, "length")
     assert(j[0] is 'a' and j[1] is '-' and j[4] is 'c', "contents")
@@ -12,7 +12,7 @@ test "join does not leak" {
 
 test "join of nothing" {
     parts := [_]string()
-    j := try str.join(parts[..], ",")
+    j := ok(str.join(parts[..], ","))
     defer free(j)
     assert(j.len is 0, "empty")
 }
@@ -24,10 +24,10 @@ test "split yields all pieces" {
 }
 
 test "replace_alloc and dupe do not leak" {
-    r := try str.replace_alloc("a-b-c", "-", "<->")
+    r := ok(str.replace_alloc("a-b-c", "-", "<->"))
     defer free(r)
     assert(r is "a<->b<->c", "replaced")
-    d := try dupe("copy")
+    d := ok(dupe("copy"))
     defer free(d)
     assert(d is "copy", "copy")
     assert(d.ptr is not "copy".ptr, "a new block")
@@ -36,8 +36,8 @@ test "replace_alloc and dupe do not leak" {
 test "replace and repeat append to a list" {
     out := list(u8)
     defer out.deinit()
-    try str.replace(&out, "x.y.z", ".", "::")
-    try str.repeat(&out, "!", 3)
+    ok(str.replace(&out, "x.y.z", ".", "::"))
+    ok(str.repeat(&out, "!", 3))
     assert(out.items is "x::y::z!!!", "contents")
 }
 

@@ -21,7 +21,7 @@ pub(super) const TYPE_NAMES: &[&str] = &[
     "type", "u16", "u32", "u64", "u8", "usize",
 ];
 
-pub(super) const BUILTIN_FNS: &[&str] = &["assert", "eprint", "expect", "expect_eq", "print", "trap"];
+pub(super) const BUILTIN_FNS: &[&str] = &["assert", "eprint", "expect_eq", "print", "trap"];
 
 impl<'s> Sema<'s> {
     pub(super) fn src(&self, span: Span) -> String {

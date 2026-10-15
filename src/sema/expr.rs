@@ -1475,7 +1475,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
             "location" => {
-                let f = self.fn_id.map_or(crate::symbol::Symbol::intern(""), |f| self.sema.prog.fns[f.index()].name);
+                let f = self.location_function();
                 self.sema.source_location(span, f)
             }
             "caller_location" => match self.sema.caller_site {
@@ -1723,20 +1723,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         let v = self.expr(operand, None);
         let vt = self.infer.resolve(v.ty);
-        let (levels, mut ret) = self.return_target();
-        // The first `try` of a test decides the test's error type (§3.8), also from a loop body
-        // or other clause of the test.
-        let in_test_body = self.infer_test_error && levels as usize == self.outer.len();
-        if in_test_body
-            && let (TyKind::Result { err, .. }, TyKind::Result { err: cur, ok }) = (vt.kind(), ret.kind())
-            && cur.is_error()
-        {
-            ret = Ty::result(*err, *ok);
-            match self.outer.first_mut() {
-                Some(f) => f.ret = ret,
-                None => self.ret = ret,
-            }
-        }
+        let (levels, ret) = self.return_target();
         self.check_fn_clause_exit(levels, "try", span);
         match (vt.kind(), ret.kind()) {
             (TyKind::Error, _) => error_expr(span),
@@ -1749,9 +1736,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 } else {
                     match self.lift_variant(*err, *f) {
                         Ok(i) => Some(tir::Lift::Variant(i)),
-                        // In a test, an error that does not lift into the test's error type
-                        // fails the test where it occurs (§3.8).
-                        Err(_) if in_test_body => return self.try_failing_test(v, vt, *err, *ok, span),
                         Err(msg) => {
                             self.error(span, msg);
                             None
@@ -1767,6 +1751,15 @@ impl<'a, 's> FnCx<'a, 's> {
                 );
                 error_expr(span)
             }
+            (TyKind::Optional(_) | TyKind::Result { .. }, _)
+                if self.sema.in_test && levels as usize == self.outer.len() =>
+            {
+                self.error(
+                    span,
+                    "a test returns no value, so `try` cannot propagate from it; write `ok(x)` to fail the test on an error (§3.8)",
+                );
+                error_expr(span)
+            }
             (TyKind::Optional(_) | TyKind::Result { .. }, _) => {
                 self.error(span, format!("`try` needs the function to return an optional or a result, not `{}`", ret));
                 error_expr(span)
@@ -1776,47 +1769,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
-    }
-
-    /// `try v` in a test for an error that the test cannot return: writes `error: ` and the
-    /// error to `Err` and stops the test, as a failed `expect` does (§3.8).
-    fn try_failing_test(&mut self, v: Expr, vt: Ty, err: Ty, ok: Ty, span: Span) -> Expr {
-        let Some(effect) = self.sema.prog.ambient.err else {
-            return error_expr(span);
-        };
-        let eref = crate::types::EffectRef { effect, args: Box::new([]) };
-        self.record_effects(&crate::types::EffectSet::new(vec![eref.clone()]), span);
-        let sym = crate::symbol::Symbol::intern;
-        let x = self.new_local(sym("$ok"), ok, false, span);
-        let e = self.new_local(sym("$err"), err, false, span);
-        let bind = |id, ty| tir::Pat { ty, kind: tir::PatKind::Bind(id), span };
-        let write = mk(
-            Ty::unit(),
-            tir::ExprKind::Write {
-                sink: tir::WriteSink::Perform { effect: eref, op: 0 },
-                pieces: vec![std::rc::Rc::from(&b"error: "[..]), std::rc::Rc::from(&b"\n"[..])],
-                specs: vec![tir::FmtSpec::default()],
-                args: vec![mk(err, tir::ExprKind::Local(e), span)],
-            },
-            span,
-        );
-        let msg = mk(Ty::string(), tir::ExprKind::Str(std::rc::Rc::from(&b"the test failed at this `try`"[..])), span);
-        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
-        let block = tir::Block { stmts: vec![tir::Stmt::Expr(write)], tail: Some(stop), span };
-        let fail = mk(Ty::never(), tir::ExprKind::Block(Box::new(block)), span);
-        let arms = vec![
-            tir::Arm {
-                pat: tir::Pat { ty: vt, kind: tir::PatKind::Ok(Box::new(bind(x, ok))), span },
-                guard: None,
-                body: mk(ok, tir::ExprKind::Local(x), span),
-            },
-            tir::Arm {
-                pat: tir::Pat { ty: vt, kind: tir::PatKind::Err(Box::new(bind(e, err))), span },
-                guard: None,
-                body: fail,
-            },
-        ];
-        mk(ok, tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span)
     }
 
     /// The variant of union `f` whose payload is `e`, for error lifting (§10.6).
@@ -2484,8 +2436,23 @@ impl<'a, 's> FnCx<'a, 's> {
     /// used (§21.5).
     /// Where this expression is, for `@location()` and `@caller_location()`.
     pub fn call_site(&self, span: Span) -> (Span, crate::symbol::Symbol) {
-        let f = self.fn_id.map_or(crate::symbol::Symbol::intern(""), |f| self.sema.prog.fns[f.index()].name);
-        (span, f)
+        (span, self.location_function())
+    }
+
+    /// The function a source location names (§20.3): the innermost enclosing function
+    /// with a name of its own, so code in a `for` body or a handler clause is located
+    /// in the function that contains it.
+    pub fn location_function(&self) -> crate::symbol::Symbol {
+        let name = |f: tir::FnId| self.sema.prog.fns[f.index()].name;
+        let frames = std::iter::once(self.fn_id).chain(self.outer.iter().rev().map(|o| o.fn_id));
+        let mut last = None;
+        for f in frames.flatten() {
+            last = Some(name(f));
+            if !name(f).as_str().starts_with('<') {
+                return name(f);
+            }
+        }
+        last.unwrap_or_else(|| crate::symbol::Symbol::intern(""))
     }
 
     /// Whether the private fields of struct type `t` are visible here: only in

@@ -208,8 +208,6 @@ pub enum TrapKind {
     Plain,
     /// A failed `assert(c, msg)`.
     Assert,
-    /// A failed `expect(c, msg)`.
-    Expect,
 }
 
 /// A comparison of two small integers.

@@ -304,7 +304,7 @@ test "squares" {
 }
 ```
 
-A test passes if it finishes, and fails if `expect` or `expect_eq` fails, a trap occurs, or the test allocator detects a leak (the report lists each leaked block and, for `new`, `make` and `dupe`, the line that allocated it). `try` works inside tests on any error type: an error fails the test and is reported. More on tests in [chapter 13](13-safety.md).
+A test passes if it finishes, and fails if `expect` or `expect_eq` fails, a trap occurs, or the test allocator detects a leak (the report lists each leaked block and, for `new`, `make` and `dupe`, the line that allocated it). `ok(x)` takes the value out of a result, or fails the test reporting the error; a test returns nothing, so `try` is not used in one. More on tests in [chapter 13](13-safety.md).
 
 `gamma test file.gm` (or a module directory) runs the tests of the root module, which then needs no `main`, and of every module of the same package that it imports, directly or indirectly. The tests of the standard library and of dependency packages are not run. Each test runs on its own; its output is captured and shown only if it fails:
 

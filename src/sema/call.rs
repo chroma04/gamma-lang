@@ -586,12 +586,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span)
             }
             BuiltinFn::ExpectEq => self.expect_eq(args, span),
-            BuiltinFn::Assert | BuiltinFn::Expect => {
-                let is_expect = b == BuiltinFn::Expect;
-                let what = if is_expect { "expect" } else { "assert" };
-                if is_expect && !self.sema.in_test {
-                    self.error(span, "`expect` may be called only in tests (§21.6)");
-                }
+            BuiltinFn::Assert => {
+                let what = "assert";
                 let (cond, msg) = match args {
                     [ast::Arg { kind: ArgKind::Positional(c), .. }] => (c, None),
                     [ast::Arg { kind: ArgKind::Positional(c), .. }, ast::Arg { kind: ArgKind::Positional(m), .. }] => {
@@ -609,30 +605,22 @@ impl<'a, 's> FnCx<'a, 's> {
                         let v = self.expr(m, Some(Ty::string()));
                         self.coerce(v, Ty::string())
                     }
-                    None => {
-                        let text: &[u8] = if is_expect { b"expectation failed" } else { b"assertion failed" };
-                        mk(Ty::string(), tir::ExprKind::Str(Rc::from(text)), span)
-                    }
+                    None => mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"assertion failed"[..])), span),
                 };
-                let op = if is_expect { tir::Builtin::Expect } else { tir::Builtin::Assert };
-                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vec![c, m] }, span)
+                mk(Ty::unit(), tir::ExprKind::Builtin { op: tir::Builtin::Assert, args: vec![c, m] }, span)
             }
         }
     }
 
-    /// `expect_eq(actual, expected)` (§21.6): in a test, fails it unless the two are equal
-    /// by `is`, writing both values to `Err` first.
+    /// `expect_eq(actual, expected)` (§21.6): unless the two are equal by `is`, writes both
+    /// values into the failure report and fails the current test, performing `Test`.
     fn expect_eq(&mut self, args: &[ast::Arg], span: Span) -> Expr {
-        if !self.sema.in_test {
-            self.error(span, "`expect_eq` may be called only in tests (§21.6)");
-            return error_expr(span);
-        }
         let [ast::Arg { kind: ArgKind::Positional(a), .. }, ast::Arg { kind: ArgKind::Positional(b), .. }] = args
         else {
             self.error(span, "`expect_eq` takes the actual value and the expected one");
             return error_expr(span);
         };
-        let Some(effect) = self.sema.prog.ambient.err else {
+        let Some(effect) = self.sema.prog.ambient.test else {
             return error_expr(span);
         };
         let l = self.expr(a, None);
@@ -648,10 +636,11 @@ impl<'a, 's> FnCx<'a, 's> {
         );
         let eref = EffectRef { effect, args: Box::new([]) };
         self.record_effects(&EffectSet::new(vec![eref.clone()]), span);
+        // `Test.note` (operation 0) takes the report; `Test.fail` (operation 1) ends it.
         let write = mk(
             Ty::unit(),
             tir::ExprKind::Write {
-                sink: WriteSink::Perform { effect: eref, op: 0 },
+                sink: WriteSink::Perform { effect: eref.clone(), op: 0 },
                 pieces: vec![Rc::from(&b"expected: "[..]), Rc::from(&b"\nactual:   "[..]), Rc::from(&b"\n"[..])],
                 specs: vec![tir::FmtSpec::default(); 2],
                 args: vec![local(y, rt), local(x, lt)],
@@ -659,7 +648,13 @@ impl<'a, 's> FnCx<'a, 's> {
             span,
         );
         let msg = mk(Ty::string(), tir::ExprKind::Str(Rc::from(&b"expectation failed: the values differ"[..])), span);
-        let stop = mk(Ty::never(), tir::ExprKind::Trap { message: Box::new(msg) }, span);
+        let function = self.location_function();
+        let loc = self.sema.source_location(span, function);
+        let stop = mk(
+            Ty::never(),
+            tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op: 1 }, args: vec![msg, loc] },
+            span,
+        );
         let fail = tir::Block { stmts: vec![Stmt::Expr(write)], tail: Some(stop), span };
         let check = mk(
             Ty::unit(),
