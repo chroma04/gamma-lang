@@ -1280,7 +1280,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let module = self.module;
                 match self.sema.lookup_module_name(module, id.name) {
-                    Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                    Some(d) => matches!(
+                        self.sema.resolve_decl(d),
+                        super::DeclValue::Effect(_) | super::DeclValue::EffectInst(_)
+                    ),
                     None => false,
                 }
             }
@@ -1288,7 +1291,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 let module = self.module;
                 match self.sema.module_named(module, base) {
                     Some(m) => match self.sema.module_member(m, *name) {
-                        Some(d) => matches!(self.sema.resolve_decl(d), super::DeclValue::Effect(_)),
+                        Some(d) => matches!(
+                            self.sema.resolve_decl(d),
+                            super::DeclValue::Effect(_) | super::DeclValue::EffectInst(_)
+                        ),
                         None => false,
                     },
                     None => false,
@@ -1312,7 +1318,14 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
     fn comptime_arg(&mut self, ty: Ty, e: &ast::Expr) -> Option<Ty> {
         if let ast::ExprKind::Ident(id) = &e.kind
-            && self.lookup_local(id.name).is_some_and(|b| !matches!(b, super::func::LocalBinding::NestedFn(_)))
+            && self.lookup_local(id.name).is_some_and(|b| {
+                !matches!(
+                    b,
+                    super::func::LocalBinding::NestedFn(_)
+                        | super::func::LocalBinding::Untyped(_)
+                        | super::func::LocalBinding::Const { .. }
+                )
+            })
         {
             self.error(
                 e.span,

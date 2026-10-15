@@ -1,0 +1,10 @@
+//! stage: check
+// Only constants, not variables, give compile-time values; a constant is visible in its block only.
+main :: fn() {
+    n := 4
+    a: [n]u8 = --- //~ ERROR
+    {
+        L :: 5
+    }
+    b: [L]u8 = --- //~ ERROR unknown name `L`
+}

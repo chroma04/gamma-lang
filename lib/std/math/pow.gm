@@ -154,11 +154,11 @@ pub pow :: fn(x: f64, y: f64) -> f64 {
         t_h := clear_low(3.0 + s2 + r)
         t_l := r - ((t_h - 3.0) - s2)
         // u + v = ss * (1 + ...)
-        u2 := s_h * t_h
-        v2 := s_l * t_h + t_l * ss
+        uu := s_h * t_h
+        vv := s_l * t_h + t_l * ss
         // 2/(3 log 2) * (ss + ...)
-        p_h := clear_low(u2 + v2)
-        p_l := v2 - (p_h - u2)
+        p_h := clear_low(uu + vv)
+        p_l := vv - (p_h - uu)
         z_h := POW_CP_H * p_h
         dp_h := if k is 0 { 0.0 } else { POW_DP_H }
         dp_l := if k is 0 { 0.0 } else { POW_DP_L }

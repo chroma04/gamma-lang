@@ -152,6 +152,27 @@ impl<'a, 's> FnCx<'a, 's> {
         call
     }
 
+    /// Performs operation `op` of the given instantiation of its effect (`Yield(u8).yield(x)`).
+    pub fn perform_op_as(&mut self, eref: EffectRef, op: u32, args: &[ast::Arg], span: Span) -> Expr {
+        let info = &self.sema.effects[&eref.effect];
+        let (params, module) = (info.params.clone(), info.module);
+        let op_info = info.ops[op as usize].clone();
+        if eref.args.len() != params.len() {
+            self.error(span, format!("`{}` needs {} type argument(s)", eref.effect.name(), params.len()));
+            return error_expr(span);
+        }
+        let ps: Vec<ParamInfo> =
+            op_info.params.iter().map(|p| ParamInfo { ty: subst(p.ty, &params, &eref.args), ..p.clone() }).collect();
+        let ret = subst(op_info.ret, &params, &eref.args);
+        let (vals, pre) = self.bind_args(&ps, module, args, span, "operation");
+        self.performed.push((eref.clone(), span));
+        if op_info.kind == ast::OpKind::Fn {
+            self.fn_performs.push(span);
+        }
+        let call = mk(ret, tir::ExprKind::Call { callee: tir::Callee::Perform { effect: eref, op }, args: vals }, span);
+        self.finish_call(pre, call, false)
+    }
+
     fn perform_op_inner(&mut self, eff: EffectId, op: u32, args: &[ast::Arg], span: Span) -> Expr {
         let info = &self.sema.effects[&eff];
         let params = info.params.clone();

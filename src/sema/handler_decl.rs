@@ -59,7 +59,9 @@ impl<'s> Sema<'s> {
     pub(super) fn check_pending_clause(&mut self, f: tir::FnId) -> bool {
         let Some(i) = self.pending_clauses.iter().position(|p| p.fn_id == f) else { return false };
         let p = self.pending_clauses.remove(i);
+        let outer = self.enter_module_scope();
         self.check_handler_clauses(vec![p]);
+        self.leave_module_scope(outer);
         true
     }
 

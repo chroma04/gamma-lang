@@ -19,6 +19,8 @@ pub enum DeclValue {
     GenericType(crate::types::AdtId),
     /// An effect.
     Effect(EffectId),
+    /// A generic effect with its arguments: `Ev :: Events(Msg)` (§3.5).
+    EffectInst(EffectRef),
     /// A (non-generic) function.
     Fn(FnId),
     /// An effect operation, callable like a function (§12.1).
@@ -35,7 +37,33 @@ pub enum DeclValue {
     Error,
 }
 
+/// The names a function body adds to the scope of the compile-time expressions in it.
+pub(super) struct BodyScopes {
+    type_params: Vec<(crate::symbol::Symbol, Ty)>,
+    value_scope: Vec<(crate::symbol::Symbol, crate::types::ParamId)>,
+    local_fns: Vec<(crate::symbol::Symbol, tir::FnId)>,
+    local_consts: Vec<(crate::symbol::Symbol, super::func::LocalBinding)>,
+}
+
 impl<'s> Sema<'s> {
+    /// Hides the names of the body being checked, for checking something that is not part
+    /// of it (a declaration, another body) at module scope; undone by `leave_module_scope`.
+    pub(super) fn enter_module_scope(&mut self) -> BodyScopes {
+        BodyScopes {
+            type_params: std::mem::take(&mut self.type_params),
+            value_scope: std::mem::take(&mut self.value_scope),
+            local_fns: std::mem::take(&mut self.local_fns),
+            local_consts: std::mem::take(&mut self.local_consts),
+        }
+    }
+
+    pub(super) fn leave_module_scope(&mut self, s: BodyScopes) {
+        self.type_params = s.type_params;
+        self.value_scope = s.value_scope;
+        self.local_fns = s.local_fns;
+        self.local_consts = s.local_consts;
+    }
+
     /// A `pub` declaration's signature must not mention a private type (§3.3): the
     /// types of a function's parameters and result, of a constant or global, an alias's
     /// type, a struct's `pub` fields and a union's payloads.
@@ -117,7 +145,11 @@ impl<'s> Sema<'s> {
         }
         self.decls[id.0 as usize].state = DeclState::InProgress;
         self.resolving.push(id);
+        // A declaration is resolved in its module's scope, even when a function body that
+        // is being checked needs it first: that body's parameters and locals are not visible.
+        let scopes = self.enter_module_scope();
         let v = self.compute_decl(id);
+        self.leave_module_scope(scopes);
         self.resolving.pop();
         // A cycle report may already have marked this declaration as failed.
         if let DeclState::InProgress = self.decls[id.0 as usize].state {
@@ -349,6 +381,12 @@ impl<'s> Sema<'s> {
             ExprKind::Float(l) if l.suffix.is_none() => Some(Ok(Untyped::Float(l.value.clone()))),
             ExprKind::Paren(inner) => self.try_untyped(module, inner),
             ExprKind::Ident(id) => {
+                if let Some((_, b)) = self.local_consts.iter().rev().find(|(n, _)| *n == id.name) {
+                    return match b {
+                        super::func::LocalBinding::Untyped(v) => Some(Ok(v.clone())),
+                        _ => None,
+                    };
+                }
                 let d = self.lookup_module_name(module, id.name)?;
                 match self.resolve_decl(d) {
                     DeclValue::Untyped(v) => Some(Ok(v)),
@@ -634,6 +672,7 @@ impl<'s> Sema<'s> {
             if let Some(d) = self.lookup_module_name(module, id.name) {
                 return match self.resolve_decl(d) {
                     DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
+                    DeclValue::EffectInst(r) => Some(r),
                     DeclValue::Error => None,
                     _ => {
                         self.error(e.span, format!("`{}` is not an effect", id.name));
@@ -651,6 +690,7 @@ impl<'s> Sema<'s> {
             let d = self.module_member(m, *name)?;
             return match self.resolve_decl(d) {
                 DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
+                DeclValue::EffectInst(r) => Some(r),
                 DeclValue::Error => None,
                 _ => {
                     self.error(e.span, format!("`{}` is not an effect", name.name));
@@ -774,6 +814,7 @@ impl<'s> Sema<'s> {
             if let DeclValue::Type(_)
             | DeclValue::GenericType(_)
             | DeclValue::Effect(_)
+            | DeclValue::EffectInst(_)
             | DeclValue::Fn(_)
             | DeclValue::Op(..)
             | DeclValue::Module(_)
@@ -782,6 +823,17 @@ impl<'s> Sema<'s> {
             {
                 return v;
             }
+        }
+        // `Ev :: Events(Msg)`: an instantiation of a generic effect.
+        if annot.is_none()
+            && let ExprKind::Call { callee, .. } = &init.kind
+            && let Some(Some(d)) = self.aliased_decl(module, callee)
+            && matches!(self.resolve_decl(d), DeclValue::Effect(_))
+        {
+            return match self.resolve_effect_ref(module, init) {
+                Some(r) => DeclValue::EffectInst(r),
+                None => DeclValue::Error,
+            };
         }
         if annot.is_none() && self.looks_like_type(module, init) {
             let ty = self.resolve_type(module, init);

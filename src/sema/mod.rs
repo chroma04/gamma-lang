@@ -220,6 +220,9 @@ pub struct Sema<'s> {
     /// The capture-free nested functions in scope in the body being checked: like
     /// top-level functions, they may be compile-time arguments (§11.8).
     pub local_fns: Vec<(Symbol, FnId)>,
+    /// The constants (`K :: 4`) of the function being checked that are in scope, for
+    /// compile-time expressions in it (§17.2): only `Untyped` and `Const` bindings.
+    pub local_consts: Vec<(Symbol, func::LocalBinding)>,
     /// Compile-time value parameters in scope (innermost last), by name (§16.5).
     pub value_scope: Vec<(Symbol, crate::types::ParamId)>,
     /// The type of each compile-time value parameter.
@@ -372,6 +375,7 @@ impl<'s> Sema<'s> {
             import_edges: vec![],
             type_params: vec![],
             local_fns: vec![],
+            local_consts: vec![],
             value_scope: vec![],
             value_params: HashMap::new(),
             effect_params: Default::default(),

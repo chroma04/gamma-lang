@@ -269,6 +269,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(&(_, pid)) = self.sema.value_scope.iter().rev().find(|(n, _)| *n == name) {
             return mk(self.sema.value_params[&pid], tir::ExprKind::ValueParam(pid), span);
         }
+        // A constant of the body whose compile-time expression this is (§17.2).
+        if let Some((_, b)) = self.sema.local_consts.iter().rev().find(|(n, _)| *n == name) {
+            match b.clone() {
+                LocalBinding::Untyped(v) => return self.untyped_literal(&v, span),
+                LocalBinding::Const { ty, id } => return mk(ty, tir::ExprKind::Const(id), span),
+                _ => {}
+            }
+        }
         // A nested function of the body whose compile-time argument this is.
         if let Some(&(_, f)) = self.sema.local_fns.iter().rev().find(|(n, _)| *n == name) {
             return self.fn_ref(f, span);
@@ -298,7 +306,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, format!("expected a value, found the type `{}`", name));
                 error_expr(span)
             }
-            DeclValue::Effect(_) => {
+            DeclValue::Effect(_) | DeclValue::EffectInst(_) => {
                 self.error(span, format!("expected a value, found the effect `{}`", name));
                 error_expr(span)
             }

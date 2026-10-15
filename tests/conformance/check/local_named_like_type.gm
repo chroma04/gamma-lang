@@ -1,0 +1,32 @@
+//! stage: check
+// A local may not have the name of a type: predeclared, declared at top level, a
+// type parameter or a local alias (§4.6).
+Point :: struct { x, y: i32 }
+Pair :: struct(T: type) { a, b: T }
+Name :: string
+LIMIT :: 10
+
+f :: fn(T: type, x: T, string: u8) -> T { //~ ERROR `string` names a type
+    T := 1 //~ ERROR `T` names a type
+    return x
+}
+
+main :: fn() {
+    u8 := 3 //~ ERROR `u8` names a type
+    i24 := 1 //~ ERROR `i24` names a type
+    Point := 2 //~ ERROR `Point` names a type
+    Pair :: 4 //~ ERROR `Pair` names a type
+    Name := "n" //~ ERROR `Name` names a type
+    Buf :: []u8
+    for bool in 0..3 {} //~ ERROR `bool` names a type
+    if rune := maybe() {} //~ ERROR `rune` names a type
+    // Other top-level and predeclared names may still be hidden.
+    LIMIT := 5
+    print := 1
+    now := 2
+    u := 3
+    i := 4
+    uint := 5
+}
+
+maybe :: fn() -> ?u32 => null

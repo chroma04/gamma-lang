@@ -168,9 +168,9 @@ pub chance :: fn(p: f64) -> bool \ {Rand} => float() < p
 
 /// A normally distributed `f64` with the given mean and standard deviation (Box-Muller).
 pub normal :: fn(mean, stddev: f64) -> f64 \ {Rand} {
-    u1 := 1.0 - float()                 // in (0, 1], so the logarithm is finite
-    u2 := float()
-    z := math.sqrt(-2.0 * math.log(u1)) * math.cos(math.tau * u2)
+    r1 := 1.0 - float()                 // in (0, 1], so the logarithm is finite
+    r2 := float()
+    z := math.sqrt(-2.0 * math.log(r1)) * math.cos(math.tau * r2)
     return mean + stddev * z
 }
 

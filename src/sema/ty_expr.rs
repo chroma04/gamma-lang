@@ -9,6 +9,63 @@ use crate::types::{CallConv, FnTy, Ty, TyKind};
 use num_traits::ToPrimitive;
 
 impl<'s> Sema<'s> {
+    /// True if `name` denotes a type in `module`: a predeclared type, a type parameter or
+    /// local alias in scope, or a type declared at top level (§4.6). Decided from the
+    /// syntax of declarations not resolved yet, so that it never starts an evaluation.
+    pub fn names_type(&mut self, module: ModuleId, name: crate::symbol::Symbol) -> bool {
+        if self.type_params.iter().any(|(n, _)| *n == name) {
+            return true;
+        }
+        match self.lookup_module_name(module, name) {
+            Some(d) => self.decl_is_type(d, 0),
+            None => builtin_type(name.as_str()).is_some(),
+        }
+    }
+
+    fn decl_is_type(&mut self, d: DeclId, depth: u32) -> bool {
+        let decl = &self.decls[d.0 as usize];
+        if let super::DeclState::Done(v) = &decl.state {
+            return matches!(v, DeclValue::Type(_) | DeclValue::GenericType(_));
+        }
+        if decl.op_of.is_some() || depth > 16 {
+            return false;
+        }
+        let (module, item) = (decl.module, decl.item.clone());
+        match &item.kind {
+            ast::ItemKind::Binding(b) if b.ty.is_none() && b.names.len() == 1 => {
+                self.syntax_is_type(module, &b.init, depth)
+            }
+            _ => false,
+        }
+    }
+
+    fn syntax_is_type(&mut self, module: ModuleId, e: &ast::Expr, depth: u32) -> bool {
+        match &e.kind {
+            ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
+                Some(d) => self.decl_is_type(d, depth + 1),
+                None => builtin_type(id.name.as_str()).is_some(),
+            },
+            ExprKind::Paren(inner) | ExprKind::Attributed { inner, .. } => self.syntax_is_type(module, inner, depth),
+            ExprKind::Struct(_)
+            | ExprKind::Union(_)
+            | ExprKind::PtrType { .. }
+            | ExprKind::SliceType { .. }
+            | ExprKind::ManyPtrType { .. }
+            | ExprKind::ErrorUnionType { .. }
+            | ExprKind::FnType(_)
+            | ExprKind::ContType(_) => true,
+            ExprKind::OptionalType(_) | ExprKind::ArrayType { .. } => super::expr::hoist_prefix(e).is_none(),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Ident(id) => match self.lookup_module_name(module, id.name) {
+                    Some(d) => self.decl_is_type(d, depth + 1),
+                    None => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// True if `e` syntactically denotes a type (used to tell aliases from constants).
     pub fn looks_like_type(&mut self, module: ModuleId, e: &ast::Expr) -> bool {
         match &e.kind {

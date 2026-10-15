@@ -92,8 +92,8 @@ main :: fn() \ {Out, Sys} {
     u := Number(d: 1.0)
     hb: [fmt.INT_BUF]u8 = ---
     print("bits {}\n", fmt.hex(u.i.bits(u64), hb[..]))
-    u2 := Number(i: 0x4008000000000000)
-    print("double {}\n", u2.d)
+    three := Number(i: 0x4008000000000000)
+    print("double {}\n", three.d)
     print("union size {}\n", @size_of(Number))
     print("mix {} sum {}\n", (mix(0x80000001, 0xFF), sum(nums[..].ptr, nums.len)))
 }
