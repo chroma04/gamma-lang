@@ -343,7 +343,7 @@ impl<'s> Sema<'s> {
                 self.error(
                     init.span,
                     "a handler literal cannot be a top-level declaration; bind it inside a function, \
-                     or declare a handler for a type with `handler E for T { … }` (§12.5)",
+                     or declare a handler for a type with `handler E for T { … }` (§12.6)",
                 );
                 DeclValue::Error
             }
