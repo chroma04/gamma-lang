@@ -62,7 +62,7 @@ mistakes :: fn(x: u8, y: u16) {
     _ = pair_max(x, y)             // error: T would be both u8 and u16
     _ = pair_max(x, 4)             // fine: T = u8, and the literal takes that type
     _ = pair_max(3, 4)             // fine: nothing else determines T, so it is i32
-    _ = pair_max(u16, x, y)        // fine: x widens to u16 at the argument
+    _ = pair_max(T: u16, x, y)        // fine: x widens to u16 at the argument
 }
 ```
 
@@ -224,7 +224,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 case_insensitive_demo :: fn() -> AllocError!() \ {Alloc} {
-    names := hash_map_with(string, u32, hash: fold_hash, eq: fold_eq)
+    names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     return ()

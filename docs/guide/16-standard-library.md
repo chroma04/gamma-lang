@@ -374,7 +374,7 @@ main :: fn() -> fs.ReadError!() \ {Out, Fs, Rand, Alloc} {
     defer free(data)
     print("{} bytes, {} lines\n", data.len, count(lines_of(data)))
 
-    info := try stat(file)
+    info := try Fs.stat(file)
     print("size {} kind {}\n", info.size, info.kind)
 
     // write_atomic: readers see the old file or the new one, never half of it.
@@ -387,8 +387,8 @@ main :: fn() -> fs.ReadError!() \ {Out, Fs, Rand, Alloc} {
 
     if !e := fs.read_all("/tmp/gamma-tour-16/missing") { print("error: {}\n", e) }
 
-    try remove(file)
-    try remove_dir(dir)
+    try Fs.remove(file)
+    try Fs.remove_dir(dir)
 }
 
 lines_of :: fn(data: []const u8) \ {Yield(string)} {
@@ -448,9 +448,9 @@ Durations and instants are core; `Clock` is the effect that supplies them (a tes
 time :: import "std/time"
 
 main :: fn() -> time.ParseError!() \ {Out, Clock} {
-    started := now()
-    sleep(ms(5))
-    took := now().since(started)
+    started := Clock.now()
+    Clock.sleep(ms(5))
+    took := Clock.now().since(started)
     print("slept at least 5 ms: {}\n", took.to_ms() >= 5)
 
     t := time.from_unix(1_700_000_000 * 1_000_000_000)
@@ -475,11 +475,11 @@ random :: import "std/random"
 main :: fn() \ {Out} {
     r := random.seeded(42)
     with &r {
-        print("{} {}\n", random.range(u8, 1, 7), random.below(u32, 100))
+        print("{} {}\n", random.range(T: u8, 1, 7), random.below(T: u32, 100))
         xs := [_]u32(1, 2, 3, 4, 5, 6)
-        random.shuffle(u32, xs[..])
+        random.shuffle(T: u32, xs[..])
         print("{}\n", xs)
-        print("{}\n", random.choice(string, [_]string("rock", "paper", "scissors")))
+        print("{}\n", random.choice(T: string, [_]string("rock", "paper", "scissors")))
     }
 }
 ```
@@ -542,7 +542,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
 
     j.pending.add(3)
     for _ in 0..3 {
-        t := try thread.spawn(Job, worker, &j)
+        t := try thread.spawn(worker, &j)
         t.detach()                          // never joined; `pending` says when it is done
     }
     j.pending.wait()                        // all three have sent
@@ -555,7 +555,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
     // A mutex-protected counter, with joined threads.
     c := Counter(n: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
-    for i in 0..4 { ts[i] = try thread.spawn(Counter, count_up, &c) }
+    for i in 0..4 { ts[i] = try thread.spawn(count_up, &c) }
     for i in 0..4 { ts[i].join() }
     print("counter {}\n", c.n)
 }
@@ -608,7 +608,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("{} {} {}\n", d.pop_front(), d.pop_back(), d.len())
 
     // A priority queue: the cheapest job first.
-    h := hp.heap_by(Job, fn(a, b: ^const Job) -> bool => a.cost < b.cost)
+    h := hp.heap_by(fn(a, b: ^const Job) -> bool => a.cost < b.cost)
     defer h.deinit()
     try h.push(Job(name: "compile", cost: 30))
     try h.push(Job(name: "lint", cost: 5))
@@ -654,8 +654,8 @@ base64 :: import "std/encoding/base64"
 main :: fn() -> AllocError!() \ {Out, Alloc} {
     packet := list(u8)
     defer packet.deinit()
-    try bytes.append_int(u16, &packet, 0xCAFE, .Big)
-    try bytes.append_int(u32, &packet, 7, .Little)
+    try bytes.append_int(T: u16, &packet, 0xCAFE, .Big)
+    try bytes.append_int(T: u32, &packet, 7, .Little)
     try packet.extend("hi")
 
     hexbuf: [32]u8 = ---

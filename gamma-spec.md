@@ -1564,7 +1564,7 @@ decl_clause  = ident '(' ident { ',' ident } ')' '=>' ( expr | block )
 ```
 
 ```
-FileLogger :: struct { file: File, min: Level }
+FileLogger :: struct { file: fs.File, min: Level }
 
 handler Log for ^FileLogger \ {Fs} {
     log(self, level, msg) => if level >= self.min { _ = fs.write_all_to(self.file, msg) }

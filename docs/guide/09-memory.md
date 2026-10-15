@@ -63,7 +63,7 @@ Allocation can fail, so each of these returns a result and you handle it the usu
 Point :: struct { x, y: i32 }
 
 heap_demo :: fn() -> AllocError!() \ {Alloc, Out} {
-    p := try new(Point, Point(x: 1, y: 2))
+    p := try new(Point(x: 1, y: 2))
     defer destroy(p)                    // release on every path out
     p.x += 10
 

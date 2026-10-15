@@ -191,7 +191,7 @@ A Safe build (§18.7) performs every check of a Checked build and also checks ev
 
 ```gamma
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    p := try new(i32, 7)
+    p := try new(T: i32, 7)
     destroy(p)
     print("{}\n", p^)    // Checked: undefined behavior. Safe: traps.
 }
