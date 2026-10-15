@@ -3126,6 +3126,9 @@ GM_API void *gm_heap_alloc(size_t size, size_t align) {
 #ifdef __FILC__
     /* Under Fil-C a block is an allocation of its own, so the capability of the pointer
        covers exactly the block, and freeing it revokes every pointer into it. */
+    /* Fil-C stops the program on a request larger than it can ever serve; no address
+       space holds 2^47 bytes, so such a request fails like any other. */
+    if ((uint64_t)size >= ((uint64_t)1 << 47)) return NULL;
     uint8_t *p = (uint8_t *)zgc_aligned_alloc(align, size);
     if (p == NULL) return NULL;
     uintptr_t a = (uintptr_t)p;
