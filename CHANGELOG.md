@@ -52,6 +52,15 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma repl <file>` exits with status 1 when the file cannot be loaded.
+- `--jobs=0` is a usage error instead of meaning one job per processor.
+- `--mode=`, `--backend=` and `--diag-format=` with a bad value report the value and what is
+  accepted, instead of "unknown option".
+- `gamma fmt <directory>` skips hidden directories and a package's `target` directory.
+- `gamma lsp` with an unknown option reports it (status 2).
+- A hand-edited `version` or `checksum` in `gamma.lock` is noticed: a plain run repairs the
+  version, `--locked` fails, and the checksum of a cached checkout is verified against the
+  lock. An empty `gamma.lock` counts as missing.
 - A local type alias can be passed as the type argument of a generic function.
 - `math.atan2` no longer returns NaN when an operand is of magnitude 2^1023 or more.
 - The interpreter opens a file with neither `write` nor `append` read-only, like the C back

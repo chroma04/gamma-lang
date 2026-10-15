@@ -198,3 +198,14 @@ fn a_line_opening_a_block_comment_is_not_blank() {
     assert_eq!(out, "5\n");
     assert_eq!(err, "");
 }
+
+#[test]
+fn a_missing_preload_file_is_an_error_status() {
+    let out = Command::new(GAMMA)
+        .args(["repl", "definitely_missing_file.gm"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("cannot start gamma");
+    assert_eq!(out.status.code(), Some(1), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
+}

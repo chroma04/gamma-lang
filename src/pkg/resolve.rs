@@ -53,6 +53,19 @@ pub fn tag_version(tag: &str) -> Option<Version> {
     Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
 }
 
+/// The version a lock entry records for `reference`, given the requirements on it: the
+/// version of the tag when the tag was chosen by a version requirement (and not pinned by
+/// name), otherwise none. This is what `pick` records, derived without the repository.
+fn recorded_version(reqs: &[Req], reference: &str) -> Option<String> {
+    let reqs = effective(reqs);
+    let pinned = reqs.iter().any(|r| !matches!(r.spec, GitSpec::Version(_) | GitSpec::Default));
+    let versioned = reqs.iter().any(|r| matches!(r.spec, GitSpec::Version(_)));
+    if pinned || !versioned {
+        return None;
+    }
+    reference.strip_prefix("tag=").and_then(tag_version).map(|v| v.to_string())
+}
+
 /// Whether a revision with `reference` and `rev` is what `spec` asks for.
 fn satisfies(reference: &str, rev: &str, spec: &GitSpec) -> bool {
     match spec {
@@ -333,7 +346,10 @@ impl<'a> Resolver<'a> {
             _ => false,
         };
         let choice = if let (true, Some(l)) = (reuse, locked) {
-            Choice { rev: l.rev, version: l.version, reference: l.reference }
+            // The version follows from the tag; one edited by hand is repaired (and
+            // `--locked` then reports that the lock would change).
+            let version = recorded_version(&reqs, &l.reference);
+            Choice { rev: l.rev, version, reference: l.reference }
         } else {
             let (dep, url) = (&reqs[0].dep, &reqs[0].url);
             if self.opts.locked && self.old.is_none() {
@@ -405,6 +421,22 @@ impl<'a> Resolver<'a> {
             }
             self.checksums.insert(key.clone(), sum);
             git::make_read_only(&dest);
+        } else if !self.checksums.contains_key(key)
+            && let Some(l) = self.old.as_ref().and_then(|o| o.find(&key.0, key.1.as_deref()))
+            && l.rev == choice.rev
+        {
+            // A checkout from an earlier run: it must still be what the lock vouches for.
+            let sum = git::tree_checksum(&dest)?;
+            if l.checksum != sum {
+                return Err(format!(
+                    "checksum mismatch for package {} (expected {}, found {}); gamma.lock was edited or the cached checkout {} was modified (`gamma cache clean --all` removes it)",
+                    l.name,
+                    l.checksum,
+                    sum,
+                    dest.display()
+                ));
+            }
+            self.checksums.insert(key.clone(), sum);
         }
         git::mark_used(&dest);
         let canon = crate::source::canonicalize(&dest).map_err(|e| format!("cannot read {}: {}", dest.display(), e))?;
