@@ -179,7 +179,7 @@ run_line :: fn(store: ^Store, src: string) -> ?i64 \ {Alloc, Out} {
     outcome: ?i64 = run: with store {
         with (handler Report {
             fail(msg, pos) => {
-                print("  error at {}: {}\n", (pos, msg))
+                print("  error at {}: {}\n", pos, msg)
                 break run null
             }
         }) {
@@ -222,11 +222,11 @@ main :: fn() \ {Out, Alloc} {
     )
     ok: u32 = 0
     for i, src in enumerate(lines[..]) {
-        print("{}: {}\n", (i + 1, src))
+        print("{}: {}\n", i + 1, src)
         if v := run_line(&store, src) {
             print("  = {}\n", v)
             ok += 1
         }
     }
-    print("{} of {} lines ok, {} definitions, {} variables\n", (ok, lines.len, store.defs, store.vars.len()))
+    print("{} of {} lines ok, {} definitions, {} variables\n", ok, lines.len, store.defs, store.vars.len())
 }

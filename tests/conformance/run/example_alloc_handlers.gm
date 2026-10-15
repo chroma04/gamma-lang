@@ -42,7 +42,7 @@ tracker :: fn() -> Tracker \ {Alloc} => Tracker(inner: current())
 
 report :: fn(label: string, t: ^const Tracker) \ {Out} {
     print("{}: live={} peak={} allocs={} frees={} biggest={}\n",
-          (label, t.live, t.peak, t.allocs, t.frees, t.biggest))
+          label, t.live, t.peak, t.allocs, t.frees, t.biggest)
 }
 
 // ---- bump allocator over a caller-supplied buffer --------------------------------
@@ -124,8 +124,8 @@ main :: fn() \ {Out, Alloc} {
     for n in sizes {
         res := with &bump { two_matrices(n) }
         match res {
-            !.OutOfMemory => print("n={}: out of memory (used {} of {}, refused {})\n", (n, bump.used, page.bytes.len, bump.refused))
-            v => print("n={}: total {} (used {})\n", (n, v, bump.used))
+            !.OutOfMemory => print("n={}: out of memory (used {} of {}, refused {})\n", n, bump.used, page.bytes.len, bump.refused)
+            v => print("n={}: total {} (used {})\n", n, v, bump.used)
         }
         bump.used = 0
     }

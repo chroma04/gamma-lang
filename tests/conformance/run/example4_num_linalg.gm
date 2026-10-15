@@ -157,14 +157,14 @@ main :: fn() \ {Out} {
     show(&a)
     f := lu_decompose(N: 3, &a) else { print("singular?\n")
         return }
-    print("permutation: {}, sign: {}\n", (f.perm, f.sign))
+    print("permutation: {}, sign: {}\n", f.perm, f.sign)
     print("LU =\n")
     show(&f.lu)
     x := lu_solve(N: 3, &f, [3]f64(8.0, -11.0, -3.0))
     b0: [64]u8 = ---
     b1: [64]u8 = ---
     b2: [64]u8 = ---
-    print("x = ({}, {}, {})\n", (fixed4(x[0], b0[..]), fixed4(x[1], b1[..]), fixed4(x[2], b2[..])))
+    print("x = ({}, {}, {})\n", fixed4(x[0], b0[..]), fixed4(x[1], b1[..]), fixed4(x[2], b2[..]))
 
     print("det(A) = {}\n", fmt.fixed(determinant(N: 3, &a), 4, fb[..]))
 
@@ -198,7 +198,7 @@ main :: fn() \ {Out} {
     dh := determinant(N: 4, &h)
     print("det(H4) = {}\n", fmt.sci(dh, 6, fb[..]))
     hinv := inverse(N: 4, &h) else { return }
-    print("H4^-1[0][0] = {}  H4^-1[3][3] = {}\n", (fmt.fixed(hinv.a[0][0], 2, fb[0..40]), fmt.fixed(hinv.a[3][3], 2, fb[100..140])))
+    print("H4^-1[0][0] = {}  H4^-1[3][3] = {}\n", fmt.fixed(hinv.a[0][0], 2, fb[0..40]), fmt.fixed(hinv.a[3][3], 2, fb[100..140]))
 
     // Rectangular products and transposes.
     r := zeros(2, 3)

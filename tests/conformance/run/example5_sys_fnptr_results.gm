@@ -83,7 +83,7 @@ main :: fn() \ {Out} {
     acc := r
     table := [3]Op(inc, dbl, inc)
     for f in table { acc = f(acc) }
-    print("table {} {}\n", (acc.id, total(acc)))
+    print("table {} {}\n", acc.id, total(acc))
     // function pointer stored in a struct, nullable
     h := Holder(r: r, cb: null)
     print("holder {}\n", run_holder(h))
@@ -97,31 +97,31 @@ main :: fn() \ {Out} {
         offset += 1
         return y
     }, r)
-    print("closure {} {} {}\n", (out.id, out.vals[1], offset))
+    print("closure {} {} {}\n", out.id, out.vals[1], offset)
     // optionals of big structs
     for k in 0..3 {
         if m := maybe(k) {
-            print("some {} {}\n", (k, total(m)))
+            print("some {} {}\n", k, total(m))
         } else {
             print("none {}\n", k)
         }
     }
     v := maybe(3) else mkrec(0)
     w := maybe(4) else mkrec(0)
-    print("else {} {}\n", (v.id, w.id))
+    print("else {} {}\n", v.id, w.id)
     // results with try / else / match
     for k in 0..8 {
         res := checked(k)
         match res {
-            !e => print("err {} {}\n", (k, e))
-            x => print("ok {} {}\n", (k, total(x)))
+            !e => print("err {} {}\n", k, e)
+            x => print("ok {} {}\n", k, total(x))
         }
     }
     z := checked(9) else e => mkrec(1)
     print("z {}\n", z.id)
     pr := both(1, 2)
     if p := pr {
-        print("both {} {}\n", (p.0.id, p.1.id))
+        print("both {} {}\n", p.0.id, p.1.id)
     }
     pe := both(1, 7)
     print("both err {}\n", pe is !.Worse)

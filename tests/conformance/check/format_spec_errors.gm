@@ -1,6 +1,6 @@
 //! stage: check
 // Format specs (§21.6.1) must be well formed and suit their argument's type.
-log :: fn(A: type, template :: string, args: A) \ {Out} { print(template, args) }
+log :: fn(A: type, template :: string, args: ..A) \ {Out} { print(template, ..args) }
 
 hexes :: fn(T: type, x: T) \ {Out} { print("{:x}\n", x) }
 
@@ -17,9 +17,9 @@ main :: fn() \ {Out} {
     print("{:e}\n", 3u8)              //~ ERROR needs a float, for `e`, not `u8`
     print("{:.3}\n", "abc")           //~ ERROR needs a float, for a precision
     print("{:+}\n", true)             //~ ERROR needs a number, for `+` or `0`
-    print("{:>5} {:b}\n", (1, "s"))   //~ ERROR needs an integer
+    print("{:>5} {:b}\n", 1, "s")   //~ ERROR needs an integer
     log("{:x}\n", 2.5)                //~ ERROR needs an integer, for a base, not `f64` (in an instantiation used here)
     hexes(1.5)                        //~ ERROR (in an instantiation used here)
     hexes(7)
-    print("{:>8} {:.1}\n", ("fine", 1))
+    print("{:>8} {:.1}\n", "fine", 1)
 }

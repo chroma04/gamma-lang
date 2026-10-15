@@ -592,7 +592,7 @@ test "running out of memory is an error" {
     ok(text.extend("["))
     for i in 0..100 {
         if i > 0 { ok(text.extend(",")) }
-        ok(text.write("{{\"id\":{},\"name\":\"item {}\",\"tags\":[\"a\",\"b\"]}}", (i, i)))
+        ok(text.write("{{\"id\":{},\"name\":\"item {}\",\"tags\":[\"a\",\"b\"]}}", i, i))
     }
     ok(text.extend("]"))
     store: [100000]u8 = ---

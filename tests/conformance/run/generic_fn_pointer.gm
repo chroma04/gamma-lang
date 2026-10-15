@@ -10,7 +10,7 @@ apply :: fn(f: ^fn(x: u8) -> u8, v: u8) -> u8 => f(v)
 main :: fn() \ {Out} {
     p: ^fn(x: u8) -> u8 = double(T: u8)
     q := double(T: i64)
-    print("{} {}\n", (p(21), q(1 << 40)))
+    print("{} {}\n", p(21), q(1 << 40))
 
     // Type arguments taken from the expected pointer type.
     r: ^fn(x: f32) -> f32 = double

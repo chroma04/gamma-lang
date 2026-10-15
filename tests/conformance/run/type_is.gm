@@ -16,6 +16,6 @@ describe :: fn(T: type) -> string {
 }
 main :: fn() \ {Out} {
     x: u8 = 1
-    print("{} {} {}\n", (same(i32, i32), same(u8, @type_of(x)), same(i32, u32)))
-    print("{} {}\n", (describe(f64), describe(bool)))
+    print("{} {} {}\n", same(i32, i32), same(u8, @type_of(x)), same(i32, u32))
+    print("{} {}\n", describe(f64), describe(bool))
 }

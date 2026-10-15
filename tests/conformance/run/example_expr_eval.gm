@@ -140,12 +140,12 @@ main :: fn() \ {Out} {
     for s in inputs {
         r := evaluate(s)
         match r {
-            !.BadChar(at) => print("{} -> bad char at {}\n", (s, at))
-            !.UnexpectedToken(at) => print("{} -> unexpected token near {}\n", (s, at))
+            !.BadChar(at) => print("{} -> bad char at {}\n", s, at)
+            !.UnexpectedToken(at) => print("{} -> unexpected token near {}\n", s, at)
             !.DivByZero => print("{} -> division by zero\n", s)
             !.Overflow => print("{} -> overflow\n", s)
             !.Unbalanced => print("{} -> unbalanced parentheses\n", s)
-            v => print("{} = {}\n", (s, v))
+            v => print("{} = {}\n", s, v)
         }
     }
 }

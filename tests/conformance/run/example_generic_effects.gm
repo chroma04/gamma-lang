@@ -33,13 +33,13 @@ generic_user :: fn(T: type, n: u32) -> T \ {Reader(T)} where Num(T) {
 main :: fn() \ {Out} {
     c := Counter(u32)(value: 21)
     with &c {
-        print("{} {}\n", (double_ask(), sum_asks(4)))
+        print("{} {}\n", double_ask(), sum_asks(4))
     }
     print("reads {}\n", c.reads)
 
     k := Counter(u32)(value: 5)
     r := with &k { generic_user(u32, 3) }
-    print("{} {}\n", (r, k.reads))
+    print("{} {}\n", r, k.reads)
 
     h :: handler Reader(f64) {
         ask() => 0.25

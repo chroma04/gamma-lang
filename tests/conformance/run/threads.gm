@@ -34,7 +34,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
         ts[i] = try thread.spawn(work, &s)
     }
     for i in 0..4 { ts[i].join() }
-    print("{} {}\n", (s.atomic_total, s.locked_total))
+    print("{} {}\n", s.atomic_total, s.locked_total)
 
     // One at a time, so the output order is fixed.
     for k in 1..4 {
@@ -48,6 +48,6 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     while @atomic_load(&flags[1], .Acquire) is 0 { thread.yield_now() }
     p.join()
     print("handshake: {}\n", flags[1])
-    print("try_lock: {} {}\n", (s.m.try_lock(), s.m.try_lock()))
+    print("try_lock: {} {}\n", s.m.try_lock(), s.m.try_lock())
     s.m.unlock()
 }

@@ -28,18 +28,18 @@ wrap_paragraph :: fn(self: ^Wrapper, text: string) \ {Out} {
     col: usize = 0
     for w in str.fields(text) {
         if col > 0 and col + 1 + w.len > WIDTH {
-            print("\n", ())
+            print("\n")
             self.lines += 1
             col = 0
         }
         if col > 0 {
-            print(" ", ())
+            print(" ")
             col += 1
         }
         print("{}", w)
         col += w.len
     }
-    print("\n", ())
+    print("\n")
     self.lines += 1
 }
 
@@ -328,12 +328,12 @@ main :: fn() -> IoError!() \ {Out, In} {
         outcome := with &wrap { try play(&r) }
         match outcome {
             .Won(moves) => print("*** You win in {} moves! ***\n", moves)
-            .Quit => print("Bye.\n", ())
+            .Quit => print("Bye.\n")
             .Eof => {
-                print("(end of input)\n", ())
+                print("(end of input)\n")
                 finished = true
             }
         }
     }
-    print("{} games, {} lines of output\n", (games, wrap.lines))
+    print("{} games, {} lines of output\n", games, wrap.lines)
 }

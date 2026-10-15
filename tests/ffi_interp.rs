@@ -34,7 +34,7 @@ libm :: foreign "m" {
     sqrt :: fn(x: f64) -> f64 \ {}
 }
 main :: fn() \ {Out, Sys} {
-    print("{} {} {}\n", (libc.strlen(c"four"), libc.abs(-3), libm.sqrt(16.0)))
+    print("{} {} {}\n", libc.strlen(c"four"), libc.abs(-3), libm.sqrt(16.0))
     print("before\n")
     _ = libc.puts(c"from C")
     print("after\n")
@@ -179,7 +179,7 @@ main :: fn() \ {Out, Sys} {
     p[0] = 'h'
     p[1] = 'i'
     p[2] = 0
-    print("{} {}\n", (libc.strlen(p), p[0..2]))
+    print("{} {}\n", libc.strlen(p), p[0..2])
     libc.free(p)
     _ = libc.open(c"/nonexistent/dir/file", 0)
     print("errno {}\n", libc.errno)

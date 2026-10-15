@@ -10,7 +10,7 @@ count :: fn() -> IoError!(lines: u32, longest: usize) \ {In, Out} {
     longest: usize = 0
     while true {
         next := r.next_line() else e => {
-            print("line {}: {}\n", (lines + 1, e))
+            print("line {}: {}\n", lines + 1, e)
             lines += 1
             continue
         }
@@ -26,17 +26,17 @@ hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
     // Standard input, then a string, through the same function.
     c := try count()
-    print("stdin: {} lines, longest {}\n", (c.lines, c.longest))
+    print("stdin: {} lines, longest {}\n", c.lines, c.longest)
     s := io.StringIn(data: "one\r\ntwo\n\nlast without newline")
     with &s {
         c2 := try count()
-        print("string: {} lines, longest {}\n", (c2.lines, c2.longest))
+        print("string: {} lines, longest {}\n", c2.lines, c2.longest)
     }
 
     // Capture output in a buffer.
     store: [32]u8 = ---
     cap := io.Capture(buf: store[..])
-    with &cap { print("captured {} and {}", (1, true)) }
+    with &cap { print("captured {} and {}", 1, true) }
     print("[{}]\n", cap.text())
 
     // A unique scratch directory.
@@ -68,20 +68,20 @@ main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
     g := try open(path, OpenOptions())
     with io.FileIn(f: g) {
         c3 := try count()
-        print("file: {} lines, longest {}\n", (c3.lines, c3.longest))
+        print("file: {} lines, longest {}\n", c3.lines, c3.longest)
     }
     close(g)
 
     // Whole files.
     try fs.copy(path, copy_path)
     data := try fs.read_all(copy_path)
-    print("copy: {} bytes, starts {}\n", (data.len, data[0..6]))
+    print("copy: {} bytes, starts {}\n", data.len, data[0..6])
     free(data)
     try fs.write_all(copy_path, "short")
     small := try fs.read_all(copy_path)
     print("rewritten: {}\n", small)
     free(small)
-    print("exists: {} {}\n", (fs.exists(copy_path), fs.exists("target/definitely/not/here")))
+    print("exists: {} {}\n", fs.exists(copy_path), fs.exists("target/definitely/not/here"))
     if !e := fs.read_all("target/definitely/not/here") { print("missing: {}\n", e) }
 
     try remove(path)

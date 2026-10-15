@@ -19,6 +19,6 @@ main :: fn() \ {Out} {
     print("{}\n", count(a))
     print("{}\n", count([_]u8(1, 2, 3, 4)))
     show([_]string("x", "y"))
-    for i, x in enumerate(a) { print("{}:{} ", (i, x)) }
+    for i, x in enumerate(a) { print("{}:{} ", i, x) }
     print("\n")
 }

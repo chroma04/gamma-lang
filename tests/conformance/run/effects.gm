@@ -42,7 +42,7 @@ sum_until :: fn(limit: u32) -> u32 {
 main :: fn() \ {Out} {
     messages := 0
     quiet :: handler Log {
-        log(msg) => { messages += 1; print("[{}] {}\n", (messages, msg)) }
+        log(msg) => { messages += 1; print("[{}] {}\n", messages, msg) }
     }
     answer :: handler Ask { ask() => 42 }
     r := with quiet, answer, (handler Abort { abort(code) => break code * 100 }) {
@@ -65,7 +65,7 @@ main :: fn() \ {Out} {
             if b is 2 { continue }
             if a is 1 { continue outer }
             if a is 2 { break outer }
-            print("({}, {}) ", (a, b))
+            print("({}, {}) ", a, b)
         }
     }
     print("\n")

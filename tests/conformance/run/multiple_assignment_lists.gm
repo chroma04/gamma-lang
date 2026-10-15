@@ -15,7 +15,7 @@ main :: fn() \ {Out} {
     x := [3]i32(1, 2, 3)
     x[0], x[2] = x[2], x[0]
     q, r: (u32, u32) = 17 / 5, 17 % 5
-    print("{} {} {} {} {} {}\n", (a, b, x[0], x[2], q, r))
+    print("{} {} {} {} {} {}\n", a, b, x[0], x[2], q, r)
     buf := [4]u8('a', 'b', 'c', 'd')
     for w in words(buf[..]) { print("{} ", w) }
     total: u32 = 0

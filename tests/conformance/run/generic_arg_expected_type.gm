@@ -7,5 +7,5 @@ h :: fn(T: type, x: T) -> bool {
     return g(y)
 }
 main :: fn() \ {Out} {
-    print("{} {} {}\n", (g(T: u8, null), f(T: u8, 1), h(T: u8, 1)))
+    print("{} {} {}\n", g(T: u8, null), f(T: u8, 1), h(T: u8, 1))
 }

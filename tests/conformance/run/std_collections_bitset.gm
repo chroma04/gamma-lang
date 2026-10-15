@@ -14,7 +14,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     z := try bs.bitset(0)
     defer z.deinit()
     print("zero: capacity {} count {} is_empty {} contains(0) {} next {}\n",
-          (z.capacity(), z.count(), z.is_empty(), z.contains(0), z.next_member(0)))
+          z.capacity(), z.count(), z.is_empty(), z.contains(0), z.next_member(0))
     z.remove(5)
     z.clear()
     show("zero items", fn() \ {Yield(usize)} { z.items() })
@@ -22,12 +22,12 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     // Members around the word boundary.
     s := try bs.bitset(130)
     defer s.deinit()
-    print("new: capacity {} count {} is_empty {}\n", (s.capacity(), s.count(), s.is_empty()))
+    print("new: capacity {} count {} is_empty {}\n", s.capacity(), s.count(), s.is_empty())
     for i in [_]usize(0, 1, 62, 63, 64, 65, 127, 128, 129) { s.insert(i) }
     show("members", fn() \ {Yield(usize)} { s.items() })
-    print("count {} is_empty {}\n", (s.count(), s.is_empty()))
+    print("count {} is_empty {}\n", s.count(), s.is_empty())
     for i in [_]usize(0, 2, 62, 63, 64, 65, 66, 128, 129, 130, 1000) {
-        print("contains({}) {}\n", (i, s.contains(i)))
+        print("contains({}) {}\n", i, s.contains(i))
     }
 
     // Insert is idempotent; remove clears one bit and nothing else.
@@ -39,7 +39,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     s.remove(3)
     s.remove(5000)
     print("after remove: count {} contains(62) {} contains(63) {} contains(64) {}\n",
-          (s.count(), s.contains(62), s.contains(63), s.contains(64)))
+          s.count(), s.contains(62), s.contains(63), s.contains(64))
     s.remove(64)
     s.remove(0)
     show("after more removes", fn() \ {Yield(usize)} { s.items() })
@@ -53,11 +53,11 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     }
     print("\n")
     print("next_member(2) {} next_member(66) {} next_member(129) {} next_member(130) {} next_member(999) {}\n",
-          (s.next_member(2), s.next_member(66), s.next_member(129), s.next_member(130), s.next_member(999)))
+          s.next_member(2), s.next_member(66), s.next_member(129), s.next_member(130), s.next_member(999))
 
     // Clear keeps the capacity.
     s.clear()
-    print("cleared: count {} capacity {} next {}\n", (s.count(), s.capacity(), s.next_member(0)))
+    print("cleared: count {} capacity {} next {}\n", s.count(), s.capacity(), s.next_member(0))
     s.insert(129)
     print("after clear: contains(129) {}\n", s.contains(129))
 
@@ -68,7 +68,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         defer t.deinit()
         t.insert(n - 1)
         t.insert(0)
-        print("n {}: count {} contains(n-1) {} contains(n) {}\n", (n, t.count(), t.contains(n - 1), t.contains(n)))
+        print("n {}: count {} contains(n-1) {} contains(n) {}\n", n, t.count(), t.contains(n - 1), t.contains(n))
     }
 
     // Union and intersection.
@@ -88,7 +88,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     i.union_with(&a)
     i.intersect_with(&b)
     show("a & b", fn() \ {Yield(usize)} { i.items() })
-    print("a unchanged: count {}, b unchanged: count {}\n", (a.count(), b.count()))
+    print("a unchanged: count {}, b unchanged: count {}\n", a.count(), b.count())
     a.union_with(&a)
     a.intersect_with(&a)
     print("a with itself: count {}\n", a.count())
@@ -121,6 +121,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for k in 0..128 { f.insert(k) }
     print("full: count {}\n", f.count())
     f.remove(64)
-    print("full minus one: count {} contains(63) {} contains(65) {}\n", (f.count(), f.contains(63), f.contains(65)))
+    print("full minus one: count {} contains(63) {} contains(65) {}\n", f.count(), f.contains(63), f.contains(65))
     return ()
 }

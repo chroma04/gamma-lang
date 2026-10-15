@@ -7,6 +7,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     x: rune = 'z'
     print("{}\n", x)
     s := try make_aligned(u8, 10, 64)
-    print("{} {}\n", (s.len, s.ptr.addr() % 64))
+    print("{} {}\n", s.len, s.ptr.addr() % 64)
     free_aligned(s, 64)
 }

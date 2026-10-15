@@ -44,6 +44,6 @@ test "replace and repeat append to a list" {
 test "builder formats through @write" {
     store: [32]u8 = ---
     b := str.builder(store[..])
-    @write(fn(bytes) => b.push(bytes), "{}-{}", (7, "x"))
+    @write(fn(bytes) => b.push(bytes), "{}-{}", 7, "x")
     assert(b.str() is "7-x", "text")
 }

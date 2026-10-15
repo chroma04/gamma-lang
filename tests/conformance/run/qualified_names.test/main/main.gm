@@ -11,11 +11,11 @@ main :: fn() \ {Out, Alloc} {
     x: s.A(i32) = s.mk(T: i32, 5)
     y := AI(x: 7)
     h := Holder(a: s.A(u8)(x: 1), b: s.A(i32, 4)(x: 2))
-    print("{} {} {} {}\n", (show(x), y.x, h.a.x, h.b.x))
+    print("{} {} {} {}\n", show(x), y.x, h.a.x, h.b.x)
     l := list(s.A(i32))
     defer l.deinit()
     l.push(x) else return
-    print("{} {}\n", (l.items.len, @size_of(s.P(u16))))
+    print("{} {}\n", l.items.len, @size_of(s.P(u16)))
     aliases()
     nested()
 }

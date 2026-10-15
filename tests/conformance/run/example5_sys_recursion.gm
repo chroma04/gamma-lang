@@ -110,24 +110,24 @@ main :: fn() \ {Out} {
     a := Arr(v: [32]i32(fill: 0), n: 32)
     for i in 0..32 { a.v[i] = (next(&g) % 1000).trunc(i32) - 500 }
     s := sort(a)
-    print("sorted {} first {} last {} n {}\n", (is_sorted(s), s.v[0], s.v[31], s.n))
+    print("sorted {} first {} last {} n {}\n", is_sorted(s), s.v[0], s.v[31], s.n)
     print("original sorted {}\n", is_sorted(a))
     same: i64 = 0
     for i in 0..32 { same += i64(a.v[i]) - i64(s.v[i]) }
     print("sum preserved {}\n", same is 0)
     for n in 4..9 {
         b0 := Board(cols: [10]i8(fill: -1), row: 0, diag1: 0, diag2: 0, used: 0)
-        print("queens {} -> {}\n", (n, place(b0, n)))
+        print("queens {} -> {}\n", n, place(b0, n))
     }
     b0 := Board(cols: [10]i8(fill: -1), row: 0, diag1: 0, diag2: 0, used: 0)
     if sol := first_solution(b0, 8) {
-        print("first {} {} {} {} {} {} {} {}\n", (sol.cols[0], sol.cols[1], sol.cols[2], sol.cols[3], sol.cols[4], sol.cols[5], sol.cols[6], sol.cols[7]))
+        print("first {} {} {} {} {} {} {} {}\n", sol.cols[0], sol.cols[1], sol.cols[2], sol.cols[3], sol.cols[4], sol.cols[5], sol.cols[6], sol.cols[7])
     }
     z := Arr(v: [32]i32(fill: 0), n: 5)
     r := is_even(z, 9)
-    print("mutual {} {}\n", (r.v[0], r.v[1]))
+    print("mutual {} {}\n", r.v[0], r.v[1])
     q := Arr(v: [32]i32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31), n: 6)
     t := rot(rot(rot(q)))
-    print("rot {} {} {} {}\n", (t.v[0], t.v[1], t.v[5], t.v[6]))
+    print("rot {} {} {} {}\n", t.v[0], t.v[1], t.v[5], t.v[6])
     print("rot ring {}\n", rot(rot(rot(rot(rot(rot(q)))))).v[0])
 }

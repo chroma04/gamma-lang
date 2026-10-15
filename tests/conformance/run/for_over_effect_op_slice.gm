@@ -30,6 +30,6 @@ main :: fn() \ {Out, Env} {
         for name in all() { print("[{}]\n", name) }
         total: u32 = 0
         for v in pair() { total += v }
-        print("{} calls {}\n", (total, f.calls))
+        print("{} calls {}\n", total, f.calls)
     }
 }

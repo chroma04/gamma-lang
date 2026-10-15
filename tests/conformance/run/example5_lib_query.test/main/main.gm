@@ -64,7 +64,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     depts: Depts = db.new_table(Dept, "depts")
     defer depts.deinit()
     try load(&staff, &depts)
-    print("{} employees, {} departments\n", (staff.len(), depts.len()))
+    print("{} employees, {} departments\n", staff.len(), depts.len())
 
     tally := db.Tally()
     tracer := db.Tracer(prefix: "    . ")
@@ -83,14 +83,14 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         n := try db.count(&staff, &q)
         print("count = {}\n", n)
     }
-    print("{} steps touched {} rows\n", (tally.steps, tally.rows))
+    print("{} steps touched {} rows\n", tally.steps, tally.rows)
 
     with &tally {
         everyone := db.new_query(Employee)
         defer everyone.deinit()
         bonus: i64 = 5
         total := try db.sum(&staff, &everyone, fn(e) => i64(e.salary) + bonus)
-        print("payroll with bonus {}: {}\n", (bonus, total))
+        print("payroll with bonus {}: {}\n", bonus, total)
 
         old := db.new_query(Employee)
         defer old.deinit()
@@ -101,12 +101,12 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         defer out.deinit()
         for g in groups.entries() { try out.push((dept: g.key, n: g.value.n, total: g.value.total)) }
         out.items.sort_by_key(fn(x) => x.dept)
-        for x in out.items { print("dept {}: {} earners over 90, total {}\n", (x.dept, x.n, x.total)) }
+        for x in out.items { print("dept {}: {} earners over 90, total {}\n", x.dept, x.n, x.total) }
 
         print("-- join --\n")
         joined: u32 = 0
         try for pair in db.join(&staff, &depts, emp_dept, dept_id) {
-            print("{} works in {}\n", (pair.left.name, pair.right.name))
+            print("{} works in {}\n", pair.left.name, pair.right.name)
             joined += 1
         }
         print("{} joined rows\n", joined)
@@ -119,7 +119,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer rich.deinit()
     young := try db.mask(&staff, under_40)
     defer young.deinit()
-    print("{} eng, {} rich, {} young\n", (eng.count(), rich.count(), young.count()))
+    print("{} eng, {} rich, {} young\n", eng.count(), rich.count(), young.count())
     both := try db.mask(&staff, over_90)
     defer both.deinit()
     both.intersect_with(&young)
@@ -135,7 +135,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer ix.release()
     for id in [_]u32(7, 3, 42) {
         if i := ix.find(id) {
-            print("id {} is row {}: {}\n", (id, i, staff.row(i)?.name))
+            print("id {} is row {}: {}\n", id, i, staff.row(i)?.name)
         } else {
             print("id {} not found\n", id)
         }

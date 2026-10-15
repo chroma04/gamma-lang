@@ -22,7 +22,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for n in 2..limit {
         if not composite.contains(n) { primes.insert(n) }
     }
-    print("primes below {}: {}\n", (limit, primes.count()))
+    print("primes below {}: {}\n", limit, primes.count())
 
     print("first:")
     taken: u32 = 0
@@ -54,7 +54,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         if q % 4 is 1 { one.insert(q) }
         if q % 4 is 3 { three.insert(q) }
     }
-    print("1 mod 4: {}, 3 mod 4: {}\n", (one.count(), three.count()))
+    print("1 mod 4: {}, 3 mod 4: {}\n", one.count(), three.count())
     both := try bs.bitset(limit)
     defer both.deinit()
     both.union_with(&one)

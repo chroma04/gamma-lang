@@ -36,6 +36,6 @@ when target.arch is .X86_64 {
 
 main :: fn() \ {Out} {
     v := Vec2(x: 2.0, y: 3.0)
-    print("{} {}\n", (win_sum(1, 0.5, v), lib.gm_test_cc_sum(1, 0.5, v)))
-    print("{} {}\n", (sysv_sum(1, 0.5, v), lib.gm_test_cc_sysv(1, 0.5, v)))
+    print("{} {}\n", win_sum(1, 0.5, v), lib.gm_test_cc_sum(1, 0.5, v))
+    print("{} {}\n", sysv_sum(1, 0.5, v), lib.gm_test_cc_sysv(1, 0.5, v))
 }

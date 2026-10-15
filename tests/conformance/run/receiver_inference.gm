@@ -14,6 +14,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     wide := list(u32)
     defer wide.deinit()
     try wide.push(small)
-    print("{} {} {} {} {}\n", (words.items[0], words.items[1], counts.get("he"), s, wide.items[0]))
+    print("{} {} {} {} {}\n", words.items[0], words.items[1], counts.get("he"), s, wide.items[0])
     return ()
 }

@@ -29,7 +29,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         destroy(q)
     }
     p := try new(T: i32, 9)
-    print("{} {} {}\n", (b.a[0], b.a[19], p^))
+    print("{} {} {}\n", b.a[0], b.a[19], p^)
     print("custom allocations: {}\n", c.allocs)
     destroy(p)
     destroy(u)

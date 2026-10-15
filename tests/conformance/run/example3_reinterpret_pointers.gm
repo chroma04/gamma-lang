@@ -20,37 +20,37 @@ main :: fn() \ {Out, Sys} {
     pm := Perm(r: true, w: false, x: true, owner: 2)
     @volatile_store(&pm, Perm(r: false, w: true, x: false, owner: 1))
     pm2 := @volatile_load(&pm)
-    print("{} {} {}\n", (pm2.w, pm2.owner, u8(pm2)))
+    print("{} {} {}\n", pm2.w, pm2.owner, u8(pm2))
     both := pm | Perm(r: true, w: false, x: false, owner: 2)
     print("{}\n", u8(both))
 
     v := V3(x: 1.0, y: -2.0, z: 0.5)
     r := v.bits(Raw)
-    print("{} {} {}\n", (r.a, r.b, r.c))
+    print("{} {} {}\n", r.a, r.b, r.c)
     back := r.bits(V3)
-    print("{} {} {}\n", (back.x, back.y, back.z))
+    print("{} {} {}\n", back.x, back.y, back.z)
     // The array's first element is the low half of the integer on a little-endian target.
     when target.endian is .Little {
         arr := [_]u16(0x0102, 0x0304)
         w := arr.bits(u32)
         print("{}\n", w)
         bs := w.bits([4]u8)
-        print("{} {} {} {}\n", (bs[0], bs[1], bs[2], bs[3]))
+        print("{} {} {} {}\n", bs[0], bs[1], bs[2], bs[3])
     } else {
         arr := [_]u16(0x0304, 0x0102)
         w := arr.bits(u32)
         print("{}\n", w)
         bs := w.bits([4]u8)
-        print("{} {} {} {}\n", (bs[3], bs[2], bs[1], bs[0]))
+        print("{} {} {} {}\n", bs[3], bs[2], bs[1], bs[0])
     }
     print("{}\n", (-1.0).bits(u64))
 
     data := [_]u32(10, 20, 30, 40, 50)
     p := data[..].ptr
     q := p + 4
-    print("{} {} {}\n", (q - p, p < q, (q - 2)[0]))
+    print("{} {} {}\n", q - p, p < q, (q - 2)[0])
     s := (p + 1)[0..3]
-    print("{} {}\n", (s.len, s[2]))
+    print("{} {}\n", s.len, s[2])
     addr := p.addr()
     back2 := addr.to_ptr([^]u32) else return
     print("{}\n", back2[3])

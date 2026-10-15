@@ -75,10 +75,10 @@ main :: fn() \ {Out} {
     for v in walk(&root) { print("node {}\n", v) }
     for v in down(3) { print("down {}\n", v) }
     calls := 0
-    r := with (handler Log { log(msg, n) => { calls += 1; print("{} {}\n", (msg, n)); n * 10 } }) {
+    r := with (handler Log { log(msg, n) => { calls += 1; print("{} {}\n", msg, n); n * 10 } }) {
         work(2)
     }
-    print("work {} after {} calls\n", (r, calls))
+    print("work {} after {} calls\n", r, calls)
     xs := [4]i32(1, 2, -3, 4)
     s := with (handler Stop { stop(c) => break c * 100 }) {
         checked_sum(xs[..2])
@@ -86,7 +86,7 @@ main :: fn() \ {Out} {
     t := with (handler Stop { stop(c) => break c * 100 }) {
         checked_sum(xs[..])
     }
-    print("sums {} {}\n", (s, t))
+    print("sums {} {}\n", s, t)
     stack: [32768]u8 = ---
     got := 0
     with (handler Gen { emit(x, k) => { got += x; resume k() } }) on stack[..] {
@@ -94,6 +94,6 @@ main :: fn() \ {Out} {
     }
     print("emitted {}\n", got)
     ws := [4]string("a", "b", "c", "d")
-    for (p, q) in pairs(ws[..]) { print("{}{} ", (p, q)) }
+    for (p, q) in pairs(ws[..]) { print("{}{} ", p, q) }
     print("\n")
 }

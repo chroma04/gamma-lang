@@ -12,7 +12,7 @@ bump :: fn(b: Big) -> i64 {
 }
 
 show :: fn(b: Big, site: SourceLocation = @caller_location()) \ {Out} {
-    print("{} {} {} {} {} {} {} line {}\n", (b.name, b.n, b.xs[0], b.xs[3], b.f, b.ok, b.c[0], site.line))
+    print("{} {} {} {} {} {} {} line {}\n", b.name, b.n, b.xs[0], b.xs[3], b.f, b.ok, b.c[0], site.line)
 }
 
 main :: fn() \ {Out} {

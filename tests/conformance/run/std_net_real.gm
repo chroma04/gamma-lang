@@ -47,7 +47,7 @@ main :: fn() -> IoError!() \ {Out, Net} {
     c2 := try connect("127.0.0.1", port)
     s2 := try l.accept()
     try s2.set_timeouts(ms(50), ms(50))
-    if !e := s2.recv(buf[..]) { print("recv with a timeout: {} ({})\n", (e, io.describe(e))) }
+    if !e := s2.recv(buf[..]) { print("recv with a timeout: {} ({})\n", e, io.describe(e)) }
     // Data that arrives in time is received; the timeout can be removed again.
     try net.send_all(c2, "late")
     print("received: {}\n", try s2.recv(buf[..]))

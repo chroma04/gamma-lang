@@ -106,7 +106,7 @@ main :: fn() \ {Out} {
         for j in i + 1..10 {
             if i * j > 60 { continue outer }
             if i * j is 42 {
-                print("pair {} {}\n", (i, j))
+                print("pair {} {}\n", i, j)
                 found = true
                 break outer
             }
@@ -117,7 +117,7 @@ main :: fn() \ {Out} {
     a := [_]i32(1, 2, 3, 4)
     b := [_]i32(10, 20, 30)
     print("dot {}\n", dot(a[..], b[..]))
-    for i, x in enumerate(a[..]) { if i is 2 { break }; print("{}:{} ", (i, x)) }
+    for i, x in enumerate(a[..]) { if i is 2 { break }; print("{}:{} ", i, x) }
     print("\n")
     for x in reversed(a[..]) { print("{} ", x) }
     print("\n")

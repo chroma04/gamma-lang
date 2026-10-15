@@ -583,6 +583,9 @@ pub struct Param {
     pub names: Vec<Ident>,
     /// Declared with `::` — a compile-time value parameter (§16.5).
     pub comptime: bool,
+    /// Declared `name: ..T` — a rest parameter, which takes the remaining positional
+    /// arguments as a tuple (§11.3).
+    pub rest: bool,
     pub ty: Option<Expr>,
     pub default: Option<Expr>,
     pub span: Span,

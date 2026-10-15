@@ -62,11 +62,11 @@ main :: fn() \ {Out} {
     // 2. same variable by value and by pointer
     c := mk(1)
     print("poke {}\n", poke(c, &c))
-    print("after poke {} {}\n", (c.a[0], c.tag))
+    print("after poke {} {}\n", c.a[0], c.tag)
     // 3. by-value param modified inside; original untouched
     d := mk(2)
     e := scribble(d)
-    print("scribble {} {} {} {}\n", (d.a[1], d.tag, e.a[1], e.tag))
+    print("scribble {} {} {} {}\n", d.a[1], d.tag, e.a[1], e.tag)
     // 4. pass through a pointer, mutate through another
     p := &d
     print("deref {}\n", pair_diff(p^, scribble(p^)))
@@ -78,11 +78,11 @@ main :: fn() \ {Out} {
     // 6. callee overwrites the original through the pointer while returning a modified copy
     f := mk(4)
     g := swap_fields(f, &f)
-    print("swap {} {} {} {}\n", (f.a[0], g.a[0], g.a[1], g.a[5]))
+    print("swap {} {} {} {}\n", f.a[0], g.a[0], g.a[1], g.a[5])
     // 7. wide integers
     w := Wide(x: 1, y: 2)
     print("wide {}\n", wide3(w, i128(bump_w(&w)), w))
-    print("w {} {}\n", (w.x, w.y))
+    print("w {} {}\n", w.x, w.y)
     // 8. arguments from array elements and fields
     arr := [3]Big(mk(1), mk(2), mk(3))
     i := 0
@@ -92,7 +92,7 @@ main :: fn() \ {Out} {
     // 10. assignment from a call that takes the destination
     h := mk(6)
     h = scribble(h)
-    print("selfassign {} {}\n", (h.a[1], h.tag))
+    print("selfassign {} {}\n", h.a[1], h.tag)
     h = swap_fields(h, &h)
-    print("selfswap {} {} {}\n", (h.a[0], h.a[1], h.tag))
+    print("selfswap {} {} {}\n", h.a[0], h.a[1], h.tag)
 }

@@ -124,7 +124,7 @@ Dog :: struct {
 }
 
 describe :: fn(a: ^const Animal) \ {Out} {
-    print("{} has {} legs\n", (a.name, a.legs))
+    print("{} has {} legs\n", a.name, a.legs)
 }
 
 teach :: fn(d: ^Dog) { d.tricks += 1 }
@@ -138,17 +138,17 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         fresh := try t.insert(keys[i], names[i])
         if not fresh { print("updated {}\n", keys[i]) }
     }
-    print("size {}, height {}\n", (t.size, height(t.root)))
-    print("find 40 = {}, find 41 = {}, find 30 = {}\n", (t.find(40), t.find(41), t.find(30)))
+    print("size {}, height {}\n", t.size, height(t.root))
+    print("find 40 = {}, find 41 = {}, find 30 = {}\n", t.find(40), t.find(41), t.find(30))
 
-    for k, v in t.entries() { print("{}={} ", (k, v)) }
+    for k, v in t.entries() { print("{}={} ", k, v) }
     print("\n")
 
     doomed := [_]i32(20, 70, 50, 99, 30)
     for k in doomed {
-        print("remove {}: {}, size {}\n", (k, t.remove(k), t.size))
+        print("remove {}: {}, size {}\n", k, t.remove(k), t.size)
     }
-    for k, v in t.entries() { print("{}={} ", (k, v)) }
+    for k, v in t.entries() { print("{}={} ", k, v) }
     print("\n")
     print("height now {}\n", height(t.root))
     root := t.root?
@@ -161,7 +161,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for w in ws {
         _ = try words.insert(w, w.len.trunc(u32))
     }
-    for k, v in words.entries() { print("{}:{} ", (k, v)) }
+    for k, v in words.entries() { print("{}:{} ", k, v) }
     print("\n")
 
     // `using` embedding: &dog coerces to ^Animal
@@ -169,6 +169,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     teach(&dog)
     teach(&dog)
     describe(&dog)
-    print("{} knows {} tricks; name via promotion: {}\n", (dog.name, dog.tricks, dog.base.name))
+    print("{} knows {} tricks; name via promotion: {}\n", dog.name, dog.tricks, dog.base.name)
     return ()
 }

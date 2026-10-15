@@ -3,5 +3,5 @@ K :: 10
 g :: fn(T: type, x: T) -> T where Num(T) => x * T(5) + T(K)
 h :: fn(T: type) -> T where Float(T) => T(1.5)
 main :: fn() \ {Out} {
-    print("{} {} {}\n", (g(T: u8, 2), g(T: f64, 0.5), h(f32)))
+    print("{} {} {}\n", g(T: u8, 2), g(T: f64, 0.5), h(f32))
 }

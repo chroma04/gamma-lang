@@ -418,3 +418,27 @@ c :: foreign "c" {
           (attribute_name))
         (identifier)
         (identifier)))))
+
+================================================================================
+Rest parameter
+================================================================================
+
+show :: fn(A: type, label: string, args: ..A) {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    name: (identifier)
+    value: (function_expression
+      parameters: (parameters
+        (parameter
+          name: (identifier)
+          type: (identifier))
+        (parameter
+          name: (identifier)
+          type: (identifier))
+        (parameter
+          name: (identifier)
+          type: (identifier)))
+      body: (block))))

@@ -1121,5 +1121,5 @@ main :: fn() \ {Out} {
             failed += 1
         }
     }
-    print("{} cases, {} failed\n", (CASES.len, failed))
+    print("{} cases, {} failed\n", CASES.len, failed)
 }

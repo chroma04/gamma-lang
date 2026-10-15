@@ -119,6 +119,9 @@ pub struct ParamInfo {
     /// For a type parameter (`T: type`) or a compile-time value parameter
     /// (`N :: usize`): its identity in the signature's types.
     pub generic: Option<crate::types::ParamId>,
+    /// A rest parameter `name: ..T`: it takes the remaining positional arguments as a
+    /// tuple (§11.3).
+    pub rest: bool,
 }
 
 impl ParamInfo {

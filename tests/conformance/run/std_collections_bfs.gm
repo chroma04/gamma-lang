@@ -76,7 +76,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             try queue.push_back(nx)
         }
     }
-    print("visited {} cells, shortest path to E: {}\n", (visited, dist[goal.y * W + goal.x]))
+    print("visited {} cells, shortest path to E: {}\n", visited, dist[goal.y * W + goal.x])
 
     // Walk back from the goal along decreasing distances.
     path := dq.deque(Cell)
@@ -97,9 +97,9 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     }
     first := path.front() else start
     end := path.back() else start
-    print("path length {}: starts at ({}, {}), ends at ({}, {})\n", (path.len(), first.x, first.y, end.x, end.y))
+    print("path length {}: starts at ({}, {}), ends at ({}, {})\n", path.len(), first.x, first.y, end.x, end.y)
     print("route:")
-    for c in path.items() { print(" ({},{})", (c.x, c.y)) }
+    for c in path.items() { print(" ({},{})", c.x, c.y) }
     print("\n")
 
     // 0-1 BFS: entering an open cell is free and entering a wall costs 2 (it has to be

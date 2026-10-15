@@ -59,7 +59,7 @@ main :: fn() \ {Out, Sys} {
         x.tag = 9
         return sum(b)
     }, x)
-    print("A {} {}\n", (r, x.a[0]))
+    print("A {} {}\n", r, x.a[0])
     // B: effect op with the variable as the argument, clause writes the variable
     y := mk(3)
     r2 := with (handler Log {
@@ -70,7 +70,7 @@ main :: fn() \ {Out, Sys} {
     }) {
         with_note(y)
     }
-    print("B {} {}\n", (r2, y.a[0]))
+    print("B {} {}\n", r2, y.a[0])
     // B2: perform directly inside with, handler writes variable
     z := mk(3)
     r3 := with (handler Log {
@@ -81,30 +81,30 @@ main :: fn() \ {Out, Sys} {
     }) {
         note(z)
     }
-    print("B2 {} {}\n", (r3, z.a[0]))
+    print("B2 {} {}\n", r3, z.a[0])
     // D: global
     g := G
     print("D {}\n", read_after_global(G))
-    print("D2 {} {}\n", (sum(G), sum(g)))
+    print("D2 {} {}\n", sum(G), sum(g))
     G = Big(a: [6]i64(fill: 1), tag: 2)
     print("D3 {}\n", sum(G) - setg() * 0 + sum(G))
     // aggregates: evaluation order of fields
     w := mk(1)
     pb := PairBig(x: w, y: Big(a: [6]i64(fill: bump(&w)), tag: 0))
-    print("agg {} {}\n", (pb.x.a[0], pb.y.a[0]))
+    print("agg {} {}\n", pb.x.a[0], pb.y.a[0])
     w2 := mk(1)
     tup := (w2, bump(&w2), w2)
-    print("tup {} {} {}\n", (tup.0.a[0], tup.1, tup.2.a[0]))
+    print("tup {} {} {}\n", tup.0.a[0], tup.1, tup.2.a[0])
     w3 := mk(1)
     arr := [2]Big(w3, mk(bump(&w3)))
-    print("arr {} {}\n", (arr[0].a[0], arr[1].a[0]))
+    print("arr {} {}\n", arr[0].a[0], arr[1].a[0])
     // equality on big structs with side effects
     w4 := mk(1)
     print("eq {}\n", w4 is mk(1 + bump(&w4) - 101))
     // defers
     pp := mk(4)
     q := twice_ret(&pp)
-    print("defer {} {}\n", (q.a[0], pp.a[0]))
+    print("defer {} {}\n", q.a[0], pp.a[0])
     dr := defer_ret()
     print("defer2 {}\n", dr.a[0])
 }

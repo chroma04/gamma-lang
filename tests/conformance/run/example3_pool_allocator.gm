@@ -96,36 +96,36 @@ main :: fn() \ {Out, Alloc} {
     print("Node is {} bytes\n", @size_of(Node))
     with Allocator(data: &pool, vt: &POOL_VT) {
         if list := build(5) {
-            print("sum {} live {}\n", (sum_list(list), pool.live))
+            print("sum {} live {}\n", sum_list(list), pool.live)
             free_list(list)
-            print("after free live {} (fresh {})\n", (pool.live, pool.next_fresh))
+            print("after free live {} (fresh {})\n", pool.live, pool.next_fresh)
         } else {
             print("unexpected failure\n")
         }
         // Blocks are recycled: building again does not touch fresh blocks.
         if list := build(5) {
-            print("again sum {} fresh {}\n", (sum_list(list), pool.next_fresh))
+            print("again sum {} fresh {}\n", sum_list(list), pool.next_fresh)
             free_list(list)
         }
         // Too many nodes for the pool: errdefer gives every node back.
         if list := build(20) {
             print("unexpected success {}\n", sum_list(list))
         } else {
-            print("build(20) failed, live {} failures {}\n", (pool.live, pool.failures))
+            print("build(20) failed, live {} failures {}\n", pool.live, pool.failures)
         }
         big := make(u8, 64)
         print("oversize request failed: {}\n", failed(big))
         b := new(T: u8, 7) else return
         destroy(b)
     }
-    print("final live {} failures {}\n", (pool.live, pool.failures))
+    print("final live {} failures {}\n", pool.live, pool.failures)
 
     // A fixed buffer, reused after reset.
     store: Storage = ---
     fb := fixed_buffer.over(store.bytes[0..64])
     with fb.allocator() {
         a := make(u32, 8) else return
-        print("a {} used {}\n", (a.len, fb.bytes_used()))
+        print("a {} used {}\n", a.len, fb.bytes_used())
         b := make(u32, 8)
         print("second 32-byte block fits: {}\n", not failed(b))
         c := make(u8, 1)
@@ -134,6 +134,6 @@ main :: fn() \ {Out, Alloc} {
     fb.reset()
     with fb.allocator() {
         d := make(u64, 8) else return
-        print("after reset {} used {}\n", (d.len, fb.bytes_used()))
+        print("after reset {} used {}\n", d.len, fb.bytes_used())
     }
 }

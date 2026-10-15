@@ -508,7 +508,7 @@ impl<'s> Sema<'s> {
                     self.value_params.insert(pid, ty);
                     self.value_scope.push((n.name, pid));
                     let default = p.default.clone().map(Rc::new);
-                    params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: Some(pid) });
+                    params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: Some(pid), rest: false });
                 }
                 continue;
             }
@@ -539,6 +539,7 @@ impl<'s> Sema<'s> {
                         span: n.span,
                         default: None,
                         generic: Some(pid),
+                        rest: false,
                     });
                 }
                 continue;
@@ -550,12 +551,47 @@ impl<'s> Sema<'s> {
                 self.error(p.span, "parameters with defaults may be followed only by parameters with defaults");
             }
             if p.names.is_empty() {
-                params.push(ParamInfo { name: Symbol::intern("_"), ty, span: p.span, default: None, generic: None });
+                params.push(ParamInfo {
+                    name: Symbol::intern("_"),
+                    ty,
+                    span: p.span,
+                    default: None,
+                    generic: None,
+                    rest: false,
+                });
+            }
+            let mut rest = p.rest;
+            if p.rest {
+                // `args: ..A` (§11.3): one name, a tuple type or a type parameter, no default.
+                let ok_ty = matches!(ty.kind(), TyKind::Tuple { names: None, .. } | TyKind::Param(_) | TyKind::Error);
+                rest = false;
+                if !literal {
+                    self.error(p.span, "a function type cannot have a rest parameter");
+                    ok = false;
+                } else if p.names.len() != 1 || p.default.is_some() || !ok_ty {
+                    self.error(
+                        p.span,
+                        "a rest parameter is one name with an unnamed tuple type or a type parameter, and no default: `args: ..A`",
+                    );
+                    ok = false;
+                } else {
+                    rest = true;
+                }
             }
             for n in &p.names {
                 let default = p.default.clone().map(Rc::new);
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None });
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None, rest });
             }
+        }
+        // A rest parameter is the last one, but for those bound only by name (§11.3).
+        if let Some(r) = params.iter().position(|p| p.rest)
+            && params[r + 1..].iter().any(|p| p.rest || !p.is_site())
+        {
+            self.error(
+                params[r].span,
+                "a rest parameter must be the last parameter (other than `@caller_location()` ones)",
+            );
+            ok = false;
         }
         if sig.variadic && !self.allow_variadic {
             self.error(sig.span, "variadic parameters are allowed only in foreign functions");
@@ -785,7 +821,14 @@ impl<'s> Sema<'s> {
                     }
                 };
                 for n in &p.names {
-                    params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None });
+                    params.push(ParamInfo {
+                        name: n.name,
+                        ty,
+                        span: n.span,
+                        default: None,
+                        generic: None,
+                        rest: false,
+                    });
                 }
             }
             let ret = op.ret.as_ref().map_or(Ty::unit(), |r| self.resolve_type(module, r));

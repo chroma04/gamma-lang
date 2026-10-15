@@ -59,19 +59,19 @@ TextSink :: struct {
 }
 
 indent :: fn(n: u32) \ {Out} {
-    for _ in 0..n { print("  ", ()) }
+    for _ in 0..n { print("  ") }
 }
 
 handler Trace for ^TextSink \ {Out, Clock} {
     event(self, level, msg, fields) => {
         print("[{}ms] ", now().ns / 1_000_000)
         indent(self.depth)
-        print("{} {}", (level_name(level), msg))
+        print("{} {}", level_name(level), msg)
         for f in fields {
             print(" {}=", f.key)
             put_value(f.val)
         }
-        print("\n", ())
+        print("\n")
         self.lines += 1
     }
     enter(self, name) => {
@@ -84,7 +84,7 @@ handler Trace for ^TextSink \ {Out, Clock} {
         self.depth -= 1
         print("[{}ms] ", now().ns / 1_000_000)
         indent(self.depth)
-        print("<- {} took {}ms\n", (name, elapsed.to_ms()))
+        print("<- {} took {}ms\n", name, elapsed.to_ms())
     }
 }
 

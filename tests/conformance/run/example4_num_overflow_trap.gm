@@ -28,7 +28,7 @@ fact_plain :: fn(n: u32) -> u32 {
 main :: fn() \ {Out} {
     for n in 10..15 {
         n32 := n.trunc(u32)
-        print("{}! checked={} wrapping={} saturating={}\n", (n32, fact_checked(n32), fact_wrapping(n32), fact_saturating(n32)))
+        print("{}! checked={} wrapping={} saturating={}\n", n32, fact_checked(n32), fact_wrapping(n32), fact_saturating(n32))
     }
     print("12! = {}\n", fact_plain(12))
     print("13! = {}\n", fact_plain(13))

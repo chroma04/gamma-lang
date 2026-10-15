@@ -38,7 +38,7 @@ main :: fn() \ {Out} {
     acc := 0
     for i in count(4) { acc = acc * 10 + i.trunc(i32) }
     print("{}\n", acc)
-    for a, b in pairs(4) { print("({},{}) ", (a, b)) }
+    for a, b in pairs(4) { print("({},{}) ", a, b) }
     print("\n")
     for x in tri(3) { print("{} ", x) }
     print("\n")
@@ -46,7 +46,7 @@ main :: fn() \ {Out} {
     print("{}\n", r)
     seen := 0
     r2 := for x in search(10, 3) { seen += 1; if x > 100 { break 99 } }
-    print("{} {}\n", (r2, seen))
+    print("{} {}\n", r2, seen)
     r3 := for x in search(2, 7) { _ = x }
     print("{}\n", r3)
     total := 0
@@ -60,13 +60,13 @@ main :: fn() \ {Out} {
     s2 := 0
     for x in count(5) { s1 += x.trunc(i32) }
     for x in count(5) { s2 += x.trunc(i32) * x.trunc(i32) }
-    print("{} {}\n", (s1, s2))
+    print("{} {}\n", s1, s2)
     // nested loops over same iterator and labeled continue/break
     out: for x in count(5) {
         for y in count(5) {
             if y > x { continue out }
             if x + y > 6 { break out }
-            print("{}{} ", (x, y))
+            print("{}{} ", x, y)
         }
     }
     print("\n")

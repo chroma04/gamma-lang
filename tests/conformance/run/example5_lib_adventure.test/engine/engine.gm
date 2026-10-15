@@ -62,10 +62,10 @@ pub ParseError :: union {
     BadDirection: string
 }
 
-sayf :: fn(A: type, template :: string, args: A) \ {Narrate} {
+sayf :: fn(A: type, template :: string, args: ..A) \ {Narrate} {
     buf: [256]u8 = ---
     b := str.builder(buf[..])
-    b.write(template, args)
+    b.write(template, ..args)
     say(b.str())
 }
 
@@ -182,8 +182,8 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() \ {Narrate, Dice, Halt,
             if g.carried.items.len is 0 {
                 say("You carry nothing.")
             } else {
-                for x in g.carried.items { sayf("- {}: {}", (g.item(x).name, g.item(x).desc)) }
-                sayf("Load: {} of {}", (w.load(g), w.MAX_WEIGHT))
+                for x in g.carried.items { sayf("- {}: {}", g.item(x).name, g.item(x).desc) }
+                sayf("Load: {} of {}", w.load(g), w.MAX_WEIGHT)
             }
         }
         .Go(d) => {
@@ -260,7 +260,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() \ {Narrate, Dice, Halt,
                 g.score += 10
                 say("The lock clicks open.")
             } else {
-                sayf("Using the {} on the {} does nothing.", (u.item, u.target))
+                sayf("Using the {} on the {} does nothing.", u.item, u.target)
             }
         }
         .Route(name) => {
@@ -281,10 +281,10 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() \ {Narrate, Dice, Halt,
                 b.push(w.dir_name(d))
             }
             if path.items.len is 0 { b.push("you are already there") }
-            sayf("Route to {}: {}", (name, b.str()))
+            sayf("Route to {}: {}", name, b.str())
         }
         .Quit => {
-            sayf("Goodbye after {} moves with {} points.", (g.moves, g.score))
+            sayf("Goodbye after {} moves with {} points.", g.moves, g.score)
             halt()
         }
     }

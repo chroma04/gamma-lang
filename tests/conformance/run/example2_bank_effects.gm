@@ -30,11 +30,11 @@ transfer :: fn(from, to: u32, amount: i64) \ {Storage, Tick, Out} {
     original := load(from) else abort("no such account")
     errdefer {
         store(from, original)
-        print("  rollback of {} at t={}\n", (from, now() - t0))
+        print("  rollback of {} at t={}\n", from, now() - t0)
     }
     withdraw(from, amount)
     deposit(to, amount)
-    print("  moved {} from {} to {}\n", (amount, from, to))
+    print("  moved {} from {} to {}\n", amount, from, to)
 }
 
 // ---- mock Storage: a fixed table, tracking writes ----
@@ -76,12 +76,12 @@ handler Tick for ^Fake {
 }
 
 dump :: fn(m: ^const Mem) \ {Out} {
-    for a in m.accts { print("  acct {}: {}\n", (a.id, a.balance)) }
+    for a in m.accts { print("  acct {}: {}\n", a.id, a.balance) }
 }
 
 try_transfer :: fn(m: ^Mem, clock: ^Fake, from, to: u32, amount: i64) -> bool \ {Out} {
     m.reason = ""
-    print("transfer {}->{} of {}\n", (from, to, amount))
+    print("transfer {}->{} of {}\n", from, to, amount)
     with m, clock {
         transfer(from, to, amount)
     }
@@ -102,9 +102,9 @@ main :: fn() \ {Out} {
     ok2 := try_transfer(&mem, &clock, 2, 3, 1000)
     ok3 := try_transfer(&mem, &clock, 1, 9, 100)
     ok4 := try_transfer(&mem, &clock, 7, 1, 1)
-    print("{} {} {} {}\n", (ok1, ok2, ok3, ok4))
+    print("{} {} {} {}\n", ok1, ok2, ok3, ok4)
     dump(&mem)
-    print("writes: {}, clock: {}\n", (mem.writes, clock.t))
+    print("writes: {}, clock: {}\n", mem.writes, clock.t)
 
     // A handler literal: count calls and veto any transfer over a limit.
     calls := 0

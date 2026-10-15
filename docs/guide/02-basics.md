@@ -26,7 +26,7 @@ demo :: fn() \ {Out} {
     ratio: f32 = 0.5               // mutable with an explicit type
     LIMIT: usize : 4096            // immutable with an explicit type
     count += 1
-    print("{} {} {} {}\n", (greeting, count, ratio, LIMIT))
+    print("{} {} {} {}\n", greeting, count, ratio, LIMIT)
 }
 ```
 
@@ -248,7 +248,7 @@ overflow_demo :: fn() \ {Out} {
     b := x +| 10              // 255
     c := x +? 10              // null, of type ?u8
     d := x +? 10 else 255     // 255: the fallback type is u8
-    print("{} {} {} {}\n", (a, b, c, d))
+    print("{} {} {} {}\n", a, b, c, d)
 }
 ```
 

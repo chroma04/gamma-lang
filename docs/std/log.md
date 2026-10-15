@@ -126,7 +126,7 @@ handler Log for ^Discard
 ### `log`
 
 ```gamma
-log :: fn(A: type, level: Level, template :: string, args: A = ()) \ {Log}
+log :: fn(A: type, level: Level, template :: string, args: ..A) \ {Log}
 ```
 
 Writes a record of `level`, formatted from `template` and `args` as `print` does.
@@ -134,7 +134,7 @@ Writes a record of `level`, formatted from `template` and `args` as `print` does
 ### `debug`
 
 ```gamma
-debug :: fn(A: type, template :: string, args: A = ()) \ {Log}
+debug :: fn(A: type, template :: string, args: ..A) \ {Log}
 ```
 
 Writes a `Debug` record.
@@ -142,7 +142,7 @@ Writes a `Debug` record.
 ### `info`
 
 ```gamma
-info :: fn(A: type, template :: string, args: A = ()) \ {Log}
+info :: fn(A: type, template :: string, args: ..A) \ {Log}
 ```
 
 Writes an `Info` record.
@@ -150,7 +150,7 @@ Writes an `Info` record.
 ### `warn`
 
 ```gamma
-warn :: fn(A: type, template :: string, args: A = ()) \ {Log}
+warn :: fn(A: type, template :: string, args: ..A) \ {Log}
 ```
 
 Writes a `Warn` record.
@@ -158,7 +158,7 @@ Writes a `Warn` record.
 ### `error`
 
 ```gamma
-error :: fn(A: type, template :: string, args: A = ()) \ {Log}
+error :: fn(A: type, template :: string, args: ..A) \ {Log}
 ```
 
 Writes an `Error` record.

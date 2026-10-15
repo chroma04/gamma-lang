@@ -98,7 +98,7 @@ free_all :: fn(K, V: type, c: ^Lru(K, V)) \ {Alloc} {
 }
 
 show :: fn(c: ^const Lru(u32, string)) \ {Out} {
-    for k, v in entries(c) { print("{}={} ", (k, v)) }
+    for k, v in entries(c) { print("{}={} ", k, v) }
     print("\n")
 }
 
@@ -108,7 +108,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     names := [_]string("zero", "one", "two", "three", "four", "five")
     for i in 0..4 {
         ev := try put(&c, i, names[i])
-        if k := ev { print("put {} evicted {}\n", (i, k)) }
+        if k := ev { print("put {} evicted {}\n", i, k) }
     }
     show(&c)
     print("get 2 -> {}\n", get(&c, 2))
@@ -121,6 +121,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 
     // stop early; the iterator's frames unwind
     for k, v in entries(&c) { if k < 3 { print("stop at {}\n", k); break } }
-    print("hits {} misses {} len {}\n", (c.hits, c.misses, c.index.len()))
+    print("hits {} misses {} len {}\n", c.hits, c.misses, c.index.len())
     return ()
 }

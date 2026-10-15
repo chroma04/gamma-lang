@@ -576,7 +576,7 @@ module.exports = grammar({
     _parameter: $ => choice($.parameter, '...', $._type_only_parameter),
     parameter: $ => seq(
       field('name', $.identifier),
-      optional(seq(choice(':', '::'), field('type', $._type))),
+      optional(seq(choice(':', '::', seq(':', field('rest', '..'))), field('type', $._type))),
       optional(seq('=', field('default', $._expression))),
     ),
     _type_only_parameter: $ => choice(

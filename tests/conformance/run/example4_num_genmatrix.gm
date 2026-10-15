@@ -74,7 +74,7 @@ main :: fn() \ {Out} {
     fibm := Matrix(u64, 2, 2)(d: [2][2]u64([2]u64(1, 1), [2]u64(1, 0)))
     for n in [_]u32(1, 10, 50, 90) {
         p := power(N: 2, fibm, n)
-        print("F({}) = {}\n", (n, p.d[0][1]))
+        print("F({}) = {}\n", n, p.d[0][1])
     }
 
     // The same code on f64 with a rotation matrix: ten steps of 36 degrees is the identity.

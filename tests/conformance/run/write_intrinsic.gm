@@ -22,16 +22,16 @@ Pos :: struct { x: f64, y: f64 }
 
 main :: fn() \ {Out} {
     line := Line(buf: [64]u8(fill: 0), len: 0)
-    @write(fn(b: []const u8) { append(&line, b) }, "{} + {} = {}", (2, 3, 2 + 3))
-    print("{} ({} bytes)\n", (line.buf[0..line.len], line.len))
+    @write(fn(b: []const u8) { append(&line, b) }, "{} + {} = {}", 2, 3, 2 + 3)
+    print("{} ({} bytes)\n", line.buf[0..line.len], line.len)
 
     // The sink sees consecutive pieces of the output.
     pieces := 0
-    @write(fn(b: []const u8) { pieces += 1 }, "a{}b{}c", (Pos(x: 1.5, y: -2.0), [2]bool(true, false)))
+    @write(fn(b: []const u8) { pieces += 1 }, "a{}b{}c", Pos(x: 1.5, y: -2.0), [2]bool(true, false))
     print("{} pieces\n", pieces)
 
     // A literal that performs `Out` uses the handlers where it is written.
-    @write(fn(b: []const u8) { print("[{}]", b) }, "x={} y={}\n", (1, ?i32(null)))
+    @write(fn(b: []const u8) { print("[{}]", b) }, "x={} y={}\n", 1, ?i32(null))
     apply(fn(b: []const u8) { print("{}\n", b.len) }, "four")
 
     x: i32 = 7

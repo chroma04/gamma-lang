@@ -54,7 +54,7 @@ area :: fn(s: Shape) -> f32 => match s {
 main :: fn() \ {Out} {
     shapes := [_]Shape(.Circle(1.0), .Rect(w: 2, h: 3), .Empty)
     for s in shapes {
-        print("{} has area {}\n", (s, area(s)))
+        print("{} has area {}\n", s, area(s))
     }
 }
 ```

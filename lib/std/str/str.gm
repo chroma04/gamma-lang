@@ -730,7 +730,7 @@ pub parse_float :: fn(T: type, s: string) -> ParseError!T where Float(T) {
 /// buffer's length is a trap (`"str: builder is full"`). Create one with `builder`.
 ///
 /// To format into a builder, use it as the sink of `@write` (§21.6.1):
-/// `@write(fn(bytes) => b.push(bytes), "{} of {}", (n, total))`.
+/// `@write(fn(bytes) => b.push(bytes), "{} of {}", n, total)`.
 pub Builder :: struct {
     buf: []u8
     used: usize
@@ -765,9 +765,9 @@ pub reset :: fn(b: ^Builder) {
 }
 
 /// Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
-/// `b.write("{} of {}", (n, total))`. Traps like `push` if the result does not fit.
-pub write :: fn(A: type, b: ^Builder, template :: string, args: A = ()) {
-    @write(fn(bytes: []const u8) => push(b, bytes), template, args)
+/// `b.write("{} of {}", n, total)`. Traps like `push` if the result does not fit.
+pub write :: fn(A: type, b: ^Builder, template :: string, args: ..A) {
+    @write(fn(bytes: []const u8) => push(b, bytes), template, ..args)
 }
 
 // ---------------------------------------------------------------------------------
@@ -775,12 +775,12 @@ pub write :: fn(A: type, b: ^Builder, template :: string, args: A = ()) {
 // ---------------------------------------------------------------------------------
 
 /// Formatted text (§21.6.1) in memory from the current allocator (release it with
-/// `free`): `str.format("{}-{:03}", (name, n))`. To append to a list instead, use
+/// `free`): `str.format("{}-{:03}", name, n)`. To append to a list instead, use
 /// `List(u8).write`.
-pub format :: fn(A: type, template :: string, args: A = ()) -> AllocError![]u8 \ {Alloc} {
+pub format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 \ {Alloc} {
     l := list(u8)
     errdefer l.deinit()
-    try l.write(template, args)
+    try l.write(template, ..args)
     return l.into_slice()
 }
 

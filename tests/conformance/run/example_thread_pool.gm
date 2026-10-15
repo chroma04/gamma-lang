@@ -95,8 +95,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     chunks_done: u32 = 0
     for c in job.counts { total += c }
     for d in job.done_by { chunks_done += d }
-    print("primes below {}: {}\n", (LIMIT, total))
-    print("chunks processed: {} of {}\n", (chunks_done, NCHUNKS))
+    print("primes below {}: {}\n", LIMIT, total)
+    print("chunks processed: {} of {}\n", chunks_done, NCHUNKS)
     print("first chunks: {}\n", job.counts[0..6])
 
     bank := Bank(m: thread.mutex(), balance: [4]i64(1000, 1000, 1000, 1000), transfers: 0)

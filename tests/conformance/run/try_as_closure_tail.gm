@@ -15,5 +15,5 @@ call :: fn(body: fn() -> E!()) -> E!() {
 main :: fn() \ {Out} {
     good := call(fn() -> E!() { try work(true) })
     bad := call(fn() -> E!() { try work(false) })
-    print("{} {}\n", (good is !_, bad is !_))
+    print("{} {}\n", good is !_, bad is !_)
 }

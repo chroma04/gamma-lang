@@ -25,7 +25,7 @@ HashMap :: struct(K, V: type,
 rotate :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T {
     return a
 }
-print  :: fn(A: type, template :: string, args: A = ()) \ {Out} { }
+print  :: fn(A: type, template :: string, args: ..A) \ {Out} { }
 
 dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
     acc := ring.zero

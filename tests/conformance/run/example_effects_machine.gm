@@ -148,7 +148,7 @@ with_warnings :: fn(xs: []const i32, limit: i32, max_warnings: u32) -> i32 \ {Ou
     r := with (handler Warn {
         warn(msg, k) => {
             seen += 1
-            print("  warning #{}: {}\n", (seen, msg))
+            print("  warning #{}: {}\n", seen, msg)
             resume k(seen < max_warnings)
         }
     }) on stack[..] {
@@ -167,7 +167,7 @@ main :: fn() \ {Out} {
 
     // scale = 10 multiplies every pushed literal; also counts trace events
     big := Config(scale: 10, verbose: true)
-    print("{} (trace events {})\n", (execute(p1[..], big, &steps), steps))
+    print("{} (trace events {})\n", execute(p1[..], big, &steps), steps)
 
     // countdown loop: push 3; loop: dup, jz end, push -1, add, jmp loop; end: halt
     p2 := [_]Instr(.Push(3), .Dup, .Jz(7), .Push(-1), .Add, .Jmp(1), .Halt, .Halt)

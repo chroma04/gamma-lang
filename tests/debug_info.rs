@@ -29,7 +29,7 @@ main :: fn() \\ {Out} {
     p := Point(x: 3, y: 4)
     stdout := sum(10)
     s := Stat(st_mtime: 1, linux: 2)
-    print(\"{} {} {}\\n\", (p.x + p.y, stdout, s.st_mtime + s.linux))
+    print(\"{} {} {}\\n\", p.x + p.y, stdout, s.st_mtime + s.linux)
 }
 ";
 
@@ -67,7 +67,7 @@ main :: fn() \\ {Out} {
     last := Node(value: 2, next: null, tags: \"b\")
     first := Node(value: 1, next: &last, tags: \"a\")
     ok, bad := (parse(4), parse(-1))
-    print(\"{} {} {}\\n\", (pair.0, slice.len, first.value))
+    print(\"{} {} {}\\n\", pair.0, slice.len, first.value)
 }
 ";
 

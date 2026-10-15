@@ -5,7 +5,7 @@ main :: fn() \ {Out} {
     b: f64 = 0x1p4
     c := 0x1p-2f32
     d := 3f16 / 2
-    print("{} {} {} {}\n", (a, b, c, d))
+    print("{} {} {} {}\n", a, b, c, d)
     // In a hexadecimal literal `f` is a digit.
     print("{}\n", 0x1f32)
     print("{}\n", 0xAp+1 + 0x1.8p1)

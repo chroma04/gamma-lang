@@ -121,7 +121,7 @@ worker :: fn(n: i32) -> never \ {Task, Out} {
     defer print("worker {} done\n", n)
     i := 0
     while i < 3 {
-        print("worker {} step {}\n", (n, i))
+        print("worker {} step {}\n", n, i)
         yield_now()
         i += 1
     }
@@ -215,7 +215,7 @@ echo :: fn() \ {Out} {
         }
         n := 0
         each(fn(s: string) \ {Lines} {
-            print("line {} ({})\n", (s, s.len))
+            print("line {} ({})\n", s, s.len)
             n += 1
         })
         print("{} lines\n", n)

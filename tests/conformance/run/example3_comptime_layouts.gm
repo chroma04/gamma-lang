@@ -107,10 +107,10 @@ when target.ptr_bits is 64 {
 main :: fn() \ {Out} {
     print("crc32(\"123456789\") = {}\n", crc32("123456789"))
     print("crc32 empty = {}\n", crc32(""))
-    print("endian {} word {}\n", (ENDIAN.len >= 3, WORD_BYTES))
-    print("sine: {} {} {} {} {}\n", (isin(0), isin(16), isin(32), isin(64), isin(96)))
-    print("negative index: {} {}\n", (isin(-32), isin(-1)))
-    print("table ends: {} {} {}\n", (SINE_Q[0], SINE_Q[1], SINE_Q[QUARTER]))
+    print("endian {} word {}\n", ENDIAN.len >= 3, WORD_BYTES)
+    print("sine: {} {} {} {} {}\n", isin(0), isin(16), isin(32), isin(64), isin(96))
+    print("negative index: {} {}\n", isin(-32), isin(-1))
+    print("table ends: {} {} {}\n", SINE_Q[0], SINE_Q[1], SINE_Q[QUARTER])
 
     r := Ring(u16, 4)(items: [4]u16(fill: 0), head: 0, count: 0)
     for i in 1..8 {
@@ -118,8 +118,8 @@ main :: fn() \ {Out} {
             print("evicted {}\n", old)
         }
     }
-    print("ring {} head {} count {}\n", (r.items, r.head, r.count))
-    print("sizes {} {} {}\n", (@size_of(Header), @size_of(Padded), @size_of(Ring(u16, 4))))
+    print("ring {} head {} count {}\n", r.items, r.head, r.count)
+    print("sizes {} {} {}\n", @size_of(Header), @size_of(Padded), @size_of(Ring(u16, 4)))
     h := Header(magic: 0xCAFE, kind: 3, len: 0x01020304, crc: crc32("hdr"))
-    print("packed field reads {} {} {} {}\n", (h.magic, h.kind, h.len, h.crc))
+    print("packed field reads {} {} {} {}\n", h.magic, h.kind, h.len, h.crc)
 }

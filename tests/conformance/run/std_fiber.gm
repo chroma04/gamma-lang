@@ -15,7 +15,7 @@ rec :: fn(l: ^Log, x: u32) {
 dump :: fn(title: string, l: ^Log) \ {Out} {
     print("{}:", title)
     for i in 0..l.n { print(" {}", l.events[i]) }
-    print("\n", ())
+    print("\n")
 }
 
 // Event `name * 10 + round` for each round; `name * 10 + 9` when the task's defer runs.
@@ -103,7 +103,7 @@ sums :: fn() \ {Out, Alloc} {
         fiber.spawn(adder, &t2, s2[..])
         fiber.join()
     }
-    print("sums {} {}\n", (t1.sum, t2.sum))
+    print("sums {} {}\n", t1.sum, t2.sum)
 }
 
 // Join with nothing spawned returns at once; main can yield with nobody else ready.
@@ -116,7 +116,7 @@ idle :: fn() \ {Out, Alloc} {
         fiber.yield_now()
         fiber.join()
     }
-    print("idle ok\n", ())
+    print("idle ok\n")
 }
 
 main :: fn() \ {Out, Alloc} {

@@ -38,14 +38,14 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Sys} {
     made := libc.symlink(cpath(cb[..], at(p[..], root, "a/two.txt")), cpath(lb[..], link)) is 0
     print("symlink made: {}\n", made)
     ln := try lstat(link)
-    print("lstat link: {} {}\n", (ln.kind is .Symlink, ln.size is not 2))
+    print("lstat link: {} {}\n", ln.kind is .Symlink, ln.size is not 2)
     sf := try stat(link)
-    print("stat link: {} {}\n", (sf.kind is .File, sf.size))
+    print("stat link: {} {}\n", sf.kind is .File, sf.size)
     dl := at(cb[..], root, "dirlink")
     _ = libc.symlink(cpath(p[..], at(lb[..], root, "a")), cpath(cb[..], dl))
-    print("lstat dir link: {} stat dir link: {}\n", ((try lstat(dl)).kind is .Symlink, (try stat(dl)).kind is .Dir))
+    print("lstat dir link: {} stat dir link: {}\n", (try lstat(dl)).kind is .Symlink, (try stat(dl)).kind is .Dir)
     _ = libc.symlink(cpath(p[..], "no/such/target"), cpath(lb[..], at(cb[..], root, "dangling")))
-    print("lstat dangling: {} stat dangling: {}\n", ((try lstat(at(cb[..], root, "dangling"))).kind is .Symlink, stat(at(cb[..], root, "dangling")) is !.NotFound))
+    print("lstat dangling: {} stat dangling: {}\n", (try lstat(at(cb[..], root, "dangling"))).kind is .Symlink, stat(at(cb[..], root, "dangling")) is !.NotFound)
 }
 
 cleanup :: fn(root: string) \ {Fs, Sys} {

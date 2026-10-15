@@ -466,8 +466,8 @@ main :: fn() \ {Out} {
         c := bits16(s)
         if a is not row.1 or b is not row.2 or c is not row.3 {
             bad += 1
-            print("MISMATCH {} f64 {} want {} | f32 {} want {} | f16 {} want {}\n", (s, a, row.1, b, row.2, c, row.3))
+            print("MISMATCH {} f64 {} want {} | f32 {} want {} | f16 {} want {}\n", s, a, row.1, b, row.2, c, row.3)
         }
     }
-    print("{} rows, {} mismatches\n", (CASES.len, bad))
+    print("{} rows, {} mismatches\n", CASES.len, bad)
 }

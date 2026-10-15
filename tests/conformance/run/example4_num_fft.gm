@@ -92,7 +92,7 @@ main :: fn() \ {Out} {
 
     ones := [8]Complex(fill: cx(1.0, 0.0))
     fft(N: 8, &ones, false)
-    print("constant: X[0] = {}, others tiny: {}\n", (fmt.fixed(ones[0].re, 6, fbuf[..]), ones[1].re.abs() < 1e-12 and ones[5].im.abs() < 1e-12))
+    print("constant: X[0] = {}, others tiny: {}\n", fmt.fixed(ones[0].re, 6, fbuf[..]), ones[1].re.abs() < 1e-12 and ones[5].im.abs() < 1e-12)
 
     // A pure cosine with 3 cycles over 16 samples has two spikes of N/2 at bins 3 and 13.
     cosine: [16]Complex = ---
@@ -103,7 +103,7 @@ main :: fn() \ {Out} {
     print("cosine bins:")
     for k in 0..16 {
         m := math.sqrt(norm2(cosine[k]))
-        if m > 1e-9 { print(" {}={}", (k, fmt.fixed(m, 3, fbuf[..]))) }
+        if m > 1e-9 { print(" {}={}", k, fmt.fixed(m, 3, fbuf[..])) }
     }
     print("\n")
 

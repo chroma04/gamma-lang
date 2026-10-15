@@ -143,7 +143,7 @@ count_bits :: fn(s: ^const BitSet) -> u32 {
 
 main :: fn() \ {Out} {
     f := Flags(syn: true, ack: false, fin: false, rst: true, prio: 5)
-    print("flags {} = {}\n", (f, u8(f)))
+    print("flags {} = {}\n", f, u8(f))
     h := Header(magic: 0xCAFE, flags: u8(f), len: 300, seq: 0x01020304)
     buf: [16]u8 = ---
     n := encode(h, buf[..])
@@ -151,10 +151,10 @@ main :: fn() \ {Out} {
     dump(buf[0..n])
     back := decode(buf[0..n])
     print("decoded: {}\n", back)
-    print("bad magic: {}, short: {}\n", (decode(buf[1..n]), decode(buf[0..4])))
+    print("bad magic: {}, short: {}\n", decode(buf[1..n]), decode(buf[0..4]))
     d := back?
-    print("seq {} len {} flags prio {}\n", (d.seq, d.len, Flags(d.flags).prio))
-    print("bswap: {} {}\n", (@bswap(u32(0x01020304)), @bswap(u16(0xCAFE))))
+    print("seq {} len {} flags prio {}\n", d.seq, d.len, Flags(d.flags).prio)
+    print("bswap: {} {}\n", @bswap(u32(0x01020304)), @bswap(u16(0xCAFE)))
     print("checksum of 'hello world!': {}\n", checksum("hello world!"))
     print("checksum of odd length: {}\n", checksum("abc"))
 
@@ -163,7 +163,7 @@ main :: fn() \ {Out} {
         vb: [10]u8 = ---
         m := put_varint(v, vb[..])
         got := get_varint(vb[0..m])?
-        print("varint {}: {} bytes: ", (v, m))
+        print("varint {}: {} bytes: ", v, m)
         dump(vb[0..m])
         print("  -> {}\n", got.value)
     }
@@ -174,7 +174,7 @@ main :: fn() \ {Out} {
     strs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")
     for s in strs {
         k := base64(s, out[..])
-        print("base64({}) = {}\n", (s, out[0..k]))
+        print("base64({}) = {}\n", s, out[0..k])
     }
 
     print("fnv1a(\"\") = {}\n", fnv1a(""))
@@ -184,15 +184,15 @@ main :: fn() \ {Out} {
     bits := BitSet()
     idx := [_]usize(0, 5, 63, 64, 100, 127, 128, 255, 5)
     for i in idx { set_bit(&bits, i) }
-    print("bits set: {}, has 100: {}, has 101: {}\n", (count_bits(&bits), has_bit(&bits, 100), has_bit(&bits, 101)))
+    print("bits set: {}, has 100: {}, has 101: {}\n", count_bits(&bits), has_bit(&bits, 100), has_bit(&bits, 101))
 
     // wide integers
     big: u256 = 1
     for _ in 0..100 { big *= 3 }
     print("3^100 = {}\n", big)
-    print("clz {} ctz {} popcount {}\n", (@clz(u32(1)), @ctz(u32(0x80)), @popcount(u64(0xF0F0))))
+    print("clz {} ctz {} popcount {}\n", @clz(u32(1)), @ctz(u32(0x80)), @popcount(u64(0xF0F0)))
     x: i24 = -8_000_000
-    print("{} {} {}\n", (x, x +% x, x.trunc(i8)))
+    print("{} {} {}\n", x, x +% x, x.trunc(i8))
     y: u8 = 200
-    print("{} {} {}\n", (y +% 100, y +| 100, y +? 100))
+    print("{} {} {}\n", y +% 100, y +| 100, y +? 100)
 }

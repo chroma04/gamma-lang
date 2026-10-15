@@ -6,6 +6,6 @@ main :: fn() \ {Out} {
                       .BrokenPipe, .ConnectionReset, .InvalidInput, .UnexpectedEof, .NoSpace,
                       .ConnectionRefused, .TimedOut, .Other(0), .Other(13))
     for e in all {
-        print("{} -> error: {}\n", (e, io.describe(e)))
+        print("{} -> error: {}\n", e, io.describe(e))
     }
 }

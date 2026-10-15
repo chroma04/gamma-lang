@@ -95,7 +95,7 @@ main :: fn() \ {Out} {
     printer :: handler Trace {
         step(iter, x, fx_val) => {
             trace_count += 1
-            print("  iter {}: x = {}\n", (iter, fmt.fixed(x, 12, b1[..])))
+            print("  iter {}: x = {}\n", iter, fmt.fixed(x, 12, b1[..]))
         }
     }
     nan_on_failure :: handler Diverged {
@@ -108,7 +108,7 @@ main :: fn() \ {Out} {
             return x * x - 2.0
         }, fn(x) => 2.0 * x, 1.0, 1e-14)
     }
-    print("sqrt(2) = {} after {} trace steps, {} function evaluations\n", (fx(root, 15, b2[..]), trace_count, evals))
+    print("sqrt(2) = {} after {} trace steps, {} function evaluations\n", fx(root, 15, b2[..]), trace_count, evals)
 
     // Newton on x^3 - 2x + 2 from 0 cycles between 0 and 1 and is stopped by the iteration limit.
     silent :: handler Trace {
@@ -128,7 +128,7 @@ main :: fn() \ {Out} {
         calls += 1
         return math.cos(x) - x
     }, 0.0, 1.0, 1e-13) else math.nan
-    print("dottie number {} using {} calls\n", (fx(dottie, 12, b1[..]), calls))
+    print("dottie number {} using {} calls\n", fx(dottie, 12, b1[..]), calls)
     print("no bracket: {}\n", bisect(fn(x) => x * x + 1.0, -1.0, 1.0, 1e-9) is null)
 
     // Quadrature: the number of evaluations tells the story.
@@ -138,13 +138,13 @@ main :: fn() \ {Out} {
         return math.sin(x)
     }
     s1 := adaptive_simpson(counted_sin, 0.0, math.pi, 1e-10)
-    print("adaptive simpson of sin on [0, pi] = {} with {} evaluations\n", (fx(s1, 10, b1[..]), n_eval))
+    print("adaptive simpson of sin on [0, pi] = {} with {} evaluations\n", fx(s1, 10, b1[..]), n_eval)
     atan_part := adaptive_simpson(fn(x) => 1.0 / (1.0 + x * x), 0.0, 1.0, 1e-12)
-    print("integral of 1/(1+x^2) = {} (pi/4 = {})\n", (fx(atan_part, 12, b1[..]), fx(math.pi / 4.0, 12, b2[..])))
+    print("integral of 1/(1+x^2) = {} (pi/4 = {})\n", fx(atan_part, 12, b1[..]), fx(math.pi / 4.0, 12, b2[..]))
     g1 := gauss5(fn(x) => math.exp(x), 0.0, 1.0)
-    print("gauss5 of exp on [0,1] = {} (e-1 = {})\n", (fx(g1, 12, b1[..]), fx(math.e - 1.0, 12, b2[..])))
+    print("gauss5 of exp on [0,1] = {} (e-1 = {})\n", fx(g1, 12, b1[..]), fx(math.e - 1.0, 12, b2[..]))
     g2 := gauss5(fn(x) => x * x * x * x * x * x * x * x * x, 0.0, 1.0)
-    print("gauss5 is exact to degree 9: {} vs {}\n", (fx(g2, 14, b1[..]), fx(0.1, 14, b2[..])))
+    print("gauss5 is exact to degree 9: {} vs {}\n", fx(g2, 14, b1[..]), fx(0.1, 14, b2[..]))
     sqrt_rough := adaptive_simpson(fn(x) => math.sqrt(x), 0.0, 1.0, 1e-9)
-    print("integral of sqrt on [0,1] = {} (2/3 = {}), error {}\n", (fx(sqrt_rough, 9, b1[..]), fx(2.0 / 3.0, 9, b2[..]), fmt.sci((sqrt_rough - 2.0 / 3.0).abs(), 1, b3[..])))
+    print("integral of sqrt on [0,1] = {} (2/3 = {}), error {}\n", fx(sqrt_rough, 9, b1[..]), fx(2.0 / 3.0, 9, b2[..]), fmt.sci((sqrt_rough - 2.0 / 3.0).abs(), 1, b3[..]))
 }

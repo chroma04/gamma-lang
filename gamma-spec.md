@@ -1340,7 +1340,7 @@ greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
 ```
 fn_lit     = 'fn' '(' [ param % ',' ] ')' [ '->' type ] [ '\' effect_set ] [ where_clause ] fn_body
 fn_body    = block | '=>' expr
-param      = ident { ',' ident } [ ( ':' | '::' ) type ] [ '=' expr ]
+param      = ident { ',' ident } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]   // ': ..T' is a rest parameter (§11.2)
 effect_set = '{' [ effect % ',' ] '}'
 effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6)
 ```
@@ -1362,6 +1362,19 @@ A parameter may have a default `= e`, where `e` is a constant expression (§7.15
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
 
+**Rest parameters.** The last parameter of a function literal (other than parameters whose default is `@caller_location()`) may be declared `name: ..T`, where `T` is an unnamed tuple type or a type parameter. It takes the **rest arguments**, the positional arguments after those of the parameters before it, as one tuple of type `T`; if `T` is a type parameter, it is inferred as the tuple of the rest arguments' types (§16.2). A rest parameter cannot be named in a call and has no default: with no rest arguments it is `()`.
+
+```
+show :: fn(A: type, label: string, args: ..A) \ {Out} {
+    print("{}: {}\n", label, args)
+}
+
+show("none")                // args is ()
+show("two", 5, "x")         // args is (5, "x"): A is (i32, string)
+```
+
+Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
+
 ### 11.3 Calls
 
 A call `f(args)` binds arguments to parameters:
@@ -1369,7 +1382,8 @@ A call `f(args)` binds arguments to parameters:
 1. **Named** arguments `name: e` bind to the parameter of that name. They may be written anywhere in the argument list.
 2. **Positional** arguments bind, in order, the **positional parameters**: every parameter except those a named argument names, inferable compile-time parameters (§16.2), which are never bound positionally, and parameters whose default is `@caller_location()`.
 3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments. A positional argument may not follow a spread that supplies names.
-4. Each parameter must be bound exactly once, or have a default, which is used.
+4. If the function has a rest parameter (§11.2), the positional arguments left over after the positional parameters before it are its rest arguments.
+5. Each parameter must be bound exactly once, or have a default, which is used.
 
 Each argument is coerced to its parameter's type (§6.4). Arguments are evaluated left to right in the order written, then the call is made.
 
@@ -2018,7 +2032,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 - A compile-time parameter (a type parameter, an effect-set parameter or a compile-time value parameter) is **inferable** if the type of another parameter mentions it (other than inside a computed array length, §16.5). An inferable parameter is **never bound positionally**: it is inferred from the run-time arguments, or written by name when the arguments do not determine it or the call wants another type: `max(T: i64, small_values)`. Positional arguments bind the remaining parameters in order (§11.3), so `max(scores)` passes `scores` and `max(i32, scores)` is an error. A compile-time parameter that is not inferable, such as `T` in `list(T: type) -> List(T)`, is an ordinary positional parameter: `list(string)`.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(T: u16, 1, 300)` or convert. The arguments are matched in an order that does not depend on how they are written: a function literal is matched after the other run-time arguments, so its parameter types can come from them (`apply_n(fn(w) => w + 1, 3, v)` takes `w`'s type from `v`).
 - In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
-- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
+- Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: ..A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", 5, 1.5)` has `A = (i32, f64)`.
 - Writing an inferable parameter by name fixes it: the run-time arguments are then coerced to the types it gives, as at any coercion site (§6.4).
 
 ```
@@ -2081,7 +2095,7 @@ A function parameter declared with `::` instead of `:` is a **compile-time value
 
 ```
 rotate :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T { … }
-print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
+print  :: fn(A: type, template :: string, args: ..A) \ {Out}
 ```
 
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
@@ -2089,7 +2103,7 @@ print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
 - Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ^` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression up to folding constant subexpressions and the order of the operands of `+ * & | ^` (`[A + B]T` and `[B + A]T` are one type, `[2 * N]T` and `[N + N]T` are not). Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
 - A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
-- A type parameter used only by an omitted defaulted parameter takes the default's type (`A` is `()` in `print("hi\n")`).
+- A type parameter used only by an omitted defaulted parameter takes the default's type: with `f :: fn(A: type, x: A = ())`, `f()` has `A = ()`.
 
 ### 16.6 Generic effects and effect-set parameters
 
@@ -2148,7 +2162,7 @@ The idiomatic replacements:
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
 | Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type: `BTree(K, V, less: by_name)` |
-| Print or log any value | `print("{} at {}", (name, pos))`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
+| Print or log any value | `print("{} at {}", name, pos)`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
 | Run-time dispatch over a closed set of cases | a tagged union and `match` |
 | Run-time dispatch over an open set (plugins, drivers) | a struct holding a data pointer and a `^const` vtable of `^fn`s, as `Allocator` does (§15.2) |
 | An implementation supplied by the caller's context | an effect and a handler (§12) |
@@ -2341,7 +2355,7 @@ libc :: foreign "c" {
 - `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
 - Parameter and result types must be C-compatible.
 - A foreign function's effect set is `{Sys}` unless annotated. An annotation with a smaller set is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. Foreign functions are never evaluated at compile time regardless (§17.6).
-- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions cannot be variadic.
+- **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions use rest parameters (§11.2) instead.
 - Narrowing at the boundary (`usize` lengths to `c.c_uint`, and so on) is never implicit: write `n.trunc(c.c_uint)` or `n.checked(c.c_uint) else …`. `T(x)` checks the *type's* range, never a proven value range, so that legality never depends on how clever the compiler's analysis is.
 - An interpreter may call foreign functions itself, with the semantics of a native call: C sees the memory the pointers it is given point to, and what C writes there is visible afterwards. Where it cannot give a call those semantics (a library it cannot load, a signature it cannot pass), it must run the program natively instead.
 - **Calling convention**: the target's C ABI by default. `#callconv(.X)` selects another: `.C` (the target's C ABI, the default, so it only states the default), `.SysV` (the System V AMD64 ABI) and `.Win64` (the Microsoft x64 ABI). `.SysV` and `.Win64` exist only where `target.arch` is `.X86_64`; naming them on another architecture, or naming any other convention, is an error. On the supported x86-64 targets the C ABI is System V, so `.SysV` means exactly `.C`; only `.Win64` differs.
@@ -2484,7 +2498,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `@static_assert(c, msg)` | `()` | yes | 17.7 |
 | `@compile_error(msg)` | `never`; a compile error if the call is in a taken `when` branch or compiled code | yes | — |
 | `@hash(x, seed: u64)` | `u64`; structural hash, for `Eq` types | yes | 16.8 |
-| `@write(sink, template, args)` | `()`; structural formatting into a sink | yes, if `sink` is | 21.6 |
+| `@write(sink, template, values…)` | `()`; structural formatting into a sink | yes, if `sink` is | 21.6 |
 | `@stack_size(f)` | `usize` | yes | 14.8 |
 | `@min_stack` | `usize` | yes | 14.1 |
 | `@fiber(f, arg, stack)` | `cont(())` | no | 14.6 |
@@ -2599,7 +2613,7 @@ clear  :: fn(T: type, l: ^List(T))
 deinit :: fn(T: type, l: ^List(T))                                 // frees through l.alloc
 into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
 collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!()   // appends what `it` yields
-write  :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!()  // @write into the list
+write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
 
 // core/map
 HashMap  :: struct(K, V: type,
@@ -2634,8 +2648,8 @@ assert :: fn(cond: bool, msg: string = "assertion failed", loc: SourceLocation =
 expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) \ {Test}
 expect_eq :: fn(T: type, actual: T, expected: T) \ {Test}
 ok     :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T \ {Test}
-print  :: fn(A: type, template :: string, args: A = ()) \ {Out}
-eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
+print  :: fn(A: type, template :: string, args: ..A) \ {Out}
+eprint :: fn(A: type, template :: string, args: ..A) \ {Err}
 ```
 
 - `trap` traps in every build mode (§18.5).
@@ -2643,23 +2657,17 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 - `expect(cond, msg)` performs `Test.fail` (§3.8) when `cond` is `false`, reporting `msg` (prefixed `expectation failed: ` unless it is the default) and its caller's location.
 - `expect_eq(actual, expected)`, unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), writes `expected: ` and `actual: ` lines with both values through `Test.note`, then performs `Test.fail` with `expectation failed: the values differ` and its own location.
 - `ok(x)` is the success value of `x`; if `x` is an error, it writes `error: ` and the error value through `Test.note` and performs `Test.fail` with its caller's location.
-- `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
+- `print(t, args…)` is `@write(fn(b) => write_out(b), t, args…)`, and `eprint` likewise with `write_err`.
 
 #### 21.6.1 Formatting: `@write`
 
 ```
-@write(sink, template, args)
+@write(sink, template, values…)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: A)` can forward to `print` or `@write`; `args` holds the arguments. `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive pieces of output, allocating nothing. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. The number of placeholders *n* decides how `args` is read, independent of whether its type is a tuple:
-
-- *n* = 0: `args` must be `()`.
-- *n* = 1: `args` is the one argument, whatever its type (a tuple prints as a tuple).
-- *n* ≥ 2: `args` must be a tuple of exactly *n* elements, the arguments in order.
-
-Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
+**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
 **Display rules.** Each argument is written according to its type:
 
@@ -2704,13 +2712,13 @@ kind  = 'x' | 'X' | 'o' | 'b' | 'e'
 A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
 
 ```
-print("{:<10}|{:>6}|{:6.2}\n", (name, count, ratio))         // Ada       |    12|  0.83
-print("{:08.3} {:+} {:#06x} {:b}\n", (-3.14159, 5, 255, 5))  // -003.142 +5 0x00ff 101
+print("{:<10}|{:>6}|{:6.2}\n", name, count, ratio)         // Ada       |    12|  0.83
+print("{:08.3} {:+} {:#06x} {:b}\n", -3.14159, 5, 255, 5)  // -003.142 +5 0x00ff 101
 ```
 
 ```
 print("hello, world\n")
-print("{} scored {} ({})\n", (player.name, score, rank))     // Ada scored 1200 (.Gold)
+print("{} scored {} ({})\n", player.name, score, rank)     // Ada scored 1200 (.Gold)
 print("{}\n", pos)                                           // Vec2(x: 1.5, y: -2)
 ```
 
@@ -2923,7 +2931,7 @@ In the parameter lists of `struct`, `union` and `effect` literals and of generic
 fn_lit        = 'fn' '(' [ param_list ] ')' [ '->' type ] [ '\' effect_set ] [ where_clause ] fn_body
 fn_body       = block | '=>' expr
 param_list    = param % ','
-param         = IDENT { ',' IDENT } [ ( ':' | '::' ) type ] [ '=' expr ]     // '::' = compile-time (§16.5)
+param         = IDENT { ',' IDENT } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]  // '::' compile-time (§16.5); ': ..' rest (§11.2)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
 handler_decl  = 'handler' [ '(' param_list ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
@@ -3082,7 +3090,7 @@ Assignment (`=` and compound forms) is a statement.
 | `:` | naming | `x: T`, `x := e`, `x :: e`, `x: T : e`, `label:` |
 | `=>` | maps to | expression bodies, match arms, handler clauses, `else e =>` |
 | `\` | effects | `-> T \ {E1, E2}` |
-| `..` | span | ranges `a..b`, slicing `a[i..]`, spread `f(..t)` |
+| `..` | span, splice | ranges `a..b`, slicing `a[i..]`, spread `f(..t)`, rest parameters `args: ..A`, effect sets `\ {..E}` |
 | `@` / `#` | intrinsic / attribute | `@size_of(T)`, `#packed` |
 | `---` | don't care | uninitialized plain data |
 

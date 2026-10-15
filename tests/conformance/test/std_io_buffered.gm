@@ -27,7 +27,7 @@ test "output waits for flush" {
     out := io.file_out(f)
     with &out {
         print("hello, ")
-        print("{} and {}\n", (1, true))
+        print("{} and {}\n", 1, true)
     }
     expect(ok(size_of_file("out.txt")) is 0, "nothing written yet")
     ok(out.flush())
@@ -148,7 +148,7 @@ test "ListOut appends printed text" {
     defer text.deinit()
     lo := io.ListOut(list: &text)
     with &lo {
-        print("{}-{}", (1, "two"))
+        print("{}-{}", 1, "two")
         eprint("!")
     }
     expect(lo.err is null)

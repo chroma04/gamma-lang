@@ -37,16 +37,16 @@ fold :: fn(w: string, owned: ^List([]u8)) -> AllocError!string \ {Alloc} {
 emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
     match fmt {
         .Text => {
-            for r in rows { print("{} x{}\n", (r.word, r.n)) }
+            for r in rows { print("{} x{}\n", r.word, r.n) }
         }
         .Csv => {
-            for r in rows { print("{}{}{}\n", (r.word, sep, r.n)) }
+            for r in rows { print("{}{}{}\n", r.word, sep, r.n) }
         }
         .Json => {
             print("[")
             for i, r in enumerate(rows) {
                 if i > 0 { print(", ") }
-                print("{{\"{}\": {}}}", (r.word, r.n))
+                print("{{\"{}\": {}}}", r.word, r.n)
             }
             print("]\n")
         }
@@ -86,7 +86,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
     rows.items.sort_by_key(fn(r) => (~r.n, r.word))
     shown := rows.items[0..rows.items.len.min(usize(top))]
     emit(fmt, shown, sep)
-    if verbose >= 1 { print("{} distinct, {} shown\n", (rows.items.len, shown.len)) }
+    if verbose >= 1 { print("{} distinct, {} shown\n", rows.items.len, shown.len) }
     if verbose >= 2 { print("{} dropped by --min-len\n", dropped) }
 }
 

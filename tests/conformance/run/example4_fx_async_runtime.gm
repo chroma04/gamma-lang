@@ -68,7 +68,7 @@ report_deadlock :: fn(rt: ^Runtime) \ {Out} {
     rt.deadlock = true
     for i in 0..MAX_TASKS + 1 {
         if occupied(rt.parked[i]) {
-            print("  deadlock: slot {} waits on channel {}\n", (i, rt.parked_on[i]))
+            print("  deadlock: slot {} waits on channel {}\n", i, rt.parked_on[i])
         }
     }
 }
@@ -191,7 +191,7 @@ producer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
     defer print("  [{}] done\n", a.name)
     for i in 1..=a.n {
         _ = send(a.a, i * 10)
-        print("  [{}] sent {}\n", (a.name, i * 10))
+        print("  [{}] sent {}\n", a.name, i * 10)
     }
     close(a.a)
     exit()
@@ -208,10 +208,10 @@ doubler :: fn(a: ^TaskArg) -> never \ {Async, Out} {
 
 summer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
     total: i32 = 0
-    defer print("  [{}] done, total {}\n", (a.name, total))
+    defer print("  [{}] done, total {}\n", a.name, total)
     while x := recv(a.a) {
         total += x
-        print("  [{}] got {}\n", (a.name, x))
+        print("  [{}] got {}\n", a.name, x)
     }
     exit()
 }
@@ -220,7 +220,7 @@ summer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
 stuck :: fn(a: ^TaskArg) -> never \ {Async, Out} {
     defer print("  [{}] cancelled\n", a.name)
     v := recv(a.a)
-    print("  [{}] unreachable {}\n", (a.name, v))
+    print("  [{}] unreachable {}\n", a.name, v)
     exit()
 }
 
@@ -238,7 +238,7 @@ pipeline :: fn() \ {Out} {
         spawn(producer, &p)
         join()
     }
-    print("pipeline: deadlock={} live={}\n", (rt.deadlock, rt.live))
+    print("pipeline: deadlock={} live={}\n", rt.deadlock, rt.live)
 }
 
 deadlocked :: fn() \ {Out} {
@@ -253,7 +253,7 @@ deadlocked :: fn() \ {Out} {
         spawn(stuck, &b)
         join()
     }
-    print("deadlocked: deadlock={} live={}\n", (rt.deadlock, rt.live))
+    print("deadlocked: deadlock={} live={}\n", rt.deadlock, rt.live)
 }
 
 main :: fn() \ {Out} {

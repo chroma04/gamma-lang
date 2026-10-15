@@ -470,58 +470,54 @@ impl<'s> Sema<'s> {
         };
         let n = pieces.len() - 1;
         let at = |cx: &MonoCx| cx.span;
-        if n > 0
-            && let Some(a) = &args
-        {
-            let tys: Vec<Ty> = match (n, a.ty.kind()) {
-                (1, _) => vec![a.ty],
-                (_, TyKind::Tuple { elems, .. }) if elems.len() == n => elems.to_vec(),
-                _ => vec![],
-            };
-            for (spec, t) in specs.iter().zip(tys) {
-                if let Err(msg) = super::call::check_spec(spec, t) {
-                    self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+        // The values are a tuple of one per placeholder (§21.6.1).
+        let tys: Option<Vec<Ty>> = match &args {
+            None => Some(vec![]),
+            Some(a) => match a.ty.kind() {
+                TyKind::Tuple { elems, .. } => Some(elems.to_vec()),
+                _ => None,
+            },
+        };
+        match &tys {
+            Some(t) if t.len() == n => {
+                for (spec, t) in specs.iter().zip(t) {
+                    if let Err(msg) = super::call::check_spec(spec, *t) {
+                        self.error(cx.span, format!("{} (in an instantiation used here)", msg));
+                    }
                 }
+            }
+            _ => {
+                let given = match (&tys, &args) {
+                    (Some(t), _) if t.len() == 1 => "1 value is".to_string(),
+                    (Some(t), _) => format!("{} values are", t.len()),
+                    (None, Some(a)) => format!("a `{}` is", a.ty),
+                    (None, None) => "no values are".to_string(),
+                };
+                let what = if n == 1 { "1 placeholder".to_string() } else { format!("{} placeholders", n) };
+                let msg = format!("the template has {}, but {} given (in an instantiation used here)", what, given);
+                self.error(at(cx), msg);
+                return e_unit(span);
             }
         }
         let write =
             |args: Vec<Expr>| Expr { ty: Ty::unit(), kind: tir::ExprKind::Write { sink, pieces, specs, args }, span };
-        match (n, args) {
-            (0, None) => write(vec![]),
-            (0, Some(a)) if a.ty.is_unit() => write(vec![]),
-            (1, Some(a)) => write(vec![*a]),
-            (_, Some(a)) => match a.ty.kind() {
-                TyKind::Tuple { elems, .. } if elems.len() == n => {
-                    let elems = elems.clone();
-                    let local = |ty| Expr { ty, kind: tir::ExprKind::Local(tmp), span };
-                    let fields = (0..n)
-                        .map(|i| Expr {
-                            ty: elems[i],
-                            kind: tir::ExprKind::Field { base: Box::new(local(a.ty)), index: i as u32 },
-                            span,
-                        })
-                        .collect();
-                    let stmts = vec![tir::Stmt::Let { local: tmp, init: Some(*a) }, tir::Stmt::Expr(write(fields))];
-                    super::func::block_of(stmts, span)
-                }
-                _ => {
-                    let msg = format!(
-                        "the template has {} placeholders, so the arguments must be a tuple of {} values, not `{}` (in an instantiation used here)",
-                        n, n, a.ty
-                    );
-                    self.error(at(cx), msg);
-                    e_unit(span)
-                }
-            },
-            (_, a) => {
-                let msg = match a {
-                    None => format!("the template has {} placeholder(s) but no arguments are given (in an instantiation used here)", n),
-                    Some(_) => "the template has no `{}` placeholders, so the arguments must be `()` (in an instantiation used here)".to_string(),
-                };
-                self.error(at(cx), msg);
-                e_unit(span)
-            }
+        let Some(a) = args else { return write(vec![]) };
+        if n == 0 {
+            // Evaluated for its effects, if any, then written as nothing.
+            let stmts = vec![tir::Stmt::Let { local: tmp, init: Some(*a) }, tir::Stmt::Expr(write(vec![]))];
+            return super::func::block_of(stmts, span);
         }
+        let elems = tys.unwrap();
+        let local = |ty| Expr { ty, kind: tir::ExprKind::Local(tmp), span };
+        let fields = (0..n)
+            .map(|i| Expr {
+                ty: elems[i],
+                kind: tir::ExprKind::Field { base: Box::new(local(a.ty)), index: i as u32 },
+                span,
+            })
+            .collect();
+        let stmts = vec![tir::Stmt::Let { local: tmp, init: Some(*a) }, tir::Stmt::Expr(write(fields))];
+        super::func::block_of(stmts, span)
     }
 
     /// Substitutes types inside the patterns directly owned by `e`.
@@ -807,12 +803,42 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        let call = self.generic_call_with(f, receiver, &written, span);
+        let call = self.generic_call_packed(f, receiver, &written, span);
         let ty = call.ty;
         Expr { ty, kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span }
     }
 
     pub fn generic_call_with(&mut self, f: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
+        // A rest parameter's arguments become one tuple argument (§11.3).
+        if self.sema.sigs[&f].params.iter().any(|p| p.rest) {
+            let sig = self.sema.sigs[&f].clone();
+            let recv = receiver.as_ref().and_then(|_| sig.params.iter().position(|p| p.generic.is_none()));
+            let named: Vec<crate::symbol::Symbol> = args
+                .iter()
+                .filter_map(|a| match &a.kind {
+                    ArgKind::Named(n, _) => Some(n.name),
+                    _ => None,
+                })
+                .collect();
+            let slot = |i: usize| {
+                Some(i) != recv
+                    && !inferable_param(&sig, i)
+                    && !sig.params[i].is_site()
+                    && !named.contains(&sig.params[i].name)
+            };
+            match super::call::pack_rest_args(&sig.params, slot, args, span) {
+                Some(Ok(packed)) => return self.generic_call_packed(f, receiver, &packed, span),
+                Some(Err((sp, msg))) => {
+                    self.error(sp, msg);
+                    return error_expr(span);
+                }
+                None => {}
+            }
+        }
+        self.generic_call_packed(f, receiver, args, span)
+    }
+
+    fn generic_call_packed(&mut self, f: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
         if args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_))) {
             return self.generic_call_spread(f, receiver, args, span);
         }

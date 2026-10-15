@@ -27,14 +27,14 @@ main :: fn() \ {Out, Alloc} {
     with Allocator(data: &c, vt: &COUNTING) {
         p := new(T: u64, 1) else return
         s := make(i32, 3) else return
-        print("live {} after {} allocations\n", (c.live, c.allocs))
+        print("live {} after {} allocations\n", c.live, c.allocs)
         free(s)
         destroy(p)
     }
-    print("live {} after {} allocations\n", (c.live, c.allocs))
+    print("live {} after {} allocations\n", c.live, c.allocs)
     l := with Allocator(data: &c, vt: &COUNTING) { list(u8) }
     for b in bytes("hello") { l.push(b) else return }
-    print("live {} after {} allocations\n", (c.live, c.allocs))
+    print("live {} after {} allocations\n", c.live, c.allocs)
     l.deinit()
     print("live {}\n", c.live)
 }

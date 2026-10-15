@@ -68,7 +68,7 @@ clamp_add :: fn(a, b: i32, lo: i32 = 0, hi: i32 = 100) -> i32 {
 }
 ```
 
-At a call, **positional** arguments bind in order, then **named** arguments (`name: value`) bind by name, and every parameter must end up bound exactly once or have a default. Named arguments always come after positional ones:
+At a call, **named** arguments (`name: value`) bind by name, wherever they are written, and **positional** arguments bind, in order, the parameters that no named argument names. Every parameter must end up bound exactly once or have a default:
 
 ```gamma
 call_demo :: fn() -> i32 {
@@ -102,13 +102,37 @@ A parameter's default may also be `@caller_location()`, which is evaluated at ea
 require :: fn(ok: bool, msg: string = "requirement failed",
               loc: SourceLocation = @caller_location()) \ {Err} {
     if not ok {
-        eprint("{} (line {})\n", (msg, loc.line))
+        eprint("{} (line {})\n", msg, loc.line)
         trap(msg)
     }
 }
 ```
 
 (Newlines inside the parentheses are ignored, so a long parameter list can wrap freely.)
+
+### Rest parameters
+
+C's variadic functions take any number of arguments of unchecked types. Gamma's equivalent is a **rest parameter**, declared `name: ..T`: it takes the remaining positional arguments as one tuple, so they keep their types and their count is known at compile time. With a type parameter for `T`, the tuple's type is inferred from the arguments:
+
+```gamma
+show :: fn(A: type, label: string, values: ..A) \ {Out} {
+    print("{}: {}\n", label, values)
+}
+
+rest_demo :: fn() \ {Out} {
+    show("nothing")                 // values is ()
+    show("pair", 1, "one")          // values is (1, "one")
+}
+```
+
+Inside the function a rest parameter is an ordinary tuple. To pass it on to another function with a rest parameter, spread it: `print(template, ..values)`. This is how `print`, `eprint`, `@write` and the logging and formatting functions of the standard library take the values for their templates, and how you write your own wrappers around them:
+
+```gamma
+log_line :: fn(A: type, template :: string, values: ..A) \ {Out} {
+    print("[log] ")
+    print(template, ..values)
+}
+```
 
 ## Methods without classes
 
@@ -201,7 +225,7 @@ table_demo :: fn() \ {Out} {
         Op(name: "inc", apply: fn(x: i32) -> i32 => x + 1),   // captures nothing, so it converts
     )
     for op in ops {
-        print("{}: {}\n", (op.name, op.apply(10)))
+        print("{}: {}\n", op.name, op.apply(10))
     }
 }
 ```

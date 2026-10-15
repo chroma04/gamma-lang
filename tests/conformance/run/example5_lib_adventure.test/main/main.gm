@@ -72,6 +72,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             try engine.step(&g, cmd)
         }
     }
-    print("played {} commands, {} lines of narration, {} moves, score {}\n", (played, console.lines, g.moves, g.score))
+    print("played {} commands, {} lines of narration, {} moves, score {}\n", played, console.lines, g.moves, g.score)
     return ()
 }

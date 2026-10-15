@@ -3,7 +3,7 @@ path :: import "std/path"
 
 show :: fn(label: string, got: string, want: string) \ {Out} {
     mark := if got is want { "ok  " } else { "FAIL" }
-    print("{} {} -> [{}]", (mark, label, got))
+    print("{} {} -> [{}]", mark, label, got)
     if got is not want { print(" wanted [{}]", want) }
     print("\n")
 }
@@ -25,8 +25,8 @@ main :: fn() \ {Out, Alloc} {
     print("sep: {}\n", path.SEP)
 
     // is_absolute
-    print("abs: {} {} {} {}\n", (path.is_absolute("/a"), path.is_absolute("a"),
-                                 path.is_absolute(""), path.is_absolute("//")))
+    print("abs: {} {} {} {}\n", path.is_absolute("/a"), path.is_absolute("a"),
+                                 path.is_absolute(""), path.is_absolute("//"))
 
     // base_name
     bn := [_](string, string)(("a/b", "b"), ("a/b/", "b"), ("a/b//", "b"), ("/", "/"), ("///", "/"),

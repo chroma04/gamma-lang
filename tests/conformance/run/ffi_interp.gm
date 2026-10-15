@@ -48,15 +48,15 @@ cmp_rec :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
 
 main :: fn() \ {Out, Sys} {
     // Scalars and strings.
-    print("{} {} {}\n", (libc.strlen(c"hello"), libc.abs(-12), libc.llabs(-5_000_000_000)))
-    print("{} {} {} {}\n", (libm.sqrt(2.0), libm.pow(2.0, 10.0), libm.sqrtf(2.25), libm.floor(-1.5)))
+    print("{} {} {}\n", libc.strlen(c"hello"), libc.abs(-12), libc.llabs(-5_000_000_000))
+    print("{} {} {} {}\n", libm.sqrt(2.0), libm.pow(2.0, 10.0), libm.sqrtf(2.25), libm.floor(-1.5))
     print("{}\n", libc.toupper(c.c_int('q')))
 
     // Memory: C reads and writes Gamma's buffers.
     src := [8]u8(1, 2, 3, 4, 5, 6, 7, 8)
     dst := [8]u8(fill: 0)
     _ = libc.memcpy(&dst, &src, 8)
-    print("{} {}\n", (dst, libc.memcmp(&dst, &src, 8)))
+    print("{} {}\n", dst, libc.memcmp(&dst, &src, 8))
     _ = libc.memset(&dst, 7, 3)
     print("{}\n", dst)
     halves: [8]u8 = ---
@@ -69,13 +69,13 @@ main :: fn() \ {Out, Sys} {
     n: c.c_int = 77
     w := libc.snprintf(buf[..].ptr, buf.len, c"n=%d x=%.2f s=%s l=%ld", n, 3.5, c"str", c.c_long(-9))
     wn := w.checked(usize) else trap("negative")
-    print("{} {}\n", (w, buf[0..wn]))
+    print("{} {}\n", w, buf[0..wn])
 
     // An out-pointer to a pointer into a Gamma string; a returned pointer into it.
     text := c"1234xyz"
     end: cstring = c""
     v := libc.strtol(text, &end, 10)
-    print("{} rest {} at {}\n", (v, libc.strlen(end), end.addr() - text.addr()))
+    print("{} rest {} at {}\n", v, libc.strlen(end), end.addr() - text.addr())
     if hit := libc.strchr(text, 'x') {
         print("x at {}\n", hit.addr() - text.addr())
     }
@@ -83,7 +83,7 @@ main :: fn() \ {Out, Sys} {
 
     // A struct result.
     d := libc.div(17, 5)
-    print("{} {}\n", (d.quot, d.rem))
+    print("{} {}\n", d.quot, d.rem)
 
     // Callbacks: C calls Gamma comparators on Gamma's arrays.
     nums := [_]i32(42, -7, 19, 0, 100, 3, -50, 8)
@@ -92,9 +92,9 @@ main :: fn() \ {Out, Sys} {
     print("callbacks ran: {}\n", calls > 0)
     key: i32 = 19
     if p := libc.bsearch(&key, &nums, nums.len, @size_of(i32), cmp_i32) {
-        print("found {} at {}\n", (p.cast(^i32)^, (p.addr() - (&nums).addr()) / 4))
+        print("found {} at {}\n", p.cast(^i32)^, (p.addr() - (&nums).addr()) / 4)
     }
     recs := [_]Rec(Rec(key: 1, weight: 2.5), Rec(key: 2, weight: 9.0), Rec(key: 3, weight: 0.5))
     libc.qsort(&recs, recs.len, @size_of(Rec), cmp_rec)
-    for r in recs { print("{} {}\n", (r.key, r.weight)) }
+    for r in recs { print("{} {}\n", r.key, r.weight) }
 }

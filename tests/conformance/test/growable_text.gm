@@ -6,7 +6,7 @@ str :: import "std/str"
 test "write appends formatted text" {
     l := list(u8)
     defer l.deinit()
-    ok(l.write("{}={:>3};", ("a", 1)))
+    ok(l.write("{}={:>3};", "a", 1))
     ok(l.write("{:.2}", 0.5))
     ok(l.write("!"))
     expect(l.items is "a=  1;0.50!")
@@ -45,7 +45,7 @@ test "dupe copies" {
 }
 
 test "format allocates" {
-    s := ok(str.format("{:x}/{}", (255, true)))
+    s := ok(str.format("{:x}/{}", 255, true))
     defer free(s)
     expect(s is "ff/true")
 }

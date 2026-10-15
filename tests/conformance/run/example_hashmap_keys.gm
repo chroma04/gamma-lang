@@ -78,7 +78,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     draw(&life)
     for g in 1..=4 {
         try step(&life)
-        print("gen {}: {} cells\n", (g, life.alive.len()))
+        print("gen {}: {} cells\n", g, life.alive.len())
     }
     draw(&life)
     b := bounds(&life)
@@ -115,7 +115,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     keys := [_]string("a", "b", "c", "d", "e", "z")
     for k in keys {
         if l := index.get(k) {
-            print("{}: {}\n", (k, l.items))
+            print("{}: {}\n", k, l.items)
         } else {
             print("{}: absent\n", k)
         }
@@ -126,7 +126,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer opt.deinit()
     try opt.put("some", 5)
     try opt.put("none", null)
-    print("{} {} {}\n", (opt.get("some"), opt.get("none"), opt.get("missing")))
+    print("{} {} {}\n", opt.get("some"), opt.get("none"), opt.get("missing"))
     r := opt.get("none")
     print("present key with null value: {}\n", r is not null)
     print("missing key: {}\n", opt.get("missing") is null)
@@ -137,7 +137,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try pairs.put((1, 2), "one-two")
     try pairs.put((2, 1), "two-one")
     try pairs.put((1, 2), "again")
-    print("{} {} {}\n", (pairs.len(), pairs.get((1, 2)), pairs.get((9, 9))))
-    print("removed {}, then {}\n", (pairs.remove((2, 1)), pairs.remove((2, 1))))
+    print("{} {} {}\n", pairs.len(), pairs.get((1, 2)), pairs.get((9, 9)))
+    print("removed {}, then {}\n", pairs.remove((2, 1)), pairs.remove((2, 1)))
     print("len {}\n", pairs.len())
 }

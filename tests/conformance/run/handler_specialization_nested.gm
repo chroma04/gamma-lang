@@ -80,7 +80,7 @@ main :: fn() \ {Out} {
         for w in add1(4) {
             if w > 4 { continue outer }
             if v > 60 { break outer }
-            print("pair {} {}\n", (v, w))
+            print("pair {} {}\n", v, w)
         }
     }
     r := with (handler Stop { stop(c) => break c * 10 }) {

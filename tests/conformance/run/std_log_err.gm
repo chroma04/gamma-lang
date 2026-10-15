@@ -14,7 +14,7 @@ handler Clock for ^Fixed {
 work :: fn() \ {log.Log} {
     log.debug("debug hidden by default")
     log.info("starting {}", "up")
-    log.warn("{} of {} retries used", (2, 3))
+    log.warn("{} of {} retries used", 2, 3)
     log.error("done")
 }
 
@@ -35,5 +35,5 @@ main :: fn() \ {Out, Err, Clock} {
     clock := Fixed(secs: 1_700_000_000)
     stamped := log.StampedLog(min: .Warn)
     with &clock, &stamped { work() }
-    print("done\n", ())
+    print("done\n")
 }

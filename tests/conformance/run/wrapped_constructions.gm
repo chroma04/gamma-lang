@@ -14,5 +14,5 @@ main :: fn() \ {Out} {
     s := [2][]const string(a[..], b[..])
     arr := [3]?(E!u8)(fill: null)
     arr[2] = !.B(9)
-    print("{} {} {} {} {} {}\n", (p[0]^, q[1] is null, s[1][0], f(1), f(0), arr[2]))
+    print("{} {} {} {} {} {}\n", p[0]^, q[1] is null, s[1][0], f(1), f(0), arr[2])
 }

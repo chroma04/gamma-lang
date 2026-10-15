@@ -34,8 +34,8 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
 
     // Empty, full and closed, without blocking.
     print("try_recv empty: {}\n", ch.try_recv())
-    print("try_send: {} {} {}\n", (ch.try_send(1), ch.try_send(2), ch.try_send(3)))
-    print("try_recv: {} {}\n", (ch.try_recv(), ch.try_recv()))
+    print("try_send: {} {} {}\n", ch.try_send(1), ch.try_send(2), ch.try_send(3))
+    print("try_recv: {} {}\n", ch.try_recv(), ch.try_recv())
     print("try_recv empty again: {}\n", ch.try_recv())
 
     // The ring wraps around: more values than the capacity pass through in order.
@@ -43,7 +43,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
         _ = ch.try_send(k)
         print("{} ", ch.try_recv() else 99)
     }
-    print("\n", ())
+    print("\n")
 
     // A receiver blocks on the empty channel; sends wake it; close ends it.
     r := try thread.spawn(drain, &ch)
@@ -53,14 +53,14 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
     print("received in order: {}\n", @atomic_load(&result, .Acquire))
 
     // A closed channel refuses sends and reports empty.
-    print("closed: send {} try_send {} recv {} try_recv {}\n", (ch.send(1), ch.try_send(1), ch.recv(), ch.try_recv()))
+    print("closed: send {} try_send {} recv {} try_recv {}\n", ch.send(1), ch.try_send(1), ch.recv(), ch.try_recv())
 
     // Values sent before the close are still delivered.
     ch2 := try thread.channel(u32, 3)
     _ = ch2.send(5)
     _ = ch2.send(6)
     ch2.close()
-    print("after close: {} {} {}\n", (ch2.recv(), ch2.recv(), ch2.recv()))
+    print("after close: {} {} {}\n", ch2.recv(), ch2.recv(), ch2.recv())
 
     // A condition variable wait that is signaled before the timeout.
     s := Signal(m: thread.mutex(), cv: thread.condvar(), ready: false)
@@ -68,7 +68,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
     s.m.lock()
     ok := true
     while not s.ready and ok { ok = s.cv.wait_timeout(&s.m, secs(30)) }
-    print("signaled: {} ready: {}\n", (ok, s.ready))
+    print("signaled: {} ready: {}\n", ok, s.ready)
     s.m.unlock()
     t.join()
 

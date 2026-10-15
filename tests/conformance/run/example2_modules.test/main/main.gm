@@ -11,7 +11,7 @@ main :: fn() \ {Out} {
         if not r { print("queue full, rejected job {}\n", i) }
     }
     print("len {}\n", jobs.len())
-    for j in jobs.items() { print("job {} cost {}\n", (j.id, j.cost)) }
+    for j in jobs.items() { print("job {} cost {}\n", j.id, j.cost) }
 
     ledger := audit.Ledger()
     with &ledger {
@@ -20,10 +20,10 @@ main :: fn() \ {Out} {
             if j.cost > 9 { audit.flag("expensive") }
         }
     }
-    print("total {} flags {} entries {}\n", (ledger.total, ledger.flags, ledger.entries))
+    print("total {} flags {} entries {}\n", ledger.total, ledger.flags, ledger.entries)
     nums := q.queue(i32, 2)
     _ = nums.push(7)
     _ = nums.push(8)
-    print("{} {}\n", (nums.pop(), nums.pop()))
+    print("{} {}\n", nums.pop(), nums.pop())
     print("{}\n", nums.pop())
 }

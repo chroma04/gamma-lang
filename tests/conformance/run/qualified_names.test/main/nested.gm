@@ -5,5 +5,5 @@ nested :: fn() \ {Out} {
     b: top.A(u8) = top.make(T: u8, 12)
     c := top.s.B(y: 13)
     d := top.A(i32)(x: 14)
-    print("{} {} {} {} {}\n", (a.x, b.x, c.y, d.x, top.s.pmk(1)))
+    print("{} {} {} {} {}\n", a.x, b.x, c.y, d.x, top.s.pmk(1))
 }

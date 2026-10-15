@@ -62,7 +62,7 @@ two_step :: fn() \ {Out} {
     }
     // the body of the `with` was abandoned at its first `next`; it must be finished before leaving
     if k := parked.k {
-        print("  parked at {} after {} step(s)\n", (parked.value, steps))
+        print("  parked at {} after {} step(s)\n", parked.value, steps)
         parked.k = null
         _ = k
     }
@@ -82,7 +82,7 @@ guarded :: fn() -> i32 \ {Out} {
             risky(10)
         }
     }
-    print("  total {} code {}\n", (total, code))
+    print("  total {} code {}\n", total, code)
     return code
 }
 

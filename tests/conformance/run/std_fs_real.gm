@@ -52,7 +52,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
             _ => print("unexpected kind\n")
         }
     }
-    print("root: {} files, {} directories\n", (files, dirs))
+    print("root: {} files, {} directories\n", files, dirs)
     for r in fs.entries(root) {
         _ = try r
         break
@@ -95,7 +95,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
             and at_index[2] < at_index[4] and at_index[4] < at_index[5]) {
         ok = false
     }
-    print("walk: {} entries, order and kinds ok: {}\n", (seen, ok))
+    print("walk: {} entries, order and kinds ok: {}\n", seen, ok)
     for r in fs.walk(root) {
         e := try r
         if e.depth is 1 { break }
@@ -110,7 +110,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
 
     // stat, lstat
     f := try lstat(at(p[..], root, "a/b/two.txt"))
-    print("lstat file: {} {}\n", (f.kind is .File, f.size))
+    print("lstat file: {} {}\n", f.kind is .File, f.size)
     print("lstat dir: {}\n", (try lstat(at(p[..], root, "a"))).kind is .Dir)
     if !e := lstat(at(p[..], root, "missing")) { print("lstat missing: {}\n", e) }
 
@@ -125,7 +125,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     _ = try h.seek(0, .Start)
     buf: [16]u8 = ---
     got := try h.read_from(buf[..])
-    print("contents: {} then {} zero bytes\n", (buf[0..5], got - 5))
+    print("contents: {} then {} zero bytes\n", buf[0..5], got - 5)
     close(h)
     ro := try open(at(p[..], root, "top.txt"), OpenOptions())
     if !e := ro.truncate(1) { print("truncate read-only: {}\n", e.tag() > 0) }
@@ -134,7 +134,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     // cwd
     cb: [4096]u8 = ---
     cn := try cwd(cb[..])
-    print("cwd: {} {}\n", (cn > 0, cb[0] is '/' or cb[1] is ':'))
+    print("cwd: {} {}\n", cn > 0, cb[0] is '/' or cb[1] is ':')
     if !e := cwd(cb[0..0]) { print("cwd too small: {}\n", e) }
 
     // write_atomic

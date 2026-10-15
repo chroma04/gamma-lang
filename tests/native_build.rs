@@ -241,7 +241,7 @@ fn prints_and_black_boxes_do_not_grow_the_c_per_site() {
     let src = dir.join("many.gm");
     let mut text = String::from("main :: fn() \\ {Out} {\n");
     for i in 0..N {
-        text.push_str(&format!("    {{ x: i32 = @black_box({i}); print(\"v {{}} {{}}\\n\", (x, x + 1)) }}\n"));
+        text.push_str(&format!("    {{ x: i32 = @black_box({i}); print(\"v {{}} {{}}\\n\", x, x + 1) }}\n"));
     }
     text.push_str("}\n");
     std::fs::write(&src, text).unwrap();

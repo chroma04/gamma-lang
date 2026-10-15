@@ -8,5 +8,5 @@ main :: fn() \ {Out} {
     b.push("abcd")
     print("full: {}\n", b.str())
     b.push_byte('e')
-    print("not reached\n", ())
+    print("not reached\n")
 }

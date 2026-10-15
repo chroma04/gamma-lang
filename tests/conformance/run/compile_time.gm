@@ -77,8 +77,8 @@ Header :: struct {
 @static_assert(@size_of(Header) is 16, "Header must match the on-disk format")
 @static_assert(@offset_of(Header, length) is 8, "length must be 8-byte aligned")
 main :: fn() \ {Out} {
-    print("{} {} {}\n", (crc32("hello"), lookup_demo(), BIG_TABLE[1]))
-    print("{} {}\n", (PATH_SEP, @size_of(Word)))
+    print("{} {} {}\n", crc32("hello"), lookup_demo(), BIG_TABLE[1])
+    print("{} {}\n", PATH_SEP, @size_of(Word))
     s := Stats()
     print("{}\n", s)
     mode_demo()

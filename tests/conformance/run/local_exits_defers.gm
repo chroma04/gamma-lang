@@ -7,12 +7,12 @@ loops :: fn() \ {Out} {
     outer: for i in 0..3 {
         defer print("end outer {}\n", i)
         for j in 0..3 {
-            defer print("  end inner {} {}\n", (i, j))
+            defer print("  end inner {} {}\n", i, j)
             errdefer print("  never\n")
             if j is 1 { continue }
             if i is 1 { continue outer }
             if i is 2 and j is 2 { break outer }
-            print("  body {} {}\n", (i, j))
+            print("  body {} {}\n", i, j)
         }
     }
     n := 0

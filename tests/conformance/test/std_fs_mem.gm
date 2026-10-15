@@ -30,7 +30,7 @@ test "entries lists a directory with kinds" {
             _ => expect(false, "unexpected kind")
         }
     }
-    print("{} files, {} directories\n", (files, dirs))
+    print("{} files, {} directories\n", files, dirs)
     expect(files is 2 and dirs is 2)
 }
 

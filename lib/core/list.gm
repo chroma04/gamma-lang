@@ -160,8 +160,8 @@ pub collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!() 
     return ()
 }
 
-/// Appends formatted text (§21.6.1): `out.write("{}: {}\n", (name, n))`.
-pub write :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> AllocError!() {
+/// Appends formatted text (§21.6.1): `out.write("{}: {}\n", name, n)`.
+pub write :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!() {
     failed := false
     @write(fn(b) {
         if not failed {
@@ -169,7 +169,7 @@ pub write :: fn(A: type, l: ^List(u8), template :: string, args: A = ()) -> Allo
                 failed = true
             }
         }
-    }, template, args)
+    }, template, ..args)
     if failed { return !.OutOfMemory }
     return ()
 }

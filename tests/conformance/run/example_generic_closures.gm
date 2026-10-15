@@ -41,22 +41,22 @@ apply_all :: fn(T: type, xs: []T, f: fn(^T)) {
 main :: fn() \ {Out} {
     nums := [_]u32(3, 4, 5)
     out: [2]u32 = ---
-    print("{} {}\n", (first_n(nums[..], 2, out[..]), out))
+    print("{} {}\n", first_n(nums[..], 2, out[..]), out)
     words := [_]string("a", "bb", "ccc")
     ws: [5]string = [5]string(fill: "")
     print("{}\n", first_n(words[..], 5, ws[..]))
     cutoff: u32 = 5
-    print("{} {}\n", (last_index_where(nums[..], fn(x) => x < cutoff), last_index_where(nums[..], fn(x) => x > 9)))
+    print("{} {}\n", last_index_where(nums[..], fn(x) => x < cutoff), last_index_where(nums[..], fn(x) => x > 9))
     a := Acc(f64)(total: 0.5)
     fs := [_]f64(1.5, 2.5)
     offset := 10.0
     each_into(fs[..], &a, fn(x) => x + offset)
-    print("{} {}\n", (a.total, a.n))
+    print("{} {}\n", a.total, a.n)
     b := Acc(i8)(total: 100)
     xs := [_]i8(10, 10)
     each_into(xs[..], &b, fn(x) => x)
-    print("{} {}\n", (b.total, b.n))
+    print("{} {}\n", b.total, b.n)
     bumped: u32 = 0
     apply_all(out[..], fn(p) { p^ += 100; bumped += 1 })
-    print("{} {}\n", (out, bumped))
+    print("{} {}\n", out, bumped)
 }

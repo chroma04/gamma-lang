@@ -33,13 +33,13 @@ main :: fn() \ {Out, Alloc} {
     m := map(u32, string)
     defer m.deinit()
     m.put(1, "one") else trap("oom")
-    for e in m.entries() { print("{}={}\n", (e.key, e.value)) }
-    for k, v in m.entries() { print("{}={}\n", (k, v)) }
+    for e in m.entries() { print("{}={}\n", e.key, e.value) }
+    for k, v in m.entries() { print("{}={}\n", k, v) }
     for i in 0..=3 { print("{} ", i) }
     print("\n")
     for i in reversed(arr[..]) { print("{} ", i) }
     print("\n")
-    for i, v in enumerate(reversed_slice(arr[..])) { print("{}:{} ", (i, v)) }
+    for i, v in enumerate(reversed_slice(arr[..])) { print("{}:{} ", i, v) }
     print("\n")
 }
 

@@ -56,7 +56,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         Ty::error()
                     }
                 };
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None });
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None, rest: false });
             }
         }
         if let Some(sig) = &expected

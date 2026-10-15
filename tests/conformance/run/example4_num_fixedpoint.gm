@@ -102,13 +102,13 @@ main :: fn() \ {Out} {
 
     a := from_f64(16, 3.25)
     b := from_f64(16, -1.5)
-    print("a={} b={} raw(a)={}\n", (show(F: 16, a, 4, b1[..]), show(F: 16, b, 4, b2[..]), a.raw))
-    print("a*b = {}   a/b = {}\n", (show(F: 16, mul_sat(F: 16, a, b), 6, b1[..]), show(F: 16, div_sat(F: 16, a, b), 6, b2[..])))
+    print("a={} b={} raw(a)={}\n", show(F: 16, a, 4, b1[..]), show(F: 16, b, 4, b2[..]), a.raw)
+    print("a*b = {}   a/b = {}\n", show(F: 16, mul_sat(F: 16, a, b), 6, b1[..]), show(F: 16, div_sat(F: 16, a, b), 6, b2[..]))
 
     // Q16.16 covers -32768..32767.99998; going past that is where the flavors differ.
     c := from_f64(16, 20000.5)
     d := from_f64(16, 15000.25)
-    print("c+d saturates to {} (raw {})\n", (show(F: 16, add_sat(F: 16, c, d), 4, b1[..]), add_sat(F: 16, c, d).raw))
+    print("c+d saturates to {} (raw {})\n", show(F: 16, add_sat(F: 16, c, d), 4, b1[..]), add_sat(F: 16, c, d).raw)
     print("c+d wraps to {}\n", show(F: 16, add_wrap(F: 16, c, d), 4, b1[..]))
     print("c+d checked is null: {}\n", add_checked(F: 16, c, d) is null)
     if s := add_checked(F: 16, c, from_f64(16, -20.5)) {
@@ -124,11 +124,11 @@ main :: fn() \ {Out} {
     // The same code at a different precision: Q24.8 trades fraction bits for range.
     e := from_f64(8, 100000.125)
     f := from_f64(8, 0.1)
-    print("Q24.8: {} * {} = {} (raw {}, 0.1 is not representable)\n", (show(F: 8, e, 3, b1[..]), show(F: 8, f, 4, b2[..]), show(F: 8, mul_sat(F: 8, e, f), 4, b3[..]), mul_sat(F: 8, e, f).raw))
+    print("Q24.8: {} * {} = {} (raw {}, 0.1 is not representable)\n", show(F: 8, e, 3, b1[..]), show(F: 8, f, 4, b2[..]), show(F: 8, mul_sat(F: 8, e, f), 4, b3[..]), mul_sat(F: 8, e, f).raw)
 
     // from_f64 clamps out-of-range inputs and keeps the exact value when representable.
     big := from_f64(16, 1.0e9)
-    print("clamped: {} {}\n", (big.raw, from_f64(16, -1.0e9).raw))
+    print("clamped: {} {}\n", big.raw, from_f64(16, -1.0e9).raw)
     print("exact: {}\n", show(F: 16, from_f64(16, 0.0001), 8, b1[..]))
 
     // Square roots.
@@ -150,7 +150,7 @@ main :: fn() \ {Out} {
     }
     print("sine table error below 5e-4: {}\n", worst < 5e-4)
     half_pi := from_f64(16, 1.5707963)
-    print("sin(pi/2) = {}  sin(0) = {}\n", (show(F: 16, sin_quarter(half_pi), 4, b1[..]), show(F: 16, sin_quarter(from_int(16, 0)), 4, b2[..])))
+    print("sin(pi/2) = {}  sin(0) = {}\n", show(F: 16, sin_quarter(half_pi), 4, b1[..]), show(F: 16, sin_quarter(from_int(16, 0)), 4, b2[..]))
     print("sin(0.5236) = {} (expect 0.5)\n", show(F: 16, sin_quarter(from_f64(16, 0.5235988)), 3, b1[..]))
     print("table[32] = {}\n", SIN_TABLE[32])
 
@@ -158,6 +158,6 @@ main :: fn() \ {Out} {
     tenth := from_f64(16, 0.1)
     acc := from_int(16, 0)
     for _ in 0..10 { acc = add_sat(F: 16, acc, tenth) }
-    print("0.1 * 10 in Q16.16: raw {} (65536 would be exact), {}\n", (acc.raw, show(F: 16, acc, 6, b1[..])))
-    print("sizes: {} {}\n", (@size_of(Q16), @size_of(Q8)))
+    print("0.1 * 10 in Q16.16: raw {} (65536 would be exact), {}\n", acc.raw, show(F: 16, acc, 6, b1[..]))
+    print("sizes: {} {}\n", @size_of(Q16), @size_of(Q8))
 }

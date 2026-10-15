@@ -47,13 +47,13 @@ counter :: fn() -> i32 {
 
 convert :: fn() \ {Out} {
     a: i8 = -1
-    print("{} {} {}\n", (a.trunc(u32), a.trunc(u8), a.trunc(i64)))
+    print("{} {} {}\n", a.trunc(u32), a.trunc(u8), a.trunc(i64))
     b: u32 = 0x1_2345
-    print("{} {} {}\n", (b.trunc(u8), b.trunc(i16), u64(b)))
+    print("{} {} {}\n", b.trunc(u8), b.trunc(i16), u64(b))
     c: i16 = -300
-    print("{} {}\n", (i64(c), c.trunc(u16)))
+    print("{} {}\n", i64(c), c.trunc(u16))
     d: u64 = 0xFFFF_FFFF_FFFF_FFFF
-    print("{} {}\n", (d.trunc(i64), d.trunc(u8)))
+    print("{} {}\n", d.trunc(i64), d.trunc(u8))
 }
 
 fib :: fn(n: u32) -> u64 {

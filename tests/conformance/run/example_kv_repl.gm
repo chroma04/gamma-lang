@@ -101,14 +101,14 @@ execute :: fn(db: ^Db, w: Words) -> CmdError!() \ {Out} {
     } else if cmd is "SUM" {
         total: i64 = 0
         for e in db.data.entries() { total += e.value }
-        print("{} over {} keys\n", (total, db.data.len()))
+        print("{} over {} keys\n", total, db.data.len())
     } else if cmd is "MAX" {
         best: ?(key: string, value: i64) = null
         for e in db.data.entries() {
             replace := if b := best { e.value > b.value or (e.value is b.value and e.key < b.key) } else { true }
             if replace { best = (key: e.key, value: e.value) }
         }
-        if b := best { print("{}={}\n", (b.key, b.value)) } else { print("empty\n") }
+        if b := best { print("{}={}\n", b.key, b.value) } else { print("empty\n") }
     } else {
         return !.Unknown(cmd)
     }
@@ -133,15 +133,15 @@ main :: fn() -> IoError!() \ {Out, In, Alloc, Env} {
         } else e => {
             failures += 1
             match e {
-                .Unknown(c) => print("line {}: unknown command {}\n", (line_no, c))
-                .MissingArg(a) => print("line {}: missing {}\n", (line_no, a))
-                .BadNumber(n) => print("line {}: bad number {}\n", (line_no, n))
-                .NoSuchKey(k) => print("line {}: no such key {}\n", (line_no, k))
+                .Unknown(c) => print("line {}: unknown command {}\n", line_no, c)
+                .MissingArg(a) => print("line {}: missing {}\n", line_no, a)
+                .BadNumber(n) => print("line {}: bad number {}\n", line_no, n)
+                .NoSuchKey(k) => print("line {}: no such key {}\n", line_no, k)
                 .Memory(_) => print("line {}: out of memory\n", line_no)
             }
         }
     }
-    print("{} lines, {} commands run, {} failed\n", (line_no, db.ops, failures))
+    print("{} lines, {} commands run, {} failed\n", line_no, db.ops, failures)
     if failures > 0 { exit(2) }
     return ()
 }

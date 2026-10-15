@@ -127,7 +127,7 @@ money :: fn(x: f64, buf: []u8) -> string {
     tmp: [24]u8 = ---
     w := fmt.grouped(whole, ',', tmp[..])
     b := str.builder(buf)
-    b.write("${}.{}{}", (w, rem / 10, rem % 10))
+    b.write("${}.{}{}", w, rem / 10, rem % 10)
     return b.str()
 }
 
@@ -137,7 +137,7 @@ main :: fn() -> CsvError!() \ {Out, Alloc} {
     rows := try with a.allocator() { parse_csv(DATA) }
     header := rows.items[0]
     body := rows.items[1..]
-    print("{} records, {} columns\n", (body.len, header.len))
+    print("{} records, {} columns\n", body.len, header.len)
 
     cell: [64]u8 = ---
     sep := [48]u8(fill: 45)
@@ -146,7 +146,7 @@ main :: fn() -> CsvError!() \ {Out, Alloc} {
     print("{}\n", rule)
     for r in body {
         if r.len < header.len {
-            print("skip short row ({} fields): {}\n", (r.len, r[0]))
+            print("skip short row ({} fields): {}\n", r.len, r[0])
             continue
         }
         sal := parse_num(r[2])
@@ -154,7 +154,7 @@ main :: fn() -> CsvError!() \ {Out, Alloc} {
         text := if s := sal { money(s, mbuf[..]) } else { "n/a" }
         line: [96]u8 = ---
         b := str.builder(line[..])
-        b.write("{} | {} | {}", (fmt.pad_right(r[0], 22, ' ', cell[0..32]), fmt.pad_right(r[1], 9, ' ', cell[32..64]), text))
+        b.write("{} | {} | {}", fmt.pad_right(r[0], 22, ' ', cell[0..32]), fmt.pad_right(r[1], 9, ' ', cell[32..64]), text)
         print("{}\n", b.str())
         if r[4].len > 0 { print("    note: {}\n", r[4]) }
     }
@@ -163,7 +163,7 @@ main :: fn() -> CsvError!() \ {Out, Alloc} {
         st := column_stats(body, col)
         mean := st.sum / f64(st.count)
         fb: [400]u8 = ---
-        print("{}: n={} min={} max={} mean={}\n", (header[col], st.count, fmt.fixed(st.min, 2, fb[0..200]), fmt.fixed(st.max, 2, fb[200..]), mean.to(f32)))
+        print("{}: n={} min={} max={} mean={}\n", header[col], st.count, fmt.fixed(st.min, 2, fb[0..200]), fmt.fixed(st.max, 2, fb[200..]), mean.to(f32))
     }
     return ()
 }

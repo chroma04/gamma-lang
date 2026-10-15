@@ -24,7 +24,7 @@ quiz :: fn() -> u32 \ {Ask(u32), Out} {
     defer print("quiz over\n")
     a := ask("a?")
     b := ask("b?")
-    print("a={} b={}\n", (a, b))
+    print("a={} b={}\n", a, b)
     return a * b
 }
 

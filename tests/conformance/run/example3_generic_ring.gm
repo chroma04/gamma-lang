@@ -32,17 +32,17 @@ Matrix :: struct(T: type, R, C: usize) {
 
 main :: fn() \ {Out} {
     r := ring(u16, 3)
-    print("{} {} {}\n", (r.push(1), r.push(2), r.push(3)))
+    print("{} {} {}\n", r.push(1), r.push(2), r.push(3))
     print("{}\n", r.push(4))
-    print("{} {}\n", (r.pop(), r.pop()))
+    print("{} {}\n", r.pop(), r.pop())
     _ = r.push(5)
     _ = r.push(6)
     while v := r.pop() { print("{} ", v) }
     print("\n")
     z := ring(u8, 0)
-    print("{} {}\n", (@size_of(Ring(u8, 0)), z.push(1)))
+    print("{} {}\n", @size_of(Ring(u8, 0)), z.push(1))
     p := swap(Pair(u8, string)(a: 1, b: "x"))
-    print("{} {}\n", (p.a, p.b))
+    print("{} {}\n", p.a, p.b)
     print("{}\n", @size_of(Matrix(f32, 3, 4)))
     print("{}\n", @type_name(Ring(u16, 3)))
 }

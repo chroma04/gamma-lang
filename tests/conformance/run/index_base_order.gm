@@ -32,5 +32,5 @@ main :: fn() \ {Out} {
     geta(&arr)[o("idx", 1).trunc(usize)] = o("rhs", 8)
     print("\n")
     y := [3]i32(o("a", 0), o("b", 1), o("c", 2))[o("d", 1).trunc(usize)]
-    print("\n{} {} {}\n", (m.v, arr, y))
+    print("\n{} {} {}\n", m.v, arr, y)
 }

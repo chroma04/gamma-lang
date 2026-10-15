@@ -76,8 +76,8 @@ main :: fn() \ {Out, Sys} {
     f5 := U5(typed: ret_s3).flat
     out: S3 = ---
     back := f5(&out, 40)
-    print("flat ret s3 {} {} {} same {}\n", (out.x, out.y, out.z, back is &out))
+    print("flat ret s3 {} {} {} same {}\n", out.x, out.y, out.z, back is &out)
     f6 := U6(typed: ret_p2).flat
     r6 := f6(21)
-    print("flat ret p2 {} {}\n", ((r6 & 0xffff_ffff_ffff_ffff).trunc(u64), (r6 >> 64).trunc(u64)))
+    print("flat ret p2 {} {}\n", (r6 & 0xffff_ffff_ffff_ffff).trunc(u64), (r6 >> 64).trunc(u64))
 }

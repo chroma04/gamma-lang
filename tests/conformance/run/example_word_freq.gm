@@ -67,7 +67,7 @@ main :: fn() -> Failure!() \ {Out, In, Alloc} {
             }
         }
     }
-    print("{} lines, {} words, {} distinct\n", (lines, total, counts.len()))
+    print("{} lines, {} words, {} distinct\n", lines, total, counts.len())
 
     entries := list(Entry)
     defer entries.deinit()
@@ -79,7 +79,7 @@ main :: fn() -> Failure!() \ {Out, In, Alloc} {
     shown: usize = 0
     for e in entries.items {
         if shown is 8 { break }
-        print("{}: {}\n", (e.word, e.count))
+        print("{}: {}\n", e.word, e.count)
         shown += 1
     }
 
@@ -91,7 +91,7 @@ main :: fn() -> Failure!() \ {Out, In, Alloc} {
         }
         if e.count is 1 { singles += 1 }
     }
-    print("longest word: {} ({} letters)\n", (longest, longest.len))
+    print("longest word: {} ({} letters)\n", longest, longest.len)
     print("words seen once: {}\n", singles)
     return ()
 }

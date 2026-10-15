@@ -13,10 +13,10 @@ main :: fn() \ {Out} {
     h := Hero(player: Player(base: Entity(id: 7, hp: 10), name: "ada"), level: 3)
     hurt(&h)                          // two levels: ^Hero → ^Entity
     rename(&h, "grace")
-    print("{} {} {} {}\n", (h.hp, show(&h), h.id, h.name))
+    print("{} {} {} {}\n", h.hp, show(&h), h.id, h.name)
     e: ^Entity = &h
     back := e.downcast_unchecked(Hero)
-    print("{} {}\n", (back.level, back.name))
+    print("{} {}\n", back.level, back.name)
     c: ^const Entity = &h
     print("{}\n", c.downcast_unchecked(Player).name)
 

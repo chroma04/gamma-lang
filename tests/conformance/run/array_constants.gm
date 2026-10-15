@@ -1,4 +1,4 @@
 // Top-level constants built with array and optional constructors (§A.7 rule 12).
 NAMES :: [_]string("a", "bc")
 N :: [3]i32(1, 2, 3)
-main :: fn() \ {Out} { print("{} {}\n", (NAMES, N)) }
+main :: fn() \ {Out} { print("{} {}\n", NAMES, N) }

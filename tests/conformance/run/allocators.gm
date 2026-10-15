@@ -9,13 +9,13 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     with fb.allocator() {
         a := try make(u8, 3)
         b := try make(u64, 2)                 // aligned to 8
-        print("{} {} aligned: {}\n", (a.len, b.len, b.ptr.addr() % 8 is 0))
+        print("{} {} aligned: {}\n", a.len, b.len, b.ptr.addr() % 8 is 0)
         print("used {}\n", fb.bytes_used())
         free(b)                               // the most recent allocation is given back
         print("used {}\n", fb.bytes_used())
         if !e := make(u8, 100) { print("too big: {}\n", e) }
         c := try make(u8, 56)                 // exactly what is left after `a`
-        print("used {} with {} more\n", (fb.bytes_used(), c.len))
+        print("used {} with {} more\n", fb.bytes_used(), c.len)
     }
     fb.reset()
     print("after reset {}\n", fb.bytes_used())

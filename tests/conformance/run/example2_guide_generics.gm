@@ -67,7 +67,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try names.put("Ada", 1)
     try names.put("ADA", 2)
     try names.put("grace", 3)
-    print("{} {}\n", (names.len(), names.get("aDa")))
+    print("{} {}\n", names.len(), names.get("aDa"))
     a := [_]i32(2000000000, 5)
     b := [_]i32(2, 3)
     print("{}\n", use_dot(a[..], b[..]))

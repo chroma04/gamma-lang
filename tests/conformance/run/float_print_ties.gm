@@ -13,5 +13,5 @@ main :: fn() \ {Out} {
     b: f32 = 30453.5625
     print("{}\n", a)
     print("{}\n", b)
-    print("{} {}\n", (a, b))
+    print("{} {}\n", a, b)
 }

@@ -8,6 +8,6 @@ main :: fn() \ {Out} {
     b: f32 = NZ2
     c: f64 = PZ
     d: f64 = M
-    print("{} {} {} {}\n", (a, b, c, d))
+    print("{} {} {} {}\n", a, b, c, d)
     print("{}\n", 1.0 / NZ)
 }

@@ -76,7 +76,7 @@ primes :: fn() \ {Yield(i64), Out} {
 show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
     print("{}:", label)
     for x in src() { print(" {}", x) }
-    print("\n", ())
+    print("\n")
 }
 
 adapters :: fn() \ {Out} {
@@ -244,7 +244,7 @@ lockstep_demo :: fn() \ {Out} {
     lockstep(naturals, short, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
             if b := r {
-                print("  ({}, {})\n", (a, b))
+                print("  ({}, {})\n", a, b)
                 n += 1
                 return 3
             }
@@ -258,7 +258,7 @@ lockstep_demo :: fn() \ {Out} {
     lockstep(squares, fibs, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
             if b := r {
-                print("  {} + {} = {}\n", (a, b, a + b))
+                print("  {} + {} = {}\n", a, b, a + b)
                 n += 1
                 if n is 4 { return 0 }
                 return 3
@@ -268,7 +268,7 @@ lockstep_demo :: fn() \ {Out} {
     })
 
     print("-- merge of the multiples of 3 and of 5 below 40, without duplicates\n")
-    print(" ", ())
+    print(" ")
     last: i64 = 0
     lockstep(multiples_of_3, multiples_of_5, fn(l: ?i64, r: ?i64) -> u8 {
         if a := l {
@@ -287,7 +287,7 @@ lockstep_demo :: fn() \ {Out} {
         }
         return 0
     })
-    print("\n", ())
+    print("\n")
 }
 
 main :: fn() \ {Out} {

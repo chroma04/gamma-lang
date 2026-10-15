@@ -10,8 +10,8 @@ OPT: ?i32 : null
 D :: OPT else 4
 M :: [2]P(P(x: 1), P(x: 2, y: 3))[1].y
 main :: fn() \ {Out} {
-    print("{} {} {} {} {}\n", (A, ARR, SUM, D, M))
-    print("{} {}\n", (first(), count()))
+    print("{} {} {} {} {}\n", A, ARR, SUM, D, M)
+    print("{} {}\n", first(), count())
 }
 
 first :: fn() -> u8 => [3]u8(9, 8, 7)[0]

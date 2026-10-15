@@ -575,6 +575,9 @@ impl Dumper {
         if p.comptime {
             v.push(atom("comptime"));
         }
+        if p.rest {
+            v.push(atom("rest"));
+        }
         push_opt(&mut v, labeled("ty", p.ty.as_ref().map(|t| self.expr(t))));
         push_opt(&mut v, labeled("default", p.default.as_ref().map(|t| self.expr(t))));
         node("param", v)

@@ -16,7 +16,7 @@ main :: fn() \ {Out, Alloc} {
     sizes := [_]u32(10, 100, 3000)
     for n in sizes {
         r := with fb.allocator() { fill_list(n) }
-        print("fixed n={}: {}\n", (n, r))
+        print("fixed n={}: {}\n", n, r)
         fb.reset()
     }
     a := arena.new()
@@ -31,6 +31,6 @@ main :: fn() \ {Out, Alloc} {
         ys.fill(2)
         sum: u64 = 0
         for i in 0..100 { sum += xs[i] + ys[i] }
-        print("arena slices: {} {}\n", (sum, xs.ptr is not ys.ptr))
+        print("arena slices: {} {}\n", sum, xs.ptr is not ys.ptr)
     }
 }

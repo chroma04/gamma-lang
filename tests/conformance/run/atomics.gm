@@ -5,18 +5,18 @@ lock :: fn(flag: ^u32) -> bool => @atomic_cas(flag, 0, 1, .Acquire, .Relaxed) is
 
 main :: fn() \ {Out, Sys} {
     n: u32 = 5
-    print("{} {}\n", (increment(&n), n))
+    print("{} {}\n", increment(&n), n)
     flag: u32 = 0
-    print("{} {} {}\n", (lock(&flag), lock(&flag), flag))
+    print("{} {} {}\n", lock(&flag), lock(&flag), flag)
     @atomic_store(&flag, 0, .Release)
     print("{}\n", @atomic_load(&flag, .Acquire))
     x: i64 = 10
-    print("{} {} {}\n", (@atomic_swap(&x, -3, .AcqRel), @atomic_max(&x, 7, .SeqCst), x))
-    print("{} {}\n", (@atomic_min(&x, -9, .Relaxed), x))
+    print("{} {} {}\n", @atomic_swap(&x, -3, .AcqRel), @atomic_max(&x, 7, .SeqCst), x)
+    print("{} {}\n", @atomic_min(&x, -9, .Relaxed), x)
     b := 0xf0u8
-    print("{} {} {}\n", (@atomic_and(&b, 0x3c, .SeqCst), @atomic_xor(&b, 0xff, .SeqCst), b))
+    print("{} {} {}\n", @atomic_and(&b, 0x3c, .SeqCst), @atomic_xor(&b, 0xff, .SeqCst), b)
     w: u8 = 255
-    print("{} {}\n", (@atomic_add(&w, 2, .SeqCst), w))
+    print("{} {}\n", @atomic_add(&w, 2, .SeqCst), w)
     ok: bool = false
     print("{}\n", @atomic_cas(&ok, true, false, .SeqCst, .SeqCst))
     @fence(.SeqCst)

@@ -7,7 +7,7 @@ early exit and coroutines.
 ```gamma
 main :: fn() \ {Out} {
     for i in 1..=3 {
-        print("{} squared is {}\n", (i, i * i))
+        print("{} squared is {}\n", i, i * i)
     }
 }
 ```

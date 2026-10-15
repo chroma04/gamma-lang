@@ -4,7 +4,7 @@ Y: @type_of(X) : 7
 main :: fn() \ {Out} {
     a: i64 = 3
     b: @type_of(a) = 4
-    print("{} {} {}\n", (@type_name(@type_of(b)), @type_name(@type_of(Y)), b + a))
+    print("{} {} {}\n", @type_name(@type_of(b)), @type_name(@type_of(Y)), b + a)
     c := [3]@type_of(a)(fill: 1)
     print("{}\n", c)
 }

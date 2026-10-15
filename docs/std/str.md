@@ -35,7 +35,7 @@ Appends text to a buffer you supply. It allocates nothing; appending beyond the
 buffer's length is a trap (`"str: builder is full"`). Create one with `builder`.
 
 To format into a builder, use it as the sink of `@write` (§21.6.1):
-`@write(fn(bytes) => b.push(bytes), "{} of {}", (n, total))`.
+`@write(fn(bytes) => b.push(bytes), "{} of {}", n, total)`.
 
 ## Unions
 
@@ -359,20 +359,20 @@ Forgets everything appended, keeping the buffer.
 ### `write`
 
 ```gamma
-write :: fn(A: type, b: ^Builder, template :: string, args: A = ())
+write :: fn(A: type, b: ^Builder, template :: string, args: ..A)
 ```
 
 Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
-`b.write("{} of {}", (n, total))`. Traps like `push` if the result does not fit.
+`b.write("{} of {}", n, total)`. Traps like `push` if the result does not fit.
 
 ### `format`
 
 ```gamma
-format :: fn(A: type, template :: string, args: A = ()) -> AllocError![]u8 \ {Alloc}
+format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 \ {Alloc}
 ```
 
 Formatted text (§21.6.1) in memory from the current allocator (release it with
-`free`): `str.format("{}-{:03}", (name, n))`. To append to a list instead, use
+`free`): `str.format("{}-{:03}", name, n)`. To append to a list instead, use
 `List(u8).write`.
 
 ### `join`

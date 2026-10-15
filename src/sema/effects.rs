@@ -780,7 +780,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.sema.prog.handlers.push(tir::HandlerLit { effect: eref.clone(), clauses: vec![] });
         // The clause `yield(x) => { p :: x; B }`.
         let x = Symbol::intern("<item>");
-        let params = vec![ParamInfo { name: x, ty: elem, span, default: None, generic: None }];
+        let params = vec![ParamInfo { name: x, ty: elem, span, default: None, generic: None, rest: false }];
         let sig = FnSig {
             module: self.module,
             params: params.clone(),

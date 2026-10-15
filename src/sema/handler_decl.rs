@@ -158,6 +158,7 @@ impl<'s> Sema<'s> {
                         span: h.for_ty.span,
                         default: None,
                         generic: None,
+                        rest: false,
                     },
                 );
                 // A generic handler's clauses are generic functions of its parameters.
@@ -345,6 +346,7 @@ impl<'s> Sema<'s> {
                 span: p.span,
                 default: None,
                 generic: None,
+                rest: false,
             })
             .collect();
         let ret = super::effects::subst(o.ret, &info.params, &eref.args);
@@ -358,6 +360,7 @@ impl<'s> Sema<'s> {
             span,
             default: None,
             generic: None,
+            rest: false,
         });
         (params, Ty::never(), o.kind)
     }
@@ -504,6 +507,7 @@ fn scope_param_infos(scope: &[ScopeParam], span: Span) -> Vec<ParamInfo> {
             span,
             default: None,
             generic: Some(p.pid),
+            rest: false,
         })
         .collect()
 }

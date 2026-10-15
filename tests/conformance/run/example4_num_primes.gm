@@ -177,7 +177,7 @@ totient :: fn(n: u32) -> u32 {
 main :: fn() \ {Out} {
     sv := Sieve(bits: [WORDS]u64(fill: 0))
     build_sieve(&sv)
-    print("primes up to {}: {}\n", (LIMIT, count_primes(&sv)))
+    print("primes up to {}: {}\n", LIMIT, count_primes(&sv))
 
     // sum of primes and the largest gap, scanning with ctz over the complement words
     sum: u64 = 0
@@ -204,7 +204,7 @@ main :: fn() \ {Out} {
         }
     }
     print("sum of primes {}\n", sum)
-    print("largest gap {} after {}; twin prime pairs {}\n", (gap, gap_at, twins))
+    print("largest gap {} after {}; twin prime pairs {}\n", gap, gap_at, twins)
 
     // Sanity: the first few primes by bit tests.
     print("primes below 60:")
@@ -219,7 +219,7 @@ main :: fn() \ {Out} {
     print("miller-rabin vs sieve mismatches: {}\n", mismatches)
 
     cases := [_]u64(561, 1105, 2147483647, 2305843009213693951, 2305843009213693953, 18446744073709551557, 18446744073709551556, 4294967297)
-    for n in cases { print("{} -> {}\n", (n, is_prime(n))) }
+    for n in cases { print("{} -> {}\n", n, is_prime(n)) }
 
     // modular exponentiation
     print("2^1000000 mod 1000000007 = {}\n", powmod(2, 1000000, 1000000007))
@@ -230,16 +230,16 @@ main :: fn() \ {Out} {
     targets := [_]u64(600851475143, 1000000007 * 998244353, 4611686014132420609, 1_000_000_000_000_000_000, 18446744073709551615)
     for t in targets {
         k := factor(t, fs[..])
-        print("{} = {}\n", (t, fs[0..k]))
+        print("{} = {}\n", t, fs[0..k])
     }
 
     // integer square roots
-    print("isqrt: {} {} {}\n", (isqrt64(99), isqrt64(18446744073709551615), isqrt64(1_000_000_000_000)))
+    print("isqrt: {} {} {}\n", isqrt64(99), isqrt64(18446744073709551615), isqrt64(1_000_000_000_000))
     huge: u128 = u128(1) << 100
     print("isqrt(2^100) = {}\n", isqrt128(huge))
     big: u128 = huge * 3 + 12345
     r := isqrt128(big)
-    print("isqrt(3*2^100+12345) = {}, r*r <= n < (r+1)^2: {}\n", (r, r * r <= big and big < (r + 1) * (r + 1)))
+    print("isqrt(3*2^100+12345) = {}, r*r <= n < (r+1)^2: {}\n", r, r * r <= big and big < (r + 1) * (r + 1))
 
     // totients and Euler's theorem
     print("totient 1..20:")

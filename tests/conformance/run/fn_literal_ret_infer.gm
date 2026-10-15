@@ -11,7 +11,7 @@ main :: fn() \ {Out} {
         if x is 0 { return "zero" }
         return "pos"
     }
-    print("{} {} {}\n", (sign(-1), sign(0), sign(5)))
+    print("{} {} {}\n", sign(-1), sign(0), sign(5))
 
     // A literal-only return takes the usual fallback.
     zero := fn() {

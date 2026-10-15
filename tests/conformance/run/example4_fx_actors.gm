@@ -143,8 +143,8 @@ pipeline :: fn() -> IoError!() \ {Out, Sys} {
     t1.join()
     t2.join()
     t3.join()
-    print("pipeline: {} values, sum of squares {}\n", (p.count, p.sum))
-    print("  source: {}\n  squarer: {}\n  summer: {}\n", (text(&p.source_log), text(&p.square_log), text(&p.sum_log)))
+    print("pipeline: {} values, sum of squares {}\n", p.count, p.sum)
+    print("  source: {}\n  squarer: {}\n  summer: {}\n", text(&p.source_log), text(&p.square_log), text(&p.sum_log))
 }
 
 // ---- Stage 2: fan-in ------------------------------------------------------------
@@ -188,7 +188,7 @@ fan_in :: fn() -> IoError!() \ {Out, Sys} {
     for i in 0..3 { ts[i].join() }
     c.join()
     // 50 messages each from ids 1, 2 and 3: sum of (id*1000 + i) over i in 0..50.
-    print("fan-in: {} messages, total {}\n", (f.received, f.total))
+    print("fan-in: {} messages, total {}\n", f.received, f.total)
 }
 
 // ---- Stage 3: request and reply -------------------------------------------------
@@ -252,10 +252,10 @@ request_reply :: fn() -> IoError!() \ {Out, Sys} {
     replies := [6]Reply(fill: Reply(ready: 0, value: 0))
     ns := [6]u32(10, 20, 30, 50, 70, 90)
     for i in 0..6 { ask(&s, ns[i], &replies[i]) }
-    for i in 0..6 { print("fib({}) = {}\n", (ns[i], await(&replies[i]))) }
+    for i in 0..6 { print("fib({}) = {}\n", ns[i], await(&replies[i])) }
     shut(&s.inbox)
     t.join()
-    print("server handled {} requests; log: {}\n", (s.served, text(&s.log)))
+    print("server handled {} requests; log: {}\n", s.served, text(&s.log))
 }
 
 main :: fn() -> IoError!() \ {Out, Sys} {

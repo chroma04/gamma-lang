@@ -10,6 +10,6 @@ main :: fn() \ {Out} {
     h.c = 7
     h.b += 1
     p := &h
-    print("{} {} {} {}\n", (x, h.b, h.c, p.c))
+    print("{} {} {} {}\n", x, h.b, h.c, p.c)
     print("{}\n", h)
 }

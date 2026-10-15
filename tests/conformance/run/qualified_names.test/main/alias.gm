@@ -9,5 +9,5 @@ aliases :: fn() \ {Out, Alloc} {
     b := B(y: 4)
     l: L(u8) = list(u8)
     defer l.deinit()
-    print("{} {} {} {}\n", (a.x, b.y, l.items.len, pmk(9)))
+    print("{} {} {} {}\n", a.x, b.y, l.items.len, pmk(9))
 }

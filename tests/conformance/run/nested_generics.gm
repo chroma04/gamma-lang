@@ -10,9 +10,9 @@ main :: fn() \ {Out} {
     }
     fill :: fn(T: type, N :: usize, x: T) -> [N]T => [N]T(fill: x)
 
-    print("{} {}\n", (twice(i32(4)), twice("ab")))
+    print("{} {}\n", twice(i32(4)), twice("ab"))
     nums := [5]i32(3, 9, 2, 7, 1)
     words := [3]string("pear", "apple", "zucchini")
-    print("{} {}\n", (biggest(nums[..]), biggest(words[..])))
+    print("{} {}\n", biggest(nums[..]), biggest(words[..]))
     print("{}\n", fill(T: u8, 3, 7))
 }

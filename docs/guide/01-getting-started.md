@@ -19,7 +19,7 @@ Four things are happening here, and each one comes back in later chapters.
 - `\ {Out}` is the function's **effect set**. It says "this function may perform output, and the caller must provide something to handle it". `print` performs the `Out` effect, so any function that calls `print` must either list `Out` or handle it. For `main`, the runtime installs a default handler that writes to standard output, so `\ {Out}` is all it takes. Leave it off and the program is rejected: Gamma does not allow I/O to happen without the signature saying so. [Chapter 7](07-effects.md) explains effects fully.
 - `print("hello, world\n")` writes the string. There is no implicit newline, and adjacent string literals are never concatenated.
 
-`print` takes a template with `{}` placeholders. With one placeholder the argument follows directly; with two or more, the arguments go in a tuple:
+`print` takes a template with `{}` placeholders, followed by one value for each placeholder:
 
 ```gamma
 square :: fn(x: i32) -> i32 => x * x
@@ -27,17 +27,17 @@ square :: fn(x: i32) -> i32 => x * x
 main :: fn() \ {Out} {
     n :: 12
     print("{}\n", square(n))
-    print("{} squared is {}\n", (n, square(n)))
+    print("{} squared is {}\n", n, square(n))
 }
 ```
 
-The placeholder count is checked at compile time against the arguments. Every type has a fixed, structural display format (integers in decimal, structs as `Name(field: value, ...)`, enums as `.Name`, and so on); see §21.6.1 of the [specification][s21].
+The placeholder count is checked at compile time against the values. (`print` is not a C-style variadic function: its values are a *rest parameter*, a typed tuple, as [chapter 6](06-functions.md) explains.) Every type has a fixed, structural display format (integers in decimal, structs as `Name(field: value, ...)`, enums as `.Name`, and so on); see §21.6.1 of the [specification][s21].
 
 A placeholder can carry a format spec after a colon, for tables and numbers: a width and alignment (`{:>8}`, `{:<12}`, `{:^5}`, with a fill character as in `{:*>8}`), a sign or zero padding (`{:+}`, `{:05}`), an integer base (`{:x}`, `{:#X}`, `{:b}`, `{:o}`), and for floats a precision or scientific notation (`{:.2}`, `{:e}`, `{:.3e}`):
 
 ```gamma
-print("{:<8}|{:>6}|{:8.2}\n", ("apples", 12, 0.8333))     // apples  |    12|    0.83
-print("{:#06x} {:+} {:b}\n", (255, 5, 5))                  // 0x00ff +5 101
+print("{:<8}|{:>6}|{:8.2}\n", "apples", 12, 0.8333)     // apples  |    12|    0.83
+print("{:#06x} {:+} {:b}\n", 255, 5, 5)                  // 0x00ff +5 101
 ```
 
 A spec that does not fit the argument (`{:x}` on a float) is a compile error.

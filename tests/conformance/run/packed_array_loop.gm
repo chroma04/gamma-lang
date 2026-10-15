@@ -6,5 +6,5 @@ main :: fn() \ {Out} {
     a := R(t: 1, arr: [3]u16(1, 2, 300))
     total: u32 = 0
     for x in a.arr { total += u32(x) }
-    print("{} {}\n", (total, @size_of(R)))
+    print("{} {}\n", total, @size_of(R))
 }

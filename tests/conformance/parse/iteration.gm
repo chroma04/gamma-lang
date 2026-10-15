@@ -37,7 +37,7 @@ runes      :: fn(s: string) \ {Yield(rune)} { }
 
 loops :: fn(scores: []u32, names: []string) {
     for p in each_ptr(scores) { p^ = p^ +| 10 }
-    for i, x in enumerate(names) { print("{} {}\n", (i, x)) }
+    for i, x in enumerate(names) { print("{} {}\n", i, x) }
     for i in 0..n { }
     for i in 0..=n { }
     for x in xs { }

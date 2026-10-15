@@ -112,7 +112,7 @@ main :: fn() -> AllocError!() \ {Alloc, Out} {
             if j + 1 < K { try triplets.push(Entry(row: row, col: row + 1, val: -1.0)) }
         }
     }
-    print("{} triplets for a {}x{} system\n", (triplets.items.len, n, n))
+    print("{} triplets for a {}x{} system\n", triplets.items.len, n, n)
 
     m := try assemble(n, triplets.items)
     defer free_csr(&m)

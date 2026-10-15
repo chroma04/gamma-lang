@@ -150,8 +150,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     }
     for i in 0..4 { ts[i].join() }
     // each who adds 300 * who * 10 plus (0+1+2)*100 to its own slot
-    print("ops {} total {} id {}\n", (sh.acct.ops, total(sh.acct), sh.acct.id))
-    for i in 0..4 { print("slot {} {}\n", (i, sh.acct.balance[i])) }
+    print("ops {} total {} id {}\n", sh.acct.ops, total(sh.acct), sh.acct.id)
+    for i in 0..4 { print("slot {} {}\n", i, sh.acct.balance[i]) }
 
     pc := PC(ring: Ring(lock: thread.mutex(), buf: ---, head: 0, count: 0, closed: false), produced: 0, result: 0, got: 0)
     tp := try thread.spawn(producer, &pc)
@@ -160,12 +160,12 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     tc.join()
     expected: u64 = 0
     for s in 0..COUNT { expected = fold(expected, make_msg(s)) }
-    print("consumed {} produced {} match {}\n", (pc.got, @atomic_load(&pc.produced, .Acquire), pc.result is expected))
+    print("consumed {} produced {} match {}\n", pc.got, @atomic_load(&pc.produced, .Acquire), pc.result is expected)
 
     word: u32 = u32(Status(ready: true, err: false, stage: 0, count: 0))
     ws: [3]thread.Thread = ---
     for i in 0..3 { ws[i] = try thread.spawn(stage_worker, &word) }
     for i in 0..3 { ws[i].join() }
     st := Status(word)
-    print("status ready {} stage {} count {}\n", (st.ready, st.stage, st.count))
+    print("status ready {} stage {} count {}\n", st.ready, st.stage, st.count)
 }

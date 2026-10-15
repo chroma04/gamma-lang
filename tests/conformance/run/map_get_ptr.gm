@@ -29,7 +29,7 @@ main :: fn() \ {Out, Alloc} {
         c^ += 1
     }
     print("len: {}\n", counts.len())
-    print("3: {}, 1: {}, 2: {}, 7: {}\n", (counts.get(3), counts.get(1), counts.get(2), counts.get(7)))
+    print("3: {}, 1: {}, 2: {}, 7: {}\n", counts.get(3), counts.get(1), counts.get(2), counts.get(7))
 
     // An existing value is not replaced by the default.
     q := (counts.entry(3, 100) else return).value
@@ -48,7 +48,7 @@ main :: fn() \ {Out, Alloc} {
         r := big.get_ptr(i) else return
         if r^ is not i * 2 + 1 { ok = false }
     }
-    print("big: {} {}\n", (big.len(), ok))
+    print("big: {} {}\n", big.len(), ok)
 
     // After remove, the key is absent and entry re-adds it.
     _ = big.remove(5)
@@ -73,5 +73,5 @@ main :: fn() \ {Out, Alloc} {
     sv2 := (sm.entry("abc", 50) else return).value
     sv2^ += 1
     sv3 := (sm.entry("xyz", 9) else return).value
-    print("custom: {} {} {}\n", (sm.get("abc"), sm.get("xyz"), sv3^))
+    print("custom: {} {} {}\n", sm.get("abc"), sm.get("xyz"), sv3^)
 }

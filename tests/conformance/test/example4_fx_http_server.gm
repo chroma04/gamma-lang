@@ -180,7 +180,7 @@ reason :: fn(code: u32) -> string => match code {
 respond :: fn(s: Socket, code: u32, body: string) -> IoError!() \ {Net, Sched} {
     buf: [512]u8 = ---
     b := str.builder(buf[..])
-    b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", (code, reason(code), body.len))
+    b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", code, reason(code), body.len)
     b.push(body)
     try send_all(s, b.str())
 }
@@ -236,7 +236,7 @@ server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
         raw := read_message(conn, buf[..]) else ""
         ctx.served += 1
         if req := parse_request(raw) {
-            print("server: {} {}\n", (req.method, req.path))
+            print("server: {} {}\n", req.method, req.path)
             _ = route(ctx, req, conn)
         } else {
             print("server: malformed request\n")
@@ -260,7 +260,7 @@ fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
         status = line
         break
     }
-    print("{}: [{}] {}\n", (ctx.name, status, parts.after))
+    print("{}: [{}] {}\n", ctx.name, status, parts.after)
 }
 
 get :: fn(ctx: ^Ctx, target: string) -> IoError!() \ {Net, Sched, Out} {

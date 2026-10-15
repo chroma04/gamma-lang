@@ -54,5 +54,5 @@ main :: fn() \ {Out, Sys} {
     // A compiler barrier: an empty template that clobbers memory.
     @asm("", (), (), "memory")
     s := split(1.5)
-    print("{} {}\n", (s.bits, s.copy))
+    print("{} {}\n", s.bits, s.copy)
 }

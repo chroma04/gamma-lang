@@ -10,7 +10,7 @@ A map that keeps its keys in order, as a B-tree.
     defer m.deinit()
     try m.put("pear", 3)
     try m.put("apple", 5)
-    for e in m.entries() { print("{} {}\n", (e.key, e.value)) }     // apple, then pear
+    for e in m.entries() { print("{} {}\n", e.key, e.value) }     // apple, then pear
     for e in m.range("b", null) { … }             // keys from "b" on
     print("{}\n", m.first())                      // (key: "apple", value: 5)
 

@@ -116,12 +116,12 @@ handler Task for ^Kernel \ {Out} {
 }
 
 worker :: fn(id: u32) -> never \ {Task, Out} {
-    defer print("  [t={}] worker {} cleanup\n", (now(), id))
+    defer print("  [t={}] worker {} cleanup\n", now(), id)
     period: u64 = 10 * u64(id)
     i: u32 = 0
     while i < 4 {
         sleep(period)
-        print("  [t={}] worker {} tick {}\n", (now(), id, i))
+        print("  [t={}] worker {} tick {}\n", now(), id, i)
         i += 1
     }
     done()
@@ -137,7 +137,7 @@ run :: fn(deadline: u64) \ {Out} {
         spawn(worker, 3)
         done()
     }
-    print("end: clock {}, cancelled {}, live {}\n", (k.clock, k.cancelled, k.live))
+    print("end: clock {}, cancelled {}, live {}\n", k.clock, k.cancelled, k.live)
 }
 
 main :: fn() \ {Out} {

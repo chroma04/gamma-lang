@@ -71,7 +71,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     for i in 0..4 { ts[i] = try thread.spawn(bump, &c) }
     for i in 0..4 { ts[i].join() }
     print("counter {}\n", c.n)
-    print("try_lock {} {}\n", (c.m.try_lock(), c.m.try_lock()))
+    print("try_lock {} {}\n", c.m.try_lock(), c.m.try_lock())
     c.m.unlock()
     print("try_lock after unlock {}\n", c.m.try_lock())
     c.m.unlock()
@@ -87,7 +87,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     p.ch.close()
     for i in 0..3 { ps[i].join() }
     for i in 0..2 { cs[i].join() }
-    print("pipeline: {} values, sum {}\n", (p.taken, p.sum))
+    print("pipeline: {} values, sum {}\n", p.taken, p.sum)
     print("send after close: {}\n", p.ch.send(1))
     print("recv after drain: {}\n", p.ch.recv())
     p.ch.deinit()
@@ -123,6 +123,6 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     got := cv.wait_timeout(&m, ms(30))
     waited := now().since(started)
     m.unlock()
-    print("wait_timeout: {} (waited at least 25ms: {})\n", (got, waited.to_ms() >= 25))
+    print("wait_timeout: {} (waited at least 25ms: {})\n", got, waited.to_ms() >= 25)
     print("cpu_count >= 1: {}\n", thread.cpu_count() >= 1)
 }

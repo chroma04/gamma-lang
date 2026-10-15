@@ -137,12 +137,12 @@ main :: fn() \ {Out} {
     for k in 0..ROWS { sum += PASCAL[ROWS - 1][k] }
     print("row 19 sums to 2^19: {}\n", sum is u64(1) << 19)
 
-    print("primes below 2000: {}, last five: {}\n", (PRIME_COUNT, PRIME_LIST[PRIME_COUNT - 5..]))
+    print("primes below 2000: {}, last five: {}\n", PRIME_COUNT, PRIME_LIST[PRIME_COUNT - 5..])
     print("sieve at run time agrees: {}\n", sieve() is PRIMES_FLAGS)
 
     print("sqrt table agrees: {}\n", sqrt_table() is SQRTS)
     print("sqrt(15) = {}\n", SQRTS[15])
-    print("H(1000) = {}, at run time {}\n", (H1000, harmonic(1000)))
+    print("H(1000) = {}, at run time {}\n", H1000, harmonic(1000))
     print("simpson e-1 error below 1e-9: {}\n", (E_MINUS_1 - (math.e - 1.0)).abs() < 1e-9)
     print("{}\n", word_name())
 }

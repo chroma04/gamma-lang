@@ -52,5 +52,5 @@ main :: fn() -> IoError!() \ {Out, Sys} {
         ts[i] = try thread.spawn(run, &jobs[i])
     }
     for i in 0..4 { ts[i].join() }
-    for j in jobs { print("{} {}\n", (j.id, j.result)) }
+    for j in jobs { print("{} {}\n", j.id, j.result) }
 }

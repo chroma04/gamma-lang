@@ -6,7 +6,7 @@ Node :: union { Leaf, Branch: List(Node) }
 main :: fn() \ {Out, Alloc} {
     a: Value = .Null
     b: Value = .Null
-    print("{} {} {}\n", (a is b, a is .Null, a is .Num(1)))
+    print("{} {} {}\n", a is b, a is .Null, a is .Num(1))
 
     // Nested three deep: [[[1]]] against [[[1]]] and [[[2]]].
     one1 := [1]Value(.Num(1))
@@ -21,13 +21,13 @@ main :: fn() \ {Out, Alloc} {
     x: Value = .Arr(top1[..])
     y: Value = .Arr(top2[..])
     z: Value = .Arr(top3[..])
-    print("{} {} {}\n", (x is y, x is z, x is .Null))
+    print("{} {} {}\n", x is y, x is z, x is .Null)
 
     m := map(Value, i32)
     defer m.deinit()
     m.put(x, 10) else return
     m.put(z, 20) else return
-    print("{} {}\n", (m.get(y), m.get(z)))
+    print("{} {}\n", m.get(y), m.get(z))
 
     l1 := list(Node)
     defer l1.deinit()
@@ -35,5 +35,5 @@ main :: fn() \ {Out, Alloc} {
     defer l2.deinit()
     n1: Node = .Branch(l1)
     n2: Node = .Branch(l2)
-    print("{} {}\n", (n1 is n2, n1 is .Leaf))
+    print("{} {}\n", n1 is n2, n1 is .Leaf)
 }

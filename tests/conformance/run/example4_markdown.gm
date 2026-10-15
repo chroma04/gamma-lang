@@ -347,7 +347,7 @@ main :: fn() \ {Out} {
         blocks = convert(text)
     }
     print("{}", b.str())
-    print("-- {} headings, {} blocks, {} bytes of HTML\n", (nheads, blocks, b.len()))
+    print("-- {} headings, {} blocks, {} bytes of HTML\n", nheads, blocks, b.len())
 
     // The same conversion under a handler that only measures the output.
     tags: u32 = 0
@@ -361,11 +361,11 @@ main :: fn() \ {Out} {
         }
     }
     _ = with measure { convert(text) }
-    print("-- measured {} tags in {} bytes (without the table of contents)\n", (tags, bytes_out))
+    print("-- measured {} tags in {} bytes (without the table of contents)\n", tags, bytes_out)
 
     chars := 0
     for r in runes(text) {
         if r > 127 { chars += 1 }
     }
-    print("-- {} non-ASCII characters in {} source bytes\n", (chars, text.len))
+    print("-- {} non-ASCII characters in {} source bytes\n", chars, text.len)
 }

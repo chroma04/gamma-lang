@@ -3,9 +3,9 @@ text :: import "std/text"
 
 show_decode :: fn(s: string) \ {Out} {
     if d := text.decode_rune(s) {
-        print("{} len {}\n", (d.rune, d.len))
+        print("{} len {}\n", d.rune, d.len)
     } else {
-        print("none\n", ())
+        print("none\n")
     }
 }
 
@@ -14,7 +14,7 @@ show_encode :: fn(cp: u32) \ {Out} {
     if e := text.encode_rune(cp, buf[..]) {
         print("{} ->", cp)
         for b in e { print(" {}", b) }
-        print("\n", ())
+        print("\n")
     } else {
         print("{} -> none\n", cp)
     }
@@ -86,7 +86,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         n += 1
         cp += 1
     }
-    print("round trip {} {}\n", (ok, n))
+    print("round trip {} {}\n", ok, n)
 
     // Appending to a list.
     out := list(u8)
@@ -95,7 +95,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try text.append_rune(&out, 0xe9)
     try text.append_rune(&out, 0x20ac)
     try text.append_rune(&out, 0x1f600)
-    print("{} {}\n", (out.items.len, out.items.utf8_valid()))
+    print("{} {}\n", out.items.len, out.items.utf8_valid())
     print("{}\n", out.items)
 
     // Stepping through a string with decode_rune.
@@ -106,5 +106,5 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         print("{} ", d.rune)
         i += d.len
     }
-    print("\n", ())
+    print("\n")
 }

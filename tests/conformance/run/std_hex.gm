@@ -14,9 +14,9 @@ show_decode :: fn(label: string, src: string) \ {Out} {
     if data.len is 0 {
         print("ok, no bytes\n")
     } else if data[0] >= 32 and data[0] < 127 and data[data.len - 1] >= 32 and data[data.len - 1] < 127 {
-        print("ok {} bytes: {}\n", (data.len, data))
+        print("ok {} bytes: {}\n", data.len, data)
     } else {
-        print("ok {} bytes, first {}, last {}\n", (data.len, data[0], data[data.len - 1]))
+        print("ok {} bytes, first {}, last {}\n", data.len, data[0], data[data.len - 1])
     }
 }
 
@@ -105,6 +105,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     all2 := list(u8)
     defer all2.deinit()
     hex.decode_append(&all2, out.items) else e => print("unexpected {}\n", e)
-    print("list round trip {} {} {}\n", (big, all2.items.len, all2.items is all[..]))
+    print("list round trip {} {} {}\n", big, all2.items.len, all2.items is all[..])
     return ()
 }

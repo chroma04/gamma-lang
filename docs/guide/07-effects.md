@@ -57,7 +57,7 @@ A **handler literal** supplies one *clause* for each operation. A `with` express
 ```gamma
 main :: fn() \ {Out} {
     printer :: handler Log {
-        log(level, msg) => print("[{}] {}\n", (level, msg))
+        log(level, msg) => print("[{}] {}\n", level, msg)
     }
     ok := with printer { connect("example.org") }
     print("ok = {}\n", ok)
@@ -128,7 +128,7 @@ ids_demo :: fn() \ {Out} {
     with ids {
         a := next_id()
         b := next_id()
-        print("{} {}\n", (a, b))           // 101 102
+        print("{} {}\n", a, b)           // 101 102
     }
 }
 ```
@@ -214,7 +214,7 @@ work :: fn() \ {Log} {
 stats_demo :: fn() \ {Out} {
     stats := CountingLog()
     with &stats { work() }
-    print("{} warnings, {} errors\n", (stats.warnings, stats.errors))
+    print("{} warnings, {} errors\n", stats.warnings, stats.errors)
 }
 ```
 

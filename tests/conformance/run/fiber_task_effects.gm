@@ -15,7 +15,7 @@ Job :: struct {
 talker :: fn(j: ^Job) \ {fiber.Sched(Out), Out} {
     defer print("{} done\n", j.name)
     for i in 0..j.rounds {
-        print("{} {}\n", (j.name, i))
+        print("{} {}\n", j.name, i)
         fiber.yield_now()
     }
 }

@@ -723,7 +723,7 @@ leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
         if s.line is 0 {
             eprint("  {} bytes allocated by a container (List, HashMap, …) or an Allocator directly\n", s.size)
         } else {
-            eprint("  {} bytes allocated at {}:{}:{}\n", (s.size, s.file, s.line, s.column))
+            eprint("  {} bytes allocated at {}:{}:{}\n", s.size, s.file, s.line, s.column)
         }
         shown += 1
     }
@@ -1504,7 +1504,7 @@ handler Net for ^TestIo {
 
 /// Reports a failure of a test or benchmark: the message, then where it happened.
 report_failure :: fn(msg: string, loc: SourceLocation) \ {Err} {
-    eprint("{}\n  at {}:{}:{} in {}\n", (msg, loc.file, loc.line, loc.column, loc.function))
+    eprint("{}\n  at {}:{}:{} in {}\n", msg, loc.file, loc.line, loc.column, loc.function)
 }
 
 /// Runs a test: 0 if it passed, 1 if it failed.

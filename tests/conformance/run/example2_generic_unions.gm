@@ -55,7 +55,7 @@ main :: fn() \ {Out} {
     s := Expr(i32).Add(&one, &two)
     m := Expr(i32).Mul(&s, &three)
     n := Expr(i32).Neg(&m)
-    print("{} depth {}\n", (eval(&n), depth(&n)))
+    print("{} depth {}\n", eval(&n), depth(&n))
     fe := Expr(f64).Lit(1.5)
     fm := Expr(f64).Mul(&fe, &fe)
     print("{}\n", eval(&fm))
@@ -69,6 +69,6 @@ main :: fn() \ {Out} {
     _ = add_pair(&ps, 1, 0.5)
     _ = add_pair(&ps, 2, 1.5)
     sw := swap_all(&ps)
-    print("{} {}\n", (sw.len, sw.items[1]))
+    print("{} {}\n", sw.len, sw.items[1])
     print("{}\n", add_pair(&sw, 2.5, 3))
 }

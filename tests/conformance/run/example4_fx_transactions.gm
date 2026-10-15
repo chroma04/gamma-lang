@@ -58,7 +58,7 @@ atomically :: fn(l: ^Ledger, label: string, body: fn() \ {Store, Abort}) -> Outc
     with l, on_abort { body() }
     if failed {
         n := rollback_to(l, mark)
-        print("  [{}] aborted ({}): undid {} writes\n", (label, why, n))
+        print("  [{}] aborted ({}): undid {} writes\n", label, why, n)
         return .Aborted(why)
     }
     print("  [{}] committed\n", label)
@@ -66,8 +66,8 @@ atomically :: fn(l: ^Ledger, label: string, body: fn() \ {Store, Abort}) -> Outc
 }
 
 transfer :: fn(from, to: usize, amount: i64) \ {Store, Abort, Out} {
-    defer print("    transfer {}->{}: leave\n", (NAMES[from], NAMES[to]))
-    errdefer print("    transfer {}->{}: unwound\n", (NAMES[from], NAMES[to]))
+    defer print("    transfer {}->{}: leave\n", NAMES[from], NAMES[to])
+    errdefer print("    transfer {}->{}: unwound\n", NAMES[from], NAMES[to])
     bal := read(from)
     write(from, bal - amount)
     if bal < amount {
@@ -78,9 +78,9 @@ transfer :: fn(from, to: usize, amount: i64) \ {Store, Abort, Out} {
 
 show :: fn(l: ^Ledger) \ {Out} {
     total: i64 = 0
-    print("  state:", ())
+    print("  state:")
     for i in 0..4 {
-        print(" {}={}", (NAMES[i], l.slots[i]))
+        print(" {}={}", NAMES[i], l.slots[i])
         total += l.slots[i]
     }
     print("  total={}\n", total)
@@ -92,7 +92,7 @@ scenario_plain :: fn(l: ^Ledger) \ {Out} {
     show(l)
     r2 := atomically(l, "overdraw", fn() { transfer(0, 2, 500) })
     show(l)
-    print("  outcomes: {} {}\n", (r1, r2))
+    print("  outcomes: {} {}\n", r1, r2)
 }
 
 scenario_nested :: fn(l: ^Ledger) \ {Out} {
@@ -129,7 +129,7 @@ scenario_audit :: fn(l: ^Ledger) \ {Out} {
         audit :: handler Store {
             read(slot) => read(slot)
             write(slot, v) => {
-                print("    audit: {} := {}\n", (NAMES[slot], v))
+                print("    audit: {} := {}\n", NAMES[slot], v)
                 write(slot, v)
             }
         }
@@ -149,5 +149,5 @@ main :: fn() \ {Out} {
     scenario_nested(&ledger)
     scenario_outer_abort(&ledger)
     scenario_audit(&ledger)
-    print("{} writes in total, undo log holds {}\n", (ledger.writes, ledger.undo_len))
+    print("{} writes in total, undo log holds {}\n", ledger.writes, ledger.undo_len)
 }

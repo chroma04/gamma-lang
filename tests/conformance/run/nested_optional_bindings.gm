@@ -20,7 +20,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try m.put("none", null)
     try m.put("five", 5)
     for k in [3]string("none", "five", "missing") {
-        if v := m.get(k) { print("{}: present {}\n", (k, v)) } else { print("{}: absent\n", k) }
+        if v := m.get(k) { print("{}: present {}\n", k, v) } else { print("{}: absent\n", k) }
     }
     show(null)
     show(?u8(null))

@@ -97,7 +97,7 @@ execute :: fn(name: string, code: []const Op, budget: u32) \ {Out} {
     vm := Vm(stack: ---, regs: [4]i64(fill: 0))
     rec := Recorder(out: ---)
     with &rec { run(&vm, code, budget) }
-    print("{}: steps {} trace {} depth {} out {}\n", (name, vm.steps, rec.trace_len, rec.max_depth, rec.out[0..rec.n]))
+    print("{}: steps {} trace {} depth {} out {}\n", name, vm.steps, rec.trace_len, rec.max_depth, rec.out[0..rec.n])
 }
 
 main :: fn() \ {Out} {
@@ -115,9 +115,9 @@ main :: fn() \ {Out} {
         emit(v) => { sum += v; count += 1 }
         fuel(pc) => { break }
     }), (handler Trace {
-        step(pc, depth) => print("  pc={} depth={}\n", (pc, depth))
+        step(pc, depth) => print("  pc={} depth={}\n", pc, depth)
     }) {
         run(&vm, small[..], 100)
     }
-    print("count {} sum {}\n", (count, sum))
+    print("count {} sum {}\n", count, sum)
 }

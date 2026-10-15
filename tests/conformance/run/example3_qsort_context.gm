@@ -58,11 +58,11 @@ main :: fn() \ {Out, Sys} {
     _ = libc.memset(&buf, 0, 16)
     _ = libc.strncpy(buf[..].ptr, c"hello", 15)
     s: cstring = buf[..].ptr
-    print("{} {}\n", (libc.strlen(s), s[0..5]))
+    print("{} {}\n", libc.strlen(s), s[0..5])
     for i in 0..5 { buf[i] = libc.toupper(c.c_int(buf[i])).trunc(u8) }
     print("{}\n", s[0..libc.strlen(s)])
     end: cstring = c""
     v := libc.strtol(c"1234xyz", &end, 10)
-    print("{} rest {}\n", (v, libc.strlen(end)))
+    print("{} rest {}\n", v, libc.strlen(end))
     print("{}\n", libc.strtol(c"-0x1F", null, 16))
 }

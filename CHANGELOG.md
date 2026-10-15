@@ -37,6 +37,12 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** rest parameters. The last parameter of a function may be declared
+  `args: ..A`; it takes the remaining positional arguments as one typed tuple, and a spread
+  passes one on (`print(template, ..args)`). `print`, `eprint`, `@write`, `List.write`,
+  `std/str`'s `write` and `format`, and `std/log` take their values this way:
+  `print("{} of {}", n, total)` instead of `print("{} of {}", (n, total))`. A tuple given
+  as one value is printed as a tuple (§11.2, §21.6.1).
 - **Breaking:** an inferable compile-time parameter (one that another parameter's type
   mentions) is never bound positionally: it is inferred, or written by name
   (`new(T: Page, ---)`, `max(T: i64, xs)`, `double(T: u8)` as a function pointer). This

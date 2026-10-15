@@ -2,7 +2,7 @@
 Task :: struct { done: bool, name: string }
 
 main :: fn() \ {Out} {
-    print("{} {} {} {}\n", (false < true, true < false, true >= true, false <= false))
+    print("{} {} {} {}\n", false < true, true < false, true >= true, false <= false)
     print("{}\n", (true, 1) < (false, 2))
     print("{}\n", [2]bool(false, true) < [2]bool(true, false))
     tasks := [3]Task(Task(done: true, name: "b"), Task(done: false, name: "c"), Task(done: false, name: "a"))
@@ -14,5 +14,5 @@ main :: fn() \ {Out} {
             j -= 1
         }
     }
-    for t in tasks { print("{} {}\n", (t.done, t.name)) }
+    for t in tasks { print("{} {}\n", t.done, t.name) }
 }

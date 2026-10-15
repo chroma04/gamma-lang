@@ -9,5 +9,5 @@ main :: fn() \ {Out} {
     n: u8 = A
     e: u8 = E
     f: f64 = E
-    print("{} {} {} {} {}\n", (x.len, y.len, n, e, f))
+    print("{} {} {} {} {}\n", x.len, y.len, n, e, f)
 }

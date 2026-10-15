@@ -5,43 +5,43 @@ Point :: struct { x: i32, y: i32 }
 Suit :: union { Hearts, Spades }
 
 show :: fn(T: type, x: T) \ {Out} where Int(T) {
-    print("[{:>6}] [{:x}] [{:#010b}]\n", (x, x, x))
+    print("[{:>6}] [{:x}] [{:#010b}]\n", x, x, x)
 }
 
 main :: fn() \ {Out} {
     // Width and alignment: numbers default to the right, everything else to the left.
-    print("[{:5}] [{:5}] [{:5}]\n", (42, "ab", true))
-    print("[{:<5}] [{:>5}] [{:^5}] [{:^6}]\n", (42, "ab", "ab", "ab"))
-    print("[{:*<6}] [{:->6}] [{:.^7}]\n", ("x", 7, "mid"))
-    print("[{:2}] [{:0}]\n", ("longer", 12345))
+    print("[{:5}] [{:5}] [{:5}]\n", 42, "ab", true)
+    print("[{:<5}] [{:>5}] [{:^5}] [{:^6}]\n", 42, "ab", "ab", "ab")
+    print("[{:*<6}] [{:->6}] [{:.^7}]\n", "x", 7, "mid")
+    print("[{:2}] [{:0}]\n", "longer", 12345)
     // Width counts Unicode scalar values, not bytes.
-    print("[{:>5}] [{:<4}]\n", ("héé", "ü"))
+    print("[{:>5}] [{:<4}]\n", "héé", "ü")
     // Any value can be padded.
-    print("[{:>20}] [{:<10}]\n", (Point(x: 1, y: -2), Suit.Spades))
+    print("[{:>20}] [{:<10}]\n", Point(x: 1, y: -2), Suit.Spades)
     print("[{:>8}]\n", ?i32(null))
     // Signs and zero padding.
-    print("{:+} {:+} {:+} {:05} {:+06} {:05}\n", (5, -5, 0, -42, 42, 7u8))
+    print("{:+} {:+} {:+} {:05} {:+06} {:05}\n", 5, -5, 0, -42, 42, 7u8)
     // Integer bases.
-    print("{:x} {:X} {:o} {:b} {:#x} {:#X} {:#o} {:#b}\n", (255, 255, 8, 5, 255, 255, 8, 5))
-    print("{:x} {:#x} {:08x} {:#010x}\n", (-255, -255, 48879, 48879))
-    print("{:x} {:b}\n", (0u64, 0))
+    print("{:x} {:X} {:o} {:b} {:#x} {:#X} {:#o} {:#b}\n", 255, 255, 8, 5, 255, 255, 8, 5)
+    print("{:x} {:#x} {:08x} {:#010x}\n", -255, -255, 48879, 48879)
+    print("{:x} {:b}\n", 0u64, 0)
     print("{:x}\n", 18446744073709551615u64)
     print("{:x}\n", -170141183460469231731687303715884105728i128)
-    print("{:x} {:b}\n", (u256(1) << 200, i8(-128)))
-    print("{} {:x}\n", (u7(127), u7(127)))
+    print("{:x} {:b}\n", u256(1) << 200, i8(-128))
+    print("{} {:x}\n", u7(127), u7(127))
     // Float precision: correctly rounded, ties to even on the exact value.
-    print("{:.2} {:.2} {:.0} {:.0} {:.0} {:.3}\n", (3.14159, 0.125, 0.5, 1.5, 2.5, 2.0))
-    print("{:.1} {:.2} {:.20}\n", (-0.05, -0.0, 0.1))
-    print("{:8.3}|{:<8.3}|{:08.3}|{:+.1}\n", (3.14159, 3.14159, -3.14159, 2.0))
+    print("{:.2} {:.2} {:.0} {:.0} {:.0} {:.3}\n", 3.14159, 0.125, 0.5, 1.5, 2.5, 2.0)
+    print("{:.1} {:.2} {:.20}\n", -0.05, -0.0, 0.1)
+    print("{:8.3}|{:<8.3}|{:08.3}|{:+.1}\n", 3.14159, 3.14159, -3.14159, 2.0)
     print("{:.3}\n", f32(0.1))
     print("{:.2}\n", 7)
     // Scientific notation.
-    print("{:e} {:e} {:e} {:e} {:e}\n", (1234.5, 0.00025, 1.0, 0.0, -1e300))
-    print("{:.2e} {:.0e} {:.3e} {:e}\n", (1234.5, 1234.5, 0.0, f32(0.1)))
+    print("{:e} {:e} {:e} {:e} {:e}\n", 1234.5, 0.00025, 1.0, 0.0, -1e300)
+    print("{:.2e} {:.0e} {:.3e} {:e}\n", 1234.5, 1234.5, 0.0, f32(0.1))
     // Non-finite values.
     nan := 0.0 / 0.0
     inf := 1.0 / 0.0
-    print("[{:+}] [{:+}] [{:6.2}] [{:06}] [{:<6}] [{:e}]\n", (nan, inf, -inf, inf, nan, inf))
+    print("[{:+}] [{:+}] [{:6.2}] [{:06}] [{:<6}] [{:e}]\n", nan, inf, -inf, inf, nan, inf)
     // Literal braces next to placeholders.
     print("{{{:>3}}}\n", 1)
     // Generic arguments.

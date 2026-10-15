@@ -15,7 +15,7 @@ pub Tracer :: struct {
 }
 
 handler Trace for ^Tracer \ {Out} {
-    step(self, what, n) => print("{}{}: {}\n", (self.prefix, what, n))
+    step(self, what, n) => print("{}{}: {}\n", self.prefix, what, n)
 }
 
 /// Counts steps and the rows they mention.

@@ -115,7 +115,7 @@ show :: fn(b: ^const Board) \ {Out} {
 }
 
 main :: fn() \ {Out} {
-    print("mode {}, bits size {}, corner neighbors {}\n", (MODE_NAME.len > 0, @size_of(Flags), NEIGHBORS[0][0]))
+    print("mode {}, bits size {}, corner neighbors {}\n", MODE_NAME.len > 0, @size_of(Flags), NEIGHBORS[0][0])
     b := Board(cells: BLANK)
     // a glider
     glider := [_](usize, usize)((0, 1), (1, 2), (2, 0), (2, 1), (2, 2))
@@ -123,7 +123,7 @@ main :: fn() \ {Out} {
     show(&b)
     for g in 0..4 {
         ch := step(&b, .Classic)
-        print("-- gen {} ({} changes)\n", (b.gen, ch))
+        print("-- gen {} ({} changes)\n", b.gen, ch)
         show(&b)
     }
     count := 0
@@ -147,7 +147,7 @@ main :: fn() \ {Out} {
         for _ in 0..5 { total += step(&bb, rule) }
         n := 0
         for p in alive_cells(&bb) { n += 1; _ = p }
-        print("{} -> {} changes, {} alive\n", (rule, total, n))
+        print("{} -> {} changes, {} alive\n", rule, total, n)
     }
     raw := u8(b.cells[0][0])
     print("raw {}\n", raw)

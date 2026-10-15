@@ -16,5 +16,5 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     b := try thread.spawn(T: u32, bump, &shared)
     a.join()
     b.join()
-    print("main's copy {}, shared {}\n", (mine, shared))
+    print("main's copy {}, shared {}\n", mine, shared)
 }

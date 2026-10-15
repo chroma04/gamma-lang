@@ -8,4 +8,4 @@ g :: fn(n: i32) -> i32 \ {Out} {
     y := f(n - 5) else { 100 }
     return x + y
 }
-main :: fn() \ {Out} { print("{} {}\n", (g(3), g(-1))) }
+main :: fn() \ {Out} { print("{} {}\n", g(3), g(-1)) }

@@ -83,11 +83,11 @@ queens :: fn(n: usize, cols: []usize) \ {Choose} {
 
 draw :: fn(cols: []const usize) \ {Out} {
     for row in 0..cols.len {
-        print("   ", ())
+        print("   ")
         for c in 0..cols.len {
-            if cols[row] is c { print("Q ", ()) } else { print(". ", ()) }
+            if cols[row] is c { print("Q ") } else { print(". ") }
         }
-        print("\n", ())
+        print("\n")
     }
 }
 
@@ -95,9 +95,9 @@ queens_demo :: fn() \ {Out} {
     print("-- 6 queens\n")
     cols: [8]usize = [8]usize(fill: 0)
     n6 := search_all(fn() { queens(6, cols[..]) }, fn() -> bool {
-        print("  solution:", ())
+        print("  solution:")
         for i in 0..6 { print(" {}", cols[i]) }
-        print("\n", ())
+        print("\n")
         return true
     })
     print("  {} solutions\n", n6)
@@ -156,12 +156,12 @@ sudoku_demo :: fn() \ {Out} {
         grid = PUZZLE
         sudoku(grid[..])
     }, fn() -> bool {
-        print("  solution:", ())
+        print("  solution:")
         for r in 0..4 {
-            print(" ", ())
+            print(" ")
             for c in 0..4 { print("{}", grid[r * 4 + c]) }
         }
-        print("\n", ())
+        print("\n")
         return true
     })
     print("  {} solution(s)\n", count)
@@ -195,11 +195,11 @@ misc_demo :: fn() \ {Out} {
     items := [5]i32(3, 5, 7, 9, 11)
     taken := [5]bool(fill: false)
     n := search_all(fn() { subset_sum(items[..], 20, taken[..]) }, fn() -> bool {
-        print("  ", ())
+        print("  ")
         for i in 0..5 {
             if taken[i] { print(" {}", items[i]) }
         }
-        print("\n", ())
+        print("\n")
         return true
     })
     print("  {} subsets\n", n)
@@ -218,7 +218,7 @@ misc_demo :: fn() \ {Out} {
         seen += 1
         if seen is 1 {
             for r in 0..7 {
-                print("  {} is {}\n", (Region.from_tag(r)?, names[assigned[r]]))
+                print("  {} is {}\n", Region.from_tag(r)?, names[assigned[r]])
             }
         }
         return seen < 1

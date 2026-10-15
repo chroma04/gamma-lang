@@ -70,7 +70,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     try tuples.put((1, true), "a")
     try tuples.put((1, false), "b")
     try tuples.put((1, true), "c")
-    print("{} {} {}\n", (tuples.len(), tuples.get((1, true)), tuples.get((2, true))))
+    print("{} {} {}\n", tuples.len(), tuples.get((1, true)), tuples.get((2, true)))
     names := map(string, List(u32))
     defer {
         for e in names.entries() { l := e.value; l.deinit() }
@@ -81,5 +81,5 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         try l.push(l.items.len.trunc(u32))
     }
     a := names.get("a")?
-    print("{} {}\n", (a.items, names.len()))
+    print("{} {}\n", a.items, names.len())
 }

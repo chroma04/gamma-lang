@@ -49,7 +49,7 @@ use_optional :: fn(xs: []const i32) \ {Out} {
     // 4. Assert that it cannot be absent. Traps if it is.
     z := first_even(xs)?
 
-    print("{} {} {}\n", (n, w, z))
+    print("{} {} {}\n", n, w, z)
 }
 ```
 
@@ -154,7 +154,7 @@ handle_results :: fn(text: string) \ {Out} {
     // Assert success. Traps (reporting the error value) if it failed.
     c := parse_u16("443")!
 
-    print("{} {} {}\n", (a, b, c))
+    print("{} {} {}\n", a, b, c)
 }
 ```
 

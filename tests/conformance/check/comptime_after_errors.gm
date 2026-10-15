@@ -6,7 +6,7 @@ C :: [2]u8(1.5, 2) //~ ERROR found a float literal
 Instr :: union { Mul: (a: u8, c: u8u8) } //~ ERROR unknown type `u8u8`
 D :: [_]Instr(.Mul(3, 3))
 
-log :: fn(template :: string, args: Args) \ {} { //~ ERROR unknown type `Args`
+log :: fn(template :: string, args: ..Args) \ {} { //~ ERROR unknown type `Args`
     print(template) //~ ERROR performs the effect `Out`
     log(93) //~ ERROR found an integer literal
 }

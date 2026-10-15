@@ -15,7 +15,7 @@ shadow_locals :: fn() -> u32 {
 }
 
 main :: fn() \ {Out, Alloc} {
-    print("{} {} {} {}\n", (current(), yield(1), read(), range(4)))
+    print("{} {} {} {}\n", current(), yield(1), read(), range(4))
     print("{}\n", shadow_locals())
 
     // The hidden operation is still reachable through its effect, and the

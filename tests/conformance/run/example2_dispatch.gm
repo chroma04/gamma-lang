@@ -84,11 +84,11 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     for line in script {
         if cmd := table.get(line[0]) {
             if line.len - 1 < cmd.arity {
-                print("{}: needs {} args\n", (cmd.name, cmd.arity))
+                print("{}: needs {} args\n", cmd.name, cmd.arity)
                 continue
             }
             if err := cmd.run(&ctx, line[1..]) {
-                print("{}: error: {}\n", (cmd.name, err))
+                print("{}: error: {}\n", cmd.name, err)
             }
         } else {
             print("unknown command {}\n", line[0])

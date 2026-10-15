@@ -23,7 +23,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
             p = p - 1
             p[0] = u16(i.trunc(u16))
         }
-        print("first {} last {}\n", (xs[0], xs[9]))
+        print("first {} last {}\n", xs[0], xs[9])
     }
     print("total {}\n", total)
 }

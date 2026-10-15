@@ -4,14 +4,14 @@ Node :: struct { v: i32, next: ?^Node }
 main :: fn() \ {Out} {
     a: u8 = 250
     old := @atomic_add(&a, 10, .SeqCst)
-    print("{} {}\n", (old, a))
+    print("{} {}\n", old, a)
     b: i16 = -5
-    print("{} {}\n", (@atomic_sub(&b, 32767, .AcqRel), b))
-    print("{} {}\n", (@atomic_max(&b, 3, .Relaxed), b))
+    print("{} {}\n", @atomic_sub(&b, 32767, .AcqRel), b)
+    print("{} {}\n", @atomic_max(&b, 3, .Relaxed), b)
     s: i32 = -8
-    print("{} {}\n", (@atomic_min(&s, -20, .Relaxed), s))
+    print("{} {}\n", @atomic_min(&s, -20, .Relaxed), s)
     f: bool = false
-    print("{} {}\n", (@atomic_swap(&f, true, .SeqCst), f))
+    print("{} {}\n", @atomic_swap(&f, true, .SeqCst), f)
     print("{}\n", @atomic_cas(&f, true, false, .SeqCst, .Relaxed))
     print("{}\n", @atomic_cas(&f, true, false, .SeqCst, .Relaxed))
     x := Node(v: 1, next: null)
@@ -23,7 +23,7 @@ main :: fn() \ {Out} {
     print("{}\n", if r is not null { 1 } else { 0 })
     if h := @atomic_load(&head, .Acquire) { print("{}\n", h.v) }
     w: u64 = 0xFFFF_FFFF_FFFF_FFFF
-    print("{} {}\n", (@atomic_add(&w, 2, .Relaxed), w))
+    print("{} {}\n", @atomic_add(&w, 2, .Relaxed), w)
     pk: i64 = 0
     print("{}\n", @atomic_xor(&pk, -1, .SeqCst))
     print("{}\n", pk)

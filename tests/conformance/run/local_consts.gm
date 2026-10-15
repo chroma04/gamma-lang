@@ -11,8 +11,8 @@ main :: fn() \ {Out} {
     K :: square(4)
     T :: table(3)
     g :: fn(x: i32) -> i32 => x + K + T[2].trunc(i32)
-    print("{} {}\n", (g(1), apply(g, 2)))
+    print("{} {}\n", g(1), apply(g, 2))
     n := 5
     r :: square(n)          // reads a local: evaluated at run time
-    print("{} {}\n", (r, T))
+    print("{} {}\n", r, T)
 }

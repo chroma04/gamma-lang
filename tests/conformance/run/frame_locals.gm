@@ -47,9 +47,9 @@ mixed :: fn(n: u32) -> u32 \ {Out} {
     bump(&z)
     tag: u32 = if v := parse("abc") { v } else e => 0
     bad: u32 = parse("") else e => 99
-    defer print("deferred plain={} r={}\n", (plain, r))
+    defer print("deferred plain={} r={}\n", plain, r)
     print("seen={} outer={} pt=({},{}) z={} tag={} bad={}\n",
-        (seen, outer(n), pt.x, pt.y, z, tag, bad))
+        seen, outer(n), pt.x, pt.y, z, tag, bad)
     return seen + plain + q + r
 }
 

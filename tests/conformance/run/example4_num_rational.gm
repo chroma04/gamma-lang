@@ -68,7 +68,7 @@ show :: fn(T: type, a: Ratio(T)) \ {Out} where Int(T) {
     if a.den is 1 {
         print("{}", a.num)
     } else {
-        print("{}/{}", (a.num, a.den))
+        print("{}/{}", a.num, a.den)
     }
 }
 
@@ -122,7 +122,7 @@ main :: fn() \ {Out} {
     print(", 1/a = ")
     show(recip(a) else { return })
     print("\n")
-    print("a < b: {}, b < a: {}, -a < a: {}\n", (less(a, b), less(b, a), less(neg(a), a)))
+    print("a < b: {}, b < a: {}, -a < a: {}\n", less(a, b), less(b, a), less(neg(a), a))
     print("zero denominator: {}\n", make_ratio(T: i64, 1, 0) is !.ZeroDenominator)
 
     // Harmonic numbers H_n exactly: H_20 = 55835135/15519504.
@@ -174,7 +174,7 @@ main :: fn() \ {Out} {
     print("\n")
     last := convergent(twos[..], 11)
     err := (to_f64(last) - 1.4142135623730951).abs()
-    print("convergent 11 = {}/{}, error below 1e-8: {}\n", (last.num, last.den, err < 1e-8))
+    print("convergent 11 = {}/{}, error below 1e-8: {}\n", last.num, last.den, err < 1e-8)
 
     // pi from a double: its continued fraction gives the famous 22/7, 333/106, 355/113.
     // 3.14159265358979323846 approximated by 31415926535897932 / 10^16 (exact integer arithmetic).

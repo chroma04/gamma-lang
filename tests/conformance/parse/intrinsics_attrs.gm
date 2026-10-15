@@ -22,7 +22,7 @@ f :: fn(p: ^u32, q: ^const u32) {
     s := @sqrt(2.0) + @fma(1.0, 2.0, 3.0)
     @compile_error("nope")
     @unreachable()
-    @write(sink, "{} at {}", (name, pos))
+    @write(sink, "{} at {}", name, pos)
     y: @type_of(x) = 0
 }
 

@@ -213,7 +213,7 @@ main :: fn() \ {Out} {
     // 2^300 by doubling; fits in 10 limbs.
     p := from_u64(N, 1)
     for _ in 0..300 { mul_small(N: N, &p, 2) }
-    print("2^300 = {} ({} limbs)\n", (to_dec(N: N, &p, buf[..]), p.len))
+    print("2^300 = {} ({} limbs)\n", to_dec(N: N, &p, buf[..]), p.len)
 
     // Big * big and the identity (a*b)/b = a, remainder 0.
     x := factorial(30)
@@ -221,7 +221,7 @@ main :: fn() \ {Out} {
     xy := mul(N: N, &x, &y) else { return }
     print("30! * 25! = {}\n", to_dec(N: N, &xy, buf[..]))
     q, r := divmod(N: N, &xy, &y)
-    print("quotient is 30!: {}  remainder zero: {}\n", (cmp(N: N, &q, &x) is 0, is_zero(N: N, &r)))
+    print("quotient is 30!: {}  remainder zero: {}\n", cmp(N: N, &q, &x) is 0, is_zero(N: N, &r))
 
     // A division with a non-zero remainder: 100! / (2^70 + 12345)
     d := from_u64(N, 1)
@@ -246,6 +246,6 @@ main :: fn() \ {Out} {
     w3 := from_u64(3, 0xFFFF_FFFF_FFFF_FFFF)
     o3 := from_u64(3, 1)
     s3 := add(N: 3, &w3, &o3)
-    if v := s3 { print("limbs: {} {} {} len {}\n", (v.limbs[0], v.limbs[1], v.limbs[2], v.len)) }
+    if v := s3 { print("limbs: {} {} {} len {}\n", v.limbs[0], v.limbs[1], v.limbs[2], v.len) }
     print("digits of 100!: {}\n", to_dec(N: N, &f100, buf[..]).len)
 }

@@ -46,7 +46,7 @@ Span :: struct { name: string, r: Range(usize) }
 ranges_demo :: fn() \ {Out} {
     word := "abcdefgh"
     sp := Span(name: "mid", r: 2..5)
-    print("{} {}\n", (sp.name, word[sp.r]))      // mid cde
+    print("{} {}\n", sp.name, word[sp.r])      // mid cde
     for i in sp.r { print("{}\n", i) }           // 2, 3 and 4, one per line
     print("{}\n", 7 in sp.r)                     // false
 }
@@ -152,7 +152,7 @@ The core library provides these iterators (§21.4). All are `#inline`.
 ```gamma
 std_demo :: fn(names: []const string, scores: []u32) \ {Out} {
     for i, name in enumerate(names) {
-        print("{}: {}\n", (i, name))
+        print("{}: {}\n", i, name)
     }
     for name in reversed(names) {
         print("{}\n", name)

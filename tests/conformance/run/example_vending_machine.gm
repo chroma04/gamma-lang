@@ -94,7 +94,7 @@ handler Log for ^Counter \ {Out} {
             .Warn => { self.warn += 1 }
             .Alert => { self.alert += 1 }
         }
-        print("  log [{}] {}\n", (level, msg))
+        print("  log [{}] {}\n", level, msg)
     }
 }
 
@@ -102,7 +102,7 @@ describe :: fn(s: State) \ {Out} {
     match s {
         .Idle => print("  state: idle\n")
         .Collecting(c) => print("  state: collecting {} cents\n", c)
-        .Dispensing(item, change) => print("  state: dispensing {} (change {})\n", (name_of(item), change))
+        .Dispensing(item, change) => print("  state: dispensing {} (change {})\n", name_of(item), change)
         .OutOfOrder(why) => print("  state: out of order ({})\n", why)
     }
 }
@@ -117,7 +117,7 @@ run :: fn(label: string, events: []const Event) \ {Out} {
             describe(s)
         }
     }
-    print("  totals: info={} warn={} alert={}\n", (c.info, c.warn, c.alert))
+    print("  totals: info={} warn={} alert={}\n", c.info, c.warn, c.alert)
 }
 
 main :: fn() \ {Out} {
@@ -133,6 +133,6 @@ main :: fn() \ {Out} {
         .Insert(.Dime), .Kick, .Take,
     )
     run("vandalism", c[..])
-    print("{} {} {}\n", (Coin.Dime, Event.Insert(.Nickel), State.Dispensing(item: .Candy, change: 5)))
-    print("{} {}\n", (Coin.from_tag(25), Coin.from_tag(7)))
+    print("{} {} {}\n", Coin.Dime, Event.Insert(.Nickel), State.Dispensing(item: .Candy, change: 5))
+    print("{} {}\n", Coin.from_tag(25), Coin.from_tag(7))
 }

@@ -79,6 +79,6 @@ labelled :: fn() -> u32 \ {Out} {
 main :: fn() \ {Out} {
     run_nested()
     print("result {}\n", run_fail(2))
-    print("find {} {}\n", (find_first(10), find_first(3)))
+    print("find {} {}\n", find_first(10), find_first(3))
     print("labelled {}\n", labelled())
 }

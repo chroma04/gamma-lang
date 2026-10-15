@@ -169,6 +169,6 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         total += u64(fast[k])
         if fast[k] > far { far = fast[k] }
     }
-    print("random graph: {} nodes differ, total distance {}, farthest {}\n", (differ, total, far))
+    print("random graph: {} nodes differ, total distance {}, farthest {}\n", differ, total, far)
     return ()
 }

@@ -17,7 +17,7 @@ bump :: fn(p: ^Pt) { p.x += 1 }
 mk :: fn(x: i32) -> Pt => Pt(x: x, y: 2)
 main :: fn() \ {Out} {
     m := Mat(2, 2)(v: [2][2]i32([2]i32(1, 2), [2]i32(3, 4)))
-    print("{} {}\n", (trace(&transpose(&m)), len2(&mk(3))))
+    print("{} {}\n", trace(&transpose(&m)), len2(&mk(3)))
     print("{}\n", len2(&(Pt(x: 1, y: 1))))
     slices()
 }
@@ -30,5 +30,5 @@ total :: fn(xs: []const i64) -> i64 {
 names :: fn(ns: []const string) -> usize => ns.len
 three :: fn() -> [3]i64 => [3]i64(4, 5, 6)
 slices :: fn() \ {Out} {
-    print("{} {} {}\n", (total([_]i64(1, 2, 3)[..]), names([_]string("a", "b")[..]), total(three()[1..])))
+    print("{} {} {}\n", total([_]i64(1, 2, 3)[..]), names([_]string("a", "b")[..]), total(three()[1..]))
 }
