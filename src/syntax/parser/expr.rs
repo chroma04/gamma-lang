@@ -413,8 +413,20 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_postfix_ops(&mut self, mut e: Expr, allow_bang: bool) -> PResult<Expr> {
+        let mut links = 0u32;
         loop {
             let start = e.span.lo;
+            if matches!(
+                self.kind(),
+                TokenKind::Punct(Punct::Question | Punct::Caret | Punct::LParen | Punct::LBracket | Punct::Dot)
+            ) || (allow_bang && matches!(self.kind(), TokenKind::Punct(Punct::Bang)))
+            {
+                links += 1;
+                if links > super::MAX_POSTFIX_CHAIN {
+                    let span = self.span();
+                    return self.fail(span, "this is nested too deeply");
+                }
+            }
             match self.kind() {
                 TokenKind::Punct(Punct::Question) => {
                     self.bump();
