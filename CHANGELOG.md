@@ -53,7 +53,6 @@ Versions and what each kind of change means are described in
 ### Fixed
 
 - `gamma repl <file>` exits with status 1 when the file cannot be loaded.
-- `--jobs=0` is a usage error instead of meaning one job per processor.
 - `--mode=`, `--backend=` and `--diag-format=` with a bad value report the value and what is
   accepted, instead of "unknown option".
 - `gamma fmt <directory>` skips hidden directories and a package's `target` directory.

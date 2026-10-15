@@ -240,14 +240,6 @@ fn usage_error(args: &[&str]) -> String {
 }
 
 #[test]
-fn zero_jobs_is_a_usage_error() {
-    for args in [&["test", "-j", "0"][..], &["test", "--jobs=0"], &["bench", "--jobs=0"]] {
-        let err = usage_error(args);
-        assert!(err.contains("must be at least 1"), "{}", err);
-    }
-}
-
-#[test]
 fn invalid_option_values_are_named() {
     let err = usage_error(&["run", "--mode=bogus", "x.gm"]);
     assert!(err.contains("invalid value `bogus` for --mode (expected debug, checked, safe or fast)"), "{}", err);

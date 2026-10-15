@@ -47,8 +47,8 @@ options:
   --all                       (test, bench) also run those of the modules of the package
                               that nothing imports (every directory with `.gm` files)
   --show-output               (test, bench) also print the output of the tests that pass
-  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1, at least 1; the output
-                              is still in order)
+  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
+                              the output is still in order)
   --time                      (test, bench) print how long each test took and the total
   --coverage[=<file>]         (test) count the lines of the package that the tests run, with
                               the interpreter; print a table, and with <file> write LCOV
@@ -131,10 +131,10 @@ struct Options {
     manifest_ldflags: Vec<String>,
 }
 
-/// The number of tests to run at once: `--jobs=n`, at least 1.
+/// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
 fn parse_jobs(text: &str) -> Result<usize, String> {
     match text.parse::<usize>() {
-        Ok(0) => Err("the job count (`--jobs`) must be at least 1".to_string()),
+        Ok(0) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
         Ok(n) => Ok(n),
         Err(_) => Err(format!("`--jobs` needs a number, not `{}`", text)),
     }
