@@ -16,7 +16,7 @@ greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
 
 - `a, b: i32` declares two parameters of one type.
 - There are two body forms: a block `{ ... }` that uses `return`, or `=> expr` for a single expression whose value is returned.
-- `-> R` gives the return type. **If you omit it, the function returns `()`.** With a block body, the end of the block must be unreachable (every path returns) unless the return type is `()`, in which case falling off the end returns `()`.
+- `-> R` gives the return type. **If you omit it, a named top-level function returns `()`**; its return type is never inferred from the body. (A function literal or nested function written where no type is expected does take its return type from its body, and a literal passed to a parameter of function type takes it from that type.) With a block body, the end of the block must be unreachable (every path returns) unless the return type is `()`, in which case falling off the end returns `()`.
 - `\ { ... }` lists the effects the function may perform ([chapter 7](07-effects.md)); omitting it means none.
 
 > **Common mistake: forgetting `-> R`.** The compiler takes the missing arrow at its word:
