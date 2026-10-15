@@ -22,7 +22,9 @@ cargo test --all-targets
 ```
 
 Run them before sending a change. Formatting uses the settings in
-`rustfmt.toml`.
+`rustfmt.toml`. CI also has jobs for Safe builds with Fil-C, for a big-endian
+cross build (s390x under qemu) and for the editor grammars (see below and
+[`editors.md`](editors.md)).
 
 ## Formatting Gamma code
 
@@ -66,6 +68,15 @@ There are two kinds of tests.
 
 **Unit tests** live next to the code they test, in `#[cfg(test)]` modules.
 
+**Integration tests** (`tests/*.rs`) run the real `gamma` binary: the formatter
+(`fmt.rs`), the package manager (`pkg.rs`, needs `git`), the language server
+(`lsp.rs`), the C runtime (`runtime.rs`), how native builds link the runtime
+(`native_build.rs`), debug information (`debug_info.rs`), the C toolchain
+variables and cross compilation (`cross.rs`), foreign calls from the interpreter
+(`ffi_interp.rs`), the layout of an installed release (`install_layout.rs`) and
+very long expressions (`long_expressions.rs`). The header comment of each file
+says what it needs and when it skips itself.
+
 **Conformance tests** are Gamma source files under `tests/conformance/`,
 grouped into directories by area (`lex/`, `parse/`, …). The runner,
 `tests/conformance.rs`, runs each file through the `gamma` binary and checks the
@@ -89,7 +100,9 @@ main :: fn() {
 | `//! os: unix` | run the test only when compiling for that kind of operating system (`unix`: all but Windows; or `windows`); for tests of what the other kind lacks (POSIX-only C functions, the System V calling convention). Keep these few: a test that is not about the platform should work on both, with `when target.os` where it must differ |
 | `//! endian: little` | run the test only on targets of that byte order (`big`), for tests that show the layout of values in memory |
 | `//! needs: f16` | leave the test out of the C lanes where the target's C compiler has no `_Float16` |
-| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`; `safe` tests need Fil-C and are skipped without it) |
+| `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`); `safe` tests run only through the C back end and need Fil-C, and are skipped without it |
+| `//! native: <reason>` | run a `run` or `test` test only through the C back end, for what the interpreter cannot do |
+| `//! filter: text` | run a `test` test with `gamma test --filter=text` |
 | `//! safe: skip <reason>` | leave the test out of the Safe lane (below), because its behavior differs in Safe builds by design |
 | `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
@@ -111,7 +124,9 @@ subdirectories hold the modules it imports (and may carry `gamma.toml` files).
 Directives and annotations may be written in any of its files, and its expected
 output is the sibling `<name>.stdout`.
 
-Useful environment variables:
+Useful environment variables (`GAMMA_STD` points the compiler at another standard
+library directory; by default it uses the one next to the installed binary, else
+`lib/std` of the source tree):
 
 ```sh
 GAMMA_TEST_FILTER=parse/match cargo test --test conformance   # run a subset
@@ -233,6 +248,14 @@ good test after changing the workflow or the packaging script.
 installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
 `GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
 the script against archives built locally with `tools/package-release.sh`.
+
+## The editor grammars
+
+`editors/vscode` (TextMate grammar and its scope tests) and `editors/tree-sitter-gamma`
+need Node.js; CI runs `npm ci && npm test` in both, checks that the generated tree-sitter
+parser is up to date (`npx tree-sitter generate`) and that it parses the standard library and
+every conformance test the compiler accepts. Change the grammars along with the language's syntax; see
+`editors/README.md`.
 
 ## The specification
 
