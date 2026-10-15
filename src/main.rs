@@ -72,10 +72,9 @@ options:
                               is then compiled without optimization
   --mode=debug|checked|safe|fast
                               (run, build, test, bench, repl) the build mode (default: debug;
-                              bench: fast): Debug,
-                              Checked and Safe trap on failed checks, Fast omits them; Debug
-                              also checks every free; Safe compiles with Fil-C, which traps
-                              on every invalid memory access
+                              bench: fast): Debug, Checked and Safe trap on failed checks,
+                              Fast omits them; Debug also checks every free; Safe compiles
+                              with Fil-C, which traps on every invalid memory access
 
 environment:
   CC        the C compiler for native builds, with any arguments (default: cc, and
