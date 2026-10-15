@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 messages with `Content-Length` framing (the base protocol of LSP).
 
 use serde_json::Value;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 /// Reads one message. Returns `None` at the end of the input.
 pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Value>> {
@@ -31,8 +31,13 @@ pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Value>> {
         }
         // Other headers (`Content-Type`) are ignored.
     }
-    let mut body = vec![0; length.unwrap_or(0)];
-    input.read_exact(&mut body)?;
+    let length = length.unwrap_or(0) as u64;
+    // Read at most `length` bytes without trusting it for an allocation.
+    let mut body = Vec::new();
+    input.take(length).read_to_end(&mut body)?;
+    if (body.len() as u64) < length {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "message body is shorter than its Content-Length"));
+    }
     serde_json::from_slice(&body).map(Some).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -86,6 +91,12 @@ mod tests {
     #[test]
     fn truncated_body_is_an_error() {
         let mut input = io::Cursor::new(b"Content-Length: 50\r\n\r\n{}".to_vec());
+        assert!(read_message(&mut input).is_err());
+    }
+
+    #[test]
+    fn huge_length_is_an_error_not_an_allocation() {
+        let mut input = io::Cursor::new(b"Content-Length: 99999999999999\r\n\r\n{}".to_vec());
         assert!(read_message(&mut input).is_err());
     }
 
