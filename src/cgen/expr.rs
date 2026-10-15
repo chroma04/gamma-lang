@@ -13,6 +13,7 @@ use crate::tir::{
 };
 use crate::types::{CallConv, EffectRef, FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
+use std::fmt::Write as _;
 
 impl<'g, 'a> FnGen<'g, 'a> {
     fn ptr_bytes(&self) -> u64 {
@@ -647,6 +648,44 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     vals.push(self.addr_of(x.ty, &v));
                 }
                 let string = Ty::string();
+                // A write to the ambient output or error is one call per piece.
+                let stub = match sink {
+                    WriteSink::Perform { effect, op } => {
+                        let id = self.g.effect_id(effect);
+                        self.out_stub(effect, id, *op, &[string], Ty::unit())
+                    }
+                    WriteSink::Fn(_) => None,
+                };
+                if let Some(core) = stub {
+                    let ps = self.piece_stub(&core, 's', string);
+                    let pf = self.piece_stub(&core, 'f', string);
+                    let cx = self.cx.clone();
+                    let loc = self.loc(e);
+                    for i in 0..pieces.len() {
+                        if !pieces[i].is_empty() {
+                            let s = self.g.static_bytes(&pieces[i]);
+                            self.unwind_call(&format!("{}({}, {}, {}, {})", ps, cx, s, pieces[i].len(), loc));
+                        }
+                        if i < args.len() {
+                            let d = self.g.ty.desc(args[i].ty);
+                            match specs.get(i) {
+                                Some(sp) if !sp.is_default() => {
+                                    let b = format!("b{}", self.fresh());
+                                    let c = spec_literal(sp);
+                                    self.line(&format!("gm_buf {} = {{0}};", b));
+                                    self.line(&format!("gm_format_spec(&{}, {}, {}, &{});", b, d, vals[i], c));
+                                    let sl = self.make_slice(string, &format!("{}.data", b), &format!("{}.len", b));
+                                    self.emit_to(sink, &sink_v, &sl, e)?;
+                                    self.line(&format!("gm_buf_free(&{});", b));
+                                }
+                                _ => {
+                                    self.unwind_call(&format!("{}({}, {}, {}, {})", pf, cx, d, vals[i], loc));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(self.unit());
+                }
                 for i in 0..pieces.len() {
                     if !pieces[i].is_empty() {
                         let s = self.g.static_bytes(&pieces[i]);
@@ -1335,6 +1374,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         if let Some(r) = self.direct_perform(id, effect, op, vals, tys, ret) {
             return Ok(r);
         }
+        if let Some(r) = self.stub_perform(e, effect, id, op, vals, tys, ret) {
+            return Ok(r);
+        }
         let n = format!("pn{}", self.fresh());
         let cx = self.cx.clone();
         let loc = self.loc(e);
@@ -1375,6 +1417,106 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Some(r) => r,
             None => self.zero(ret),
         })
+    }
+
+    /// The function that performs operation `op` of the ambient output or error effect
+    /// (`print`) for a program: it finds the handler and calls it, so that this code is
+    /// not repeated at every site. A program that prints a lot has thousands of sites,
+    /// and the C compiler spends most of its time on the code inlined at them.
+    /// `None` when `op` is another operation.
+    fn out_stub(&mut self, effect: &EffectRef, id: u32, op: u32, tys: &[Ty], ret: Ty) -> Option<String> {
+        let amb = self.g.prog.ambient.clone();
+        let writer = if Some(effect.effect) == amb.out {
+            "gm_write_out"
+        } else if Some(effect.effect) == amb.err {
+            "gm_write_err"
+        } else {
+            return None;
+        };
+        if !ret.is_unit()
+            || tys.len() != 1
+            || self.g.ty.by_ref(tys[0])
+            || self.g.prog.ctl_ops.contains(&(effect.effect, op))
+        {
+            return None;
+        }
+        let fp = self.fn_ptr_type(ret, tys);
+        let pt = self.g.ty.param_cty(tys[0]);
+        let p = self.ptr_bytes();
+        let name = effect.effect.name();
+        let key = format!("{}|{}|{}|{}", id, op, writer, pt);
+        if let Some(f) = self.g.stubs.get(&key) {
+            return Some(f.clone());
+        }
+        let f = format!("gm_pf{}", self.g.stubs.len());
+        self.g.stubs.insert(key, f.clone());
+        let sig = format!("static void {f}(gm_node *cx, {pt} a, const char *file, uint32_t line, uint32_t col)");
+        let _ = writeln!(self.g.helpers.protos, "GM_NOINLINE {sig};");
+        let _ = write!(
+            self.g.helpers.bodies,
+            "GM_NOINLINE {sig} {{\n    gm_node *pn = gm_find(cx, {id});\n    \
+             if (!pn) gm_trap(\"no handler installed for effect `{name}`\", file, line, col);\n    \
+             if (pn->kind == GM_NATIVE) {{\n        {writer}(GM_LD(void *, &a), GM_LD(uintptr_t, (uint8_t *)&a + {p}));\n    }} else {{\n        \
+             ((({fp})pn->clauses[{op}]))(pn->env, pn->hctx, pn, a);\n    }}\n}}\n"
+        );
+        Some(f)
+    }
+
+    /// A function around the stub `core` that builds the string it writes: `kind` 's'
+    /// takes a pointer and a length, 'f' a type descriptor and a value to format (the
+    /// way `{}` of a template does). It returns whether the write started an unwind.
+    fn piece_stub(&mut self, core: &str, kind: char, string: Ty) -> String {
+        let key = format!("piece|{core}|{kind}");
+        if let Some(f) = self.g.stubs.get(&key) {
+            return f.clone();
+        }
+        let f = format!("gm_pf{}", self.g.stubs.len());
+        self.g.stubs.insert(key, f.clone());
+        let pt = self.g.ty.param_cty(string);
+        let p = self.ptr_bytes();
+        let loc = "const char *file, uint32_t line, uint32_t col";
+        let body = if kind == 's' {
+            format!("static bool {f}(gm_node *cx, const void *d, uintptr_t n, {loc})",)
+        } else {
+            format!("static bool {f}(gm_node *cx, const gm_type *d, const void *v, {loc})")
+        };
+        let _ = writeln!(self.g.helpers.protos, "GM_NOINLINE {body};");
+        let (pre, data, len, post) = if kind == 's' {
+            (String::new(), "d".to_string(), "n".to_string(), String::new())
+        } else {
+            (
+                "    gm_buf b = {0};\n    gm_format(&b, d, v, true);\n".to_string(),
+                "b.data".to_string(),
+                "b.len".to_string(),
+                "    gm_buf_free(&b);\n".to_string(),
+            )
+        };
+        let _ = write!(
+            self.g.helpers.bodies,
+            "GM_NOINLINE {body} {{\n{pre}    {pt} a;\n    GM_ST(void *, (uint8_t *)&a, (void *)({data}));\n    \
+             GM_ST(uintptr_t, (uint8_t *)&a + {p}, (uintptr_t)({len}));\n    {core}(cx, a, file, line, col);\n{post}    return gm_unw.kind != 0;\n}}\n"
+        );
+        f
+    }
+
+    /// A write to the ambient output or error through [`Self::out_stub`].
+    #[allow(clippy::too_many_arguments)]
+    fn stub_perform(
+        &mut self,
+        e: &Expr,
+        effect: &EffectRef,
+        id: u32,
+        op: u32,
+        vals: &[String],
+        tys: &[Ty],
+        ret: Ty,
+    ) -> Option<String> {
+        let f = self.out_stub(effect, id, op, tys, ret)?;
+        let cx = self.cx.clone();
+        let loc = self.loc(e);
+        self.line(&format!("{}({}, {}, {});", f, cx, vals[0], loc));
+        self.check_unwind();
+        Some(self.zero(ret))
     }
 
     /// In a specialized clone, a perform of the effect it is specialized for, outside

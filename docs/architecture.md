@@ -634,6 +634,18 @@ function of its own and reaches the locals through a pointer to the frame, and
 in Debug builds and with `-g`, so that the dead frame filled with `0xDD`
 (§18.3) covers every local and debuggers show them all as its fields.
 
+**Size of the generated C.** The C compiler's time grows faster than the size of a
+function, so code that every site would repeat is shared. A write to the ambient
+`Out` or `Err` (`print`, `@write`) is a call of one small function per program and
+signature (`gm_pfN`, in `Gen::stubs`) that finds the handler and calls it, and each
+literal or formatted piece of a template is one call of a second function that builds
+the string and returns whether an unwind began. Generated programs with thousands of
+prints in one `main` took a minute to compile before; the stubs and the register
+`@black_box` cut the compile time of a 9,400-line `main` of such statements
+from over 60 s to about 20 s, and the generated C from about 30 lines per statement to
+about 14. What remains grows faster than linearly with the size of one function
+(splitting the same statements over eight functions halves it again).
+
 **Effects.** The handler context `cx` is a linked list of `gm_node`s, built on
 the C stack by `with`. Performing an operation finds the innermost node for the
 effect instance and calls the clause from its table. Handler declarations go
@@ -839,7 +851,7 @@ nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
 
 ## Tests and benchmarks
 
-`test "name" { … }` and `bench "name" { … }` are one syntax-tree item (`ItemKind::Test`, with a `bench` flag) and are collected only when `tests_enabled` is set (`gamma test`, `gamma bench`, the language server). `sema/tests_decl.rs` turns each body into a function whose error type is inferred from its first `try`, and wraps it in an entry function that calls a runner of the core prelude: `run_test` / `run_test_unit` (tracking allocator, test handlers, leak check) for a test, `run_bench` / `run_bench_unit` for a benchmark. The entries go to `Program::tests` and `Program::benches`. A benchmark's entry is wrapped like `main` (`entry_point`), so it runs under the system handlers. `run_bench` finds the number of runs per sample by growing batches, takes 20 timed samples with the `Clock` effect, and prints one line, `gamma-bench: <runs> <ns> <ns> …`, that `src/testing.rs` turns into the report (the benchmark's own output precedes it). `@black_box` is `Builtin::BlackBox`: the identity in the interpreter, and in C a round trip through a `volatile` pointer.
+`test "name" { … }` and `bench "name" { … }` are one syntax-tree item (`ItemKind::Test`, with a `bench` flag) and are collected only when `tests_enabled` is set (`gamma test`, `gamma bench`, the language server). `sema/tests_decl.rs` turns each body into a function whose error type is inferred from its first `try`, and wraps it in an entry function that calls a runner of the core prelude: `run_test` / `run_test_unit` (tracking allocator, test handlers, leak check) for a test, `run_bench` / `run_bench_unit` for a benchmark. The entries go to `Program::tests` and `Program::benches`. A benchmark's entry is wrapped like `main` (`entry_point`), so it runs under the system handlers. `run_bench` finds the number of runs per sample by growing batches, takes 20 timed samples with the `Clock` effect, and prints one line, `gamma-bench: <runs> <ns> <ns> …`, that `src/testing.rs` turns into the report (the benchmark's own output precedes it). `@black_box` is `Builtin::BlackBox`: the identity in the interpreter, and in C an empty `asm` statement that may change the value (integers and booleans; Fil-C and other types: a round trip through a `volatile` pointer).
 
 `src/testing.rs` selects the cases (`--filter`), runs them and prints the results in order. `pool` runs the jobs on `--jobs` threads and hands the results over in job order. The interpreter's state is not shared between threads, so each thread analyzes the program again (the analysis is deterministic, so test number `i` is the same everywhere); native runs only start processes. `--all` makes `analyze_package_tests` load every directory of the package (`Sema::load_package_modules`).
 

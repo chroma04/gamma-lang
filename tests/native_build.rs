@@ -227,3 +227,40 @@ fn run_reuses_cached_executables() {
     assert_eq!(run(&[]), "55\n");
     assert_eq!(programs().len(), 3);
 }
+
+/// A function with thousands of prints and `@black_box`es must not make the C compiler
+/// work through a copy of the effect dispatch for each: they call shared functions, so
+/// the C a statement takes stays small.
+#[test]
+fn prints_and_black_boxes_do_not_grow_the_c_per_site() {
+    if !c_compiler_available() {
+        return;
+    }
+    const N: usize = 200;
+    let (dir, _) = setup("many-prints");
+    let src = dir.join("many.gm");
+    let mut text = String::from("main :: fn() \\ {Out} {\n");
+    for i in 0..N {
+        text.push_str(&format!("    {{ x: i32 = @black_box({i}); print(\"v {{}} {{}}\\n\", (x, x + 1)) }}\n"));
+    }
+    text.push_str("}\n");
+    std::fs::write(&src, text).unwrap();
+    let exe = dir.join("a");
+    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .env("GAMMA_CACHE_DIR", dir.join("cache"))
+        .args(["build", "-o"])
+        .arg(&exe)
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "gamma build failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(stdout.lines().count(), N);
+    assert!(stdout.starts_with("v 0 1\n") && stdout.ends_with("v 199 200\n"));
+    let c = std::fs::read_to_string(exe.with_extension("c")).unwrap();
+    let start = c.rfind("gm_f0(void *env").expect("the function of main");
+    let body = &c[start..];
+    let lines = body[..body[1..].find("\nstatic ").unwrap_or(body.len() - 1)].lines().count();
+    assert!(lines > N * 10 && lines < N * 45, "main takes {} lines of C for {} statements", lines, N);
+}

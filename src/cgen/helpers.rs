@@ -320,6 +320,7 @@ impl Helpers {
 
 /// C support for the helpers and for bit builtins.
 pub const SUPPORT: &str = r#"
+#define GM_NOINLINE __attribute__((noinline))
 static uint64_t gm_mix(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p;
     for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ULL; }
