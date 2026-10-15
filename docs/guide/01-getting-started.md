@@ -63,23 +63,42 @@ main :: fn() -> E!() \ {Out} { ... }
 
 (Only one `main` can exist in a module, of course; the three are alternatives.) Chapter 5 covers the `E!()` form.
 
+## Installing
+
+Prebuilt releases for Linux and macOS (x86_64 and arm64) and Windows (x86_64) are attached to each [GitHub release](https://github.com/chroma04/gamma-lang/releases). On Linux and macOS:
+
+```sh
+curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh
+```
+
+The script checks the download against its checksum and installs the compiler as `~/.gamma/bin/gamma` and the standard library in `~/.gamma/lib/gamma/std`; set `GAMMA_INSTALL` to use another prefix and `GAMMA_VERSION` (such as `v0.1.0`) to install a particular release. Add `~/.gamma/bin` to your `PATH` (the script prints the line to use). The compiler finds the standard library relative to its own location, so nothing else needs configuring; set `GAMMA_STD` to a directory of `std` modules to use a different copy. Running `gamma run` needs nothing more, but the native builds described below need a C compiler (`cc`, `gcc` or `clang`). [Windows](#installing-and-using-it-on-windows) has its own installer.
+
+To build from source instead, you need a recent stable Rust toolchain:
+
+```sh
+cargo build --release
+./target/release/gamma help
+```
+
+A binary built this way finds the standard library in the `lib/std` directory of the source tree it was built from.
+
 ## The `gamma` tool
-
-> **Status.** The reference implementation of Gamma is under construction. Today the `gamma` tool lexes, parses and type-checks programs and runs them with an interpreter. The core of the language works: functions, literal inference, integers and floats, structs, unions, tuples, arrays and slices, optionals and results, patterns and `match`, function literals, formatted output with `print`, effects and handlers, fibers, iterators, generics, allocation with lists and maps, modules, tests and calls to C. `gamma build` compiles a program to a native executable through the system C compiler; `gamma run --backend=c` compiles and runs it in one step. The standard library beyond the core library is a set of modules under `std/` ([the standard library reference](../std.md)).
-
-You build the tool from the repository with Cargo, then use it like this:
 
 ```text
 gamma run hello.gm         type-check the program and run it
 gamma build hello.gm       compile it to a native executable `hello` (-o picks the name)
 gamma check hello.gm       type-check without running
-gamma lex file.gm          print the tokens of a source file
-gamma parse file.gm        check the syntax of a source file
-gamma parse --dump file.gm check the syntax and print the syntax tree
+gamma test hello.gm        run the `test` declarations (see Tests below)
+gamma bench hello.gm       run the `bench` declarations and report the time per run
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
 gamma fmt --check file.gm  list the files that formatting would change, without writing
 gamma doc dir              write API documentation from `///` and `//!` comments (--format=html, -o dir, --all)
 gamma repl                 start an interactive session
+gamma new dir              create a package (also init, add, remove, fetch, update; chapter 15)
+gamma lsp                  run the language server for editors (docs/editors.md)
+gamma lex file.gm          print the tokens of a source file
+gamma parse file.gm        check the syntax of a source file
+gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma help                 print usage
 gamma version              print the compiler version
 ```
@@ -137,7 +156,7 @@ The REPL does not resolve package dependencies, and a program that needs the nat
 
 ### Build modes
 
-The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized), and an optional fourth, **Safe** (all checks, and every memory access checked; the reference tool builds it with Fil-C). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|safe|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked. The C back end optimizes Checked and Fast builds fully; Debug builds are optimized lightly so that they compile quickly (and not at all with debug information, below). Debug builds also reuse a precompiled copy of the runtime, and `gamma run --backend=c` reuses the executables of programs it has built, both kept in `~/.cache/gamma` (set `GAMMA_CACHE_DIR` to use another directory, or to an empty value to turn the cache off).
+The specification defines three build modes: **Debug** (all checks, plus extra diagnostics such as poisoning freed memory), **Checked** (all checks, optimized) and **Fast** (checks removed, optimized), and an optional fourth, **Safe** (all checks, and every memory access checked; the reference tool builds it with Fil-C). They are covered in [chapter 13](13-safety.md). How you select a mode is up to the implementation; the reference tool takes `--mode=debug|checked|safe|fast` (debug is the default) on `run`, `build` and `test`. The mode selects which checks are compiled in and whether frees are checked. The C back end optimizes Checked and Fast builds fully; Debug builds are optimized lightly so that they compile quickly (and not at all with debug information, below). Debug builds also reuse a precompiled copy of the runtime, and `gamma run --backend=c` reuses the executables of programs it has built, both kept in `~/.cache/gamma` (set `GAMMA_CACHE_DIR` to use another directory, or to an empty value to turn the cache off; `gamma cache dir` prints the location and `gamma cache clean` empties it). A package can also set a mode and C compiler options per build in `gamma.toml` and pick them with `--profile=<name>` ([chapter 15](15-packages.md)).
 
 ### Debugging native code
 
@@ -155,7 +174,7 @@ $2 = Shape_Rect = {w = 2, h = 3}
 
 ### Installing and using it on Windows
 
-`gamma` runs on x86_64 Windows 10 and later. The interpreter (`gamma run`, `gamma test`) needs nothing else. Native builds (`gamma build`, `--backend=c`) need a **MinGW-w64** C compiler, gcc or clang, as `cc`, `gcc` or `clang` on `PATH` (that is the order `gamma` tries when `CC` is unset): the generated C is GNU C, which MSVC's `cl.exe` does not accept, so `cl` is not supported. Two easy ways to get one:
+`gamma` runs on x86_64 Windows 10 and later. In PowerShell, `irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex` installs the compiler and the standard library in `%USERPROFILE%\.gamma` (`GAMMA_INSTALL` and `GAMMA_VERSION` work as for `install.sh`) and adds its `bin` directory to your `PATH`. The interpreter (`gamma run`, `gamma test`) needs nothing else. Native builds (`gamma build`, `--backend=c`) need a **MinGW-w64** C compiler, gcc or clang, as `cc`, `gcc` or `clang` on `PATH` (that is the order `gamma` tries when `CC` is unset): the generated C is GNU C, which MSVC's `cl.exe` does not accept, so `cl` is not supported. Two easy ways to get one:
 
 ```powershell
 winget install MSYS2.MSYS2          # then, in the "MSYS2 UCRT64" shell:
@@ -272,7 +291,7 @@ Points worth knowing:
   ```
 
   A directory tree without a manifest is a package of its own, rooted at the root module's directory.
-- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), this guide only relies on the module `std/c` in the interop chapter (and mentions `std/thread` there). Other `std/...` modules are outside what the specification defines; see the [standard library reference](../std.md).
+- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), the chapters before the last rely only on the module `std/c` (in the interop chapter, which also mentions `std/thread`). Other `std/...` modules are outside what the specification defines; [chapter 16](16-standard-library.md) tours them and the [standard library reference](../std.md) lists them.
 
 ## Tests
 
@@ -293,46 +312,26 @@ A test passes if it finishes, and fails if `expect` or `expect_eq` fails, a trap
 $ gamma test squares.gm
 test "squares" ... ok
 test "cubes" ... FAILED
-    expectation failed
-      at squares.gm:12:5
+    expected: 10
+    actual:   9
+    expectation failed: the values differ
+      at squares.gm:9:5 in test "cubes"
 1 passed, 1 failed
 ```
 
 A test outside the root module is reported with its module's directory, relative to the package root: `test "parses" in util/json ... ok`. The command exits with status 1 if any test failed.
 
-`--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
+Options of `gamma test`:
+
+- `--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
+- `--all` also runs the tests of the package's modules that nothing imports.
+- `--show-output` prints the output of passing tests too, and `--time` reports how long each test took.
+- `-j n` (or `--jobs=n`) runs `n` tests at a time, `0` meaning one per processor; the report stays in order.
+- `--coverage` counts the lines of the package that the tests run and prints a table; `--coverage=out.lcov` also writes an LCOV file.
+
+`gamma bench` takes the same file or directory and runs the top-level `bench` declarations the same way, reporting the time per run; it compiles through C in Fast mode unless you pass `--backend=interp` or `--mode`.
 
 Tests run in the interpreter by default. A module that calls C functions or contains `@asm` has its tests compiled with the C back end instead (so that C's output is captured with the test's), and `--backend=c` does the same for any module. The compiler builds one executable and runs it once per test; the report is the same as above.
-
-More options of `gamma test`:
-
-- `--all` also runs the tests of the modules of the package that nothing imports: every directory of the package that holds `.gm` files, except hidden ones, `target` and the directories of other packages.
-- `--show-output` also prints what the passing tests wrote.
-- `--time` adds the time each test took and the total. It is off by default so that reports are the same from run to run.
-- `--jobs=n` (or `-j n`) runs `n` tests at a time; `--jobs=0` uses one per processor. The results are still printed in order. With the interpreter every thread analyzes the program itself, so parallelism pays when the tests take longer than that.
-- `--coverage` counts the source lines of the package that the tests run, with the interpreter, and prints the lines run per file. `--coverage=lcov.info` also writes an LCOV file for coverage viewers. Only lines with a statement count; generic functions count through their instances, and one that nothing instantiates is not counted. The bodies of tests are left out.
-
-### Benchmarks
-
-A `bench` declaration looks like a test, but it measures how long its body takes:
-
-```gamma
-bench "sum of squares" {
-    total: u64 = 0
-    for i in 0..1000 { total += @black_box(i) * i }
-    _ = @black_box(total)
-}
-```
-
-`gamma bench file.gm` runs each benchmark in growing batches until a batch is long enough to time, then takes 20 samples and reports the mean time per run and how much the samples varied:
-
-```text
-$ gamma bench squares.gm
-bench "sum of squares" ... 412.31 ns/run (± 1.8%, 20 samples of 24317 runs)
-1 run, 0 failed
-```
-
-Benchmarks are compiled with the C back end in Fast mode by default, because that is what the numbers are for; `--backend=interp` or `--mode=…` changes that. They run under the system's handlers (real clock, real heap), one at a time. An optimizer may delete work whose result nothing uses, or compute it at compile time: pass inputs and results through `@black_box(x)`, which returns `x` while hiding it from the optimizer. `--filter`, `--all` and `--show-output` work as for `gamma test`; `gamma test` type-checks benchmarks but does not run them. The compiler's own repository keeps its benchmarks in `bench/` (`gamma bench bench/`).
 
 ## Where to go next
 
