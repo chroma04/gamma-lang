@@ -26,6 +26,14 @@ largest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 `T` is an ordinary parameter that happens to be a type, and later parameters and the return type can mention it. The `where Ord(T)` clause is a *constraint*, explained below.
 
+Because `T` names a type inside the body, no local, parameter or loop variable there may be called `T`. The same rule applies to every type visible at that point: the predeclared ones (`u8`, `string`, and every sized integer name such as `u24`), top-level types and aliases, and the other type parameters. Functions and constants may still be hidden by a local, but a type may not.
+
+```gamma
+f :: fn(T: type, x: T) {
+    T := 3                         // error: `T` names a type; a local may not have the name of a type
+}
+```
+
 Calls usually omit the type arguments, because they can be **inferred** from the value arguments:
 
 ```gamma
@@ -43,7 +51,7 @@ generic_demo :: fn(scores: []const i32) -> i32 {
 The rules are short and strict (§16.2):
 
 - Inference matches each argument's type against its parameter's type structurally. A type parameter must be determined by at least one argument, and all determinations must agree **exactly**. No widening is applied.
-- Untyped literals do not determine a type parameter.
+- Untyped literals do not determine a type parameter; they take the type that the other arguments infer. If nothing but literals could determine it, it takes the literals' fallback type (`i32` for integers, `f64` for floats).
 - A type parameter that appears only in the result type, or nowhere, cannot be inferred and must be written. That is why you write `list(string)` and `make(u8, 64)`.
 - When you do write type arguments, you write them all, first: `swap_values(i32, &p, &q)`.
 
@@ -51,10 +59,10 @@ The rules are short and strict (§16.2):
 pair_max :: fn(T: type, a, b: T) -> T where Ord(T) => if a > b { a } else { b }
 
 mistakes :: fn(x: u8, y: u16) {
-    _ = pair_max(3, 4)             // error: untyped literals cannot determine T
     _ = pair_max(x, y)             // error: T would be both u8 and u16
+    _ = pair_max(x, 4)             // fine: T = u8, and the literal takes that type
+    _ = pair_max(3, 4)             // fine: nothing else determines T, so it is i32
     _ = pair_max(u16, x, y)        // fine: x widens to u16 at the argument
-    _ = pair_max(i32, 3, 4)        // fine
 }
 ```
 
@@ -69,7 +77,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | Constraint | Satisfied by | Grants |
 | --- | --- | --- |
 | `Eq(T)` | every type where `is` is defined | `is`, `is not`, `in`, literal patterns, `@hash` |
-| `Ord(T)` | integers, floats, enums; tuples, arrays and slices of these | `Eq`, plus `< <= > >=` |
+| `Ord(T)` | `bool`, integers, floats, enums; tuples, arrays and slices of these | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
 | `Signed(T)` | signed integers and floats | `Num`, plus unary `-` |
@@ -90,7 +98,7 @@ first_or :: fn(T: type, xs: []const T, fallback: T) -> T {
 }
 ```
 
-Remove `where Num(T)` from `sum_all` and the compiler rejects the definition at `total += x`, not at some call.
+Remove `where Num(T)` from `sum_all` and the compiler rejects the definition (at `total: T = 0` and at `total += x`), not at some call.
 
 ## Behavior as a parameter
 
@@ -261,14 +269,22 @@ apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
 }
 ```
 
-`E` is usually inferred from the argument, and an explicit argument is an effect set literal such as `\ {Out, Alloc}` or a single effect. Left out entirely, `E` is empty. Effects and handlers take such parameters too: `std/fiber`'s `Sched(E)` lets fiber tasks perform the effects `E`, handled outside the scheduler.
+`E` is usually inferred from the argument (`apply(noisy, 4)` with `noisy :: fn(x: i32) -> i32 \ {Out}` gives `E = {Out}`, so that call performs `Out`). An explicit argument is an effect set literal such as `\ {Out, Alloc}` or a single effect (`apply(Out, noisy, 4)`), and an `E` that is neither given nor inferred is empty. Generic types, effects and handlers take such parameters too, which is what lets a *stored* function pointer be polymorphic in its effects:
+
+```gamma
+Holder :: struct(E: effects) { f: ^fn(x: i32) -> i32 \ {..E} }
+
+run_holder :: fn(E: effects, h: Holder(E), x: i32) -> i32 \ {..E} => h.f(x)
+```
+
+`std/fiber`'s `Sched(E)` is the main example: it lets fiber tasks perform the effects `E`, handled outside the scheduler.
 
 The same once-checked rule applies: `..E` performed inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type, so it cannot appear outside an effect set.
 
 ## Restrictions
 
 - A `when` condition may not depend on a type parameter or compile-time value parameter of an enclosing generic function ([chapter 11](11-compile-time.md)). Use separate functions.
-- A generic function does not convert to a function pointer, and there is no partial application of type arguments. Write a non-generic wrapper: `largest_i32 :: fn(xs: []const i32) -> ?i32 => largest(xs)`.
+- A generic function is not a value by itself, but one instantiation is: give every compile-time argument and leave out the run-time ones (`p: ^fn(s: string) -> ?u8 = parse_int(u8)`), or assign the bare name where a function pointer type is expected, and the type arguments are taken from that type (`q: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`). There is no other partial application of type arguments; write a non-generic wrapper: `largest_i32 :: fn(xs: []const i32) -> ?i32 => largest(xs)`.
 - Type arguments must be first-class, run-time types. A second-class `fn(...)` type cannot be a type argument, so you cannot store a closure in `Box(fn() -> i32)`.
 - Recursion between instantiations must terminate: an instantiation that keeps requiring a strictly larger type argument is a compile error after an implementation-defined depth.
 
