@@ -301,7 +301,7 @@ GM_API int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x);
 GM_API uint32_t gm_wclz(const uint8_t *a, uint32_t bits);
 GM_API uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
 GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
-GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits);
+GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
 GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
 /* Rotates the bits of a left by k (taken modulo bits). */
 GM_API void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k);
