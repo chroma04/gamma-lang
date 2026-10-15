@@ -43,15 +43,15 @@ stack_demo :: fn() -> usize {
 
 ## Allocators and the `Alloc` effect
 
-An `Allocator` is a first-class handle: a pointer to some state plus a table of three functions (allocate, resize, free). The **`Alloc` effect** supplies the *current* allocator. Its one operation is `current: fn() -> Allocator`. The ambient default for `Alloc` is the system heap, so `main` can simply list `Alloc` and allocate; tests get a heap that reports leaks.
+An `Allocator` is a first-class handle: a pointer to some state plus a table of three functions (allocate, resize, free). The **`Alloc` effect** supplies the *current* allocator. Its one operation is `current: fn() -> Allocator`, called as `Alloc.current()`. The ambient default for `Alloc` is the system heap, so `main` can simply list `Alloc` and allocate; tests get a heap that reports leaks.
 
 The core functions that allocate perform `Alloc`, which is why you see `\ {Alloc}` in signatures:
 
 | Function | Meaning |
 | --- | --- |
-| `new(T, init)` | allocate one `T` holding `init`, giving `AllocError!^T` |
+| `new(init)` | allocate one `T` holding `init`, giving `AllocError!^T` |
 | `make(T, n)` | allocate `n` uninitialized `T` (plain-data `T` only), giving `AllocError![]T` |
-| `make_fill(T, n, x)` | allocate `n` copies of `x`, for any `T` |
+| `make_fill(n, x)` | allocate `n` copies of `x`, for any `T` |
 | `make_aligned(T, n, align)` | like `make`, with a larger alignment |
 | `free(s)` | release a slice from `make` or `make_fill` |
 | `free_aligned(s, align)` | release a slice from `make_aligned`, with the same `align` |
@@ -78,7 +78,7 @@ heap_demo :: fn() -> AllocError!() \ {Alloc, Out} {
 
 A few details:
 
-- `new(T, ---)` leaves the object uninitialized, and `make` returns uninitialized storage (Debug builds fill it with `0xAA`), so both are restricted to plain-data types. For anything else, such as `bool` or pointers, use `make_fill`: `flags := try make_fill(bool, 8, false)`.
+- `new(T: Point, ---)` leaves the object uninitialized, and `make` returns uninitialized storage (Debug builds fill it with `0xAA`), so both are restricted to plain-data types. For anything else, such as `bool` or pointers, use `make_fill`: `flags := try make_fill(8, false)`. The element type of `new` and `make_fill` comes from the value you give, so it is written (by name, `T: u8`) only when a literal would pick the wrong one: `try make_fill(T: u8, 64, 0)`.
 - `free` and `destroy` must receive exactly what the allocator returned. Freeing an empty slice does nothing.
 - If the allocation fails, the `defer` after it is never reached, so you never free what you did not get. When a function allocates something to *return* to its caller, use `errdefer` instead of `defer`, so the memory is released only if a later step fails ([chapter 3](03-control-flow.md)).
 
@@ -157,7 +157,7 @@ map_demo :: fn() -> AllocError!() \ {Alloc, Out} {
 }
 ```
 
-The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `hash_map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `map_with`; see [chapter 10](10-generics.md).
+The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `hash_map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `hash_map_with`; see [chapter 10](10-generics.md).
 
 Besides `put`, `get` and `remove`, a map has `contains(k)`, `len()`, `clear()` (which keeps the storage) and `entries()`, an iterator over `(key, value)` pairs in an unspecified order: `for e in ages.entries() { print("{} {}\n", e.key, e.value) }`.
 

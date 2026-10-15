@@ -22,7 +22,7 @@ Four conventions hold across the library, so that learning one module teaches th
 
 ## Formatted output
 
-`print` writes to `Out` and `eprint` to `Err`. The template is a compile-time string with `{}` placeholders; with one placeholder the argument stands alone, with several it is a tuple. Any value prints, structs and unions included:
+`print` writes to `Out` and `eprint` to `Err`. The template is a compile-time string with `{}` placeholders; each placeholder takes one value, passed as a rest argument (`print("{} of {}\n", n, total)`), and a template without placeholders takes none (`print("hi\n")`). A tuple given as one value prints as a tuple: `print("{}\n", (n, total))` writes `(3, 10)`. Any value prints, structs and unions included:
 
 ```gamma
 Point :: struct { x, y: f64 }
@@ -71,7 +71,7 @@ that text is 16 bytes
 [12][-][x]
 ```
 
-The template of a function that forwards to `print` or `@write` is a compile-time parameter, so a mistake in it is reported at the call that wrote it:
+A function that forwards to `print` or `@write` takes the values as a rest parameter (`args: ..A`, [chapter 6](06-functions.md#rest-parameters)) and passes them on with a spread. Its template is a compile-time parameter, so a mistake in it is reported at the call that wrote it:
 
 ```gamma
 shout :: fn(A: type, template :: string, args: ..A) \ {Out} {
@@ -356,7 +356,7 @@ main :: fn() \ {Out} {
 
 ## Files, paths and standard input
 
-File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations (`open`, `read_from`, `write_to`, `seek`, `stat`, `lstat`, ...) are in the core:
+File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read_from(buf)`, `f.write_to(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
 
 ```gamma
 fs :: import "std/fs"
@@ -793,7 +793,7 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | --- | --- |
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
 | `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
-| `std/net` | `send_all` and `recv_exact` over the `Net` effect (tests get an in-memory network) |
+| `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
 | `std/c` | C's platform-dependent types (`c_int`, `c_long`, ...) for [foreign declarations](14-interop.md) |
 

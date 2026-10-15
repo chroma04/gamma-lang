@@ -55,7 +55,7 @@ Versions and what each kind of change means are described in
   as one value is printed as a tuple (§11.2, §21.6.1).
 - **Breaking:** an inferable compile-time parameter (one that another parameter's type
   mentions) is never bound positionally: it is inferred, or written by name
-  (`new(T: Page, ---)`, `max(T: i64, xs)`, `double(T: u8)` as a function pointer). This
+  (`new(T: Page, ---)`, `make_fill(T: u8, 64, 0)`, `double(T: u8)` as a function pointer). This
   replaces the rule that counted positional arguments to decide whether type arguments
   were given (§16.2). Non-inferable ones, such as `list(string)`, stay positional.
 - Named arguments may be written anywhere in an argument list; positional arguments bind,

@@ -887,9 +887,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     self.sema.sess.sources.text(first.span)
                 ));
             }
-            if std::env::var_os("GAMMA_MIGRATE").is_some() {
-                self.migrate_positional(&sig, recv_index, &named, &positional, args, span);
-            }
             self.error(span, msg);
             return error_expr(span);
         }
@@ -933,7 +930,6 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         // Type parameters the receiver fixes: arguments are coerced to them (§16.2).
         let fixed: Vec<ParamId> = binds.keys().copied().collect();
-        let mut self_typed_binds: HashMap<ParamId, Ty> = HashMap::new();
         for (i, e) in &sources {
             let p = &sig.params[*i];
             if let Some(pid) = p.generic
@@ -1017,11 +1013,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(p.ty, t, &mut b2);
-                if self.self_typed(e) {
-                    for (k, v2) in &b2 {
-                        self_typed_binds.entry(*k).or_insert(*v2);
-                    }
-                }
                 for (k, v2) in b2 {
                     match binds.get(&k) {
                         Some(prev) if *prev != v2 && explicit => {}
@@ -1046,42 +1037,6 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         let _ = receiver;
-        if std::env::var_os("GAMMA_MIGRATE_MOVE").is_some() {
-            // Trailing named compile-time arguments move to the front of the call.
-            let is_ct = |a: &ast::Arg| matches!(&a.kind, ArgKind::Named(nm, _) if sig.params.iter().any(|p| p.name == nm.name && p.generic.is_some()));
-            let tail = args.iter().rev().take_while(|a| is_ct(a)).count();
-            if tail > 0 && tail < args.len() {
-                let first = args.len() - tail;
-                let file = self.sema.sess.sources.file(span.file).path.clone();
-                let text: Vec<String> =
-                    args[first..].iter().map(|a| self.sema.sess.sources.text(a.span).to_string()).collect();
-                eprintln!(
-                    "MIGRATE_MOVE\t{}\t{}\t{}\t{}\t{}",
-                    file.display(),
-                    args[0].span.lo,
-                    args[first - 1].span.hi,
-                    args[args.len() - 1].span.hi,
-                    text.join(", ")
-                );
-            }
-        }
-        if std::env::var_os("GAMMA_MIGRATE").is_some() {
-            for (k, a) in args.iter().enumerate() {
-                let ArgKind::Named(nm, _) = &a.kind else { continue };
-                let Some(i) = sig.params.iter().position(|p| p.name == nm.name) else { continue };
-                let Some(pid) = sig.params[i].generic else { continue };
-                if !inferable_param(&sig, i) || self.sema.value_params.contains_key(&pid) {
-                    continue;
-                }
-                if let (Some(x), Some(y)) = (binds.get(&pid), self_typed_binds.get(&pid))
-                    && x == y
-                    && k > 0
-                {
-                    let file = self.sema.sess.sources.file(span.file).path.clone();
-                    eprintln!("MIGRATE_DROP\t{}\t{}\t{}", file.display(), args[k - 1].span.hi, a.span.hi);
-                }
-            }
-        }
         // A type parameter that only untyped literals determine takes their fallback
         // types (§16.2): `log("{}", 5)` makes it `i32`.
         if sig.generics.iter().any(|p| !binds.contains_key(p) && !self.sema.value_params.contains_key(p)) {
@@ -1263,100 +1218,6 @@ impl<'a, 's> FnCx<'a, 's> {
     /// leaves out a required run-time one: it then denotes the instantiation as a
     /// function value rather than calling it (§16.7). An argument for a type parameter
     /// must be a type, so `id(x)` for `id :: fn(T: type, x: T)` is still a call.
-    /// Whether `e`'s type does not depend on what is expected of it: a typed local, or a
-    /// field, element, slice, dereference or address of one.
-    fn self_typed(&mut self, e: &ast::Expr) -> bool {
-        match &e.kind {
-            ast::ExprKind::Ident(i) => {
-                matches!(
-                    self.lookup_local(i.name),
-                    Some(super::func::LocalBinding::Var(_) | super::func::LocalBinding::Const { .. })
-                )
-            }
-            ast::ExprKind::Paren(x) | ast::ExprKind::Deref(x) => self.self_typed(x),
-            ast::ExprKind::Field { base, .. } | ast::ExprKind::TupleField { base, .. } => self.self_typed(base),
-            ast::ExprKind::Index { base, .. } | ast::ExprKind::Slice { base, .. } => self.self_typed(base),
-            ast::ExprKind::Unary { op: ast::UnOp::AddrOf, operand } => self.self_typed(operand),
-            ast::ExprKind::Str(_) | ast::ExprKind::Bool(_) => true,
-            ast::ExprKind::Call { callee, .. } => {
-                matches!(callee.kind, ast::ExprKind::Ident(_) | ast::ExprKind::Field { .. })
-                    && self.type_of_name(callee).is_some()
-            }
-            _ => false,
-        }
-    }
-
-    /// Migration aid: the positional arguments that bound inferable parameters under the
-    /// old rule, to be written by name.
-    fn migrate_positional(
-        &mut self,
-        sig: &super::FnSig,
-        recv_index: Option<usize>,
-        named: &[crate::symbol::Symbol],
-        positional: &[&ast::Expr],
-        args: &[ast::Arg],
-        span: Span,
-    ) {
-        let old: Vec<usize> = (0..sig.params.len())
-            .filter(|&i| !named.contains(&sig.params[i].name) && Some(i) != recv_index && !sig.params[i].is_site())
-            .collect();
-        let mut targets = vec![];
-        for i in old {
-            let is_effects = sig.params[i].generic.is_some_and(|p| self.sema.effect_params.contains(&p));
-            if is_effects && !positional.get(targets.len()).is_some_and(|e| self.denotes_effects(e)) {
-                continue;
-            }
-            targets.push(i);
-        }
-        let mut items = vec![];
-        for (j, e) in positional.iter().enumerate() {
-            let Some(&i) = targets.get(j) else { break };
-            if inferable_param(sig, i) {
-                let hi = positional.get(j + 1).map_or(e.span.hi, |n| n.span.lo);
-                items.push(format!("{}:{}:{}:{}", e.span.lo, e.span.hi, hi, sig.params[i].name));
-            }
-        }
-        let remaining = args.len() - items.len();
-        let file = self.sema.sess.sources.file(span.file).path.clone();
-        eprintln!("MIGRATE2\t{}\t{}\t{}\t{}", file.display(), span.hi, remaining, items.join(";"));
-    }
-
-    /// Whether `e` is written as effects: `\ {…}`, an effect, or an effect-set parameter.
-    fn denotes_effects(&mut self, e: &ast::Expr) -> bool {
-        match &e.kind {
-            ast::ExprKind::EffectSet(_) => true,
-            ast::ExprKind::Call { callee, .. } => self.denotes_effects(callee),
-            ast::ExprKind::Ident(id) if self.lookup_local(id.name).is_some() => false,
-            ast::ExprKind::Ident(id) => {
-                if let Some(&(_, t)) = self.sema.type_params.iter().rev().find(|(n, _)| *n == id.name) {
-                    return matches!(t.kind(), TyKind::Param(p) if self.sema.effect_params.contains(p));
-                }
-                let module = self.module;
-                match self.sema.lookup_module_name(module, id.name) {
-                    Some(d) => matches!(
-                        self.sema.resolve_decl(d),
-                        super::DeclValue::Effect(_) | super::DeclValue::EffectInst(_)
-                    ),
-                    None => false,
-                }
-            }
-            ast::ExprKind::Field { base, name } => {
-                let module = self.module;
-                match self.sema.module_named(module, base) {
-                    Some(m) => match self.sema.module_member(m, *name) {
-                        Some(d) => matches!(
-                            self.sema.resolve_decl(d),
-                            super::DeclValue::Effect(_) | super::DeclValue::EffectInst(_)
-                        ),
-                        None => false,
-                    },
-                    None => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
     fn is_instantiation(&mut self, sig: &super::FnSig, args: &[ast::Arg], positional: &[&ast::Expr]) -> bool {
         let named = |p: &ParamInfo| args.iter().any(|a| matches!(&a.kind, ArgKind::Named(n, _) if n.name == p.name));
         // No run-time argument is given, and at least one is needed.

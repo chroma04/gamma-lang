@@ -75,3 +75,8 @@
   implemented); §21.1 every universe type barred for locals; §21.5 only List/list/HashMap/
   map/map_with re-exported; §21.6 expect/expect_eq only directly in a test body; §12.9 Clock
   wall; A.1 bench; examples fixed (@variant_name, capture_output, FileLogger).
+- s15 (design review): §1 thesis + principles; App C by principle; §3.8 Test effect; §11.2 rest
+  params; §11.3 named args anywhere, positional binds non-inferable; §16.2 inferable never
+  positional; §12.3 named effect sets; §12.6 no overlapping handler decls; §14.5 `cancel`;
+  §21.1 universe without ops/Fs-Net types; §21.6.1 template = one value per placeholder;
+  §7.2 mutation-visible principle; §6.1 shift fallback usize.

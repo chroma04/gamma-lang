@@ -299,7 +299,6 @@ impl<'a, 's> FnCx<'a, 's> {
         } else {
             let mut d = crate::diag::Diagnostic::error(span, format!("unknown name `{}`", name));
             if let Some(hint) = self.sema.universe_hint(name) {
-                self.sema.migrate_universe(name, span);
                 d = d.with_note(hint);
             }
             self.sema.emit(d);

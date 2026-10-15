@@ -142,7 +142,6 @@ impl<'s> Sema<'s> {
                 }
                 let mut d = crate::diag::Diagnostic::error(e.span, format!("unknown type `{}`", id.name));
                 if let Some(hint) = self.universe_hint(id.name) {
-                    self.migrate_universe(id.name, e.span);
                     d = d.with_note(hint);
                 }
                 self.emit(d);

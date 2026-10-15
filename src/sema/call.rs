@@ -855,7 +855,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                 }
                 if vals.len() != n {
-                    self.migrate_write_args(n, &vals);
                     let given =
                         if vals.len() == 1 { "1 value is".to_string() } else { format!("{} values are", vals.len()) };
                     self.error(span, format!("the template has {}, but {} given", placeholders(n), given));
@@ -883,23 +882,6 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         Some((pieces, specs, values, stmts))
-    }
-
-    /// Migration aid: `print("{} {}", (a, b))` becomes `print("{} {}", a, b)`.
-    fn migrate_write_args(&mut self, n: usize, vals: &[&ast::Expr]) {
-        if std::env::var_os("GAMMA_MIGRATE").is_none() || n < 2 || vals.len() != 1 {
-            return;
-        }
-        let e = vals[0];
-        let file = self.sema.sess.sources.file(e.span.file).path.clone();
-        if let ExprKind::Tuple(elems) = &e.kind
-            && elems.len() == n
-            && elems.iter().all(|x| x.name.is_none())
-        {
-            eprintln!("MIGRATE_UNWRAP\t{}\t{}\t{}", file.display(), e.span.lo, e.span.hi);
-        } else {
-            eprintln!("MIGRATE_SPREAD\t{}\t{}", file.display(), e.span.lo);
-        }
     }
 
     /// `@write(sink, template, args…)` (§21.6.1): formatting into a second-class function.

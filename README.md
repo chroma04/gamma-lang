@@ -1,16 +1,45 @@
 # Gamma
 
-Gamma is a systems programming language intended to replace C: simple, fast and
-sensible, with **algebraic effects and handlers** for allocation, I/O, iteration,
-early exit and coroutines.
+Gamma is a systems programming language intended to replace C. It is **C in which
+everything a function depends on appears in its signature**: its inputs in the parameter
+list, its failures in `E!T`, its absences in `?T`, and its *context* (the allocator,
+input and output, the clock, randomness, its scheduler, the outside world) in its effect
+set after `\`. **Algebraic effects and handlers** supply that context, so it is explicit
+without being passed by hand, and tests can replace it.
 
 ```gamma
-main :: fn() \ {Out} {
-    for i in 1..=3 {
-        print("{} squared is {}\n", i, i * i)
+fs    :: import "std/fs"
+arena :: import "std/arena"
+
+// Counts the lines of a file. The signature says everything it touches.
+count_lines :: fn(path: string) -> fs.ReadError!usize \ {Fs, Alloc} {
+    text := try fs.read_all(path)          // memory from whatever allocator is current
+    defer free(text)
+    n: usize = 0
+    for b in bytes(text) { if b is '\n' { n += 1 } }
+    return n
+}
+
+main :: fn() -> fs.ReadError!() \ {Fs, Alloc, Out} {
+    scratch := arena.new()                 // you choose where memory comes from
+    defer scratch.deinit()
+    with scratch.allocator() {
+        print("{} lines\n", try count_lines("README.md"))
     }
 }
+
+test "counts lines" {                      // tests get an in-memory file system
+    ok(fs.write_all("notes.txt", "one\ntwo\n"))
+    expect_eq(ok(count_lines("notes.txt")), 2)
+}
 ```
+
+From C it keeps what matters: data laid out as in C, values that copy as bytes, explicit
+memory management with `defer`, no garbage collector and no hidden allocation. From
+modern languages it takes tagged unions with exhaustive `match`, optionals instead of
+null, results instead of `errno`, generics, modules and a package manager. And effects
+do the jobs C leaves to globals, callbacks and `setjmp`: allocation, I/O, iteration,
+early exit, coroutines, testing.
 
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.

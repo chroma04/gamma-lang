@@ -132,7 +132,7 @@ checksum :: fn(data: [^]const u8, len: usize) -> u32 {
 }
 ```
 
-On the C side this is `uint32_t gm_checksum(const uint8_t *data, size_t len);`. An exported function that needs effects installs its own handlers internally, using `Sys`-level constructors from the library (the specification's example uses `heap_allocator()` and `real_fs()` for this). A trap inside an exported function terminates the process; it does not return into C.
+On the C side this is `uint32_t gm_checksum(const uint8_t *data, size_t len);`. An exported function that needs effects installs its own handlers internally, using the default handlers of the core library (the specification's example installs `heap_allocator()`, `system_io()` and `system_output()` for this). A trap inside an exported function terminates the process; it does not return into C.
 
 ## Calling conventions: `#callconv`
 

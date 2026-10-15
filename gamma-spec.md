@@ -1,12 +1,12 @@
 # The Gamma Language Specification
 
-Version 1.0. Gamma is a systems programming language intended to replace C: simple, fast and sensible, with algebraic effects for allocation, I/O, iteration, early exit and coroutines.
+Version 1.0. Gamma is a systems programming language intended to replace C: C in which everything a function depends on appears in its signature, with algebraic effects carrying the context that C leaves implicit — allocation, I/O, iteration, early exit and coroutines.
 
 This specification is self-contained. Chapters 1–22 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
 
 | § | Chapter |
 | --- | --- |
-| 1 | [Introduction](#1-introduction): goals, notation, terms, build modes |
+| 1 | [Introduction](#1-introduction): the idea and the principles, notation, terms, build modes |
 | 2 | [Lexical structure](#2-lexical-structure) |
 | 3 | [Programs, modules and top-level declarations](#3-programs-modules-and-top-level-declarations) |
 | 4 | [Bindings, scopes and mutability](#4-bindings-scopes-and-mutability) |
@@ -37,13 +37,21 @@ This specification is self-contained. Chapters 1–22 and Appendices A–B are n
 
 ## 1. Introduction
 
-Gamma is a systems programming language intended as a replacement for C. Its goals, in priority order:
+Gamma is a systems programming language intended as a replacement for C. Its design follows from one idea:
 
-1. **Sensible.** Every construct has one meaning that can be stated in a sentence. Rules that read the same in different places mean the same thing. Footguns inherited from C (implicit conversions, octal literals, `x & 1 == 0`, fallthrough, null by default, undefined signed overflow) are removed.
-2. **Fast.** Nothing costs more than the equivalent C unless the program asks for a check, and every check can be removed by a build mode. Abstractions (generics, effects, iteration) compile away when their implementation is known statically.
-3. **Simple.** A small number of orthogonal features. Where two features could do one job, one is removed.
+> **Gamma is C in which everything a function depends on appears in its signature.** Its inputs are in its parameter list, its failures in `E!T`, its absences in `?T`, and its *context* — the allocator, input and output, the clock, randomness, the consumer of the values it produces, its scheduler, the outside world — in its effect set, after `\`. Handlers supply that context, so it is explicit without being passed by hand.
 
-Gamma's distinguishing feature is **algebraic effects with handlers**, used for the things C does with globals, callbacks, `setjmp`, and hand-written state machines: allocation, I/O, logging, iteration, early exit, and coroutines.
+C programs reach their context through globals, `errno`, callbacks with a `void *`, `setjmp` and hand-written state machines. Gamma expresses all of these with **algebraic effects and handlers**, which the type system tracks and which tests can replace. Five principles follow from the three words *modern C alternative* and *algebraic effects*; every rule of this specification is meant to be derivable from one of them, and Appendix C gives the derivations.
+
+| | Principle | What it means |
+| --- | --- | --- |
+| **P1** | **Data is bytes you can lay out.** (*C*) | Values have C layout, copy bitwise, own nothing and run no code when copied or dropped (§5, §15). |
+| **P2** | **Cost is visible where it is paid.** (*C*) | No construct allocates, calls user code, converts, suspends or checks unless its syntax or its signature says so. Nothing costs more than the equivalent C unless the program asks for a check, and every check can be removed by a build mode (§15.3, §18). |
+| **P3** | **Context is an effect.** (*algebraic effects*) | Anything a function uses that it is not passed is in its effect set and is supplied by a handler; `Sys` marks the edge of the model (§12). |
+| **P4** | **Mistakes are rejected, not interpreted.** (*modern*) | Ambiguous text is a compile error, invalid states are not representable (no null, tagged unions, exhaustive `match`), a failed run-time check traps, and arithmetic is never undefined. C's footguns — implicit conversions, octal literals, `x & 1 == 0`, fallthrough, null by default, undefined overflow — are gone. |
+| **P5** | **Every rule is local.** (*modern*) | Legality never depends on global resolution or on how clever the compiler's analysis is. Generics are checked once where they are written, and a reader can tell from a call which code runs. |
+
+One rule breaks ties: **when two features could do one job, one is removed.** "Fast" and "simple" are consequences rather than goals of their own: abstractions (generics, effects, iteration) compile away when their implementation is known statically (P2), and the language stays small because every feature must earn its place against the others.
 
 ### 1.1 Status of this document
 
@@ -870,6 +878,8 @@ A **place** is an expression that denotes a storage location: a variable or para
 
 A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
 
+These rules follow one principle: **mutation of an argument is visible at the call.** An argument passed for read-only access (`^const T`, `[]const T`) may be a temporary or an array, which the compiler adapts, since nothing can change through it; an argument passed for mutation must be a mutable place, written explicitly (`&x`, `a[..]`). The one exception is the receiver of a method call (§7.10), which is the subject of the call: `names.push(x)` visibly acts on `names`.
+
 ### 7.3 Operator summary
 
 Precedence, tightest first. Operators on one level associate left-to-right unless stated.
@@ -1523,7 +1533,7 @@ An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Y
 
 **Checking.** For every function, the effects its body performs must be a subset of its declared effect set. A `test` body and `main` are checked against the ambient set (§3.7). A top-level constant's initializer must perform no effects.
 
-**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There are no effect variables, and no other subtyping on effect sets.
+**Subsumption.** Where a function pointer type `^fn(…) \ {S}` is expected, a function pointer or named function with the same calling convention (§19.2) whose effect set is a subset of `S` is accepted. There is no other subtyping on effect sets, and no effect variables in the types of values: a generic function may abstract over a set with an effect-set parameter, fixed per instantiation (§12.8, §16.6).
 
 ### 12.4 Handlers
 
@@ -1624,7 +1634,7 @@ When an operation is performed, its handler's clause runs with the operation's a
 
 ### 12.8 Effect polymorphism
 
-Gamma has no effect variables in the types of values. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. A function *pointer* type has a fixed effect set, but a generic function, type, effect or handler may abstract over one with an effect-set parameter (`E: effects`, §16.6), which is fixed per instantiation.
+Gamma is effect-polymorphic in two ways, and has no effect variables in the types of run-time values. Higher-order functions are effect-polymorphic through second-class function parameters (§11.6): their callbacks' unlisted effects are handled at the callback's definition site, so the higher-order function never mentions them. A function *pointer* type has a fixed effect set, but a generic function, type, effect or handler may abstract over one with an effect-set parameter (`E: effects`, §16.6), which is fixed per instantiation.
 
 Generic effects (`Yield(T)`) and effect sets mentioning type parameters (`\ {Yield(T)}`) or effect-set parameters (`\ {..E}`) are allowed; the set is fixed per instantiation.
 
@@ -1742,7 +1752,7 @@ for p in each_ptr(scores) { p^ = p^ +| 10 }
 for i, x in enumerate(names) { … }
 ```
 
-Any user function with `Yield(T)` in its effect set is an iterator; there is no other iterator protocol.
+Any user function with `Yield(T)` in its effect set is an iterator; `for` knows no other iterator protocol. (The cursors of §13.4 are ordinary methods that `while` uses through binding conditions.)
 
 ### 13.4 Lockstep iteration
 
@@ -2031,7 +2041,7 @@ max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 At a call, type parameters may be omitted when they can be **inferred** from the value arguments:
 
-- A compile-time parameter (a type parameter, an effect-set parameter or a compile-time value parameter) is **inferable** if the type of another parameter mentions it (other than inside a computed array length, §16.5). An inferable parameter is **never bound positionally**: it is inferred from the run-time arguments, or written by name when the arguments do not determine it or the call wants another type: `max(T: i64, small_values)`. Positional arguments bind the remaining parameters in order (§11.3), so `max(scores)` passes `scores` and `max(i32, scores)` is an error. A compile-time parameter that is not inferable, such as `T` in `list(T: type) -> List(T)`, is an ordinary positional parameter: `list(string)`.
+- A compile-time parameter (a type parameter, an effect-set parameter or a compile-time value parameter) is **inferable** if the type of another parameter mentions it (other than inside a computed array length, §16.5). An inferable parameter is **never bound positionally**: it is inferred from the run-time arguments, or written by name when the arguments do not determine it or determine another type than wanted: `make_fill(T: u8, 64, 0)`. Positional arguments bind the remaining parameters in order (§11.3), so `max(scores)` passes `scores` and `max(i32, scores)` is an error. A compile-time parameter that is not inferable, such as `T` in `list(T: type) -> List(T)`, is an ordinary positional parameter: `list(string)`.
 - Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(T: u16, 1, 300)` or convert. The arguments are matched in an order that does not depend on how they are written: a function literal is matched after the other run-time arguments, so its parameter types can come from them (`apply_n(fn(w) => w + 1, 3, v)` takes `w`'s type from `v`).
 - In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
 - Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: ..A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", 5, 1.5)` has `A = (i32, f64)`.
@@ -2040,7 +2050,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 ```
 biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
 names   := list(string)              // T is not inferable: a positional parameter
-wide    := max(T: i64, scores) else 0  // T written by name: the elements widen to i64
+bytes   := make_fill(T: u8, 64, 0)   // T by name: the literals alone would make it i32
 try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted (§7.10)
 ```
 
@@ -2059,7 +2069,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
-| `Signed(T)` | signed integer and float types | `Num`, plus unary `-` |
+| `Signed(T)` | signed integer and float types (floats have a sign) | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
@@ -2153,7 +2163,7 @@ The algorithm is implementation-defined, need not be stable across builds or tar
 
 Gamma has no user-defined traits, interfaces or typeclasses: no declaration that lets a type promise to provide named operations, and no mechanism that finds an implementation implicitly. The closed constraints of §16.3 are fixed by the language.
 
-*Rationale.* Traits combine five jobs. Four are already done by other features, each with its cost visible at the use site; the fifth — implicit, compositional resolution of implementations — is what Gamma deliberately omits, because its rules (coherence, orphan rules, overlap, associated types, effect sets on trait methods) would be the largest and least predictable part of the language, and because a reader could not tell from a call which code runs. See Appendix C.4.
+*Rationale.* Traits combine five jobs. Four are already done by other features, each with its cost visible at the use site; the fifth — implicit, compositional resolution of implementations — is what Gamma deliberately omits, because its rules (coherence, orphan rules, overlap, associated types, effect sets on trait methods) would be the largest and least predictable part of the language, and because a reader could not tell from a call which code runs. Handler declarations (§12.6) are the one, confined, place where a type supplies an implementation. See Appendix C.6.
 
 The idiomatic replacements:
 
@@ -2833,7 +2843,7 @@ Reasons:
 Requirements:
 
 1. **Settled design.** There is one obvious interface, preferably fixed by an external standard (an RFC, ISO 8601, a Unicode annex, a FIPS publication), and it does not impose a policy that reasonable programs would choose differently (an output style, a protocol framework, a configuration format with dialects).
-2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, reflection, macros, overloading); a module that would need one is not admitted until the language has it.
+2. **The language's rules, unbent.** No hidden allocation: a function that allocates performs `Alloc` or takes an `Allocator`, and text or bytes are produced into a caller-supplied buffer or a `List` (§22.3). I/O goes through effects. Failure is a result, never a trap, unless the caller broke a documented precondition. Nothing requires a mechanism the language deliberately lacks (traits, run-time reflection, macros, overloading; the compile-time introspection of a type's shape, such as `@variants`, is part of the language); a module that would need one is not admitted until the language has it.
 3. **Not a second way.** It does not duplicate a core facility or another module, and it is not an alias that only saves keystrokes. A function that is a composition of two or three existing calls is admitted only on reason 1 with strong evidence (it appears in most programs of its domain) or on reason 2.
 4. **Bounded size and cost.** A module has one concern and a surface that its reference documentation can describe in a page. Nothing is paid by programs that do not import it: no global state, no initialization at start-up, no effect on the core.
 5. **Quality.** It is written in Gamma (foreign code only behind `std/c`-style boundaries), documented in the library reference, covered by tests that run in the interpreter and through the C back end, and conforms to its external standard where it has one.
@@ -3117,40 +3127,75 @@ Assignment (`=` and compound forms) is a statement.
 
 ## Appendix C. Design rationale
 
-This appendix is non-normative. It explains why Gamma is the way it is and lists the main alternatives it rejects, with the reasons.
+This appendix is non-normative. It derives the design from the thesis and the principles of §1 — **P1** data is bytes you can lay out, **P2** cost is visible where it is paid, **P3** context is an effect, **P4** mistakes are rejected, not interpreted, **P5** every rule is local, and the tie-breaker *one feature per job* — and lists, under the principle they would violate, the main alternatives Gamma rejects.
 
-The goals of §1 are applied in priority order: **sensible**, then **fast**, then **simple**. When they conflict, the earlier one wins; when two features could do one job, one is removed.
+### C.1 The thesis: everything a function depends on is in its signature
 
-### C.1 Syntax
+A Gamma signature `fn(path: string) -> LoadError!Config \ {Alloc, Fs}` says what the function takes, how it can fail, and what it asks of its context. C says the first and leaves the rest to globals, `errno`, conventions and comments. Each part of the signature has one job:
 
-- **`::` names everything; `T(...)` makes everything; sigils describe shapes and words describe logic.** A reader learns three patterns and then reads declarations, construction and control flow uniformly. `?`, `!` and `^` each tell one story across types, operators and unwrapping.
-- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. `is` is always value equality; for slices (and so strings) that means content, because `name is "admin"` comparing addresses would be a trap.
-- **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses. These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Comparisons do not chain.
-- **Binary `~` is exclusive-or.** `^` is the pointer sigil, and pointers are far more common than XOR.
-- **Newlines end statements** except where a line obviously continues. Inside `( )` and `[ ]` newlines are ignored. A line starting with `.` continues a method chain, except at the start of a match arm, where `.Variant` begins a new arm.
-- **Struct construction is by name only.** Reordering fields can never silently change a constructor's meaning, and `S(x)` with one positional argument is always a conversion.
+| What a function depends on | Where it is written | In C |
+| --- | --- | --- |
+| its inputs | parameters, copied as values (§11.2) | parameters |
+| whether a result may be absent | `?T` (§10) | a null pointer, a sentinel |
+| how it can fail, for its caller to decide | `E!T` (§10) | a return code and `errno` |
+| the context it uses | the effect set `\ {…}` (§12) | globals, callbacks with `void *`, `setjmp` |
+
+**Results versus effects.** Failure could be an effect too, and Gamma deliberately does not make it one. The rule is: *if the nearest caller is the right one to decide, return a result; if whoever installed the context is, perform an `esc` operation.* A parse error or a missing file is the caller's business, so it is data (P1) in the return type (P2) and costs a branch, as an error code does in C. Abort this request, exit the process (`Env.exit`), fail this test (`Test.fail`, §3.8), stop this iteration (`yield`, §13) are decisions made far up the stack, so they are `esc` operations, whose cost — the exit-flag protocol of Appendix D — the signature shows. `try` and lifting (§10.5, §10.6) make results cheap to propagate, so neither mechanism is stretched to do the other's job.
+
+### C.2 P1 — Data is bytes you can lay out
+
+- **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
+- **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
+- **Arbitrary-width integers** (`u1` … `u65535`, as C23's `_BitInt`) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
+- **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
+- **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
+- **Threads follow the C11 memory model**, with atomics as intrinsics (§19.6). Existing knowledge and tools apply unchanged.
+
+### C.3 P2 — Cost is visible where it is paid
+
+- **No hidden allocation.** No construct allocates (§15.3). The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is freed through the allocator that produced it (§15.2).
+- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` is the one operator whose cost grows with the data it compares — slices compare by content, so that `name is "admin"` means what it says (§7.6) — and it is still a loop over the values, never user code.
+- **The kind of an effect operation is its cost** (§12.2): `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use, and `with … on stack` makes the program provide the stack a suspension needs (§14.1).
+- **No hidden conversions.** Lossless widening happens only at coercion sites and on the right of a compound assignment; `T(x)` converts only when lossless for every value of the source *type*; lossy conversions are named methods (`trunc`, `round`, `checked`, `sat`, `bits`, §6). The one implicit conversion between two distinct nominal types is error lifting (§10.6): a `try` or `return` wraps an error in the one variant of the function's error union that carries it. It is allowed because it is decided at the site, by one unambiguous variant, and is a compile error when ambiguous.
+- **Second-class closures.** `fn(…)` values capture by reference, cost no allocation, and can be passed down but never stored or returned; `^fn(…)` is a plain code pointer, first-class and C-compatible (§11.6, §11.7). Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
+- **Mutation of an argument is visible at the call** (§7.2). A read-only argument may be a temporary, or an array passed for a `[]const T` — the compiler adapts it, since nothing can change — but a mutable one must be a named mutable place written explicitly (`a[..]`, `&x`). The one exception is the receiver of a method call, which is the subject of the call: `names.push(x)` visibly acts on `names`.
+- **Rest parameters, not varargs** (§11.2). `print("{} of {}", n, total)` takes a typed, counted tuple; nothing is allocated and nothing is unchecked. The same `..` that spreads a tuple into arguments collects arguments into one, and splices effect sets.
+- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway (§18.1).
+
+### C.4 P3 — Context is an effect
+
+- **Why effects at all.** C programs express allocation policy, logging, I/O, iteration, early exit and coroutines with globals, callback-plus-`void *` pairs, `setjmp` and hand-written state machines. Effects express all six with one mechanism that the type system tracks and that tests can replace (§12).
+- **`Sys` marks the edge of the model.** Foreign calls, globals, volatile memory and threads all perform `Sys`, which cannot be handled; a function without it has no hidden state (§12.10). This is what makes **compile-time evaluation** an ordinary call of a function whose effect set is empty (§17), and **test handlers** sound (§12.9). It is not purity: such functions may still write through pointers they are given.
+- **Iteration is an effect.** `for` is a `with` that installs a handler for `Yield` (§13.2); ranges, slices and user iterators are one mechanism, and there is no iterator protocol. Cursors (§13.4) are ordinary methods that `while` uses; `for` knows only `Yield`.
+- **Testing is an effect.** A test fails by performing `Test.fail`, an `esc` operation, so a helper that checks something on a test's behalf says so in its signature (`\ {Test}`), and a failure unwinds the test, running its `defer`s (§3.8).
+- **Calls show the context they use.** The universe holds the predeclared effects but not their operations, except `yield` (§21.1): `Clock.now()`, `Alloc.current()`, `Fs.open(path, opts)` say at the call that they reach into the context, and names like `now`, `read` and `exit` stay free.
+- **A clause never handles its own performs.** Clauses run in the context outside their handler (§12.5). This makes an iterator written as a loop over another iterator correct, and makes nested handlers for the same effect compose predictably.
+- **Exits are explicit control flow.** An `esc` clause leaves by `break` (the `with` is an expression, so this can carry a value), and the frames in between run their `defer`s (§12.7). There are no exceptions, unwinding tables or `setjmp`.
+- **Structured lifetime for fibers.** A `with … on` cannot complete while any fiber it created is suspended; an exit that crosses it cancels the remaining fibers first (§14.4). Continuations are first-class so schedulers can queue them, with one-shot use checked at run time where it cannot be checked statically. Fibers start from a function pointer and an argument, never from a second-class closure, since a fiber can outlive the frame that would have created the closure (§14.6).
+- **Effect polymorphism, in two forms.** Higher-order functions are polymorphic in their callbacks' effects through second-class parameters: a callback's effects are handled where it was written, except those its parameter type lists, which the callee handles (§11.6), so `retry(3, fn() => Net.send(c, p))` needs no annotation. Stored function pointers are polymorphic through effect-set parameters (`E: effects`, §16.6), fixed per instantiation like type parameters. What Gamma rejects is effect variables in the types of run-time *values*, which would need a run-time representation of effect rows. **Named effect sets** (§12.3) keep long sets readable without adding anything to the type system: `\ {..Io}` is only an abbreviation.
+- **Generic effect instances must be distinguishable** when checked once (§16.6), so `\ {Yield(T), Yield(U)}` is rejected: which handler a `yield` reaches must not depend on the instantiation (P5).
+
+### C.5 P4 — Mistakes are rejected, not interpreted
+
+- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. Words describe logic (`and`, `or`, `not`, `is`, `in`), sigils describe shapes: `?` maybe absent, `!` may have failed, `^` a pointer, each telling one story across types, operators and unwrapping (§B.2). Freeing `!` from "not" lets it mean "failed" everywhere.
+- **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses; comparisons do not chain (§7.3). These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Binary `~` is exclusive-or, since `^` is the pointer sigil and pointers are far more common than XOR.
+- **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other and wrap implicitly, so success paths read like plain code (§10).
+- **Unions are tagged and matches exhaustive** (§8.6). Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range.
+- **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks; undefined behavior is confined to a closed list of memory and concurrency errors that cannot be checked cheaply (§18.4). The overflow flavors are spelled by the sigil story: `+%` wraps, `+|` saturates, `+?` gives an optional; their method forms follow the conversions, where a method that gives an optional is named `checked` (`x.checked(T)`, `x.pow_checked(n)`).
+- **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used, and a literal that does not fit its type is an error, not a wrap (§6.1). Only a literal that nothing constrains falls back: to `usize` if it counts or positions something (a range bound, a length, an index, a shift amount), otherwise `i32` or `f64`.
+- **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one (§5.1).
+- **Ignored results must be discarded explicitly** (`_ = f()`), so an unhandled error is always visible in the source (§7.14).
+- **Struct construction is by name only**, so reordering fields can never silently change a constructor's meaning, and `S(x)` with one positional argument is always a conversion (§7.11).
 - **No octal-by-leading-zero, no implicit string concatenation, no fallthrough, no truthiness.** Each is a classic C bug with no compensating benefit.
+- **Newlines end statements** except where a line obviously continues; inside `( )` and `[ ]` newlines are ignored (§2.8).
 
-### C.2 Types and values
+### C.6 P5 — Every rule is local
 
-- **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used anywhere in the function; only a literal nothing constrains falls back (`i32`, `f64`, or `usize` for ranges and array lengths). This keeps the common case unannotated while never converting between types: a literal that does not fit its inferred type is an error, not a wrap.
-- **No implicit numeric conversion in expressions.** Lossless widening happens only at coercion sites (assignment, arguments, return) and on the right of a compound assignment (`total += x`). `T(x)` converts only when lossless for every value of the source *type*; legality never depends on how clever the compiler's range analysis is. Lossy conversions are named methods: `trunc`, `round`, `checked`, `sat`, `bits`.
-- **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one.
-- **Arbitrary-width integers** make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified (unlike C bitfields).
-- **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other, and wrap implicitly so success paths read like plain code.
-- **Unions are tagged** and matches are exhaustive. Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range.
-- **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so no invalid value can arise from forgetting to.
-- **Ignored results must be discarded explicitly** (`_ = f()`), so an unhandled error is always visible in the source.
+Generic code is ordinary code with compile-time parameters, **checked once** where it is written and monomorphized (§16.1). Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) that describe which built-in operators a body may use; `Signed` covers the float types because they have a sign and unary `-`.
 
-### C.3 Functions
+**Inference never depends on reading order or on positions** (§16.2). A compile-time parameter that another parameter's type mentions is inferred, or written by name; it is never bound by position, so a reader can tell which argument binds which parameter without counting. Function literals are matched after the other arguments, so writing them first or last does not change what a call means.
 
-- **Two kinds of function value.** `fn(…)` is second-class: it may capture locals by reference, costs no allocation, and can be passed down but never stored or returned. `^fn(…)` is a plain code pointer: first-class, C-compatible, capturing nothing. Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
-- **Effect polymorphism without effect variables.** A second-class callback's effects are handled where it was written, except those its parameter type lists, which the callee handles. So `retry(3, fn() => Net.send(c, p))` needs no annotation for `Net`, while `capture_output(body: fn() \ {Out})` can provide an effect to its callback.
-- **Parameters are distinct objects.** Passing a large value by reference is an optimization the implementation may make when unobservable, never a semantic the programmer must reason about.
-
-### C.4 Generics, and why there are no traits
-
-Generic code is ordinary code with compile-time parameters, checked once where it is written and monomorphized. Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) that describe what built-in operators a body may use.
+**`T(x)` is legal by type, never by value** (§6.5), and `@hash`, `is` and formatting are derived from a type's structure, which nothing can override and nothing needs to resolve (§7.6, §16.8, §21.6). Compile-time introspection of a type's *shape* (`@size_of`, `@variants`, `@type_name`) is part of this structural derivation; open run-time reflection is not part of the language.
 
 **Gamma has no user-defined traits, interfaces or typeclasses.** Traits combine five jobs:
 
@@ -3162,70 +3207,43 @@ Generic code is ordinary code with compile-time parameters, checked once where i
 | Implementation supplied by context | effects and handlers |
 | Implementation found **implicitly** and **composed** (`Hash` for `(A, B)` from `Hash` for `A` and `B`) | deliberately absent |
 
-The first four already exist, each with its cost and its code visible where it is used. The fifth is the part that makes a trait system: it requires coherence and orphan rules, overlap resolution, associated types, conditional implementations, and — in a language with effects — either fixed effect sets on trait methods (rigid) or effect variables (the row polymorphism Gamma rejects). It is the largest and least predictable component of the languages that have it, and it means a reader cannot tell from `m.put(k, v)` which code runs.
+The first four already exist, each with its cost and its code visible where it is used. The fifth is the part that makes a trait system: coherence and orphan rules, overlap resolution, associated types, conditional implementations, and — in a language with effects — either fixed effect sets on trait methods or effect variables in value types. It is the largest and least predictable component of the languages that have it, and it means a reader cannot tell from `m.put(k, v)` which code runs. What implicit composition is usually *for* is covered structurally instead: hashing (§16.8), ordering by key tuples (`xs.sort_by_key(fn(p) => (p.last, p.first))`; structs are not ordered, since their field order records layout, not priority), and printing (§21.6.1). What remains costs one explicit argument, such as a constant struct of operations for generic arithmetic over user-defined number types (§16.9).
 
-What implicit composition is usually *for* is covered structurally instead, by rules the compiler derives from a type's shape, which nothing can override and nothing needs to resolve:
+**Handler declarations are the one place a type supplies an implementation** (§12.6): `with x` installs the handlers declared for `x`'s type. This is type-directed, and it is admitted because it is confined: it happens only at a `with`, a syntactically marked site; it is resolved against one value's static type; it is never composed from other declarations; and declarations may not overlap, so finding a value's handlers is a lookup, never a choice between candidates. A declaration lives in the module of the effect or of the type, as methods live in the type's module (§7.10).
 
-- **Hashing**: `@hash` is defined for every `Eq` type and agrees with `is` (§16.8), so `HashMap((string, u32), V)` needs no code.
-- **Ordering**: tuples, arrays and slices compare lexicographically, so structs are ordered by an explicit key tuple: `xs.sort_by_key(fn(p) => (p.last, p.first))`. Structs themselves are not ordered: their field order records layout, not priority.
-- **Printing**: `print("{}", x)` formats every type structurally (§21.6.1). Custom presentation is an ordinary function returning a string.
+### C.7 One feature per job
 
-What remains costs one explicit argument: generic arithmetic over user-defined number types passes its operations as a constant struct (`dot(FIXED_RING, xs, ys)`), and combining two unrelated libraries takes a small adapter function. That is the price of knowing what every call does.
+- **`::` names everything, `T(...)` makes everything.** A reader learns three patterns and then reads declarations, construction and control flow uniformly (§3.4, §7.11).
+- **`else` means "otherwise" everywhere**: an `if` chain, a fallback `x else d`, an error capture `else e => …`, a pattern binding `P := e else d` (§10.4, §4.5).
+- **`..` means "span or splice"**: ranges and slicing, spreading arguments, rest parameters, effect-set splicing.
+- **One mechanism for context** (effects), **one for failure the caller decides** (results), **one for iteration** (`Yield`), **one for generics** (compile-time parameters).
+- **The standard library obeys the same rules** (§22): no hidden allocation, I/O through effects, nothing that needs a mechanism the language lacks.
 
-Operator overloading is excluded for the same reason: an operator never calls user code, so `a + b` always costs what it looks like it costs. Arrays have elementwise arithmetic for the common numeric case.
+### C.8 Alternatives considered and rejected
 
-### C.5 Effects
+| Alternative | Violates | Reason |
+| --- | --- | --- |
+| User-defined traits / interfaces / typeclasses | P5 | implicit, global resolution (C.6) |
+| Operator overloading | P2 | operators would hide calls and costs |
+| Move semantics, destructors or a `#no_copy` marker | P1 | an ownership system; Debug tagging catches the double frees it would prevent |
+| Lexicographic ordering of structs | P4 | field order records layout, not priority; order key tuples instead |
+| Bitwise equality for floats (to find NaN keys) | one feature per job | two notions of equality is worse than one documented caveat |
+| A default literal type without inference | P4 | `i := 0; while i < xs.len` would fail or wrap |
+| `T(x)` succeeding when the *value* is provably in range | P5 | legality would depend on the compiler's analysis |
+| Binding inferred type arguments by position | P5 | which argument binds which parameter would depend on counting them |
+| Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | P4 | would make naming conventions part of the grammar |
+| Effect variables in the types of run-time values | P2 | needs a run-time representation of effect rows; second-class callbacks and effect-set parameters cover the uses (C.4) |
+| Multi-shot continuations | P1 | require copying stacks; break pointers into them |
+| Exceptions | P3, P2 | `esc` exits and results cover early exit and failure, visibly (C.1) |
+| C-style variadic functions | P2, P4 | untyped and unchecked; rest parameters are typed tuples |
+| Implicit allocation for closures | P2 | second-class closures need none |
+| Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
+| Effect operations in the universe scope | P3 | a bare `now()` hides that it reaches into the context |
 
-- **Why effects at all.** C programs express allocation policy, logging, I/O, iteration, early exit and coroutines with globals, callback-plus-`void*` pairs, `setjmp`, and hand-written state machines. Effects express all six with one mechanism that the type system tracks, and that tests can replace.
-- **Three operation kinds** (`fn`, `esc`, `ctl`) make the worst case visible in the signature: `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use.
-- **A clause never handles its own performs.** Clauses run in the context outside their handler. This makes an iterator written as a loop over another iterator correct, and makes nested handlers for the same effect compose predictably.
-- **Exits are explicit control flow.** An `esc` clause leaves by `break` (the `with` is an expression, so this can carry a value), and the frames in between run their `defer`s. There are no exceptions, unwinding tables or `setjmp`.
-- **`Sys` marks the boundary of the model.** Foreign calls, globals, volatile memory and threads all need `Sys`; a function without it has no hidden state. This is what makes compile-time evaluation and test handlers sound. It is not purity: such functions may still write through pointers they are given.
-- **Generic effect instances must be distinguishable** when checked once, so `\ {Yield(T), Yield(U)}` is rejected: which handler a `yield` reaches must not depend on the instantiation.
-
-### C.6 Fibers and continuations
-
-- **One-shot, stack-switching continuations.** Multi-shot continuations would require copying stacks, which invalidates pointers into them. One-shot continuations on caller-provided stacks allocate nothing and keep pointers stable.
-- **`resume` is a transfer, not a call.** `ctl` clauses run on the `with`'s own stack and `resume` (type `never`) switches away. A scheduler can switch between any number of fibers without its stack growing.
-- **Structured lifetime.** A `with … on` cannot complete while any fiber it created is suspended; an exit that crosses it cancels the remaining fibers first. Continuations are first-class so schedulers can queue them, with one-shot use checked at run time where it cannot be checked statically.
-- **Fibers start from a function pointer and an argument**, never from a second-class closure, since a fiber can outlive the frame that would have created the closure.
-
-### C.7 Memory and safety
-
-- **Allocation is explicit.** No construct allocates behind the program's back. The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is always freed through the allocator that produced it.
-- **No ownership system.** Values copy bitwise like C; there are no destructors or move semantics. `defer`/`errdefer` structure cleanup, and Debug builds tag allocations, poison freed memory and detect leaks. Ownership tracking would make Gamma a different language.
-- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway.
-- **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks. Undefined behavior is confined to a closed list (§18.4) of memory and concurrency errors that cannot be checked cheaply.
-- **Compile-time evaluation is ordinary code** whose empty effect set proves it touches nothing outside. The evaluator checks everything, so a compile-time bug is a compile error, never compiler misbehavior. Constants contain only read-only pointers into static data.
-
-### C.8 Interoperability and threads
-
-- **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer. Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C.
-- **Exported functions install their own handlers**, because C cannot pass any.
-- **Threads follow the C11 memory model**, with atomics as intrinsics. Existing knowledge and tools apply unchanged. Handlers, second-class values and continuations are per-thread, so nothing captured by reference is shared implicitly.
-
-### C.9 Alternatives considered and rejected
-
-| Alternative | Reason for rejection |
-| --- | --- |
-| User-defined traits / interfaces / typeclasses | C.4 |
-| Operator overloading | operators would hide calls and costs (C.4) |
-| Move semantics or a `#no_copy` marker | an ownership system; Debug tagging catches the double frees it would prevent |
-| Lexicographic ordering of structs | field order records layout, not priority; order key tuples instead |
-| Bitwise equality for floats (to find NaN keys) | two notions of equality is worse than one documented caveat |
-| A default literal type without inference | `i := 0; while i < xs.len` would fail |
-| `T(x)` succeeding when the *value* is provably in range | legality would depend on the compiler's analysis |
-| Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | would make naming conventions part of the grammar |
-| Effect variables / row polymorphism | second-class callbacks provide effect polymorphism with no syntax |
-| Multi-shot continuations | require copying stacks; break pointers into them |
-| Exceptions | `esc` exits and results cover early exit and failure, visibly |
-| Implicit allocation for closures | second-class closures need none |
-| Macros | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
-
-### C.10 Future directions
+### C.9 Future directions
 
 - A `Send`-like rule that would let fibers migrate between threads.
-- Stored function values polymorphic in their effects at run time (effect variables or existential handlers); effect-set parameters (§16.6) cover the compile-time case.
+- Stored function values polymorphic in their effects at run time (existential handlers), if a representation can be found that keeps P2.
 - SIMD vector types with guaranteed code generation.
 - If experience shows heavy dictionary-passing boilerplate for user-defined numeric types, a compile-time parameter defaulting to a constant found by name in the type's own module — which would still involve no global resolution.
 

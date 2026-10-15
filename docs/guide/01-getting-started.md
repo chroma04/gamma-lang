@@ -4,6 +4,8 @@
 
 This chapter shows the smallest Gamma program, explains what you can do with the `gamma` tool today, and sketches how source files and modules fit together.
 
+One idea runs through everything that follows: in Gamma, **everything a function depends on appears in its signature**. You will see it in the very first program, whose `\ {Out}` says that it writes output.
+
 ## Hello, world
 
 ```gamma

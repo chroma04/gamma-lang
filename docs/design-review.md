@@ -429,3 +429,35 @@ depends on its position.
 Step 1 alone changes how Gamma presents itself. Steps 2–5 remove the places where its own
 features don't use its main idea. After step 5, every special rule named in this report is
 either deleted or stated as a consequence of a principle.
+
+---
+
+## 8. Outcome
+
+Every step of section 7 has been carried out. The specification now opens with the thesis
+and the five principles (§1), and Appendix C derives the rules from them and files each
+rejected alternative under the principle it violates. The code in section 6 compiles and
+is the README's first program. The language changes are listed in the changelog. Where the
+work departed from the report, or went past it, the reasons were these:
+
+- **F6-A, inferable parameters by name.** Measured over the library and the tests,
+  about 340 calls needed a type that the arguments could not determine, mostly `new`
+  and `make_fill` with literal values. Written last, as the old rule for named
+  arguments required, they read badly (`make_fill(64, 0, T: u8)`). Two further changes
+  fixed that and are part of the result:
+  - Named arguments may appear anywhere in a call, so types come first:
+    `make_fill(T: u8, 64, 0)`.
+  - Inference matches function-literal arguments after the others, so dropping an
+    explicit type never depends on argument order.
+- **F2, the `Test` effect.** It has a second operation, `note`, through which `expect_eq`
+  and `ok` write the values of a failure report before `fail` ends it. Without it,
+  reporting values would have needed `Err` in every helper's signature.
+- **F3, the universe.** The methods of `Instant` and `Duration` (`since`, `after`, …)
+  left the universe too, on the same grounds as the operations. The operation names
+  stay as they were (`Out.write_out`): `Out` and `Err` are declared in one module, and
+  an operation is a function of that module (§12.1), so they cannot both be `write`.
+- **F10, overflow naming.** The report suggested renaming `pow_checked` to `pow_opt`.
+  That would have broken the consistency with `x.checked(T)`, which also returns an
+  optional. The names stay, and the rule that a method returning an optional is called
+  `checked` is now stated in Appendix C.
+- **F10, `Signed`.** The name is kept and documented: floats have a sign.

@@ -303,27 +303,6 @@ impl<'s> Sema<'s> {
         UNIVERSE_HIDDEN.contains(&decl.name.name.as_str())
     }
 
-    /// Migration aid: where a name left out of the universe scope is used.
-    pub fn migrate_universe(&mut self, name: Symbol, span: Span) {
-        if std::env::var_os("GAMMA_MIGRATE").is_none() {
-            return;
-        }
-        let Some(prelude) = self.prelude else { return };
-        let Some(&d) = self.modules[prelude.0 as usize].scope.get(&name) else { return };
-        let file = self.sess.sources.file(span.file).path.clone();
-        let with = match self.decls[d.0 as usize].op_of {
-            Some((e, _)) => format!("{}.{}", self.decls[e.0 as usize].name.name, name),
-            None => match name.as_str() {
-                "Socket" | "Listener" | "Shutdown" => format!("net.{}", name),
-                "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => {
-                    format!("fs.{}", name)
-                }
-                _ => return,
-            },
-        };
-        eprintln!("MIGRATE_QUALIFY\t{}\t{}\t{}\t{}", file.display(), span.lo, span.hi, with);
-    }
-
     /// For an unknown name that the core library declares but leaves out of the universe
     /// scope, how to reach it.
     pub fn universe_hint(&mut self, name: Symbol) -> Option<String> {
