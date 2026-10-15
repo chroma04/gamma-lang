@@ -508,6 +508,7 @@ both use it. The files:
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `discard`, `@fiber` |
 | `borrow.rs`, `constarg.rs` | parameters read in place; static storage for constant arguments |
 | `rtcache.rs` | the cached runtime object of Debug and Safe builds |
+| `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
 | `debug.rs`, `views.rs`, `gdb_printers.py` | debug information for `-g` |
 
 The generated code follows the interpreter exactly, and the conformance
@@ -875,6 +876,17 @@ nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
 `src/testing.rs` selects the cases (`--filter`), runs them and prints the results in order. `pool` runs the jobs on `--jobs` threads and hands the results over in job order. The interpreter's state is not shared between threads, so each thread analyzes the program again (the analysis is deterministic, so test number `i` is the same everywhere); native runs only start processes. `--all` makes `analyze_package_tests` load every directory of the package (`Sema::load_package_modules`).
 
 Coverage (`--coverage`) is a rewrite of the checked program (`src/coverage.rs`): before each statement, and before the value of each block, of the functions of the package that are not tests, it inserts `Builtin::Cover(n)`, where `n` numbers a source line. The tree-walker counts executions in process-wide atomic counters (`interp/coverage.rs`), and the bytecode VM leaves expressions with the builtin to the tree-walker. Nothing is inserted, and nothing slows down, without the option; the C back end does not support the builtin, so coverage needs the interpreter.
+
+## API documentation
+
+`gamma doc` (`src/doc/`) works on the syntax tree only, so a module needs to parse but
+not to type-check. `collect.rs` reads the `pub` declarations of a module (a directory or a
+file), copies each signature from the source text between the spans the parser recorded, and
+attaches its `///` comments and the `//!` comments at the top of the module's files.
+`markdown.rs` and `html.rs` render a module and the index of a set of modules, and
+`md_html.rs` is the small Markdown renderer for doc comments (everything is escaped). The
+output depends only on the sources, never on the machine or the time, so the standard library
+reference in `docs/std/` is checked in and `tests/doc.rs` fails when it is stale.
 
 ## REPL
 

@@ -13,7 +13,7 @@ The binary is `target/<profile>/gamma`. `cargo run -- <args>` builds and runs it
 
 ## Checks
 
-Continuous integration runs, on Linux and macOS:
+Continuous integration runs, on Linux and macOS (and the tests on Windows with MinGW-w64 gcc):
 
 ```sh
 cargo fmt --all -- --check
@@ -23,8 +23,8 @@ cargo test --all-targets
 
 Run them before sending a change. Formatting uses the settings in
 `rustfmt.toml`. CI also has jobs for Safe builds with Fil-C, for a big-endian
-cross build (s390x under qemu) and for the editor grammars (see below and
-[`editors.md`](editors.md)).
+cross build (s390x under qemu), for the editor grammars (see below and
+[`editors.md`](editors.md)) and, on pull requests, for benchmarks (see below).
 
 ## Formatting Gamma code
 
@@ -70,11 +70,14 @@ There are two kinds of tests.
 
 **Integration tests** (`tests/*.rs`) run the real `gamma` binary: the formatter
 (`fmt.rs`), the package manager (`pkg.rs`, needs `git`), the language server
-(`lsp.rs`), the C runtime (`runtime.rs`), how native builds link the runtime
-(`native_build.rs`), debug information (`debug_info.rs`), the C toolchain
-variables and cross compilation (`cross.rs`), foreign calls from the interpreter
-(`ffi_interp.rs`), the layout of an installed release (`install_layout.rs`) and
-very long expressions (`long_expressions.rs`). The header comment of each file
+(`lsp.rs`), the documentation generator (`doc.rs`), `gamma repl` (`repl.rs`),
+`gamma test` and `gamma bench` (`testing_cli.rs`), build settings in `gamma.toml`
+(`build_profiles.rs`), the internal compiler error report (`ice.rs`), the C runtime
+(`runtime.rs`), how native builds link the runtime (`native_build.rs`), debug
+information (`debug_info.rs`), the C toolchain variables and cross compilation
+(`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
+installed release (`install_layout.rs`) and very long expressions
+(`long_expressions.rs`). The header comment of each file
 says what it needs and when it skips itself.
 
 **Conformance tests** are Gamma source files under `tests/conformance/`,
@@ -208,6 +211,13 @@ When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs
 that check each compile error the section requires.
 
+## Benchmarks
+
+`bench/benches.gm` holds `bench` declarations, run with `gamma bench bench/` (see
+`bench/README.md`); `bench/programs/` holds small programs for counting interpreter
+instructions. On pull requests CI runs `scripts/bench-compare.sh` to compare the
+benchmarks of the branch with those of its base; the job only reports, it never fails.
+
 ## Generated files
 
 `lib/std/text/tables.gm` and the conformance test `tests/conformance/run/std_text_ucd.gm`
@@ -230,16 +240,19 @@ A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.
 Pushing the tag runs `.github/workflows/release.yml`, which:
 
 1. builds `gamma` in release mode on Linux (x86_64 and arm64, on Ubuntu 22.04 so that the
-   binaries run with older glibc versions) and macOS (x86_64 and arm64);
-2. packages each with `tools/package-release.sh` as `gamma-<os>-<arch>.tar.gz` plus a
-   `.sha256` file. The archive is an installation prefix: `bin/gamma`, the standard library
+   binaries run with older glibc versions), macOS (x86_64 and arm64) and Windows (x86_64,
+   with the C runtime linked statically);
+2. packages each with `tools/package-release.sh` as `gamma-<os>-<arch>.tar.gz` (a `.zip`
+   on Windows) plus a `.sha256` file. The archive is an installation prefix: `bin/gamma`, the standard library
    in `lib/gamma/std` (an installed compiler finds it relative to its own path), `LICENSE`
    and `README.md`;
 3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
    compiler runs a program that imports `std/...`, on the interpreter and through C;
-4. creates the GitHub release with the archives, `SHA256SUMS` and `tools/install.sh`.
+4. creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
+   `tools/install.ps1`.
 
-To cut a release: bump `version` in `Cargo.toml` (and `Cargo.lock` with `cargo build`),
+To cut a release, follow [`versioning.md`](versioning.md): in short, update
+`CHANGELOG.md`, bump `version` in `Cargo.toml` (and `Cargo.lock` with `cargo build`),
 merge that, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Running the workflow by hand
 (workflow dispatch) builds and checks the archives without publishing anything, which is a
 good test after changing the workflow or the packaging script.
@@ -248,6 +261,7 @@ good test after changing the workflow or the packaging script.
 installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
 `GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
 the script against archives built locally with `tools/package-release.sh`.
+`tools/install.ps1` does the same on Windows.
 
 ## The editor grammars
 
