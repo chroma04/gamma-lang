@@ -53,6 +53,18 @@ Versions and what each kind of change means are described in
 ### Fixed
 
 - A local type alias can be passed as the type argument of a generic function.
+- `math.atan2` no longer returns NaN when an operand is of magnitude 2^1023 or more.
+- The interpreter opens a file with neither `write` nor `append` read-only, like the C back
+  end, instead of failing with `InvalidInput`.
+- An allocation too large for the host is an `AllocError` in the interpreter, as in the C
+  back end, instead of a trap; `std/arena` no longer overflows on huge requests.
+- `json.Writer` supports the nesting depth `json.parse` accepts by default (512), and a
+  `write_string` or `key` that fails on invalid UTF-8 leaves the writer unchanged.
+- `fmt.zero_pad` keeps the sign and prefix when the text is a slice of the output buffer.
+- `time.to_unix` no longer traps for the earliest representable instant.
+- `bytes.read_int` and `bytes.write_int` work for odd widths such as `u24`.
+- `str.Builder.write` accepts a template without arguments.
+- The `std/io` example for `StringIn` compiles.
 
 ## 0.1.0 (not yet tagged)
 

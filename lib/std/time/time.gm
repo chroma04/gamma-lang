@@ -154,7 +154,10 @@ pub from_unix :: fn(ns: i64) -> DateTime {
 /// if the result does not fit an `i64` (roughly the years 1678 to 2262).
 pub to_unix :: fn(t: DateTime) -> i64 {
     secs := i64(t.hour) * 3600 + i64(t.minute) * 60 + i64(t.second)
-    return days_from_civil(t.date) * NS_PER_DAY + secs * NS_PER_SEC + i64(t.nanosecond)
+    // The days alone can exceed an `i64` of nanoseconds while the sum fits (at the minimum).
+    total := i128(days_from_civil(t.date)) * i128(NS_PER_DAY) + i128(secs) * i128(NS_PER_SEC) + i128(t.nanosecond)
+    if total < i128(@min_value(i64)) or total > i128(@max_value(i64)) { trap("time: the date and time do not fit an i64 of nanoseconds") }
+    return total.trunc(i64)
 }
 
 /// The current date and time from the `Clock`'s wall clock.

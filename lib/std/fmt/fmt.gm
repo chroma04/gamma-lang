@@ -225,9 +225,12 @@ pub zero_pad :: fn(s: string, width: usize, buf: []u8) -> string {
         return pad_left(s, width, ' ', buf)
     }
     pad := width - s.len
+    // `s` may be a slice of `buf`: keep the sign and prefix before anything is overwritten.
+    lead: [3]u8 = ---
+    if head > 0 { lead[0..head].copy_from(s[0..head]) }
     buf[head + pad..width].copy_from(s[head..])
     buf[head..head + pad].fill('0')
-    if head > 0 { buf[0..head].copy_from(s[0..head]) }
+    if head > 0 { buf[0..head].copy_from(lead[0..head]) }
     return buf[0..width]
 }
 

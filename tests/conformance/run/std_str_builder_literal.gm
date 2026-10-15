@@ -1,0 +1,10 @@
+// A literal template needs no arguments.
+str :: import "std/str"
+
+main :: fn() \ {Out} {
+    store: [32]u8 = ---
+    b := str.builder(store[..])
+    b.write("literal")
+    b.write(" {}", 7)
+    print("{}\n", b.str())
+}

@@ -1,0 +1,18 @@
+// Padding where the text is a slice of the output buffer.
+fmt :: import "std/fmt"
+
+main :: fn() \ {Out} {
+    c: [32]u8 = ---
+    s := fmt.dec(i32, 42, c[10..])
+    print("[{}]\n", fmt.pad_left(s, 5, '*', c[..]))
+    s2 := fmt.dec(i32, 42, c[1..])
+    print("[{}]\n", fmt.pad_left(s2, 5, '*', c[..]))
+    s3 := fmt.dec(i32, 42, c[1..])
+    print("[{}]\n", fmt.pad_right(s3, 5, '*', c[..]))
+    s4 := fmt.dec(i32, -42, c[1..])
+    print("[{}]\n", fmt.zero_pad(s4, 5, c[..]))
+    s5 := fmt.prefixed(u32, 255, 16, c[2..])
+    print("[{}]\n", fmt.zero_pad(s5, 8, c[..]))
+    s6 := fmt.dec(i32, -7, c[3..])
+    print("[{}]\n", fmt.zero_pad(s6, 6, c[..]))
+}

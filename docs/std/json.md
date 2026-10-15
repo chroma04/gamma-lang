@@ -178,10 +178,12 @@ Variants:
 ### `MAX_WRITE_DEPTH`
 
 ```gamma
-MAX_WRITE_DEPTH :: 256
+MAX_WRITE_DEPTH :: 512
 ```
 
-The deepest nesting a `Writer` supports.
+The deepest nesting a `Writer` supports. It equals the default `max_depth` of `parse`, so
+every document `parse` accepts with the default limit can be written back; a document
+parsed with a larger `max_depth` may be too deep for a `Writer`.
 
 ## Functions
 

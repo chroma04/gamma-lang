@@ -1,0 +1,16 @@
+// `atan2` with operands at the top of the exponent range.
+math :: import "std/math"
+
+main :: fn() \ {Out} {
+    big: f64 = 1.7976931348623157e308
+    print("{}\n", math.atan2(big, big))
+    print("{}\n", math.atan2(-big, big))
+    print("{}\n", math.atan2(big, -big))
+    print("{}\n", math.atan2(-big, -big))
+    print("{}\n", math.atan2(1.0e308, 9.0e307))
+    print("{}\n", math.atan2(4.0e307, 9.0e307))
+    print("{}\n", math.atan2(9.0e307, 4.0e307))
+    print("{}\n", math.atan2(1.0, big))
+    print("{}\n", math.atan2(big, 1.0))
+    print("{}\n", math.atan2(5.0e-324, big))
+}

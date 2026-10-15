@@ -248,9 +248,20 @@ pub atan2 :: fn(y: f64, x: f64) -> f64 {
             // q = ay/ax rounded; q + delta is the quotient to double precision,
             // where delta = (ay - q*ax)/ax is computed from the exact product
             // after scaling ax into [1, 2).
-            sc := from_words(0x7fe00000 - (ix & 0x7ff00000), 0)
-            sx := ax * sc
-            sy := ay * sc
+            // The scale factor 2**(1023 - e) is not representable for the
+            // largest exponent, so those operands are first brought down by
+            // 2**-600 (exact, since |y| is within 2**60 of |x| here).
+            bx := ax
+            by := ay
+            ex := ix & 0x7ff00000
+            if ex >= 0x7fe00000 {
+                bx = ax * 0x1.0p-600
+                by = ay * 0x1.0p-600
+                ex = high_word(bx) & 0x7ff00000
+            }
+            sc := from_words(0x7fe00000 - ex, 0)
+            sx := bx * sc
+            sy := by * sc
             q := sy / sx
             p := two_prod(q, sx)
             delta := ((sy - p.0) - p.1) / sx
