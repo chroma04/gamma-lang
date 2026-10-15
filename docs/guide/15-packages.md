@@ -200,7 +200,7 @@ Fetched packages live in the same cache directory as compiled runtime objects: `
 | --- | --- |
 | `git/db/` | one bare mirror per repository |
 | `git/checkouts/<repo>/<rev>/` | the files of each revision in use |
-| `git/url/<name>/<hash>/` | each unpacked archive |
+| `git/url/<name>-<hash>/<hash>/` | each unpacked archive (`<name>` is the archive's file name) |
 | `run/`, `native/`, `gm_rt-*` | cached executables, compiled C sources, the compiled runtime |
 
 All of it can be deleted at any time; the next build fetches or compiles again from the lock. **Checkouts are read-only**: once a checkout is created and verified, Gamma removes the write permission from its files and directories, so editing a dependency in place fails with a permission error instead of silently changing every program that uses the checkout. To change a dependency, edit its repository (or use a `path` dependency while you work on it). Gamma restores permissions before it deletes a checkout.
