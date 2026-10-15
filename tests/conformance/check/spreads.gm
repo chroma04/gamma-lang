@@ -10,7 +10,7 @@ g :: fn(t: (i32, i32), n: (a: i32, b: i32), s: S, x: i32) {
     _ = f(a: 1, ..n)               //~ ERROR parameter `a` is given more than once
     _ = f(..n, ..n)                //~ ERROR parameter `a` is given more than once
     _ = f(..s)                     //~ ERROR has no parameter named `c` (supplied by this spread)
-    _ = f(b: 2, ..t)               //~ ERROR positional arguments must come before named arguments
+    _ = f(b: 2, ..t)               //~ ERROR too many arguments: the function takes 1
     _ = [2]i32(..n)                //~ ERROR this spread has named parts
 }
 

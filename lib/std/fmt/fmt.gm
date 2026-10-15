@@ -74,7 +74,7 @@ digits_at_end :: fn(T: type, x: T, base: u32, upper: bool, group: bool, sep: u8,
         if neg { r = 0 -% r }
         if n >= out.len { trap("fmt: buffer too small for the formatted integer") }
         n += 1
-        out[out.len - n] = digit_char(small(T, r), upper)
+        out[out.len - n] = digit_char(small(r), upper)
         k += 1
         v = v / b
         if v is 0 { break }

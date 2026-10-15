@@ -53,7 +53,7 @@ put :: fn(K, V: type, c: ^Lru(K, V), key: K, val: V) -> AllocError!?K \ {Alloc} 
         push_front(c, n)
         return null
     }
-    n := try new(Node(K, V), Node(K, V)(key: key, val: val))
+    n := try new(T: Node(K, V), Node(K, V)(key: key, val: val))
     errdefer destroy(n)
     try c.index.put(key, n)
     push_front(c, n)

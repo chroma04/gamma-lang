@@ -35,7 +35,7 @@ assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr \ {Alloc} {
     }
     flat.items.sort_by_key(fn(e) => (e.row, e.col))
 
-    row_start := try make_fill(usize, n + 1, 0)
+    row_start := try make_fill(T: usize, n + 1, 0)
     errdefer free(row_start)
     cols := try make(u32, flat.items.len)
     errdefer free(cols)

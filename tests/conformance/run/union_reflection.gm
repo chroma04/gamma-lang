@@ -27,5 +27,5 @@ main :: fn() \ {Out} {
     n: u32 = 0
     print("{}\n", @variant_name(next(&n)))
     print("{}\n", n)
-    print("{} {}\n", (name_of(i32, Opt(i32).Some(3)), name_of(string, Opt(string).None)))
+    print("{} {}\n", (name_of(T: i32, Opt(i32).Some(3)), name_of(T: string, Opt(string).None)))
 }

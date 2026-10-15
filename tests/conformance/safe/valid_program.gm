@@ -11,7 +11,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     total: i64 = 0
     with ar.allocator() {
         head: ?^Node = null
-        for i in 0..1000 { head = try new(Node, Node(value: i, next: head)) }
+        for i in 0..1000 { head = try new(Node(value: i, next: head)) }
         cur := head
         while n := cur {
             total += n.value

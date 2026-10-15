@@ -56,7 +56,7 @@ emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
 tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
     top := m.get(u8, "top") else 10
     min_len := m.get(u16, "min-len") else 1
-    fmt := m.pick(Format, "format", FORMAT_TABLE[..]) else .Text
+    fmt := m.pick(T: Format, "format", FORMAT_TABLE[..]) else .Text
     sep := m.text("sep") else ","
     fold_case := m.flag("ignore-case")
     verbose := m.count("verbose")

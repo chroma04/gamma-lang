@@ -3,15 +3,15 @@ bytes :: import "std/bytes"
 
 main :: fn() \ {Out} {
     b: [4]u8 = [_]u8(0, 0, 0, 0)
-    bytes.write_int(u24, b[..], 0x123456, .Big)
+    bytes.write_int(T: u24, b[..], 0x123456, .Big)
     print("{} {} {} {}\n", (b[0], b[1], b[2], b[3]))
     print("{:x}\n", bytes.read_int(u24, b[..], .Big))
-    bytes.write_int(u24, b[..], 0x123456, .Little)
+    bytes.write_int(T: u24, b[..], 0x123456, .Little)
     print("{} {} {} {}\n", (b[0], b[1], b[2], b[3]))
     print("{:x}\n", bytes.read_int(u24, b[..], .Little))
-    bytes.write_int(i24, b[..], -2, .Little)
+    bytes.write_int(T: i24, b[..], -2, .Little)
     print("{}\n", bytes.read_int(i24, b[..], .Little))
-    bytes.write_int(i16, b[..], -2, .Big)
+    bytes.write_int(T: i16, b[..], -2, .Big)
     print("{} {}\n", (b[0], b[1]))
     print("{}\n", bytes.read_int(i16, b[..], .Big))
 }

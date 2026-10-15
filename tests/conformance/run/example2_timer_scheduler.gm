@@ -128,7 +128,7 @@ worker :: fn(id: u32) -> never \ {Task, Out} {
 }
 
 run :: fn(deadline: u64) \ {Out} {
-    k := Kernel(sleepers: heap(Sleeper, 8, earlier), deadline: deadline, stacks: ---)
+    k := Kernel(sleepers: heap(T: Sleeper, 8, earlier), deadline: deadline, stacks: ---)
     main_stack: [STACK]u8 = ---
     print("deadline {}\n", deadline)
     with &k on main_stack[..] {

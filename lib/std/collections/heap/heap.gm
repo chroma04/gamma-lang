@@ -43,7 +43,7 @@ pub heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) \ {Alloc} wher
 
 /// Like `heap_from`, ordered by `less` as for `heap_by`.
 pub heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) \ {Alloc} {
-    h := heap_by(T, less)
+    h := heap_by(less)
     try fill(&h, xs)
     return h
 }

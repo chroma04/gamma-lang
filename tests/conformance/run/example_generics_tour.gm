@@ -49,7 +49,7 @@ apply_n :: fn(T: type, f: fn(T) -> T, n: u32, x: T) -> T {
 
 nested :: fn(base: i32) -> i32 {
     add := base
-    return twice(i32, fn(v) => apply_n(i32, fn(w) => w + add, 3, v), 1)
+    return twice(T: i32, fn(v) => apply_n(fn(w) => w + add, 3, v), 1)
 }
 
 Wrapper :: struct(T: type) {
@@ -71,10 +71,10 @@ main :: fn() \ {Out} {
     xs := [_]i32(1, -2, 3, -4, 5, 6)
     ls: [6]i32 = ---
     rs: [6]string = [6]string(fill: "")
-    n := partition(i32, i32, string, xs[..], fn(x) => if x > 0 { Either(i32, string).Left(x * 10) } else { Either(i32, string).Right("neg") }, ls[..], rs[..])
+    n := partition(xs[..], fn(x) => if x > 0 { Either(i32, string).Left(x * 10) } else { Either(i32, string).Right("neg") }, ls[..], rs[..])
     print("{} {} {} {}\n", (n, ls[0..n.0], rs[0..n.1], @type_name(Either(i32, string))))
 
-    r := compose(i32, i64, string, fn(x) => i64(x) * 1000000, fn(y) => if y > 5000000 { "big" } else { "small" }, 7)
+    r := compose(A: i32, B: i64, C: string, fn(x) => i64(x) * 1000000, fn(y) => if y > 5000000 { "big" } else { "small" }, 7)
     print("{} {}\n", (r, nested(10)))
     w := wrap(wrap(i32(3)))
     print("{} {}\n", (w, w.value.value))

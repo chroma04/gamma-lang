@@ -49,7 +49,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [4]thread.Thread = ---
     for i in 0..4 {
         jobs[i] = Job(id: i.trunc(u32) * 10, result: 0, cancelled: false)
-        ts[i] = try thread.spawn(Job, run, &jobs[i])
+        ts[i] = try thread.spawn(run, &jobs[i])
     }
     for i in 0..4 { ts[i].join() }
     for j in jobs { print("{} {}\n", (j.id, j.result)) }

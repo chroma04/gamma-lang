@@ -116,7 +116,7 @@ main :: fn() \ {Out} {
     print("depth {}\n", depth_sum(big(1), 3))
     c := big(1)
     print("peek {} {}\n", (peek(c, &c), c.a[2]))
-    print("pick {}\n", pick(Big, false, big(1), big(2)).a[0])
+    print("pick {}\n", pick(T: Big, false, big(1), big(2)).a[0])
     m := with Maker(base: 100) { build() }
     print("decl {}\n", m.a[0])
     twice :: fn(f: fn(k: i64) -> Big) -> Big {

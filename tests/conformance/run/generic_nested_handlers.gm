@@ -17,8 +17,8 @@ tally :: fn(T: type, xs: []const T) -> u32 {
 }
 main :: fn() \ {Out} {
     xs := [3]u32(1, 2, 3)
-    bump_all(u32, xs[..], fn(p: ^u32) { p^ += 10 })
+    bump_all(xs[..], fn(p: ^u32) { p^ += 10 })
     print("{} {} {}\n", (xs[0], xs[1], xs[2]))
     print("{}\n", total(i8, fn() => count_to(4)))
-    print("{}\n", tally(u32, xs[..]))
+    print("{}\n", tally(xs[..]))
 }

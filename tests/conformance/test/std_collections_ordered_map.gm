@@ -143,7 +143,7 @@ test "ascending and descending insertion, removal in several orders" {
 
 test "a custom order" {
     // Descending.
-    m := om.ordered_map_by(u32, u32, fn(a, b: ^const u32) -> bool => a^ > b^)
+    m := om.ordered_map_by(K: u32, u32, fn(a, b: ^const u32) -> bool => a^ > b^)
     defer m.deinit()
     for i in 0..100 { ok(m.put(i, i)) }
     f := m.first() else return ()
@@ -167,7 +167,7 @@ Word :: struct {
 
 test "keys that compare by a field, and equal keys under the order" {
     // Words ordered by length only: two words of the same length are the same key.
-    m := om.ordered_map_by(string, u32, fn(a, b: ^const string) -> bool => a^.len < b^.len)
+    m := om.ordered_map_by(K: string, u32, fn(a, b: ^const string) -> bool => a^.len < b^.len)
     defer m.deinit()
     ok(m.put("a", 1))
     ok(m.put("ccc", 3))

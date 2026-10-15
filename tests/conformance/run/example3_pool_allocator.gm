@@ -60,7 +60,7 @@ build :: fn(n: i32) -> AllocError!?^Node \ {Alloc} {
     head: ?^Node = null
     errdefer free_list(head)
     for i in 1..n + 1 {
-        node := try new(Node, Node(value: i, next: head))
+        node := try new(Node(value: i, next: head))
         head = node
     }
     return head
@@ -70,7 +70,7 @@ free_list :: fn(h: ?^Node) \ {Alloc} {
     cur := h
     while n := cur {
         cur = n.next
-        destroy(Node, n)
+        destroy(n)
     }
 }
 
@@ -115,8 +115,8 @@ main :: fn() \ {Out, Alloc} {
         }
         big := make(u8, 64)
         print("oversize request failed: {}\n", failed(big))
-        b := new(u8, 7) else return
-        destroy(u8, b)
+        b := new(T: u8, 7) else return
+        destroy(b)
     }
     print("final live {} failures {}\n", (pool.live, pool.failures))
 

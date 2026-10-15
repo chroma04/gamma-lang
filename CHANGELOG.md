@@ -37,6 +37,15 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** an inferable compile-time parameter (one that another parameter's type
+  mentions) is never bound positionally: it is inferred, or written by name
+  (`new(T: Page, ---)`, `max(T: i64, xs)`, `double(T: u8)` as a function pointer). This
+  replaces the rule that counted positional arguments to decide whether type arguments
+  were given (§16.2). Non-inferable ones, such as `list(string)`, stay positional.
+- Named arguments may be written anywhere in an argument list; positional arguments bind,
+  in order, the parameters that no named argument names (§11.3).
+- Generic inference matches function-literal arguments after the other arguments, so a
+  literal's parameter types can come from a later argument.
 - **Breaking:** failing a test is an effect. The predeclared `Test` effect
   (`note`, and `fail: esc(…) -> never`) is given to test and benchmark bodies; `expect`,
   `expect_eq` and the new `ok(x)` perform it, so helper functions that declare `\ {Test}`

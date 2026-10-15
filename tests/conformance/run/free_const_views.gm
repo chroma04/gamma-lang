@@ -3,7 +3,7 @@ main :: fn() -> AllocError!() \ {Alloc, Out} {
     s := try make(u8, 3)
     t: string = s
     free(t)
-    p := try new(i32, 4)
+    p := try new(T: i32, 4)
     q: ^const i32 = p
     destroy(q)
     print("ok\n")

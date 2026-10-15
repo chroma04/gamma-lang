@@ -462,7 +462,7 @@ Types that are not plain-data — `bool`, unions, optionals, results, pointers o
 
 *Note:* Debug builds fill `---` storage with a recognizable pattern (`0xAA` bytes).
 
-`---` may also be used as the value of a struct field in a constructor, or as an argument, with the same restriction on the field's or parameter's type: `Buf(len: 0, data: ---)`, `new(Page, ---)`. Inside a generic function, `---` at type `T` requires the constraint `Plain(T)` (§16.3).
+`---` may also be used as the value of a struct field in a constructor, or as an argument, with the same restriction on the field's or parameter's type: `Buf(len: 0, data: ---)`, `new(T: Page, ---)`. Inside a generic function, `---` at type `T` requires the constraint `Plain(T)` (§16.3).
 
 ### 4.5 Destructuring
 
@@ -1009,7 +1009,7 @@ Indexing a `string` gives a `u8`.
 
 A struct type may not have both a field and a method candidate with the same name: declaring a function `f` in `S`'s module whose first run-time parameter has type `S`, `^S` or `^const S` is a compile error if `S` has a field `f`.
 
-**Receiver rules.** The receiver fills the function's first run-time parameter: compile-time parameters (types and `::` parameters) are skipped and inferred (§16.2, §16.5). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
+**Receiver rules.** The receiver fills the function's first run-time parameter; compile-time parameters before it are inferred or, if not inferable, bound by the other arguments as in any call (§11.3, §16.2). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
 
 Methods cannot be added to types declared in other modules; write a free function instead.
 
@@ -1358,7 +1358,7 @@ Parameters are immutable bindings. Each parameter is a **distinct object** initi
 
 *Implementation note:* an implementation may pass a large argument by reference instead of copying when this is unobservable. See Appendix D.
 
-A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it, and it is not counted among the non-inferable parameters of §16.2.
+A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it.
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
 
@@ -1366,9 +1366,9 @@ A parameter of type `type` is a **type parameter**, and a parameter declared `na
 
 A call `f(args)` binds arguments to parameters:
 
-1. **Positional** arguments bind to parameters in order. Inferable parameters (§16.2) are skipped by positional binding when the call omits them; see §16.2 for the rule.
-2. **Named** arguments `name: e` bind to the parameter of that name. They follow all positional arguments.
-3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments.
+1. **Named** arguments `name: e` bind to the parameter of that name. They may be written anywhere in the argument list.
+2. **Positional** arguments bind, in order, the **positional parameters**: every parameter except those a named argument names, inferable compile-time parameters (§16.2), which are never bound positionally, and parameters whose default is `@caller_location()`.
+3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments. A positional argument may not follow a spread that supplies names.
 4. Each parameter must be bound exactly once, or have a default, which is used.
 
 Each argument is coerced to its parameter's type (§6.4). Arguments are evaluated left to right in the order written, then the call is made.
@@ -2015,15 +2015,16 @@ max :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 At a call, type parameters may be omitted when they can be **inferred** from the value arguments:
 
-- A parameter is **inferable** if it has type `type`, or is a compile-time value parameter (§16.5) that appears in the type of another parameter. Let *r* be the number of non-inferable parameters without defaults, and *n* the number of all non-inferable parameters, excluding in both counts any parameter bound by name. If the call supplies between *r* and *n* positional arguments, all inferable parameters are omitted and must be inferred; positional arguments then bind to the non-inferable parameters in order. Otherwise every inferable parameter must be supplied, positionally or by name.
-- Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(u16, 1, 300)` or convert.
+- A compile-time parameter (a type parameter, an effect-set parameter or a compile-time value parameter) is **inferable** if the type of another parameter mentions it (other than inside a computed array length, §16.5). An inferable parameter is **never bound positionally**: it is inferred from the run-time arguments, or written by name when the arguments do not determine it or the call wants another type: `max(T: i64, small_values)`. Positional arguments bind the remaining parameters in order (§11.3), so `max(scores)` passes `scores` and `max(i32, scores)` is an error. A compile-time parameter that is not inferable, such as `T` in `list(T: type) -> List(T)`, is an ordinary positional parameter: `list(string)`.
+- Inference matches each value argument's type against its parameter's type structurally (`[]const T` against `[]u8` gives `T = u8`, using the coercion `[]T → []const T` where necessary). Each type parameter must be determined by at least one argument, and all determinations must agree **exactly** — no widening is applied during inference. `f(1u8, 300u16)` against `fn(T: type, a, b: T)` is a compile error; write `f(T: u16, 1, 300)` or convert. The arguments are matched in an order that does not depend on how they are written: a function literal is matched after the other run-time arguments, so its parameter types can come from them (`apply_n(fn(w) => w + 1, 3, v)` takes `w`'s type from `v`).
 - In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
 - Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", (5, 1.5))` has `A = (i32, f64)`.
-- A type parameter that appears only in the result type, or not at all, cannot be inferred and must be written: `list(string)`.
+- Writing an inferable parameter by name fixes it: the run-time arguments are then coerced to the types it gives, as at any coercion site (§6.4).
 
 ```
 biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
-names   := list(string)              // T written explicitly
+names   := list(string)              // T is not inferable: a positional parameter
+wide    := max(T: i64, scores) else 0  // T written by name: the elements widen to i64
 try names.push("ada")                // push(string, &names, "ada"): T inferred, & inserted (§7.10)
 ```
 
@@ -2064,7 +2065,7 @@ HashMap :: struct(K, V: type,
 ids := map(string, u32)                                // @hash and `is`
 try ids.put("ada", 1)
 
-names := map_with(string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2108,7 +2109,7 @@ Sched :: effect(E: effects) {
 ```
 
 - Inside an effect set, `..E` stands for the effects of `E`; after instantiation it is replaced by them (duplicates merge). `E` itself is not a type and may appear only as `..E` or as the argument of another effect-set parameter (`Sched(E)`, `Scheduler(E)`).
-- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), or as another effect-set parameter. A function's effect-set parameter takes a positional argument only where one written this way stands; otherwise it is inferred, like a type parameter (§16.2), from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
+- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), or as another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2); an inferable one is written by name or inferred from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
 - The body is checked once, with `..E` as an opaque member of the sets that mention it: `apply` may call `f` because its own set includes `..E`. Since `E` might include any effect, a `with` may not handle anything around code that performs `..E` (the next paragraph's rule, for effect sets).
 
 This is how a stored function pointer can be polymorphic in its effects without effect variables in the types of values: `std/fiber`'s `Sched(E)` lets tasks perform the effects `E`, which the scheduler's handler, `handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}`, requires where it is installed (§14.6).
@@ -2121,7 +2122,7 @@ This is how a stored function pointer can be polymorphic in its effects without 
 ### 16.7 Restrictions
 
 - `when` conditions may not depend on type parameters or compile-time value parameters of an enclosing generic function or type (that would make "checked once" impossible). Use separate functions.
-- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)`. An argument for a type parameter must be a type, which tells `f(u8)` from a call such as `id(x)`; a function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
+- A generic function named without arguments is not a value. Applied to *only* its compile-time arguments (types and `::` values, every one given, positionally or by name as §11.3 binds them, and at least one run-time parameter without a default left out) it denotes that instantiation as a function pointer (§11.7): `p: ^fn(s: string) -> ?u8 = parse_int(u8)` (`T` is not inferable there, so it is positional), `q: ^fn(x: u8) -> u8 = double(T: u8)` for `double :: fn(T: type, x: T) -> T`. A function without required run-time parameters is always called. When a function pointer type is expected, a bare generic function name takes its type arguments from it by matching its run-time parameter and result types (`p: ^fn(x: u8) -> u8 = double` for `double :: fn(T: type, x: T) -> T`); this needs every compile-time argument to be a type that the match determines. There is no other partial application of type arguments; write a wrapper function.
 - Recursion between generic instantiations must terminate: an instantiation that (transitively) requires an instantiation with a strictly larger type argument is a compile error after an implementation-defined depth (at least 64).
 
 ### 16.8 Structural hashing
@@ -2530,7 +2531,7 @@ destroy      :: fn(T: type, p: ^const T) \ {Alloc}
 dupe         :: fn(T: type, s: []const T) -> AllocError![]T \ {Alloc}
 ```
 
-`make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T, ---)` is allowed when `T` is plain-data (§4.4).
+`make` returns uninitialized storage (filled with `0xAA` in Debug builds), so it requires a plain-data element type; `make_fill` works for any type. `new(T: X, ---)` is allowed when `X` is plain-data (§4.4).
 
 `free(s)` and `destroy(p)` release storage obtained from the current allocator; the slice or pointer must be exactly what was returned (§15.2). Freeing an empty slice is a no-op. Storage from `make_aligned(T, n, align)` is released with `free_aligned(s, align)`, passing the same `align`, so that the allocator gets back the alignment it allocated with.
 

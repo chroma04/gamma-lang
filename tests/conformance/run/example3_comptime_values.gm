@@ -50,7 +50,7 @@ main :: fn() \ {Out} {
     print("{}\n", FB)
     print("{}\n", W)
     print("{} {}\n", (sz(u16), sz(Mat(2, 3))))
-    print("{} {}\n", (check(u32, 5), check(f64, 1.0)))
+    print("{} {}\n", (check(T: u32, 5), check(T: f64, 1.0)))
     print("{} {}\n", (NAMES[2], TOTAL))
     print("{}\n", PROG[1])
     print("{}\n", slice_const.len)

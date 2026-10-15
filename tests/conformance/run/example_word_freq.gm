@@ -35,7 +35,7 @@ dup_lower :: fn(w: string) -> AllocError!string \ {Alloc} {
 }
 
 release :: fn(w: string) \ {Alloc} {
-    free(u8, w.ptr.cast([^]u8)[0..w.len])
+    free(T: u8, w.ptr.cast([^]u8)[0..w.len])
 }
 
 more_frequent :: fn(a, b: ^const Entry) -> bool {

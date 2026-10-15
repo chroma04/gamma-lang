@@ -38,11 +38,11 @@ main :: fn() \ {Out, Rand} {
     h := random.seeded(99)
     with &h {
         // below
-        print("below(u8, 1) = {}\n", random.below(u8, 1))
+        print("below(u8, 1) = {}\n", random.below(T: u8, 1))
         counts: [6]u32 = [_]u32(0, 0, 0, 0, 0, 0)
         in_bounds := true
         for _ in 0..6000 {
-            v := random.below(u32, 6)
+            v := random.below(T: u32, 6)
             if v >= 6 { in_bounds = false } else { counts[v] += 1 }
         }
         all_seen := true
@@ -50,9 +50,9 @@ main :: fn() \ {Out, Rand} {
         print("below(u32, 6): in bounds {} all faces plausible {}\n", (in_bounds, all_seen))
         big_ok := true
         for _ in 0..1000 {
-            if random.below(u64, 1_000_000_007) >= 1_000_000_007 { big_ok = false }
-            if random.below(u16, 65535) >= 65535 { big_ok = false }
-            if random.below(i8, 100) >= 100 { big_ok = false }
+            if random.below(T: u64, 1_000_000_007) >= 1_000_000_007 { big_ok = false }
+            if random.below(T: u16, 65535) >= 65535 { big_ok = false }
+            if random.below(T: i8, 100) >= 100 { big_ok = false }
         }
         print("below bounds on other types: {}\n", big_ok)
 
@@ -61,18 +61,18 @@ main :: fn() \ {Out, Rand} {
         saw_lo := false
         saw_hi := false
         for _ in 0..2000 {
-            v := random.range(i32, -3, 3)
+            v := random.range(T: i32, -3, 3)
             if v < -3 or v >= 3 { neg_ok = false }
             if v is -3 { saw_lo = true }
             if v is 2 { saw_hi = true }
         }
         print("range(i32, -3, 3): in bounds {} reaches ends {} {}\n", (neg_ok, saw_lo, saw_hi))
-        print("range of one value: {}\n", random.range(i16, -5, -4))
+        print("range of one value: {}\n", random.range(T: i16, -5, -4))
         full_ok := true
         big_seen := false
         small_seen := false
         for _ in 0..1000 {
-            v := random.range(i64, -9223372036854775807 - 1, 9223372036854775807)
+            v := random.range(T: i64, -9223372036854775807 - 1, 9223372036854775807)
             if v is 9223372036854775807 { full_ok = false }
             if v > 1_000_000_000_000_000_000 { big_seen = true }
             if v < -1_000_000_000_000_000_000 { small_seen = true }
@@ -80,12 +80,12 @@ main :: fn() \ {Out, Rand} {
         print("range(i64) full span: {} {} {}\n", (full_ok, big_seen, small_seen))
         wide := false
         for _ in 0..200 {
-            if random.range(i8, -128, 127) < -64 { wide = true }
+            if random.range(T: i8, -128, 127) < -64 { wide = true }
         }
         print("range(i8) full span reaches low values: {}\n", wide)
         u_ok := true
         for _ in 0..1000 {
-            v := random.range(u8, 200, 255)
+            v := random.range(T: u8, 200, 255)
             if v < 200 or v >= 255 { u_ok = false }
         }
         print("range(u8, 200, 255): {}\n", u_ok)
@@ -118,26 +118,26 @@ main :: fn() \ {Out, Rand} {
         // shuffle
         items := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
         orig := items
-        random.shuffle(u32, items[..])
+        random.shuffle(items[..])
         seen: [10]bool = [_]bool(false, false, false, false, false, false, false, false, false, false)
         for v in items { seen[v] = true }
         perm := true
         for s in seen { if not s { perm = false } }
         print("shuffle is a permutation: {} moved something: {}\n", (perm, items is not orig))
         one := [_]u32(5)
-        random.shuffle(u32, one[..])
-        random.shuffle(u32, items[0..0])
+        random.shuffle(one[..])
+        random.shuffle(items[0..0])
         print("shuffle of one: {}\n", one[0])
 
         // choice
         words := [_]string("a", "b", "c")
         pick_ok := true
         for _ in 0..100 {
-            w := random.choice(string, words[..])
+            w := random.choice(words[..])
             if w is null { pick_ok = false }
         }
         print("choice picks members: {}\n", pick_ok)
-        print("choice of nothing: {}\n", random.choice(string, words[0..0]) is null)
+        print("choice of nothing: {}\n", random.choice(words[0..0]) is null)
 
         // weighted
         ws := [_]f64(0.0, 1.0, 0.0, 3.0, -2.0)

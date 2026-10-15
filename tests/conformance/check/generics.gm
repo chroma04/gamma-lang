@@ -26,7 +26,7 @@ Shape :: struct { w: u32 }
 
 uses :: fn(xs: []const i32, ss: []const Shape) {
     _ = max(xs)
-    _ = max(i32, xs)
+    _ = max(xs)
     _ = max(ss)                             //~ ERROR does not satisfy `Ord(T)`
     _ = literal(u8)                         //~ ERROR does not fit in `u8`
     _ = literal(u16)

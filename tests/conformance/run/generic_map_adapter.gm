@@ -6,8 +6,8 @@ map_it :: fn(A, B: type, src: fn() \ {Yield(A)}, f: fn(a: A) -> B) \ {Yield(B)} 
 nums :: fn() \ {Yield(i32)} { yield(1); yield(2) }
 main :: fn() \ {Out} {
     same()
-    for s in map_it(i32, i64, nums, fn(a: i32) -> i64 => i64(a) * 1000000000000) { print("{}\n", s) }
+    for s in map_it(A: i32, B: i64, nums, fn(a: i32) -> i64 => i64(a) * 1000000000000) { print("{}\n", s) }
 }
 same :: fn() \ {Out} {
-    for s in map_it(i32, i32, nums, fn(a: i32) -> i32 => a * 10) { print("{}\n", s) }
+    for s in map_it(A: i32, B: i32, nums, fn(a: i32) -> i32 => a * 10) { print("{}\n", s) }
 }

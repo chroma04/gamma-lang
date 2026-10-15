@@ -30,14 +30,14 @@ pop :: fn(T: type, s: ^Stack(T)) -> ?T {
 
 sum :: fn(T: type, t: ^const Tree(T)) -> T where Num(T) => match t^ {
     .Leaf(v)           => v
-    .Node(left, right) => sum(T, left) + sum(T, right)
+    .Node(left, right) => sum(left) + sum(right)
 }
 
 main :: fn() \ {Out} {
     p := Pair(i32)(a: 1, b: 2)
     print("{} {}\n", (swap(p), p.larger()))
     q := Pair(string)(a: "x", b: "y")
-    print("{}\n", swap(string, q))
+    print("{}\n", swap(q))
     s := Stack(u8)(items: [8]u8(fill: 0), len: 0)
     _ = s.push(7)
     _ = s.push(9)

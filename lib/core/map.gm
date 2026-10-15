@@ -56,11 +56,11 @@ find :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn
            m: ^const HashMap(K, V, hash, eq), k: ^const K) -> ?usize {
     n := m.slots.len
     if n is 0 { return null }
-    i := key_hash(K, hash, k, m.seed).trunc(usize) & (n - 1)
+    i := key_hash(hash, k, m.seed).trunc(usize) & (n - 1)
     while true {
         s := &m.slots[i]
         if s.state is EMPTY { return null }
-        if s.state is FULL and key_eq(K, eq, &s.key, k) { return i }
+        if s.state is FULL and key_eq(eq, &s.key, k) { return i }
         i = (i + 1) & (n - 1)
     }
 }
@@ -69,7 +69,7 @@ find :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn
 insert_new :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
                  m: ^HashMap(K, V, hash, eq), k: ^const K, v: ^const V) {
     n := m.slots.len
-    i := key_hash(K, hash, k, m.seed).trunc(usize) & (n - 1)
+    i := key_hash(hash, k, m.seed).trunc(usize) & (n - 1)
     while m.slots[i].state is FULL { i = (i + 1) & (n - 1) }
     if m.slots[i].state is EMPTY { m.used += 1 }
     m.slots[i] = Slot(K, V)(state: FULL, key: k^, value: v^)

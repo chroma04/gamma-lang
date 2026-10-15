@@ -146,7 +146,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [4]thread.Thread = ---
     for i in 0..4 {
         jobs[i] = Job(sh: &sh, who: i.trunc(u32) + 1, rounds: 300)
-        ts[i] = try thread.spawn(Job, teller, &jobs[i])
+        ts[i] = try thread.spawn(teller, &jobs[i])
     }
     for i in 0..4 { ts[i].join() }
     // each who adds 300 * who * 10 plus (0+1+2)*100 to its own slot
@@ -154,8 +154,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     for i in 0..4 { print("slot {} {}\n", (i, sh.acct.balance[i])) }
 
     pc := PC(ring: Ring(lock: thread.mutex(), buf: ---, head: 0, count: 0, closed: false), produced: 0, result: 0, got: 0)
-    tp := try thread.spawn(PC, producer, &pc)
-    tc := try thread.spawn(PC, consumer, &pc)
+    tp := try thread.spawn(producer, &pc)
+    tc := try thread.spawn(consumer, &pc)
     tp.join()
     tc.join()
     expected: u64 = 0
@@ -164,7 +164,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
 
     word: u32 = u32(Status(ready: true, err: false, stage: 0, count: 0))
     ws: [3]thread.Thread = ---
-    for i in 0..3 { ws[i] = try thread.spawn(u32, stage_worker, &word) }
+    for i in 0..3 { ws[i] = try thread.spawn(stage_worker, &word) }
     for i in 0..3 { ws[i].join() }
     st := Status(word)
     print("status ready {} stage {} count {}\n", (st.ready, st.stage, st.count))

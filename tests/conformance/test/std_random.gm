@@ -24,8 +24,8 @@ test "helpers are reproducible under a seed" {
     s := random.seeded(11)
     xs: [16]u32 = ---
     ys: [16]u32 = ---
-    with &r { for i in 0..16 { xs[i] = random.below(u32, 1000) } }
-    with &s { for i in 0..16 { ys[i] = random.below(u32, 1000) } }
+    with &r { for i in 0..16 { xs[i] = random.below(T: u32, 1000) } }
+    with &s { for i in 0..16 { ys[i] = random.below(T: u32, 1000) } }
     assert(xs is ys, "same draws")
 }
 
@@ -35,19 +35,19 @@ test "wide integer ranges use every bit" {
         big: u128 = 1 << 100
         upper := 0
         for _ in 0..1000 {
-            x := random.below(u128, big)
+            x := random.below(big)
             assert(x < big, "below n")
             if x >= big / 2 { upper += 1 }
         }
         assert(upper > 400 and upper < 600, "the upper half is drawn too")
         negative := 0
         for _ in 0..1000 {
-            y := random.range(i128, -(1 << 120), 1 << 120)
+            y := random.range(T: i128, -(1 << 120), 1 << 120)
             assert(y >= -(1 << 120) and y < 1 << 120, "in range")
             if y < 0 { negative += 1 }
         }
         assert(negative > 400 and negative < 600, "both signs are drawn")
-        assert(random.range(i128, @min_value(i128), @max_value(i128)) < @max_value(i128), "full span")
-        assert(random.below(u128, 1) is 0, "one value")
+        assert(random.range(T: i128, @min_value(i128), @max_value(i128)) < @max_value(i128), "full span")
+        assert(random.below(T: u128, 1) is 0, "one value")
     }
 }

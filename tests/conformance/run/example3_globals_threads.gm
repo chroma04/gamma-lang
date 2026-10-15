@@ -21,7 +21,7 @@ worker :: fn(arg: ^u32) \ {Sys} {
 main :: fn() -> IoError!() \ {Out, Sys} {
     ids := [_]u32(1, 2, 3)
     ts: [3]thread.Thread = ---
-    for i in 0..3 { ts[i] = try thread.spawn(u32, worker, &ids[i]); ts[i].join() }
+    for i in 0..3 { ts[i] = try thread.spawn(worker, &ids[i]); ts[i].join() }
     print("hits {} flag {} tl {}\n", (@atomic_load(&hits, .SeqCst), @atomic_load(&flag, .SeqCst), tl))
     table[2] = 30
     print("{} {}\n", (table[2], msg.cstr_len()))

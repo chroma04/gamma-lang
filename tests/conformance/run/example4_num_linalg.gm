@@ -100,19 +100,19 @@ lu_solve :: fn(N :: usize, f: ^const LU(N), b: [N]f64) -> [N]f64 {
 }
 
 determinant :: fn(N :: usize, m: ^const Mat(N, N)) -> f64 {
-    f := lu_decompose(N, m) else return 0.0
+    f := lu_decompose(N: N, m) else return 0.0
     d := f64(f.sign)
     for i in 0..N { d *= f.lu.a[i][i] }
     return d
 }
 
 inverse :: fn(N :: usize, m: ^const Mat(N, N)) -> Singular!Mat(N, N) {
-    f := try lu_decompose(N, m)
+    f := try lu_decompose(N: N, m)
     inv := zeros(N, N)
     for c in 0..N {
         e := [N]f64(fill: 0.0)
         e[c] = 1.0
-        col := lu_solve(N, &f, e)
+        col := lu_solve(N: N, &f, e)
         for r in 0..N { inv.a[r][c] = col[r] }
     }
     return inv
@@ -155,27 +155,27 @@ main :: fn() \ {Out} {
     )
     print("A =\n")
     show(&a)
-    f := lu_decompose(3, &a) else { print("singular?\n")
+    f := lu_decompose(N: 3, &a) else { print("singular?\n")
         return }
     print("permutation: {}, sign: {}\n", (f.perm, f.sign))
     print("LU =\n")
     show(&f.lu)
-    x := lu_solve(3, &f, [3]f64(8.0, -11.0, -3.0))
+    x := lu_solve(N: 3, &f, [3]f64(8.0, -11.0, -3.0))
     b0: [64]u8 = ---
     b1: [64]u8 = ---
     b2: [64]u8 = ---
     print("x = ({}, {}, {})\n", (fixed4(x[0], b0[..]), fixed4(x[1], b1[..]), fixed4(x[2], b2[..])))
 
-    print("det(A) = {}\n", fmt.fixed(determinant(3, &a), 4, fb[..]))
+    print("det(A) = {}\n", fmt.fixed(determinant(N: 3, &a), 4, fb[..]))
 
     // Inverse and the round trip A * A^-1 = I.
-    inv := inverse(3, &a) else { print("no inverse\n")
+    inv := inverse(N: 3, &a) else { print("no inverse\n")
         return }
     print("A^-1 =\n")
     show(&inv)
-    prod := matmul(3, 3, 3, &a, &inv)
+    prod := matmul(N: 3, K: 3, M: 3, &a, &inv)
     id := identity(3)
-    print("max |A*inv - I| < 1e-12: {}\n", max_abs_diff(3, 3, &prod, &id) < 1e-12)
+    print("max |A*inv - I| < 1e-12: {}\n", max_abs_diff(N: 3, M: 3, &prod, &id) < 1e-12)
 
     // A singular matrix is reported, not divided by zero.
     s := zeros(3, 3)
@@ -184,8 +184,8 @@ main :: fn() \ {Out} {
         [3]f64(2.0, 4.0, 6.0),
         [3]f64(1.0, 1.0, 1.0),
     )
-    print("det(S) = {}\n", fmt.fixed(determinant(3, &s), 4, fb[..]))
-    match inverse(3, &s) {
+    print("det(S) = {}\n", fmt.fixed(determinant(N: 3, &s), 4, fb[..]))
+    match inverse(N: 3, &s) {
         !.Singular => print("S is singular\n")
         _          => print("S inverted?\n")
     }
@@ -195,18 +195,18 @@ main :: fn() \ {Out} {
     for i in 0..4 {
         for j in 0..4 { h.a[i][j] = 1.0 / (i + j + 1).to(f64) }
     }
-    dh := determinant(4, &h)
+    dh := determinant(N: 4, &h)
     print("det(H4) = {}\n", fmt.sci(dh, 6, fb[..]))
-    hinv := inverse(4, &h) else { return }
+    hinv := inverse(N: 4, &h) else { return }
     print("H4^-1[0][0] = {}  H4^-1[3][3] = {}\n", (fmt.fixed(hinv.a[0][0], 2, fb[0..40]), fmt.fixed(hinv.a[3][3], 2, fb[100..140])))
 
     // Rectangular products and transposes.
     r := zeros(2, 3)
     r.a = [2][3]f64([3]f64(1.0, 2.0, 3.0), [3]f64(4.0, 5.0, 6.0))
-    rt := transpose(2, 3, &r)
-    g := matmul(2, 3, 2, &r, &rt)
+    rt := transpose(N: 2, M: 3, &r)
+    g := matmul(N: 2, K: 3, M: 2, &r, &rt)
     print("R * R^T =\n")
     show(&g)
-    gt := transpose(2, 2, &g)
+    gt := transpose(N: 2, M: 2, &g)
     print("symmetric: {}\n", g.a is gt.a)
 }

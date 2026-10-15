@@ -38,7 +38,7 @@ pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> A
     step("scan", all.len)
     emitted: usize = 0
     if less := q.ordering() {
-        h := heap.heap_by(T, less)
+        h := heap.heap_by(less)
         defer h.deinit()
         for i in 0..all.len {
             if q.accepts(&all[i]) { try h.push(all[i]) }

@@ -5,7 +5,7 @@ Stop :: effect { stop: esc(code: i32) -> never }
 
 nums :: fn(n: i32) \ {Yield(i32), Out} {
     defer print("nums({}) done\n", n)
-    for i in range(i32, 0, n) { yield(i) }
+    for i in range(0, n) { yield(i) }
 }
 
 squares :: fn(n: i32) \ {Yield(i32), Out} {

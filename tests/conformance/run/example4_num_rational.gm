@@ -108,8 +108,8 @@ convergent :: fn(terms: []const i64, upto: usize) -> Ratio(i64) {
 
 main :: fn() \ {Out} {
     // Basic canonical form and arithmetic.
-    a := make_ratio(i64, 6, -8) else { return }
-    b := make_ratio(i64, 5, 12) else { return }
+    a := make_ratio(T: i64, 6, -8) else { return }
+    b := make_ratio(T: i64, 5, 12) else { return }
     print("6/-8 = ")
     show(a)
     print("\n")
@@ -123,12 +123,12 @@ main :: fn() \ {Out} {
     show(recip(a) else { return })
     print("\n")
     print("a < b: {}, b < a: {}, -a < a: {}\n", (less(a, b), less(b, a), less(neg(a), a)))
-    print("zero denominator: {}\n", make_ratio(i64, 1, 0) is !.ZeroDenominator)
+    print("zero denominator: {}\n", make_ratio(T: i64, 1, 0) is !.ZeroDenominator)
 
     // Harmonic numbers H_n exactly: H_20 = 55835135/15519504.
-    h := whole(i64, 0)
+    h := whole(T: i64, 0)
     for k in 1..=20 {
-        term := make_ratio(i64, 1, k.trunc(i64)) else { return }
+        term := make_ratio(T: i64, 1, k.trunc(i64)) else { return }
         h = add(h, term) else { print("overflow at {}\n", k)
             return }
         if k in (1, 2, 3, 10, 20) {
@@ -140,10 +140,10 @@ main :: fn() \ {Out} {
     print("H_20 ~ {}\n", to_f64(h))
 
     // The same sum overflows i32 earlier, and the overflow is detected rather than wrapped.
-    h32 := whole(i32, 0)
+    h32 := whole(T: i32, 0)
     reached: u32 = 0
     for k in 1..=40 {
-        term := make_ratio(i32, 1, k.trunc(i32)) else { return }
+        term := make_ratio(T: i32, 1, k.trunc(i32)) else { return }
         h32 = add(h32, term) else {
             print("i32 harmonic sum overflows at k={}\n", k)
             break
@@ -189,12 +189,12 @@ main :: fn() \ {Out} {
     print("\n")
 
     // Egyptian fractions by the greedy algorithm: 4/13 = 1/4 + 1/18 + 1/468.
-    rest := make_ratio(i64, 4, 13) else { return }
+    rest := make_ratio(T: i64, 4, 13) else { return }
     print("4/13 =")
     while rest.num > 0 {
         d := (rest.den + rest.num - 1) / rest.num       // ceil(den / num)
         print(" 1/{}", d)
-        unit := make_ratio(i64, 1, d) else { return }
+        unit := make_ratio(1, d) else { return }
         rest = add(rest, neg(unit)) else { return }
     }
     print("\n")

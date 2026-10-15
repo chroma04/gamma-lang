@@ -73,7 +73,7 @@ main :: fn() \ {Out} {
     // Fibonacci numbers: [[1,1],[1,0]]^n = [[F(n+1), F(n)], [F(n), F(n-1)]]
     fibm := Matrix(u64, 2, 2)(d: [2][2]u64([2]u64(1, 1), [2]u64(1, 0)))
     for n in [_]u32(1, 10, 50, 90) {
-        p := power(u64, 2, fibm, n)
+        p := power(N: 2, fibm, n)
         print("F({}) = {}\n", (n, p.d[0][1]))
     }
 
@@ -81,10 +81,10 @@ main :: fn() \ {Out} {
     c := 0.8090169943749475
     s := 0.5877852522924731
     rot := Matrix(f64, 2, 2)(d: [2][2]f64([2]f64(c, -s), [2]f64(s, c)))
-    r10 := power(f64, 2, rot, 10)
+    r10 := power(N: 2, rot, 10)
     dev := (r10.d[0][0] - 1.0).abs() + r10.d[0][1].abs() + r10.d[1][0].abs() + (r10.d[1][1] - 1.0).abs()
     print("rotation^10 close to identity: {}\n", dev < 1e-14)
-    print("trace(rot) = {}\n", trace(f64, 2, &rot))
+    print("trace(rot) = {}\n", trace(N: 2, &rot))
 
     // f32 and i32 versions of the same shape.
     m32 := Matrix(f32, 2, 3)(d: [2][3]f32([3]f32(1.0, 2.0, 3.0), [3]f32(4.0, 5.0, 6.0)))

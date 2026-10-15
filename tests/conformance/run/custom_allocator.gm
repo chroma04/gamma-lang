@@ -25,11 +25,11 @@ COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_fr
 main :: fn() \ {Out, Alloc} {
     c := Counter(live: 0, allocs: 0, inner: current())
     with Allocator(data: &c, vt: &COUNTING) {
-        p := new(u64, 1) else return
+        p := new(T: u64, 1) else return
         s := make(i32, 3) else return
         print("live {} after {} allocations\n", (c.live, c.allocs))
-        free(i32, s)
-        destroy(u64, p)
+        free(s)
+        destroy(p)
     }
     print("live {} after {} allocations\n", (c.live, c.allocs))
     l := with Allocator(data: &c, vt: &COUNTING) { list(u8) }

@@ -94,6 +94,6 @@ main :: fn() \ {Out} {
     }
     print("emitted {}\n", got)
     ws := [4]string("a", "b", "c", "d")
-    for (p, q) in pairs(string, ws[..]) { print("{}{} ", (p, q)) }
+    for (p, q) in pairs(ws[..]) { print("{}{} ", (p, q)) }
     print("\n")
 }

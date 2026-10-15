@@ -100,7 +100,7 @@ comparisons :: fn() \ {Out} {
     print("{} {}\n", (a.abs_diff(b), c.abs_diff(d)))
     is_ := [3]i200(b, a, 0)
     us := [2]u200(d, c)
-    print("{} {}\n", (lowest(i200, is_[..]), lowest(u200, us[..])))
+    print("{} {}\n", (lowest(is_[..]), lowest(us[..])))
     print("{} {} {}\n", (c in c..d, d in c..d, d in c..=d))
 }
 
@@ -175,17 +175,17 @@ twice :: fn(T: type, x: T) -> T where Int(T) => x * 2
 
 library :: fn() \ {Out, Alloc} {
     start: u200 = (1 << 150) - 2
-    for i in range(u200, start, start + 5) {
+    for i in range(start, start + 5) {
         print("{} ", i)
     }
     print("\n")
-    for i in range_incl(i256, -2, 2) {
+    for i in range_incl(T: i256, -2, 2) {
         print("{} ", i)
     }
     print("\n")
     m := map(u200, i129)
     defer m.deinit()
-    for i in range(u200, 0, 50) {
+    for i in range(T: u200, 0, 50) {
         _ = m.put((i << 100) + 1, i129(i.trunc(u64)) - 25)
     }
     total: i129 = 0
@@ -194,7 +194,7 @@ library :: fn() \ {Out, Alloc} {
     for e in m.entries() { print("{} ", e.value) }
     print("\n")
     x: u200 = (1 << 150) + 255
-    print("{}\n", twice(u300, x))
+    print("{}\n", twice(T: u300, x))
     arr := [4]u200(1, 2, 3, 4)
     idx: u200 = 2
     hi: u256 = 3

@@ -23,7 +23,7 @@ main :: fn() \ {Out, Alloc} {
     out.clear()
     w := json.writer(&out, 0)
     _ = w.begin_array()
-    _ = w.write_int(i32, 1)
+    _ = w.write_int(T: i32, 1)
     print("{}\n", w.write_string("bad\xff"))
     _ = w.write_null()
     _ = w.end_array()

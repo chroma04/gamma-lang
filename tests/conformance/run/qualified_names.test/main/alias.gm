@@ -5,7 +5,7 @@ mk :: s.mk
 pmk :: s.pmk
 
 aliases :: fn() \ {Out, Alloc} {
-    a: A(i32) = mk(i32, 3)
+    a: A(i32) = mk(T: i32, 3)
     b := B(y: 4)
     l: L(u8) = list(u8)
     defer l.deinit()

@@ -20,19 +20,19 @@ count_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_free)
 
 main :: fn() -> AllocError!() \ {Out, Alloc} {
-    b := try new(Big, Big(a: [20]i64(fill: 7)))
+    b := try new(Big(a: [20]i64(fill: 7)))
     b.a[19] += 1
-    u := try new(Unit, Unit())
+    u := try new(Unit())
     c := Counter(allocs: 0)
     with Allocator(data: &c, vt: &COUNTING) {
-        q := try new(u64, 5)
-        destroy(u64, q)
+        q := try new(T: u64, 5)
+        destroy(q)
     }
-    p := try new(i32, 9)
+    p := try new(T: i32, 9)
     print("{} {} {}\n", (b.a[0], b.a[19], p^))
     print("custom allocations: {}\n", c.allocs)
-    destroy(i32, p)
-    destroy(Unit, u)
-    destroy(Big, b)
+    destroy(p)
+    destroy(u)
+    destroy(b)
     return ()
 }

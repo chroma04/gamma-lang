@@ -68,7 +68,7 @@ parse_csv :: fn(text: string) -> CsvError!List(Row) \ {Alloc} {
                 break
             }
         }
-        copy := try make_fill(string, fields.items.len, "")
+        copy := try make_fill(fields.items.len, "")
         copy.copy_from(fields.items)
         row: Row = copy
         try rows.push(row)

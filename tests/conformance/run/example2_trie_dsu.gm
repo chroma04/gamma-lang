@@ -13,7 +13,7 @@ Trie :: struct {
 }
 
 new_node :: fn() -> ^Node \ {Alloc} {
-    return new(Node, Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
+    return new(Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
 }
 
 trie :: fn() -> Trie \ {Alloc} => Trie(root: new_node())

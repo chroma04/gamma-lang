@@ -70,7 +70,7 @@ is_prime :: fn(n: i64) -> bool {
 }
 
 primes :: fn() \ {Yield(i64), Out} {
-    filtered(i64, fn() { naturals() }, is_prime)
+    filtered(T: i64, fn() { naturals() }, is_prime)
 }
 
 show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
@@ -81,15 +81,15 @@ show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
 
 adapters :: fn() \ {Out} {
     print("-- adapters\n")
-    show_stream("first 10 primes", fn() { taking(i64, 10, primes) })
+    show_stream("first 10 primes", fn() { taking(T: i64, 10, primes) })
     show_stream("squares of 1..5", fn() {
-        taking(i64, 5, fn() { mapped(i64, i64, naturals, fn(x: i64) -> i64 => x * x) })
+        taking(T: i64, 5, fn() { mapped(T: i64, U: i64, naturals, fn(x: i64) -> i64 => x * x) })
     })
-    show_stream("fibs from the 10th, 6 of them", fn() { taking(i64, 6, fn() { skipping(i64, 10, fibs) }) })
-    show_stream("fibs below 100", fn() { taking_while(i64, fibs, fn(x: i64) -> bool => x < 100) })
+    show_stream("fibs from the 10th, 6 of them", fn() { taking(T: i64, 6, fn() { skipping(T: i64, 10, fibs) }) })
+    show_stream("fibs below 100", fn() { taking_while(T: i64, fibs, fn(x: i64) -> bool => x < 100) })
     // The same stream consumed twice by different loops is two independent runs.
     total: i64 = 0
-    for p in taking(i64, 100, primes) { total += p }
+    for p in taking(T: i64, 100, primes) { total += p }
     print("sum of the first 100 primes: {}\n", total)
 }
 

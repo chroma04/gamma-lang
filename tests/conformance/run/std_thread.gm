@@ -68,7 +68,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     // Mutex
     c := Counter(n: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
-    for i in 0..4 { ts[i] = try thread.spawn(Counter, bump, &c) }
+    for i in 0..4 { ts[i] = try thread.spawn(bump, &c) }
     for i in 0..4 { ts[i].join() }
     print("counter {}\n", c.n)
     print("try_lock {} {}\n", (c.m.try_lock(), c.m.try_lock()))
@@ -81,8 +81,8 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     p.producers.add(3)
     ps: [3]thread.Thread = ---
     cs: [2]thread.Thread = ---
-    for i in 0..3 { ps[i] = try thread.spawn(Pipe, produce, &p) }
-    for i in 0..2 { cs[i] = try thread.spawn(Pipe, consume, &p) }
+    for i in 0..3 { ps[i] = try thread.spawn(produce, &p) }
+    for i in 0..2 { cs[i] = try thread.spawn(consume, &p) }
     p.producers.wait()
     p.ch.close()
     for i in 0..3 { ps[i].join() }
@@ -95,7 +95,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     // Condvar: three threads wait at a gate that the main thread opens.
     g := Gate(m: thread.mutex(), cv: thread.condvar(), open: false, through: 0)
     gs: [3]thread.Thread = ---
-    for i in 0..3 { gs[i] = try thread.spawn(Gate, pass, &g) }
+    for i in 0..3 { gs[i] = try thread.spawn(pass, &g) }
     thread.yield_now()
     g.m.lock()
     g.open = true
@@ -108,7 +108,7 @@ main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
     j := Job(wg: thread.wait_group(), done_count: 0)
     j.wg.add(5)
     js: [5]thread.Thread = ---
-    for i in 0..5 { js[i] = try thread.spawn(Job, task, &j) }
+    for i in 0..5 { js[i] = try thread.spawn(task, &j) }
     j.wg.wait()
     print("tasks done: {}\n", j.done_count)
     for i in 0..5 { js[i].join() }

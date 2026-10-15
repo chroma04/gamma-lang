@@ -150,7 +150,7 @@ test "a memory-backed device" {
 
 test "leak checking applies to driver buffers" {
     buf := make(u8, 64) else return
-    defer free(u8, buf)
+    defer free(buf)
     buf.fill(0x55)
     expect(buf[63] is 0x55)
 }

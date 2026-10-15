@@ -145,7 +145,7 @@ wide_bits :: fn(T: type) -> T \ {Rand} where Int(T) {
 pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
     assert(lo < hi, "random.range: lo must be less than hi")
     if @size_of(T) > 8 {
-        if hi -% lo > 0 { return lo +% below(T, hi -% lo) }
+        if hi -% lo > 0 { return lo +% below(T: T, hi -% lo) }
         // The span is more than half the range of a signed `T`: draw until in range.
         while true {
             r := wide_bits(T)
@@ -178,7 +178,7 @@ pub normal :: fn(mean, stddev: f64) -> f64 \ {Rand} {
 pub shuffle :: fn(T: type, items: []T) \ {Rand} {
     i := items.len
     while i > 1 {
-        j := below(usize, i)
+        j := below(i)
         i -= 1
         items.swap(i, j)
     }
@@ -187,7 +187,7 @@ pub shuffle :: fn(T: type, items: []T) \ {Rand} {
 /// A uniformly chosen element of `items`, or `null` if it is empty.
 pub choice :: fn(T: type, items: []const T) -> ?T \ {Rand} {
     if items.len is 0 { return null }
-    return items[below(usize, items.len)]
+    return items[below(items.len)]
 }
 
 /// An index of `weights` chosen with probability proportional to its weight, or `null`

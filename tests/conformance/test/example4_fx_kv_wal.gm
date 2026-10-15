@@ -212,11 +212,11 @@ recover :: fn(rep: ^Report) -> KvError!DiskKv \ {Fs, Alloc} {
     db := DiskKv(mem: mem_new())
     snap_rep := Report()
     if data := try slurp(SNAP) {
-        defer free(u8, data)
+        defer free(data)
         try replay(&db.mem, data, &snap_rep)
     }
     if data := try slurp(WAL) {
-        defer free(u8, data)
+        defer free(data)
         try replay(&db.mem, data, rep)
         if rep.torn or rep.bad {
             try fs.write_all(WAL, data[0..rep.valid_len])
@@ -281,7 +281,7 @@ test "the same workload runs against both handlers" {
     expect(disk.records is 7)
     // The log is plain text with a checksum on every line.
     data := ok(read_whole(WAL))
-    defer free(u8, data)
+    defer free(data)
     expect(data.starts_with("SET apple 3 #"))
 }
 
@@ -315,7 +315,7 @@ test "a torn last record is dropped and the log repaired" {
     data := ok(read_whole(WAL))
     cut := data.len - 6
     ok(fs.write_all(WAL, data[0..cut]))
-    free(u8, data)
+    free(data)
     rep := Report()
     db2 := ok(recover(&rep))
     defer db2.mem.m.deinit()
@@ -346,7 +346,7 @@ test "a corrupt record stops the replay" {
     at := str.find(data, "SET y 20") else trap("record not found")
     data[at + 6] = '9'
     ok(fs.write_all(WAL, data))
-    free(u8, data)
+    free(data)
     rep := Report()
     db2 := ok(recover(&rep))
     defer db2.mem.m.deinit()

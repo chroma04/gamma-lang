@@ -18,9 +18,9 @@ waiter :: fn(s: ^Shared) \ {Sys} {
 
 main :: fn() -> IoError!() \ {Out, Sys} {
     s := Shared(lock: 0, counter: 0, ready: 0, data: 1000)
-    w := try thread.spawn(Shared, waiter, &s)
+    w := try thread.spawn(waiter, &s)
     ts: [8]thread.Thread = ---
-    for i in 0..8 { ts[i] = try thread.spawn(Shared, worker, &s) }
+    for i in 0..8 { ts[i] = try thread.spawn(worker, &s) }
     for i in 0..8 { ts[i].join() }
     @atomic_store(&s.ready, 1, .Release)
     w.join()

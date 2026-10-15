@@ -57,10 +57,10 @@ main :: fn() \ {Out, Alloc} {
     with al {
         w := make_aligned(u8, 10, 256) else return
         print("aligned256 {} len {}\n", (w.ptr.addr() % 256, w.len))
-        free_aligned(u8, w, 256)
-        s := make_fill(u32, 3, 9) else return
+        free_aligned(w, 256)
+        s := make_fill(T: u32, 3, 9) else return
         print("{} {} {}\n", (s[0], s[1], s[2]))
-        free(u32, s)
+        free(s)
         m := make(u8, 100000)
         print("{}\n", m is !.OutOfMemory)
     }

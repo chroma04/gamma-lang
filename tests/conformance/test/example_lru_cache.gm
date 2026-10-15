@@ -21,12 +21,12 @@ Lru :: struct {
 }
 
 lru :: fn(capacity: usize) -> AllocError!Lru \ {Alloc} {
-    slots := try make_fill(Slot, capacity, Slot(key: 0, value: 0, stamp: 0, expires: 0))
+    slots := try make_fill(capacity, Slot(key: 0, value: 0, stamp: 0, expires: 0))
     return Lru(slots: slots)
 }
 
 drop :: fn(c: ^Lru) \ {Alloc} {
-    free(Slot, c.slots)
+    free(c.slots)
 }
 
 find_slot :: fn(c: ^Lru, key: u32) -> ?usize {
@@ -169,7 +169,7 @@ test "saved cache round-trips through the in-memory file system" {
     c.put(1234567, 9007199254740993, ms(0))
     save(&c, "cache.txt") else return
     data := fs.read_all("cache.txt") else return
-    defer free(u8, data)
+    defer free(data)
     expect(data.len is 36)
     expect(data[0..5] is "5=-50")
     info := stat("cache.txt") else return

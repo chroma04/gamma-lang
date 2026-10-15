@@ -58,7 +58,7 @@ pub append_int :: fn(T: type, out: ^List(u8), x: T, e: Endian) -> AllocError!() 
     tmp: [16]u8 = ---
     n := @size_of(T)
     assert(n <= tmp.len, "bytes: integer wider than 128 bits")
-    write_int(T, tmp[0..n], x, e)
+    write_int(tmp[0..n], x, e)
     try out.extend(tmp[0..n])
     return ()
 }
@@ -73,12 +73,12 @@ pub read_f64 :: fn(b: []const u8, e: Endian) -> f64 => read_int(u64, b, e).bits(
 
 /// Stores `x` in the first 4 bytes of `b`. Traps if `b` is shorter.
 pub write_f32 :: fn(b: []u8, x: f32, e: Endian) {
-    write_int(u32, b, x.bits(u32), e)
+    write_int(T: u32, b, x.bits(u32), e)
 }
 
 /// Stores `x` in the first 8 bytes of `b`. Traps if `b` is shorter.
 pub write_f64 :: fn(b: []u8, x: f64, e: Endian) {
-    write_int(u64, b, x.bits(u64), e)
+    write_int(T: u64, b, x.bits(u64), e)
 }
 
 // ---------------------------------------------------------------------------------

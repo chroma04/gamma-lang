@@ -109,7 +109,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     // Paths, using a heap ordered by a function on a struct.
     prev: [6]u32 = [6]u32(fill: INF)
     best: [6]u32 = [6]u32(fill: INF)
-    pq := hp.heap_by(State, cheaper)
+    pq := hp.heap_by(T: State, cheaper)
     defer pq.deinit()
     best[0] = 0
     try pq.push(State(cost: 0, node: 0, via: INF))

@@ -48,7 +48,7 @@ pub OrderedMap :: struct(K, V: type) {
 
 /// An empty map ordered by `<`, using the current allocator.
 pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K) {
-    return ordered_map_by(K, V, fn(a, b: ^const K) -> bool => a^ < b^)
+    return ordered_map_by(K: K, V, fn(a, b: ^const K) -> bool => a^ < b^)
 }
 
 /// An empty map ordered by `less`, using the current allocator. `less(a, b)` says that

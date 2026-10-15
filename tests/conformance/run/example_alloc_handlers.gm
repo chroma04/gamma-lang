@@ -82,11 +82,11 @@ handler Alloc for ^Bump {
 Matrix :: struct { rows, cols: usize, cells: []i64 }
 
 make_matrix :: fn(rows, cols: usize) -> AllocError!Matrix \ {Alloc} {
-    cells := try make_fill(i64, rows * cols, 0)
+    cells := try make_fill(T: i64, rows * cols, 0)
     return Matrix(rows: rows, cols: cols, cells: cells)
 }
 
-free_matrix :: fn(m: Matrix) \ {Alloc} { free(i64, m.cells) }
+free_matrix :: fn(m: Matrix) \ {Alloc} { free(m.cells) }
 
 two_matrices :: fn(n: usize) -> AllocError!i64 \ {Alloc} {
     a := try make_matrix(n, n)

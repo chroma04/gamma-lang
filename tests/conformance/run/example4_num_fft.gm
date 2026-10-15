@@ -65,10 +65,10 @@ convolve :: fn(N :: usize, a, b: []const i64, out: []i64) {
     fb := [N]Complex(fill: cx(0.0, 0.0))
     for i, v in enumerate(a) { fa[i] = cx(v.to(f64), 0.0) }
     for i, v in enumerate(b) { fb[i] = cx(v.to(f64), 0.0) }
-    fft(N, &fa, false)
-    fft(N, &fb, false)
+    fft(N: N, &fa, false)
+    fft(N: N, &fb, false)
     for i in 0..N { fa[i] = mul(fa[i], fb[i]) }
-    fft(N, &fa, true)
+    fft(N: N, &fa, true)
     for i in 0..out.len { out[i] = fa[i].re.round(i64) }
 }
 
@@ -85,13 +85,13 @@ main :: fn() \ {Out} {
     // The DFT of a unit impulse is flat; of a constant it is a single spike.
     imp := [8]Complex(fill: cx(0.0, 0.0))
     imp[0] = cx(1.0, 0.0)
-    fft(8, &imp, false)
+    fft(N: 8, &imp, false)
     flat := true
     for c in imp { if c.re is not 1.0 or c.im is not 0.0 { flat = false } }
     print("impulse spectrum flat: {}\n", flat)
 
     ones := [8]Complex(fill: cx(1.0, 0.0))
-    fft(8, &ones, false)
+    fft(N: 8, &ones, false)
     print("constant: X[0] = {}, others tiny: {}\n", (fmt.fixed(ones[0].re, 6, fbuf[..]), ones[1].re.abs() < 1e-12 and ones[5].im.abs() < 1e-12))
 
     // A pure cosine with 3 cycles over 16 samples has two spikes of N/2 at bins 3 and 13.
@@ -99,7 +99,7 @@ main :: fn() \ {Out} {
     for i in 0..16 {
         cosine[i] = cx(math.cos(math.tau * 3.0 * i.to(f64) / 16.0), 0.0)
     }
-    fft(16, &cosine, false)
+    fft(N: 16, &cosine, false)
     print("cosine bins:")
     for k in 0..16 {
         m := math.sqrt(norm2(cosine[k]))
@@ -118,12 +118,12 @@ main :: fn() \ {Out} {
     orig := sig
     energy_t := 0.0
     for c in sig { energy_t += norm2(c) }
-    fft(32, &sig, false)
+    fft(N: 32, &sig, false)
     energy_f := 0.0
     for c in sig { energy_f += norm2(c) }
     energy_f /= 32.0
     print("Parseval holds: {}\n", (energy_t - energy_f).abs() < 1e-12)
-    fft(32, &sig, true)
+    fft(N: 32, &sig, true)
     worst := 0.0
     for i in 0..32 {
         d := norm2(sub(sig[i], orig[i]))

@@ -288,17 +288,33 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut stmts = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
-        // Positional arguments never bind a `@caller_location()` parameter.
-        let positional_max = params.iter().filter(|p| !p.is_site()).count();
+        // Positional arguments bind, in order, the parameters that no named argument names
+        // (§11.3); never a `@caller_location()` parameter.
+        let named_here: Vec<crate::symbol::Symbol> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Named(n, _) => Some(n.name),
+                _ => None,
+            })
+            .collect();
+        let positional_slot = |p: &ParamInfo| !p.is_site() && !named_here.contains(&p.name);
+        let positional_max = params.iter().filter(|p| positional_slot(p)).count();
+        let skip_named = |mut i: usize| {
+            while i < params.len() && !positional_slot(&params[i]) {
+                i += 1;
+            }
+            i
+        };
         // After a spread fails, missing arguments are not reported again.
         let mut spread_failed = false;
         for arg in args {
             match &arg.kind {
                 ArgKind::Positional(e) => {
                     if seen_named {
-                        self.error(arg.span, "positional arguments must come before named arguments");
+                        self.error(arg.span, "positional arguments must come before a spread that supplies names");
                     }
-                    if next_positional >= positional_max {
+                    next_positional = skip_named(next_positional);
+                    if next_positional >= params.len() {
                         self.error(arg.span, format!("too many arguments: the {} takes {}", what, positional_max));
                         let _ = self.expr(e, None);
                         continue;
@@ -312,7 +328,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     next_positional += 1;
                 }
                 ArgKind::Named(name, e) => {
-                    seen_named = true;
                     let Some(i) = params.iter().position(|p| p.name == name.name) else {
                         self.error(name.span, format!("the {} has no parameter named `{}`", what, name.name));
                         let _ = self.expr(e, None);
@@ -339,11 +354,15 @@ impl<'a, 's> FnCx<'a, 's> {
                             // An unnamed tuple's elements are positional arguments.
                             None => {
                                 if seen_named {
-                                    self.error(e.span, "positional arguments must come before named arguments");
+                                    self.error(
+                                        e.span,
+                                        "positional arguments must come before a spread that supplies names",
+                                    );
                                     spread_failed = true;
                                     break;
                                 }
-                                if next_positional >= positional_max {
+                                next_positional = skip_named(next_positional);
+                                if next_positional >= params.len() {
                                     self.error(
                                         e.span,
                                         format!("too many arguments: the {} takes {}", what, positional_max),

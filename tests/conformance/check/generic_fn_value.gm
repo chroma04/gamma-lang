@@ -6,11 +6,11 @@ main :: fn() {
     g := f //~ ERROR `f` is generic, so it needs its compile-time arguments
     h :: fn(T: type, x: T) -> T => x
     k := h //~ ERROR `h` is generic, so it needs its compile-time arguments
-    p: ^fn(x: u8) -> u8 = f(u8)
+    p: ^fn(x: u8) -> u8 = f(T: u8)
     q: ^fn(x: u8) -> u8 = f
     r: ^fn(x: u8) -> u16 = f //~ ERROR
-    s := g2(u8) //~ ERROR cannot infer the type parameter `U`
+    s := g2(u8) //~ ERROR cannot infer the type parameter `T`; write it by name
     t: ^fn(x: u8) -> u8 = g2 //~ ERROR
-    u: ^fn(x: u16) -> u16 = f(u8) //~ ERROR
-    _ = f(u8, 3)
+    u: ^fn(x: u16) -> u16 = f(T: u8) //~ ERROR
+    _ = f(T: u8, 3)
 }

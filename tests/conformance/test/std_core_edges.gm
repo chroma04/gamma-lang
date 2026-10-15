@@ -32,7 +32,7 @@ test "allocation sizes that overflow are out of memory" {
         free(s)
         expect(false, "make")
     }
-    if s := make_fill(u64, n, 0) {
+    if s := make_fill(T: u64, n, 0) {
         free(s)
         expect(false, "make_fill")
     }

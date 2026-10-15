@@ -34,7 +34,7 @@ test "expectations fail" {
 }
 
 test "leaks are caught" {
-    p := new(i32, 5) else return
+    p := new(T: i32, 5) else return
     _ = p
 }
 

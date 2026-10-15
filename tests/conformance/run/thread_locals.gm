@@ -12,8 +12,8 @@ bump :: fn(arg: ^u32) \ {Sys} {
 
 main :: fn() -> IoError!() \ {Out, Sys} {
     mine = 100
-    a := try thread.spawn(u32, bump, &shared)
-    b := try thread.spawn(u32, bump, &shared)
+    a := try thread.spawn(T: u32, bump, &shared)
+    b := try thread.spawn(T: u32, bump, &shared)
     a.join()
     b.join()
     print("main's copy {}, shared {}\n", (mine, shared))

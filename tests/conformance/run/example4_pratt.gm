@@ -150,7 +150,7 @@ expect :: fn(p: ^Parser, kind: Kind, what: string) -> Failure!Token {
 }
 
 mk :: fn(pos: usize, kind: NodeKind) -> Failure!^Node \ {Alloc} {
-    return try new(Node, Node(pos: pos, kind: kind))
+    return try new(Node(pos: pos, kind: kind))
 }
 
 // Binding powers: (left, right). Right-associative operators have right < left.

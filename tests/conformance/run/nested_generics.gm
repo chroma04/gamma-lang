@@ -14,5 +14,5 @@ main :: fn() \ {Out} {
     nums := [5]i32(3, 9, 2, 7, 1)
     words := [3]string("pear", "apple", "zucchini")
     print("{} {}\n", (biggest(nums[..]), biggest(words[..])))
-    print("{}\n", fill(u8, 3, 7))
+    print("{}\n", fill(T: u8, 3, 7))
 }

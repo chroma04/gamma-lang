@@ -87,7 +87,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NWORKERS]thread.Thread = ---
     for i in 0..NWORKERS {
         args[i] = JobArg(job: &job, id: i.trunc(u32))
-        ts[i] = try thread.spawn(JobArg, worker, &args[i])
+        ts[i] = try thread.spawn(worker, &args[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
 
@@ -103,7 +103,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     targs := [NWORKERS]TransferArg(fill: TransferArg(bank: &bank, seed: 0))
     for i in 0..NWORKERS {
         targs[i] = TransferArg(bank: &bank, seed: 12345 + i.trunc(u32) * 7919)
-        ts[i] = try thread.spawn(TransferArg, transfer, &targs[i])
+        ts[i] = try thread.spawn(transfer, &targs[i])
     }
     for i in 0..NWORKERS { ts[i].join() }
     sum: i64 = 0

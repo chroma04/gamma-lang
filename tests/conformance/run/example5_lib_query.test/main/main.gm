@@ -131,7 +131,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("\nrich or young: {}\n", either.count())
 
     print("-- index --\n")
-    ix := try db.table.index(Employee, u32, &staff, emp_id)
+    ix := try db.table.index(K: u32, &staff, emp_id)
     defer ix.release()
     for id in [_]u32(7, 3, 42) {
         if i := ix.find(id) {

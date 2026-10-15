@@ -92,7 +92,7 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     ts: [NT]thread.Thread = ---
     for i in 0..NT {
         ws[i] = Worker(sh: &sh, id: i.trunc(u32))
-        ts[i] = try thread.spawn(Worker, work, &ws[i])
+        ts[i] = try thread.spawn(work, &ws[i])
     }
     for i in 0..NT { ts[i].join() }
     print("plain counter {} (expected {})\n", (sh.plain, NT * ITER))
@@ -100,8 +100,8 @@ main :: fn() -> IoError!() \ {Out, Sys} {
     print("bits {} parity {}\n", (sh.bits, sh.parity))
 
     ring := Ring(slots: [RING]u32(fill: 0), head: 0, tail: 0, sum: 0, received: 0)
-    p := try thread.spawn(Ring, producer, &ring)
-    c := try thread.spawn(Ring, consumer, &ring)
+    p := try thread.spawn(producer, &ring)
+    c := try thread.spawn(consumer, &ring)
     p.join()
     c.join()
     expected: u64 = 0

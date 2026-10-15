@@ -51,9 +51,9 @@ main :: fn() \ {Out, Alloc} {
     b := Job(name: "b", rounds: 2)
     c := Job(name: "c", rounds: 5)
     with &s on main_stack[..] {
-        fiber.spawn(Job, talker, &a, sa[..])
-        fiber.spawn(Job, talker, &b, sb[..])
-        fiber.spawn(Job, silent, &c, sc[..])
+        fiber.spawn(talker, &a, sa[..])
+        fiber.spawn(talker, &b, sb[..])
+        fiber.spawn(silent, &c, sc[..])
         fiber.join()
     }
 
@@ -64,9 +64,9 @@ main :: fn() \ {Out, Alloc} {
     y := Job(name: "y", rounds: 3)
     with (handler Tick { tick(name) => { ticks += 1 } }) {
         with &t on main_stack[..] {
-            fiber.spawn(Job, ticker, &x, sa[..])
-            fiber.spawn(Job, ticker, &y, sb[..])
-            fiber.spawn(Job, talky, &a, sc[..])
+            fiber.spawn(ticker, &x, sa[..])
+            fiber.spawn(ticker, &y, sb[..])
+            fiber.spawn(talky, &a, sc[..])
             fiber.join()
         }
     }

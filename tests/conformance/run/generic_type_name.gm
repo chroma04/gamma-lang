@@ -4,7 +4,7 @@ name2 :: fn(T: type, x: T) -> string => @type_name(@type_of(x))
 Box :: struct(T: type) { v: T }
 main :: fn() \ {Out} {
     print("{}\n", name_of(u16))
-    print("{}\n", name2(?[3]u8, null))
+    print("{}\n", name2(T: ?[3]u8, null))
     print("{}\n", name_of(Box(i64)))
     print("{}\n", @type_name(Box(u8)))
 }

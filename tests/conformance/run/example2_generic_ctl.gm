@@ -84,9 +84,9 @@ run_outer :: fn(stop_at: u32) \ {Out} {
 
 main :: fn() \ {Out} {
     ia := [_]i32(1, 2, 3, 4)
-    print("{}\n", collect_sum(i32, ia[..]))
+    print("{}\n", collect_sum(ia[..]))
     fa := [_]f64(0.5, 0.25)
-    print("{}\n", collect_sum(f64, fa[..]))
+    print("{}\n", collect_sum(fa[..]))
     print("{}\n", answer())
     run_outer(100)
 }

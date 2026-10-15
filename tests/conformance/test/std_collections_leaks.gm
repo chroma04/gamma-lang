@@ -59,7 +59,7 @@ test "a heap frees its storage" {
 
 test "a heap built from a slice frees its storage" {
     xs := [_]i32(5, 4, 3, 2, 1)
-    h := ok(hp.heap_from(i32, xs[..]))
+    h := ok(hp.heap_from(xs[..]))
     defer h.deinit()
     expect(h.peek() is 1)
 }

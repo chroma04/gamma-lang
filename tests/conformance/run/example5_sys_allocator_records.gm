@@ -58,7 +58,7 @@ build_list :: fn(n: u32) -> AllocError!?^Rec \ {Alloc} {
     for i in 0..n {
         r := make_rec(i)
         r.link = head
-        head = try new(Rec, r)
+        head = try new(r)
     }
     return head
 }
@@ -92,7 +92,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     stored := 0
     with fb.allocator() {
         for i in 0..200 {
-            if p := new(Rec, make_rec(i.trunc(u32))) {
+            if p := new(T: Rec, make_rec(i.trunc(u32))) {
                 stored += 1
                 if p.id is not i.trunc(u32) { print("corrupt\n") }
             } else {
@@ -110,7 +110,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
         for i in 0..N { try l.push(make_rec(i.trunc(u32))) }
         m := map(u32, Rec)
         for i in 0..500 { try m.put(i.trunc(u32) * 3, make_rec(i.trunc(u32))) }
-        h := hp.heap_by(Rec, fn(a, b: ^const Rec) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id))
+        h := hp.heap_by(T: Rec, fn(a, b: ^const Rec) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id))
         for r in l.items { try h.push(r) }
         d := dq.deque(Rec)
         for i in 0..300 {

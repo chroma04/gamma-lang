@@ -47,17 +47,17 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     print("reused: {} {}\n", (h.pop(), h.pop()))
 
     // Ordering by a function: a max-heap from a named function, and from a literal.
-    mx := hp.heap_by(i32, greater)
+    mx := hp.heap_by(T: i32, greater)
     defer mx.deinit()
     for x in [_]i32(5, 3, 9, 1, 3, 7) { try mx.push(x) }
     drain_i32("max-first", fn() -> ?i32 => mx.pop())
-    mx2 := hp.heap_by(i32, fn(a, b: ^const i32) -> bool => a^ > b^)
+    mx2 := hp.heap_by(T: i32, fn(a, b: ^const i32) -> bool => a^ > b^)
     defer mx2.deinit()
     for x in [_]i32(2, 8, 4) { try mx2.push(x) }
     drain_i32("max-first literal", fn() -> ?i32 => mx2.pop())
 
     // Structs ordered by a field; equal priorities are all returned.
-    jobs := hp.heap_by(Job, by_priority)
+    jobs := hp.heap_by(T: Job, by_priority)
     defer jobs.deinit()
     try jobs.push(Job(priority: 2, name: "write"))
     try jobs.push(Job(priority: 9, name: "deploy"))
@@ -89,16 +89,16 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 
     // Bulk construction.
     src := [_]i32(9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 5, 5)
-    bulk := try hp.heap_from(i32, src[..])
+    bulk := try hp.heap_from(src[..])
     defer bulk.deinit()
     print("heap_from: len {} peek {}\n", (bulk.len(), bulk.peek()))
     drain_i32("heap_from", fn() -> ?i32 => bulk.pop())
-    bulk_max := try hp.heap_from_by(i32, greater, src[..])
+    bulk_max := try hp.heap_from_by(greater, src[..])
     defer bulk_max.deinit()
     drain_i32("heap_from_by", fn() -> ?i32 => bulk_max.pop())
-    none := try hp.heap_from(i32, src[0..0])
+    none := try hp.heap_from(src[0..0])
     defer none.deinit()
-    one := try hp.heap_from(i32, src[0..1])
+    one := try hp.heap_from(src[0..1])
     defer one.deinit()
     print("bulk of 0: {}, of 1: {}\n", (none.pop(), one.pop()))
     print("source untouched: {}\n", src[0] is 9 and src[11] is 5)

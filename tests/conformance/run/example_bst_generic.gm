@@ -25,7 +25,7 @@ insert :: fn(K, V: type, t: ^Tree(K, V), key: K, value: V) -> AllocError!bool \ 
         }
         link = if key < n.key { &n.left } else { &n.right }
     }
-    link^ = try new(Node(K, V), Node(K, V)(key: key, value: value))
+    link^ = try new(T: Node(K, V), Node(K, V)(key: key, value: value))
     t.size += 1
     return true
 }
