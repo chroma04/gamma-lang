@@ -10,7 +10,10 @@
 - macOS CI compiles generated C with Apple clang; locally `cc` is gcc. clang rejects things gcc
   accepts (e.g. `(T){0}` for a zero-member struct → use `(T){}`). Before pushing C back-end
   changes run `CC=clang cargo test -q` too.
-- Worktree subagents (isolation: worktree) are created from the repo's default branch (old main here), not the session branch: brief them to `git reset --hard <session branch tip>` first.
+- Worktree subagents (isolation: worktree) are sometimes created from the LOCAL `main` ref, which
+  the fresh clone may leave stale (s14: at PR #34 while origin/main was #36). Before spawning:
+  `git fetch origin main && git branch -f main origin/main`, and brief every agent to
+  `git reset --hard <session branch tip>` first and verify a recent file exists.
 - Force-push is denied by the permission classifier: never push a commit you may want to drop.
   Never make memory-only commits (their messages can't avoid mentioning notes); fold memory
   edits into code commits.
