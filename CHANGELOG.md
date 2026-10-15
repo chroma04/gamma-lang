@@ -67,6 +67,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A local constant computed by a call (`S :: square(3)`) declared after a local type alias
+  is evaluated at compile time, so it can be an array length.
 - A top-level declaration resolved while a function body is being checked no longer sees
   that body's type parameters or local constants.
 - Long chains of field accesses and method calls are checked in linear time; a chain of

@@ -12,6 +12,10 @@ main :: fn() \ {Out} {
     b := [K * 2]u8(fill: 1)
     Row :: [Z]u16
     r: Row = Row(fill: 2)
+    // A computed constant after a local type alias is still evaluated at compile time.
+    T2 :: square(2)
+    f: [T2]u8 = ---
+    print("{}\n", f.len)
     @static_assert(K is 4, "K is four")
     c := mk(K)
     d := [S]bool(fill: true)

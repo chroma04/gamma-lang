@@ -893,7 +893,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// steps falls back to run time; any other failure is a compile error.
     fn opportunistic_const(&mut self, b: &ast::Binding, annot: Option<Ty>, init: &Expr) -> Option<LocalBinding> {
         if matches!(b.init.kind, ExprKind::Uninit)
-            || !self.sema.type_params.is_empty()
+            || self.sema.type_params.iter().any(|&(_, t)| super::generics::has_param(t))
             || !self.sema.value_scope.is_empty()
             || !closed_const(init)
         {
