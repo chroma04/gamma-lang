@@ -212,7 +212,7 @@ $ gamma cache clean
 Removed 2 package checkouts, 1 repository mirror, 3 cached builds (14.2 MiB freed) in /home/me/.cache/gamma
 ```
 
-- `gamma cache clean` removes checkouts and archives unused for 30 days, the mirrors that no checkout is left for, the cached executables, compiled C sources and runtime objects unused for 30 days (they carry their last use in their modification time), and half-written temporary files older than a day. `--older-than=<days>` changes the age; `--older-than=0` removes everything not in use right now.
+- `gamma cache clean` removes checkouts and archives unused for 30 days, the mirrors that no checkout is left for, the cached executables, compiled C sources and runtime objects unused for 30 days (they carry their last use in their modification time), and half-written temporary files older than a day. `--older-than=<days>` changes the age; `--older-than=0` removes everything not in use right now. `--all` and `--older-than` cannot be combined.
 - `gamma cache clean --all` removes everything Gamma keeps there (and nothing else in the directory), whatever its age.
 - `--dry-run` reports what would be removed without removing it.
 
