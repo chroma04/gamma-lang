@@ -70,7 +70,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// `v` reduced to `bits` bits (two's complement wrap), as a C expression.
-    fn normalize(&self, ii: IntInfo, v: &str) -> String {
+    pub(super) fn normalize(&self, ii: IntInfo, v: &str) -> String {
         if ii.exact() {
             return v.to_string();
         }
@@ -472,6 +472,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     "memset(&{r}, 0, sizeof {r}); memcpy(&{r}, {a}, sizeof {r} < {sz} ? sizeof {r} : {sz});",
                     sz = self.g.ty.size(at)
                 ));
+                if let Some(ii) = self.int_info(t)
+                    && self.wide(t).is_none()
+                    && !ii.exact()
+                {
+                    let v = self.normalize(ii, &r);
+                    self.line(&format!("{r} = {v};"));
+                }
                 Ok(r)
             }
             Builtin::Cast => {

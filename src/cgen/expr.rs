@@ -28,7 +28,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// Loads a value of type `t` from address `a`.
     pub fn load(&mut self, t: Ty, a: &str) -> String {
         let c = self.g.ty.cty(t);
-        self.tmp(t, &format!("GM_LD({}, {})", c, a))
+        let ld = format!("GM_LD({}, {})", c, a);
+        // Padding bits of a narrow integer in memory are unspecified; ignore them.
+        match self.int_info(t) {
+            Some(ii) if self.wide(t).is_none() => {
+                let v = self.normalize(ii, &ld);
+                self.tmp(t, &v)
+            }
+            _ => self.tmp(t, &ld),
+        }
     }
 
     /// A zero-filled blob temporary of type `t`.
