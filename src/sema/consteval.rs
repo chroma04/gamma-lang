@@ -132,7 +132,7 @@ impl<'s> Sema<'s> {
             let mut ok = true;
             let mut param = None;
             walk(&x, &mut |n| {
-                if n.ty.is_error() {
+                if n.ty.mentions_error() {
                     ok = false;
                 }
                 if let ExprKind::ValueParam(p) = n.kind {
@@ -143,6 +143,13 @@ impl<'s> Sema<'s> {
                         fns.push(*f)
                     }
                     ExprKind::HandlerRef(h) => consts.push(Reach::Handler(h.index())),
+                    ExprKind::With { handlers, .. } => {
+                        for h in handlers {
+                            if let tir::HandlerValue::Decl { decls, .. } = h {
+                                consts.extend(decls.iter().map(|d| Reach::Decl(d.index())));
+                            }
+                        }
+                    }
                     ExprKind::Const(c) => consts.push(Reach::Const(c.index())),
                     _ => {}
                 }
@@ -162,6 +169,7 @@ impl<'s> Sema<'s> {
                 match r {
                     Reach::Const(c) if seen_consts.insert(c) => work.push(self.prog.consts[c].init.clone()),
                     Reach::Handler(h) => fns.extend(self.prog.handlers[h].clauses.iter().copied()),
+                    Reach::Decl(d) => fns.extend(self.prog.handler_decls[d].clauses.iter().copied()),
                     _ => {}
                 }
             }
@@ -197,6 +205,9 @@ impl<'s> Sema<'s> {
             self.check_fn_body(p.fn_id, p.module, &p.item);
             return true;
         }
+        if self.check_pending_clause(f) {
+            return true;
+        }
         if let Some(i) = self.mono_queue.iter().position(|r| r.instance == f) {
             let req = self.mono_queue.remove(i);
             if !self.ensure_body(req.generic, span) {
@@ -217,7 +228,20 @@ impl<'s> Sema<'s> {
             return false;
         }
         // Foreign functions have no body; calling one at compile time traps.
-        true
+        if matches!(self.prog.fns[f.index()].kind, tir::FnKind::Foreign { .. }) {
+            return true;
+        }
+        // A nested function or literal of the function being checked gets its body
+        // when that function is finished.
+        let name = self.prog.fns[f.index()].name;
+        self.error(
+            span,
+            format!(
+                "this compile-time evaluation calls `{}`, which is nested in the function being checked; it cannot run before that function is complete",
+                name
+            ),
+        );
+        false
     }
 }
 
@@ -327,6 +351,7 @@ impl<'s> Sema<'s> {
 enum Reach {
     Const(usize),
     Handler(usize),
+    Decl(usize),
 }
 
 fn is_pointer(t: Ty) -> bool {

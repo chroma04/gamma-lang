@@ -1,0 +1,13 @@
+//! stage: check
+// The fields of a `#bits` struct cannot have their address taken (§5.10.5).
+M :: #bits(u8) struct { a: u4, _: u3, b: bool }
+
+set :: fn(p: ^bool) { p^ = false }
+
+main :: fn() {
+    m := M(a: 3, b: true)
+    p := &m.a //~ ERROR have no address
+    set(&m.b) //~ ERROR have no address
+    q := &m
+    q.a = 5
+}

@@ -208,7 +208,7 @@ Both sides of the `.` are required (`1.` and `.5` are not float literals). This 
 
 #### 2.5.3 Character literals
 
-`'c'` is an **integer literal** whose value is the Unicode code point of `c`. `c` is a single Unicode scalar value or one escape sequence (§2.5.5). `''` is ill-formed. A character literal is untyped and receives its type like any integer literal; `'é'` does not fit `u8` and is a compile error at type `u8`.
+`'c'` is an **integer literal** whose value is the Unicode code point of `c`. `c` is a single Unicode scalar value or one escape sequence (§2.5.5). `''` is ill-formed. A character literal is untyped and receives its type like any integer literal; `'€'` (U+20AC) does not fit `u8` and is a compile error at type `u8`, while `'é'` (U+00E9) fits.
 
 #### 2.5.4 String literals
 
@@ -1333,6 +1333,7 @@ effect     = effect_ref | '..' IDENT                    // '..E': an effect-set 
 
 - `a, b: i32` declares two parameters of one type.
 - `-> R` may be omitted when the return type is `()`. With a block body, the end of the block must be unreachable or the return type must be `()` or `E!()` (falling off the end returns `()`, which for `E!()` is a success). With an `=>` body, the expression's value is returned.
+- A top-level function's signature is known before any body is checked, so it is never inferred: without `-> R` its return type is `()`.
 - A function literal without `-> R` and without an expected return type (from a parameter type or an annotation, §6.4) takes its return type from its body. With an `=>` body it is the type of the expression. With a block body it is the common type of the values of its `return` statements: the first `return e` gives the type and the others convert to it; a literal-only `return 0` takes the usual fallback (§6.1) unless another `return` constrains it; `return` without a value, or no `return` at all, means `()`. A block that can reach its end while some `return` has a value is the error of an ordinary block body above. This applies to nested functions `name :: fn …` (§11.8) as well, except that one which refers to itself must declare `-> R`, because its own type is not yet known inside its body. A literal with an expected function type or an explicit `-> R` is checked against that type and is not inferred.
 - The effect set lists every effect the function may perform that it does not handle itself (§12.3). Omitted means empty.
 - Parameter types may be omitted only in a literal whose expected type is a known function type (e.g. an argument to a parameter of function type); they are then taken from it. When the expected return type is a type parameter still to be inferred, an `=>` literal without `-> R` has the type of its body expression, which determines that parameter: `people.sort_by_key(fn(p) => (p.last, p.first))` infers the key type.

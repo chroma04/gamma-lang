@@ -1,0 +1,6 @@
+//! stage: check
+// A required compile-time value cannot call a function nested in the function being checked.
+main :: fn() {
+    sq :: fn(x: u32) -> u32 { return x * x }
+    a: [sq(3)]u8 = --- //~ ERROR nested in the function being checked
+}

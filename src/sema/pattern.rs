@@ -516,7 +516,10 @@ impl<'a, 's> FnCx<'a, 's> {
                                 format!("variant `{}` has a single payload; use one sub-pattern", vname.name),
                             );
                         }
-                        self.pattern(&args[0].pat, pt, ctx, binds)
+                        match args.first() {
+                            Some(a) => self.pattern(&a.pat, pt, ctx, binds),
+                            None => pat(pt, PatKind::Wild, span),
+                        }
                     }
                 };
                 Some(Box::new(p))

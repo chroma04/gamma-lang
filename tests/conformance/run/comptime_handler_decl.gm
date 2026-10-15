@@ -1,0 +1,36 @@
+// Compile-time evaluation may install declared handlers (§12.6, §17.1): user
+// declarations and the core library's Alloc handler for an allocator value.
+fixed_buffer :: import "std/fixed_buffer"
+
+Acc :: effect { add: fn(x: u32) }
+Sum :: struct { t: u32 }
+handler Acc for ^Sum { add(self, x) => { self.t += x } }
+
+calc :: fn() -> usize {
+    s := Sum(t: 0)
+    with &s { add(3); add(4) }
+    return s.t
+}
+
+build :: fn() -> [6]u32 {
+    store: [1024]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    out: [6]u32 = [6]u32(fill: 0)
+    with fb.allocator() {
+        l := list(u32)
+        defer l.deinit()
+        for i in 0..6 { l.push(u32(i) * 3) else trap("oom") }
+        for i in 0..6 { out[i] = l.items[i] }
+    }
+    return out
+}
+
+K :: calc()
+T :: build()
+Buf :: struct { b: [calc()]u8 }
+
+main :: fn() \ {Out} {
+    L :: calc()
+    x := Buf(b: ---)
+    print("{} {} {} {} {}\n", (K, L, x.b.len, T[5], T.len))
+}

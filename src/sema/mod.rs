@@ -238,6 +238,8 @@ pub struct Sema<'s> {
     pub decl_with_checks: Vec<(Vec<usize>, Ty, Span)>,
     /// Handler declarations (§12.6) found while loading modules.
     handler_items: Vec<(ModuleId, Rc<ast::Item>)>,
+    /// Clauses of registered handler declarations whose bodies are not checked yet.
+    pending_clauses: Vec<handler_decl::PendingClause>,
     /// For each declared handler (indexed like `prog.handler_decls`): the effects
     /// its clauses may perform.
     pub handler_decl_effects: Vec<EffectSet>,
@@ -378,6 +380,7 @@ impl<'s> Sema<'s> {
             decl_clause_breaks: HashMap::new(),
             decl_with_checks: vec![],
             handler_items: vec![],
+            pending_clauses: vec![],
             handler_decl_effects: vec![],
             handler_templates: vec![],
             handler_instances: HashMap::new(),
@@ -538,13 +541,14 @@ impl<'s> Sema<'s> {
                 self.error(item.span, "only `@static_assert` may appear as a top-level declaration");
             }
         }
-        let clauses = self.declare_handlers();
+        self.ensure_handlers_declared();
         if self.tests_enabled {
             self.check_tests(root);
         } else {
             self.find_main(root);
         }
         self.drain_bodies();
+        let clauses = std::mem::take(&mut self.pending_clauses);
         self.check_handler_clauses(clauses);
         self.drain_bodies();
         self.check_decl_breaks();

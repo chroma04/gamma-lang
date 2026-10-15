@@ -44,9 +44,26 @@ pub struct PendingClause {
 }
 
 impl<'s> Sema<'s> {
-    /// Registers every handler declaration so `with` can find them, and returns
-    /// their clauses for checking once all signatures are known.
-    pub(super) fn declare_handlers(&mut self) -> Vec<PendingClause> {
+    /// Registers the handler declarations not registered yet, so `with` can find
+    /// them; their clauses are checked once all signatures are known, or earlier when
+    /// a compile-time evaluation reaches them.
+    pub(super) fn ensure_handlers_declared(&mut self) {
+        if !self.handler_items.is_empty() {
+            let clauses = self.declare_handlers();
+            self.pending_clauses.extend(clauses);
+        }
+    }
+
+    /// Checks the clause of a handler declaration with function `f` now if it is
+    /// still pending; returns whether it was.
+    pub(super) fn check_pending_clause(&mut self, f: tir::FnId) -> bool {
+        let Some(i) = self.pending_clauses.iter().position(|p| p.fn_id == f) else { return false };
+        let p = self.pending_clauses.remove(i);
+        self.check_handler_clauses(vec![p]);
+        true
+    }
+
+    fn declare_handlers(&mut self) -> Vec<PendingClause> {
         let mut pending = vec![];
         for (module, item) in std::mem::take(&mut self.handler_items) {
             let ItemKind::Handler(h) = &item.kind else { continue };
@@ -331,6 +348,7 @@ impl<'s> Sema<'s> {
     /// The handler declarations for values of type `t`, instantiating those for
     /// generic types that `t` matches.
     pub fn handlers_for(&mut self, t: Ty) -> Vec<HandlerDeclId> {
+        self.ensure_handlers_declared();
         let mut out: Vec<HandlerDeclId> = (0..self.prog.handler_decls.len())
             .filter(|&i| self.prog.handler_decls[i].for_ty == t)
             .map(|i| HandlerDeclId(i as u32))

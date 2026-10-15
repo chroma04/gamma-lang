@@ -898,9 +898,14 @@ impl<'a, 's> FnCx<'a, 's> {
         if cex.ty.is_error() || super::decls::non_constant_part(cex.ty).is_some() {
             return None;
         }
+        let n = self.sema.sess.diags.len();
         let value = match self.sema.try_eval_const(&cex) {
             Ok(v) => v,
-            Err(None) => return None,
+            // What cannot be evaluated yet (it calls a function nested in this one) runs.
+            Err(None) => {
+                self.sema.sess.diags.truncate(n);
+                return None;
+            }
             Err(Some(t)) if t.message.contains("step budget") => return None,
             Err(Some(t)) => {
                 self.sema.report_eval_failure(&cex, &t);
