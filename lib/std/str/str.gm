@@ -3,7 +3,9 @@
 //! A `string` is a `[]const u8`, and every function here works on bytes: an index is a
 //! byte index and case rules are ASCII only. Functions that return a `string` return a
 //! slice of their argument (or of the buffer the caller supplied), so nothing is copied
-//! and nothing allocates, with the one exception of `join`.
+//! and nothing allocates. The exceptions are `join`, `format`, `replace_alloc` and the
+//! functions that append to a `List(u8)` (`replace`, `repeat`), whose results are new
+//! memory or list growth.
 //!
 //! Strings are slices, so these are free functions (`str.trim(s)`), not methods. The
 //! builtin methods of slices cover the rest: `s.starts_with(p)`, `s.ends_with(p)`,

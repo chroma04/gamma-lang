@@ -33,7 +33,7 @@ handlers, and tests run with the test handlers instead.
 | `Rand` | `fill(buf)` | the OS's generator | fixed seed |
 | `Fs` | files and directories (below) | the real file system | in-memory file system |
 | `Net` | TCP connections (below) | real sockets | loopback fake: an in-memory network with one host (`localhost`, `127.0.0.1` and `::1`); nothing blocks, so `accept` and `recv` give `WouldBlock` instead of waiting |
-| `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | empty |
+| `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | no arguments or variables; `exit` ends the test, which passes only with code 0 |
 | `Alloc` | `current() -> Allocator` | the system heap | leak-checking heap |
 
 Durations are built with `ns(n)`, `us(n)`, `ms(n)` and `secs(n)`; `i.since(earlier)`,
@@ -89,9 +89,11 @@ Numbers, slices, pointers and unions have methods built into the language (§21.
 so no module repeats them. The ones people look for most:
 
 - Integers: `x.trunc(T)`, `x.checked(T)`, `x.sat(T)` (narrowing), `x.to(f64)` (to a
-  float), `min`, `max`, `clamp`, `abs`, `unsigned_abs`, `abs_diff`, `pow`.
+  float), `bits(T)`, `min`, `max`, `clamp`, `abs`, `unsigned_abs`, `abs_diff`, `pow` and
+  its `pow_wrap`, `pow_sat` and `pow_checked` forms.
 - Floats: `round(T)`, `floor(T)`, `ceil(T)`, `trunc(T)` (to integers, checked),
-  `to(F)`, `is_nan`, `is_inf`, `abs`, `sqrt`.
+  `checked(T)`, `sat(T)`, `to(F)`, `bits(T)`, `is_nan`, `is_inf`, `is_finite`, `sign_bit`,
+  `min`, `max`, `abs`, `sqrt`. (`std/math` has the `f64` functions that are not built in.)
 - Slices and strings: `len`, `get(i)`, `first`, `last`, `starts_with`, `ends_with`,
   `index_of`, `copy_from`, `fill`, `swap`, `sort`, `sort_by`, `sort_by_key`, the stable
   sorts, `min`, `max`, `binary_search`, `utf8_valid`. `is` compares strings and slices

@@ -61,7 +61,8 @@ with `free(data)`.
 write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs}
 ```
 
-Writes all of `bytes` to `f`, retrying short writes.
+Writes all of `bytes` to `f`, retrying short writes. A write that makes no progress
+(returns 0) fails with `.Other(0)`.
 
 ### `write_all`
 
@@ -85,7 +86,7 @@ Appends `bytes` to the file at `path`, creating it if needed.
 exists :: fn(path: string) -> bool \ {Fs}
 ```
 
-Whether something exists at `path`.
+Whether something exists at `path`. A symbolic link counts only if its target exists.
 
 ### `copy`
 
@@ -123,8 +124,8 @@ in pre-order: a directory comes before what it contains, and the entries of one
 directory are in the order the operating system gives them. Symbolic links are not
 followed; they are yielded with the kind `.Symlink`. A `path` is valid until the next
 entry is produced. A directory that cannot be read yields its error and the walk
-goes on with the rest; a failure to list `root` itself, or to allocate, yields an error
-and ends the walk. Everything allocated and every directory opened is released when the
+goes on with the rest; a failure to list `root` itself, or to allocate (`.NoSpace`), yields
+an error and ends the walk. Everything allocated and every directory opened is released when the
 walk finishes or the loop is left early.
 
     for r in fs.walk("src") {
@@ -151,4 +152,5 @@ write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Rand}
 Replaces the contents of the file at `path` with `bytes` so that no reader ever sees a
 partial file: the bytes go to a new file next to `path` (named after it with a random
 suffix), which is synced and then renamed over `path`. The new file is removed again
-if anything fails. `path` may be at most 4000 bytes long (`InvalidInput` otherwise).
+if anything fails. The suffix comes from the `Rand` effect. `path` may be at most 4000
+bytes long (`InvalidInput` otherwise).

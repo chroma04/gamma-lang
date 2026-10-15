@@ -60,8 +60,8 @@ radix_with :: fn(T: type, x: T, base: u32, upper: bool, prefix: bool, buf: []u8)
 Formats `x` in `base` (2 to 36), a minus sign first if `x` is negative.
 
 `upper` chooses `A`-`Z` over `a`-`z` for digits above 9, and `prefix` adds `0x`, `0o`
-or `0b` after the sign (it needs base 16, 8 or 2). Every other integer function is
-this one with fixed arguments. Traps if `buf` is too small (`INT_BUF` always suffices
+or `0b` after the sign (it needs base 16, 8 or 2). `dec`, `hex`, `oct`, `radix` and the
+other functions of that kind are this one with fixed arguments. Traps if `buf` is too small (`INT_BUF` always suffices
 for types up to 128 bits, `max_int_len(T)` for any type).
 
 ### `dec`

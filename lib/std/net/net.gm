@@ -7,7 +7,8 @@
 //!     reply: [5]u8 = ---
 //!     try net.recv_exact(s, reply[..])
 
-/// Sends all of `bytes` on `s`, retrying short sends.
+/// Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress (returns
+/// 0) fails with `.Other(0)`.
 pub send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net} {
     done: usize = 0
     while done < bytes.len {
