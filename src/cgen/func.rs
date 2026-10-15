@@ -525,6 +525,23 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return;
         }
         self.line("if (gm_unw.kind) {");
+        self.unwind_ladder();
+    }
+
+    /// A call of `call`, a C function that returns whether it started an unwind, and
+    /// the check of that result.
+    pub fn unwind_call(&mut self, call: &str) {
+        if self.no_check {
+            self.line(&format!("{};", call));
+        } else {
+            self.line(&format!("if ({}) {{", call));
+            self.unwind_ladder();
+        }
+    }
+
+    /// The rest of a `check_unwind` whose `if` line was emitted already: the jump and
+    /// the closing brace.
+    pub fn unwind_ladder(&mut self) {
         self.indent += 1;
         self.ladder();
         self.indent -= 1;

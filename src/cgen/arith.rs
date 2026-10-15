@@ -11,6 +11,7 @@ use super::{CResult, unsupported};
 use crate::tir::{AdtKind, BinOp, Builtin, Expr, ExprKind, Flavor, UnOp};
 use crate::types::{FloatTy, Ty, TyKind};
 use num_bigint::BigInt;
+use std::fmt::Write as _;
 
 /// Facts about an integer type.
 #[derive(Clone, Copy)]
@@ -742,12 +743,27 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     return Ok(vals[0].clone());
                 }
                 // The value goes through memory behind a volatile pointer, so the compiler can
-                // assume nothing about what it reads back.
+                // assume nothing about what it reads back. The function that does it is
+                // shared by all the sites of a type, and not inlined or analysed across
+                // calls: a program with thousands of sites has no per-site stack slots for
+                // the C compiler to lay out.
                 let c = self.g.ty.cty(t);
-                let slot = self.tmp(t, &vals[0]);
-                let p = format!("t{}", self.fresh());
-                self.line(&format!("{c} *volatile {p} = &{slot};"));
-                Ok(self.tmp(t, &format!("*{p}")))
+                let key = format!("bb|{c}");
+                let f = match self.g.stubs.get(&key) {
+                    Some(f) => f.clone(),
+                    None => {
+                        let f = format!("gm_pf{}", self.g.stubs.len());
+                        self.g.stubs.insert(key, f.clone());
+                        let sig = format!("{c} {f}({c} v)");
+                        let _ = writeln!(self.g.helpers.protos, "GM_NOIPA static {sig};");
+                        let _ = writeln!(
+                            self.g.helpers.bodies,
+                            "GM_NOIPA static {sig} {{ {c} *volatile p = &v; return *p; }}"
+                        );
+                        f
+                    }
+                };
+                Ok(self.tmp(t, &format!("{f}({})", vals[0])))
             }
             Builtin::Hash => {
                 let f = self.g.helpers.hash_fn(&mut self.g.ty, at);
