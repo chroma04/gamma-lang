@@ -1,5 +1,6 @@
 //! Calls (§11.3), effect operations (§12.1), conversions `T(x)` (§6.5) and the
-//! builtin functions `print`, `eprint`, `trap` and `assert` (§21.6).
+//! builtin functions `print`, `eprint`, `trap`, `assert`, `expect` and `expect_eq`, with the
+//! format templates of `print` and `@write` (§21.6, §21.6.1).
 
 use super::builtins::{BuiltinFn, builtin_fn, builtin_type};
 use super::func::{FnCx, LocalBinding, Obligation, error_expr};

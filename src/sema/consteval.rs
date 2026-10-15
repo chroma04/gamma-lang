@@ -1,5 +1,6 @@
 //! Compile-time evaluation during checking (§17): array lengths given by typed
-//! constants, compile-time value arguments, and the like.
+//! constants, compile-time value arguments, `when` conditions, constants and static
+//! assertions, and the like.
 //!
 //! Evaluation runs the interpreter on the program as checked so far. Before it
 //! does, every function the expression can reach must have a checked body, so

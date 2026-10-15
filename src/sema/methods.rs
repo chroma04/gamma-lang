@@ -317,7 +317,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     span,
                 ))
             }
-            // The length of a C string, up to its NUL (§5.7).
+            // The length of a C string, up to its NUL (§5.8).
             (TyKind::ManyPtr { elem, .. }, "cstr_len") if *elem == Ty::u8() => {
                 self.arity(args, 0, n, span);
                 Some(b(Builtin::CstrLen, Ty::usize(), vec![take_expr(recv)]))
