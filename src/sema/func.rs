@@ -553,7 +553,8 @@ impl<'a, 's> FnCx<'a, 's> {
         self.scopes.iter().rev().flat_map(|s| s.iter().rev()).find(|(n, _)| *n == name).map(|(_, b)| b)
     }
 
-    /// Declares a local name, enforcing the no-shadowing rule (§4.6).
+    /// Declares a local name, enforcing the no-shadowing rule and the rule that a local may
+    /// not be named like a type visible here (§4.6).
     pub fn declare(&mut self, name: Symbol, binding: LocalBinding, span: Span) {
         if name.as_str() == "_" {
             return;

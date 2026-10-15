@@ -176,7 +176,7 @@ pub struct Sema<'s> {
     pub allow_variadic: bool,
     /// Foreign functions declared with a final `...` (§19.2).
     pub variadic_fns: std::collections::HashSet<FnId>,
-    /// Whether `test` declarations are compiled (`gamma test`, §3.8).
+    /// Whether `test` and `bench` declarations are compiled (`gamma test`, `gamma bench`, §3.8, §3.9).
     pub tests_enabled: bool,
     /// Keep checking a module that has syntax errors (for editors).
     pub keep_going: bool,
@@ -300,8 +300,8 @@ pub fn analyze(sess: &mut Session, root: &Path) -> Option<Program> {
     analyze_with(sess, root, None)
 }
 
-/// Checks the program rooted at `root` for testing: its `test` declarations
-/// are compiled (into [`Program::tests`]) and `main` is not required (§3.8).
+/// Checks the program rooted at `root` for testing: its `test` and `bench` declarations
+/// are compiled (into [`Program::tests`] and [`Program::benches`]) and `main` is not required (§3.8).
 pub fn analyze_tests(sess: &mut Session, root: &Path) -> Option<Program> {
     analyze_with(sess, root, Some(false))
 }
