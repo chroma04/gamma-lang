@@ -1,0 +1,9 @@
+true 63 127
+true 63
+-1 true true -1
+-15 false true
+-1 true 16777215
+1099511627775 true -1 true
+true true
+[-1, -1]
+true true 63

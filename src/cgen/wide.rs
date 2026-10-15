@@ -483,7 +483,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Builtin::Bswap => {
                 let r = self.tmp_uninit(t);
-                self.line(&format!("gm_wbswap((uint8_t *)&{r}, {p0}, {});", w.bits));
+                self.line(&format!("gm_wbswap((uint8_t *)&{r}, {p0}, {args});"));
                 Ok(r)
             }
             Builtin::Bitreverse => {
