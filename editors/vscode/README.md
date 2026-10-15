@@ -7,7 +7,7 @@ Syntax highlighting and language server support for [Gamma](../../README.md) (`.
 - Syntax highlighting from a TextMate grammar: comments (line, nested block, doc), strings with escapes and `{}` format placeholders, raw and C strings, character literals, every number form (`0x1p4`, `1_000u32`, `1f32`), keywords, attributes, intrinsics, declarations, types, effect sets and the overflow-flavored operators (`+%`, `*|`, `<<?`, ...).
 - Highlighting of `gamma` code blocks in Markdown.
 - Bracket matching, auto-closing pairs, comment toggling, indentation and doc comment continuation.
-- Language server features through `gamma lsp`: diagnostics, hover, go to definition, completion, document symbols and formatting.
+- Language server features through `gamma lsp`: diagnostics, hover, go to definition, find references, rename, completion, signature help, document symbols and formatting.
 
 ## Requirements
 

@@ -42,9 +42,9 @@ const HELP: &str = "\
 Enter an expression to print its value, a statement or a definition to add it to the session.
 An input continues on the next line while brackets are open or it is incomplete.
 
-  :help             this text
-  :quit             leave (so does end of input)
-  :type <expr>      the type of an expression, which is not run unless it must be
+  :help             this text (:h, :?)
+  :quit             leave (:q, :exit; so does end of input)
+  :type <expr>      (:t) the type of an expression, which is not run unless it must be
   :list             the definitions and variables of the session
   :load <file>      add the declarations of a file
   :reset            forget everything

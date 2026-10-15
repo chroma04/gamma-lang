@@ -19,13 +19,13 @@ welcome.
 
 ## The gamma executable
 
-The language server is part of the compiler. Build it from the repository root:
+The language server is part of the compiler. Use the `gamma` from a [release](../README.md#installing), or build it from the repository root:
 
 ```sh
 cargo build --release
 ```
 
-Then put `target/release/gamma` on your `PATH`. The editor setups below start `gamma lsp`. The server speaks the Language Server Protocol over standard input and output. Highlighting does not need the executable.
+For a build, put `target/release/gamma` on your `PATH`. The editor setups below start `gamma lsp`. The server speaks the Language Server Protocol over standard input and output. Highlighting does not need the executable.
 
 ## Visual Studio Code
 
@@ -111,7 +111,7 @@ vim.lsp.config('gamma', {
 vim.lsp.enable('gamma')
 ```
 
-On Neovim 0.8 to 0.10, start the client from a `FileType` autocommand:
+On Neovim 0.10, start the client from a `FileType` autocommand:
 
 ```lua
 vim.api.nvim_create_autocmd('FileType', {
@@ -126,7 +126,6 @@ vim.api.nvim_create_autocmd('FileType', {
 })
 ```
 
-`vim.fs.root` needs Neovim 0.10. On older versions use `vim.fs.dirname(vim.fs.find({ 'gamma.toml', '.git' }, { upward = true })[1])`.
 
 ## Helix
 
