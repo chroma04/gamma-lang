@@ -1,4 +1,5 @@
-//! The Gamma compiler: lexer, parser, semantic analysis, interpreter and back end.
+//! The Gamma compiler: lexer, parser, semantic analysis, interpreter, C back end, formatter,
+//! package manager and language server.
 //!
 //! See `docs/architecture.md` for an overview of the pipeline.
 

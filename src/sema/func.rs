@@ -1314,7 +1314,7 @@ impl<'a, 's> FnCx<'a, 's> {
         Expr { ty, kind: tir::ExprKind::Loop { label: id, cond, body, step: None }, span }
     }
 
-    /// Checks an `if`/`while` condition (§8.2). Binding parts are not supported yet.
+    /// Checks an `if`/`while` condition (§8.2): boolean parts and `pattern := value` binding parts.
     pub fn cond(&mut self, c: &ast::Cond) -> Vec<tir::CondPart> {
         let mut parts = vec![];
         for p in &c.parts {

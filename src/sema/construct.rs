@@ -371,7 +371,7 @@ impl<'a, 's> FnCx<'a, 's> {
             return mk(Ty::array(len, elem), tir::ExprKind::ArrayFill(Box::new(v)), span);
         }
         let mut values = vec![];
-        // `[N]T(..t)` spreads a tuple's elements (§7.13); with spreads, every value goes
+        // `[N]T(..t)` spreads a tuple's elements (§11.4); with spreads, every value goes
         // through a temporary, in the order written.
         let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
         let mut stmts = vec![];
