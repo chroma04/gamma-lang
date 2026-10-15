@@ -89,6 +89,8 @@ A conforming implementation provides three build modes, Debug, Checked and Fast,
 
 Safe builds follow every rule this specification states for Checked builds; where it says "Debug and Checked builds", Safe builds are included.
 
+How a mode and a target are chosen is implementation-defined; the reference implementation takes `--mode=debug|checked|safe|fast` (default `debug`; `safe` compiles with Fil-C through the C back end) and `--target=<triple>`, and `target.mode` (§3.6) reports the mode.
+
 ### 1.5 Organization
 
 | § | Topic |
@@ -291,7 +293,7 @@ Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 
 - A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
 - A **package** is a directory tree containing a `gamma.toml` manifest at its root. The manifest names the package and lists its dependencies, each as a name mapped to a source location and version. The manifest format is implementation-defined, except as stated here; the reference implementation's is described in chapter 15 of the guide (`docs/guide/15-packages.md`).
-- The **root module** of a program is the module named on the compiler's command line. It must declare `main` (§3.7). A library has no `main`.
+- The **root module** of a program is the module named on the compiler's command line. (The reference implementation also accepts a single `.gm` file there, which then forms a module by itself.) It must declare `main` (§3.7). A library has no `main`.
 
 ### 3.2 Imports
 
@@ -364,7 +366,7 @@ when target.os is .Linux {
 - `when` may appear at top level, among the fields of a `struct` body or the variants of a `union` body, and as a statement (§8.9).
 - A `when` condition may not depend on a type parameter of an enclosing generic (§16.7).
 
-The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, …), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, …), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
+The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, `.Other`), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
 
 ### 3.7 The entry point
 
@@ -574,7 +576,7 @@ An empty slice still holds a non-null, suitably aligned pointer, which must not 
 
 `string` is exactly `[]const u8`. String literals are UTF-8 (unless escapes say otherwise), but `string` values carry no encoding guarantee. There is no character type; iterate with `bytes(s)` (yields `u8`), `runes(s)` (yields `rune`, replacing invalid sequences with U+FFFD) or the standard library's grapheme iterator (`graphemes` in `std/text`).
 
-`cstring` is exactly `[^]const u8`. A `c"..."` literal is a `cstring`. `s.cstr_len()` counts bytes up to the NUL. A string literal can also initialize a `[N]u8` whose length equals the literal's byte length.
+`cstring` is exactly `[^]const u8`. A `c"..."` literal is a `cstring`. `s.cstr_len()` counts bytes up to the NUL.
 
 ### 5.9 Tuples
 
@@ -662,7 +664,7 @@ A `union` literal creates a new nominal **tagged union**. Each variant has a dis
 - **Reflection.** `@variants(T)` is a compile-time constant of type `[N]T` holding every variant of the enum `T` in declaration order, so `for d in @variants(Dir)` visits each variant and `@variants(Dir).len` counts them. `T` must be a tagged union none of whose variants has a payload, and a concrete type (not a type parameter). `@variant_name(x)` gives the name of the active variant of any tagged union value `x` as a `string`, as written in the declaration and without the dot: `@variant_name(Dir.E)` is `"E"`. It evaluates `x` once. Neither applies to a `#c_union`.
 
 ```
-for d in @variants(Dir) { print(@variant_name(d)) }    // N E S W
+for d in @variants(Dir) { print("{} ", @variant_name(d)) }    // N E S W
 ```
 
 - **Layout.** A tagged union is laid out as a struct `{ tag: TagType, payload: P }` where `P` is an untagged union of all payload types (size = maximum payload size, alignment = maximum payload alignment). An enum is just its tag.
@@ -1403,10 +1405,12 @@ try retry(3, fn() => send(packet))      // send's Net effect is handled by retry
 `retry` performs no effects of its own and needs no effect annotation to accept callbacks that perform any. A callee that wants to *provide* an effect lists it:
 
 ```
-capture_output :: fn(body: fn() \ {Out}) -> string \ {Alloc} {
-    buf := string_builder()
-    with buf.out_handler() { body() }         // body's Out is handled here
-    return buf.finish()
+capture_output :: fn(body: fn() \ {Out}) -> AllocError![]u8 \ {Alloc} {
+    text := list(u8)
+    defer text.deinit()
+    lo := io.ListOut(list: &text)             // io :: import "std/io"
+    with &lo { body() }                       // body's Out is handled here
+    return text.into_slice()
 }
 ```
 
@@ -1532,10 +1536,10 @@ decl_clause  = ident '(' ident { ',' ident } ')' '=>' ( expr | block )
 ```
 
 ```
-FileLogger :: struct { fd: Fd, min: Level }
+FileLogger :: struct { file: File, min: Level }
 
 handler Log for ^FileLogger \ {Fs} {
-    log(self, level, msg) => if level >= self.min { _ = fs.write(self.fd, msg) }
+    log(self, level, msg) => if level >= self.min { _ = fs.write_all_to(self.file, msg) }
 }
 ```
 
@@ -1605,7 +1609,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Alloc` | `current: fn() -> Allocator` | the system heap | leak-checking heap; a leak fails the test |
 | `Out`, `Err` | `write_out` / `write_err: fn(bytes: []const u8)` | stdout, stderr | captured to buffers |
 | `In` | `read: fn(buf: []u8) -> IoError!usize` | stdin | empty input |
-| `Clock` | `now: fn() -> Instant`, `sleep: fn(d: Duration)` | system clock | fake clock; `sleep` advances it |
+| `Clock` | `now: fn() -> Instant`, `wall: fn() -> i64`, `sleep: fn(d: Duration)` | system clock | fake clock; `sleep` advances it |
 | `Rand` | `fill: fn(buf: []u8)` | OS-seeded generator | fixed seed |
 | `Fs` | file-system operations (§21.7) | real file system | in-memory file system |
 | `Net` | socket operations (§21.7) | real sockets | loopback fake |
@@ -2490,7 +2494,7 @@ The core library is the part of the standard library that the language definitio
 
 ### 21.1 The universe scope
 
-These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not use them, nor the type aliases `string`, `cstring` and `rune` (§4.6). Every other name, including the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
+These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name, including the effects and the effect operations (`current`, `yield`, `read`, `now`, `exit`, …), may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names. A hidden operation is still reachable through its effect (`Alloc.current`, §12.1).
 
 | Category | Names |
 | --- | --- |
@@ -2564,7 +2568,7 @@ nth        :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T
 
 ### 21.5 Containers (summary)
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`), whose public names are re-exported to the universe scope; method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `map` and `map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
 
 ```
 // core/list
@@ -2622,8 +2626,8 @@ eprint :: fn(A: type, template :: string, args: A = ()) \ {Err}
 
 - `trap` traps in every build mode (§18.5).
 - `assert` is a checked operation: it traps on `false` in Debug and Checked builds and is removed (its argument not evaluated) in Fast builds.
-- `expect` may be called only in tests; on `false` it fails the current test (reporting the location) and stops it.
-- `expect_eq(actual, expected)` may be called only in tests; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
+- `expect` may be called only directly in the body of a test (not in a function a test calls); on `false` it fails the current test (reporting the location) and stops it.
+- `expect_eq(actual, expected)` may be called only directly in the body of a test; unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), it writes `expected: ` and `actual: ` lines with both values to `Err`, then fails and stops the test like `expect`.
 - `print(t, args)` is `@write(fn(b) => write_out(b), t, args)`, and `eprint` likewise with `write_err`.
 
 #### 21.6.1 Formatting: `@write`
@@ -2842,6 +2846,7 @@ top_decl      = { attribute } [ 'pub' ] binding
               | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
               | handler_decl
               | 'test' STRING block
+              | 'bench' STRING block
               | intrinsic_call                                  // @static_assert(...)
 top_block     = '{' { NL } { top_decl NL { NL } } '}'
 
@@ -3077,7 +3082,7 @@ Assignment (`=` and compound forms) is a statement.
 | Build | Optimized | Checks | Extras |
 | --- | --- | --- | --- |
 | Debug | no | all | poisoning, allocation tags, fiber guard pages, leak-checking tests |
-| Checked (release default) | yes | all | — |
+| Checked (the usual release mode) | yes | all | — |
 | Safe (optional) | yes | all, and every memory access | traps on use after free, out-of-bounds and invalid pointers (§18.7) |
 | Fast | yes | none (except integer division) | — |
 

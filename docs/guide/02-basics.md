@@ -80,7 +80,7 @@ ok :: fn(xs: []const i32, ys: []const i32) -> i32 {
 }
 ```
 
-A local *may* reuse a name from outside the function: a top-level name, an imported module's name or a predeclared name. It hides that name for its scope. The names of types are the exception: a local, parameter or pattern binding cannot be called `u8`, `string` or `Point` when those name types (nor after a type parameter of the function), and that includes every sized integer type, so `i1`, `u2` and `i24` are not available as variable names either. Otherwise `x: u2` could change meaning halfway through a function.
+A local *may* reuse a name from outside the function: a top-level name, an imported module's name or a predeclared name. It hides that name for its scope. The names of types are the exception: a local, parameter or pattern binding cannot be called `u8`, `string` or `Point` when those name types (nor like a type parameter of the function), and that includes every sized integer type, so `i1`, `u2` and `i24` are not available as variable names either. Otherwise `x: u2` could change meaning halfway through a function.
 
 ### Uninitialized storage
 
