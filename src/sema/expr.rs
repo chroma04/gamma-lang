@@ -334,13 +334,13 @@ impl<'a, 's> FnCx<'a, 's> {
         // `m.n` where `n` is a public module binding of module `m`.
         if let ExprKind::Field { base, name } = &e.kind {
             // Remembering failures keeps a long field chain from being walked again at
-            // every link.
-            let key = e as *const ast::Expr as usize;
+            // every link. Synthetic nodes share one id and are not remembered.
+            let key = e.id;
             if self.not_module.contains(&key) {
                 return None;
             }
             let found = self.module_of(base).and_then(|m| self.sema.public_module_member(m, name.name));
-            if found.is_none() {
+            if found.is_none() && key.0 != u32::MAX {
                 self.not_module.insert(key);
             }
             return found;

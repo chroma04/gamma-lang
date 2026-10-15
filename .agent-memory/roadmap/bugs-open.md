@@ -31,18 +31,5 @@
 (#39, #40 fixed: deferred match exhaustiveness via FnCx.deferred_matches; pending handler
  literals checked at first `with`, FnCx.pending_handlers + shielded_performs.)
 ## s13 (bug sweep) leftovers
-41. §4.6: a local hiding a predeclared/top-level type name still resolves as the type in type
-    position (`u8 := 3; x: u8 = 0` accepted). Sema::resolve_type knows no locals; needs a
-    scoped hidden-name list (like type_params, saved/cleared in check_fn_body). Note
-    type_params itself may leak into lazily resolved top-level decls (resolve_decl does not
-    clear it) — check.
-42. Local `K :: 4` unusable in type/comptime positions (`[K]u8`, `@static_assert`, `when`,
-    value args): same root cause as 41 (module-level resolver).
-43. `EvI :: Ev(i32)` effect-instantiation alias rejected ("cannot be called"); §17.5.
-    Also `Yield(i32).yield(5)` qualified op on an instantiated effect.
-44. Deep chains: `a.b.b.b…` check time superlinear (14 s at 40k); 1M-link call/index chains
-    overflow the 1 GiB compiler stack.
-45. C back end: 9k-line generated main with many constant checks takes >60 s (unprofiled).
-46. Minor CLI: `gamma repl missing.gm` exits 0; `gamma test -j 0` accepted; `--mode=bogus`
-    says "unknown option"; gamma fmt <dir> descends into hidden dirs/target.
-47. `--locked` ignores hand-edited lock `version`/`checksum` until a checkout is needed.
+41–43, 46–47 fixed in s13 (decisions/024; CLI/lock fixes). 44 (deep chains) and 45 (C build
+time of huge functions) handled by delegated work in s13 — see sessions/s13.

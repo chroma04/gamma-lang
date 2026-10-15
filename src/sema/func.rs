@@ -77,8 +77,8 @@ pub enum Obligation {
 pub struct FnCx<'a, 's> {
     pub sema: &'a mut Sema<'s>,
     pub module: ModuleId,
-    /// Field expressions (by address) known not to name a module member.
-    pub not_module: std::collections::HashSet<usize>,
+    /// Field expressions known not to name a module member.
+    pub not_module: std::collections::HashSet<ast::NodeId>,
     pub locals: Vec<tir::LocalDecl>,
     /// Block scopes, innermost last.
     pub scopes: Vec<Vec<(Symbol, LocalBinding)>>,
