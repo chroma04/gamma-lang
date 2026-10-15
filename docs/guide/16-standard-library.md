@@ -754,7 +754,7 @@ main :: fn() -> json.WriteError!() \ {Out, Alloc} {
         print("{} at line {} column {}\n", (e, p.line, p.column))
     }
 
-    // Write the tree back, compact and indented.
+    // Write the tree back (the last argument is the indent; 0 is compact).
     out := list(u8)
     defer out.deinit()
     try json.write(&out, doc.root, 0)
