@@ -285,3 +285,28 @@ fn aligned_padding_is_decided_the_same_after_reindenting() {
         assert_eq!(format_source(&once).unwrap(), once, "not idempotent on {:?}", src);
     }
 }
+
+#[test]
+fn directory_walk_skips_hidden_directories_and_package_target() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fmt_walk");
+    let _ = std::fs::remove_dir_all(&root);
+    let ugly = "main::fn(){\n}\n";
+    for d in ["src", ".git", "target", "src/target", ".claude/x"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+        std::fs::write(root.join(d).join("a.gm"), ugly).unwrap();
+    }
+    std::fs::write(root.join("gamma.toml"), "[package]\nname = \"w\"\nversion = \"0.1.0\"\n").unwrap();
+    let gamma = |args: &[&Path]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_gamma")).arg("fmt").args(args).output().unwrap()
+    };
+    assert!(gamma(&[&root]).status.success());
+    let read = |d: &str| std::fs::read_to_string(root.join(d).join("a.gm")).unwrap();
+    assert_ne!(read("src"), ugly);
+    assert_ne!(read("src/target"), ugly, "only the package's own target directory is skipped");
+    for d in [".git", "target", ".claude/x"] {
+        assert_eq!(read(d), ugly, "{} must be left alone", d);
+    }
+    // A file named explicitly is always formatted.
+    assert!(gamma(&[&root.join("target/a.gm")]).status.success());
+    assert_ne!(read("target"), ugly);
+}

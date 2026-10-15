@@ -309,7 +309,7 @@ More options of `gamma test`:
 - `--all` also runs the tests of the modules of the package that nothing imports: every directory of the package that holds `.gm` files, except hidden ones, `target` and the directories of other packages.
 - `--show-output` also prints what the passing tests wrote.
 - `--time` adds the time each test took and the total. It is off by default so that reports are the same from run to run.
-- `--jobs=n` (or `-j n`) runs `n` tests at a time; `--jobs=0` uses one per processor. The results are still printed in order. With the interpreter every thread analyzes the program itself, so parallelism pays when the tests take longer than that.
+- `--jobs=n` (or `-j n`) runs `n` tests at a time; `--jobs=0` is rejected (at least one job is needed). The results are still printed in order. With the interpreter every thread analyzes the program itself, so parallelism pays when the tests take longer than that.
 - `--coverage` counts the source lines of the package that the tests run, with the interpreter, and prints the lines run per file. `--coverage=lcov.info` also writes an LCOV file for coverage viewers. Only lines with a statement count; generic functions count through their instances, and one that nothing instantiates is not counted. The bodies of tests are left out.
 
 ### Benchmarks
