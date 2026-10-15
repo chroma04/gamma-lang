@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-14) — PRs #1–#34 merged; s6–s10 = parallel Claude Projects threads
+## State (2026-10-15) — PRs #1–#35 merged; s6–s10 = parallel Claude Projects threads
+- s13 (PR #36, branch claude/tender-mayer-l0s83r): bug-hunting sweep — ~30 fixes across
+  sema/comptime, second-class rules, cgen ints, stdlib, REPL/LSP/pkg/doc/fmt
+  (sessions/s13-2026-10-15-bughunt.md); leftovers bugs-open.md #41–47.
 - s12 (PR #35, branch claude/elegant-gauss-hvjj2r, CI all green incl. first Windows job):
   gamma doc, repl, LSP follow-ups, std additions, build profiles + pkg follow-ups, interp
   perf, diagnostics polish, Windows port, test runner/bench/coverage, Safe perf —
@@ -31,7 +34,7 @@
   privates, `is`/@hash on params.
 
 ## Next steps
-1. Drive PR #35 to merge. Next: the to-do list's [nice] items; Safe new/destroy (~4x
+1. Drive PR #36 to merge. Next: the to-do list's [nice] items; Safe new/destroy (~4x
    Checked; borrow.rs `site` copy needs a static-constant-at-all-call-sites analysis);
    Windows follow-ups (Safe mode, gamma debug, gdb printers Linux-only; ARM64 Windows).
 2. bugs-open.md leftovers (#23–#40); computed array lengths done (decisions/007); VM
@@ -62,7 +65,7 @@
                   · s05-2026-10-11.md · s06-2026-10-11.md (cross) · s06-2026-10-12.md (C perf)
                   · s06-2026-10-12-safe.md (Safe mode) · s07-2026-10-12.md (dogfooding)
                   · s08-2026-10-12-bughunt.md (bug hunt) · s11-2026-10-14-p1-tooling.md
-                  · s12-2026-10-14-todo-p2.md
+                  · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
 - gotchas/        environment.md
 
 ## Conventions

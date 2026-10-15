@@ -353,6 +353,18 @@ impl<'a> Machine<'a> {
                         }
                         o.custom_flags(fl);
                     }
+                    // Windows: ask for write access to pass the standard library's checks of
+                    // the creation flags, then open with read access only.
+                    #[cfg(windows)]
+                    if has(tir::FS_CREATE) || has(tir::FS_EXCLUSIVE) || has(tir::FS_TRUNCATE) {
+                        use std::os::windows::fs::OpenOptionsExt;
+                        const GENERIC_READ: u32 = 0x8000_0000;
+                        o.write(true)
+                            .create(has(tir::FS_CREATE) && !has(tir::FS_EXCLUSIVE))
+                            .create_new(has(tir::FS_EXCLUSIVE))
+                            .truncate(has(tir::FS_TRUNCATE))
+                            .access_mode(GENERIC_READ);
+                    }
                 }
                 let r = o.open(path);
                 let sys = &mut self.sys;
