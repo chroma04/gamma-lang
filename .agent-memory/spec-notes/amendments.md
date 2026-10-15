@@ -70,3 +70,8 @@
   no local binding may be named like a visible type (incl. every sized int name; reverses the
   s9 "locals may hide reserved names" rule — decisions/024); local constants usable at
   compile time; effect aliases `Bytes :: Yield(u8)`.
+- s14 audit: §1.4 reference impl's --mode/--target; §3.1 single .gm file as root; §3.6 exact
+  target.os/arch sets (+ .Other); removed "string literal initializes [N]u8" (never
+  implemented); §21.1 every universe type barred for locals; §21.5 only List/list/HashMap/
+  map/map_with re-exported; §21.6 expect/expect_eq only directly in a test body; §12.9 Clock
+  wall; A.1 bench; examples fixed (@variant_name, capture_output, FileLogger).
