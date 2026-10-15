@@ -8,6 +8,9 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Named effect sets: `Io :: \ {Fs, Alloc, Err}` names a list of effects, spliced into
+  an effect set as `\ {..Io, Clock}`, and usable as the argument of an effect-set
+  parameter (§12.3).
 - Windows (x86_64): the interpreter and the C back end (`gamma build`, `--backend=c`,
   `gamma test`) run on Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is
   not supported). The runtime has Win32 implementations of fibers, threads, the futex,

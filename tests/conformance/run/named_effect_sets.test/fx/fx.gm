@@ -1,0 +1,5 @@
+/// What console code may do.
+pub Console :: \ {Out, Alloc}
+
+/// The console and the clock.
+pub Timed :: \ {..Console, Clock}

@@ -1502,13 +1502,16 @@ handler Net for ^TestIo {
     peer(self, s, buf) => mem_peer(&self.net, s, buf)
 }
 
+// What `main` may perform (§12.9), and a test or benchmark body besides `Test` (§3.8).
+Ambient :: \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}
+
 /// Reports a failure of a test or benchmark: the message, then where it happened.
 report_failure :: fn(msg: string, loc: SourceLocation) \ {Err} {
     eprint("{}\n  at {}:{}:{} in {}\n", msg, loc.file, loc.line, loc.column, loc.function)
 }
 
 /// Runs a test: 0 if it passed, 1 if it failed.
-run_test :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net, Test}) -> u8 \ {Out, Err, Env} {
+run_test :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {Out, Err, Env} {
     t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     checks :: handler Test {
@@ -1551,7 +1554,7 @@ bench_next_iters :: fn(iters: u64, elapsed: u64) -> u64 {
 }
 
 /// Runs a benchmark: 0 if it completed, 1 if it failed.
-run_bench :: fn(body: ^fn() \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net, Test}) -> u8 \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net} {
+run_bench :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {..Ambient} {
     checks :: handler Test {
         note(bytes) => write_err(bytes)
         fail(msg, loc) => {

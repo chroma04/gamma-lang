@@ -342,7 +342,7 @@ binding  = ident '::' expr
          | ident ':' type ':' expr
 ```
 
-Every top-level binding is immutable and its initializer is evaluated at compile time (§17). The kinds of value a top-level binding can denote are: a constant of any type whose value is known at compile time, a function, a type (`struct`, `union`, an alias), an effect, a module (`import`), and a foreign block. The `#global` attribute (§19.3) introduces the only kind of mutable top-level storage.
+Every top-level binding is immutable and its initializer is evaluated at compile time (§17). The kinds of value a top-level binding can denote are: a constant of any type whose value is known at compile time, a function, a type (`struct`, `union`, an alias), an effect, a named effect set (§12.3), a module (`import`), and a foreign block. The `#global` attribute (§19.3) introduces the only kind of mutable top-level storage.
 
 Top-level declarations are mutually visible regardless of order. Their dependency graph — *A* depends on *B* if evaluating *A*'s initializer or computing *A*'s type requires *B*'s value — must be acyclic, except that functions may refer to each other (including recursively) and types may refer to each other through pointers. A cycle is a compile error naming every declaration in it.
 
@@ -1342,7 +1342,7 @@ fn_lit     = 'fn' '(' [ param % ',' ] ')' [ '->' type ] [ '\' effect_set ] [ whe
 fn_body    = block | '=>' expr
 param      = ident { ',' ident } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]   // ': ..T' is a rest parameter (§11.2)
 effect_set = '{' [ effect % ',' ] '}'
-effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6)
+effect     = effect_ref | '..' IDENT                    // '..E': an effect-set parameter (§16.6) or a named set (§12.3)
 ```
 
 - `a, b: i32` declares two parameters of one type.
@@ -1510,6 +1510,8 @@ An `esc` or `ctl` operation with result type `never` can never return to the per
 ### 12.3 Effect sets
 
 An effect set `{E1, E2, …}` lists effect types, each possibly instantiated (`Yield(i32)`). Two instantiations of a generic effect with different arguments are different effects; `{Yield(i32), Yield(u8)}` is a valid set. Order and duplicates are irrelevant.
+
+**Named effect sets.** A top-level binding whose initializer is an effect set names it: `Io :: \ {Fs, Alloc, Err}`. `..Io` in an effect set stands for its effects, so `\ {..Io, Clock}` is `\ {Fs, Alloc, Err, Clock}`; it may be `pub`, aliased (`Console :: Io`), reached through a module (`..m.Io`) and given as the argument of an effect-set parameter (`Sched(Io)`, §16.6). A named effect set is a compile-time name for a list of effects, nothing more: it is not a type, not a value, and it cannot mention an effect-set parameter. It exists so that the effects a family of functions performs are written once.
 
 **Performed effects.** The effects an expression *performs* are:
 
@@ -2123,7 +2125,7 @@ Sched :: effect(E: effects) {
 ```
 
 - Inside an effect set, `..E` stands for the effects of `E`; after instantiation it is replaced by them (duplicates merge). `E` itself is not a type and may appear only as `..E` or as the argument of another effect-set parameter (`Sched(E)`, `Scheduler(E)`).
-- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), or as another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2); an inferable one is written by name or inferred from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
+- An argument for an effect-set parameter is written `\ {E1, E2}`, or as a single effect (`Sched(Out)` is `Sched(\ {Out})`), a named effect set (§12.3), or another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2); an inferable one is written by name or inferred from the effect sets of the other arguments' function types: first from the arguments of an effect named once on each side (`Sched(E)` against `Sched(\ {Out})`), then, for a single `..E`, as the argument's effects that the parameter type does not name. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched(\ {})`).
 - The body is checked once, with `..E` as an opaque member of the sets that mention it: `apply` may call `f` because its own set includes `..E`. Since `E` might include any effect, a `with` may not handle anything around code that performs `..E` (the next paragraph's rule, for effect sets).
 
 This is how a stored function pointer can be polymorphic in its effects without effect variables in the types of values: `std/fiber`'s `Sched(E)` lets tasks perform the effects `E`, which the scheduler's handler, `handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}`, requires where it is installed (§14.6).
@@ -2909,7 +2911,7 @@ fn_type_param = [ IDENT { ',' IDENT } ':' ] type | '...'                       /
 tuple_type    = '(' ')' | '(' type ',' ')' | '(' type ',' type { ',' type } [ ',' ] ')'
               | '(' IDENT ':' type { ',' IDENT ':' type } [ ',' ] ')'
 effect_set    = '{' [ effect_entry % ',' ] '}'
-effect_entry  = effect_ref | '..' IDENT                          // '..E' (§16.6)
+effect_entry  = effect_ref | '..' postfix_expr                   // '..E' (§16.6), '..Io' (§12.3)
 effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net, Sched(\ {Out})
 
 struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'

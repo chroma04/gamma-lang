@@ -230,6 +230,13 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, "expected a value, found a type");
                 error_expr(span)
             }
+            ExprKind::EffectSet(_) => {
+                self.error(
+                    span,
+                    "an effect set is not a value; name one with a top-level declaration: `Io :: \\ {Fs, Alloc}` (§12.3)",
+                );
+                error_expr(span)
+            }
             _ => {
                 self.error(span, "this kind of expression is not supported yet");
                 error_expr(span)
@@ -313,6 +320,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             DeclValue::Effect(_) | DeclValue::EffectInst(_) => {
                 self.error(span, format!("expected a value, found the effect `{}`", name));
+                error_expr(span)
+            }
+            DeclValue::EffectSet(_) => {
+                self.error(span, format!("expected a value, found the effect set `{}`", name));
                 error_expr(span)
             }
             DeclValue::Op(..) => {

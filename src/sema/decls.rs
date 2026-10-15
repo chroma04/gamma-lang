@@ -21,6 +21,8 @@ pub enum DeclValue {
     Effect(EffectId),
     /// A generic effect with its arguments: `Ev :: Events(Msg)` (§3.5).
     EffectInst(EffectRef),
+    /// A named effect set: `Io :: \ {Fs, Alloc}` (§12.3), spliced as `\ {..Io}`.
+    EffectSet(EffectSet),
     /// A (non-generic) function.
     Fn(FnId),
     /// An effect operation, callable like a function (§12.1).
@@ -339,6 +341,15 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
+            // `Io :: \ {Fs, Alloc}`: a named effect set (§12.3).
+            ExprKind::EffectSet(list) if b.ty.is_none() => {
+                let set = self.resolve_effect_set(module, list);
+                if set.has_splice() {
+                    self.error(init.span, "a named effect set cannot contain an effect-set parameter");
+                    return DeclValue::Error;
+                }
+                DeclValue::EffectSet(set)
+            }
             ExprKind::Handler(_) => {
                 self.error(
                     init.span,
@@ -648,6 +659,13 @@ impl<'s> Sema<'s> {
     pub fn resolve_effect_set(&mut self, module: ModuleId, list: &[ast::Expr]) -> EffectSet {
         let mut v = vec![];
         for e in list {
+            // `..Io`: the effects of a named effect set.
+            if let ExprKind::EffectSplice(inner) = &e.kind
+                && let Some(set) = self.named_effect_set(module, inner)
+            {
+                v.extend(set.effects.iter().cloned());
+                continue;
+            }
             if let Some(r) = self.resolve_effect_ref(module, e) {
                 v.push(r);
             }
@@ -655,15 +673,37 @@ impl<'s> Sema<'s> {
         EffectSet::new(v)
     }
 
+    /// The effects of the named effect set that `e` names (`Io`, `m.Io`), if it names one.
+    pub fn named_effect_set(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectSet> {
+        let d = match &e.kind {
+            ExprKind::Ident(id) => self.lookup_module_name(module, id.name)?,
+            ExprKind::Field { base, name } => {
+                let m = self.module_named(module, base)?;
+                self.module_member(m, *name)?
+            }
+            _ => return None,
+        };
+        match self.resolve_decl(d) {
+            DeclValue::EffectSet(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn resolve_effect_ref(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectRef> {
         // `..E`: the effects of an effect-set parameter (§16.6).
         if let ExprKind::EffectSplice(inner) = &e.kind {
             return match self.effect_param_named(inner) {
                 Some(p) => Some(EffectRef::splice(p)),
+                None if matches!(&inner.kind, ExprKind::Ident(id) if self.lookup_module_name(module, id.name).is_none()) =>
+                {
+                    let ExprKind::Ident(id) = &inner.kind else { unreachable!() };
+                    self.error(inner.span, format!("unknown effect set `{}`", id.name));
+                    None
+                }
                 None => {
                     self.error(
                         inner.span,
-                        "only an effect-set parameter (`E: effects`) can be spliced with `..` (§16.6)",
+                        "only a named effect set or an effect-set parameter (`E: effects`) can be spliced with `..` (§12.3, §16.6)",
                     );
                     None
                 }
@@ -710,6 +750,16 @@ impl<'s> Sema<'s> {
                     DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
                     DeclValue::EffectInst(r) => Some(r),
                     DeclValue::Error => None,
+                    DeclValue::EffectSet(_) => {
+                        self.error(
+                            e.span,
+                            format!(
+                                "`{}` is an effect set; splice it into the set as `..{}` (§12.3)",
+                                id.name, id.name
+                            ),
+                        );
+                        None
+                    }
                     _ => {
                         self.error(e.span, format!("`{}` is not an effect", id.name));
                         None
@@ -769,6 +819,9 @@ impl<'s> Sema<'s> {
     pub fn resolve_effect_arg(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         if let Some(p) = self.effect_param_named(e) {
             return p;
+        }
+        if let Some(set) = self.named_effect_set(module, e) {
+            return Ty::intern(TyKind::Effects(set));
         }
         if let ExprKind::EffectSet(list) = &e.kind {
             let set = self.resolve_effect_set(module, list);
@@ -858,6 +911,7 @@ impl<'s> Sema<'s> {
             | DeclValue::GenericType(_)
             | DeclValue::Effect(_)
             | DeclValue::EffectInst(_)
+            | DeclValue::EffectSet(_)
             | DeclValue::Fn(_)
             | DeclValue::Op(..)
             | DeclValue::Module(_)

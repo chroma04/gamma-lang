@@ -251,7 +251,9 @@ Some effects are predeclared, and the runtime installs a default handler for eac
 | `Env` | `args`, `var`, `exit` | process environment | empty |
 | `Sys` | none | none | not replaceable |
 
-`main` and `test` bodies can perform any of these without handling them. Everything else must either handle them or declare them. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
+`main` and `test` bodies can perform any of these without handling them. Everything else must either handle them or declare them.
+
+The universe scope holds these effects but not their operations (except `yield`, [chapter 8](08-iteration.md)): you call an operation through its effect, as `Clock.now()`, `Alloc.current()`, `Env.args()` or `Fs.open(path, opts)`, so every call that reaches into the context says so where it is written. The names `now`, `read`, `exit` and the rest stay free for your own functions. Operations on a file or socket are also methods: `f.read_from(buf)`. The types of the file system and the network (`File`, `OpenOptions`, `Socket`, …) come from `std/fs` and `std/net`. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
 
 Here is a function that runs a callback and counts the bytes it would print, by installing its own handler for `Out` around the callback:
 
@@ -272,6 +274,19 @@ measure_demo :: fn() \ {Out} {
 ```
 
 The hello is swallowed by `counter` and never reaches standard output.
+
+### Naming a set of effects
+
+Effect sets get long when a family of functions does the same kinds of things. A top-level binding can name a set, and `..` splices it into another:
+
+```gamma
+Io :: \ {Fs, Alloc, Err}
+
+load :: fn(path: string) -> fs.ReadError![]u8 \ {..Io} { … }
+save :: fn(path: string, data: []const u8) -> IoError!() \ {..Io, Clock} { … }
+```
+
+A named effect set is only a name for a list of effects: `\ {..Io, Clock}` is exactly `\ {Fs, Alloc, Err, Clock}`. It can be `pub`, imported, aliased, and given where an effect-set parameter is expected ([chapter 10](10-generics.md)).
 
 ### `Sys`: the edge of the model
 
