@@ -19,9 +19,9 @@ Next steps:
 
 You get `gamma.toml`, a `main.gm` that prints a greeting and has a small function with a `test`, and a `.gitignore` for the executable that `gamma build .` writes. If `git` is installed and the directory is not already inside a git work tree, `gamma new` also runs `git init`; pass `--vcs=none` to skip that.
 
-`gamma init [dir]` does the same in a directory that already exists (the current one by default). It never overwrites a file: anything already there is reported as skipped.
+`gamma init [dir]` does the same in a directory that already exists (the current one by default). It never overwrites a file: anything already there is reported as skipped (and if `gamma.toml` is among them, the message says so instead of claiming a new package).
 
-The package name is the directory name with every character that is not a letter, digit or `_` replaced by `_` (`my-app` becomes `my_app`). Give another with `--name=<name>`. A package name must be an identifier: letters, digits and `_`, not starting with a digit, because it is the first segment of an import path.
+The package name is the directory name with every character that is not a letter, digit or `_` replaced by `_` (`my-app` becomes `my_app`; `gamma new` and `gamma init` print a note when the name differs from the directory's). Give another with `--name=<name>`. A package name must be an identifier: letters, digits and `_`, not starting with a digit, because it is the first segment of an import path. It also cannot be a keyword, `_`, a builtin type name (`i32`, `bool`, `string`, ...), or `std` or `core`; if the directory name gives such a name, pass `--name`.
 
 Every package command finds its package by walking up from the directory you name (or the current one) to the nearest `gamma.toml`.
 
@@ -39,7 +39,7 @@ util = { git = "https://example.com/util.git", tag = "v0.3.0" }
 blob = { url = "https://example.com/blob-1.2.0.tar.gz", sha256 = "9f86…" }
 ```
 
-`[package]` holds the `name` and a semantic `version`. Both are optional. `[dependencies]` maps a name to a source. The name is what you write in `import "json"`, so it must be an identifier as well; it does not have to match the dependency's own package name. A `gamma.toml` that does not follow these rules is reported with its line, as in `gamma.toml:6: dependency `x` has an unknown key `colour``. Keys that are not listed here are errors inside a dependency, and ignored elsewhere, except in the `[build]` and `[profile.*]` tables (see [Build settings](#build-settings)), where an unknown key is an error too.
+`[package]` holds the `name` and a semantic `version`. Both are optional. `[dependencies]` maps a name to a source. The name is what you write in `import "json"`, so it must be a valid name as well (the same rules as for a package name); it does not have to match the dependency's own package name. A `gamma.toml` that does not follow these rules is reported with its line, as in `gamma.toml:6: dependency `x` has an unknown key `colour``. Keys that are not listed here are errors inside a dependency, and ignored elsewhere, except in the `[build]` and `[profile.*]` tables (see [Build settings](#build-settings)), where an unknown key is an error too.
 
 ### Path dependencies
 

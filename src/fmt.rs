@@ -441,18 +441,23 @@ fn continues_line(info: &Info) -> bool {
 /// Whether a run of spaces between `prev` and `cur` is kept: it aligns the
 /// operator of consecutive declarations, fields or match arms into a column,
 /// so it is kept only when the line above or below has the same operator in
-/// the same column (or, after `:`, a token in the same column).
+/// the same column (or, after `:`, a token in the same column). Columns count
+/// from each line's own indentation, which the formatter rewrites: the
+/// decision is the same for the source and for its formatted output.
 fn keeps_padding(src: &str, prev: &Info, cur: &Info) -> bool {
     let op = matches!(cur.text.as_str(), "::" | "=>");
     if !op && prev.text != ":" {
         return false;
     }
-    let col = column(src, cur.lo);
+    let indent_of = |line: &str| line.chars().take_while(|c| c.is_whitespace()).count();
     let line_start = src[..cur.lo].rfind('\n').map_or(0, |i| i + 1);
     let line_end = src[cur.lo..].find('\n').map_or(src.len(), |i| cur.lo + i);
     let above = src[..line_start.saturating_sub(1)].rsplit('\n').next().filter(|_| line_start > 0);
     let below = src.get(line_end + 1..).filter(|_| line_end < src.len()).and_then(|r| r.split('\n').next());
+    let own = &src[line_start..line_end];
+    let col = column(src, cur.lo).saturating_sub(indent_of(own));
     [above, below].into_iter().flatten().any(|line| {
+        let col = col + indent_of(line);
         let rest: String = line.chars().skip(col).collect();
         let before: String = line.chars().take(col).collect();
         let spaced = before.ends_with(' ') && !before.trim().is_empty();

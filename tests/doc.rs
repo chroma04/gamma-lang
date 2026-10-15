@@ -94,6 +94,40 @@ fn missing_lists_undocumented_items() {
     assert!(!warnings.contains("module"), "the fixture has module documentation: {}", warnings);
 }
 
+#[test]
+fn inline_markdown_and_headings_in_doc_comments() {
+    let dir = temp_dir("inline");
+    let src = "\
+//! Module text.
+//!
+//! # Overview
+//!
+//! More.
+
+/// Spans: `` a`b `` and ``` x``y ``` and `` ` `` and `lone ` tick, ***both*** and **s**.
+///
+/// # Details
+///
+///     # not a heading
+pub f :: fn() {}
+";
+    std::fs::write(dir.join("m.gm"), src).unwrap();
+    let m = &doc::load_modules(&dir, false).unwrap()[0];
+    let html = doc::render_module(m, Format::Html, None);
+    assert!(html.contains("<code>a`b</code>"), "{html}");
+    assert!(html.contains("<code>x``y</code>"), "{html}");
+    assert!(html.contains("<code>`</code>"), "{html}");
+    assert!(html.contains("<code>lone </code> tick") || html.contains("`lone"), "{html}");
+    assert!(html.contains("<em><strong>both</strong></em>"), "{html}");
+    assert!(html.contains("<strong>s</strong>"), "{html}");
+    assert!(html.contains("<h4>Overview</h4>") && html.contains("<h4>Details</h4>"), "{html}");
+    let md = doc::render_module(m, Format::Markdown, None);
+    assert!(md.contains("#### Overview") && md.contains("#### Details"), "{md}");
+    assert!(!md.lines().any(|l| l == "# Overview" || l == "# Details"), "{md}");
+    assert!(md.contains("    # not a heading"), "{md}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("gamma-doc-test-{}-{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&dir);
