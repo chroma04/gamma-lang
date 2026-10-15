@@ -3,9 +3,9 @@
  *     cc -std=gnu11 -O1 -pthread -Wall -Werror -Wno-unused-function -I runtime runtime/rt_test.c
  *
  * With no arguments it runs every check and exits non-zero if any failed. With a case name
- * (`trap`, `double-free`, `invalid-free`, `wrong-size`, `args`) it runs that one scenario,
- * which is expected to end the process, so the test runner can check the exit status and the
- * output.
+ * (`trap`, `trap-nofile`, `double-free`, `invalid-free`, `wrong-size`, `args`) it runs that one
+ * scenario, which (except `args`, which only starts up with its arguments) is expected to end
+ * the process, so the test runner can check the exit status and the output.
  */
 #include "gm_rt.h"
 #include "gm_rt.c"
@@ -541,8 +541,6 @@ static void test_env_args(void) {
     }
 }
 
-/* ---- scenarios that end the process ------------------------------------------------ */
-
 /* ---- integers wider than 128 bits ------------------------------------------------ */
 
 static uint64_t rng_state = 0x9e3779b97f4a7c15ULL;
@@ -1042,6 +1040,8 @@ static void test_wide(void) {
     test_wide_identities();
     test_wide_misc();
 }
+
+/* ---- scenarios that end the process ------------------------------------------------ */
 
 static int scenario(const char *name) {
     if (strcmp(name, "trap") == 0) {

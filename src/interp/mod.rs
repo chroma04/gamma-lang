@@ -7,9 +7,11 @@
 //!
 //! # Design
 //!
-//! - **Memory** ([`memory`]): a flat virtual address space. Every local,
-//!   temporary, string literal, constant and global lives in its own
-//!   allocation at a fresh, never reused address, so out-of-bounds,
+//! - **Memory** ([`memory`]): a flat virtual address space. Every string
+//!   literal, constant, global, temporary whose address is taken and local that
+//!   needs an address (small locals that never do stay in registers or frame
+//!   slots) lives in its own allocation at a fresh, never reused address, so
+//!   out-of-bounds,
 //!   use-after-return, null and misaligned accesses and writes to read-only
 //!   data are detected exactly (spec §18.4). Values are plain bytes in target
 //!   layout; pointers are addresses.

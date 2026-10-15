@@ -1,6 +1,6 @@
 //! The system services behind the core library's default handlers (§12.9):
-//! standard input, clocks and random bytes. Compiled programs get the same
-//! services from the C runtime.
+//! standard input, clocks, random bytes, files and directories, TCP networking,
+//! futexes and threads. Compiled programs get the same services from the C runtime.
 
 use super::machine::*;
 use super::value::*;

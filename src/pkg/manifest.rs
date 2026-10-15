@@ -1,7 +1,7 @@
 //! The package manifest, `gamma.toml`.
 //!
 //! One parser serves the compiler (to find import roots) and the package manager (to
-//! resolve git dependencies). Errors carry the line they refer to, and the caller
+//! resolve git and archive dependencies, and to read the build settings). Errors carry the line they refer to, and the caller
 //! prints them as `gamma.toml:LINE: message`.
 
 use semver::VersionReq;

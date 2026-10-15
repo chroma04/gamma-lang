@@ -788,7 +788,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 Ok(format!("({} + {})", b, off))
             }
             ExprKind::Index { base, index, checked } => {
-                // The base is evaluated before the index (§7): when the index has effects,
+                // The base is evaluated before the index (§7.1): when the index has effects,
                 // the base's address (or value) is computed first, into a temporary.
                 let early = if no_writes(index) {
                     None
