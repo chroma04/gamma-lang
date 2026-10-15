@@ -1,12 +1,18 @@
-//! The cache of separately compiled runtime objects.
+//! The cache directory, and in it the separately compiled runtime objects and the
+//! built programs.
 //!
 //! Compiling the runtime is most of the work of compiling a small program, so Debug
-//! builds link with a runtime object compiled once (see [`super::compile`]). Objects are
+//! builds (and Safe ones) link with a runtime object compiled once (see [`super::compile`]).
+//! Objects are
 //! kept in the cache directory under a name derived from everything that affects them:
 //! the runtime's source, the C compiler (its command with its arguments, `CFLAGS` and its
 //! `--version` output) and the flags. The directory is `$GAMMA_CACHE_DIR` if set (an empty value turns the cache
 //! off), else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and
-//! `~/.cache/gamma` elsewhere; on Windows `%LOCALAPPDATA%\gamma`.
+//! `~/.cache/gamma` elsewhere; on Windows `%LOCALAPPDATA%\gamma` (`%USERPROFILE%` if that is
+//! unset) when `XDG_CACHE_HOME` is not set.
+//!
+//! [`cached_program`] keeps whole executables in `run/` under a key that covers everything that
+//! affects them, for `gamma run --backend=c`; the most recent few are kept.
 //!
 //! Concurrent builds may compile the same object at once: each writes a file of its
 //! own and renames it into place, so a reader never sees a partial object.
@@ -125,8 +131,6 @@ pub fn cached_program(
     Ok(Some(exe))
 }
 
-/// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing
-/// any used in the last ten minutes (another process may be about to run it).
 /// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps
 /// it. Windows sets times only through a handle opened for writing.
 pub(crate) fn touch(p: &Path) {
@@ -135,6 +139,8 @@ pub(crate) fn touch(p: &Path) {
     let _ = f.and_then(|f| f.set_modified(now));
 }
 
+/// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing
+/// any used in the last ten minutes (another process may be about to run it).
 fn prune(dir: &Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut progs: Vec<(std::time::SystemTime, PathBuf)> = rd

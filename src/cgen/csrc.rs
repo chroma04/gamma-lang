@@ -5,7 +5,7 @@
 //! directory (`native/obj-<hash>.o`) under a name derived from the *preprocessed* file
 //! (so a changed header counts), the compiler and all flags. A native build links the
 //! objects into the executable ([`Link`]); the interpreter loads them as a shared
-//! library (`native/lib-<hash>.so`) it can call into ([`load_for_interpreter`]).
+//! library (`native/lib-<hash>.so`, `.dylib` on macOS) it can call into ([`load_for_interpreter`]).
 //!
 //! Without a cache directory the objects are compiled into a temporary directory that
 //! lives as long as the [`Link`].

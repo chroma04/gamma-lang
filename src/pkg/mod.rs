@@ -4,8 +4,7 @@
 //! The compiler asks [`prepare`] for a [`Resolution`] before it analyzes a program: the
 //! directory of every dependency of every package in the graph. Path dependencies need
 //! no resolution; git and archive (`url = …`) dependencies are fetched into the package
-//! store and locked in
-//! `gamma.lock`, next to the root package's manifest.
+//! store and locked in `gamma.lock`, next to the root package's manifest.
 
 pub mod archive;
 pub mod build;
@@ -68,9 +67,9 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Brings the git dependencies of the package at `root` up to date: resolves what the
-/// lockfile does not cover, fetches what the store lacks, and rewrites `gamma.lock` if
-/// it changed. Returns `None` if the graph has no git dependencies. `explicit` is set
+/// Brings the git and archive dependencies of the package at `root` up to date: resolves
+/// what the lockfile does not cover, fetches what the store lacks, and rewrites `gamma.lock`
+/// if it changed. Returns `None` if the graph has none. `explicit` is set
 /// for the package commands, which also delete a lockfile that is no longer needed.
 pub fn sync(root: &Path, opts: &Options, refresh: &Refresh, explicit: bool) -> Result<Option<Resolution>, String> {
     let lock_path = root.join("gamma.lock");
@@ -98,7 +97,7 @@ pub fn sync(root: &Path, opts: &Options, refresh: &Refresh, explicit: bool) -> R
 }
 
 /// What the compiler does before analyzing the program at `input`: sync the git
-/// dependencies of its package. `None` if it has no package or no git dependencies.
+/// and archive dependencies of its package. `None` if it has no package or none.
 pub fn prepare(input: &Path, opts: &Options) -> Result<Option<Resolution>, String> {
     match find_root(input) {
         Some(root) => sync(&root, opts, &Refresh::None, false),
