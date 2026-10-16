@@ -6,6 +6,7 @@ Gamma has three kinds of editor support, plus extensions that package them for V
 | --- | --- | --- |
 | TextMate grammar | Syntax highlighting in VS Code and other editors that read TextMate grammars. | `editors/vscode/syntaxes/gamma.tmLanguage.json` |
 | Tree-sitter grammar | Syntax highlighting, indentation, folding and a syntax tree in Neovim, Helix, Emacs, Zed and others. | `editors/tree-sitter-gamma/` |
+| Emacs mode | `gamma-ts-mode`: the grammar's highlighting, indentation and imenu in Emacs 29 and later, and the language server through Eglot. | `editors/emacs/` |
 | Zed extension | The tree-sitter grammar's highlighting, outline and indentation in Zed, and the language server. | `editors/zed/` |
 | Language server | Diagnostics, hover, go to definition, find references, rename, completion, signature help, document symbols and formatting, for any editor with an LSP client. | `gamma lsp` |
 
@@ -16,7 +17,7 @@ and diagnostics, hover and go to definition from the language server), and the H
 setup with Helix 25.07.1 (`hx --health gamma` finds the server, the parser and the
 highlight queries). The VS Code extension packages with `vsce`. The Zed extension is checked by building it
 and running its queries over the repository's sources, but has not been tried in Zed;
-the Emacs instructions have not been tried yet. Reports of what works in other versions are
+the Emacs mode is tested with Emacs 29.3 in batch mode, with a grammar regenerated for ABI 14. Reports of what works in other versions are
 welcome.
 
 ## The gamma executable
@@ -181,15 +182,17 @@ Run `hx --health gamma` to check the setup.
 
 ## Emacs
 
-Emacs 29 and later can build the tree-sitter parser:
+`editors/emacs/gamma-ts-mode.el` is a major mode for Emacs 29.1 and later, built on the tree-sitter grammar. It gives highlighting, indentation (four spaces), imenu and navigation by declaration, and registers `gamma lsp` with Eglot.
+
+Install the grammar, then load the mode from a checkout:
 
 ```elisp
-(add-to-list 'treesit-language-source-alist
-             '(gamma "https://github.com/chroma04/gamma-lang" nil "editors/tree-sitter-gamma/src"))
+(add-to-list 'load-path "~/src/gamma-lang/editors/emacs")
+(require 'gamma-ts-mode)
 (treesit-install-language-grammar 'gamma)
 ```
 
-No major mode is provided. For the language server, any LSP client works with the command `gamma lsp`.
+`.gm` files open in `gamma-ts-mode`, and `M-x eglot` starts the language server from the `gamma` on your `PATH`. Emacs builds linked against tree-sitter older than 0.25 cannot load the committed parser (ABI 15) and need it regenerated with `--abi 14`. See `editors/emacs/README.md` for the details, a `use-package` snippet and the tests.
 
 ## Other editors
 
