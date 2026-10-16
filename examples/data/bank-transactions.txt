@@ -1,0 +1,17 @@
+# opening deposits
+deposit alice 10000
+deposit bob 2500
+deposit carol 700
+
+transfer alice bob 3000
+withdraw bob 50000
+withdraw dave 100
+transfer carol alice 701
+transfer bob zed 5
+transfer alice alice 5
+deposit alice -20
+deposit alice lots
+withdraw carol
+audit alice
+withdraw carol 700
+deposit dave 1

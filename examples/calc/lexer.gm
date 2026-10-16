@@ -1,0 +1,113 @@
+//! Turns one line of calculator input into tokens.
+
+str :: import "std/str"
+
+/// A token. Payloads carry the data; the other variants are punctuation.
+Token :: union {
+    Num: f64
+    Ident: string
+    Plus
+    Minus
+    Star
+    Slash
+    Caret
+    LParen
+    RParen
+    Assign
+}
+
+/// A token and the byte column (from 0) where it starts.
+Spanned :: struct {
+    tok: Token
+    pos: usize
+}
+
+/// What went wrong, and where in the line (a byte column).
+ErrorKind :: union {
+    UnexpectedChar: u8
+    BadNumber
+    UnexpectedToken
+    UnexpectedEnd
+    DivisionByZero
+    Domain
+    UnknownVariable: string
+    UnknownFunction: string
+    NotAssignable
+    Memory: AllocError
+}
+
+CalcError :: struct {
+    kind: ErrorKind
+    pos: usize
+}
+
+is_digit :: fn(c: u8) -> bool => c in '0'..='9'
+
+is_ident_start :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '_'
+
+/// Splits `line` into tokens appended to `out`. Whitespace separates tokens and is dropped.
+tokenize :: fn(line: string, out: ^List(Spanned)) -> CalcError!() needs Alloc {
+    i: usize = 0
+    while i < line.len {
+        c := line[i]
+        start := i
+        i += 1
+        tok: Token = match c {
+            ' ', '\t' => continue
+            '+' => .Plus
+            '-' => .Minus
+            '*' => .Star
+            '/' => .Slash
+            '^' => .Caret
+            '(' => .LParen
+            ')' => .RParen
+            '=' => .Assign
+            _ => {
+                if is_digit(c) or c is '.' {
+                    while i < line.len and (is_digit(line[i]) or line[i] is '.') { i += 1 }
+                    // parse_float is strict, so "1.2.3" and "." end up here as BadNumber.
+                    value := str.parse_float(f64, line[start..i]) else {
+                        return !CalcError(kind: .BadNumber, pos: start)
+                    }
+                    Token.Num(value)
+                } else if is_ident_start(c) {
+                    while i < line.len and (is_ident_start(line[i]) or is_digit(line[i])) { i += 1 }
+                    Token.Ident(line[start..i])
+                } else {
+                    return !CalcError(kind: .UnexpectedChar(c), pos: start)
+                }
+            }
+        }
+        out.push(Spanned(tok: tok, pos: start)) else e => {
+            return !CalcError(kind: .Memory(e), pos: start)
+        }
+    }
+    return ()
+}
+
+test "tokenize an expression" {
+    toks := list(Spanned)
+    defer toks.deinit()
+    ok(tokenize("x = 2.5*(y+1)", &toks))
+    expect_eq(toks.items.len, 9)
+    expect(toks.items[0].tok is .Ident("x"))
+    expect(toks.items[2].tok is .Num(2.5))
+    expect_eq(toks.items[3].pos, 7)
+    expect(toks.items[8].tok is .RParen)
+}
+
+test "tokenize errors" {
+    toks := list(Spanned)
+    defer toks.deinit()
+    match tokenize("1 + $", &toks) {
+        !e => {
+            expect(e.kind is .UnexpectedChar('$'))
+            expect_eq(e.pos, 4)
+        }
+        _ => expect(false)
+    }
+    match tokenize("1.2.3", &toks) {
+        !e => expect(e.kind is .BadNumber)
+        _ => expect(false)
+    }
+}

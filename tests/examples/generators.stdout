@@ -1,0 +1,24 @@
+fibonacci: 0 1 1 2 3 5 8 13 21 34 55 89
+even fibonacci: 0 2 8 34 144 610
+squares of primes: 4 9 25 49 121
+25 primes below 100
+tree: 20 30 35 40 50 60 65 70 80
+first key above 45: 50
+n = 10
+n = 9
+n = 8
+countdown closed
+producer: sending alpha
+consumer: got alpha (1)
+producer: sending beta
+consumer: got beta (2)
+producer: closed
+consumer took 2
+producer: sending alpha
+consumer: got alpha (1)
+producer: sending beta
+consumer: got beta (2)
+producer: sending gamma
+consumer: got gamma (3)
+producer: closed
+consumer took 3

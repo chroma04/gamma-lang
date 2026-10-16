@@ -1,0 +1,143 @@
+//! Evaluation: walks the tree, looks variables up in a hash map, and reports errors with the
+//! column of the offending operator or name.
+
+math :: import "std/math"
+arena :: import "std/arena"
+
+/// Variables by name. The map owns copies of its keys (see `store`).
+Vars :: HashMap(string, f64)
+
+/// A map preloaded with `pi`.
+new_vars :: fn() -> AllocError!Vars needs Alloc {
+    vars := hash_map(string, f64)
+    errdefer free_vars(&vars)
+    try store(&vars, "pi", math.pi)
+    return vars
+}
+
+/// Sets a variable. The first time a name is seen the map keeps its own copy of it,
+/// because `name` usually points into a line buffer that is about to be reused.
+store :: fn(vars: ^Vars, name: string, value: f64) -> AllocError!() needs Alloc {
+    e := try vars.entry(name, 0)
+    if not e.found { e.key^ = try dupe(name) }
+    e.value^ = value
+    return ()
+}
+
+free_vars :: fn(vars: ^Vars) needs Alloc {
+    for k in vars.keys() { free(k) }
+    vars.deinit()
+}
+
+eval :: fn(e: ^const Expr, vars: ^const Vars) -> CalcError!f64 {
+    return match e^ {
+        .Num(v) => v
+        .Var(name, pos) => vars.get(name) else return !CalcError(kind: .UnknownVariable(name), pos: pos)
+        .Neg(operand, _) => -(try eval(operand, vars))
+        .Bin(op, lhs, rhs, pos) => {
+            a := try eval(lhs, vars)
+            b := try eval(rhs, vars)
+            match op {
+                .Add => a + b
+                .Sub => a - b
+                .Mul => a * b
+                .Div => {
+                    if b is 0 { return !CalcError(kind: .DivisionByZero, pos: pos) }
+                    a / b
+                }
+                .Pow => math.pow(a, b)
+            }
+        }
+        .Call(name, arg, pos) => {
+            x := try eval(arg, vars)
+            if name is "sqrt" {
+                if x < 0 { return !CalcError(kind: .Domain, pos: pos) }
+                math.sqrt(x)
+            } else if name is "abs" {
+                math.abs(x)
+            } else {
+                return !CalcError(kind: .UnknownFunction(name), pos: pos)
+            }
+        }
+    }
+}
+
+Outcome :: struct {
+    target: ?string
+    value: f64
+}
+
+evaluate :: fn(line: string, vars: ^const Vars) -> CalcError!Outcome needs Alloc {
+    toks := list(Spanned)
+    try tokenize(line, &toks)
+    stmt := try parse(toks.items, line.len)
+    return Outcome(target: stmt.target, value: try eval(stmt.value, vars))
+}
+
+/// Lexes, parses and evaluates `line`, storing the value in the assignment target (if any)
+/// and in `ans`. Tokens and tree live in an arena that is dropped before returning.
+run_line :: fn(line: string, vars: ^Vars) -> CalcError!f64 needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    outcome := try with a.allocator() { evaluate(line, vars) }
+    store(vars, "ans", outcome.value) else err => return !CalcError(kind: .Memory(err), pos: 0)
+    if name := outcome.target {
+        store(vars, name, outcome.value) else err => return !CalcError(kind: .Memory(err), pos: 0)
+    }
+    return outcome.value
+}
+
+/// Runs one line in a fresh variable map and returns the value, for the tests.
+calc :: fn(line: string) -> CalcError!f64 needs Alloc {
+    vars := new_vars() else err => return !CalcError(kind: .Memory(err), pos: 0)
+    defer free_vars(&vars)
+    return run_line(line, &vars)
+}
+
+test "arithmetic and precedence" {
+    expect_eq(ok(calc("1 + 2 * 3")), 7.0)
+    expect_eq(ok(calc("(1 + 2) * 3")), 9.0)
+    expect_eq(ok(calc("10 - 4 - 3")), 3.0)
+    expect_eq(ok(calc("2 ^ 3 ^ 2")), 512.0)
+    expect_eq(ok(calc("-2 ^ 2")), -4.0)
+    expect_eq(ok(calc("8 / 4 / 2")), 1.0)
+    expect_eq(ok(calc("sqrt(16) + abs(-3)")), 7.0)
+}
+
+test "variables" {
+    vars := ok(new_vars())
+    defer free_vars(&vars)
+    expect_eq(ok(run_line("x = 3 * (2 + 1)", &vars)), 9.0)
+    expect_eq(ok(run_line("x + 1", &vars)), 10.0)
+    expect_eq(ok(run_line("ans * 2", &vars)), 20.0)
+    expect_eq(vars.get("x") else 0.0, 9.0)
+    expect_eq(vars.len(), 3)         // pi, ans, x
+}
+
+test "errors carry positions" {
+    match calc("1 + 4 / (2 - 2)") {
+        !e => {
+            expect(e.kind is .DivisionByZero)
+            expect_eq(e.pos, 6)
+        }
+        _ => expect(false)
+    }
+    match calc("2 * y") {
+        !e => {
+            expect(e.kind is .UnknownVariable("y"))
+            expect_eq(e.pos, 4)
+        }
+        _ => expect(false)
+    }
+    match calc("(1 + 2") {
+        !e => {
+            expect(e.kind is .UnexpectedEnd)
+            expect_eq(e.pos, 6)
+        }
+        _ => expect(false)
+    }
+    match calc("3 = 4") {
+        !e => expect(e.kind is .NotAssignable)
+        _ => expect(false)
+    }
+}

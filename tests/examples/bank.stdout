@@ -1,0 +1,31 @@
+ 2: deposit alice 10000
+ 3: deposit bob 2500
+ 4: deposit carol 700
+ 6: transfer alice bob 3000
+ 7: withdraw bob 50000
+    refused: bob has 5500 but 50000 is needed
+ 8: withdraw dave 100
+    refused: unknown account dave
+ 9: transfer carol alice 701
+    refused: carol has 700 but 701 is needed
+10: transfer bob zed 5
+    refused: unknown account zed
+11: transfer alice alice 5
+    refused: cannot transfer to the same account
+12: deposit alice -20
+    refused: amount must be positive
+13: deposit alice lots
+    rejected: bad amount lots
+14: withdraw carol
+    rejected: wrong number of arguments for withdraw
+15: audit alice
+    rejected: unknown command audit
+16: withdraw carol 700
+17: deposit dave 1
+
+balances in cents (4 accounts):
+  alice       7000
+  bob         5500
+  carol          0
+  dave           1
+9 transactions failed

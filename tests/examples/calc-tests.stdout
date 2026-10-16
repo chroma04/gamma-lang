@@ -1,0 +1,6 @@
+test "arithmetic and precedence" ... ok
+test "variables" ... ok
+test "errors carry positions" ... ok
+test "tokenize an expression" ... ok
+test "tokenize errors" ... ok
+5 passed, 0 failed

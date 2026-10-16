@@ -1,0 +1,13 @@
+[Info] order 1: priced
+[Warn] order 2: empty order skipped
+[Error] order 3: missing price
+[Info] order 4: priced
+good batch: 4750 cents
+after good batch: Debug=3 Info=2 Warn=1 Error=1
+[Debug] order 5: springs
+[Info] order 5: priced
+[Error] order 6: quantity out of range
+[Error] order 0: suspicious order
+[Debug] order 0: batch closed
+bad batch aborted
+after both: Debug=5 Info=3 Warn=1 Error=3

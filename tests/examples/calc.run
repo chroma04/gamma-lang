@@ -1,0 +1,3 @@
+example: calc
+stdin: data/calc-input.txt
+exit: 1

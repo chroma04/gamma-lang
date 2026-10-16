@@ -1,0 +1,4 @@
+test "fib starts 0 1 1 2 3 5" ... ok
+test "primes" ... ok
+test "tree walk is sorted" ... ok
+3 passed, 0 failed

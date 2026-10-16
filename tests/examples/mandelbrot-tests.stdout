@@ -1,0 +1,3 @@
+test "points inside and outside the set" ... ok
+test "shade stays inside the palette" ... ok
+2 passed, 0 failed

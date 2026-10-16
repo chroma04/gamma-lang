@@ -1,0 +1,208 @@
+//! Generators: iterators are plain functions that `yield`, and `for` is their handler.
+//!
+//! Shows an infinite Fibonacci iterator, a sieve of Eratosthenes, lazy adapters
+//! (`taking`, `filtered`, `mapped`) that take iterators as arguments, an in-order walk
+//! of a binary tree built with `new`, `break` unwinding an iterator so its `defer`
+//! runs, and a producer coroutine on a fiber (a `ctl` operation) that the consumer
+//! stops early, either by asking it to stop or with `cancel`.
+//!
+//! Run from the examples directory: `gamma run generators.gm` and `gamma test generators.gm`.
+
+// ---- sources ------------------------------------------------------------------------
+
+fib :: fn() needs Yield(u64) {
+    a: u64 = 0
+    b: u64 = 1
+    while true {
+        yield(a)
+        a, b = b, a + b
+    }
+}
+
+// The primes below 100: the loop yields each one as soon as it is known.
+primes :: fn() needs Yield(u32) {
+    composite := [100]bool(fill: false)
+    for n in 2..100 {
+        if composite[n] { continue }
+        yield(u32(n))
+        mut := n * n
+        while mut < 100 {
+            composite[mut] = true
+            mut += n
+        }
+    }
+}
+
+// ---- adapters: they take an iterator call as an argument and yield again ----------------
+
+taking :: fn(T: type, n: usize, src: fn() needs Yield(T)) needs Yield(T) {
+    if n is 0 { return }
+    count := 0
+    for x in src() {
+        yield(x)
+        count += 1
+        if count is n { break }
+    }
+}
+
+filtered :: fn(T: type, src: fn() needs Yield(T), keep: fn(x: T) -> bool) needs Yield(T) {
+    for x in src() {
+        if keep(x) { yield(x) }
+    }
+}
+
+mapped :: fn(T, U: type, src: fn() needs Yield(T), f: fn(x: T) -> U) needs Yield(U) {
+    for x in src() { yield(f(x)) }
+}
+
+show :: fn(label: string, src: fn() needs Yield(u64)) needs Out {
+    print("{}:", label)
+    for x in src() { print(" {}", x) }
+    print("\n")
+}
+
+// ---- a binary tree and its in-order iterator ---------------------------------------------
+
+Node :: struct {
+    key: i32
+    left: ?^Node = null
+    right: ?^Node = null
+}
+
+insert :: fn(root: ^?^Node, key: i32) -> AllocError!() needs Alloc {
+    link := root
+    while n := link^ {
+        link = if key < n.key { &n.left } else { &n.right }
+    }
+    link^ = try new(Node(key: key))
+    return ()
+}
+
+// Recursion works: every level performs `yield` for the same handler.
+in_order :: fn(n: ?^const Node) needs Yield(i32) {
+    p := n else return
+    in_order(p.left)
+    yield(p.key)
+    in_order(p.right)
+}
+
+free_tree :: fn(n: ?^Node) needs Alloc {
+    p := n else return
+    free_tree(p.left)
+    free_tree(p.right)
+    destroy(p)
+}
+
+// An iterator with cleanup: `break` in the caller's loop unwinds it and runs the `defer`.
+countdown :: fn(from: u32) needs Yield(u32) + Out {
+    defer print("countdown closed\n")
+    n := from
+    while n > 0 {
+        yield(n)
+        n -= 1
+    }
+}
+
+// ---- a coroutine: the producer suspends at each `emit` until the consumer answers ---------
+
+Feed :: effect {
+    emit: ctl(line: string) -> bool // the reply says whether the consumer wants more
+}
+
+producer :: fn() needs Feed + Out {
+    defer print("producer: closed\n")
+    lines := [_]string("alpha", "beta", "gamma", "delta", "epsilon")
+    for l in lines {
+        print("producer: sending {}\n", l)
+        if not emit(l) { return }
+    }
+    print("producer: out of lines\n")
+}
+
+// Runs the producer on its own stack; the consumer is the clause. It takes `limit` lines,
+// then either asks the producer to stop (`resume k(false)`) or abandons it (`cancel k`),
+// which unwinds the producer from where it is suspended.
+consume :: fn(limit: u32, polite: bool) -> u32 needs Out {
+    stack: [16384]u8 = ---
+    got := 0u32
+    sink :: handler Feed {
+        emit(line, k) => {
+            got += 1
+            print("consumer: got {} ({})\n", line, got)
+            if got is limit {
+                if polite {
+                    resume k(false)
+                } else {
+                    cancel k
+                    break
+                }
+            } else {
+                resume k(true)
+            }
+        }
+    }
+    with sink on stack[..] { producer() }
+    return got
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    show("fibonacci", fn() => taking(12, fib()))
+    show("even fibonacci", fn() => taking(6, filtered(fib(), fn(x: u64) -> bool => x % 2 is 0)))
+    show("squares of primes", fn() => taking(5, mapped(primes(), fn(p: u32) -> u64 => u64(p) * u64(p))))
+
+    count := 0
+    for p in primes() { count += 1 }
+    print("{} primes below 100\n", count)
+
+    // Build a tree from unsorted keys and walk it in order.
+    root: ?^Node = null
+    defer free_tree(root)
+    for k in [_]i32(50, 30, 70, 20, 40, 60, 80, 35, 65) { try insert(&root, k) }
+    print("tree:")
+    for k in in_order(root) { print(" {}", k) }
+    print("\n")
+
+    // Stop the walk at the first key above 45: the recursion unwinds in one step.
+    first := 0
+    for k in in_order(root) {
+        if k > 45 {
+            first = k
+            break
+        }
+    }
+    print("first key above 45: {}\n", first)
+
+    for n in countdown(10) {
+        if n < 8 { break }
+        print("n = {}\n", n)
+    }
+
+    print("consumer took {}\n", consume(2, true))
+    print("consumer took {}\n", consume(3, false))
+    return ()
+}
+
+test "fib starts 0 1 1 2 3 5" {
+    l := list(u64)
+    defer l.deinit()
+    ok(l.collect(taking(6, fib())))
+    expect_eq(l.items.len, 6)
+    expect(l.items[5] is 5)
+}
+
+test "primes" {
+    n := count(primes())
+    expect_eq(n, 25)
+    expect_eq(nth(primes(), 9), 29)
+}
+
+test "tree walk is sorted" {
+    root: ?^Node = null
+    defer free_tree(root)
+    for k in [_]i32(5, 2, 8, 1, 9, 3) { ok(insert(&root, k)) }
+    l := list(i32)
+    defer l.deinit()
+    ok(l.collect(in_order(root)))
+    expect_eq(l.items.len, 6)
+    for i in 1..l.items.len { expect(l.items[i - 1] < l.items[i]) }
+}

@@ -1,0 +1,7 @@
+test "parse recognises the three commands" ... ok
+test "apply runs commands against the ledger" ... ok
+test "deposit opens an account and adds up" in ledger ... ok
+test "withdraw refuses to overdraw" in ledger ... ok
+test "transfer is all or nothing" in ledger ... ok
+test "accounts come in opening order" in ledger ... ok
+6 passed, 0 failed

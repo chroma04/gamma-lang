@@ -1,0 +1,9 @@
+checksum = 750
+tracked: live=0 peak=300 allocs=2 frees=2
+list holds 1000 numbers, tracker saw allocations: true
+after deinit: live=0
+arena: 1000 allocations reached the tracker as fewer than 10: true
+arena released: live=0
+formatted without the heap: orders/open: 42
+a 1000 byte request does not fit in 64 bytes: .OutOfMemory
+heap allocations during that: 0

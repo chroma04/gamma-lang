@@ -1,0 +1,44 @@
+> 1 + 2 * 3
+7
+> (1 + 2) * 3
+9
+> 2 ^ 3 ^ 2
+512
+> -2 ^ 2
+-4
+> 7 / 2
+3.5
+> x = 3 * (2 + 1)
+9
+> y = x / 4
+2.25
+> x + y
+11.25
+> ans * 2
+22.5
+> r = 2.5
+2.5
+> pi * r ^ 2
+19.634954084936208
+> sqrt(x + 7) + abs(-1.5)
+5.5
+> 10 / (x - 9)
+     ^ division by zero
+> 1 + z * 2
+      ^ unknown variable 'z'
+> (1 + 2
+        ^ unexpected end of input
+> 3 + * 4
+      ^ unexpected token
+> 2 $ 3
+    ^ unexpected character '$'
+> 4 = 5
+  ^ can only assign to a variable name
+> sqrt(-1)
+  ^ argument outside the function's domain
+> foo(2)
+  ^ unknown function 'foo'
+> 1.2.3
+  ^ malformed number
+> x = y = 1
+        ^ unexpected token

@@ -1,0 +1,53 @@
+//! A line-oriented calculator. Reads expressions from standard input and prints each result;
+//! `name = expression` stores a variable, and `ans` holds the last result.
+
+io :: import "std/io"
+
+main :: fn() -> u8 needs Out + In + Alloc {
+    vars := new_vars() else {
+        print("out of memory\n")
+        return 2
+    }
+    defer free_vars(&vars)
+    reader := io.reader()
+    failures: u8 = 0
+    while true {
+        line := reader.next_line() else err => {
+            print("read error: {}\n", io.describe(err))
+            return 2
+        }
+        text := line else break              // end of input
+        if text.len is 0 or text[0] is '#' { continue }
+        print("> {}\n", text)
+        if value := run_line(text, &vars) {
+            print("{}\n", value)
+        } else e => {
+            report(e)
+            failures += 1
+        }
+    }
+    return if failures is 0 { 0 } else { 1 }
+}
+
+/// Prints a caret under the column where the error was found, then the message.
+report :: fn(e: CalcError) needs Out {
+    print("  ")
+    for _ in 0..e.pos { print(" ") }
+    print("^ ")
+    match e.kind {
+        .UnexpectedChar(c) => {
+            one := [1]u8(fill: c)
+            shown: string = one[..]
+            print("unexpected character '{}'\n", shown)
+        }
+        .BadNumber => print("malformed number\n")
+        .UnexpectedToken => print("unexpected token\n")
+        .UnexpectedEnd => print("unexpected end of input\n")
+        .DivisionByZero => print("division by zero\n")
+        .Domain => print("argument outside the function's domain\n")
+        .UnknownVariable(name) => print("unknown variable '{}'\n", name)
+        .UnknownFunction(name) => print("unknown function '{}'\n", name)
+        .NotAssignable => print("can only assign to a variable name\n")
+        .Memory(_) => print("out of memory\n")
+    }
+}

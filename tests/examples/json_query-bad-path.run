@@ -1,0 +1,3 @@
+example: json_query.gm
+args: .store.books[x] data/json-store.json
+exit: 1

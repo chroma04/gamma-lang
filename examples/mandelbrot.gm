@@ -1,0 +1,99 @@
+//! ASCII-art Mandelbrot set.
+//!
+//! Each character cell is one point `c` of the complex plane; the brightness is how many
+//! iterations of `z = z*z + c` it takes `z` to leave the circle of radius 2. Shows `f64`
+//! arithmetic, nested loops, fixed-size arrays and checked conversions between integers and
+//! floats. The width and height in characters are optional arguments (default 72 x 28).
+//!
+//! Run from the examples/ directory (the default size takes well under a second in the
+//! interpreter; for a bigger picture compile it, which is much faster):
+//!
+//!     gamma run mandelbrot.gm
+//!     gamma run --backend=c mandelbrot.gm 160 60
+
+math :: import "std/math"
+str :: import "std/str"
+
+MAX_ITER :: 200
+
+/// Dark to light; a point that never escapes is drawn with the last character.
+PALETTE :: " .:-=+*#%@"
+
+/// Number of iterations before `c` escapes, or `MAX_ITER` if it seems to stay bounded.
+escape_time :: fn(cr, ci: f64) -> u32 {
+    zr: f64 = 0
+    zi: f64 = 0
+    n: u32 = 0
+    while n < MAX_ITER and zr * zr + zi * zi <= 4.0 {
+        t := zr * zr - zi * zi + cr
+        zi = 2.0 * zr * zi + ci
+        zr = t
+        n += 1
+    }
+    return n
+}
+
+/// The palette character for an iteration count. Counts are bent with a square root so that
+/// the slow-escaping points near the boundary get more shades than the fast ones.
+shade :: fn(n: u32) -> u8 {
+    if n is MAX_ITER { return PALETTE[PALETTE.len - 1] }
+    levels := PALETTE.len - 1
+    x := (math.sqrt(f64(n)) - 1.5) * 1.1
+    if x < 0.0 { return PALETTE[0] }
+    idx := x.trunc(usize)
+    return PALETTE[if idx < levels { idx } else { levels - 1 }]
+}
+
+/// Draws the region [-2.2, 0.8] x [-1.2, 1.2]. Terminal cells are about twice as tall as
+/// wide, which the default 72 x 28 size compensates for.
+render :: fn(width, height: u32) needs Out + Alloc {
+    row := make_fill(T: u8, usize(width), ' ') else {
+        print("out of memory\n")
+        return
+    }
+    defer free(row)
+    for py in 0..height {
+        ci := 1.2 - 2.4 * (f64(py) + 0.5) / f64(height)
+        for px in 0..width {
+            cr := -2.2 + 3.0 * (f64(px) + 0.5) / f64(width)
+            row[px] = shade(escape_time(cr, ci))
+        }
+        line: string = row
+        print("{}\n", line)
+    }
+}
+
+main :: fn() -> u8 needs Out + Err + Alloc + Env {
+    args := Env.args()[1..]
+    width: u32 = 72
+    height: u32 = 28
+    if args.len is 2 {
+        width = str.parse_int(u32, args[0]) else 0
+        height = str.parse_int(u32, args[1]) else 0
+    } else if args.len is not 0 {
+        eprint("usage: mandelbrot [width height]\n")
+        return 1
+    }
+    if width is 0 or height is 0 or width > 1000 or height > 1000 {
+        eprint("error: width and height must be between 1 and 1000\n")
+        return 1
+    }
+    render(width, height)
+    return 0
+}
+
+test "points inside and outside the set" {
+    expect_eq(escape_time(0.0, 0.0), MAX_ITER)       // the origin never escapes
+    expect_eq(escape_time(-1.0, 0.0), MAX_ITER)      // neither does the period-2 bulb
+    expect_eq(escape_time(2.0, 2.0), 1)
+    expect(escape_time(0.3, 0.6) < MAX_ITER)
+}
+
+test "shade stays inside the palette" {
+    for n in 0..=MAX_ITER {
+        c := shade(n)
+        expect(PALETTE.index_of(c) is not null)
+    }
+    expect_eq(shade(0), ' ')
+    expect_eq(shade(MAX_ITER), '@')
+}

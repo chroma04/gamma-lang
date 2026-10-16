@@ -1,0 +1,4 @@
+test "checksum frees everything it allocates" ... ok
+test "failure part way still frees" ... ok
+test "the test heap checks for leaks" ... ok
+3 passed, 0 failed
