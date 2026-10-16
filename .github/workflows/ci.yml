@@ -192,6 +192,21 @@ jobs:
         run: |
           cargo build
           cd editors/tree-sitter-gamma && STRICT=1 ./scripts/parse-corpus.sh
+      - name: Emacs mode
+        # Ubuntu's Emacs links tree-sitter 0.20, which loads parsers of ABI 14 only, so
+        # the tests use a copy of the grammar generated for it.
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q emacs-nox
+          tmp=$(mktemp -d)
+          cp -r editors/tree-sitter-gamma "$tmp/gamma"
+          (cd "$tmp/gamma" && npx tree-sitter generate --abi 14 && mkdir -p "$tmp/lib" \
+            && cc -fPIC -shared -O2 -I src src/parser.c src/scanner.c -o "$tmp/lib/libtree-sitter-gamma.so")
+          export GAMMA_TS_GRAMMAR_DIR="$tmp/lib"
+          emacs --batch -L editors/emacs -l ert -l editors/emacs/test/gamma-ts-mode-tests.el \
+            -f ert-run-tests-batch-and-exit
+          emacs --batch -L editors/emacs --eval '(setq byte-compile-error-on-warn t)' \
+            -f batch-byte-compile editors/emacs/gamma-ts-mode.el editors/emacs/test/gamma-ts-mode-tests.el
+          rm -f editors/emacs/*.elc editors/emacs/test/*.elc
       - name: Zed extension queries
         run: editors/zed/check-queries.sh
       - name: Zed extension (WebAssembly)
