@@ -23,7 +23,7 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive PRs #43 (claude/bugs-p2-s20) and #44 (claude/macos-long-chain, macOS CI hours) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive PR #43 (claude/bugs-p2-s20) to merge (#44, the macOS CI fix, merged); then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);

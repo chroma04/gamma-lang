@@ -216,3 +216,30 @@ fn native_chain_traps_where_the_interpreter_does() {
     assert_ne!(interp.0, Some(0));
     assert_eq!(interp.1, native.1);
 }
+
+#[test]
+fn native_long_function_is_marked_for_clang() {
+    // Clang from LLVM 19 on takes time that grows about with the cube of the length of a
+    // chain of checked operations, so a function this long is marked `GM_LONG_FN`, which
+    // compiles it without optimization there (see `runtime/gm_rt.h`).
+    if !have_cc() {
+        return;
+    }
+    let src = main_with("", &format!("    x := a{}\n", ".abs()".repeat(3_000)));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("long-expressions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("long_fn.gm");
+    std::fs::write(&path, &src).unwrap();
+    let exe = dir.join("long_fn");
+    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .env("GAMMA_CACHE_DIR", dir.join("cache"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let c = std::fs::read_to_string(exe.with_extension("c")).unwrap();
+    assert!(c.contains("static GM_LONG_FN "), "the function of the chain is not marked");
+}

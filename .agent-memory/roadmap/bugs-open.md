@@ -19,7 +19,7 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     macos-latest = macOS 26 image): EarlyCSE → simplifyInstruction(icmp) → isKnownNonEqual →
     computeKnownBits/adjustKnownBitsForSelectArm ~cubic in chain length (abs chain 10k links
     178 s, 50k hours → macOS CI 12 min → 2h48). Shape tweaks (asm barriers, overflow builtins,
-    opaque conds) did NOT help. Fix (PR #44, branch claude/macos-long-chain): GM_LONG_FN
+    opaque conds) did NOT help. Fix (PR #44, merged): GM_LONG_FN
     (>2,000 names, func.rs LONG_FN_NAMES) = optnone,noinline on those clangs; 50k ≈ 35 s.
     Real programs: max ~770 names/function (examples/calc). (Old #49 "deep nested C
     expressions" was a misdiagnosis: cgen already spills every operand into temps.)
