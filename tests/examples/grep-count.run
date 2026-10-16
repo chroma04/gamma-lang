@@ -1,0 +1,2 @@
+example: grep.gm
+args: -c an data/grep-fruits.txt data/grep-poem.txt

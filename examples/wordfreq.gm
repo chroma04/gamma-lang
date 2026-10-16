@@ -1,0 +1,162 @@
+//! wordfreq: print the most frequent words of the text on standard input.
+//!
+//! Words are runs of letters, digits and apostrophes, folded to lower case. The
+//! table lists the N most frequent (`--top N`, default 10) with their counts,
+//! ties broken alphabetically. A bad argument is reported on standard error and
+//! the program exits with status 2.
+//!
+//! Shows: `hash_map` with `entry`, `sort_by` on a `List`, an arena for the
+//! words' memory with `defer` cleanup, effect sets (`needs In + Alloc + Out`),
+//! an iterator written with `Yield`, `std/cli` option parsing, and a `test`.
+//!
+//! Run it from the examples/ directory:
+//!
+//!     gamma run wordfreq.gm < data/wordfreq-sample.txt
+//!     gamma run wordfreq.gm --top 3 < data/wordfreq-sample.txt
+//!     gamma test wordfreq.gm
+arena :: import "std/arena"
+cli :: import "std/cli"
+io :: import "std/io"
+str :: import "std/str"
+
+Count :: struct {
+    word: string
+    n: u32
+}
+
+is_word_byte :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c is '\''
+
+// Yields the words of `text` as slices of it, in order.
+words :: fn(text: string) needs Yield(string) {
+    start: ?usize = null
+    for i in 0..text.len {
+        if is_word_byte(text[i]) {
+            if start is null { start = i }
+        } else if s := start {
+            yield(text[s..i])
+            start = null
+        }
+    }
+    if s := start { yield(text[s..]) }
+}
+
+// Copies `w` into the current allocator, folded to lower case.
+lowered :: fn(w: string) -> AllocError!string needs Alloc {
+    buf := try make(u8, w.len)
+    for i in 0..w.len { buf[i] = if is_upper(w[i]) { w[i] + 32 } else { w[i] } }
+    return buf
+}
+
+is_upper :: fn(c: u8) -> bool => c in 'A'..='Z'
+
+// Adds the words of `text` to `counts`. The map keeps the words it first saw, so
+// they are copied into `keys`, an arena that outlives the map.
+count_words :: fn(counts: ^HashMap(string, u32), keys: ^arena.Arena, text: string) -> AllocError!() needs Alloc {
+    for w in words(text) {
+        key := with keys.allocator() { try lowered(w) }
+        e := try counts.entry(key, 0)
+        e.value^ += 1
+    }
+}
+
+more_frequent :: fn(a, b: ^const Count) -> bool {
+    if a.n is not b.n { return a.n > b.n }
+    return a.word < b.word
+}
+
+// The `top` most frequent words, most frequent first.
+ranking :: fn(counts: ^HashMap(string, u32), top: usize) -> AllocError!List(Count) needs Alloc {
+    all := list(Count)
+    errdefer all.deinit()
+    for e in counts.entries() { try all.push(Count(word: e.key, n: e.value)) }
+    all.items.sort_by(more_frequent)
+    if all.items.len > top { all.truncate(top) }
+    return all
+}
+
+Failure :: union { Io: IoError, Mem: AllocError }
+
+run :: fn(top: usize) -> Failure!() needs In + Alloc + Out {
+    keys := arena.new()
+    defer keys.deinit()
+    counts := hash_map(string, u32)
+    defer counts.deinit()
+
+    r := io.reader()
+    while line := try r.next_line() { try count_words(&counts, &keys, line) }
+
+    table := try ranking(&counts, top)
+    defer table.deinit()
+    for c in table.items { print("{:<12} {:>5}\n", c.word, c.n) }
+}
+
+// Reads `--top N`; returns null after reporting a problem on standard error.
+parse_args :: fn() -> ?usize needs Env + Err {
+    top: usize = 10
+    opts := [_]cli.Opt(cli.Opt(short: 't', long: "top", value: "N", help: "how many words to show"))
+    for a in cli.parse(Env.args()[1..], opts[..]) {
+        match a {
+            .Opt(o) => {
+                top = str.parse_int(usize, o.value) else {
+                    eprint("wordfreq: bad number for --top: {}\n", o.value)
+                    return null
+                }
+            }
+            .Pos(p) => {
+                eprint("wordfreq: unexpected argument: {}\n", p)
+                return null
+            }
+            .Unknown(u) => {
+                eprint("wordfreq: unknown option: {}\n", u)
+                return null
+            }
+            .MissingValue(_) => {
+                eprint("wordfreq: --top needs a number\n")
+                return null
+            }
+            .UnexpectedValue(_) => return null
+        }
+    }
+    return top
+}
+
+main :: fn() needs In + Alloc + Out + Err + Env {
+    top := parse_args() else Env.exit(2)
+    run(top) else e => {
+        eprint("wordfreq: error: {}\n", e)
+        Env.exit(1)
+    }
+}
+
+test "counting folds case and keeps apostrophes" {
+    keys := arena.new()
+    defer keys.deinit()
+    counts := hash_map(string, u32)
+    defer counts.deinit()
+    ok(count_words(&counts, &keys, "The cat, the CAT; don't. Don't! 42 cats"))
+    expect_eq(counts.get("the"), 2)
+    expect_eq(counts.get("cat"), 2)
+    expect_eq(counts.get("don't"), 2)
+    expect_eq(counts.get("42"), 1)
+    expect_eq(counts.len(), 5)
+}
+
+test "ranking breaks ties alphabetically and truncates" {
+    keys := arena.new()
+    defer keys.deinit()
+    counts := hash_map(string, u32)
+    defer counts.deinit()
+    ok(count_words(&counts, &keys, "b a c b a d"))
+    table := ok(ranking(&counts, 3))
+    defer table.deinit()
+    expect_eq(table.items.len, 3)
+    expect(table.items[0].word is "a" and table.items[0].n is 2)
+    expect(table.items[1].word is "b")
+    expect(table.items[2].word is "c")
+}
+
+test "words splits on everything but letters, digits and apostrophes" {
+    n: u32 = 0
+    for _ in words("  one--two, three\n\tfour's ") { n += 1 }
+    expect_eq(n, 4)
+}

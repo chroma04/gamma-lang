@@ -1,0 +1,6 @@
+test "prints matching lines with numbers" ... ok
+test "ignore case and several files" ... ok
+test "count only" ... ok
+test "a missing file is an error that names the cause" ... ok
+test "a file without a final newline still matches its last line" ... ok
+5 passed, 0 failed

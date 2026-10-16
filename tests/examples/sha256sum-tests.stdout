@@ -1,0 +1,5 @@
+test "known vectors" ... ok
+test "a file is hashed in pieces" ... ok
+test "stdin is read through the In effect" ... ok
+test "a missing file is an error" ... ok
+4 passed, 0 failed
