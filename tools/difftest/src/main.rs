@@ -257,7 +257,10 @@ fn main() {
                     check_seed(&cfg, seed, &stats, keep_going, &stop);
                     let done = stats.done.fetch_add(1, Ordering::SeqCst) + 1;
                     if done % 50 == 0 {
-                        eprintln!("difftest: {done} programs, {} disagreements", stats.mismatches.load(Ordering::SeqCst));
+                        eprintln!(
+                            "difftest: {done} programs, {} disagreements",
+                            stats.mismatches.load(Ordering::SeqCst)
+                        );
                     }
                 }
             })

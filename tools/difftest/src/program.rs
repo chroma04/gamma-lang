@@ -255,7 +255,9 @@ impl Gen {
         if neg && mag == max + 1 {
             return format!("@min_value({name})");
         }
-        if !neg && mag == max && t.signed && self.rng.chance(60) || !neg && mag == max && !t.signed && self.rng.chance(60) {
+        if !neg && mag == max && t.signed && self.rng.chance(60)
+            || !neg && mag == max && !t.signed && self.rng.chance(60)
+        {
             return format!("@max_value({name})");
         }
         if neg && mag > 0 { format!("(-{mag}{name})") } else { format!("({mag}{name})") }
@@ -425,11 +427,8 @@ impl Gen {
             48..=57 => {
                 let a = self.int_expr(t, d1);
                 let amount = self.int_expr(U8, d1);
-                let masked = if self.rng.chance(self.trap_bias.min(10)) {
-                    amount
-                } else {
-                    format!("({amount} % {}u8)", t.bits)
-                };
+                let masked =
+                    if self.rng.chance(self.trap_bias.min(10)) { amount } else { format!("({amount} % {}u8)", t.bits) };
                 match self.rng.below(5) {
                     0 => format!("({a} >> {masked})"),
                     1 if self.rng.chance(self.trap_bias) => format!("({a} << {masked})"),
@@ -626,10 +625,10 @@ impl Gen {
             return self.vars[*self.rng.pick(&vars)].name.clone();
         }
         let d1 = d.saturating_sub(1);
-        if r == 3 {
-            if let Some(c) = self.call(&Ty::Pt, d1) {
-                return c;
-            }
+        if r == 3
+            && let Some(c) = self.call(&Ty::Pt, d1)
+        {
+            return c;
         }
         if r == 4 && !vars.is_empty() {
             let v = self.vars[*self.rng.pick(&vars)].name.clone();
@@ -809,10 +808,10 @@ impl Gen {
             return self.vars[*self.rng.pick(&vars)].name.clone();
         }
         let d1 = d.saturating_sub(1);
-        if r == 3 {
-            if let Some(c) = self.call(&ty, d1) {
-                return c;
-            }
+        if r == 3
+            && let Some(c) = self.call(&ty, d1)
+        {
+            return c;
         }
         format!("({}, {})", self.int_expr(a, d1), self.int_expr(b, d1))
     }
@@ -824,10 +823,10 @@ impl Gen {
             return self.vars[*self.rng.pick(&vars)].name.clone();
         }
         let d1 = d.saturating_sub(1);
-        if r == 3 {
-            if let Some(c) = self.call(&Ty::Sh, d1) {
-                return c;
-            }
+        if r == 3
+            && let Some(c) = self.call(&Ty::Sh, d1)
+        {
+            return c;
         }
         match self.rng.below(3) {
             0 => format!("Sh.Circle({})", self.int_expr(self.sh_circle, d1)),
@@ -976,7 +975,8 @@ impl Gen {
                 let k = 1 + self.rng.below(6) as u64;
                 let t = *self.rng.pick(&[U8, U32, INTS[2], INTS[7]]);
                 let i = self.fresh("it");
-                let range = if self.rng.chance(50) { format!("0..{k}{}", t.name()) } else { format!("1..={k}{}", t.name()) };
+                let range =
+                    if self.rng.chance(50) { format!("0..{k}{}", t.name()) } else { format!("1..={k}{}", t.name()) };
                 out.push_str(&format!("{ind}for {i} in {range} {{\n"));
                 self.push_var(i, Ty::Int(t), false);
                 self.loop_body(out, level + 1, k);
@@ -984,7 +984,8 @@ impl Gen {
                 out.push_str(&format!("{ind}}}\n"));
             }
             83..=86 if loop_ok => {
-                let arrs: Vec<usize> = (0..self.vars.len()).filter(|&i| matches!(self.vars[i].ty, Ty::Arr(..))).collect();
+                let arrs: Vec<usize> =
+                    (0..self.vars.len()).filter(|&i| matches!(self.vars[i].ty, Ty::Arr(..))).collect();
                 if arrs.is_empty() {
                     return;
                 }
