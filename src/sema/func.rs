@@ -267,6 +267,17 @@ impl<'s> Sema<'s> {
 
     /// Checks a constant expression (a typed constant's initializer) outside any function.
     pub fn check_const_expr(&mut self, module: ModuleId, e: &ast::Expr, expected: Option<Ty>) -> Option<Expr> {
+        let raised = self.sess.diags.raised_errors();
+        let checked = self.check_const_expr_inner(module, e, expected);
+        // An expression with an error in it (a comparison of a string with an integer, say)
+        // is not evaluated: its operands do not have the types that the evaluator relies on.
+        if self.sess.diags.raised_errors() != raised {
+            return None;
+        }
+        checked
+    }
+
+    fn check_const_expr_inner(&mut self, module: ModuleId, e: &ast::Expr, expected: Option<Ty>) -> Option<Expr> {
         let mut cx = FnCx::new(self, module, Ty::unit(), EffectSet::empty());
         let mut ex = cx.expr(e, expected);
         if let Some(t) = expected {

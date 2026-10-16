@@ -567,7 +567,10 @@ impl<'a, 's> FnCx<'a, 's> {
             self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
             return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
         }
-        let v = self.expr(x, Some(t));
+        // Only an untyped literal (or arithmetic on literals) takes its type from the target;
+        // anything else is typed on its own, so that the target does not reach into the
+        // branches of `f32(~(if c { a } else { b }))` with `a, b: i16`.
+        let v = self.expr(x, if is_literal_tree(x) { Some(t) } else { None });
         // An untyped literal simply takes the type (§16.1: `T(300)`), and so does a
         // variable of literal type converted to an integer type. A float type is taken
         // by literals only: `f64(i)` converts `i` from the integer type it ends up with.
@@ -1148,6 +1151,17 @@ impl<'a, 's> FnCx<'a, 's> {
             );
         }
         v
+    }
+}
+
+/// True if the syntax tree `e` is built from literals, parentheses and operators only.
+fn is_literal_tree(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) => true,
+        ExprKind::Paren(inner) => is_literal_tree(inner),
+        ExprKind::Unary { operand, .. } => is_literal_tree(operand),
+        ExprKind::Binary { lhs, rhs, .. } => is_literal_tree(lhs) && is_literal_tree(rhs),
+        _ => false,
     }
 }
 

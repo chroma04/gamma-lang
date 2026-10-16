@@ -1,0 +1,14 @@
+//! stage: check
+// An ill-typed expression that must be evaluated at compile time (a constant's initializer,
+// a `print` template) is reported and not evaluated: the evaluator relies on the operand
+// types and used to stop on a comparison of a string with an integer.
+sz :: fn(T: type) -> usize => @size_of(T)
+
+A :: "ab" < 5usize //~ ERROR operands of a comparison have different types
+B :: "a" + 1 //~ ERROR operands of `+` have different types
+C :: "ab" is 5usize //~ ERROR cannot compare `string` with `usize`
+
+main :: fn() needs Out {
+    print("{}\n" < sz(u32)) //~ ERROR operands of a comparison have different types //~ ERROR expected `string`, found `bool` //~ ERROR template must be a compile-time string
+    print("a" + "b") //~ ERROR `+` requires numeric operands //~ ERROR template must be a compile-time string
+}
