@@ -896,6 +896,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut binds: HashMap<ParamId, Ty> = HashMap::new();
         // Arguments whose types still contain untyped literals.
         let mut literal_args: Vec<(Ty, Ty)> = vec![];
+        // Set when two arguments bind a type parameter differently (reported once).
+        let mut conflict = false;
         let mut values: Vec<Option<Expr>> = vec![None; sig.params.len()];
         let mut sources: Vec<(usize, &ast::Expr)> =
             positional.iter().enumerate().map(|(k, e)| (targets[k], *e)).collect();
@@ -1017,6 +1019,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     match binds.get(&k) {
                         Some(prev) if *prev != v2 && explicit => {}
                         Some(prev) if *prev != v2 && !same_int_value(*prev, v2) => {
+                            conflict = true;
                             self.error(
                                 e.span,
                                 format!(
@@ -1037,6 +1040,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         let _ = receiver;
+        if conflict {
+            return error_expr(span);
+        }
         // A type parameter that only untyped literals determine takes their fallback
         // types (§16.2): `log("{}", 5)` makes it `i32`.
         if sig.generics.iter().any(|p| !binds.contains_key(p) && !self.sema.value_params.contains_key(p)) {
@@ -1047,7 +1053,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 if !mentions {
                     continue;
                 }
-                let t = self.infer.settle(aty);
+                let t = self.settle(aty);
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(pty, t, &mut b2);
                 for (k, v2) in b2 {

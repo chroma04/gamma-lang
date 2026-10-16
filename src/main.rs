@@ -36,7 +36,7 @@ commands:
   repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
   help    print this message; `gamma help packages` and `gamma help doc` add the options of
-          the package commands and of `doc`
+          the package commands and of `doc` (as does `--help` after a command)
   version print the compiler version
 
 options:
@@ -284,6 +284,31 @@ fn main() -> ExitCode {
         })
 }
 
+/// The command whose help `gamma <command> … --help` asks for. Options come before the
+/// file, and the arguments after `gamma run <file>` belong to the program.
+fn help_requested(args: &[String]) -> Option<String> {
+    let cmd = args.get(1)?;
+    for a in &args[2..] {
+        match a.as_str() {
+            "--help" | "-h" => return Some(cmd.clone()),
+            _ if cmd == "run" && !a.starts_with('-') => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Prints the usage, followed by the details of `topic` (a command) where it has more.
+fn print_help(topic: &str) {
+    print!("{}", USAGE);
+    if topic == "packages" || gamma::pkg::cli::is_package_command(topic) {
+        print!("\n{}", gamma::pkg::cli::USAGE);
+    }
+    if topic == "doc" {
+        print!("\n{}", gamma::doc::USAGE);
+    }
+}
+
 fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
@@ -293,6 +318,10 @@ fn compiler_main() -> ExitCode {
         if std::env::var_os("GAMMA_DEBUG_PANIC").is_some() {
             panic!("requested by GAMMA_DEBUG_PANIC");
         }
+    }
+    if let Some(cmd) = help_requested(&std::env::args().collect::<Vec<_>>()) {
+        print_help(&cmd);
+        return ExitCode::SUCCESS;
     }
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         return fmt_command(std::env::args().skip(2).collect());
@@ -329,13 +358,7 @@ fn compiler_main() -> ExitCode {
     }
     match opts.command.as_str() {
         "help" | "--help" | "-h" => {
-            print!("{}", USAGE);
-            if opts.file.as_deref() == Some(std::path::Path::new("packages")) {
-                print!("\n{}", gamma::pkg::cli::USAGE);
-            }
-            if opts.file.as_deref() == Some(std::path::Path::new("doc")) {
-                print!("\n{}", gamma::doc::USAGE);
-            }
+            print_help(&opts.file.as_deref().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default());
             ExitCode::SUCCESS
         }
         "version" | "--version" => {

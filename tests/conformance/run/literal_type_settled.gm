@@ -1,0 +1,15 @@
+// A construct that needs a literal variable's type while the body is checked gives it
+// its fallback type there (§6.1).
+main :: fn() needs Out {
+    n := 5
+    _ = @atomic_add(&n, 1, .SeqCst)
+    print("{}\n", @atomic_load(&n, .SeqCst))
+    total := 0
+    print("{}\n", @type_of(total) is i32)
+    scale := 1.5
+    print("{}\n", @size_of(@type_of(scale)))
+    // Constraints met before decide the type.
+    small := 1
+    b: u8 = small
+    print("{} {}\n", @type_of(small) is u8, b)
+}

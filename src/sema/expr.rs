@@ -274,6 +274,15 @@ impl<'a, 's> FnCx<'a, 's> {
             match b.clone() {
                 LocalBinding::Untyped(v) => return self.untyped_literal(&v, span),
                 LocalBinding::Const { ty, id } => return mk(ty, tir::ExprKind::Const(id), span),
+                LocalBinding::Var(_) => {
+                    let d = crate::diag::Diagnostic::error(
+                        span,
+                        format!("`{}` is a variable, so its value is not known at compile time", name),
+                    )
+                    .with_note("declare it with `::` to make it a compile-time constant (§17.2)");
+                    self.sema.emit(d);
+                    return error_expr(span);
+                }
                 _ => {}
             }
         }
@@ -2528,7 +2537,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut elem = Ty::unit();
         if has_ptr {
             let p = self.expr(exprs[0], None);
-            let pt = self.infer.resolve(p.ty);
+            // The operation depends on the pointee type, so an untyped literal's type is
+            // settled here (`x := 0; @atomic_add(&x, 1, .SeqCst)`, §6.1).
+            let pt = self.settle(p.ty);
             match pt.kind() {
                 TyKind::Ptr { is_const, pointee } => {
                     if writes && *is_const {
@@ -2749,6 +2760,8 @@ fn asm_entries(list: &ast::Expr, pairs: bool) -> Vec<&ast::Expr> {
 /// or `[3]^Node(…)`.
 pub fn construction_call(e: &ast::Expr) -> Option<&ast::Expr> {
     match &e.kind {
+        // `xs.first()` and `xs[0](…)` call something on a value: not a construction.
+        ExprKind::Call { callee, .. } if calls_on_value(callee) => None,
         ExprKind::Call { .. } => Some(e),
         ExprKind::ArrayType { elem: inner, .. }
         | ExprKind::OptionalType(inner)
@@ -2756,6 +2769,23 @@ pub fn construction_call(e: &ast::Expr) -> Option<&ast::Expr> {
         | ExprKind::SliceType { inner, .. }
         | ExprKind::ManyPtrType { inner, .. } => construction_call(inner),
         _ => None,
+    }
+}
+
+/// True if `callee` is a method or a function pointer reached from a value (`v.f`, `v[i]`
+/// where `v` is more than a name path such as `m.T`), so calling it constructs nothing.
+fn calls_on_value(callee: &ast::Expr) -> bool {
+    fn is_path(e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(_) => true,
+            ExprKind::Field { base, .. } => is_path(base),
+            _ => false,
+        }
+    }
+    match &callee.kind {
+        ExprKind::Field { base, .. } => !is_path(base),
+        ExprKind::Index { .. } => true,
+        _ => false,
     }
 }
 
@@ -2785,29 +2815,52 @@ pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
     if construction_call(inner).is_some() {
         return None;
     }
+    // The operand of the innermost prefix: `[2]?u8(1, null)[0]` stacks two of them.
+    fn prefix_operand(e: &ast::Expr) -> Option<&ast::Expr> {
+        match &e.kind {
+            ExprKind::ArrayType { elem: inner, .. }
+            | ExprKind::OptionalType(inner)
+            | ExprKind::PtrType { inner, .. }
+            | ExprKind::SliceType { inner, .. }
+            | ExprKind::ManyPtrType { inner, .. } => Some(inner),
+            _ => None,
+        }
+    }
+    fn operand(e: &ast::Expr) -> &ast::Expr {
+        prefix_operand(e).map_or(e, operand)
+    }
+    fn operand_mut(e: &mut ast::Expr) -> &mut ast::Expr {
+        if prefix_operand(e).is_none() {
+            return e;
+        }
+        match &mut e.kind {
+            ExprKind::ArrayType { elem: inner, .. }
+            | ExprKind::OptionalType(inner)
+            | ExprKind::PtrType { inner, .. }
+            | ExprKind::SliceType { inner, .. }
+            | ExprKind::ManyPtrType { inner, .. } => operand_mut(inner),
+            _ => unreachable!(),
+        }
+    }
     fn push_down(prefix: &ast::Expr, inner: &ast::Expr) -> Option<ast::Expr> {
         let mut out = inner.clone();
         let next = match &mut out.kind {
             ExprKind::Index { base, .. }
             | ExprKind::Slice { base, .. }
             | ExprKind::Field { base, .. }
-            | ExprKind::TupleField { base, .. } => base,
+            | ExprKind::TupleField { base, .. }
+            | ExprKind::OptUnwrap(base)
+            | ExprKind::ResUnwrap(base)
+            | ExprKind::Deref(base) => base,
             // A method call on the constructed value.
-            ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) => {
-                callee
-            }
+            ExprKind::Call { callee, .. } if calls_on_value(callee) => callee,
             _ => return None,
         };
         **next = match &next.kind {
-            // The construction itself: the prefix applies to it.
-            ExprKind::Call { callee, .. }
-                if !matches!(callee.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) =>
-            {
+            // The construction itself: the prefixes apply to it.
+            ExprKind::Call { callee, .. } if !calls_on_value(callee) => {
                 let mut p = prefix.clone();
-                match &mut p.kind {
-                    ExprKind::ArrayType { elem, .. } | ExprKind::OptionalType(elem) => **elem = (**next).clone(),
-                    _ => unreachable!(),
-                }
+                *operand_mut(&mut p) = (**next).clone();
                 p.span = prefix.span.to(next.span);
                 p
             }
@@ -2815,7 +2868,7 @@ pub fn hoist_prefix(e: &ast::Expr) -> Option<ast::Expr> {
         };
         Some(out)
     }
-    push_down(e, inner)
+    push_down(e, operand(e))
 }
 
 /// True for `()`, which is both the unit type and the unit value.

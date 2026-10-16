@@ -47,6 +47,27 @@ impl<'a, 's> FnCx<'a, 's> {
         body
     }
 
+    /// Gives the unresolved literal variables in `ty` their types now, for a construct that
+    /// needs them while the body is checked (§6.1): a pending coercion of the variable
+    /// decides it as at the end of inference, and otherwise it takes its fallback.
+    pub fn settle(&mut self, ty: Ty) -> Ty {
+        for p in &self.pending {
+            let src = self.infer.resolve(p.source);
+            if !src.is_infer() {
+                continue;
+            }
+            let mut mentioned = false;
+            self.infer.resolve(ty).walk(&mut |x| mentioned |= x == src);
+            if mentioned {
+                let core = literal_core(p.target);
+                if self.infer.unify(src, core).is_err() {
+                    let _ = self.infer.unify(src, p.target);
+                }
+            }
+        }
+        self.infer.settle(ty)
+    }
+
     /// Rewrites a nested function's body once inference is complete.
     pub fn finalize_nested(&mut self, mut body: Expr) -> Expr {
         self.fin_expr(&mut body);

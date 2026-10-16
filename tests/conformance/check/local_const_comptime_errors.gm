@@ -1,8 +1,10 @@
 //! stage: check
 // Only constants, not variables, give compile-time values; a constant is visible in its block only.
+n :: 2
+
 main :: fn() {
-    n := 4
-    a: [n]u8 = --- //~ ERROR
+    n := 4 // hides the top-level `n`, also in compile-time expressions
+    a: [n]u8 = --- //~ ERROR `n` is a variable, so its value is not known at compile time //~ NOTE declare it with `::`
     {
         L :: 5
     }

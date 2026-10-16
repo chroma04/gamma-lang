@@ -1,0 +1,16 @@
+// Postfix operations after a construction under type prefixes apply to the constructed
+// value (§A.7 rule 12): method calls, indexing, field access and unwrapping.
+P :: struct { a: i32, b: i32 }
+
+sum :: fn(p: P) -> i32 { return p.a + p.b }
+
+main :: fn() needs Out {
+    print("{}\n", [3]u8(4, 5, 6).first())
+    print("{}\n", [3]u8(1, 2, 3)[0].min(4))
+    print("{}\n", [2]P(P(a: 1, b: 2), P(a: 3, b: 4))[0].sum())
+    print("{}\n", [2]P(P(a: 1, b: 2), P(a: 3, b: 4))[1].b)
+    print("{}\n", ?i32(3)?)
+    print("{}\n", ?i32(4)?.min(2))
+    print("{}\n", [2]?u8(7, null)[0]?)
+    print("{}\n", [2][2]u8([2]u8(1, 2), [2]u8(3, 4))[1][0])
+}

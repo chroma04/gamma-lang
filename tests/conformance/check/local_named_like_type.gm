@@ -7,6 +7,7 @@ Name :: string
 LIMIT :: 10
 
 f :: fn(T: type, x: T, string: u8) -> T { //~ ERROR `string` names a type
+    g :: fn(cont: i32) {} //~ ERROR `cont` is a reserved type name
     T := 1 //~ ERROR `T` names a type
     return x
 }
@@ -18,6 +19,8 @@ main :: fn() {
     Pair :: 4 //~ ERROR `Pair` names a type
     Name := "n" //~ ERROR `Name` names a type
     Buf :: []u8
+    cont := 1 //~ ERROR `cont` is a reserved type name
+    f64 :: i32 //~ ERROR `f64` is a reserved type name
     for bool in 0..3 {} //~ ERROR `bool` names a type
     if rune := maybe() {} //~ ERROR `rune` names a type
     // Other top-level and predeclared names may still be hidden.
