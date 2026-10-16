@@ -7,7 +7,7 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
    (expr.rs in_place_root), small fns `static inline` in non-debug builds (gcc -O2 did not
    inline them: bigcopy-style bench gcc 1.13 → 0.33 s, clang 0.4 s). s22: array/slice/
    many-ptr elements passed in place too (in_place_root; run/big_value_index_args).
-   Left: nested aggregate elements still go through a temp.
+   Nested aggregates (`M(a: V(..), b: mk())`) are already built in place (checked s22).
 24. Interpreter (s21: perform 873 → 817 instr/op over a call's ~616): the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
     is dispatch/call-bound (~15 ns/op), plus `new`/`destroy` spread over builtins. Follow-ups
     listed in decisions/020.

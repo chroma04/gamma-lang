@@ -466,6 +466,35 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let cmp = if when { c } else { negate(c) };
                 self.emit(Op::BrI { cmp, a, b, k, t }, span);
             }
+            ExprKind::Binary { op, lhs, rhs }
+                if Cmp::of(*op).is_some() && self.float_binary(*op, lhs, rhs).is_some() =>
+            {
+                let k = self.float_binary(*op, lhs, rhs).unwrap();
+                let ops = self.operands(&[lhs, rhs], span)?;
+                let (Arg::Data { reg: a, .. }, Arg::Data { reg: b, .. }) = (ops[0], ops[1]) else {
+                    return Err(unsupported!());
+                };
+                // Not `a < b` is not `a >= b` when either is a NaN: jump past instead.
+                let c = Cmp::of(*op).unwrap();
+                if when {
+                    self.emit(Op::BrF { cmp: c, a, b, k, t }, span);
+                } else {
+                    let skip = self.label();
+                    self.emit(Op::BrF { cmp: c, a, b, k, t: skip }, span);
+                    self.emit(Op::Jmp { t }, span);
+                    self.bind(skip);
+                }
+            }
+            ExprKind::Eq { lhs, rhs, negated } if float_eq(lhs, rhs).is_some() => {
+                let k = float_eq(lhs, rhs).unwrap();
+                let ops = self.operands(&[lhs, rhs], span)?;
+                let (Arg::Data { reg: a, .. }, Arg::Data { reg: b, .. }) = (ops[0], ops[1]) else {
+                    return Err(unsupported!());
+                };
+                // `==` and `!=` negate each other also for NaNs.
+                let cmp = if when != *negated { Cmp::Eq } else { Cmp::Ne };
+                self.emit(Op::BrF { cmp, a, b, k, t }, span);
+            }
             ExprKind::Eq { lhs, rhs, negated } if self.small_eq(lhs, rhs).is_some() => {
                 let k = self.small_eq(lhs, rhs).unwrap();
                 let ops = self.operands(&[lhs, rhs], span)?;
@@ -1007,7 +1036,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 | Op::JmpTag { t, .. }
                 | Op::JmpFast { t }
                 | Op::JmpTick { t }
-                | Op::BrI { t, .. } => t,
+                | Op::BrI { t, .. }
+                | Op::BrF { t, .. } => t,
                 _ => continue,
             };
             *t = at(*t);

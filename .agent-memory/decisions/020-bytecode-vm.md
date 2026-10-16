@@ -58,3 +58,12 @@
 - Callgrind: call 1150→340 instr, perform 1730→900, new/destroy 22k→16k. Micro 1.6–2.2×.
 - Next: lisp-style code hits slow ops (LdLocal, AddrLocal, LdUpvar, Builtin, EqG, Str, arg vecs
   into tree-walked code); new/destroy cost spread across builtins.
+
+## s22 float ops
+- Profiled examples with `--features vm-profile` + GAMMA_VM_PROFILE=1 GAMMA_VM_PAIRS=1:
+  mandelbrot was 71% BinG (floats had no fast path). Added BinF/CmpF/BrF/NegF for f32/f64
+  (f16 stays generic). f32 computed in f64 then rounded = correctly rounded for + - * /.
+  Negated float conditions: BrF over a Jmp (never invert a float cmp: NaN). Float loop
+  1.00 s → 0.12 s. Register words hold target-order bytes: BE swaps (fval/fput in exec.rs);
+  checked with `gamma run --target=s390x-linux-gnu` (interp emulates BE).
+- life.gm profile: AddI/BinI/IndexAddr/Load/BrI mixes — no single dominant slow op left.

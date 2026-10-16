@@ -1,0 +1,30 @@
+1 2: < true <= true > false >= false is false is not true
+  lt le !gt !ge isnot !is lt-and-ne 
+2 2: < false <= true > false >= true is true is not false
+  !lt le !gt ge is gt-or-eq 
+3 2: < false <= false > true >= true is false is not true
+  !lt !le gt ge isnot !is gt-or-eq 
+nan 1: < false <= false > false >= false is false is not true
+  !lt !le !gt !ge isnot !is 
+1 nan: < false <= false > false >= false is false is not true
+  !lt !le !gt !ge isnot !is 
+nan nan: < false <= false > false >= false is false is not true
+  !lt !le !gt !ge isnot !is 
+0 -0: < false <= true > false >= true is true is not false
+  !lt le !gt ge is gt-or-eq 
+-inf inf: < true <= true > false >= false is false is not true
+  lt le !gt !ge isnot !is lt-and-ne 
+1.5 nan: < false <= false > false >= false is false is not true
+  !lt !ge isnot 
+0.1 0.1: < false <= true > false >= true is true is not false
+  !lt 
+0 -0: < false <= true > false >= true is true is not false
+  !lt 
+0.1 0.2: 0.30000000000000004 -0.1 0.020000000000000004 0.5 -0.1
+1 0: 1 1 0 inf -1
+-0 inf: inf -inf nan -0 0
+0.1 0.2: 0.3 -0.1 0.020000001 0.5 -0.1
+16777216 1: 16777216 16777215 16777216 16777216 -16777216
+3.4e38 10: 3.4e38 3.4e38 inf 3.4e37 -3.4e38
+18 1477.8918800354004
+10460354000

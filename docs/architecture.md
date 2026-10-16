@@ -422,6 +422,12 @@ registers directly; calls to and from tree-walked code go through `Value`s.
   (a closure capturing it, `&x`, an assignment through a place the VM cannot
   resolve), in which case it lives in the frame as in the tree-walker. Small
   literal constants get registers that are filled when the activation starts.
+- *Instructions* have fast forms for the common types: small integers (up to 64
+  bits; `AddI`, `CmpI`, `BrI` compare-and-branch…), `f32`/`f64` (`BinF`, `CmpF`,
+  `BrF`, `NegF`) and pointer words. Anything else (big integers, `f16`, arrays,
+  `#bits` structs) goes through generic instructions that decode the operands'
+  bytes as the tree-walker does. A branch on a negated float comparison jumps over
+  an unconditional jump instead of inverting the comparison, which a NaN would break.
 - *Control flow* that stays in a function (`break`, `continue`, `return`, `try`,
   a clause's `break` to a `with` in the same function) compiles to jumps, with the
   `defer` and `errdefer` statements it crosses copied inline. Flows from

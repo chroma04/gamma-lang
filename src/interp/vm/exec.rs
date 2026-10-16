@@ -278,6 +278,59 @@ fn n_cmp<const LE: bool>(cmp: Cmp, k: IntK, x: u64, y: u64) -> bool {
     }
 }
 
+/// The value of a float of kind `k` given as a word (its bytes in the target's order).
+#[inline(always)]
+fn fval<const LE: bool>(k: FloatK, x: u64) -> f64 {
+    match k {
+        FloatK::F64 => f64::from_bits(if LE { x } else { x.swap_bytes() }),
+        FloatK::F32 => f32::from_bits(if LE { x as u32 } else { (x as u32).swap_bytes() }) as f64,
+    }
+}
+
+/// The word of the float `v` as a value of kind `k`, rounded to it.
+#[inline(always)]
+fn fput<const LE: bool>(k: FloatK, v: f64) -> u64 {
+    match k {
+        FloatK::F64 => {
+            let b = v.to_bits();
+            if LE { b } else { b.swap_bytes() }
+        }
+        FloatK::F32 => {
+            let b = (v as f32).to_bits();
+            (if LE { b } else { b.swap_bytes() }) as u64
+        }
+    }
+}
+
+/// A comparison of two floats of kind `k` given as words (IEEE: every comparison with a
+/// NaN but `!=` is false).
+#[inline(always)]
+fn f_cmp<const LE: bool>(cmp: Cmp, k: FloatK, x: u64, y: u64) -> bool {
+    let (x, y) = (fval::<LE>(k, x), fval::<LE>(k, y));
+    match cmp {
+        Cmp::Lt => x < y,
+        Cmp::Le => x <= y,
+        Cmp::Gt => x > y,
+        Cmp::Ge => x >= y,
+        Cmp::Eq => x == y,
+        Cmp::Ne => x != y,
+    }
+}
+
+/// `x op y` for floats of kind `k`. An `f32` operation computed in `f64` and then rounded
+/// gives the correctly rounded `f32` result for these operators.
+#[inline(always)]
+fn f_arith<const LE: bool>(op: FArith, k: FloatK, x: u64, y: u64) -> u64 {
+    let (x, y) = (fval::<LE>(k, x), fval::<LE>(k, y));
+    let v = match op {
+        FArith::Add => x + y,
+        FArith::Sub => x - y,
+        FArith::Mul => x * y,
+        FArith::Div => x / y,
+    };
+    fput::<LE>(k, v)
+}
+
 impl<'a> St<'a> {
     #[inline(always)]
     fn code(&self) -> &Code<'a> {
@@ -1048,6 +1101,14 @@ impl<'a> Machine<'a> {
                         jump!(t);
                     }
                 }
+                Op::BinF { op, dst, a, b, k } => w!(dst, f_arith::<LE>(op, k, r!(a), r!(b))),
+                Op::CmpF { cmp, dst, a, b, k } => w!(dst, f_cmp::<LE>(cmp, k, r!(a), r!(b)) as u64),
+                Op::BrF { cmp, a, b, k, t } => {
+                    if f_cmp::<LE>(cmp, k, r!(a), r!(b)) {
+                        jump!(t);
+                    }
+                }
+                Op::NegF { dst, a, k } => w!(dst, fput::<LE>(k, -fval::<LE>(k, r!(a)))),
                 Op::TickBr { cmp, a, b, k, exit, body } => {
                     tri!(at!(), self.tick());
                     if COUNT {

@@ -35,6 +35,10 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Faster `f32` and `f64` code on the interpreter: arithmetic, comparisons and branches
+  on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster).
+- The C back end passes a large argument read from an element of an array, slice or
+  many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its
   variable points at that conversion; a missing method or field `.name` at the start of
   a line explains that the line continues the previous one; `else` as a `match` pattern
