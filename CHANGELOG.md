@@ -8,6 +8,8 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `editors/zed/`: a Zed extension for Gamma (highlighting, outline, indentation and the
+  language server).
 - `examples/`: runnable programs, from command-line tools (`wordfreq`, `grep`,
   `sha256sum`, `json_query`) through effects, allocators, fibers, threads, TCP and C
   interop to a multi-file calculator and a package. The test suite runs each of them

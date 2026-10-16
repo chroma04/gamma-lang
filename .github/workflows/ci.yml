@@ -175,6 +175,8 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - name: TextMate grammar
         working-directory: editors/vscode
@@ -190,3 +192,11 @@ jobs:
         run: |
           cargo build
           cd editors/tree-sitter-gamma && STRICT=1 ./scripts/parse-corpus.sh
+      - name: Zed extension queries
+        run: editors/zed/check-queries.sh
+      - name: Zed extension (WebAssembly)
+        working-directory: editors/zed
+        run: |
+          cargo fmt --check
+          cargo clippy --target wasm32-wasip2 -- -D warnings
+          cargo build --release --target wasm32-wasip2
