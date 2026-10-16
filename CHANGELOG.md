@@ -50,8 +50,17 @@ Versions and what each kind of change means are described in
   (`Handle :: fs.File`), as for any other type name (§4.6).
 - `io.ReadError` is now the same type as `fs.ReadError`, so one function can propagate
   both with `try`.
+- Optimized C builds declare small functions `inline`, so gcc inlines them as Clang
+  does: a loop adding 32-byte structs through a small function ran three times slower
+  with gcc than with Clang and now runs as fast.
+- The interpreter performs an operation with less work (about 6% fewer instructions in
+  a loop of handled performs).
 
 ### Fixed
+
+- `bench/benches.gm` used an old form of `new` and `destroy` and no longer built, which
+  the benchmark job of CI reported only in its summary; that job now fails when the
+  benchmarks do not build or run.
 
 - A conversion `T(x)` no longer pushes `T` into `x`'s branches and operands:
   `f32(if c { a } else { b })` with `a, b: i16` was rejected.

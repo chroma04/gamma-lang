@@ -537,6 +537,14 @@ checked operations takes minutes, 50,000 hours. A generated function of more tha
 is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optnone`)
 on those versions of Clang and means nothing elsewhere.
 
+At the other end, optimized builds (every mode but Debug) declare a function of at most
+64 temporaries and labels `inline` unless it carries an `#inline` hint. gcc at `-O2`
+inlines a function not declared `inline` only when its size estimate is tiny, and the
+frame set-up of a generated function already exceeds it, so a small function on large
+values (adding two 4-element vectors) stayed a call, with its arguments copied to
+temporaries, at about three times the cost of Clang's code. Declared `inline`, gcc
+weighs it against its larger limit for such functions, which still keeps big ones out.
+
 How the runtime is linked depends on the build mode:
 
 - Checked and Fast builds are one translation unit, the runtime followed by the
