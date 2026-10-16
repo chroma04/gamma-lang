@@ -1,0 +1,44 @@
+//! stage: check
+// An effect-set parameter that occurs in an effect of the function's own set
+// (`needs Sched(E)`) is inferable: it is written by name or taken from the one
+// instantiation of that effect available at the call (§16.6).
+Sched :: effect(E: effects) {
+    pause: ctl()
+}
+
+helper :: fn(E: effects) needs Sched(E) {
+    pause()
+}
+
+twice :: fn(E: effects, n: u32) -> u32 needs Sched(E) {
+    helper()
+    helper()
+    return n * 2
+}
+
+task :: fn() -> u32 needs Sched(Out + Clock) {
+    helper()
+    return twice(3)
+}
+
+named :: fn() needs Sched(Out) {
+    helper(E: Out)
+}
+
+forwards :: fn(F: effects) needs Sched(F) {
+    helper()
+}
+
+positional :: fn() needs Sched(Out) {
+    twice(Out, 3)   //~ ERROR too many arguments
+}
+
+none :: fn() {
+    helper()   //~ ERROR which the function does not declare
+}
+
+two :: fn() needs Sched(Out) + Sched(Clock) {
+    helper()   //~ ERROR but the function declares `Sched(Out)` and `Sched(Clock)`
+}
+
+main :: fn() {}

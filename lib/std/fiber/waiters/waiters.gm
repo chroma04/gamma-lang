@@ -1,0 +1,41 @@
+//! The queue of waiting tasks of std/fiber, which re-exports it.
+
+queue :: import "std/collections/deque"
+
+/// Tasks waiting for something, in the order they started to wait (see `park` and
+/// `wake` of `std/fiber`). It keeps the allocator it was created with.
+pub Waiters :: struct {
+    tasks: queue.Deque(cont(()))
+    // The ready queue of the scheduler of the tasks (set by `park`).
+    ready: ?^queue.Deque(cont(()))
+}
+
+/// An empty queue of waiting tasks, using the current allocator.
+pub waiters :: fn() -> Waiters needs Alloc {
+    return Waiters(tasks: queue.deque(cont(())), ready: null)
+}
+
+/// Frees the queue. No task may be waiting in it.
+pub deinit :: fn(w: ^Waiters) {
+    if not w.tasks.is_empty() { trap("freeing a queue that a task still waits in") }
+    w.tasks.deinit()
+}
+
+/// Whether no task waits in the queue.
+pub is_empty :: fn(w: ^const Waiters) -> bool => w.tasks.is_empty()
+
+/// Makes the task at the front ready to run once the current task gives way; false if
+/// no task waits. It needs no effect, so a `defer` may wake tasks.
+pub wake :: fn(w: ^Waiters) -> bool {
+    k := w.tasks.pop_front() else return false
+    ready := w.ready else trap("a waiting task without a scheduler")
+    ready.push_back(k) else trap("out of memory in the scheduler")
+    return true
+}
+
+/// Adds suspended task `k` at the back; `ready` is its scheduler's queue of ready tasks.
+/// This is the scheduler's side of `park`.
+pub add :: fn(w: ^Waiters, k: cont(()), ready: ^queue.Deque(cont(()))) {
+    w.ready = ready
+    w.tasks.push_back(k) else trap("out of memory in the scheduler")
+}

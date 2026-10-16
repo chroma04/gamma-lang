@@ -129,6 +129,7 @@ fn generate_entries(
         handler_done: vec![false; prog.handlers.len()],
         decl_done: vec![false; prog.handler_decls.len()],
         line_paths: HashMap::new(),
+        loc_files: Default::default(),
         stubs: HashMap::new(),
     };
     for &entry in entries {
@@ -155,6 +156,10 @@ fn generate_entries(
         out.push_str(&debug::gdb_script_section());
     }
     out.push_str(&g.ty.descriptors());
+    for &id in g.loc_files.borrow().iter() {
+        let path = g.sources.file(crate::source::FileId(id)).path.display().to_string();
+        let _ = writeln!(out, "static const char gm_src{}[] = {};", id, c_string(path.as_bytes()));
+    }
     out.push_str(&g.static_defs);
     out.push_str(&debug::guard(&names, &g.frames));
     out.push_str(&g.protos);
@@ -235,6 +240,9 @@ pub struct Gen<'a> {
     /// The path a `#line` directive names for each source file (`None`: the file is not
     /// on disk, so lines in it are not mapped).
     line_paths: HashMap<crate::source::FileId, Option<String>>,
+    /// The source files trap locations name; each path is one static string `gm_srcN`
+    /// (N = the file id) rather than a literal repeated at every trap site.
+    loc_files: std::cell::RefCell<std::collections::BTreeSet<u32>>,
 }
 
 impl<'a> Gen<'a> {
@@ -338,7 +346,8 @@ impl<'a> Gen<'a> {
         }
         let f = self.sources.file(span.file);
         let (line, col) = f.line_col(span.lo);
-        format!("{}, {}, {}", c_string(f.path.display().to_string().as_bytes()), line, col)
+        self.loc_files.borrow_mut().insert(span.file.0);
+        format!("gm_src{}, {}, {}", span.file.0, line, col)
     }
 
     /// A `#line` directive for the start of `span`, with debug information on and the

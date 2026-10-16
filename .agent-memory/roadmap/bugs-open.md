@@ -14,8 +14,14 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     GM_HUGE_FN (>20k temps: gcc no-tree-pta/no-thread-jumps), -Wno-free-nonheap-object in
     BASE_CFLAGS (stops gcc's waccess pass). 100k-term sum: gcc 187→25 s, clang >8 min→17 s.
     Left: outline long statement runs into functions sharing the frame (defers, gm_unw exits,
-    backtrace, stack accounting); trap sites repeat the absolute path string (38 MB C for 100k
-    terms, ~10 s gcc parse); by-ref (struct) chains not flattened. (Old #49 "deep nested C
+    backtrace, stack accounting); by-ref (struct) chains not flattened. (s20: trap sites
+    name the file via one `static const char gm_srcN[]` per file: 100k terms 31→27 s gcc.) Clang ≥19 (Apple ≥17;
+    macos-latest = macOS 26 image): EarlyCSE → simplifyInstruction(icmp) → isKnownNonEqual →
+    computeKnownBits/adjustKnownBitsForSelectArm ~cubic in chain length (abs chain 10k links
+    178 s, 50k hours → macOS CI 12 min → 2h48). Shape tweaks (asm barriers, overflow builtins,
+    opaque conds) did NOT help. Fix (PR #44, merged): GM_LONG_FN
+    (>2,000 names, func.rs LONG_FN_NAMES) = optnone,noinline on those clangs; 50k ≈ 35 s.
+    Real programs: max ~770 names/function (examples/calc). (Old #49 "deep nested C
     expressions" was a misdiagnosis: cgen already spills every operand into temps.)
 - Safe mode: new/destroy ≈ 4x Checked (GC alloc of `new`; `&key` in std maps escapes).
 
@@ -27,8 +33,10 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     for fiber overflow can't be shared.
 
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
-23. std channels/queue/generator; lstat on symlinks untested; reflection.
+23. std generator; reflection. (Fiber channel done s20: std/fiber/channel; deque exists;
+    lstat on symlinks is tested by run/std_fs_symlinks.)
 
 ## Dogfood papercuts (s18 examples; unscheduled)
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).
-- std wish: std/fiber channel + sleep-aware scheduler (Clock.sleep blocks the thread).
+- std wish: sleep-aware fiber scheduler (Clock.sleep blocks the thread; a scheduler op
+  `sleep` would need Clock in the handler's set — design open). Channel done in s20.

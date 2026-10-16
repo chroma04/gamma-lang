@@ -66,6 +66,9 @@ pub struct Diagnostics {
     seen: HashSet<(Severity, Span, String)>,
     /// While positive, new diagnostics are discarded (used for speculative parsing).
     suppressed: u32,
+    /// How many errors were ever passed to [`Diagnostics::push`], including those that were
+    /// discarded or repeat an earlier diagnostic.
+    raised: usize,
 }
 
 impl Diagnostics {
@@ -77,6 +80,9 @@ impl Diagnostics {
     /// message (generic code is checked once per instantiation, for example), or is an
     /// error about the error type `{error}`, which only restates an earlier error.
     pub fn push(&mut self, d: Diagnostic) {
+        if d.severity == Severity::Error {
+            self.raised += 1;
+        }
         if self.suppressed != 0 {
             return;
         }
@@ -99,6 +105,13 @@ impl Diagnostics {
 
     pub fn has_errors(&self) -> bool {
         self.list.iter().any(|d| d.severity == Severity::Error)
+    }
+
+    /// The number of errors raised so far, counting those that were discarded or repeat
+    /// an earlier diagnostic. A stage that sees it change knows that what it just checked
+    /// contains an error, whether or not that error was recorded again.
+    pub fn raised_errors(&self) -> usize {
+        self.raised
     }
 
     pub fn error_count(&self) -> usize {

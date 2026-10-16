@@ -292,8 +292,10 @@ every conformance test the compiler accepts. Change the grammars along with the 
 
 `fuzz/` is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) crate (outside the
 main workspace, so `cargo build` and `cargo test` never compile it). Its targets feed
-arbitrary text to the front end: `parse` lexes and parses it, and `fmt` formats
-text the parser accepts and checks that the result formats to itself. Diagnostics for
+arbitrary text to the front end: `parse` lexes and parses it, `fmt` formats
+text the parser accepts and checks that the result formats to itself, and `check` runs
+the whole front end (name resolution, type checking, lowering) on it as a single-file
+program, with the real standard library from `lib/std` of the source tree. Diagnostics for
 invalid input are expected; panics, stack overflows, hangs and quadratic blowups are bugs.
 
 ```sh
@@ -302,14 +304,57 @@ cargo install cargo-fuzz
 fuzz/seed.sh                      # corpus from lib/, examples/ and tests/conformance/
 cargo +nightly fuzz run parse -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
 cargo +nightly fuzz run fmt -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
+cargo +nightly fuzz run check -s none -- -max_total_time=600 -timeout=20 -rss_limit_mb=4096 \
+    -max_len=8192 -jobs=4 -workers=4
 ```
+
+Every `check` run loads and checks the standard library, so it is much slower than the
+other targets; `-s none` (no sanitizer) and a small `-max_len` keep it at a useful rate,
+and `-jobs`/`-workers` use several cores.
 
 Crashing inputs are saved in `fuzz/artifacts/<target>/`; `fuzz/corpus/` and
 `fuzz/artifacts/` are not checked in. To turn a crash into a regression test, shrink it
 with `cargo +nightly fuzz tmin <target> <artifact>`, fix the bug, and add the small input
 as a conformance test (for example `tests/conformance/parse/<name>.gm` with
-`//! stage: parse` and `//~ ERROR` annotations) or a unit test in the module concerned.
+`//! stage: parse` and `//~ ERROR` annotations, or `tests/conformance/check/<name>.gm`
+with `//! stage: check`) or a unit test in the module concerned.
 Fuzzing is not part of CI.
+
+## Differential testing
+
+`tools/difftest/` is a small Rust crate (its own workspace, like `fuzz/`, with no
+dependencies) that generates random programs and checks that every back end gives the
+same result. A seed determines a program: well-typed, terminating (loops have constant
+bounds, calls only go to earlier functions, recursion is bounded by a depth argument),
+and covering integers of all widths from 8 to 64 bits with checked, wrapping, saturating
+and optional-result operators and conversions, comparisons, boolean logic, `if`, `while`
+and `for`, local variables and assignment, functions and bounded recursion, structs,
+arrays, unions and `match`, optionals and results with `try`, and `print`. Checked
+operations may trap; the back ends must then trap in the same way.
+
+Each program runs with the interpreter (`gamma run`) and with the C back end
+(`gamma run --backend=c`) compiled by every C compiler listed in `--cc` (default: gcc and
+clang; compilers that are not installed are skipped). Standard output, standard error
+(with the program's path replaced by `FILE`) and the exit status must be equal.
+
+```sh
+cargo build --release                     # the gamma executable it tests
+cargo build --release --manifest-path tools/difftest/Cargo.toml --target-dir target
+target/release/difftest --start 0 --count 1000      # seeds 0..1000, in parallel
+target/release/difftest --print 17                  # show the program of seed 17
+target/release/difftest --save 17 /tmp/p.gm         # write it to a file
+target/release/difftest --reduce /tmp/p.gm          # shrink a program that disagrees
+```
+
+Programs on which the back ends disagree are kept in the work directory (`--work`, by
+default `difftest/` in the system temporary directory) and reported with all three
+outputs; `--reduce` deletes lines while the same back ends keep disagreeing and writes
+`<file>.min.gm`. A program that the compiler rejects is reported too, since the
+generator should never produce one. `--mode=checked` tests Checked builds, `--gamma`
+(or `$GAMMA`) selects the executable. To turn a disagreement into a regression test, decide
+from the specification which side is wrong, fix it, and add the reduced program as
+`tests/conformance/run/<name>.gm`, which runs on both back ends. Like fuzzing,
+differential testing is not part of CI.
 
 ## The specification
 

@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-16) — PRs #1–#41 merged; s19 PR #42 open (papercuts + P2 picks)
+## State (2026-10-16) — PRs #1–#42 merged; s20 PR open (bugs-open + P2, branch claude/bugs-p2-s20)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -17,12 +17,13 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- Recent history: s19 papercuts + tree-sitter/MSRV/SECURITY (branch claude/fervent-bohr-wot1ar);
+- Recent history: s20 fiber channel + effect-param context inference + fuzz/difftest
+  (sessions/s20-…); s19 papercuts + tree-sitter/MSRV/SECURITY (branch claude/fervent-bohr-wot1ar);
   s18 examples (PR #41); s13 bug sweep (PR #36; locals not named like types, decisions/024);
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive PR #42 (branch claude/fervent-bohr-wot1ar) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive PR #43 (claude/bugs-p2-s20) to merge (#44, the macOS CI fix, merged); then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -53,12 +54,13 @@
                   · 025 design review (thesis, principles; implemented: cancel, Test effect, rest
                     params, named args/inferable params, universe w/o ops, named effect sets)
                   · 026 effect syntax `needs A + B`, `needs not` (foreign only), no `..E`
+                  · 027 effect-set params inferred from the caller's Sched(E); fiber channel
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
                   · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
                   · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
-                  · s19-2026-10-16-papercuts-p2.md
+                  · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
 - gotchas/        environment.md
 
 ## Conventions

@@ -1,0 +1,18 @@
+// The argument of a conversion `T(x)` is typed on its own, also when it is an `if` or a
+// `match`: its branches are not coerced to `T` one by one (§6.5).
+pick :: fn(c: bool, a, b: i16) -> f32 => f32(if c { a } else { b })
+
+main :: fn() needs Out {
+    a: i16 = 5
+    b: i16 = -7
+    c := true
+    print("{}\n", f32(if c { a } else { b }))
+    print("{}\n", f64(match c { true => b; false => a }))
+    print("{}\n", pick(false, a, b))
+    print("{}\n", i64(if c { a } else { b }))
+    print("{}\n", u8(if c { 200 } else { 1 }))
+    print("{}\n", f64((if c { 1 } else { 2 })))
+    print("{}\n", f32(if c { 1.5f32 } else { 2.5f32 }))
+    print("{}\n", f32(~(if c { a } else { b })))
+    print("{}\n", f64(-(match c { true => a; false => b }) +% 1))
+}

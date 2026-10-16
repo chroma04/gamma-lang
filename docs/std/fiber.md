@@ -37,6 +37,10 @@ the `with &s` needs `Out` and `Clock` itself.
 `Scheduler` keeps the allocator it was created with for its queue of ready tasks and
 performs no `Alloc` afterwards.
 
+A task can wait for another without polling: `park(&w)` suspends it in a `Waiters`
+queue, and it does not run again until a task calls `wake(&w)`, which makes it ready.
+`std/fiber/channel` builds a bounded channel between tasks on them.
+
 ## Structs
 
 ### `Scheduler`
@@ -50,6 +54,17 @@ Scheduler :: struct(E: effects) {
 A round-robin scheduler: the ready tasks in a queue, in the order they will run. Its tasks
 may perform the effects `E`.
 
+## Type aliases
+
+### `Waiters`
+
+```gamma
+Waiters :: waiters_module.Waiters
+```
+
+Tasks waiting for something, in the order they started to wait (see `park` and
+`wake`). It keeps the allocator it was created with.
+
 ## Effects
 
 ### `Sched`
@@ -60,12 +75,17 @@ Sched :: effect(E: effects) {
     spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never needs Sched(E) + E, arg: rawptr, stack: []u8)
     exit: ctl() -> never
     join: ctl()
+    park: ctl(w: ^Waiters)
 }
 ```
 
 What a task can ask of its scheduler. `spawn`, which takes a typed task function, is the
 way to start a task; `spawn_raw` is the operation underneath.
 `E` is what tasks may perform besides `Sched`; `Sched` alone is `Sched` of the empty set.
+
+Operations:
+
+- `park`: Suspends the current task at the back of `w` until `wake` takes it out.
 
 ## Handlers
 
@@ -74,6 +94,25 @@ way to start a task; `spawn_raw` is the operation underneath.
 ```gamma
 handler(E: effects) Sched(E) for ^Scheduler(E) needs E
 ```
+
+## Constants
+
+### `waiters`
+
+```gamma
+waiters :: waiters_module.waiters
+```
+
+An empty queue of waiting tasks, using the current allocator.
+
+### `wake`
+
+```gamma
+wake :: waiters_module.wake
+```
+
+Makes the task at the front of `w` ready to run once the current task gives way; false
+if no task waits there. It needs no effect, so a `defer` may wake tasks.
 
 ## Functions
 

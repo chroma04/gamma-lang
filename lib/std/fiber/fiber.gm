@@ -32,6 +32,10 @@
 //!
 //! `Scheduler` keeps the allocator it was created with for its queue of ready tasks and
 //! performs no `Alloc` afterwards.
+//!
+//! A task can wait for another without polling: `park(&w)` suspends it in a `Waiters`
+//! queue, and it does not run again until a task calls `wake(&w)`, which makes it ready.
+//! `std/fiber/channel` builds a bounded channel between tasks on them.
 
 queue :: import "std/collections/deque"
 
@@ -43,7 +47,25 @@ pub Sched :: effect(E: effects) {
     spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never needs Sched(E) + E, arg: rawptr, stack: []u8)
     exit: ctl() -> never
     join: ctl()
+    /// Suspends the current task at the back of `w` until `wake` takes it out.
+    park: ctl(w: ^Waiters)
 }
+
+// `Waiters` is declared in its own module because methods resolve in the module that
+// declares a type (§7.10) and a module has one function per name: `Scheduler` and
+// `Waiters` both have a `deinit`.
+waiters_module :: import "./waiters"
+
+/// Tasks waiting for something, in the order they started to wait (see `park` and
+/// `wake`). It keeps the allocator it was created with.
+pub Waiters :: waiters_module.Waiters
+
+/// An empty queue of waiting tasks, using the current allocator.
+pub waiters :: waiters_module.waiters
+
+/// Makes the task at the front of `w` ready to run once the current task gives way; false
+/// if no task waits there. It needs no effect, so a `defer` may wake tasks.
+pub wake :: waiters_module.wake
 
 /// A round-robin scheduler: the ready tasks in a queue, in the order they will run. Its tasks
 /// may perform the effects `E`.
@@ -103,6 +125,11 @@ handler(E: effects) Sched(E) for ^Scheduler(E) needs E {
         r := next(self)
         resume r()
     }
+    park(self, w, k) => {
+        w.add(k, &self.ready)
+        r := next(self)
+        resume r()
+    }
 }
 
 // What a new task starts from. It lives at the bottom of the task's stack.
@@ -126,5 +153,5 @@ pub spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) needs Sched(E) + E, arg: ^T
     off := (16 - stack.ptr.addr() % 16) % 16
     start := stack[off..off + 32].ptr.cast(^Start(E))
     start^ = Start(E)(f: f.cast(^fn(arg: rawptr) needs Sched(E) + E), arg: arg.cast(rawptr))
-    spawn_raw(entry(E), start.cast(rawptr), stack[off + 32..stack.len])
+    spawn_raw(entry(E: E), start.cast(rawptr), stack[off + 32..stack.len])
 }

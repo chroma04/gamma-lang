@@ -1,0 +1,30 @@
+//! stage: check
+// Performing one instantiation of a generic effect where another is declared or handled
+// says that the two are different effects (§12.3).
+Sched :: effect(E: effects) {
+    pause: ctl()
+}
+
+H :: struct(E: effects) { n: u8 = 0 }
+
+handler(E: effects) Sched(E) for ^H(E) {
+    pause(self, k) => resume k()
+}
+
+plain :: fn() needs Sched {
+    pause()
+}
+
+declared :: fn() needs Sched(Out) {
+    plain()   //~ ERROR but the function declares `Sched(Out)`
+}
+
+handled :: fn() {
+    h := H(Out)()
+    stack: [16384]u8 = ---
+    with &h on stack[..] {
+        plain()   //~ ERROR but an enclosing `with` handles `Sched(Out)`
+    }
+}
+
+main :: fn() {}

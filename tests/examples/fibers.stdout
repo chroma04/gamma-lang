@@ -9,9 +9,9 @@ generate: 4
 generate: 5
 square: 3 -> 9
 square: 4 -> 16
+generate: 6
 sum: +9 = 14
 sum: +16 = 30
-generate: 6
 square: 5 -> 25
 square: 6 -> 36
 sum: +25 = 55

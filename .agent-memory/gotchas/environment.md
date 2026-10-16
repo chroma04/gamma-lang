@@ -49,3 +49,7 @@
 - Windows compile check without CI: `apt-get install gcc-mingw-w64-x86-64; rustup target add x86_64-pc-windows-gnu; cargo check --target x86_64-pc-windows-gnu` (libffi-sys needs the mingw gcc).
 - Brief agents never to `pkill -f "cargo build"` (or any shared pattern): it kills the other
   agents' builds too (s14, twice).
+- `cargo test` stops after the first failing test binary: use `--no-fail-fast` to see all.
+- Newer clang for testing: `apt-get install clang-19 clang-20` (Ubuntu noble). Never time
+  compiles while another background compile runs (s20 got garbage numbers).
+- gdb on a running compiler: `ps -eo pid,comm | awk '$2 ~ /^clang/'` (never pgrep -f).
