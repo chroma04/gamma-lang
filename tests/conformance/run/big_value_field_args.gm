@@ -1,0 +1,39 @@
+// A large argument read from a field of a variable, of a dereference or of a parameter
+// may be passed where it lies instead of being copied first. The callee must still see
+// the value as it was at the call, also when the result is stored over the place the
+// argument came from.
+V :: struct { x: f64, y: f64, z: f64, w: f64 }
+M :: struct { a: V, b: V, n: i64 }
+Box :: struct { m: M }
+
+// Writes its result field by field, reading the other parameter after each write.
+mix :: fn(p: V, q: V) -> V => V(x: q.y, y: p.x + q.x, z: q.w, w: p.z)
+
+show :: fn(v: V) needs Out {
+    print("{} {} {} {}\n", v.x, v.y, v.z, v.w)
+}
+
+// Passes fields of its own parameter on.
+step :: fn(m: M) -> M => M(a: mix(m.a, m.b), b: mix(m.b, m.a), n: m.n + 1)
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    m := M(a: V(x: 1.0, y: 2.0, z: 3.0, w: 4.0), b: V(x: 5.0, y: 6.0, z: 7.0, w: 8.0), n: 0)
+    show(mix(m.a, m.b))
+    // The result replaces the field that is the second argument, then the first.
+    m.b = mix(m.a, m.b)
+    show(m.b)
+    m.a = mix(m.a, m.b)
+    show(m.a)
+    m = step(m)
+    show(m.a)
+    show(m.b)
+    print("{}\n", m.n)
+    // Through a pointer, two levels down.
+    bx := try new(Box(m: m))
+    bx.m.a = mix(bx.m.b, bx.m.a)
+    show(bx.m.a)
+    bx.m = step(bx.m)
+    show(bx.m.b)
+    destroy(bx)
+    return ()
+}

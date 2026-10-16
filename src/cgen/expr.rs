@@ -1065,16 +1065,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
             // A callee may build its result in the destination while reading a parameter in
             // place, so the destination must not overlap a place passed in place.
             let borrows = dest.is_some() && callee_borrows(self, callee, i);
-            let overlaps = self.arg_may_overlap(a, obs, borrows);
+            let root = self.in_place_root(a);
+            let overlaps = root.is_none_or(|r| self.arg_may_overlap(r, obs, borrows));
             // A large constant is passed from static storage (see `constarg`).
             let k = if self.g.ty.by_ref(a.ty) { self.g.const_arg(a) } else { None };
             let v = if let Some(k) = k {
                 format!("(*({} *){})", self.g.ty.cty(a.ty), k)
-            } else if self.g.ty.by_ref(a.ty)
-                && matches!(a.kind, ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_))
-                && later_pure()
-                && !overlaps
-            {
+            } else if self.g.ty.by_ref(a.ty) && root.is_some() && later_pure() && !overlaps {
                 let addr = self.place_addr(a)?;
                 format!("(*({} *){})", self.g.ty.cty(a.ty), addr)
             } else {
@@ -1111,6 +1108,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// Whether argument `a`, passed in place, may overlap the destination of the call
     /// (see `Observed`) and so must be copied first. `borrows`: the callee may read it
     /// in place without copying it.
+    /// The variable or dereference a large argument is read from, when it can be passed
+    /// in place: `a` is a local, an upvar or a dereference, or a field (of a field…) of
+    /// one. Fields of `#bits` structs have no address.
+    fn in_place_root<'e>(&self, a: &'e Expr) -> Option<&'e Expr> {
+        let mut e = a;
+        loop {
+            match &e.kind {
+                ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_) => return Some(e),
+                ExprKind::Field { base, .. } if self.g.ty.bits_layout(base.ty).is_none() => e = base,
+                _ => return None,
+            }
+        }
+    }
+
     fn arg_may_overlap(&self, a: &Expr, obs: Observed, borrows: bool) -> bool {
         if !borrows {
             return false;

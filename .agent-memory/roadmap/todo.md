@@ -16,7 +16,8 @@ nvim-treesitter submissions.
   Its small papercuts were fixed in s19; the rest: bugs-open.md "Dogfood papercuts".
 
 ## P2 — worth doing early
-(s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
+(s21: gcc inline of small fns, field args in place, Emacs mode, difftest coverage + CI.
+ s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
 fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.
 s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Fuzzing: fuzz/ targets parse, fmt, check (s20: ~345k execs, 1 const-eval panic fixed;
@@ -26,10 +27,13 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   generics/strings (generator in tools/difftest/src/program.rs); CI job running a few
   hundred seeds.
 - bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
-- Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
+- Perf: Safe new/destroy ~4x Checked (needs Fil-C: its setup.sh was refused by the
+  auto-mode classifier in s21 — ask the user to allow or run it); interpreter `perform`
+  (s21 trimmed it ~6%; vm_perform still ~200 instr self).
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions
-  is the user's; Emacs untested.
+  is the user's. Emacs: editors/emacs/gamma-ts-mode.el (s21, ERT tests in batch Emacs 29.3;
+  committed parser is ABI 15, Ubuntu's Emacs needs `generate --abi 14` — CI step regenerates).
 
 ## Nice — after 0.1.0
 - Language: `@fields(T)` reflection (§22 deferred), SIMD types (C.10), enum-indexed arrays

@@ -53,6 +53,9 @@ Versions and what each kind of change means are described in
 - Optimized C builds declare small functions `inline`, so gcc inlines them as Clang
   does: a loop adding 32-byte structs through a small function ran three times slower
   with gcc than with Clang and now runs as fast.
+- A large argument read from a field of a variable or of a pointer's target (`f(m.a)`)
+  is passed in place in C, as one read from the variable itself already was, instead of
+  being copied to a temporary first.
 - The interpreter performs an operation with less work (about 6% fewer instructions in
   a loop of handled performs).
 

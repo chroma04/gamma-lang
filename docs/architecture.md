@@ -854,7 +854,8 @@ value through memory anyway, but by value the C compiler made several copies
 per call (a temporary, the conversion union, the argument area, the frame), and
 fiber stacks sized by `@stack_size` must hold them. Because the copy happens on
 entry, the address may be that of any place holding the value: an argument read
-from a local or through a pointer is passed as that place when no later argument
+from a local or through a pointer, or from a field (of a field…) of one, is passed as
+that place (`FnGen::in_place_root`) when no later argument
 can write memory (`no_writes`), and `return x` copies `x` straight into the result
 slot. An argument built from literals only, such as the `SourceLocation` that
 `@caller_location()` fills in for `new`, lives in static storage initialized at
