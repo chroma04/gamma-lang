@@ -22,8 +22,7 @@
 1. Drive the s17 PR (branch claude/wonderful-cerf-sfn0qf) to merge; then the user tags
    v0.1.0 (release workflow re-run by hand on the s17 branch incl. Windows — see s17 log).
 2. Pre-release list agreed with the user (s17): dogfood the new syntax + an `examples/`
-   dir; spec gaps (`_:` parses as an argument name; Appendix A `'#' 'global'` vs lexer
-   token); fuzzing; tree-sitter multi-line block comment as newline; Cargo.toml metadata;
+   dir; fuzzing; tree-sitter multi-line block comment as newline; Cargo.toml metadata;
    issue templates/SECURITY.md; #48–49; Safe new/destroy (~4x Checked).
 3. Windows follow-ups (Safe, gamma debug, gdb printers Linux-only; ARM64); VM follow-ups
    in decisions/020; the user's [nice] items.

@@ -1,0 +1,7 @@
+//! stage: parse
+// `_` is not a name, so it cannot name an argument (§11.3); a spread or positional `_` is
+// left to name resolution.
+f :: fn() {
+    g(_: 1) //~ ERROR `_` cannot name an argument
+    g(a: 1, _: 2) //~ ERROR `_` cannot name an argument
+}

@@ -20,3 +20,7 @@ the P1 bugs (#50–53).
 - CHANGELOG: Unreleased folded into one `## 0.1.0 - 2026-10-16` summary (no prior release,
   so Breaking/Fixed lists were dropped; git history has them). release.yml: notes from the
   version's CHANGELOG section (awk), build job checks the section exists.
+- Spec gaps settled (user asked): Appendix A uses ATTR/INTRINSIC tokens (`'#global'`),
+  §2.7 has their productions; `{ attribute } '^' fn_type` in A.2 (#callconv); `_:` is a
+  parse error (parse_arg) — also for #bits padding, which can't be named in construction
+  (§5); break-label rule was already A.7 rule 11.

@@ -583,6 +583,10 @@ impl Parser<'_> {
             return Ok(Arg { kind: ArgKind::Spread(e), span: self.span_from(start) });
         }
         if self.nth_is_name(0) && self.nth_is(1, Punct::Colon) {
+            if matches!(self.kind(), TokenKind::Underscore) {
+                let span = self.span();
+                self.diags.push(crate::diag::Diagnostic::error(span, "`_` cannot name an argument (§11.3)"));
+            }
             let name = self.parse_name("an argument name")?;
             self.bump();
             let e = self.parse_expr()?;
