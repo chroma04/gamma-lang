@@ -72,6 +72,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- On macOS, a program run with `gamma run --backend=c` could be killed when another
+  `gamma` process started the same cached executable at the same time: marking a
+  cached file as used no longer opens it for writing outside Windows.
 - In Debug builds, a trap in a task started by `@fiber` (such as a `std/fiber` task)
   named a different caller for the task on each back end; both now name the
   `with … on` that drives it.

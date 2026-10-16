@@ -55,3 +55,7 @@
 - Newer clang for testing: `apt-get install clang-19 clang-20` (Ubuntu noble). Never time
   compiles while another background compile runs (s20 got garbage numbers).
 - gdb on a running compiler: `ps -eo pid,comm | awk '$2 ~ /^clang/'` (never pgrep -f).
+- macOS CI exit 137 (SIGKILL, empty stderr) on C example runs (s22, PR #46): parallel cases of
+  one example share the cached `prog-<hash>`; rtcache::touch opened it for WRITE (Windows-only
+  need) while another case ran it. Now read-only handle outside Windows. Never open a cached
+  executable for writing.
