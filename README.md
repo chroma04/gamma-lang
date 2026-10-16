@@ -44,7 +44,6 @@ early exit, coroutines, testing.
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
 - [`docs/std.md`](docs/std.md) — the standard library.
-- [`docs/design-review.md`](docs/design-review.md) — a review of the design against its guiding principles, with proposed changes.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
 - [`CHANGELOG.md`](CHANGELOG.md) and [`docs/versioning.md`](docs/versioning.md) — what
