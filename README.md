@@ -65,7 +65,7 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 | Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 30 modules (see [`docs/std/`](docs/std/index.md)): `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/hash` (with `crc32` and `sha256`), `std/json`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset, ordered_map), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread` (with `wait_group`), `std/c` |
 | Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
-| Editors | a language server (`gamma lsp`), a VS Code extension, a Zed extension, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
+| Editors | a language server (`gamma lsp`), a VS Code extension, a Zed extension, an Emacs mode, and TextMate and tree-sitter grammars in [`editors/`](editors/) |
 
 ### Which back end?
 
