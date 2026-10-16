@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-16) — PRs #1–#38 merged; s16 PR open (effect syntax `needs A + B`)
+## State (2026-10-16) — PRs #1–#39 merged; s17 PR open (v0.1.0 prep: bugs #50–53, CHANGELOG)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -19,18 +19,17 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive the s16 PR (branch claude/stoic-davinci-afgofy) to merge: effect sets written
-   `needs A + B`, `needs not` for pure foreign fns (decisions/026).
-2. bugs-open.md: #50–53 (parser postfix after prefixed construction, `cont` local, fallback
-   type of literal locals, diagnostics), #48–49 (gcc on huge C functions/expressions), Safe
-   new/destroy (~4x Checked).
-3. The user's to-do list [nice] items; Windows follow-ups (Safe, gamma debug, gdb printers
-   Linux-only; ARM64 Windows); VM follow-ups in decisions/020.
+1. Drive the s17 PR (branch claude/wonderful-cerf-sfn0qf) to merge; then the user tags
+   v0.1.0 (release workflow re-run by hand on the s17 branch incl. Windows — see s17 log).
+2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). Next up: P1
+   dogfood pass + `examples/`, then P2 (fuzzing, tree-sitter newline, Cargo metadata, …).
+3. VM follow-ups in decisions/020; bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).
 
 ## Map
-- roadmap/        milestones.md (M0–M12 summary + gaps), bugs-open.md, c-backend-plan.md
+- roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
+                  c-backend-plan.md
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)
@@ -54,6 +53,7 @@
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
                   · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
+                  · s17-2026-10-16-release-prep.md
 - gotchas/        environment.md
 
 ## Conventions

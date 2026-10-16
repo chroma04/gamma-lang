@@ -1,5 +1,5 @@
 # Open implementation bugs, gaps and wishes (current; delete entries when fixed)
-Numbers are stable ids (gaps are fixed entries). Checked 2026-10-15.
+Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fixed in s17).
 
 ## Performance
 7. C big values: gm_out results + in-place construction + borrowed params of pure fns
@@ -22,19 +22,6 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-15.
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
-
-## Found by the s14 docs/spec audit (not fixed)
-50. Postfix method calls after a prefixed-type construction don't parse (A.7 rule 12):
-    `[3]u8(1,2,3).first()`, `[_]u8(1,2).min()` → "expected a type"; `?i32(3)?` → "expected a
-    value, found a type". `.len`, `[0]`, `(?i32(3))?` work.
-51. A local/param named `cont` is accepted (reserved type name, §2.4/§4.6); top-level rejected.
-52. Literal-inferred locals before finalize: `x := 5; @atomic_add(&x, 1)` → "not defined on
-    {integer}"; `@type_of(total)` of `total := 0` → "type of an untyped literal is not known".
-    §6.1 says they take the fallback type.
-53. Diagnostics: bad `print` template with a loop variable adds a spurious "unknown name d";
-    `n := 3; a: [n]u8` says "unknown name n" instead of "not a compile-time constant";
-    `pair_max(x: u8, y: u16)` reports both "T inferred as both" and "expected u8";
-    `gamma repl --help` → "unknown option".
 
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
 23. std channels/queue/generator; lstat on symlinks untested; reflection.

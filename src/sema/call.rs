@@ -667,7 +667,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let l = self.expr(a, None);
         let r = self.expr(b, Some(l.ty));
         let (l, r) = self.equalize(l, r, span);
-        let (lt, rt) = (self.infer.settle(l.ty), self.infer.settle(r.ty));
+        let (lt, rt) = (self.settle(l.ty), self.settle(r.ty));
         let (x, y) = (self.temp(lt, a.span), self.temp(rt, b.span));
         let local = |id, ty| mk(ty, tir::ExprKind::Local(id), span);
         let differ = mk(
@@ -872,7 +872,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if wants_float && self.infer.var_kind(v.ty) == Some(VarKind::Int) {
                 let _ = self.infer.unify(v.ty, Ty::f64());
             }
-            let t = self.infer.settle(v.ty);
+            let t = self.settle(v.ty);
             // A generic argument is checked in each instance (§16.1).
             if super::generics::has_param(t) {
                 continue;

@@ -1,9 +1,10 @@
 name: Release
 
 # Pushing a tag `vX.Y.Z` builds the `gamma` binaries for Linux and macOS (x86_64 and
-# arm64) and Windows (x86_64), checks that each one runs a program on the interpreter and through C from its
-# installed layout, and publishes them as a GitHub release. Running the workflow by hand
-# builds and checks the archives without publishing them.
+# arm64) and Windows (x86_64), checks that each one runs a program on the interpreter and
+# through C from its installed layout, and publishes them as a GitHub release whose notes
+# are the version's section of CHANGELOG.md. Running the workflow by hand builds and checks
+# the archives without publishing them.
 
 on:
   push:
@@ -42,6 +43,14 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Check that CHANGELOG.md has a section for the crate version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if ! grep -q "^## $version\b" CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $version" >&2
             exit 1
           fi
       - name: Build
@@ -132,8 +141,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat dist/*.sha256 > dist/SHA256SUMS
+          # The release notes are the version's section of CHANGELOG.md.
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --title "Gamma $GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS tools/install.sh tools/install.ps1

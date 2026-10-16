@@ -1,0 +1,9 @@
+//! stage: check
+// Two arguments that bind one type parameter differently give one error.
+larger :: fn(T: type, a: T, b: T) -> T { return a }
+
+main :: fn() {
+    x: u8 = 1
+    y: u16 = 2
+    z := larger(x, y) //~ ERROR `T` is inferred as both `u8` and `u16`
+}

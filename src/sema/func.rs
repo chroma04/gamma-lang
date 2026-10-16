@@ -157,6 +157,8 @@ pub struct PendingHandler {
     pub depth: usize,
     /// The length of each scope there.
     pub scope_lens: Vec<usize>,
+    /// The length of `Sema::local_consts` at the literal.
+    pub local_consts: usize,
     pub labels: usize,
     pub handled: usize,
 }
@@ -417,6 +419,7 @@ impl<'a, 's> FnCx<'a, 's> {
             span,
             depth: self.outer.len(),
             scope_lens: self.scopes.iter().map(|s| s.len()).collect(),
+            local_consts: self.sema.local_consts.len(),
             labels: self.labels.len(),
             handled: self.handled.len(),
         });
@@ -440,6 +443,7 @@ impl<'a, 's> FnCx<'a, 's> {
         for (scope, &len) in self.scopes.iter_mut().zip(&p.scope_lens) {
             hidden_tails.push(scope.split_off(len.min(scope.len())));
         }
+        let hidden_consts = self.sema.local_consts.split_off(p.local_consts.min(self.sema.local_consts.len()));
         let hidden_labels = self.labels.split_off(p.labels.min(self.labels.len()));
         let hidden_handled = self.handled.split_off(p.handled.min(self.handled.len()));
         let performed = self.performed.len();
@@ -449,6 +453,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         self.handled.extend(hidden_handled);
         self.labels.extend(hidden_labels);
+        self.sema.local_consts.extend(hidden_consts);
         for (scope, tail) in self.scopes.iter_mut().zip(hidden_tails) {
             scope.extend(tail);
         }
@@ -553,13 +558,17 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         if self.lookup_local(name).is_some() {
             self.error(span, format!("`{}` is already declared in this function; locals may not be shadowed", name));
-        } else if !matches!(binding, LocalBinding::Type(_) | LocalBinding::Label) {
-            let module = self.module;
-            if self.sema.names_type(module, name) {
-                self.error(span, format!("`{}` names a type; a local may not have the name of a type (§4.6)", name));
-            }
+        } else if !matches!(binding, LocalBinding::Type(_) | LocalBinding::Label)
+            && self.sema.names_type(self.module, name)
+        {
+            self.error(span, format!("`{}` names a type; a local may not have the name of a type (§4.6)", name));
+        } else if super::is_reserved_type_name(name.as_str()) {
+            // `cont`, and a local alias or label named like a predeclared type.
+            self.error(span, format!("`{}` is a reserved type name and cannot be redeclared", name));
         }
-        if matches!(binding, LocalBinding::Untyped(_) | LocalBinding::Const { .. }) {
+        // Compile-time expressions of the body see its constants, and its variables hide
+        // the top-level names they shadow (`n := 3; a: [n]u8` is an error, §4.6).
+        if matches!(binding, LocalBinding::Untyped(_) | LocalBinding::Const { .. } | LocalBinding::Var(_)) {
             self.sema.local_consts.push((name, binding.clone()));
         }
         self.scopes.last_mut().unwrap().push((name, binding));
@@ -1540,12 +1549,8 @@ impl<'a, 's> FnCx<'a, 's> {
             let performed = self.performed.len();
             let v = self.expr(x, None);
             self.performed.truncate(performed);
-            let t = self.infer.resolve(v.ty);
-            if t.has_infer() {
-                self.error(e.span, "the type of an untyped literal is not known here; give it a type");
-                return Ty::error();
-            }
-            return t;
+            // The type is needed now, so an untyped literal takes its fallback (§6.1).
+            return self.settle(v.ty);
         }
         let module = self.module;
         self.sema.resolve_type(module, e)

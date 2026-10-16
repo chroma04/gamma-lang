@@ -277,6 +277,11 @@ Exceptions to maximal munch:
 
 `@` immediately followed by an identifier forms an **intrinsic name** (`@size_of`). `#` immediately followed by an identifier forms an **attribute name** (`#packed`). Whitespace between `@`/`#` and the identifier is not permitted. The set of intrinsics and attributes is closed and listed in §20.
 
+```
+intrinsic_name = '@' ident        // one token; written INTRINSIC in Appendix A
+attribute_name = '#' ident        // one token; written ATTR in Appendix A
+```
+
 ### 2.8 Newlines and statement termination
 
 Newlines are significant inside braces `{ }` and at the top level, where they terminate statements and declarations. They are insignificant inside parentheses `( )` and brackets `[ ]`.
@@ -660,7 +665,7 @@ Mode :: #bits(u16) struct {
 }
 ```
 
-`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4); padding fields stay zero, so `~` complements only the named fields. A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
+`#bits(U)` packs the fields into the unsigned integer type `U` starting at the least significant bit, in declaration order. Field types must be `bool` (1 bit), `uN`, `iN`, payload-less unions with an explicit tag type, or other `#bits` structs. The widths must sum to exactly the width of `U`; fields named `_` are padding that is zero when constructed and cannot be named in a construction. The struct has the size and alignment of `U`. Fields cannot have their address taken. A `#bits` struct is **plain** when every field is a `bool`, an integer or a plain `#bits` struct: then every bit pattern of `U` is a valid value, so the struct is plain-data (§5.19), converts to and from `U` by `U(m)` and `Mode(u)` (§6.5), and takes the bitwise operators (§7.4); padding fields stay zero, so `~` complements only the named fields. A `#bits` struct with an enum field converts to `U` by `bits` (§6.6), and from `U` only by constructing it. A field of a nested `#bits` field is read and assigned like any field: `r.inner.flag = true`.
 
 ### 5.11 Unions
 
@@ -757,7 +762,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument (§21.6.1), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type: `x := 0; T :: @type_of(x); y: u8 = x` is an error, because `x` is already `i32`. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -1390,7 +1395,7 @@ Inside the function the parameter is an ordinary tuple, and a spread passes it o
 
 A call `f(args)` binds arguments to parameters:
 
-1. **Named** arguments `name: e` bind to the parameter of that name. They may be written anywhere in the argument list.
+1. **Named** arguments `name: e` bind to the parameter of that name (`_` is not a name, so `_: e` is an error). They may be written anywhere in the argument list.
 2. **Positional** arguments bind, in order, the **positional parameters**: every parameter except those a named argument names, inferable compile-time parameters (§16.2), which are never bound positionally, and parameters whose default is `@caller_location()`.
 3. **Spread** arguments `..e` (§11.4) expand into positional or named arguments. A positional argument may not follow a spread that supplies names.
 4. If the function has a rest parameter (§11.2), the positional arguments left over after the positional parameters before it are its rest arguments.
@@ -2471,8 +2476,8 @@ Gamma adopts the C11 memory model.
 ### 20.1 Syntax
 
 ```
-attribute = '#' ident [ '(' [ expr % ',' ] ')' ]
-intrinsic = '@' ident [ '(' [ arg % ',' ] ')' ]
+attribute = attribute_name [ '(' [ expr % ',' ] ')' ]     // attribute_name is the token `#name` (§2.7)
+intrinsic = intrinsic_name [ '(' [ arg % ',' ] ')' ]     // intrinsic_name is the token `@name` (§2.7)
 ```
 
 Attributes precede the declaration, field, or type literal they modify. Intrinsics are expressions. Both sets are closed; an unknown name is a compile error.
@@ -2873,7 +2878,7 @@ These belong in packages, whatever their popularity: application protocols above
 
 ## Appendix A. Grammar
 
-This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
+This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
 
 ### A.1 Files and declarations
 
@@ -2896,7 +2901,7 @@ binding       = IDENT '::' expr
               | ident_list ':' type ( ':' | '=' ) expr
 ident_list    = IDENT ',' IDENT { ',' IDENT }
 
-attribute     = '#' IDENT [ '(' [ expr % ',' ] ')' ]
+attribute     = ATTR [ '(' [ expr % ',' ] ')' ]
 ```
 
 ### A.2 Types
@@ -2911,7 +2916,7 @@ prefix_type   = '?' prefix_type
               | '[' '^' ']' [ 'const' ] prefix_type
               | '[' expr ']' prefix_type
               | '[' '_' ']' prefix_type                         // only in array constructors
-              | '^' fn_type
+              | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
               | tuple_type
               | struct_lit | union_lit | effect_lit
@@ -2954,7 +2959,7 @@ clause        = IDENT '(' [ IDENT % ',' ] ')' '=>' ( expr | block )
 
 foreign_block = 'foreign' STRING '{' { NL } { foreign_member NL { NL } } '}'
 foreign_member= { attribute } IDENT '::' fn_type
-              | { attribute } '#' 'global' IDENT ':' type
+              | { attribute } '#global' IDENT ':' type
 import_expr   = 'import' STRING
 ```
 
@@ -3017,7 +3022,7 @@ postfix       = '?' | '!' | '^'
               | '[' expr ']'
               | '[' [ expr ] ( '..' | '..=' ) [ expr ] ']'
               | '.' IDENT | '.' INT
-arg           = expr | IDENT ':' expr | '..' expr
+arg           = expr | IDENT ':' expr | '..' expr                // a name is never `_` (§11.3)
 primary       = literal | IDENT | '_' | '---' | 'null' | 'true' | 'false'
               | '(' expr ')' | tuple_expr
               | '.' IDENT                                         // variant, type from context
@@ -3035,7 +3040,7 @@ if_expr       = 'if' cond block { 'else' 'if' cond block } [ 'else' ( block | ID
 match_expr    = 'match' expr '{' { NL } { arm NL { NL } } '}'
 arm           = pattern { ',' pattern } [ 'if' expr ] '=>' ( expr | block )
 with_expr     = [ label ] 'with' expr { ',' expr } [ 'on' expr ] block
-intrinsic_call= '@' IDENT [ '(' [ arg % ',' ] ')' ]
+intrinsic_call= INTRINSIC [ '(' [ arg % ',' ] ')' ]
 is_pattern    = pattern                                            // binding-free; §7.6
 ```
 

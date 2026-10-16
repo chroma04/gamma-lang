@@ -1,0 +1,7 @@
+//! stage: check
+// Once a literal variable's type is settled early, later uses must agree with it (§6.1).
+main :: fn() {
+    x := 0
+    T :: @type_of(x)
+    y: u8 = x //~ ERROR expected `u8`, found `i32`
+}
