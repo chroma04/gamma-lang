@@ -1,0 +1,154 @@
+//! bank: apply a list of transactions from standard input and print the balances.
+//!
+//! One transaction per line; blank lines and lines starting with `#` are skipped:
+//!
+//!     deposit alice 100          open `alice` if needed and add 100 cents
+//!     withdraw bob 25            take 25 cents out
+//!     transfer alice bob 30      move 30 cents between two existing accounts
+//!
+//! Amounts are whole cents. A transaction that cannot be applied is reported and
+//! skipped. The final balances are listed in alphabetical order.
+//!
+//! Shows a package with a manifest and a submodule (`import "./ledger"`), `pub`
+//! visibility, error unions with payloads, `match` on results, error lifting with `try`,
+//! `In` read a line at a time, and tests in both modules.
+//!
+//! Run from the examples directory:
+//!
+//!     gamma run bank < data/bank-transactions.txt
+//!     gamma test bank
+ledger :: import "./ledger"
+io :: import "std/io"
+str :: import "std/str"
+
+Command :: union {
+    Deposit: (account: string, amount: i64)
+    Withdraw: (account: string, amount: i64)
+    Transfer: (from: string, to: string, amount: i64)
+}
+
+ParseError :: union {
+    Empty
+    UnknownCommand: string
+    WrongArguments: string
+    BadAmount: string
+}
+
+amount_of :: fn(s: string) -> ParseError!i64 {
+    return str.parse_int(i64, s) else !.BadAmount(s)
+}
+
+// Splits a line into words with `str.fields`; no allocation is needed for at most four.
+parse :: fn(line: string) -> ParseError!Command {
+    w := [4]string(fill: "")
+    n := 0
+    for f in str.fields(line) {
+        if n < w.len { w[n] = f }
+        n += 1
+    }
+    if n is 0 { return !.Empty }
+    match w[0] {
+        "deposit" => {
+            if n is not 3 { return !.WrongArguments(w[0]) }
+            return Command.Deposit(account: w[1], amount: try amount_of(w[2]))
+        }
+        "withdraw" => {
+            if n is not 3 { return !.WrongArguments(w[0]) }
+            return Command.Withdraw(account: w[1], amount: try amount_of(w[2]))
+        }
+        "transfer" => {
+            if n is not 4 { return !.WrongArguments(w[0]) }
+            return Command.Transfer(from: w[1], to: w[2], amount: try amount_of(w[3]))
+        }
+        _ => return !.UnknownCommand(w[0])
+    }
+}
+
+apply :: fn(l: ^ledger.Ledger, c: Command) -> ledger.LedgerError!() {
+    match c {
+        .Deposit(d) => try ledger.deposit(l, d.account, d.amount)
+        .Withdraw(w) => try ledger.withdraw(l, w.account, w.amount)
+        .Transfer(t) => try ledger.transfer(l, t.from, t.to, t.amount)
+    }
+    return ()
+}
+
+describe :: fn(e: ledger.LedgerError) needs Out {
+    match e {
+        .UnknownAccount(name) => print("unknown account {}", name)
+        .InsufficientFunds(f) => print("{} has {} but {} is needed", f.account, f.balance, f.needed)
+        .InvalidAmount => print("amount must be positive")
+        .SameAccount => print("cannot transfer to the same account")
+        .OutOfMemory(_) => print("out of memory")
+    }
+}
+
+report_parse_error :: fn(e: ParseError) needs Out {
+    match e {
+        .Empty => {}
+        .UnknownCommand(w) => print("unknown command {}", w)
+        .WrongArguments(w) => print("wrong number of arguments for {}", w)
+        .BadAmount(s) => print("bad amount {}", s)
+    }
+}
+
+Failure :: union { Io: IoError, Mem: AllocError }
+
+main :: fn() -> Failure!() needs In + Out + Alloc {
+    l := ledger.new()
+    defer l.deinit()
+    failed := 0
+    r := io.reader()
+    n := 0
+    while line := try r.next_line() {
+        n += 1
+        text := str.trim(line)
+        if text.len is 0 or text[0] is '#' { continue }
+        print("{:>2}: {}\n", n, text)
+        c := parse(text) else e => {
+            print("    rejected: ")
+            report_parse_error(e)
+            print("\n")
+            failed += 1
+            continue
+        }
+        apply(&l, c) else e => {
+            print("    refused: ")
+            describe(e)
+            print("\n")
+            failed += 1
+        }
+    }
+
+    // Report in alphabetical order, whatever order the accounts were opened in.
+    all := list(ledger.Account)
+    defer all.deinit()
+    try all.collect(ledger.each(&l))
+    all.items.sort_by(fn(a, b: ^const ledger.Account) -> bool => a.name < b.name)
+    print("\nbalances in cents ({} accounts):\n", ledger.count(&l))
+    for a in all.items { print("  {:<8}{:>8}\n", a.name, a.balance) }
+    print("{} transactions failed\n", failed)
+    return ()
+}
+
+test "parse recognises the three commands" {
+    expect(parse("deposit alice 100") is Command.Deposit(_))
+    expect(parse("withdraw bob 5") is Command.Withdraw(_))
+    expect(parse("transfer a b 7") is Command.Transfer(_))
+    expect(parse("") is !.Empty)
+    expect(parse("burn alice 1") is !.UnknownCommand(_))
+    expect(parse("deposit alice") is !.WrongArguments(_))
+    expect(parse("deposit alice lots") is !.BadAmount(_))
+}
+
+test "apply runs commands against the ledger" {
+    l := ledger.new()
+    defer l.deinit()
+    ok(apply(&l, ok(parse("deposit alice 100"))))
+    expect(apply(&l, ok(parse("transfer alice bob 30"))) is !.UnknownAccount(_))
+    expect_eq(ledger.balance(&l, "alice"), 100)
+    ok(apply(&l, ok(parse("deposit bob 1"))))
+    ok(apply(&l, ok(parse("transfer alice bob 30"))))
+    expect_eq(ledger.balance(&l, "alice"), 70)
+    expect_eq(ledger.balance(&l, "bob"), 31)
+}

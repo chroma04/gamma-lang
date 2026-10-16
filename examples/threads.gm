@@ -1,0 +1,138 @@
+//! Counts the primes below a limit by splitting the range across worker threads.
+//!
+//! Shows: `std/thread` (`spawn`, `join`, `WaitGroup`, `Channel`), thread entry points
+//! as function pointers with one pointer argument, per-thread result slots that need
+//! no synchronization, an atomic counter (`@atomic_add`), and combining results in a
+//! fixed order so the output never depends on how the threads were scheduled.
+//!
+//! Run from the examples/ directory:  gamma run threads.gm      (or: gamma test threads.gm)
+
+thread :: import "std/thread"
+
+LIMIT :: 20000
+WORKERS :: 4
+
+/// What one worker needs. Each worker owns its `Slice`, so writing `count` is not a race;
+/// `tested` and `pending` are shared and are only touched through atomics and the wait group.
+Slice :: struct {
+    lo: u32
+    hi: u32
+    count: u32 = 0
+    tested: ^u64
+    pending: ^thread.WaitGroup
+}
+
+is_prime :: fn(n: u32) -> bool {
+    if n < 2 { return false }
+    d: u32 = 2
+    while d * d <= n {
+        if n % d is 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+/// A thread entry point: a plain function of one pointer, `needs Sys` like all thread code.
+count_primes :: fn(s: ^Slice) needs Sys {
+    for n in s.lo..s.hi {
+        if is_prime(n) { s.count += 1 }
+    }
+    _ = @atomic_add(s.tested, u64(s.hi - s.lo), .Relaxed)
+    s.pending.done()
+}
+
+/// Splits [0, limit) into `WORKERS` ranges, one thread each, and adds up their counts.
+parallel_count :: fn(limit: u32) -> IoError!u32 needs Sys {
+    tested: u64 = 0
+    pending := thread.wait_group()
+    blank := Slice(lo: 0, hi: 0, tested: &tested, pending: &pending)
+    slices := [WORKERS]Slice(fill: blank)
+    threads: [WORKERS]thread.Thread = ---
+    step := limit / WORKERS
+    pending.add(WORKERS)
+    for i in 0..WORKERS {
+        hi := if i is WORKERS - 1 { limit } else { u32(i + 1) * step }
+        slices[i] = Slice(lo: u32(i) * step, hi: hi, tested: &tested, pending: &pending)
+        threads[i] = try thread.spawn(count_primes, &slices[i])
+    }
+    pending.wait()
+    for i in 0..WORKERS { threads[i].join() }
+
+    total: u32 = 0
+    for i in 0..WORKERS { total += slices[i].count }
+    // Every number was handed to exactly one worker.
+    if @atomic_load(&tested, .SeqCst) is not u64(limit) { trap("lost work") }
+    return total
+}
+
+/// The same count, with the workers reporting over a bounded channel. Messages arrive in
+/// whatever order the threads finish, so each carries its worker's index and the receiver
+/// files it under that index: the result is the same on every run.
+Part :: struct {
+    index: usize
+    count: u32
+}
+
+Shared :: struct {
+    results: thread.Channel(Part)
+}
+
+Job :: struct {
+    shared: ^Shared
+    index: usize
+    lo: u32
+    hi: u32
+}
+
+report_worker :: fn(j: ^Job) needs Sys {
+    n: u32 = 0
+    for k in j.lo..j.hi {
+        if is_prime(k) { n += 1 }
+    }
+    _ = j.shared.results.send(Part(index: j.index, count: n))
+}
+
+Failure :: union {
+    Io: IoError
+    Mem: AllocError
+}
+
+/// Counts the primes in each of `WORKERS` ranges and returns the counts in range order.
+via_channel :: fn(limit: u32) -> Failure!([WORKERS]u32) needs Sys + Alloc {
+    shared := Shared(results: try thread.channel(Part, WORKERS))
+    defer shared.results.deinit()
+    jobs := [WORKERS]Job(fill: Job(shared: &shared, index: 0, lo: 0, hi: 0))
+    threads: [WORKERS]thread.Thread = ---
+    step := limit / WORKERS
+    for i in 0..WORKERS {
+        hi := if i is WORKERS - 1 { limit } else { u32(i + 1) * step }
+        jobs[i] = Job(shared: &shared, index: i, lo: u32(i) * step, hi: hi)
+        threads[i] = try thread.spawn(report_worker, &jobs[i])
+    }
+    counts: [WORKERS]u32 = ---
+    for _ in 0..WORKERS {
+        part := shared.results.recv()?
+        counts[part.index] = part.count
+    }
+    for i in 0..WORKERS { threads[i].join() }
+    return counts
+}
+
+main :: fn() -> Failure!() needs Out + Sys + Alloc {
+    total := try parallel_count(LIMIT)
+    print("primes below {}: {}\n", LIMIT, total)
+
+    counts := try via_channel(LIMIT)
+    sum: u32 = 0
+    for i in 0..WORKERS {
+        print("range {}: {}\n", i, counts[i])
+        sum += counts[i]
+    }
+    print("channel total matches: {}\n", sum is total)
+}
+
+test "small ranges" {
+    expect_eq(ok(parallel_count(100)), 25)
+    counts := ok(via_channel(100))
+    expect_eq(counts[0] + counts[1] + counts[2] + counts[3], 25)
+}

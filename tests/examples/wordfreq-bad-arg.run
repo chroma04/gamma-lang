@@ -1,0 +1,4 @@
+example: wordfreq.gm
+args: --top lots
+stdin: data/wordfreq-sample.txt
+exit: 2

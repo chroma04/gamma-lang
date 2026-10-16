@@ -62,15 +62,15 @@ what a network call gives when its timeout runs out.
 ### The network: `Net`
 
 ```gamma
-l := try listen("127.0.0.1", 0)          // any free port
+l := try Net.listen("127.0.0.1", 0)      // any free port
 port := try l.local_port()
-c := try connect("localhost", port)
+c := try Net.connect("localhost", port)
 s := try l.accept()
 _ = try c.send("ping")
 n := try s.recv(buf[..])                 // 0 once the peer has closed
 ```
 
-`close_socket` and `close_listener` release the handles. Hosts are names or address
+`Net.close_socket` and `Net.close_listener` release the handles. Hosts are names or address
 literals; a failed name lookup is `.Other(0)`. `s.shutdown(how)` closes one direction of
 a connection (`how` is a `Shutdown`: `.Read`, `.Write` or `.Both`); after `.Write` the
 peer's `recv` returns 0 once it has read everything, while the other direction keeps

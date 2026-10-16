@@ -1,0 +1,16 @@
+//! stage: check
+// A conversion `T(x)` of a variable of literal type gives the variable the type `T`
+// (§6.5), so a literal far away that flows into the variable must fit `T`. The error
+// at the literal points at the conversion.
+
+main :: fn() {
+    for i in 0..1000 { //~ ERROR the literal 1000 does not fit in `u8`
+        x := u8(i % 200) //~ NOTE this conversion gives the literal's variable the type `u8`
+        _ = x
+    }
+    // A named conversion converts from the variable's own type instead.
+    for i in 0..1000 {
+        y := (i % 200).trunc(u8)
+        _ = y
+    }
+}

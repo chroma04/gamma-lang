@@ -1,0 +1,158 @@
+//! Choosing where memory comes from.
+//!
+//! `Alloc` is an effect, so the caller decides which allocator the code underneath
+//! uses. This program writes a tracking allocator that wraps the current one and
+//! installs it with `with`, then shows three more choices: an arena for scratch memory
+//! that is released all at once, a fixed buffer that needs no heap at all, and the
+//! rule that a `List` keeps the allocator it was created with. The `test`s run on the
+//! leak-checking heap that `gamma test` provides.
+//!
+//! Only the byte counts of plain `u8`/`u32`/`u64` arrays are printed, because those are
+//! the same on every platform.
+//!
+//! Run from the examples directory: `gamma run allocators.gm` and `gamma test allocators.gm`.
+arena :: import "std/arena"
+fixed_buffer :: import "std/fixed_buffer"
+
+// ---- a tracking allocator -------------------------------------------------------------
+
+Tracker :: struct {
+    inner: Allocator // whatever was current when the tracker was made
+    live: usize = 0
+    peak: usize = 0
+    allocs: u32 = 0
+    frees: u32 = 0
+}
+
+// An allocator is a data pointer plus a table of three functions.
+track_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
+    t := data.cast(^Tracker)
+    p := t.inner.vt.alloc(t.inner.data, size, align) else return null
+    t.live += size
+    t.peak = t.peak.max(t.live)
+    t.allocs += 1
+    return p
+}
+
+// Refusing to resize in place makes containers allocate, copy and free instead.
+track_resize :: fn(data: rawptr, p: [^]u8, old, new, align: usize) -> bool => false
+
+track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
+    t := data.cast(^Tracker)
+    t.live -= size
+    t.frees += 1
+    t.inner.vt.free(t.inner.data, p, size, align)
+}
+
+TRACK :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
+
+// `with &tracker { ... }` makes the tracker the current allocator.
+handler Alloc for ^Tracker {
+    current(self) => Allocator(data: self, vt: &TRACK)
+}
+
+tracker :: fn() -> Tracker needs Alloc => Tracker(inner: Alloc.current())
+
+report :: fn(label: string, t: ^const Tracker) needs Out {
+    print("{}: live={} peak={} allocs={} frees={}\n", label, t.live, t.peak, t.allocs, t.frees)
+}
+
+// ---- code that allocates, unaware of who is listening -------------------------------
+
+// Two temporary buffers; both are released by `defer` on every path out.
+checksum :: fn(n: usize) -> AllocError!u32 needs Alloc {
+    bytes := try make_fill(T: u8, n, 7)
+    defer free(bytes)
+    words := try make_fill(T: u32, n / 2, 1)
+    defer free(words)
+    total: u32 = 0
+    for b in bytes { total += u32(b) }
+    for w in words { total += w }
+    return total
+}
+
+// ---- the four demonstrations -----------------------------------------------------------
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    // 1. Count what `checksum` allocates: 100 + 200 bytes at once, all freed again.
+    t := tracker()
+    sum := try with &t { checksum(100) }
+    print("checksum = {}\n", sum)
+    report("tracked", &t)
+
+    // 2. A list captures the allocator current at its construction. Pushing outside the
+    //    `with` is still tracked, and so is `deinit`.
+    t2 := tracker()
+    nums := with &t2 { list(u32) }
+    for i in 0..1000 { try nums.push(i) }
+    print("list holds {} numbers, tracker saw allocations: {}\n", nums.items.len, t2.allocs > 0)
+    nums.deinit()
+    print("after deinit: live={}\n", t2.live)
+
+    // 3. An arena for scratch memory. A thousand small allocations are served from a few
+    //    chunks of the tracked heap and released together.
+    t3 := tracker()
+    with &t3 {
+        scratch := arena.new() // its chunks come from the tracker
+        defer scratch.deinit() // gives them all back at once
+        with scratch.allocator() {
+            for i in 0..1000 {
+                buf := try make(u8, i % 40 + 1)
+                buf.fill(7)
+            }
+        }
+        print("arena: 1000 allocations reached the tracker as fewer than 10: {}\n", t3.allocs < 10)
+    }
+    print("arena released: live={}\n", t3.live)
+
+    // 4. No heap at all: format into a list backed by a fixed buffer on the stack.
+    t4 := tracker()
+    store: [64]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with &t4 {
+        with fb.allocator() {
+            line := list(u8)
+            defer line.deinit()
+            try line.write("{}/{}: {}", "orders", "open", 42)
+            print("formatted without the heap: {}\n", line.items)
+            if !err := make(u8, 1000) {
+                print("a 1000 byte request does not fit in 64 bytes: {}\n", err)
+            }
+        }
+    }
+    print("heap allocations during that: {}\n", t4.allocs)
+    return ()
+}
+
+// ---- tests ---------------------------------------------------------------------------------
+
+test "checksum frees everything it allocates" {
+    t := tracker()
+    total := ok(with &t { checksum(10) })
+    expect_eq(total, 10 * 7 + 5)
+    expect_eq(t.live, 0)
+    expect_eq(t.allocs, t.frees)
+    expect_eq(t.peak, 10 + 5 * 4)
+}
+
+test "failure part way still frees" {
+    // A 64 byte fixed buffer holds the first buffer (40) but not the second (80); the
+    // `defer` after the first one still runs.
+    store: [64]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    r := with fb.allocator() { checksum(40) }
+    expect(r is !.OutOfMemory)
+}
+
+// The test heap reports any block that is not freed, so this test passing means the
+// `defer`s below do their job. Delete one and the test fails with a leak report.
+test "the test heap checks for leaks" {
+    names := list(string)
+    defer names.deinit()
+    ok(names.push("ada"))
+    ok(names.push("grace"))
+    p := ok(new(u64(7)))
+    defer destroy(p)
+    expect_eq(names.items.len, 2)
+    expect_eq(p^, 7)
+}

@@ -1,0 +1,2 @@
+example: json_query.gm
+args: .store.books[1].title data/json-store.json

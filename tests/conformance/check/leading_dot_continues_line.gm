@@ -1,0 +1,37 @@
+//! stage: check
+// A line that starts with `.name` continues the previous line (§2.8), so a variant
+// meant as a block's value on its own line becomes a method call or field access on
+// the line before; the error says so.
+
+Tok :: union { Num: i32, End }
+
+f :: fn(n: i32) -> Tok {
+    return if n > 0 { //~ ERROR expected `Tok`, found `()`
+        x := n * 2
+        .Num(x) //~ ERROR has no method `Num` //~ NOTE continues the previous line
+    } else {
+        .End
+    }
+}
+
+g :: fn(n: i32) -> Tok {
+    t: Tok = if n > 0 { //~ ERROR expected `Tok`, found `()`
+        y := n
+        .End //~ ERROR has no field `End` //~ NOTE continues the previous line
+    } else {
+        Tok.Num(n)
+    }
+    return t
+}
+
+// Naming the type makes it a value of its own.
+h :: fn(n: i32) -> Tok {
+    return if n > 0 {
+        x := n * 2
+        Tok.Num(x)
+    } else {
+        .End
+    }
+}
+
+main :: fn() {}

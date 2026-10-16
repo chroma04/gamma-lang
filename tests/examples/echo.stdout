@@ -1,0 +1,7 @@
+> hello, world
+< HELLO, WORLD
+> gamma talks TCP
+< GAMMA TALKS TCP
+> bye
+< BYE
+server echoed 33 bytes, failed: false

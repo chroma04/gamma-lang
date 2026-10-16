@@ -1,0 +1,253 @@
+//! Selects a value from a JSON document with a small path language and prints it.
+//!
+//! Strings are printed raw, everything else as JSON (indented with `--pretty`). Errors go to
+//! standard error and make the exit status 1. Shows `std/json`, `std/cli`, tagged unions for
+//! the path steps, results with positions, and `needs Err`.
+//!
+//! Run from the examples/ directory:
+//!
+//!     gamma run json_query.gm .store.books[1].title data/json-store.json
+//!     gamma run json_query.gm --pretty .store.books[0] < data/json-store.json
+//!
+//! A path is `.` (the whole document) or steps: `.name` selects an object member and `[3]`
+//! an array element, so `.store.books[1].tags[0]` is a valid path.
+
+cli :: import "std/cli"
+fs :: import "std/fs"
+io :: import "std/io"
+json :: import "std/json"
+
+/// One step of a path, with the byte offset in the query where it ends.
+Step :: struct {
+    kind: StepKind
+    end: usize
+}
+
+StepKind :: union {
+    Key: string
+    Index: usize
+}
+
+PathError :: union {
+    ExpectedStep: usize
+    BadIndex: usize
+    Unclosed: usize
+    Memory: AllocError
+}
+
+/// Splits a query such as `.store.books[1].title` into steps (slices of `query`).
+parse_path :: fn(query: string, out: ^List(Step)) -> PathError!() needs Alloc {
+    i: usize = 0
+    while i < query.len {
+        if query[i] is '.' {
+            i += 1
+            start := i
+            while i < query.len and query[i] is not '.' and query[i] is not '[' { i += 1 }
+            if i is start {
+                // A lone "." is the root; "..a" or a trailing "." is an error.
+                if query.len is 1 { return () }
+                return !.ExpectedStep(start)
+            }
+            try out.push(Step(kind: .Key(query[start..i]), end: i))
+        } else if query[i] is '[' {
+            start := i + 1
+            close := query[start..].index_of(']') else return !.Unclosed(i)
+            digits := query[start..start + close]
+            n := str_to_index(digits) else return !.BadIndex(start)
+            i = start + close + 1
+            try out.push(Step(kind: .Index(n), end: i))
+        } else {
+            return !.ExpectedStep(i)
+        }
+    }
+    return ()
+}
+
+str_to_index :: fn(digits: string) -> ?usize {
+    if digits.len is 0 { return null }
+    n: usize = 0
+    for c in bytes(digits) {
+        if c not in '0'..='9' { return null }
+        n = n *? 10 +? usize(c - '0') else return null
+    }
+    return n
+}
+
+/// Follows `steps` from `root`. On failure returns the index of the step that did not match.
+select :: fn(root: json.Value, steps: []const Step) -> usize!json.Value {
+    v := root
+    for i, step in enumerate(steps) {
+        v = match step.kind {
+            .Key(name) => json.get(v, name) else return !i
+            .Index(n) => json.at(v, n) else return !i
+        }
+    }
+    return v
+}
+
+/// Prints the value: strings raw, anything else as JSON text.
+show :: fn(v: json.Value, indent: usize) -> json.WriteError!() needs Out + Alloc {
+    if .String(s) := v {
+        print("{}\n", s)
+        return ()
+    }
+    buf := list(u8)
+    defer buf.deinit()
+    try json.write(&buf, v, indent)
+    text: string = buf.items
+    print("{}\n", text)
+    return ()
+}
+
+/// A short name and the byte offset of a JSON syntax error.
+describe_parse_error :: fn(e: json.ParseError) -> (what: string, at: usize) => match e {
+    .UnexpectedEnd(at) => (what: "unexpected end of input", at: at)
+    .UnexpectedByte(at) => (what: "unexpected character", at: at)
+    .InvalidNumber(at) => (what: "invalid number", at: at)
+    .InvalidEscape(at) => (what: "invalid escape sequence", at: at)
+    .InvalidSurrogate(at) => (what: "invalid surrogate pair", at: at)
+    .ControlCharacter(at) => (what: "unescaped control character in string", at: at)
+    .InvalidUtf8(at) => (what: "invalid UTF-8", at: at)
+    .TrailingData(at) => (what: "unexpected data after the value", at: at)
+    .TooDeep(at) => (what: "nesting too deep", at: at)
+    .Memory(_) => (what: "out of memory", at: 0)
+}
+
+OPTS :: [_]cli.Opt(
+    cli.Opt(short: 'p', long: "pretty", help: "indent the output"),
+    cli.Opt(short: 'h', long: "help", help: "show this help"),
+)
+
+USAGE :: "json_query [options] <path> [file]"
+
+main :: fn() -> u8 needs Out + Err + In + Fs + Alloc + Env {
+    pretty := false
+    query: ?string = null
+    file: ?string = null
+    for a in cli.parse(Env.args()[1..], OPTS[..]) {
+        match a {
+            .Opt(o) => {
+                if o.index is 0 {
+                    pretty = true
+                } else {
+                    usage()
+                    return 0
+                }
+            }
+            .Pos(p) => {
+                if query is null { query = p } else if file is null { file = p } else {
+                    eprint("error: too many arguments\n")
+                    return 1
+                }
+            }
+            .Unknown(u) => {
+                eprint("error: unknown option {}\n", u)
+                return 1
+            }
+            _ => {
+                eprint("error: bad option usage\n")
+                return 1
+            }
+        }
+    }
+    q := query else {
+        usage()
+        return 1
+    }
+
+    steps := list(Step)
+    defer steps.deinit()
+    parse_path(q, &steps) else e => {
+        at := match e {
+            .ExpectedStep(at) => at
+            .BadIndex(at) => at
+            .Unclosed(at) => at
+            .Memory(_) => 0
+        }
+        eprint("error: bad path '{}': cannot parse at column {}\n", q, at + 1)
+        return 1
+    }
+
+    text := read_input(file) else return 1
+    defer free(text)
+    doc := json.parse(text) else e => {
+        d := describe_parse_error(e)
+        pos := json.position(text, d.at)
+        eprint("error: invalid JSON at line {}, column {}: {}\n", pos.line, pos.column, d.what)
+        return 1
+    }
+    defer doc.deinit()
+
+    value := select(doc.root, steps.items) else failed => {
+        eprint("error: path not found: {}\n", q[0..steps.items[failed].end])
+        return 1
+    }
+    show(value, if pretty { 2 } else { 0 }) else {
+        eprint("error: cannot print the value\n")
+        return 1
+    }
+    return 0
+}
+
+usage :: fn() needs Out + Alloc {
+    help := list(u8)
+    defer help.deinit()
+    _ = cli.help(&help, USAGE, OPTS[..])
+    text: string = help.items
+    print("{}", text)
+}
+
+/// Reads the named file, or standard input when there is none. Reports its own errors.
+read_input :: fn(file: ?string) -> ?[]u8 needs In + Fs + Alloc + Err {
+    if path := file {
+        return fs.read_all(path) else e => {
+            what := match e {
+                .Io(err) => io.describe(err)
+                .Alloc(_) => "out of memory"
+            }
+            eprint("error: cannot read {}: {}\n", path, what)
+            return null
+        }
+    }
+    return io.read_all() else e => {
+        what := match e {
+            .Io(err) => io.describe(err)
+            .Alloc(_) => "out of memory"
+        }
+        eprint("error: cannot read input: {}\n", what)
+        return null
+    }
+}
+
+test "paths split into steps" {
+    steps := list(Step)
+    defer steps.deinit()
+    ok(parse_path(".store.books[12].title", &steps))
+    expect_eq(steps.items.len, 4)
+    expect(steps.items[0].kind is .Key("store"))
+    expect(steps.items[2].kind is .Index(12))
+    expect_eq(steps.items[2].end, 16)
+    expect(steps.items[3].kind is .Key("title"))
+}
+
+test "bad paths are rejected with a column" {
+    steps := list(Step)
+    defer steps.deinit()
+    expect(parse_path("a.b", &steps) is !.ExpectedStep(0))
+    expect(parse_path(".a[x]", &steps) is !.BadIndex(3))
+    expect(parse_path(".a[1", &steps) is !.Unclosed(2))
+    expect(parse_path(".a..b", &steps) is !.ExpectedStep(3))
+}
+
+test "select follows keys and indices" {
+    doc := ok(json.parse("{\"a\": [10, {\"b\": \"x\"}]}"))
+    defer doc.deinit()
+    steps := list(Step)
+    defer steps.deinit()
+    ok(parse_path(".a[1].b", &steps))
+    v := ok(select(doc.root, steps.items))
+    expect(v is .String("x"))
+    steps.clear()
+    ok(parse_path(".a[2]", &steps))
+    expect(select(doc.root, steps.items) is !1)
+}

@@ -1,0 +1,12 @@
+//! stage: check
+// `---` needs plain data (§4.4); for an array of non-plain elements the error
+// suggests filling it instead.
+
+Job :: struct { name: string, path: string }
+
+main :: fn() {
+    jobs: [4]Job = --- //~ ERROR an array can start filled
+    filled := [4]Job(fill: Job(name: "", path: ""))
+    _ = jobs
+    _ = filled
+}

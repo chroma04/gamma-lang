@@ -1,0 +1,117 @@
+//! A TCP echo server that shouts: it sends every line back in upper case. The server
+//! runs on its own thread, the client talks to it over the loopback interface.
+//!
+//! Shows: `std/net` (`Net.listen` on port 0 to get a free port, `local_port`, `accept`,
+//! `send_all`, `recv_exact`, `shutdown`), a server thread (`std/thread` with
+//! `thread.defaults` to give it handlers), error handling with `try` and `IoError`,
+//! and tests that run the very same server code against the test runner's in-memory
+//! network, with no threads and no real sockets.
+//!
+//! Run from the examples/ directory:  gamma run echo.gm      (or: gamma test echo.gm)
+
+net :: import "std/net"
+thread :: import "std/thread"
+ascii :: import "std/ascii"
+
+LINES :: [_]string("hello, world\n", "gamma talks TCP\n", "bye\n")
+
+/// Serves one request on `conn`: reads what has arrived, sends it back in upper case.
+/// Returns the number of bytes echoed, 0 once the client has shut its sending side down.
+echo_once :: fn(conn: net.Socket) -> IoError!usize needs Net {
+    buf: [256]u8 = ---
+    n := try conn.recv(buf[..])
+    for i in 0..n { buf[i] = ascii.to_upper(buf[i]) }
+    try net.send_all(conn, buf[0..n])
+    return n
+}
+
+/// Accepts one client and echoes until it is done. Returns the total number of bytes.
+serve :: fn(listener: net.Listener) -> IoError!usize needs Net {
+    conn := try listener.accept()
+    defer Net.close_socket(conn)
+    total: usize = 0
+    while true {
+        n := try echo_once(conn)
+        if n is 0 { break }
+        total += n
+    }
+    return total
+}
+
+/// The server thread's argument and result. The thread writes `echoed` or `failed`
+/// before it ends; the main thread reads them after `join`, which orders the accesses.
+Server :: struct {
+    listener: net.Listener
+    echoed: usize = 0
+    failed: bool = false
+}
+
+server_main :: fn(s: ^Server) needs Sys {
+    // A new thread has no handlers; `defaults` installs the real ones (including `Net`).
+    thread.defaults(fn() needs Net {
+        s.echoed = serve(s.listener) else {
+            s.failed = true
+            return
+        }
+    })
+}
+
+/// Sends one line and waits for the reply of the same length. Returns it in `reply`.
+ask :: fn(sock: net.Socket, line: string, reply: []u8) -> IoError!string needs Net {
+    try net.send_all(sock, line)
+    got := reply[0..line.len]
+    try net.recv_exact(sock, got)
+    return got
+}
+
+main :: fn() -> IoError!() needs Out + Net + Sys {
+    listener := try Net.listen("127.0.0.1", 0)       // port 0: the OS picks a free port
+    defer Net.close_listener(listener)
+    port := try listener.local_port()
+
+    server := Server(listener: listener)
+    t := try thread.spawn(server_main, &server)
+
+    sock := try Net.connect("127.0.0.1", port)
+    reply: [64]u8 = ---
+    for line in LINES {
+        print("> {}", line)
+        print("< {}", try ask(sock, line, reply[..]))
+    }
+    try sock.shutdown(.Write)                         // "no more requests": the server's loop ends
+    t.join()
+    Net.close_socket(sock)
+
+    print("server echoed {} bytes, failed: {}\n", server.echoed, server.failed)
+}
+
+// The tests use the in-memory network: `connect` succeeds without a server thread, and
+// the test plays both sides by taking turns, calling `echo_once` between send and receive.
+
+test "echo shouts one line" {
+    l := ok(Net.listen("127.0.0.1", 0))
+    client := ok(Net.connect("127.0.0.1", ok(l.local_port())))
+    conn := ok(l.accept())
+    reply: [32]u8 = ---
+
+    ok(net.send_all(client, "ping\n"))
+    expect_eq(ok(echo_once(conn)), 5)
+    ok(net.recv_exact(client, reply[0..5]))
+    expect(reply[0..5] is "PING\n")
+}
+
+test "serve echoes until the client shuts down" {
+    l := ok(Net.listen("127.0.0.1", 0))
+    client := ok(Net.connect("127.0.0.1", ok(l.local_port())))
+    ok(net.send_all(client, "one\ntwo\n"))
+    ok(client.shutdown(.Write))
+    expect_eq(ok(serve(l)), 8)
+    reply: [8]u8 = ---
+    ok(net.recv_exact(client, reply[..]))
+    expect(reply[..] is "ONE\nTWO\n")
+}
+
+test "a refused connection is an error, not a crash" {
+    // Nothing listens on port 1.
+    expect(Net.connect("127.0.0.1", 1) is !.ConnectionRefused)
+}

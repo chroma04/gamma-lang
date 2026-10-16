@@ -1040,7 +1040,7 @@ impl<'a, 's> FnCx<'a, 's> {
             match annot {
                 Some(t) => {
                     if !self.is_plain_data(t) {
-                        self.error(b.init.span, format!("`---` requires a plain-data type, but `{}` is not (§4.4)", t));
+                        self.error(b.init.span, uninit_message(t));
                     }
                     Expr { ty: t, kind: tir::ExprKind::Uninit, span: b.init.span }
                 }
@@ -1602,6 +1602,13 @@ pub fn untyped_op(op: ast::BinOp) -> bool {
 
 pub fn unit(span: Span) -> Expr {
     Expr { ty: Ty::unit(), kind: tir::ExprKind::Aggregate(vec![]), span }
+}
+
+/// The error for `---` at a type that is not plain data (§4.4).
+pub fn uninit_message(ty: Ty) -> String {
+    let hint =
+        if matches!(ty.kind(), TyKind::Array { .. }) { "; an array can start filled: `[N]T(fill: v)`" } else { "" };
+    format!("`---` requires a plain-data type, but `{}` is not (§4.4){}", ty, hint)
 }
 
 pub fn error_expr(span: Span) -> Expr {

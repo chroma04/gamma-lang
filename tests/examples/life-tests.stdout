@@ -1,0 +1,5 @@
+test "rule table is Conway's" ... ok
+test "a blinker has period two" ... ok
+test "a glider travels diagonally and wraps around the torus" ... ok
+test "neighbors wrap at the corners" ... ok
+4 passed, 0 failed

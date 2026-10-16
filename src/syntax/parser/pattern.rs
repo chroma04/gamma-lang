@@ -48,6 +48,7 @@ impl Parser<'_> {
             | TokenKind::Str(_)
             | TokenKind::Keyword(Keyword::True | Keyword::False) => self.parse_literal_pattern(),
             TokenKind::Ident(_) => self.parse_path_pattern(),
+            TokenKind::Keyword(Keyword::Else) => self.expected("a pattern (the pattern that matches anything is `_`)"),
             _ => self.expected("a pattern"),
         }
     }

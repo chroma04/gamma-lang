@@ -1,0 +1,3 @@
+example: grep.gm
+args: zzz data/grep-fruits.txt
+exit: 1

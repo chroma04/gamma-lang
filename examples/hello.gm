@@ -1,0 +1,7 @@
+//! The smallest program. `needs Out` says that it prints; without it, the call to
+//! `print` is a compile error.
+//!
+//! Run it from the examples/ directory:  gamma run hello.gm
+main :: fn() needs Out {
+    print("hello, world\n")
+}

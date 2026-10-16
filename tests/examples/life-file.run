@@ -1,0 +1,2 @@
+example: life.gm
+args: 6 data/life-pattern.txt

@@ -1,0 +1,4 @@
+test "counting folds case and keeps apostrophes" ... ok
+test "ranking breaks ties alphabetically and truncates" ... ok
+test "words splits on everything but letters, digits and apostrophes" ... ok
+3 passed, 0 failed

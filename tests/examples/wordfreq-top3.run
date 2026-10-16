@@ -1,0 +1,3 @@
+example: wordfreq.gm
+args: --top 3
+stdin: data/wordfreq-sample.txt

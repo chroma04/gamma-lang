@@ -1,0 +1,20 @@
+generate: 1
+generate: 2
+generate: 3
+square: 1 -> 1
+square: 2 -> 4
+sum: +1 = 1
+sum: +4 = 5
+generate: 4
+generate: 5
+square: 3 -> 9
+square: 4 -> 16
+sum: +9 = 14
+sum: +16 = 30
+generate: 6
+square: 5 -> 25
+square: 6 -> 36
+sum: +25 = 55
+sum: +36 = 91
+sum of squares: 91
+took at least 102 ms: true

@@ -11,10 +11,9 @@ nvim-treesitter submissions.
 - User: tag the merge commit `v0.1.0`, push the tag; check install.sh / install.ps1 on clean
   Linux, macOS and Windows machines.
 
-## P1 — should land before the tag (bugs #50–53 and spec gaps done in s17)
-- Dogfood pass on the syntax of PRs #38–39 (`needs A + B`, rest args, qualified effect ops
-  `Clock.now()`, `hash_map`): write a few real programs, fix what they find.
-- An `examples/` directory of runnable programs, checked by CI (none exists).
+## P1 — should land before the tag
+- Done in s18 (PR #41): `examples/` (19 programs, tests/examples.rs) = the dogfood pass.
+  Leftover papercuts from it: see bugs-open.md "Dogfood papercuts".
 
 ## P2 — worth doing early
 - Fuzzing: cargo-fuzz on the parser; random-program differential (interp vs gcc vs clang);

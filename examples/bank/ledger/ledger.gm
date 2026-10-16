@@ -1,0 +1,152 @@
+//! A ledger of named accounts holding whole-cent balances.
+//!
+//! Accounts are opened by their first deposit. Every operation reports what went wrong
+//! as a `LedgerError`, and an operation that fails changes nothing.
+
+/// Why an operation was refused.
+pub LedgerError :: union {
+    UnknownAccount: string
+    InsufficientFunds: (account: string, balance: i64, needed: i64)
+    InvalidAmount
+    SameAccount
+    OutOfMemory: AllocError
+}
+
+pub Account :: struct {
+    pub name: string
+    pub balance: i64
+}
+
+/// Owns the accounts and a copy of each account name. Call `deinit` when done.
+/// It keeps the allocator it was created with, like `List` does, and uses that one
+/// for the names however it is called later.
+pub Ledger :: struct {
+    accounts: List(Account)
+    alloc: Allocator
+}
+
+/// An empty ledger that allocates from the current allocator.
+pub new :: fn() -> Ledger needs Alloc => Ledger(accounts: list(Account), alloc: Alloc.current())
+
+pub deinit :: fn(l: ^Ledger) {
+    with l.alloc {
+        for a in l.accounts.items { free(a.name) }
+    }
+    l.accounts.deinit()
+}
+
+find :: fn(l: ^const Ledger, name: string) -> ?usize {
+    for i, a in enumerate(l.accounts.items) {
+        if a.name is name { return i }
+    }
+    return null
+}
+
+/// The balance of `name`, if the account exists.
+pub balance :: fn(l: ^const Ledger, name: string) -> ?i64 {
+    i := find(l, name) else return null
+    return l.accounts.items[i].balance
+}
+
+/// How many accounts are open.
+pub count :: fn(l: ^const Ledger) -> usize => l.accounts.items.len
+
+/// The accounts in the order they were opened.
+pub each :: fn(l: ^const Ledger) needs Yield(Account) {
+    for a in l.accounts.items { yield(a) }
+}
+
+/// Adds `amount` cents to `name`, opening the account if it is new.
+pub deposit :: fn(l: ^Ledger, name: string, amount: i64) -> LedgerError!() {
+    if amount <= 0 { return !.InvalidAmount }
+    if i := find(l, name) {
+        l.accounts.items[i].balance += amount
+        return ()
+    }
+    copy := try with l.alloc { dupe(name) }
+    errdefer with l.alloc { free(copy) } // released if the push fails
+    try l.accounts.push(Account(name: copy, balance: amount))
+    return ()
+}
+
+/// Takes `amount` cents out of `name`.
+pub withdraw :: fn(l: ^Ledger, name: string, amount: i64) -> LedgerError!() {
+    if amount <= 0 { return !.InvalidAmount }
+    i := find(l, name) else return !.UnknownAccount(name)
+    acct := &l.accounts.items[i]
+    if acct.balance < amount {
+        return !.InsufficientFunds(account: name, balance: acct.balance, needed: amount)
+    }
+    acct.balance -= amount
+    return ()
+}
+
+/// Moves `amount` cents between two existing accounts, all or nothing.
+pub transfer :: fn(l: ^Ledger, from, to: string, amount: i64) -> LedgerError!() {
+    if from is to { return !.SameAccount }
+    if find(l, to) is null { return !.UnknownAccount(to) }
+    try withdraw(l, from, amount)
+    try deposit(l, to, amount) // cannot fail now: the account exists and amount > 0
+    return ()
+}
+
+test "deposit opens an account and adds up" {
+    l := new()
+    defer l.deinit()
+    ok(deposit(&l, "alice", 100))
+    ok(deposit(&l, "alice", 50))
+    expect_eq(balance(&l, "alice"), 150)
+    expect_eq(balance(&l, "bob"), null)
+    expect_eq(count(&l), 1)
+}
+
+test "withdraw refuses to overdraw" {
+    l := new()
+    defer l.deinit()
+    ok(deposit(&l, "bob", 40))
+    r := withdraw(&l, "bob", 41)
+    expect(r is !.InsufficientFunds(_))
+    match r {
+        !.InsufficientFunds(e) => {
+            expect_eq(e.balance, 40)
+            expect_eq(e.needed, 41)
+        }
+        _ => expect(false)
+    }
+    expect_eq(balance(&l, "bob"), 40)
+    ok(withdraw(&l, "bob", 40))
+    expect_eq(balance(&l, "bob"), 0)
+}
+
+test "transfer is all or nothing" {
+    l := new()
+    defer l.deinit()
+    ok(deposit(&l, "alice", 100))
+    ok(deposit(&l, "bob", 5))
+    ok(transfer(&l, "alice", "bob", 30))
+    expect_eq(balance(&l, "alice"), 70)
+    expect_eq(balance(&l, "bob"), 35)
+    expect(transfer(&l, "alice", "carol", 1) is !.UnknownAccount(_))
+    expect(transfer(&l, "alice", "bob", 71) is !.InsufficientFunds(_))
+    expect(transfer(&l, "alice", "alice", 1) is !.SameAccount)
+    expect(transfer(&l, "alice", "bob", 0) is !.InvalidAmount)
+    expect_eq(balance(&l, "alice"), 70)
+    expect_eq(balance(&l, "bob"), 35)
+}
+
+test "accounts come in opening order" {
+    l := new()
+    defer l.deinit()
+    ok(deposit(&l, "zed", 1))
+    ok(deposit(&l, "amy", 2))
+    names := list(string)
+    defer names.deinit()
+    ok(names.collect(fn() => each_name(&l)))
+    expect_eq(names.items.len, 2)
+    expect(names.items[0] is "zed")
+    expect(names.items[1] is "amy")
+}
+
+each_name :: fn(l: ^const Ledger) needs Yield(string) {
+    for a in each(l) { yield(a.name) }
+}

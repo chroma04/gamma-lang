@@ -1,0 +1,3 @@
+example: json_query.gm
+args: --pretty .store.books[1].tags
+stdin: data/json-store.json

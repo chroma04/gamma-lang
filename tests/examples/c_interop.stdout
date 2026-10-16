@@ -1,0 +1,10 @@
+strlen: 17
+to_string: hello from C land
+strcmp: -1 0 1
+abs: 42
+div: 3 remainder 2
+strtol: 1234, rest is " apples"
+qsort: -250 -7 0 3 19 42 1000
+snprintf wrote 20 bytes: 7 items at 2.50 each
+perm bits: 27
+exec: true, write: false, level: 3

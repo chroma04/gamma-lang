@@ -76,9 +76,9 @@ There are two kinds of tests.
 (`runtime.rs`), how native builds link the runtime (`native_build.rs`), debug
 information (`debug_info.rs`), the C toolchain variables and cross compilation
 (`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
-installed release (`install_layout.rs`) and very long expressions
-(`long_expressions.rs`). The header comment of each file
-says what it needs and when it skips itself.
+installed release (`install_layout.rs`), very long expressions
+(`long_expressions.rs`) and the programs in `examples/` (`examples.rs`, below). The
+header comment of each file says what it needs and when it skips itself.
 
 **Conformance tests** are Gamma source files under `tests/conformance/`,
 grouped into directories by area (`lex/`, `parse/`, …). The runner,
@@ -206,6 +206,19 @@ in a `when` where a program inspects its own memory, or mark the test `//! endia
 
 `tests/cross.rs` checks the toolchain variables and target detection; most of it
 needs `clang`.
+
+**Examples.** The programs in `examples/` are run by `tests/examples.rs` on both back
+ends. Each run of an example is a file `tests/examples/<case>.run`, naming the example
+and giving its arguments, standard input and expected exit status, next to the
+expected output `<case>.stdout`; the format is described in the header of
+`tests/examples.rs`. A new example needs at least one case (a test checks this) and
+must be formatted with `gamma fmt`. Programs run with `examples/` as their working
+directory, so a case's paths are the ones the example's doc comment tells readers to
+type. `GAMMA_TEST_FILTER` and `BLESS=1` work as for the conformance tests:
+
+```sh
+GAMMA_TEST_FILTER=wordfreq cargo test --test examples
+```
 
 When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs

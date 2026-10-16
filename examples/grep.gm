@@ -1,0 +1,172 @@
+//! grep: print the lines of files that contain a piece of text.
+//!
+//!     grep [-i] [-n] [-c] PATTERN FILE...
+//!
+//! The pattern is plain text, not a regular expression. `-i` ignores ASCII case,
+//! `-n` prefixes each line with its number, `-c` prints only the number of matching
+//! lines per file. With several files every line is prefixed with the file name.
+//! Exit status: 0 if some line matched, 1 if none did, 2 on a usage error or if
+//! a file could not be read (the other files are still searched).
+//!
+//! Shows: `std/cli`, `std/fs`, results with `try` and `match` on
+//! error unions, the `Out` effect redirected into a buffer by a handler, and tests
+//! that run against the test runner's in-memory file system.
+//!
+//! Run it from the examples/ directory:
+//!
+//!     gamma run grep.gm -n apple data/grep-fruits.txt data/grep-poem.txt
+//!     gamma test grep.gm
+cli :: import "std/cli"
+fs :: import "std/fs"
+io :: import "std/io"
+str :: import "std/str"
+
+Options :: struct {
+    ignore_case: bool = false
+    numbers: bool = false
+    count_only: bool = false
+    prefix_names: bool = false
+}
+
+matches :: fn(line, pattern: string, ignore_case: bool) -> bool {
+    if ignore_case { return str.find_ignore_case(line, pattern) is not null }
+    return str.contains(line, pattern)
+}
+
+// Searches one file and prints what the options ask for. Returns the number of
+// matching lines. The whole file is read into memory and released on every path.
+search :: fn(file, pattern: string, opts: Options) -> fs.ReadError!u32 needs Fs + Alloc + Out {
+    data := try fs.read_all(file)
+    defer free(data)
+
+    found: u32 = 0
+    lineno: u32 = 0
+    for line in str.lines(data) {
+        lineno += 1
+        if not matches(line, pattern, opts.ignore_case) { continue }
+        found += 1
+        if opts.count_only { continue }
+        if opts.prefix_names { print("{}:", file) }
+        if opts.numbers { print("{}:", lineno) }
+        print("{}\n", line)
+    }
+    if opts.count_only {
+        if opts.prefix_names { print("{}:", file) }
+        print("{}\n", found)
+    }
+    return found
+}
+
+describe :: fn(e: fs.ReadError) -> string => match e {
+    .Io(io_err) => io.describe(io_err)
+    .Alloc(_) => "out of memory"
+}
+
+usage :: fn() needs Err {
+    eprint("usage: grep [-i] [-n] [-c] PATTERN FILE...\n")
+}
+
+main :: fn() needs Alloc + Env + Err + Fs + Out {
+    flags := [_]cli.Opt(
+        cli.Opt(short: 'i', long: "ignore-case"),
+        cli.Opt(short: 'n', long: "line-number"),
+        cli.Opt(short: 'c', long: "count"),
+    )
+    opts := Options()
+    pattern: ?string = null
+    files := list(string)
+    defer files.deinit()
+
+    for a in cli.parse(Env.args()[1..], flags[..]) {
+        match a {
+            .Opt(o) => match o.index {
+                0 => { opts.ignore_case = true }
+                1 => { opts.numbers = true }
+                _ => { opts.count_only = true }
+            }
+            .Pos(p) => {
+                if pattern is null {
+                    pattern = p
+                } else {
+                    files.push(p) else Env.exit(2)
+                }
+            }
+            .Unknown(u) => {
+                eprint("grep: unknown option {}\n", u)
+                usage()
+                Env.exit(2)
+            }
+            _ => {
+                usage()
+                Env.exit(2)
+            }
+        }
+    }
+    pat := pattern else {
+        usage()
+        Env.exit(2)
+    }
+    if files.items.len is 0 {
+        usage()
+        Env.exit(2)
+    }
+    opts.prefix_names = files.items.len > 1
+
+    total: u32 = 0
+    failed := false
+    for file in files.items {
+        n := search(file, pat, opts) else e => {
+            eprint("grep: {}: {}\n", file, describe(e))
+            failed = true
+            continue
+        }
+        total += n
+    }
+    if failed { Env.exit(2) }
+    if total is 0 { Env.exit(1) }
+}
+
+// Runs `search` on `file` with the program's output captured, and returns what it printed.
+run :: fn(buf: []u8, file, pattern: string, opts: Options) -> string needs Fs + Alloc + Test {
+    cap := io.Capture(buf: buf)
+    with &cap {
+        _ = ok(search(file, pattern, opts))
+    }
+    return io.text(&cap)
+}
+
+test "prints matching lines with numbers" {
+    ok(fs.write_all("/t.txt", "one\ntwo\nthree\ntwo again\n"))
+    buf: [128]u8 = ---
+    out := run(buf[..], "/t.txt", "two", Options(numbers: true))
+    expect_eq(out, "2:two\n4:two again\n")
+}
+
+test "ignore case and several files" {
+    ok(fs.write_all("/a", "Hello\nworld\n"))
+    buf: [128]u8 = ---
+    expect_eq(run(buf[..], "/a", "hello", Options(prefix_names: true)), "")
+    out := run(buf[..], "/a", "hello", Options(ignore_case: true, prefix_names: true))
+    expect_eq(out, "/a:Hello\n")
+}
+
+test "count only" {
+    ok(fs.write_all("/c", "x\nxx\ny\n"))
+    buf: [64]u8 = ---
+    expect_eq(run(buf[..], "/c", "x", Options(count_only: true)), "2\n")
+    expect_eq(run(buf[..], "/c", "q", Options(count_only: true)), "0\n")
+}
+
+test "a missing file is an error that names the cause" {
+    if !e := search("/no/such/file", "x", Options()) {
+        expect_eq(describe(e), "file or directory not found")
+    } else {
+        expect(false)
+    }
+}
+
+test "a file without a final newline still matches its last line" {
+    ok(fs.write_all("/n", "a\nb"))
+    buf: [64]u8 = ---
+    expect_eq(run(buf[..], "/n", "b", Options()), "b\n")
+}

@@ -1,0 +1,2 @@
+example: json_query.gm
+args: --pretty .store.books[0] data/json-store.json

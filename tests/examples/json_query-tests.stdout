@@ -1,0 +1,4 @@
+test "paths split into steps" ... ok
+test "bad paths are rejected with a column" ... ok
+test "select follows keys and indices" ... ok
+3 passed, 0 failed

@@ -1,0 +1,3 @@
+example: grep.gm
+args: apple data/grep-fruits.txt data/grep-missing.txt data/grep-poem.txt
+exit: 2

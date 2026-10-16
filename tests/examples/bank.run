@@ -1,0 +1,2 @@
+example: bank
+stdin: data/bank-transactions.txt

@@ -1,0 +1,175 @@
+//! A tiny order-processing service written against a `Log` effect.
+//!
+//! The service never says where its log lines go. `main` installs a handler that
+//! prints them above a minimum level, and a `Stats` handler (declared with
+//! `handler Log for ^Stats`) counts them on the way through. A `test` swaps in a
+//! handler that captures the records instead. `Abort` is an `esc` operation:
+//! performing it unwinds the service up to the `with`, running its `defer`s.
+//!
+//! Shows: user-declared effects, `fn` and `esc` operations, handler literals,
+//! handler declarations for a type that forward to the enclosing handler, `with`
+//! nesting, and testing through handlers.
+//!
+//! Run from the examples directory: `gamma run logging.gm` and `gamma test logging.gm`.
+Level :: union { Debug, Info, Warn, Error }
+
+Log :: effect {
+    log: fn(level: Level, order: u32, msg: string)
+}
+
+Abort :: effect {
+    abort: esc(reason: string) -> never
+}
+
+Order :: struct {
+    id: u32
+    item: string
+    qty: u32
+    cents: u32
+}
+
+// Prices a batch. Bad orders are logged and skipped; a nonsense quantity aborts it.
+process :: fn(orders: []const Order) -> u64 needs Log + Abort {
+    defer log(.Debug, 0, "batch closed")
+    total: u64 = 0
+    for o in orders {
+        if o.qty is 0 {
+            log(.Warn, o.id, "empty order skipped")
+            continue
+        }
+        if o.cents is 0 {
+            log(.Error, o.id, "missing price")
+            continue
+        }
+        if o.qty > 1000 {
+            log(.Error, o.id, "quantity out of range")
+            abort("suspicious order")
+        }
+        log(.Debug, o.id, o.item)
+        total += u64(o.qty) * u64(o.cents)
+        log(.Info, o.id, "priced")
+    }
+    return total
+}
+
+// Counts records per level and passes each one on to the handler outside the `with`.
+Stats :: struct {
+    seen: [4]u32 = [4]u32(fill: 0)
+}
+
+handler Log for ^Stats needs Log {
+    log(self, level, order, msg) => {
+        self.seen[level.tag()] += 1
+        log(level, order, msg)
+    }
+}
+
+// Runs a batch with the abort handled here; returns null when it was aborted.
+run_batch :: fn(orders: []const Order) -> ?u64 needs Log {
+    stop :: handler Abort {
+        abort(reason) => {
+            log(.Error, 0, reason)
+            break null
+        }
+    }
+    return with stop { process(orders) }
+}
+
+report :: fn(label: string, stats: ^const Stats) needs Out {
+    print("{}:", label)
+    for lv in @variants(Level) {
+        print(" {}={}", @variant_name(lv), stats.seen[lv.tag()])
+    }
+    print("\n")
+}
+
+main :: fn() needs Out {
+    good := [_]Order(
+        Order(id: 1, item: "bolts", qty: 40, cents: 25),
+        Order(id: 2, item: "nuts", qty: 0, cents: 10),
+        Order(id: 3, item: "washers", qty: 100, cents: 0),
+        Order(id: 4, item: "gears", qty: 3, cents: 1250),
+    )
+    bad := [_]Order(
+        Order(id: 5, item: "springs", qty: 12, cents: 80),
+        Order(id: 6, item: "pallets", qty: 5000, cents: 3),
+        Order(id: 7, item: "never reached", qty: 1, cents: 1),
+    )
+
+    min := Level.Info // printed records are Info and above
+    printer :: handler Log {
+        log(level, order, msg) => if level >= min {
+            print("[{}] order {}: {}\n", @variant_name(level), order, msg)
+        }
+    }
+
+    stats := Stats()
+    with printer {
+        with &stats {
+            if total := run_batch(good[..]) {
+                print("good batch: {} cents\n", total)
+            }
+        }
+    }
+    report("after good batch", &stats)
+
+    min = .Debug // now show everything, including the cleanup note
+    with printer {
+        with &stats {
+            if total := run_batch(bad[..]) {
+                print("bad batch: {} cents\n", total)
+            } else {
+                print("bad batch aborted\n")
+            }
+        }
+    }
+    report("after both", &stats)
+}
+
+// A handler that records what was logged, for tests.
+Captured :: struct {
+    lines: List(string)
+}
+
+handler Log for ^Captured needs Alloc {
+    log(self, level, order, msg) => {
+        self.lines.push(msg) else {}
+    }
+}
+
+test "a bad order is reported and skipped" {
+    cap := Captured(lines: list(string))
+    defer cap.lines.deinit()
+    orders := [_]Order(Order(id: 1, item: "x", qty: 2, cents: 0), Order(id: 2, item: "y", qty: 2, cents: 7))
+    total := with &cap { run_batch(orders[..]) }
+    expect_eq(total, 14)
+    expect_eq(cap.lines.items.len, 4)
+    expect(cap.lines.items[0] is "missing price")
+    expect(cap.lines.items[3] is "batch closed")
+}
+
+test "abort unwinds through defer" {
+    cap := Captured(lines: list(string))
+    defer cap.lines.deinit()
+    orders := [_]Order(Order(id: 1, item: "x", qty: 5000, cents: 7))
+    total := with &cap { run_batch(orders[..]) }
+    expect(total is null)
+    // the clause runs first and logs the reason; unwinding then runs the `defer`
+    expect_eq(cap.lines.items.len, 3)
+    expect(cap.lines.items[0] is "quantity out of range")
+    expect(cap.lines.items[1] is "suspicious order")
+    expect(cap.lines.items[2] is "batch closed")
+}
+
+test "stats count by level" {
+    cap := Captured(lines: list(string))
+    defer cap.lines.deinit()
+    stats := Stats()
+    orders := [_]Order(Order(id: 1, item: "x", qty: 0, cents: 1), Order(id: 2, item: "y", qty: 1, cents: 1))
+    with &cap {
+        with &stats { _ = run_batch(orders[..]) }
+    }
+    expect_eq(stats.seen[Level.Warn.tag()], 1)
+    expect_eq(stats.seen[Level.Info.tag()], 1)
+    expect_eq(stats.seen[Level.Debug.tag()], 2)
+}

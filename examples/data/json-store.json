@@ -1,0 +1,13 @@
+{
+  "store": {
+    "name": "Gamma Books",
+    "open": true,
+    "rating": 4.5,
+    "books": [
+      {"title": "The Gamma Programming Language", "year": 2024, "tags": ["systems", "effects"], "price": 39.5},
+      {"title": "Effects in Practice", "year": 2025, "tags": [], "price": 28},
+      {"title": "Café Algorithms", "year": 2023, "tags": ["algorithms"], "price": null}
+    ],
+    "address": {"city": "Zurich", "zip": "8001"}
+  }
+}

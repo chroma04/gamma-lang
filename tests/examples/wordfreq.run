@@ -1,0 +1,2 @@
+example: wordfreq.gm
+stdin: data/wordfreq-sample.txt

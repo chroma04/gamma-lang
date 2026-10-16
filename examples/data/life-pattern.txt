@@ -1,0 +1,4 @@
+# R-pentomino, a small seed that stays busy for over a thousand generations
+.##
+##.
+.#.

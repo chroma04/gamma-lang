@@ -1,0 +1,4 @@
+test "a bad order is reported and skipped" ... ok
+test "abort unwinds through defer" ... ok
+test "stats count by level" ... ok
+3 passed, 0 failed

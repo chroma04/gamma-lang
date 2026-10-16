@@ -1,0 +1,2 @@
+example: grep.gm
+args: -i APPLE data/grep-fruits.txt data/grep-poem.txt

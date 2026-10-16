@@ -9,7 +9,7 @@
 #
 # Usage: scripts/parse-corpus.sh [-v] [directory ...]
 #   -v   also list the files that parse cleanly
-#   Directories default to lib/ and tests/conformance/.
+#   Directories default to lib/, tests/conformance/ and examples/.
 #
 # Environment:
 #   GAMMA         the gamma executable (default: target/{release,debug}/gamma, then PATH)
@@ -29,7 +29,7 @@ fi
 if [[ $# -gt 0 ]]; then
   dirs=("$@")
 else
-  dirs=("$repo/lib" "$repo/tests/conformance")
+  dirs=("$repo/lib" "$repo/tests/conformance" "$repo/examples")
 fi
 
 gamma="${GAMMA:-}"
