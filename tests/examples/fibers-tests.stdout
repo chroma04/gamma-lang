@@ -1,0 +1,3 @@
+test "the pipeline sums the squares" ... ok
+test "tests run on a fake clock" ... ok
+2 passed, 0 failed

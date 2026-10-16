@@ -1,0 +1,4 @@
+test "echo shouts one line" ... ok
+test "serve echoes until the client shuts down" ... ok
+test "a refused connection is an error, not a crash" ... ok
+3 passed, 0 failed

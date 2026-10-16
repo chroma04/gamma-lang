@@ -5,8 +5,8 @@
 Helpers over the `Net` effect (§21.7) for TCP connections.
 
     net :: import "std/net"
-    s := try connect("localhost", 8080)
-    defer close_socket(s)
+    s := try Net.connect("localhost", 8080)
+    defer Net.close_socket(s)
     try net.send_all(s, "ping\n")
     reply: [5]u8 = ---
     try net.recv_exact(s, reply[..])
