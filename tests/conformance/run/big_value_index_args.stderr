@@ -1,0 +1,2 @@
+trap: index 2 out of bounds for length 2
+  at tests/conformance/run/big_value_index_args.gm:46:10 in main
