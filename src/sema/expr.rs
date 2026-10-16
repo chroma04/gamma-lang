@@ -1146,7 +1146,8 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(e) = self.struct_field(b, name.name, span) {
             return e;
         }
-        self.error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
+        let d = Diagnostic::error(name.span, format!("type `{}` has no field `{}`", bt, name.name));
+        self.emit_with_continuation_note(d, base.span, name.span);
         error_expr(span)
     }
 

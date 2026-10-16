@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-16) — PRs #1–#39 merged; s17 PR open (v0.1.0 prep: bugs #50–53, CHANGELOG)
+## State (2026-10-16) — PRs #1–#40 merged; s18 PR #41 open (examples/ + dogfood fixes)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -15,14 +15,16 @@
 - CI = fmt + clippy -D warnings + test (ubuntu, macos, windows) + Safe + s390x cross +
   editors + benchmarks. Verify locally (fmt, clippy -D warnings, cargo test, CC=clang
   conformance for cgen changes) before pushing.
-- Recent history: s13 bug sweep (PR #36; locals not named like types, decisions/024);
+- examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
+  header); new examples need a case and `gamma fmt`.
+- Recent history: s18 examples (PR #41); s13 bug sweep (PR #36; locals not named like types, decisions/024);
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive the s17 PR (branch claude/wonderful-cerf-sfn0qf) to merge; then the user tags
-   v0.1.0 (release workflow re-run by hand on the s17 branch incl. Windows — see s17 log).
-2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). Next up: P1
-   dogfood pass + `examples/`, then P2 (fuzzing, tree-sitter newline, Cargo metadata, …).
+1. Drive PR #41 (branch claude/clever-pascal-whycup) to merge; then the user tags v0.1.0
+   (CHANGELOG has an Unreleased section now: fold it into 0.1.0 if tagged after #41).
+2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
+   next P2 (fuzzing, tree-sitter newline, Cargo metadata, …), bugs-open dogfood papercuts.
 3. VM follow-ups in decisions/020; bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).
@@ -53,7 +55,7 @@
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
                   · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
-                  · s17-2026-10-16-release-prep.md
+                  · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
 - gotchas/        environment.md
 
 ## Conventions

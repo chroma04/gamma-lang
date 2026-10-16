@@ -4,6 +4,7 @@
 use super::func::{FnCx, Obligation, error_expr};
 use super::generics::Constraint;
 use super::{DeclValue, ParamInfo};
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Builtin, Callee, Expr};
@@ -59,8 +60,24 @@ impl<'a, 's> FnCx<'a, 's> {
             return e;
         }
         let rty = self.infer.resolve(rty);
-        self.error(name.span, format!("type `{}` has no method `{}`", rty, name.name));
+        let d = Diagnostic::error(name.span, format!("type `{}` has no method `{}`", rty, name.name));
+        self.emit_with_continuation_note(d, base.span, name.span);
         error_expr(span)
+    }
+
+    /// Emits `d`, a missing field or method `.name` of `base`, adding a note when `.name`
+    /// starts a line: such a line continues the previous one (§2.8), which surprises
+    /// code that meant `.Variant` as a value of its own.
+    pub fn emit_with_continuation_note(&mut self, d: Diagnostic, base: Span, name: Span) {
+        let file = self.sema.sess.sources.file(base.file);
+        let mut d = d;
+        if base.file == name.file && file.line_col(base.hi).0 < file.line_col(name.lo).0 {
+            d = d.with_note(
+                "a line that starts with `.name` continues the previous line (§2.8); to begin a new \
+                 expression with a variant, name its type: `T.Variant`",
+            );
+        }
+        self.sema.emit(d);
     }
 
     fn type_arg(&mut self, args: &[ast::Arg], i: usize, span: Span) -> Option<Ty> {

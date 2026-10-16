@@ -509,7 +509,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         if let ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {
-                self.error(e.span, format!("`---` requires a plain-data type, but `{}` is not (§4.4)", ty));
+                self.error(e.span, super::func::uninit_message(ty));
             }
             return mk(ty, tir::ExprKind::Uninit, e.span);
         }
@@ -570,6 +570,9 @@ impl<'a, 's> FnCx<'a, 's> {
         // by literals only: `f64(i)` converts `i` from the integer type it ends up with.
         if self.infer.var_kind(v.ty).is_some() && (t.is_integer() || (t.is_float() && is_literal(&v))) {
             if self.infer.unify(v.ty, t).is_ok() {
+                if !is_literal(&v) {
+                    self.infer.note_fixed_by(v.ty, span);
+                }
                 return v;
             }
             // A variable already restricted to other types, such as an index (§6.1):

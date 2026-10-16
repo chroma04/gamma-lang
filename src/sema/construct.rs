@@ -158,7 +158,7 @@ impl<'a, 's> FnCx<'a, 's> {
     fn field_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
         if let ast::ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {
-                self.error(e.span, format!("`---` requires a plain-data type, but `{}` is not (§4.4)", ty));
+                self.error(e.span, super::func::uninit_message(ty));
             }
             return mk(ty, tir::ExprKind::Uninit, e.span);
         }

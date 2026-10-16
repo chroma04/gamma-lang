@@ -352,7 +352,8 @@ lossless_demo :: fn(a: u8, b: i16, flag: bool, d: Dir) {
 | Method | Meaning |
 | --- | --- |
 | `x.trunc(T)` | integers: keep the low bits. Floats: round toward zero, checked to fit |
-| `x.round(T)`, `x.floor(T)`, `x.ceil(T)` | float to integer (checked); `round` also does integer to float and float to narrower float |
+| `x.round(T)`, `x.floor(T)`, `x.ceil(T)` | float to integer, rounding as named (checked) |
+| `x.to(F)` | integer or float to the float type `F`: the nearest value, never traps (`i.to(f64)` for an index `i`) |
 | `x.checked(T)` | `?T`: `null` if the value does not fit |
 | `x.sat(T)` | clamp to `T`'s range (NaN becomes 0) |
 | `x.bits(T)` | reinterpret the bytes of one plain-data type as another of the same size |

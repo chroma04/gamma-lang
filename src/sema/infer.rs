@@ -28,6 +28,9 @@ struct Var {
     integer: bool,
     fallback: Fallback,
     resolved: Option<Ty>,
+    /// The conversion `T(x)` that gave the variable its type, if one did (§6.5), for
+    /// diagnostics about literals far from it.
+    fixed_by: Option<crate::source::Span>,
 }
 
 #[derive(Default)]
@@ -51,6 +54,7 @@ impl InferTable {
             integer: false,
             fallback: Fallback::I32,
             resolved: None,
+            fixed_by: None,
         });
         Ty::infer(v)
     }
@@ -144,6 +148,21 @@ impl InferTable {
             VarKind::Int if var.integer => ty.is_integer(),
             VarKind::Int => ty.is_integer() || ty.is_float(),
         }
+    }
+
+    /// Records that the conversion at `span` gave `ty`, a variable, its type.
+    pub fn note_fixed_by(&mut self, ty: Ty, span: crate::source::Span) {
+        if let TyKind::Infer(v) = ty.kind() {
+            let r = self.root(v.0) as usize;
+            self.vars[r].fixed_by.get_or_insert(span);
+        }
+    }
+
+    /// The conversion that gave `ty`, a variable, its type (see `note_fixed_by`).
+    pub fn fixed_by(&mut self, ty: Ty) -> Option<crate::source::Span> {
+        let TyKind::Infer(v) = ty.kind() else { return None };
+        let r = self.root(v.0) as usize;
+        self.vars[r].fixed_by
     }
 
     /// Makes `a` and `b` the same type.

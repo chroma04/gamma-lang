@@ -6,6 +6,24 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### Added
+
+- `examples/`: runnable programs, from command-line tools (`wordfreq`, `grep`,
+  `sha256sum`, `json_query`) through effects, allocators, fibers, threads, TCP and C
+  interop to a multi-file calculator and a package. The test suite runs each of them
+  on both back ends.
+
+### Changed
+
+- Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its
+  variable points at that conversion; a missing method or field `.name` at the start of
+  a line explains that the line continues the previous one; `else` as a `match` pattern
+  suggests `_`; `---` on an array that is not plain data suggests `fill:`.
+
+### Fixed
+
+- The `std/net` documentation called `connect` and `close_socket` without `Net.`.
+
 ## 0.1.0 - 2026-10-16
 
 The first release: the complete language of `gamma-spec.md`, implemented on two

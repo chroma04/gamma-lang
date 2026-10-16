@@ -1,0 +1,9 @@
+//! stage: parse
+// `else` is not a pattern; the catch-all arm is `_`.
+
+main :: fn() needs Out {
+    match 3 {
+        1 => print("one\n")
+        else => print("other\n") //~ ERROR the pattern that matches anything is `_`
+    }
+}

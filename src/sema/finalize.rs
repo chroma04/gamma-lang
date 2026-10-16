@@ -4,6 +4,7 @@
 
 use super::expr::{apply_steps, base_coercion};
 use super::func::{FnCx, Obligation};
+use crate::diag::Diagnostic;
 use crate::float;
 use crate::tir::{self, Coercion, Expr, ExprKind};
 use crate::types::{IntTy, Ty, TyKind};
@@ -192,6 +193,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ => {}
         }
+        let fixed_by = if matches!(e.kind, ExprKind::Int(_)) { self.infer.fixed_by(e.ty) } else { None };
         e.ty = self.infer.resolve(e.ty);
         match &mut e.kind {
             // Literals at a type parameter are checked per instantiation (§16.1).
@@ -201,7 +203,15 @@ impl<'a, 's> FnCx<'a, 's> {
                     let r = BigRational::from_integer(v.clone());
                     self.fin_float(e, r, true);
                 } else if !e.ty.is_error() && !int_fits(v, e.ty, &self.sema.target) {
-                    self.error(e.span, format!("the literal {} does not fit in `{}`", v, e.ty));
+                    let mut d = Diagnostic::error(e.span, format!("the literal {} does not fit in `{}`", v, e.ty));
+                    // The type may come from a conversion of a variable the literal flows into.
+                    if let Some(span) = fixed_by {
+                        d = d.with_label(span, format!(
+                            "this conversion gives the literal's variable the type `{0}` (§6.5); `.trunc({0})` or `.checked({0})` would convert from its own type",
+                            e.ty
+                        ));
+                    }
+                    self.sema.emit(d);
                 }
             }
             ExprKind::UntypedFloat(r) => {
