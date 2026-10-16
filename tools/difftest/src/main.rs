@@ -102,8 +102,22 @@ pub fn run_one(cfg: &Config, file: &Path, cc: Option<&str>) -> Outcome {
     let (stdout, stderr, code) = run_with_timeout(cmd, cfg.timeout);
     // Diagnostics and trap reports name the file; the directory differs per seed.
     let path = file.display().to_string();
-    let stderr = stderr.replace(&path, "FILE");
+    let stderr = trim_library_frames(&stderr.replace(&path, "FILE"));
     Outcome { stdout, stderr, code }
+}
+
+/// Cuts a trap's backtrace at the first frame inside the fiber library. The interpreter and
+/// the C back end attribute the library's own entry frames differently (another file and
+/// function name), so only the program's frames above them are compared.
+fn trim_library_frames(stderr: &str) -> String {
+    let mut out = String::new();
+    for line in stderr.split_inclusive('\n') {
+        if line.starts_with("  called from") && line.contains("/std/fiber/") {
+            break;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// The outcomes of every configuration: the interpreter first, then each C compiler.

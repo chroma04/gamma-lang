@@ -9,6 +9,10 @@
 
 use crate::rng::Rng;
 
+mod extras;
+
+use extras::Features;
+
 /// An integer type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct It {
@@ -69,6 +73,10 @@ enum Ty {
     Tup(It, It),
     /// `f32` or `f64`, by width.
     Flt(u32),
+    /// A string.
+    Str,
+    /// The generic struct `Pair(T)`.
+    Gp(It),
 }
 
 impl Ty {
@@ -83,6 +91,8 @@ impl Ty {
             Ty::Sh => "Sh".into(),
             Ty::Tup(a, b) => format!("({}, {})", a.name(), b.name()),
             Ty::Flt(b) => format!("f{b}"),
+            Ty::Str => "string".into(),
+            Ty::Gp(t) => format!("Pair({})", t.name()),
         }
     }
 }
@@ -102,6 +112,9 @@ struct Func {
     cost: u64,
     /// The first parameter is a recursion depth.
     recursive: bool,
+    /// Performs (so needs) the effect `Ev` / `Co`.
+    ev: bool,
+    co: bool,
 }
 
 const COST_LIMIT: u64 = 6000;
@@ -126,6 +139,17 @@ pub struct Gen {
     ret: Option<Ty>,
     /// Functions `0..callable` may be called.
     callable: usize,
+    /// Which of the optional language areas this program uses.
+    feat: Features,
+    /// Operand types of the effects `Ev` and `Co`.
+    ev_t: [It; 3],
+    co_t: [It; 2],
+    /// Whether the code being generated may perform `Ev` / `Co` operations.
+    ev: bool,
+    co: bool,
+    in_main: bool,
+    /// Element type of the channels of the fiber blocks.
+    fib_it: It,
 }
 
 fn pick_int(rng: &mut Rng) -> It {
@@ -145,6 +169,10 @@ impl Gen {
         let sh_circle = pick_it(&mut rng);
         let sh_rect = [pick_it(&mut rng), pick_it(&mut rng)];
         let er_bad = pick_it(&mut rng);
+        let feat = Features::pick(&mut rng);
+        let ev_t = [pick_it(&mut rng), pick_it(&mut rng), pick_it(&mut rng)];
+        let co_t = [pick_it(&mut rng), pick_it(&mut rng)];
+        let fib_it = pick_it(&mut rng);
         let mut g = Gen {
             rng,
             funcs: vec![],
@@ -161,6 +189,13 @@ impl Gen {
             block_depth: 0,
             ret: None,
             callable: 0,
+            feat,
+            ev_t,
+            co_t,
+            ev: false,
+            co: false,
+            in_main: false,
+            fib_it,
         };
         let mut out = String::new();
         out.push_str(&format!("// difftest seed {seed}\n"));
@@ -176,7 +211,9 @@ impl Gen {
             sh_rect[0].name(),
             sh_rect[1].name()
         ));
-        out.push_str(&format!("Er :: union {{ Bad: {}, Worse }}\n\n", er_bad.name()));
+        out.push_str(&format!("Er :: union {{ Bad: {}, Worse }}\n", er_bad.name()));
+        out.push_str(&g.extra_decls());
+        out.push('\n');
         // Constructors of results: the variant follows the first argument.
         for t in INTS.iter().chain(&WIDE).copied() {
             let bad = g.conv(U8, er_bad, "k".to_string());
@@ -198,6 +235,7 @@ impl Gen {
             out.push_str(&text);
             out.push('\n');
         }
+        out.push_str(&g.fiber_decls());
         out.push_str(&g.main_fn());
         out
     }
@@ -208,7 +246,23 @@ impl Gen {
         pick_int(&mut self.rng)
     }
 
+    /// A type a function may return: no strings, whose storage the function might free.
+    fn rand_ret_ty(&mut self) -> Ty {
+        loop {
+            let t = self.rand_ty();
+            if t != Ty::Str {
+                return t;
+            }
+        }
+    }
+
     fn rand_ty(&mut self) -> Ty {
+        if self.feat.generics && self.rng.chance(9) {
+            return Ty::Gp(self.any_int());
+        }
+        if self.feat.strings && self.rng.chance(7) {
+            return Ty::Str;
+        }
         match self.rng.below(100) {
             0..=54 => Ty::Int(self.any_int()),
             55..=64 => Ty::Bool,
@@ -277,7 +331,12 @@ impl Gen {
     }
 
     fn funcs_returning(&self, ty: &Ty) -> Vec<usize> {
-        (0..self.callable).filter(|&i| &self.funcs[i].ret == ty).collect()
+        (0..self.callable)
+            .filter(|&i| {
+                let f = &self.funcs[i];
+                &f.ret == ty && (!f.ev || self.ev) && (!f.co || self.co)
+            })
+            .collect()
     }
 
     /// An expression of integer type `from` converted to `to`.
@@ -337,6 +396,8 @@ impl Gen {
             Ty::Sh => self.sh_expr(d),
             Ty::Tup(a, b) => self.tup_expr(*a, *b, d),
             Ty::Flt(b) => self.flt_expr(*b, d),
+            Ty::Str => self.str_expr(d),
+            Ty::Gp(t) => self.gp_expr(*t, d),
         }
     }
 
@@ -358,6 +419,10 @@ impl Gen {
                         }
                         Ty::Arr(et, n) if *et == t => {
                             c.push((None, format!("{}[{}]", v.name, self.rng.below(*n))));
+                        }
+                        Ty::Gp(et) if *et == t => {
+                            c.push((None, format!("{}.a", v.name)));
+                            c.push((None, format!("{}.b", v.name)));
                         }
                         Ty::Tup(a, b) => {
                             if *a == t {
@@ -389,6 +454,12 @@ impl Gen {
             return self.int_leaf(t);
         }
         let d1 = d - 1;
+        if self.feat.any()
+            && self.rng.chance(10)
+            && let Some(e) = self.extra_int(t, d1)
+        {
+            return e;
+        }
         let name = t.name();
         match self.rng.below(100) {
             0..=29 => {
@@ -543,6 +614,9 @@ impl Gen {
             return (if self.rng.chance(50) { "true" } else { "false" }).to_string();
         }
         let d1 = d - 1;
+        if self.feat.strings && self.rng.chance(10) {
+            return self.str_bool(d1);
+        }
         match self.rng.below(100) {
             0..=44 => {
                 let t = self.any_int();
@@ -864,6 +938,9 @@ impl Gen {
         self.cost += self.mult;
         let nested_ok = self.block_depth < 4 && self.cost < COST_LIMIT;
         let loop_ok = nested_ok && self.loops < 2;
+        if self.feat.any() && self.rng.chance(12) && self.extra_stmt(out, level, nested_ok) {
+            return;
+        }
         match self.rng.below(100) {
             0..=21 => {
                 let ty = self.rand_ty();
@@ -872,7 +949,9 @@ impl Gen {
                 let name = self.fresh("v");
                 if self.rng.chance(85) || !self.mentions_var(&e) {
                     out.push_str(&format!("{ind}{name}: {} = {e}\n", ty.name()));
-                    self.push_var(name, ty, true);
+                    // A string may point into a buffer that its scope frees, so it is never reassigned.
+                    let assignable = ty != Ty::Str;
+                    self.push_var(name, ty, assignable);
                 } else {
                     out.push_str(&format!("{ind}{name}: {} : {e}\n", ty.name()));
                     self.push_var(name, ty, false);
@@ -914,6 +993,17 @@ impl Gen {
                         let op = if self.rng.chance(self.trap_bias.min(40)) { "+=" } else { "=" };
                         out.push_str(&format!("{ind}{name}.{f} {op} {e}\n"));
                     }
+                    Ty::Gp(t) => match self.rng.below(3) {
+                        0 => out.push_str(&format!("{ind}pair_swap(&{name})\n")),
+                        1 => {
+                            let e = self.int_expr(t, d);
+                            out.push_str(&format!("{ind}{name}.a = {e}\n"));
+                        }
+                        _ => {
+                            let e = self.expr(&Ty::Gp(t), d);
+                            out.push_str(&format!("{ind}{name} = {e}\n"));
+                        }
+                    },
                     Ty::Arr(t, n) => match self.rng.below(5) {
                         0 => out.push_str(&format!("{ind}{name}[..].sort()\n")),
                         1 => {
@@ -1057,7 +1147,10 @@ impl Gen {
             98 if nested_ok => {
                 // Deferred statements run when the enclosing block ends, also on a trap.
                 let ty = self.rand_ty();
+                // A deferred statement cannot suspend.
+                let saved_co = std::mem::replace(&mut self.co, false);
                 let e = self.expr(&ty, 2);
+                self.co = saved_co;
                 out.push_str(&format!("{ind}defer print(\"defer {{}}\\n\", {e})\n"));
             }
             99 if nested_ok => {
@@ -1128,7 +1221,9 @@ impl Gen {
 
     // ----- functions --------------------------------------------------------------------
 
-    fn begin_function(&mut self, ret: Option<Ty>, callable: usize) {
+    fn begin_function(&mut self, ret: Option<Ty>, callable: usize, ev: bool, co: bool) {
+        self.ev = ev;
+        self.co = co;
         self.vars.clear();
         self.cost = 1;
         self.mult = 1;
@@ -1140,9 +1235,11 @@ impl Gen {
 
     fn function(&mut self, index: usize) -> String {
         let name = format!("f{index}");
-        let ret = self.rand_ty();
+        let ret = self.rand_ret_ty();
         let recursive = matches!(ret, Ty::Int(_)) && self.rng.chance(25);
-        self.begin_function(Some(ret.clone()), index);
+        let ev = self.feat.effects && self.rng.chance(30);
+        let co = self.feat.effects && self.rng.chance(15);
+        self.begin_function(Some(ret.clone()), index, ev, co);
         let mut params = vec![];
         let mut sig = vec![];
         if recursive {
@@ -1157,7 +1254,8 @@ impl Gen {
             self.push_var(pname, ty.clone(), false);
             params.push(ty);
         }
-        let mut text = format!("{name} :: fn({}) -> {} needs Out {{\n", sig.join(", "), ret.name());
+        let needs = self.needs(ev, co);
+        let mut text = format!("{name} :: fn({}) -> {} needs {needs} {{\n", sig.join(", "), ret.name());
         if recursive {
             let e = self.expr(&ret, 3);
             text.push_str(&format!("    if d is 0 {{ return {e} }}\n"));
@@ -1187,21 +1285,29 @@ impl Gen {
         }
         text.push_str("}\n");
         let cost = if recursive { self.cost.saturating_mul(32) } else { self.cost };
-        self.funcs.push(Func { name, params, ret, cost, recursive });
+        self.funcs.push(Func { name, params, ret, cost, recursive, ev, co });
         text
     }
 
     fn main_fn(&mut self) -> String {
         let n = self.funcs.len();
-        self.begin_function(None, n);
-        let mut text = String::from("main :: fn() needs Out {\n");
+        self.begin_function(None, n, false, false);
+        self.in_main = true;
+        let needs = self.needs(false, false);
+        let mut text = format!("main :: fn() needs {needs} {{\n");
         for _ in 0..(3 + self.rng.below(6)) {
             self.stmt(&mut text, 1);
         }
+        self.fiber_blocks(&mut text);
         // Print the result of every function at least once.
         for i in 0..n {
             let params = self.funcs[i].params.clone();
             let recursive = self.funcs[i].recursive;
+            let (ev, co) = (self.funcs[i].ev, self.funcs[i].co);
+            let ret = self.funcs[i].ret.clone();
+            // A function that performs effects is called under handlers for them.
+            let w = self.open_with(&mut text, 1, ev, co, &ret);
+            (self.ev, self.co) = (ev, co);
             let mut args = vec![];
             for (k, p) in params.iter().enumerate() {
                 if recursive && k == 0 {
@@ -1210,8 +1316,10 @@ impl Gen {
                     args.push(self.expr(p, 2));
                 }
             }
+            (self.ev, self.co) = (false, false);
             let name = self.funcs[i].name.clone();
-            text.push_str(&format!("    print(\"{}: {{}}\\n\", {}({}))\n", name, name, args.join(", ")));
+            let call = w.wrap(&format!("{}({})", name, args.join(", ")));
+            text.push_str(&format!("    print(\"{}: {{}}\\n\", {})\n", name, call));
         }
         text.push_str("}\n");
         text
