@@ -210,7 +210,23 @@ pub enum TrapKind {
     Assert,
 }
 
-/// A comparison of two small integers.
+/// A floating-point type with native instructions (`f16` goes through the generic ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatK {
+    F32,
+    F64,
+}
+
+/// An arithmetic operator of [`Op::BinF`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FArith {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// A comparison of two small integers or two floats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmp {
     Lt,
@@ -494,6 +510,43 @@ pub enum Op {
         dst: Reg,
         a: Reg,
         k: IntK,
+    },
+    /// `@rotl(a, b)` (`left`) or `@rotr(a, b)` of a small integer of kind `k` by an
+    /// amount of kind `bk`.
+    RotI {
+        left: bool,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+        bk: IntK,
+    },
+    /// `+ - * /` of `f32` or `f64` values.
+    BinF {
+        op: FArith,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: FloatK,
+    },
+    CmpF {
+        cmp: Cmp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: FloatK,
+    },
+    BrF {
+        cmp: Cmp,
+        a: Reg,
+        b: Reg,
+        k: FloatK,
+        t: u32,
+    },
+    NegF {
+        dst: Reg,
+        a: Reg,
+        k: FloatK,
     },
     NotI {
         dst: Reg,
@@ -904,14 +957,19 @@ impl Code<'_> {
                 | Op::JmpTag { t, .. }
                 | Op::JmpFast { t }
                 | Op::JmpTick { t } => t < n,
-                Op::BrI { a, b, t, .. } => t < n && a < nregs && b < nregs,
+                Op::BrI { a, b, t, .. } | Op::BrF { a, b, t, .. } => t < n && a < nregs && b < nregs,
                 Op::TickBr { a, b, exit, body, .. } => exit < n && body < n && a < nregs && b < nregs,
-                Op::Mov1 { dst, src } | Op::AddImm { dst, src, .. } => dst < nregs && src < nregs,
+                Op::Mov1 { dst, src } | Op::AddImm { dst, src, .. } | Op::NegF { dst, a: src, .. } => {
+                    dst < nregs && src < nregs
+                }
                 Op::Imm { dst, .. } => dst < nregs,
                 Op::AddI { dst, a, b, .. }
                 | Op::SubI { dst, a, b, .. }
                 | Op::MulI { dst, a, b, .. }
                 | Op::CmpI { dst, a, b, .. }
+                | Op::BinF { dst, a, b, .. }
+                | Op::RotI { dst, a, b, .. }
+                | Op::CmpF { dst, a, b, .. }
                 | Op::AndW { dst, a, b }
                 | Op::OrW { dst, a, b }
                 | Op::XorW { dst, a, b } => dst < nregs && a < nregs && b < nregs,

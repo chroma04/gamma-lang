@@ -183,6 +183,20 @@ fn len32(len: u64) -> C<u32> {
 }
 
 /// True if `ty` is a second-class type, whose values are not bytes.
+/// The kind of a float type that has native instructions.
+pub fn float_kind(ty: Ty) -> Option<FloatK> {
+    match ty.kind() {
+        TyKind::Float(crate::types::FloatTy::F32) => Some(FloatK::F32),
+        TyKind::Float(crate::types::FloatTy::F64) => Some(FloatK::F64),
+        _ => None,
+    }
+}
+
+/// The fast form of `lhs is rhs` when the operands are floats of one type.
+pub fn float_eq(lhs: &Expr, rhs: &Expr) -> Option<FloatK> {
+    if lhs.ty == rhs.ty { float_kind(lhs.ty) } else { None }
+}
+
 pub fn second_class(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Fn(_) | TyKind::Handler(_))
 }
@@ -1483,10 +1497,25 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 UnOp::Neg => self.emit(Op::NegI { dst: reg, a, k }, span),
                 _ => self.emit(Op::NotI { dst: reg, a, k }, span),
             };
+        } else if op == UnOp::Neg
+            && operand.ty == e.ty
+            && let Some(k) = float_kind(e.ty)
+        {
+            self.emit(Op::NegF { dst: reg, a, k }, span);
         } else {
             self.emit(Op::UnG { dst: reg, a, op, ty: operand.ty }, span);
         }
         Ok(dst)
+    }
+
+    /// The float kind of a binary operation on two floats of one type that has native
+    /// instructions.
+    pub fn float_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<FloatK> {
+        let arith = matches!(op, BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div);
+        if lhs.ty != rhs.ty || !(arith || Cmp::of(op).is_some()) {
+            return None;
+        }
+        float_kind(lhs.ty)
     }
 
     /// The small-integer kinds of a binary operation that can use the fast instructions.
@@ -1517,6 +1546,19 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     let info = self.code.bins.len() as u32 - 1;
                     self.emit(Op::BinI { op, dst: reg, a, b, k, info }, span)
                 }
+            };
+        } else if let Some(k) = self.float_binary(op, lhs, rhs) {
+            let fop = match op {
+                BinOp::Add(_) => Some(FArith::Add),
+                BinOp::Sub(_) => Some(FArith::Sub),
+                BinOp::Mul(_) => Some(FArith::Mul),
+                BinOp::Div => Some(FArith::Div),
+                _ => None,
+            };
+            match (Cmp::of(op), fop) {
+                (Some(cmp), _) => self.emit(Op::CmpF { cmp, dst: reg, a, b, k }, span),
+                (_, Some(op)) => self.emit(Op::BinF { op, dst: reg, a, b, k }, span),
+                _ => unreachable!(),
             };
         } else {
             let rk = IntK::U64;
@@ -1551,6 +1593,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
         if let Some(k) = self.small_eq(lhs, rhs) {
             let cmp = if neg { Cmp::Ne } else { Cmp::Eq };
             self.emit(Op::CmpI { cmp, dst: reg, a, b, k }, span);
+        } else if let Some(k) = float_eq(lhs, rhs) {
+            let cmp = if neg { Cmp::Ne } else { Cmp::Eq };
+            self.emit(Op::CmpF { cmp, dst: reg, a, b, k }, span);
         } else if lhs.ty == rhs.ty && self.word_eq(lhs.ty) {
             self.emit(Op::EqW { dst: reg, a, b, neg }, span);
         } else if lhs.ty == rhs.ty && matches!(lhs.ty.kind(), TyKind::Bool) {
@@ -1826,6 +1871,20 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     } else {
                         self.emit(Op::Trunc { dst: reg, src, from, to }, span);
                     }
+                    return Ok(dst);
+                }
+                if matches!(op, Builtin::Rotl | Builtin::Rotr)
+                    && args.len() == 2
+                    && let (Some(k), Some(bk)) = (self.small(args[0].ty), self.small(args[1].ty))
+                {
+                    let ops = self.operands(&[&args[0], &args[1]], span)?;
+                    let dst = self.dst(e, want);
+                    let (Arg::Data { reg: a, .. }, Arg::Data { reg: b, .. }, Arg::Data { reg, .. }) =
+                        (ops[0], ops[1], dst)
+                    else {
+                        return Err(unsupported!());
+                    };
+                    self.emit(Op::RotI { left: op == Builtin::Rotl, dst: reg, a, b, k, bk }, span);
                     return Ok(dst);
                 }
                 let refs: Vec<&'a Expr> = args.iter().collect();

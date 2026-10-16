@@ -1,0 +1,48 @@
+//! exit: 134
+//! stderr
+// A large argument read from an element of an array, slice or many-pointer may be passed
+// where it lies instead of being copied first. The callee must still see the value as it
+// was at the call, also when the result is stored over the element it came from, and an
+// index out of bounds still traps before the call.
+V :: struct { x: f64, y: f64, z: f64, w: f64 }
+Grid :: struct { cells: [3]V, n: i64 }
+
+// Writes its result field by field, reading the other parameter after each write.
+mix :: fn(p: V, q: V) -> V => V(x: q.y, y: p.x + q.x, z: q.w, w: p.z)
+
+show :: fn(v: V) needs Out {
+    print("{} {} {} {}\n", v.x, v.y, v.z, v.w)
+}
+
+// Writes through the pointer before reading the value it was given.
+poke :: fn(p: ^V, v: V) -> f64 {
+    p.x = 100.0
+    return v.x
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    a := [_]V(V(x: 1.0, y: 2.0, z: 3.0, w: 4.0), V(x: 5.0, y: 6.0, z: 7.0, w: 8.0))
+    show(mix(a[0], a[1]))
+    // The result replaces an element that is an argument.
+    a[1] = mix(a[0], a[1])
+    show(a[1])
+    i := 0
+    a[i] = mix(a[i], a[i + 1])
+    show(a[0])
+    print("{}\n", poke(&a[1], a[1]))
+    // An element of an array field, through a pointer.
+    g := try new(Grid(cells: [_]V(a[0], a[1], a[0]), n: 0))
+    g.cells[2] = mix(g.cells[1], g.cells[2])
+    show(g.cells[2])
+    // Elements of a slice.
+    s := g.cells[..]
+    s[0] = mix(s[2], s[0])
+    show(s[0])
+    show(mix(s[i], s[i + 2]))
+    print("{}\n", poke(&s[0], s[0]))
+    destroy(g)
+    // Out of bounds: traps before the call.
+    j := 2
+    show(a[j])
+    return ()
+}

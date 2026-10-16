@@ -30,6 +30,7 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Perf: Safe new/destroy ~3.6x Checked (s21: memset → gap stores; rest is Fil-C cost of
   by-ref param copies and blob loads with pointers, see sessions/s21); interpreter `perform`
   (s21 trimmed it ~6%; vm_perform still ~200 instr self).
+  s22: VM float ops + RotI; examples show no other generic-op hotspot.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions
   is the user's. Emacs: editors/emacs/gamma-ts-mode.el (s21, ERT tests in batch Emacs 29.3;

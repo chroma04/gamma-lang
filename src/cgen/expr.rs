@@ -1153,14 +1153,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// (see `Observed`) and so must be copied first. `borrows`: the callee may read it
     /// in place without copying it.
     /// The variable or dereference a large argument is read from, when it can be passed
-    /// in place: `a` is a local, an upvar or a dereference, or a field (of a field…) of
-    /// one. Fields of `#bits` structs have no address.
+    /// in place: `a` is a local, an upvar or a dereference, or a field or array element
+    /// (of a field…) of one. An element of a slice or many-pointer lives outside the frame
+    /// like a dereference; its index must not write, as it is evaluated as part of the
+    /// place. Fields of `#bits` structs have no address.
     fn in_place_root<'e>(&self, a: &'e Expr) -> Option<&'e Expr> {
         let mut e = a;
         loop {
             match &e.kind {
                 ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Deref(_) => return Some(e),
                 ExprKind::Field { base, .. } if self.g.ty.bits_layout(base.ty).is_none() => e = base,
+                ExprKind::Index { base, index, .. } if no_writes(index) => match base.ty.kind() {
+                    TyKind::Array { .. } => e = base,
+                    TyKind::Slice { .. } | TyKind::ManyPtr { .. } if no_writes(base) => return Some(e),
+                    _ => return None,
+                },
                 _ => return None,
             }
         }

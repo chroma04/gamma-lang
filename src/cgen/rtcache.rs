@@ -132,10 +132,17 @@ pub fn cached_program(
 }
 
 /// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps
-/// it. Windows sets times only through a handle opened for writing.
+/// it. Windows sets times only through a handle opened for writing. Elsewhere a read-only
+/// handle does, and opening for writing must be avoided: `p` may be an executable that
+/// another process is running, and on macOS opening a running signed program for
+/// writing can get that process killed.
 pub(crate) fn touch(p: &Path) {
     let now = std::time::SystemTime::now();
-    let f = std::fs::OpenOptions::new().write(true).open(p).or_else(|_| std::fs::File::open(p));
+    let f = if cfg!(windows) {
+        std::fs::OpenOptions::new().write(true).open(p).or_else(|_| std::fs::File::open(p))
+    } else {
+        std::fs::File::open(p)
+    };
     let _ = f.and_then(|f| f.set_modified(now));
 }
 
@@ -159,5 +166,27 @@ fn prune(dir: &Path) {
         if *t < recent {
             let _ = std::fs::remove_file(p);
         }
+    }
+}
+
+// Marking a cached file as used needs no write access to it outside Windows (see `touch`).
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touch_marks_a_read_only_file_as_used() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gamma-touch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("prog");
+        std::fs::write(&p, b"x").unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::open(&p).unwrap().set_modified(old).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).unwrap();
+        touch(&p);
+        let t = std::fs::metadata(&p).unwrap().modified().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(t > old + std::time::Duration::from_secs(86400), "{t:?}");
     }
 }

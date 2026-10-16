@@ -35,6 +35,11 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Faster `f32` and `f64` code on the interpreter: arithmetic, comparisons and branches
+  on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster),
+  and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
+- The C back end passes a large argument read from an element of an array, slice or
+  many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its
   variable points at that conversion; a missing method or field `.name` at the start of
   a line explains that the line continues the previous one; `else` as a `match` pattern
@@ -67,6 +72,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- On macOS, a program run with `gamma run --backend=c` could be killed when another
+  `gamma` process started the same cached executable at the same time: marking a
+  cached file as used no longer opens it for writing outside Windows.
 - In Debug builds, a trap in a task started by `@fiber` (such as a `std/fiber` task)
   named a different caller for the task on each back end; both now name the
   `with … on` that drives it.

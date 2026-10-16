@@ -1,0 +1,72 @@
+// Float arithmetic, comparisons and branches on them, in `f32` and `f64`. Every ordered
+// comparison with a NaN is false, so `not (a < b)` differs from `a >= b`; `is not` is
+// the negation of `is`. `f32` results are rounded to `f32` after each operation.
+mark :: fn(c: bool, s: string) needs Out {
+    if c { print("{} ", s) }
+}
+
+cmp64 :: fn(a: f64, b: f64) needs Out {
+    print("{} {}: < {} <= {} > {} >= {} is {} is not {}\n  ", a, b, a < b, a <= b, a > b, a >= b, a is b, a is not b)
+    // The same comparisons as conditions.
+    if a < b { mark(true, "lt") }
+    if not (a < b) { mark(true, "!lt") }
+    if a <= b { mark(true, "le") }
+    if not (a <= b) { mark(true, "!le") }
+    if a > b { mark(true, "gt") }
+    if not (a > b) { mark(true, "!gt") }
+    if a >= b { mark(true, "ge") }
+    if not (a >= b) { mark(true, "!ge") }
+    if a is b { mark(true, "is") }
+    if a is not b { mark(true, "isnot") }
+    if not (a is b) { mark(true, "!is") }
+    mark(a < b and a is not b, "lt-and-ne")
+    mark(a > b or a is b, "gt-or-eq")
+    print("\n")
+}
+
+cmp32 :: fn(a: f32, b: f32) needs Out {
+    print("{} {}: < {} <= {} > {} >= {} is {} is not {}\n  ", a, b, a < b, a <= b, a > b, a >= b, a is b, a is not b)
+    if a < b { mark(true, "lt") }
+    if not (a < b) { mark(true, "!lt") }
+    if not (a >= b) { mark(true, "!ge") }
+    if a is not b { mark(true, "isnot") }
+    print("\n")
+}
+
+arith64 :: fn(a: f64, b: f64) needs Out {
+    print("{} {}: {} {} {} {} {}\n", a, b, a + b, a - b, a * b, a / b, -a)
+}
+
+arith32 :: fn(a: f32, b: f32) needs Out {
+    print("{} {}: {} {} {} {} {}\n", a, b, a + b, a - b, a * b, a / b, -a)
+}
+
+main :: fn() needs Out {
+    nan := 0.0 / 0.0
+    inf := 1.0 / 0.0
+    for p in [_](f64, f64)((1.0, 2.0), (2.0, 2.0), (3.0, 2.0), (nan, 1.0), (1.0, nan), (nan, nan), (0.0, -0.0), (-inf, inf)) {
+        cmp64(p.0, p.1)
+    }
+    cmp32(1.5, nan.to(f32))
+    cmp32(0.1, 0.1)
+    cmp32(0.0, -0.0)
+    arith64(0.1, 0.2)
+    arith64(1.0, 0.0)
+    arith64(-0.0, inf)
+    arith32(0.1, 0.2)
+    arith32(16777216.0, 1.0)
+    arith32(3.4e38, 10.0)
+    // A loop on a float condition.
+    x := 1.0
+    n := 0
+    while x < 1000.0 {
+        x = x * 1.5
+        n += 1
+    }
+    print("{} {}\n", n, x)
+    y: f32 = 1.0
+    while not (y >= 1.0e10) {
+        y = y * 3.0
+    }
+    print("{}\n", y)
+}
