@@ -1,7 +1,7 @@
 // std/random: the xoshiro256** generator as a `Rand` handler, and the helpers over `Rand`.
 random :: import "std/random"
 
-main :: fn() \ {Out, Rand} {
+main :: fn() needs Out + Rand {
     // Reference outputs of splitmix64-seeded xoshiro256**.
     r := random.seeded(0)
     print("{} {} {} {}\n", random.next(&r), random.next(&r), random.next(&r), random.next(&r))

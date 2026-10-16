@@ -4,7 +4,7 @@ audit :: import "../audit"
 
 Job :: struct { id: u32, cost: u32 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     jobs := q.queue(Job, 4)
     for i in 1..=6 {
         r := jobs.push(Job(id: i, cost: i * 3))

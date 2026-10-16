@@ -1,7 +1,7 @@
 // `to_unix` of the earliest and latest representable instants.
 time :: import "std/time"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     lo: i64 = -9223372036854775807 - 1
     print("{}\n", time.to_unix(time.from_unix(lo)) is lo)
     hi: i64 = 9223372036854775807

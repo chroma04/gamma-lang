@@ -4,12 +4,12 @@
 
 This chapter shows the smallest Gamma program, explains what you can do with the `gamma` tool today, and sketches how source files and modules fit together.
 
-One idea runs through everything that follows: in Gamma, **everything a function depends on appears in its signature**. You will see it in the very first program, whose `\ {Out}` says that it writes output.
+One idea runs through everything that follows: in Gamma, **everything a function depends on appears in its signature**. You will see it in the very first program, whose `needs Out` says that it writes output.
 
 ## Hello, world
 
 ```gamma
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("hello, world\n")
 }
 ```
@@ -18,7 +18,7 @@ Four things are happening here, and each one comes back in later chapters.
 
 - `main :: ...` **binds a name**. In Gamma, `::` introduces an immutable binding, and everything at the top level of a file is one: functions, types, constants, imports. There is no separate "function declaration" syntax; a function is a value written as `fn(...) { ... }` and given a name with `::`.
 - `fn()` is a function with no parameters and no `-> T`, so it returns `()` (the unit value).
-- `\ {Out}` is the function's **effect set**. It says "this function may perform output, and the caller must provide something to handle it". `print` performs the `Out` effect, so any function that calls `print` must either list `Out` or handle it. For `main`, the runtime installs a default handler that writes to standard output, so `\ {Out}` is all it takes. Leave it off and the program is rejected: Gamma does not allow I/O to happen without the signature saying so. [Chapter 7](07-effects.md) explains effects fully.
+- `needs Out` is the function's **effect set**. It says "this function may perform output, and the caller must provide something to handle it". `print` performs the `Out` effect, so any function that calls `print` must either list `Out` or handle it. For `main`, the runtime installs a default handler that writes to standard output, so `needs Out` is all it takes. Leave it off and the program is rejected: Gamma does not allow I/O to happen without the signature saying so. [Chapter 7](07-effects.md) explains effects fully.
 - `print("hello, world\n")` writes the string. There is no implicit newline, and adjacent string literals are never concatenated.
 
 `print` takes a template with `{}` placeholders, followed by one value for each placeholder:
@@ -26,7 +26,7 @@ Four things are happening here, and each one comes back in later chapters.
 ```gamma
 square :: fn(x: i32) -> i32 => x * x
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n :: 12
     print("{}\n", square(n))
     print("{} squared is {}\n", n, square(n))
@@ -50,17 +50,17 @@ A spec that does not fit the argument (`{:x}` on a float) is a compile error.
 
 ```gamma
 // 1. no result: exit status 0
-main :: fn() \ {Out} { ... }
+main :: fn() needs Out { ... }
 
 // 2. an exit status
-main :: fn() -> u8 \ {Out} {
+main :: fn() -> u8 needs Out {
     print("something went wrong\n")
     return 2
 }
 
 // 3. a result: success exits with 0, an error prints its type and variant
 //    to standard error and exits with 1
-main :: fn() -> E!() \ {Out} { ... }
+main :: fn() -> E!() needs Out { ... }
 ```
 
 (Only one `main` can exist in a module, of course; the three are alternatives.) Chapter 5 covers the `E!()` form.
@@ -260,7 +260,7 @@ hello/
 `greet/greet.gm` defines a public function:
 
 ```gamma
-pub hello :: fn(name: string) \ {Out} {
+pub hello :: fn(name: string) needs Out {
     print("hello, {}\n", name)
 }
 ```
@@ -270,7 +270,7 @@ and `main.gm` imports the directory as a module:
 ```gamma
 greet :: import "./greet"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     greet.hello("Ada")
 }
 ```

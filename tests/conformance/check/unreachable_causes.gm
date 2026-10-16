@@ -31,7 +31,7 @@ stop :: fn() {
     _ = 4                                 //~ ERROR unreachable code
 }
 
-op :: fn() \ {Stop} {
+op :: fn() needs Stop {
     halt()                                //~ NOTE this operation never returns
     _ = 5                                 //~ ERROR unreachable code
 }

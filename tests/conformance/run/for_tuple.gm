@@ -1,10 +1,10 @@
 // `for` over a tuple whose elements have one type iterates over its elements (§13.2).
 pair :: fn() -> (string, string) => ("x", "y")
-noisy :: fn(x: i32) -> i32 \ {Out} {
+noisy :: fn(x: i32) -> i32 needs Out {
     print("[{}]", x)
     return x
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for x in (1, 2, 3) { print("{} ", x) }
     print("\n")
     t := (10u8, 20u8, 30u8)

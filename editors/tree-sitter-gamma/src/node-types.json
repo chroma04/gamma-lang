@@ -48,10 +48,6 @@
         "named": true
       },
       {
-        "type": "effect_set",
-        "named": true
-      },
-      {
         "type": "effect_type",
         "named": true
       },
@@ -1116,29 +1112,6 @@
     "children": {
       "multiple": true,
       "required": false,
-      "types": [
-        {
-          "type": "_type_atom",
-          "named": true
-        },
-        {
-          "type": "effect_spread",
-          "named": true
-        },
-        {
-          "type": "error_union_type",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "effect_spread",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
       "types": [
         {
           "type": "_type_atom",
@@ -3585,10 +3558,6 @@
     "named": false
   },
   {
-    "type": "\\",
-    "named": false
-  },
-  {
     "type": "]",
     "named": false
   },
@@ -3733,6 +3702,10 @@
   },
   {
     "type": "match",
+    "named": false
+  },
+  {
+    "type": "needs",
     "named": false
   },
   {

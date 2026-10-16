@@ -42,7 +42,7 @@ swap_in :: fn(T: type, a: ^T, b: ^T) {
     b^ = t
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := mk(1)
     p = Pair(a: p.b, b: p.a)
     print("swap-ctor {} {} {} {}\n", p.a[0], p.a[4], p.b[0], p.b[4])

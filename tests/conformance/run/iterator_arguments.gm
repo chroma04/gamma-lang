@@ -2,23 +2,23 @@
 // `collect`, `count`, `nth` and `zip` (§21.4).
 str :: import "std/str"
 
-evens :: fn(xs: []const i32) \ {Yield(i32)} {
+evens :: fn(xs: []const i32) needs Yield(i32) {
     for x in xs { if x % 2 is 0 { yield(x) } }
 }
 
 // A function of the program with an iterator parameter; `T` is inferred.
-sum_of :: fn(T: type, it: fn() \ {Yield(T)}) -> T where Num(T) {
+sum_of :: fn(T: type, it: fn() needs Yield(T)) -> T where Num(T) {
     s: T = 0
     for x in it() { s += x }
     return s
 }
 
-numbers :: fn(n: i32, calls: ^u32) \ {Yield(i32)} {
+numbers :: fn(n: i32, calls: ^u32) needs Yield(i32) {
     calls^ += 1
     for i in 0..n { yield(i) }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     line := "alpha beta  gamma"
     words := collect(str.fields(line)) else trap()
     defer words.deinit()

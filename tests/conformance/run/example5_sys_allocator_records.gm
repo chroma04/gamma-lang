@@ -53,7 +53,7 @@ COUNTING_VT :: AllocVtable(alloc: counting_alloc, resize: counting_resize, free:
 N :: 2000
 
 // Builds a linked list of records inside whatever allocator is current; returns the head.
-build_list :: fn(n: u32) -> AllocError!?^Rec \ {Alloc} {
+build_list :: fn(n: u32) -> AllocError!?^Rec needs Alloc {
     head: ?^Rec = null
     for i in 0..n {
         r := make_rec(i)
@@ -73,7 +73,7 @@ sum_list :: fn(h: ?^Rec) -> u64 {
     return t
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     print("size {}\n", @size_of(Rec))
     expected: u64 = 0
     for i in 0..N { expected = expected +% digest(make_rec(i.trunc(u32))) }

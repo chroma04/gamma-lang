@@ -4,7 +4,7 @@ io :: import "std/io"
 fs :: import "std/fs"
 
 // Counts the lines; a line that is too long for the reader is reported and skipped.
-count :: fn() -> IoError!(lines: u32, longest: usize) \ {In, Out} {
+count :: fn() -> IoError!(lines: u32, longest: usize) needs In + Out {
     r := io.reader()
     lines: u32 = 0
     longest: usize = 0
@@ -23,7 +23,7 @@ count :: fn() -> IoError!(lines: u32, longest: usize) \ {In, Out} {
 
 hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 
-main :: fn() -> fs.ReadError!() \ {Out, In, Fs, Rand, Alloc} {
+main :: fn() -> fs.ReadError!() needs Out + In + Fs + Rand + Alloc {
     // Standard input, then a string, through the same function.
     c := try count()
     print("stdin: {} lines, longest {}\n", c.lines, c.longest)

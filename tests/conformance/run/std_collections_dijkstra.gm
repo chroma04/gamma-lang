@@ -20,7 +20,7 @@ free_graph :: fn(adj: ^List(List(Edge))) {
     adj.deinit()
 }
 
-make_graph :: fn(n: usize) -> AllocError!List(List(Edge)) \ {Alloc} {
+make_graph :: fn(n: usize) -> AllocError!List(List(Edge)) needs Alloc {
     adj := list(List(Edge))
     errdefer free_graph(&adj)
     for _ in 0..n { try adj.push(list(Edge)) }
@@ -34,7 +34,7 @@ add_edge :: fn(adj: ^List(List(Edge)), a, b, w: u32) -> AllocError!() {
 }
 
 // With the heap of tuples ordered by distance first.
-shortest :: fn(adj: []List(Edge), src: u32, dist: []u32) -> AllocError!() \ {Alloc} {
+shortest :: fn(adj: []List(Edge), src: u32, dist: []u32) -> AllocError!() needs Alloc {
     for i in 0..dist.len { dist[i] = INF }
     pq := hp.heap((u32, u32))
     defer pq.deinit()
@@ -87,7 +87,7 @@ State :: struct {
 
 cheaper :: fn(a, b: ^const State) -> bool => a.cost < b.cost
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // A small graph with a known answer.
     g := try make_graph(6)
     defer free_graph(&g)

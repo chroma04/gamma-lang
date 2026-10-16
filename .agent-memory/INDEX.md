@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-15) — PRs #1–#37 merged; #38 open (s15 design review + its implementation)
+## State (2026-10-16) — PRs #1–#38 merged; s16 PR open (effect syntax `needs A + B`)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -19,8 +19,8 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive PR #38 to merge (s15: design review + all of its changes, decisions/025,
-   sessions/s15-2026-10-15-vision.md).
+1. Drive the s16 PR (branch claude/stoic-davinci-afgofy) to merge: effect sets written
+   `needs A + B`, `needs not` for pure foreign fns (decisions/026).
 2. bugs-open.md: #50–53 (parser postfix after prefixed construction, `cont` local, fallback
    type of literal locals, diagnostics), #48–49 (gcc on huge C functions/expressions), Safe
    new/destroy (~4x Checked).
@@ -44,15 +44,16 @@
                   · 019 perf round s9 (where time goes, what was measured/kept/dropped)
                   · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
                   · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
-                  · 022 effect-set parameters (`E: effects`, `..E`, Sched(E))
+                  · 022 effect-set parameters (`E: effects`, `needs E`, Sched(E))
                   · 023 tooling: packages, LSP, editor grammars, release
                   · 024 locals not named like types (+ local consts at comptime, scope isolation)
                   · 025 design review (thesis, principles; implemented: cancel, Test effect, rest
                     params, named args/inferable params, universe w/o ops, named effect sets)
+                  · 026 effect syntax `needs A + B`, `needs not` (foreign only), no `..E`
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
-                  · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md
+                  · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
 - gotchas/        environment.md
 
 ## Conventions
@@ -61,5 +62,6 @@
   Path::canonicalize (Windows \\?\ paths).
 - Work in git worktrees for parallel agents (`isolation: worktree`); merge their branches.
 - Docs for humans in docs/ and README.md; never reference this folder from them.
+- Effects: `fn() -> T needs Alloc + Out`; set args `Sched(Out + Clock)`; pure C fn `needs not`.
 - `print("{} {}", a, b)`: values are rest args. Ops qualified: `Clock.now()`. Inferable type
   params by name, first: `new(T: Page, ---)`. Tests: `ok(x)`, no `try`.

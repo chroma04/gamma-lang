@@ -197,7 +197,7 @@ sum :: fn(p: Point) -> i32 {
     return p.x + p.y
 }
 
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     pt := Point(x: 1, y: 2)
     total := sum(pt)
     print(\"{}\\n\", total)
@@ -344,7 +344,7 @@ fn hover_definition_references_and_symbols() {
 
     // Hover on `main`'s effect signature.
     let h = lsp.result("textDocument/hover", lsp.at(&path, 10, 1));
-    assert!(h["contents"]["value"].as_str().unwrap().contains("main :: fn() \\ {Out}"));
+    assert!(h["contents"]["value"].as_str().unwrap().contains("main :: fn() needs Out"));
 
     // Definition of the call of `sum`.
     let d = lsp.result("textDocument/definition", lsp.at(&path, 12, 14));
@@ -853,7 +853,7 @@ later :: fn() -> i32 => helper(2)
 const LIST_SRC: &str = include_str!("../lib/core/list.gm");
 
 /// A program that calls `list` (line 1, column 11).
-const CORE_PROGRAM: &str = "main :: fn() \\ {Alloc} {\n    xs := list(i32)\n    _ = xs\n}\n";
+const CORE_PROGRAM: &str = "main :: fn() needs Alloc {\n    xs := list(i32)\n    _ = xs\n}\n";
 
 #[test]
 fn definition_in_the_core_library_points_into_the_source_tree() {

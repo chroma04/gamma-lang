@@ -3,7 +3,7 @@ increment :: fn(counter: ^u32) -> u32 => @atomic_add(counter, 1, .SeqCst)
 
 lock :: fn(flag: ^u32) -> bool => @atomic_cas(flag, 0, 1, .Acquire, .Relaxed) is null
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     n: u32 = 5
     print("{} {}\n", increment(&n), n)
     flag: u32 = 0

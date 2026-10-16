@@ -163,6 +163,7 @@
   "cancel"
   "with"
   "on"
+  "needs"
 ] @keyword
 
 [
@@ -224,7 +225,6 @@
   "+|=" "-|=" "*|=" "<<|="
   "=>" "->" "::"
   "!" "?" "^"
-  "\\"
 ] @operator
 
 ; Punctuation

@@ -39,7 +39,7 @@ left_of :: fn(o: ^const spec.Opt, b: ^str.Builder) {
 }
 
 /// One line: `Usage: prog [OPTIONS] <a> [b...]`.
-pub usage :: fn(sp: ^const spec.Spec) \ {Out} {
+pub usage :: fn(sp: ^const spec.Spec) needs Out {
     print("Usage: {} [OPTIONS]", sp.program)
     for p in sp.positionals() {
         if p.required { print(" <{}>", p.name) } else { print(" [{}]", p.name) }
@@ -48,7 +48,7 @@ pub usage :: fn(sp: ^const spec.Spec) \ {Out} {
     print("\n")
 }
 
-pub help :: fn(sp: ^const spec.Spec) \ {Out} {
+pub help :: fn(sp: ^const spec.Spec) needs Out {
     usage(sp)
     print("\n{}\n", sp.about)
     pos := sp.positionals()

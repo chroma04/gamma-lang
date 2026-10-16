@@ -11,7 +11,7 @@ swap_op :: fn(o: ^Ops) -> i64 {
     o.f = neg
     return 10
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n: i64 = 0
     print("{}\n", pick(&n)(n))
     o := Ops(f: dbl)

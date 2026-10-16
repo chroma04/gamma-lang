@@ -1,6 +1,6 @@
 //! exit: 134
 // A shift by at least the width of a wide integer traps.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u200 = 1
     n: u16 = 199
     print("{}\n", x << n)

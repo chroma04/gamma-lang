@@ -1,10 +1,10 @@
 // A `for` body's `yield` goes to the handlers outside the loop, even in generic code (§16.6).
-repeat_each :: fn(T: type, xs: []const T, times: u32) \ {Yield(T)} {
+repeat_each :: fn(T: type, xs: []const T, times: u32) needs Yield(T) {
     for _ in 0..times {
         for x in xs { yield(x) }
     }
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     xs := [2]i32(1, 2)
     for v in repeat_each(xs[..], 3) { print("{} ", v) }
     print("\n")

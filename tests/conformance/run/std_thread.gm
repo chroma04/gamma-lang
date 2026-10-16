@@ -6,7 +6,7 @@ Counter :: struct {
     m: thread.Mutex
 }
 
-bump :: fn(c: ^Counter) \ {Sys} {
+bump :: fn(c: ^Counter) needs Sys {
     for i in 0..2000 {
         c.m.lock()
         c.n += 1
@@ -22,14 +22,14 @@ Pipe :: struct {
     producers: thread.WaitGroup
 }
 
-produce :: fn(p: ^Pipe) \ {Sys} {
+produce :: fn(p: ^Pipe) needs Sys {
     for i in 1..101 {
         _ = p.ch.send(i)
     }
     p.producers.done()
 }
 
-consume :: fn(p: ^Pipe) \ {Sys} {
+consume :: fn(p: ^Pipe) needs Sys {
     while true {
         x := p.ch.recv() else break
         _ = @atomic_add(&p.sum, x, .Relaxed)
@@ -45,7 +45,7 @@ Gate :: struct {
     through: u32
 }
 
-pass :: fn(g: ^Gate) \ {Sys} {
+pass :: fn(g: ^Gate) needs Sys {
     g.m.lock()
     while not g.open { g.cv.wait(&g.m) }
     g.through += 1
@@ -57,14 +57,14 @@ Job :: struct {
     done_count: u32
 }
 
-task :: fn(j: ^Job) \ {Sys} {
+task :: fn(j: ^Job) needs Sys {
     _ = @atomic_add(&j.done_count, 1, .Relaxed)
     j.wg.done()
 }
 
 Fail :: union { Io: IoError, Mem: AllocError }
 
-main :: fn() -> Fail!() \ {Out, Sys, Alloc, Clock} {
+main :: fn() -> Fail!() needs Out + Sys + Alloc + Clock {
     // Mutex
     c := Counter(n: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---

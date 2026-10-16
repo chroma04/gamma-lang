@@ -1,7 +1,7 @@
 // 1000000 allocations and frees of a small struct through the ambient allocator.
 P :: struct { a: i64, b: i64 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     s: i64 = 0
     for i in 0..1000000 {
         p := try new(P(a: i, b: 1))

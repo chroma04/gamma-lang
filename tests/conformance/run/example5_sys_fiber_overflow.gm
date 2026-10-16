@@ -5,19 +5,19 @@ Gen :: effect { emit: ctl(x: u32) }
 
 Rec :: struct { words: [256]u64 }
 
-leaf :: fn(r: Rec, depth: u32) -> u32 \ {Gen} {
+leaf :: fn(r: Rec, depth: u32) -> u32 needs Gen {
     emit(depth)
     return r.words[3].trunc(u32) + depth
 }
 
-descend :: fn(r: Rec, depth: u32) -> u32 \ {Gen} {
+descend :: fn(r: Rec, depth: u32) -> u32 needs Gen {
     if depth is 0 { return leaf(r, 0) }
     s := r
     s.words[3] += 1
     return descend(s, depth - 1) + 1
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [40000]u8 = ---
     with (handler Gen { emit(x, k) => resume k() }) on stack[..] {
         r := Rec(words: [256]u64(fill: 5))

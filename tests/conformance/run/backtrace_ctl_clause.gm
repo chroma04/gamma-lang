@@ -9,11 +9,11 @@ check :: fn(n: i32) -> i32 {
     return n
 }
 
-produce :: fn() \ {Ask, Gen} {
+produce :: fn() needs Ask + Gen {
     for i in 0..10 { emit(ask(i)) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [32768]u8 = ---
     with (handler Ask { ask(n) => check(n) }) {
         with (handler Gen {

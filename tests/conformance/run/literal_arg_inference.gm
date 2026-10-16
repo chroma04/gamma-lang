@@ -1,7 +1,7 @@
 // Function literal arguments of generic calls take their parameter types from what the
 // call has inferred so far; the rest (a key type) is inferred from the literal (§16.2).
 P :: struct { first, last: string }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [4]u32(3, 1, 4, 1)
     a.stable_sort_by_key(fn(x) => x^ % 3)
     print("{}\n", a)

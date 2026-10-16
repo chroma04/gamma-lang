@@ -1,6 +1,6 @@
 //! needs: f16
 // A float suffix on a decimal integer and a hexadecimal float without a fraction (§2.5.2).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := 1f32
     b: f64 = 0x1p4
     c := 0x1p-2f32

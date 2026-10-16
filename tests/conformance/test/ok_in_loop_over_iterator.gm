@@ -1,6 +1,6 @@
 //! stage: test
 // `ok` inside the body of a `for` over an iterator, which is a handler clause of the test.
-words :: fn(text: string) \ {Yield(string)} {
+words :: fn(text: string) needs Yield(string) {
     yield(text)
 }
 

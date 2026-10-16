@@ -20,12 +20,12 @@ Lru :: struct {
     evictions: u32 = 0
 }
 
-lru :: fn(capacity: usize) -> AllocError!Lru \ {Alloc} {
+lru :: fn(capacity: usize) -> AllocError!Lru needs Alloc {
     slots := try make_fill(capacity, Slot(key: 0, value: 0, stamp: 0, expires: 0))
     return Lru(slots: slots)
 }
 
-drop :: fn(c: ^Lru) \ {Alloc} {
+drop :: fn(c: ^Lru) needs Alloc {
     free(c.slots)
 }
 
@@ -36,7 +36,7 @@ find_slot :: fn(c: ^Lru, key: u32) -> ?usize {
     return null
 }
 
-put :: fn(c: ^Lru, key: u32, value: i64, ttl: Duration) \ {Clock} {
+put :: fn(c: ^Lru, key: u32, value: i64, ttl: Duration) needs Clock {
     c.clock += 1
     expires: u64 = if ttl.ns is 0 { 0 } else { Clock.now().ns + ttl.ns }
     if i := find_slot(c, key) {
@@ -56,7 +56,7 @@ put :: fn(c: ^Lru, key: u32, value: i64, ttl: Duration) \ {Clock} {
     c.slots[victim] = Slot(key: key, value: value, stamp: c.clock, expires: expires, used: true)
 }
 
-get :: fn(c: ^Lru, key: u32) -> ?i64 \ {Clock} {
+get :: fn(c: ^Lru, key: u32) -> ?i64 needs Clock {
     c.clock += 1
     idx := find_slot(c, key)
     if idx is null {
@@ -76,7 +76,7 @@ get :: fn(c: ^Lru, key: u32) -> ?i64 \ {Clock} {
 
 // ---- persistence ---------------------------------------------------------------------------------
 
-save :: fn(c: ^const Lru, path: string) -> fs.ReadError!() \ {Fs} {
+save :: fn(c: ^const Lru, path: string) -> fs.ReadError!() needs Fs {
     f := try Fs.open(path, fs.OpenOptions(read: false, write: true, create: true, truncate: true))
     defer Fs.close(f)
     for s in c.slots {

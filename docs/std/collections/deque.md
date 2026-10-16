@@ -46,7 +46,7 @@ The deque must not change while the cursor is in use.
 ### `deque`
 
 ```gamma
-deque :: fn(T: type) -> Deque(T) \ {Alloc}
+deque :: fn(T: type) -> Deque(T) needs Alloc
 ```
 
 An empty deque using the current allocator. It allocates on the first push.
@@ -167,7 +167,7 @@ Frees the deque's storage through its own allocator.
 ### `items`
 
 ```gamma
-items :: fn(T: type, d: ^const Deque(T)) \ {Yield(T)}
+items :: fn(T: type, d: ^const Deque(T)) needs Yield(T)
 ```
 
 The elements from front to back. The deque must not change during the iteration.

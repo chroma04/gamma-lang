@@ -8,8 +8,8 @@ Versions and what each kind of change means are described in
 
 ### Added
 
-- Named effect sets: `Io :: \ {Fs, Alloc, Err}` names a list of effects, spliced into
-  an effect set as `\ {..Io, Clock}`, and usable as the argument of an effect-set
+- Named effect sets: `Io :: Fs + Alloc + Err` names a list of effects, used in an
+  effect set as `needs Io + Clock`, and usable as the argument of an effect-set
   parameter (§12.3).
 - Windows (x86_64): the interpreter and the C back end (`gamma build`, `--backend=c`,
   `gamma test`) run on Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is
@@ -40,6 +40,13 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Breaking:** effect sets are written after the keyword `needs` and joined with `+`:
+  `fn(p: ^Parser) -> Value needs Alloc + Out` instead of `\ {Alloc, Out}`. A named set or
+  an effect-set parameter is a plain term (`needs Io + Clock`, `needs Sched(E) + E`; no
+  more `..E`), and an effect-set argument is a set without `needs`
+  (`fiber.scheduler(Out + Clock)`). A pure foreign function is declared `needs not`,
+  which is allowed only there. `needs` is a new keyword. Braces now hold only code and
+  members.
 - **Breaking:** the universe scope holds the predeclared effects but not their
   operations, except `yield`: write `Clock.now()`, `Alloc.current()`, `Env.args()`,
   `Fs.open(path, opts)` (methods on files and sockets are unchanged). The types of `Fs`

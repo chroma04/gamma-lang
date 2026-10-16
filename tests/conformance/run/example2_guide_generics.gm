@@ -57,7 +57,7 @@ dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
 
 use_dot :: fn(xs, ys: []const i32) -> i32 => dot(SAT_RING, xs, ys)
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     st := stack(i32, 4)
     _ = st.push(10)
     _ = st.push(20)

@@ -6,7 +6,7 @@ sum :: fn(T: type, xs: []const T) -> T where Num(T) {
     for x in xs { t += x }
     return t
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: i16 = 1
     T :: @type_of(x)
     Bytes :: []const u8

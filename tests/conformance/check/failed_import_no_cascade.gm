@@ -2,7 +2,7 @@
 // A failed import is reported once; uses of its members add no further errors.
 lib :: import "./no_such_module"        //~ ERROR cannot find the module directory
 g :: fn(p: lib.P) -> lib.P => p
-h :: fn() \ {lib.Log} { }
+h :: fn() needs lib.Log { }
 main :: fn() {
     x: lib.T = lib.make()
     _ = x

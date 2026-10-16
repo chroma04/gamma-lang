@@ -6,7 +6,7 @@ net :: import "std/net"
 // A connected pair: the client end and the accepted server end.
 Pair :: struct { client: net.Socket, server: net.Socket, port: u16 }
 
-connected :: fn() -> IoError!Pair \ {Net} {
+connected :: fn() -> IoError!Pair needs Net {
     l := try Net.listen("127.0.0.1", 0)
     port := try l.local_port()
     c := try Net.connect("127.0.0.1", port)

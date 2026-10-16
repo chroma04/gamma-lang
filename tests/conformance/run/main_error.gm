@@ -2,4 +2,4 @@
 //! stderr
 // An error returned by `main` is reported with its type and variant (§3.7).
 E :: union { Bad, Worse: (code: i32) }
-main :: fn() -> E!() \ {Out} { return !.Worse(code: 3) }
+main :: fn() -> E!() needs Out { return !.Worse(code: 3) }

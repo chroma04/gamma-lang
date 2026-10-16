@@ -1,7 +1,7 @@
 // Integers of odd widths occupy the next power of two bytes.
 bytes :: import "std/bytes"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b: [4]u8 = [_]u8(0, 0, 0, 0)
     bytes.write_int(T: u24, b[..], 0x123456, .Big)
     print("{} {} {} {}\n", b[0], b[1], b[2], b[3])

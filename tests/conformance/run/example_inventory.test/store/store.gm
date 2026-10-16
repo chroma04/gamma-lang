@@ -45,7 +45,7 @@ pub Store :: struct {
     pub items: List(model.Item)
 }
 
-pub store :: fn() -> Store \ {Alloc} => Store(items: list(model.Item))
+pub store :: fn() -> Store needs Alloc => Store(items: list(model.Item))
 
 pub deinit :: fn(s: ^Store) { s.items.deinit() }
 
@@ -56,7 +56,7 @@ find_index :: fn(s: ^const Store, sku: u32) -> ?usize {
     return null
 }
 
-pub register :: fn(s: ^Store, it: model.Item) -> Failure!() \ {Alloc, Audit} {
+pub register :: fn(s: ^Store, it: model.Item) -> Failure!() needs Alloc + Audit {
     if find_index(s, it.sku) is not null {
         record(.Rejected(it.sku))
         return !.Stock(.Duplicate(it.sku))
@@ -65,7 +65,7 @@ pub register :: fn(s: ^Store, it: model.Item) -> Failure!() \ {Alloc, Audit} {
     return ()
 }
 
-pub receive :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() \ {Audit} {
+pub receive :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() needs Audit {
     i := find_index(s, sku)
     if i is null {
         record(.Rejected(sku))
@@ -76,7 +76,7 @@ pub receive :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() \ {Audit} {
     return ()
 }
 
-pub ship :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() \ {Audit} {
+pub ship :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() needs Audit {
     idx := find_index(s, sku)
     if idx is null {
         record(.Rejected(sku))

@@ -1,6 +1,6 @@
 //! exit: 134
 // Dividing a wide integer by zero traps.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: i256 = -(1 << 200)
     zero: i256 = 0
     print("{}\n", a / (zero + 4))

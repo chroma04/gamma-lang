@@ -44,7 +44,7 @@ decode :: fn(buf: []const u8) -> ?Header {
     return h
 }
 
-dump :: fn(bs: []const u8) \ {Out} {
+dump :: fn(bs: []const u8) needs Out {
     for b in bs { print("{} ", b) }
     print("\n")
 }
@@ -141,7 +141,7 @@ count_bits :: fn(s: ^const BitSet) -> u32 {
     return n
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     f := Flags(syn: true, ack: false, fin: false, rst: true, prio: 5)
     print("flags {} = {}\n", f, u8(f))
     h := Header(magic: 0xCAFE, flags: u8(f), len: 300, seq: 0x01020304)

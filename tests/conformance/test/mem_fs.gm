@@ -5,7 +5,7 @@ fs :: import "std/fs"
 
 WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
 
-put :: fn(path: string, text: string) -> IoError!() \ {Fs} {
+put :: fn(path: string, text: string) -> IoError!() needs Fs {
     f := try Fs.open(path, WRITE)
     defer f.close()
     n := try f.write_to(text)
@@ -13,7 +13,7 @@ put :: fn(path: string, text: string) -> IoError!() \ {Fs} {
 }
 
 // Reads a whole file into `buf` and returns its length.
-slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
+slurp :: fn(path: string, buf: []u8) -> IoError!usize needs Fs {
     f := try Fs.open(path, fs.OpenOptions())
     defer f.close()
     total: usize = 0
@@ -26,7 +26,7 @@ slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
 }
 
 // True if the file at `path` holds exactly `text`.
-holds :: fn(path: string, text: string) -> IoError!bool \ {Fs} {
+holds :: fn(path: string, text: string) -> IoError!bool needs Fs {
     buf: [256]u8 = ---
     n := try slurp(path, buf[..])
     return buf[0..n] is text
@@ -35,7 +35,7 @@ holds :: fn(path: string, text: string) -> IoError!bool \ {Fs} {
 // The number of entries of a directory, and whether `name` is one of them.
 Listing :: struct { count: usize, found: bool }
 
-list_dir :: fn(path: string, name: string) -> IoError!Listing \ {Fs} {
+list_dir :: fn(path: string, name: string) -> IoError!Listing needs Fs {
     d := try Fs.open_dir(path)
     defer d.close_dir()
     buf: [32]u8 = ---

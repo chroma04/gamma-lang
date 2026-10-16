@@ -3,8 +3,8 @@
 // Tests of a module that calls C (§3.8, §19.2): `gamma test` runs them natively.
 c :: import "std/c"
 libc :: foreign "c" {
-    strlen :: fn(s: cstring) -> usize \ {}
-    #link_name("abs") absolute :: fn(x: c.c_int) -> c.c_int \ {}
+    strlen :: fn(s: cstring) -> usize needs not
+    #link_name("abs") absolute :: fn(x: c.c_int) -> c.c_int needs not
 }
 
 ParseError :: union { TooLong }

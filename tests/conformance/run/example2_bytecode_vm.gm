@@ -42,7 +42,7 @@ pop :: fn(vm: ^Vm) -> i64 {
     return vm.stack[vm.sp]
 }
 
-run :: fn(vm: ^Vm, code: []const Op, max_steps: u32) \ {Io, Trace} {
+run :: fn(vm: ^Vm, code: []const Op, max_steps: u32) needs Io + Trace {
     while true {
         if vm.steps >= max_steps { fuel(vm.pc) }
         vm.steps += 1
@@ -93,14 +93,14 @@ handler Trace for ^Recorder {
     }
 }
 
-execute :: fn(name: string, code: []const Op, budget: u32) \ {Out} {
+execute :: fn(name: string, code: []const Op, budget: u32) needs Out {
     vm := Vm(stack: ---, regs: [4]i64(fill: 0))
     rec := Recorder(out: ---)
     with &rec { run(&vm, code, budget) }
     print("{}: steps {} trace {} depth {} out {}\n", name, vm.steps, rec.trace_len, rec.max_depth, rec.out[0..rec.n])
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fact := FACT
     execute("fact", fact[..], 1000)
     spin := SPIN

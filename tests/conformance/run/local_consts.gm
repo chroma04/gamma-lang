@@ -7,7 +7,7 @@ table :: fn(n: u32) -> [8]u32 {
     return t
 }
 apply :: fn(f: ^fn(x: i32) -> i32, v: i32) -> i32 => f(v)
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     K :: square(4)
     T :: table(3)
     g :: fn(x: i32) -> i32 => x + K + T[2].trunc(i32)

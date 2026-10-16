@@ -1,11 +1,11 @@
 //! stage: check
 // A function literal that performs effects outside its type carries the handlers where
 // it is written: it is second-class, and never a function pointer (§11.6, §11.7).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s := (fn() { print("hi\n") }, 1) //~ ERROR cannot be a tuple element
     a: ?^fn() = fn() { print("hi\n") } //~ ERROR `Out` is not among them
     x := if true { fn() { print("a\n") } } else { fn() { print("b\n") } } //~ ERROR may only be bound with `::`
-    f :: fn() \ {Out} { print("ok\n") }
+    f :: fn() needs Out { print("ok\n") }
     f()
     (fn() { print("ok\n") })()
 }

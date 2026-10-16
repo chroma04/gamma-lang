@@ -14,12 +14,12 @@ through_pointer :: fn(f: ^fn() -> i32) -> i32 {
     return f()                       //~ ERROR a function value whose target is not known statically
 }
 
-logs :: fn() \ {Log} {
+logs :: fn() needs Log {
     log(1)                           //~ ERROR the handler of `Log` performed here is not known statically
 }
 
 libc :: foreign "c" {
-    strlen :: fn(s: cstring) -> usize \ {}
+    strlen :: fn(s: cstring) -> usize needs not
 }
 
 measure :: fn() -> usize {

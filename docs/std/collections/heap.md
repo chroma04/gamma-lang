@@ -37,7 +37,7 @@ A priority queue: a binary heap in a growable array.
 ### `heap`
 
 ```gamma
-heap :: fn(T: type) -> Heap(T) \ {Alloc} where Ord(T)
+heap :: fn(T: type) -> Heap(T) needs Alloc where Ord(T)
 ```
 
 An empty heap that yields the smallest element first (by `<`), using the current allocator.
@@ -45,7 +45,7 @@ An empty heap that yields the smallest element first (by `<`), using the current
 ### `heap_by`
 
 ```gamma
-heap_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool) -> Heap(T) \ {Alloc}
+heap_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool) -> Heap(T) needs Alloc
 ```
 
 An empty heap that yields first the element that `less` puts before all others, using
@@ -55,7 +55,7 @@ be a strict weak ordering (`fn(a, b) => a^ > b^` makes a max-heap).
 ### `heap_from`
 
 ```gamma
-heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) \ {Alloc} where Ord(T)
+heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) needs Alloc where Ord(T)
 ```
 
 A heap holding a copy of `xs`, built in O(n) time, that yields the smallest element first.
@@ -63,7 +63,7 @@ A heap holding a copy of `xs`, built in O(n) time, that yields the smallest elem
 ### `heap_from_by`
 
 ```gamma
-heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) \ {Alloc}
+heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) needs Alloc
 ```
 
 Like `heap_from`, ordered by `less` as for `heap_by`.

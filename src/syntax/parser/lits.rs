@@ -406,7 +406,7 @@ impl Parser<'_> {
         if !self.at_kw(Keyword::Fn) {
             return self.expected("a function type like `fn(args) -> T`");
         }
-        let sig = self.parse_fn_type_sig()?;
+        let sig = self.parse_foreign_fn_sig()?;
         Ok(ForeignMember { attrs, kind: ForeignMemberKind::Fn { name, sig }, span: self.span_from(start) })
     }
 }

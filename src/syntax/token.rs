@@ -121,7 +121,7 @@ keywords! {
     And = "and", Break = "break", Cancel = "cancel", Continue = "continue", Ctl = "ctl",
     Defer = "defer", Effect = "effect", Else = "else", Errdefer = "errdefer", Esc = "esc",
     False = "false", Fn = "fn", For = "for", Foreign = "foreign", Handler = "handler", If = "if",
-    Import = "import", In = "in", Is = "is", Match = "match", Not = "not", Null = "null",
+    Import = "import", In = "in", Is = "is", Match = "match", Needs = "needs", Not = "not", Null = "null",
     Or = "or", Pub = "pub", Resume = "resume", Return = "return", Struct = "struct",
     True = "true", Try = "try", Union = "union", Using = "using", When = "when",
     While = "while", With = "with",

@@ -37,7 +37,7 @@ name_of :: fn(p: Product) -> string => match p {
     .Soda => "soda"
 }
 
-step :: fn(s: State, e: Event) -> State \ {Log} {
+step :: fn(s: State, e: Event) -> State needs Log {
     return match s {
         .OutOfOrder(why) => {
             log(.Alert, why)
@@ -87,7 +87,7 @@ Counter :: struct {
     alert: u32 = 0
 }
 
-handler Log for ^Counter \ {Out} {
+handler Log for ^Counter needs Out {
     log(self, level, msg) => {
         match level {
             .Info => { self.info += 1 }
@@ -98,7 +98,7 @@ handler Log for ^Counter \ {Out} {
     }
 }
 
-describe :: fn(s: State) \ {Out} {
+describe :: fn(s: State) needs Out {
     match s {
         .Idle => print("  state: idle\n")
         .Collecting(c) => print("  state: collecting {} cents\n", c)
@@ -107,7 +107,7 @@ describe :: fn(s: State) \ {Out} {
     }
 }
 
-run :: fn(label: string, events: []const Event) \ {Out} {
+run :: fn(label: string, events: []const Event) needs Out {
     print("{}\n", label)
     c := Counter()
     s: State = .Idle
@@ -120,7 +120,7 @@ run :: fn(label: string, events: []const Event) \ {Out} {
     print("  totals: info={} warn={} alert={}\n", c.info, c.warn, c.alert)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [_]Event(
         .Insert(.Quarter), .Insert(.Quarter), .Insert(.Dime),
         .Select(.Soda), .Take, .Take,

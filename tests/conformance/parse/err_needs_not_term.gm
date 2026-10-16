@@ -1,0 +1,6 @@
+//! stage: parse
+// `needs not` is the empty set and ends the signature; it cannot exclude an effect (§19.2).
+
+c :: foreign "c" {
+    abs :: fn(x: i32) -> i32 needs not Alloc   //~ ERROR `needs not` ends the signature
+}

@@ -1,5 +1,5 @@
 // 5000000 pushes onto a List (growth allocates), then a sum.
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     l := list(i64)
     defer l.deinit()
     for i in 0..5000000 { try l.push(i) }

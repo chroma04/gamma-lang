@@ -11,7 +11,7 @@ handler Counter for ^Acc {
     }
 }
 
-work :: fn(n: i64) -> i64 \ {Counter} {
+work :: fn(n: i64) -> i64 needs Counter {
     s: i64 = 0
     for i in 0..n {
         s = bump(i)
@@ -19,7 +19,7 @@ work :: fn(n: i64) -> i64 \ {Counter} {
     return s
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     acc := Acc(total: 0)
     r := with &acc { work(200000) }
     print("{}\n", r)

@@ -8,7 +8,7 @@ STACK :: 65536
 
 Sched :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(a: ^Ctx) -> never \ {Sched, Net, Out}, a: ^Ctx)
+    spawn: ctl(entry: ^fn(a: ^Ctx) -> never needs Sched + Net + Out, a: ^Ctx)
     exit: ctl() -> never
     join: ctl()
 }
@@ -47,7 +47,7 @@ dequeue :: fn(rt: ^Runtime) -> cont(()) {
     return k
 }
 
-handler Sched for ^Runtime \ {Net, Out} {
+handler Sched for ^Runtime needs Net + Out {
     yield_now(self, k) => {
         enqueue(self, k)
         r := dequeue(self)
@@ -82,7 +82,7 @@ handler Sched for ^Runtime \ {Net, Out} {
 
 // ---- Wire helpers ---------------------------------------------------------------
 
-send_all :: fn(s: net.Socket, bytes: string) -> IoError!() \ {Net, Sched} {
+send_all :: fn(s: net.Socket, bytes: string) -> IoError!() needs Net + Sched {
     done: usize = 0
     while done < bytes.len {
         match s.send(bytes[done..bytes.len]) {
@@ -94,7 +94,7 @@ send_all :: fn(s: net.Socket, bytes: string) -> IoError!() \ {Net, Sched} {
 }
 
 // Reads until `buf` holds a complete message (headers plus Content-Length bytes) or the peer closes.
-read_message :: fn(s: net.Socket, buf: []u8) -> IoError!string \ {Net, Sched} {
+read_message :: fn(s: net.Socket, buf: []u8) -> IoError!string needs Net + Sched {
     have: usize = 0
     while have < buf.len {
         match s.recv(buf[have..]) {
@@ -178,7 +178,7 @@ reason :: fn(code: u32) -> string => match code {
     _ => "Unknown"
 }
 
-respond :: fn(s: net.Socket, code: u32, body: string) -> IoError!() \ {Net, Sched} {
+respond :: fn(s: net.Socket, code: u32, body: string) -> IoError!() needs Net + Sched {
     buf: [512]u8 = ---
     b := str.builder(buf[..])
     b.write("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n", code, reason(code), body.len)
@@ -186,7 +186,7 @@ respond :: fn(s: net.Socket, code: u32, body: string) -> IoError!() \ {Net, Sche
     try send_all(s, b.str())
 }
 
-route :: fn(ctx: ^Ctx, req: Request, s: net.Socket) -> IoError!() \ {Net, Sched} {
+route :: fn(ctx: ^Ctx, req: Request, s: net.Socket) -> IoError!() needs Net + Sched {
     body: [128]u8 = ---
     b := str.builder(body[..])
     if req.path is "/hello" {
@@ -219,7 +219,7 @@ route :: fn(ctx: ^Ctx, req: Request, s: net.Socket) -> IoError!() \ {Net, Sched}
 
 // ---- Tasks ----------------------------------------------------------------------
 
-server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+server :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     defer print("server: stopped after {} connections\n", ctx.served)
     while ctx.served < ctx.limit {
         conn := match ctx.listener.accept() {
@@ -249,7 +249,7 @@ server :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
 }
 
 // One request on a fresh connection; prints the status line and body.
-fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
+fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() needs Net + Sched + Out {
     conn := try Net.connect("localhost", ctx.port)
     defer conn.close_socket()
     try send_all(conn, request)
@@ -264,14 +264,14 @@ fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() \ {Net, Sched, Out} {
     print("{}: [{}] {}\n", ctx.name, status, parts.after)
 }
 
-get :: fn(ctx: ^Ctx, target: string) -> IoError!() \ {Net, Sched, Out} {
+get :: fn(ctx: ^Ctx, target: string) -> IoError!() needs Net + Sched + Out {
     buf: [128]u8 = ---
     b := str.builder(buf[..])
     b.write("GET {} HTTP/1.1\r\nHost: localhost\r\n\r\n", target)
     try fetch(ctx, b.str())
 }
 
-alice :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+alice :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     _ = get(ctx, "/hello")
     _ = get(ctx, "/count")
     _ = get(ctx, "/sum?a=40&b=2")
@@ -279,7 +279,7 @@ alice :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
     exit()
 }
 
-bob :: fn(ctx: ^Ctx) -> never \ {Sched, Net, Out} {
+bob :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     _ = get(ctx, "/count")
     _ = get(ctx, "/nope")
     _ = fetch(ctx, "DELETE /hello HTTP/1.1\r\n\r\n")

@@ -6,12 +6,12 @@ libc :: foreign "c" {
     exit :: fn(code: c.c_int) -> never
 }
 
-pick :: fn(n: i32) -> i32 \ {Sys} {
+pick :: fn(n: i32) -> i32 needs Sys {
     if n > 0 { return n }
     libc.exit(3)
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print("{}\n", pick(5))
     _ = pick(0)
     print("not reached\n")

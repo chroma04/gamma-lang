@@ -11,7 +11,7 @@ Reg :: #bits(u32) struct {
     top: u2 = 0
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := Reg(enable: true, mode: 5, prio: 9, count: 4000, flags: 21, top: 3)
     print("{}\n", r)
     raw := u32(r)

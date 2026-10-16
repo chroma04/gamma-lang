@@ -3,7 +3,7 @@ thread :: import "std/thread"
 
 SpinLock :: struct { flag: u32 }
 
-lock :: fn(l: ^SpinLock) \ {Sys} {
+lock :: fn(l: ^SpinLock) needs Sys {
     while true {
         if @atomic_cas(&l.flag, 0, 1, .Acquire, .Relaxed) is null { return }
         thread.yield_now()
@@ -30,7 +30,7 @@ Worker :: struct {
     id: u32
 }
 
-work :: fn(w: ^Worker) \ {Sys} {
+work :: fn(w: ^Worker) needs Sys {
     sh := w.sh
     for i in 0..ITER {
         lock(&sh.lk)
@@ -55,7 +55,7 @@ Ring :: struct {
 
 COUNT :: 300
 
-producer :: fn(r: ^Ring) \ {Sys} {
+producer :: fn(r: ^Ring) needs Sys {
     n: u32 = 0
     while n < COUNT {
         head := @atomic_load(&r.head, .Relaxed)
@@ -70,7 +70,7 @@ producer :: fn(r: ^Ring) \ {Sys} {
     }
 }
 
-consumer :: fn(r: ^Ring) \ {Sys} {
+consumer :: fn(r: ^Ring) needs Sys {
     got: u32 = 0
     while got < COUNT {
         tail := @atomic_load(&r.tail, .Relaxed)
@@ -86,7 +86,7 @@ consumer :: fn(r: ^Ring) \ {Sys} {
     r.received = got
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     sh := Shared(lk: SpinLock(flag: 0), plain: 0, maxseen: 0, bits: 0, parity: 0)
     ws := [NT]Worker(fill: Worker(sh: &sh, id: 0))
     ts: [NT]thread.Thread = ---

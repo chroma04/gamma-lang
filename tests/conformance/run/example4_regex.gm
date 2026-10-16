@@ -64,7 +64,7 @@ Parser :: struct {
     nodes: ^List(Node)
 }
 
-add_node :: fn(p: ^Parser, n: Node) -> RegexError!u32 \ {Alloc} {
+add_node :: fn(p: ^Parser, n: Node) -> RegexError!u32 needs Alloc {
     id := p.nodes.items.len.trunc(u32)
     try p.nodes.push(n)
     return id
@@ -98,7 +98,7 @@ escape_class :: fn(ch: u8, c: ^Class) -> bool {
     return true
 }
 
-parse_class :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+parse_class :: fn(p: ^Parser) -> RegexError!u32 needs Alloc {
     cls := Class(bits: [4]u64(fill: 0))
     negate := false
     if c := peek(p) {
@@ -137,7 +137,7 @@ parse_class :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
     return try add_node(p, .Set(cls))
 }
 
-parse_atom :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+parse_atom :: fn(p: ^Parser) -> RegexError!u32 needs Alloc {
     ch := peek(p) else return !fail(p, "unexpected end")
     p.pos += 1
     return match ch {
@@ -170,7 +170,7 @@ parse_atom :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
     }
 }
 
-parse_rep :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+parse_rep :: fn(p: ^Parser) -> RegexError!u32 needs Alloc {
     atom := try parse_atom(p)
     q := peek(p) else return atom
     if q not in ('*', '+', '?') { return atom }
@@ -187,7 +187,7 @@ parse_rep :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
     return id
 }
 
-parse_cat :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+parse_cat :: fn(p: ^Parser) -> RegexError!u32 needs Alloc {
     acc: ?u32 = null
     while c := peek(p) {
         if c in ('|', ')') { break }
@@ -197,7 +197,7 @@ parse_cat :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
     return acc else try add_node(p, .Empty)
 }
 
-parse_alt :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
+parse_alt :: fn(p: ^Parser) -> RegexError!u32 needs Alloc {
     left := try parse_cat(p)
     if c := peek(p) {
         if c is '|' {
@@ -211,7 +211,7 @@ parse_alt :: fn(p: ^Parser) -> RegexError!u32 \ {Alloc} {
 
 // ------------------------------------------------------------------ compiler
 
-emit :: fn(re: ^Regex, n: u32) -> RegexError!() \ {Alloc} {
+emit :: fn(re: ^Regex, n: u32) -> RegexError!() needs Alloc {
     match re.nodes.items[n] {
         .Empty => {}
         .Lit(c) => try re.prog.push(.Char(c))
@@ -257,7 +257,7 @@ emit :: fn(re: ^Regex, n: u32) -> RegexError!() \ {Alloc} {
     return ()
 }
 
-compile :: fn(pattern: string) -> RegexError!Regex \ {Alloc} {
+compile :: fn(pattern: string) -> RegexError!Regex needs Alloc {
     re := Regex(nodes: list(Node), prog: list(Inst))
     errdefer deinit(&re)
     p := Parser(src: pattern, nodes: &re.nodes)
@@ -399,7 +399,7 @@ nfa_find_from :: fn(re: ^const Regex, text: string, from: usize, steps: ^u64) ->
 }
 
 // Non-overlapping matches, left to right; an empty match advances by one byte.
-find_all :: fn(re: ^const Regex, text: string) \ {Yield(Found)} {
+find_all :: fn(re: ^const Regex, text: string) needs Yield(Found) {
     at: usize = 0
     scratch: u64 = 0
     while at <= text.len {
@@ -421,7 +421,7 @@ replace_all :: fn(re: ^const Regex, text, repl: string, out: ^str.Builder) {
 
 // ------------------------------------------------------------------ driver
 
-report :: fn(pattern, text: string) \ {Out, Alloc} {
+report :: fn(pattern, text: string) needs Out + Alloc {
     re := compile(pattern) else e => {
         match e {
             .Syntax(msg, at) => print("/{}/: syntax error at {}: {}\n", pattern, at, msg)
@@ -449,7 +449,7 @@ report :: fn(pattern, text: string) \ {Out, Alloc} {
     print("{}\n", if a is b { "" } else { "  <- engines differ" })
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     report("abc", "xxabcxx")
     report("a*b", "caaab")
     report("^a+$", "aaa")

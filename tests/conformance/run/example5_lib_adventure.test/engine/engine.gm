@@ -24,7 +24,7 @@ pub Console :: struct {
     pub lines: u32 = 0
 }
 
-handler Narrate for ^Console \ {Out} {
+handler Narrate for ^Console needs Out {
     say(self, text) => {
         self.lines += 1
         print("  {}\n", text)
@@ -62,7 +62,7 @@ pub ParseError :: union {
     BadDirection: string
 }
 
-sayf :: fn(A: type, template :: string, args: ..A) \ {Narrate} {
+sayf :: fn(A: type, template :: string, args: ..A) needs Narrate {
     buf: [256]u8 = ---
     b := str.builder(buf[..])
     b.write(template, ..args)
@@ -105,7 +105,7 @@ pub parse :: fn(line: string) -> ParseError!Command {
     return !.UnknownVerb(verb)
 }
 
-describe :: fn(g: ^w.World) \ {Narrate} {
+describe :: fn(g: ^w.World) needs Narrate {
     r := g.current()
     sayf("== {} ==", r.name)
     say(r.desc)
@@ -135,7 +135,7 @@ has_item :: fn(items: []const u16, id: u16) -> bool {
 }
 
 /// The shortest unlocked path from the player's room to room `to`, if any.
-pub route :: fn(g: ^w.World, to: u16) -> AllocError!?List(w.Dir) \ {Alloc} {
+pub route :: fn(g: ^w.World, to: u16) -> AllocError!?List(w.Dir) needs Alloc {
     n := g.rooms.len()
     seen := try bs.bitset(n)
     defer seen.deinit()
@@ -175,7 +175,7 @@ pub route :: fn(g: ^w.World, to: u16) -> AllocError!?List(w.Dir) \ {Alloc} {
 }
 
 /// Carries out one command.
-pub step :: fn(g: ^w.World, c: Command) -> AllocError!() \ {Narrate, Dice, Halt, Alloc} {
+pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + Halt + Alloc {
     match c {
         .Look => describe(g)
         .Inventory => {

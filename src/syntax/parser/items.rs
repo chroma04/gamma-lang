@@ -61,7 +61,7 @@ impl Parser<'_> {
         Ok(ItemKind::Test { name, name_span, body: body?, bench })
     }
 
-    /// `handler E for T [\ {effects}] { clauses }`.
+    /// `handler E for T [needs effects] { clauses }`.
     fn parse_handler_decl(&mut self) -> PResult<HandlerDecl> {
         let start = self.lo();
         self.bump();
@@ -69,7 +69,7 @@ impl Parser<'_> {
         let effect = self.parse_effect_ref()?;
         self.expect_kw(Keyword::For, "after the effect of a handler declaration")?;
         let for_ty = self.with_restr(Restr { no_brace: true, ..Restr::default() }, |p| p.parse_type())?;
-        let effects = if self.at(Punct::Backslash) { Some(self.parse_effect_set()?) } else { None };
+        let effects = self.parse_needs_opt(false)?;
         self.expect(Punct::LBrace, "to begin the handler body")?;
         let saved = std::mem::take(&mut self.labels);
         let clauses = self.unrestricted(|p| p.parse_clauses());

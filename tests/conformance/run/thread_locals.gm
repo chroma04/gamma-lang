@@ -5,12 +5,12 @@ thread :: import "std/thread"
 #global #thread_local mine: u32 = 10
 #global shared: u32 = 0
 
-bump :: fn(arg: ^u32) \ {Sys} {
+bump :: fn(arg: ^u32) needs Sys {
     for i in 0..5 { mine += 1 }
     _ = @atomic_add(&shared, mine, .Relaxed)
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     mine = 100
     a := try thread.spawn(T: u32, bump, &shared)
     b := try thread.spawn(T: u32, bump, &shared)

@@ -3,7 +3,7 @@ divmod :: fn(a, b: u32) -> (u32, u32) => (a / b, a % b)
 
 P :: struct { x, y: i32 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     q, r := divmod(17, 5)
     print("{} {}\n", q, r)
     a, _, c :: (1, "ignored", 3.5)

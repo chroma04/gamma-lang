@@ -11,7 +11,6 @@
   (parameters)
   (tuple_expression)
   (tuple_type)
-  (effect_set)
 ] @indent.begin
 
 [

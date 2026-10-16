@@ -65,7 +65,7 @@ free_tree :: fn(t: ^Tree) {
     t.children.deinit()
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     root := Tree(name: "root", children: list(Tree))
     defer free_tree(&root)
     for i in 0..3 {

@@ -38,7 +38,7 @@ apply_all :: fn(T: type, xs: []T, f: fn(^T)) {
     for i in 0..xs.len { f(&xs[i]) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     nums := [_]u32(3, 4, 5)
     out: [2]u32 = ---
     print("{} {}\n", first_n(nums[..], 2, out[..]), out)

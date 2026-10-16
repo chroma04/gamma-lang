@@ -2,7 +2,7 @@
 // Tests may perform `Sys`, like `main` (§3.8, §12.9).
 #global counter: u32 = 0
 
-bump :: fn() \ {Sys} { counter += 1 }
+bump :: fn() needs Sys { counter += 1 }
 
 test "globals and volatile access" {
     x: u32 = 5

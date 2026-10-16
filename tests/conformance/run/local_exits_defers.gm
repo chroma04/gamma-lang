@@ -3,7 +3,7 @@
 // when an error is returned.
 E :: union { Bad: i32 }
 
-loops :: fn() \ {Out} {
+loops :: fn() needs Out {
     outer: for i in 0..3 {
         defer print("end outer {}\n", i)
         for j in 0..3 {
@@ -23,14 +23,14 @@ loops :: fn() \ {Out} {
     print("n = {}\n", n)
 }
 
-check :: fn(x: i32) -> E!i32 \ {Out} {
+check :: fn(x: i32) -> E!i32 needs Out {
     defer print("check {} done\n", x)
     errdefer print("check {} failed\n", x)
     if x < 0 { return !.Bad(x) }
     return x * 2
 }
 
-twice :: fn(x: i32) -> E!i32 \ {Out} {
+twice :: fn(x: i32) -> E!i32 needs Out {
     defer print("twice {} done\n", x)
     errdefer print("twice {} failed\n", x)
     {
@@ -40,7 +40,7 @@ twice :: fn(x: i32) -> E!i32 \ {Out} {
     }
 }
 
-first_even :: fn(xs: []const i32) -> ?i32 \ {Out} {
+first_even :: fn(xs: []const i32) -> ?i32 needs Out {
     defer print("search over\n")
     for x in xs {
         defer print("saw {}\n", x)
@@ -51,7 +51,7 @@ first_even :: fn(xs: []const i32) -> ?i32 \ {Out} {
 
 E2 :: effect { stop: esc(code: i32) -> never }
 
-with_break :: fn() -> i32 \ {Out} {
+with_break :: fn() -> i32 needs Out {
     r := label: with (handler E2 { stop(code) => break code * 10 }) {
         defer print("with body left\n")
         for i in 0..10 {
@@ -63,7 +63,7 @@ with_break :: fn() -> i32 \ {Out} {
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     loops()
     print("{}\n", twice(4))
     print("{}\n", twice(-3))

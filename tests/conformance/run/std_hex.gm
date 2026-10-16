@@ -1,7 +1,7 @@
 // std/encoding/hex: encoding in both cases, decoding either, each error, and round trips.
 hex :: import "std/encoding/hex"
 
-show_decode :: fn(label: string, src: string) \ {Out} {
+show_decode :: fn(label: string, src: string) needs Out {
     buf: [32]u8 = ---
     print("{}: ", label)
     data := hex.decode(src, buf[..]) else e => {
@@ -20,7 +20,7 @@ show_decode :: fn(label: string, src: string) \ {Out} {
     }
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     print("-- RFC 4648 section 10\n")
     buf: [64]u8 = ---
     inputs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")

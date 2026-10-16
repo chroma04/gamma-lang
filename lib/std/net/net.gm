@@ -18,7 +18,7 @@ pub Shutdown :: core.Shutdown
 
 /// Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress (returns
 /// 0) fails with `.Other(0)`.
-pub send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net} {
+pub send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() needs Net {
     done: usize = 0
     while done < bytes.len {
         n := try s.send(bytes[done..bytes.len])
@@ -30,7 +30,7 @@ pub send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net} {
 
 /// Fills `buf` completely from `s`. `UnexpectedEof` if the peer closes the connection
 /// first.
-pub recv_exact :: fn(s: Socket, buf: []u8) -> IoError!() \ {Net} {
+pub recv_exact :: fn(s: Socket, buf: []u8) -> IoError!() needs Net {
     done: usize = 0
     while done < buf.len {
         n := try s.recv(buf[done..buf.len])

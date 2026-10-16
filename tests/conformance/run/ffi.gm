@@ -2,7 +2,7 @@
 c :: import "std/c"
 libc :: foreign "c" {
     puts :: fn(s: cstring) -> c.c_int
-    strlen :: fn(s: cstring) -> usize \ {}
+    strlen :: fn(s: cstring) -> usize needs not
     printf :: fn(fmt: cstring, ...) -> c.c_int
     qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int)
     #link_name("abs") absolute :: fn(x: c.c_int) -> c.c_int
@@ -16,12 +16,12 @@ by_value :: fn(a, b: rawptr) -> c.c_int {
     return if x < y { -1 } else if x > y { 1 } else { 0 }
 }
 
-bump :: fn() -> u32 \ {Sys} {
+bump :: fn() -> u32 needs Sys {
     counter += 1
     return counter
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     _ = libc.puts(c"hello from C")
     print("{}\n", libc.strlen(c"four"))
     _ = libc.printf(c"%d %s %.2f\n", c.c_int(42), c"str", 2.5)

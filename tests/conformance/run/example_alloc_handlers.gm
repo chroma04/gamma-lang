@@ -38,9 +38,9 @@ handler Alloc for ^Tracker {
     current(self) => Allocator(data: self, vt: &TRACK_VT)
 }
 
-tracker :: fn() -> Tracker \ {Alloc} => Tracker(inner: Alloc.current())
+tracker :: fn() -> Tracker needs Alloc => Tracker(inner: Alloc.current())
 
-report :: fn(label: string, t: ^const Tracker) \ {Out} {
+report :: fn(label: string, t: ^const Tracker) needs Out {
     print("{}: live={} peak={} allocs={} frees={} biggest={}\n",
           label, t.live, t.peak, t.allocs, t.frees, t.biggest)
 }
@@ -81,14 +81,14 @@ handler Alloc for ^Bump {
 
 Matrix :: struct { rows, cols: usize, cells: []i64 }
 
-make_matrix :: fn(rows, cols: usize) -> AllocError!Matrix \ {Alloc} {
+make_matrix :: fn(rows, cols: usize) -> AllocError!Matrix needs Alloc {
     cells := try make_fill(T: i64, rows * cols, 0)
     return Matrix(rows: rows, cols: cols, cells: cells)
 }
 
-free_matrix :: fn(m: Matrix) \ {Alloc} { free(m.cells) }
+free_matrix :: fn(m: Matrix) needs Alloc { free(m.cells) }
 
-two_matrices :: fn(n: usize) -> AllocError!i64 \ {Alloc} {
+two_matrices :: fn(n: usize) -> AllocError!i64 needs Alloc {
     a := try make_matrix(n, n)
     defer free_matrix(a)
     b := try make_matrix(n, n)     // may fail: `a` is released by the defer
@@ -100,7 +100,7 @@ two_matrices :: fn(n: usize) -> AllocError!i64 \ {Alloc} {
     return total
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     t := tracker()
     r := with &t { two_matrices(10) }
     print("tracked result: {}\n", r)

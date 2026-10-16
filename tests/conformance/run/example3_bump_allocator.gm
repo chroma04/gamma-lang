@@ -44,7 +44,7 @@ bump_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 VT :: AllocVtable(alloc: bump_alloc, resize: bump_resize, free: bump_free)
 Store :: #align(64) struct { bytes: [4096]u8 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     store: Store = ---
     b := Bump(mem: store.bytes[..], top: 0, last: 0, log_n: 0, sizes: [32]usize(fill: 0), aligns: [32]usize(fill: 0), resized: 0, freed: 0)
     al := Allocator(data: &b, vt: &VT)

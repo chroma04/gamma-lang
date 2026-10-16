@@ -15,7 +15,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
     return true
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     ids := hash_map(string, u32)
     defer ids.deinit()
     try ids.put("ada", 1)

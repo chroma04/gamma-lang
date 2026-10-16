@@ -6,10 +6,10 @@ libc :: foreign "c" {
     puts   :: fn(s: cstring) -> c_int
     qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c_int)
     printf :: fn(fmt: cstring, ...) -> c_int
-    strlen :: fn(s: cstring) -> usize \ {}
+    strlen :: fn(s: cstring) -> usize needs not
     #global errno: c_int
     #link_name("write")
-    sys_write :: fn(fd: c_int, buf: rawptr, n: usize) -> isize \ {Sys}
+    sys_write :: fn(fd: c_int, buf: rawptr, n: usize) -> isize needs Sys
     #thread_local
     #global tls: u32
 }

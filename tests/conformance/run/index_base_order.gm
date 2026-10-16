@@ -1,26 +1,26 @@
 // The base of an index is evaluated before the index (§4.7, §7).
 M :: struct { v: [3]i32 }
-o :: fn(t: string, v: i32) -> i32 \ {Out} {
+o :: fn(t: string, v: i32) -> i32 needs Out {
     print("{} ", t)
     return v
 }
-getm :: fn(m: ^M) -> ^M \ {Out} {
+getm :: fn(m: ^M) -> ^M needs Out {
     print("base ")
     return m
 }
-gets :: fn(s: []i32) -> []i32 \ {Out} {
+gets :: fn(s: []i32) -> []i32 needs Out {
     print("slice ")
     return s
 }
-getp :: fn(p: [^]i32) -> [^]i32 \ {Out} {
+getp :: fn(p: [^]i32) -> [^]i32 needs Out {
     print("ptr ")
     return p
 }
-geta :: fn(p: ^[3]i32) -> ^[3]i32 \ {Out} {
+geta :: fn(p: ^[3]i32) -> ^[3]i32 needs Out {
     print("array ")
     return p
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     m := M(v: [3]i32(0, 0, 0))
     getm(&m).v[o("idx", 1).trunc(usize)] = o("rhs", 5)
     print("\n")

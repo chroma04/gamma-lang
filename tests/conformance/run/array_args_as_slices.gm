@@ -7,11 +7,11 @@ total :: fn(xs: []const i64) -> i64 {
 }
 count :: fn(T: type, xs: []const T) -> usize => xs.len
 fill :: fn(xs: []i64) { for p in each_ptr(xs) { p^ = 9 } }
-show :: fn(xs: []const string) \ {Out} {
+show :: fn(xs: []const string) needs Out {
     for s in xs { print("{} ", s) }
     print("\n")
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [3]i64(1, 2, 3)
     print("{}\n", total(a))
     print("{}\n", total(&a))

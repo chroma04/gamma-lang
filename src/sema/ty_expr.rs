@@ -117,10 +117,7 @@ impl<'s> Sema<'s> {
                     {
                         self.error(
                             e.span,
-                            format!(
-                                "`{}` is an effect set, not a type; use it in an effect set as `..{}` (§16.6)",
-                                id.name, id.name
-                            ),
+                            format!("`{}` is an effect set, not a type; use it after `needs` (§16.6)", id.name),
                         );
                         return Ty::error();
                     }

@@ -23,19 +23,19 @@ call_cl :: fn(f: fn(b: Big) -> i64, b: Big) -> i64 => f(b)
 
 #global G: Big = Big(a: [6]i64(fill: 1), tag: 2)
 
-read_after_global :: fn(b: Big) -> i64 \ {Sys} {
+read_after_global :: fn(b: Big) -> i64 needs Sys {
     G.a[0] = 5000
     return sum(b)
 }
 
-setg :: fn() -> i64 \ {Sys} {
+setg :: fn() -> i64 needs Sys {
     G.a[1] = 777
     return 1
 }
 
 Log :: effect { note: fn(b: Big) -> i64 }
 
-with_note :: fn(b: Big) -> i64 \ {Log} => note(b)
+with_note :: fn(b: Big) -> i64 needs Log => note(b)
 
 PairBig :: struct { x: Big, y: Big }
 
@@ -51,7 +51,7 @@ defer_ret :: fn() -> Big {
     return x
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     // A
     x := mk(3)
     r := call_cl(fn(b: Big) -> i64 {

@@ -456,7 +456,7 @@ bits16 :: fn(s: string) -> u16 {
     return x.bits(u16)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     bad: usize = 0
     for row in CASES {
         s := row.0

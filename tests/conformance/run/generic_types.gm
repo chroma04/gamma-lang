@@ -33,7 +33,7 @@ sum :: fn(T: type, t: ^const Tree(T)) -> T where Num(T) => match t^ {
     .Node(left, right) => sum(left) + sum(right)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := Pair(i32)(a: 1, b: 2)
     print("{} {}\n", swap(p), p.larger())
     q := Pair(string)(a: "x", b: "y")

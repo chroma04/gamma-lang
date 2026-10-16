@@ -3,7 +3,7 @@
 net :: import "std/net"
 io :: import "std/io"
 
-main :: fn() -> IoError!() \ {Out, Net} {
+main :: fn() -> IoError!() needs Out + Net {
     l := try Net.listen("127.0.0.1", 0)
     port := try l.local_port()
     client := try Net.connect("127.0.0.1", port)

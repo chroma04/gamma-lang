@@ -12,7 +12,7 @@ call :: fn(body: fn() -> E!()) -> E!() {
     return ()
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     good := call(fn() -> E!() { try work(true) })
     bad := call(fn() -> E!() { try work(false) })
     print("{} {}\n", good is !_, bad is !_)

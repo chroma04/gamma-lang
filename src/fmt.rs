@@ -150,7 +150,6 @@ struct Open {
     info: usize,
     /// The `[` was not preceded by an operand: a type prefix or an array literal.
     prefix: bool,
-    effect: bool,
     /// The `(` is the argument list of an attribute such as `#align(8)`.
     attr: bool,
     /// A `:` was seen in the current statement or argument at this level.
@@ -205,14 +204,14 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                         ta = true;
                         open = true;
                         let attr = matches!(prev, Some(K::Attribute(_)));
-                        stack.push(Open { info: infos.len(), prefix: false, effect: false, attr, colon: false });
+                        stack.push(Open { info: infos.len(), prefix: false, attr, colon: false });
                         ends = false;
                     }
                     Punct::LBracket => {
                         tb = ends;
                         ta = true;
                         open = true;
-                        stack.push(Open { info: infos.len(), prefix: !ends, effect: false, attr: false, colon: false });
+                        stack.push(Open { info: infos.len(), prefix: !ends, attr: false, colon: false });
                         ends = false;
                     }
                     Punct::LBrace => {
@@ -220,10 +219,9 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                             pending_matches.pop();
                             match_body = true;
                         }
-                        let effect = is_punct(prev, Punct::Backslash);
-                        ta = effect || adjacent_close(src, toks, i);
+                        ta = adjacent_close(src, toks, i);
                         open = true;
-                        stack.push(Open { info: infos.len(), prefix: false, effect, attr: false, colon: false });
+                        stack.push(Open { info: infos.len(), prefix: false, attr: false, colon: false });
                         ends = false;
                     }
                     Punct::RParen | Punct::RBracket | Punct::RBrace => {
@@ -241,7 +239,7 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                         if p == Punct::RBrace
                             && let Some(o) = o
                         {
-                            tb = o.effect || (o.info + 1 == infos.len() && src[infos[o.info].hi..lo].trim().is_empty());
+                            tb = o.info + 1 == infos.len() && src[infos[o.info].hi..lo].trim().is_empty();
                         }
                     }
                     Punct::Comma => {

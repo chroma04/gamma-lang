@@ -15,7 +15,7 @@ Anything beyond that (HTTP, TLS, compression, databases, image formats, ciphers)
 
 Four conventions hold across the library, so that learning one module teaches the rest:
 
-1. **No hidden allocation.** A function that allocates says so with `\ {Alloc}` or takes an allocator. Functions that produce text or bytes write into a buffer you supply, or append to a `List(u8)`.
+1. **No hidden allocation.** A function that allocates says so with `needs Alloc` or takes an allocator. Functions that produce text or bytes write into a buffer you supply, or append to a `List(u8)`.
 2. **Failure is a value.** Parsers take a `string` and return `E!T` with an error that says where the problem is; a trap means a documented precondition was broken.
 3. **Containers capture the allocator** when they are created, like `List` does, and never perform `Alloc` afterwards.
 4. **Sequences are iterators**, not allocated arrays, unless you ask for a list.
@@ -27,7 +27,7 @@ Four conventions hold across the library, so that learning one module teaches th
 ```gamma
 Point :: struct { x, y: f64 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} scored {}\n", "Ada", 1200)
     print("{}\n", Point(x: 1.5, y: -2))
     print("{} {} {}\n", [_]u8(1, 2, 3), Maybe.Some(4), "text")
@@ -55,7 +55,7 @@ A spec after the colon sets alignment (`<`, `>`, `^`) with an optional fill char
 `print` is `@write` aimed at `Out`. `@write(sink, template, ..args)` takes the same template and arguments, but calls a function you give it with the pieces of output. It allocates nothing, which makes it the base of every formatting function:
 
 ```gamma
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total: usize = 0
     @write(fn(b) { total += b.len }, "{} items at {:.2}\n", 3, 9.5)
     print("that text is {} bytes\n", total)
@@ -74,13 +74,13 @@ that text is 16 bytes
 A function that forwards to `print` or `@write` takes the values as a rest parameter (`args: ..A`, [chapter 6](06-functions.md#rest-parameters)) and passes them on with a spread. Its template is a compile-time parameter, so a mistake in it is reported at the call that wrote it:
 
 ```gamma
-shout :: fn(A: type, template :: string, args: ..A) \ {Out} {
+shout :: fn(A: type, template :: string, args: ..A) needs Out {
     print("!! ")
     print(template, ..args)
     print("\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     shout("disk {} is {}% full", "sda", 91)
 }
 ```
@@ -90,7 +90,7 @@ To keep text rather than print it, append to a list, or format into a new alloca
 ```gamma
 str :: import "std/str"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     line := list(u8)
     defer line.deinit()
     try line.write("{:>5}|{:<5}|", 42, "ab")
@@ -112,7 +112,7 @@ The templates leave out a few presentations that programs ask for: other bases, 
 ```gamma
 fmt :: import "std/fmt"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     buf: [fmt.INT_BUF]u8 = ---
     print("{}\n", fmt.grouped(u32(1234567), ',', buf[..]))
     print("{}\n", fmt.radix(u32(255), 36, buf[..]))
@@ -138,7 +138,7 @@ main :: fn() \ {Out} {
 Numbers, arrays, slices, strings and pointers have methods built into the language (§21.3). They are listed there; these are the ones used all the time.
 
 ```gamma
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // Integers: conversions say what they do on overflow.
     big: i32 = 300
     print("{} {} {}\n", big.trunc(u8), big.checked(u8), big.sat(u8))
@@ -180,7 +180,7 @@ main :: fn() \ {Out} {
 `List(T)` and `HashMap(K, V)` are in the core library ([chapter 9](09-memory.md) covers them). The pieces used most:
 
 ```gamma
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     names := list(string)
     defer names.deinit()
     try names.push("ada")
@@ -214,7 +214,7 @@ Allocators are values. `std/arena` hands out memory from chunks and gives everyt
 arena :: import "std/arena"
 fixed_buffer :: import "std/fixed_buffer"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     a := arena.new()                       // chunks come from the current allocator
     defer a.deinit()                       // releases every chunk at once
     with a.allocator() {
@@ -248,7 +248,7 @@ The iterators of the core library are `range`, `each`, `enumerate`, `reversed`, 
 ```gamma
 str :: import "std/str"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     for i, name in enumerate([_]string("ada", "grace")) { print("{}:{} ", i, name) }
     print("\n")
 
@@ -277,7 +277,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 ```gamma
 str :: import "std/str"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     s := "  key = value  "
     print("[{}]\n", str.trim(s))
     if kv := str.split_once(str.trim(s), "=") {
@@ -306,7 +306,7 @@ Parsing numbers is exact. `parse_int` takes any integer type; `parse_float` roun
 ```gamma
 str :: import "std/str"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", str.parse_int(u8, "200"))
     print("{}\n", str.parse_int(u8, "256"))
     print("{}\n", str.parse_int(i32, "-0x1F"))
@@ -341,7 +341,7 @@ main :: fn() \ {Out} {
 ```gamma
 text :: import "std/text"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s := "e\u{301}🇫🇷👨\u{200d}👩\u{200d}👧!"
     n: usize = 0
     for g in text.graphemes(s) { n += 1 }
@@ -363,7 +363,7 @@ fs :: import "std/fs"
 io :: import "std/io"
 path :: import "std/path"
 
-main :: fn() -> fs.ReadError!() \ {Out, Fs, Rand, Alloc} {
+main :: fn() -> fs.ReadError!() needs Out + Fs + Rand + Alloc {
     dir := "/tmp/gamma-tour-16"
     try fs.make_dir_all(dir)
     file := "/tmp/gamma-tour-16/notes.txt"
@@ -391,7 +391,7 @@ main :: fn() -> fs.ReadError!() \ {Out, Fs, Rand, Alloc} {
     try Fs.remove_dir(dir)
 }
 
-lines_of :: fn(data: []const u8) \ {Yield(string)} {
+lines_of :: fn(data: []const u8) needs Yield(string) {
     start: usize = 0
     for i in 0..data.len {
         if data[i] is '\n' {
@@ -407,7 +407,7 @@ lines_of :: fn(data: []const u8) \ {Yield(string)} {
 ```gamma
 path :: import "std/path"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     p := "/usr/lib/libc.so.6"
     print("{} {} {} {}\n", path.base_name(p), path.dir_name(p), path.extension(p), path.stem(p))
     buf: [64]u8 = ---
@@ -423,14 +423,14 @@ Standard input is the `In` effect. `io.reader()` reads it a line at a time; `io.
 ```gamma
 io :: import "std/io"
 
-shout_lines :: fn() -> IoError!() \ {In, Out} {
+shout_lines :: fn() -> IoError!() needs In + Out {
     r := io.reader()
     while line := try r.next_line() {
         print("{}!\n", line)
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     input := io.StringIn(data: "one\ntwo\nthree")
     with &input {
         shout_lines() else e => print("failed: {}\n", io.describe(e))
@@ -447,7 +447,7 @@ Durations and instants are core; `Clock` is the effect that supplies them (a tes
 ```gamma
 time :: import "std/time"
 
-main :: fn() -> time.ParseError!() \ {Out, Clock} {
+main :: fn() -> time.ParseError!() needs Out + Clock {
     started := Clock.now()
     Clock.sleep(ms(5))
     took := Clock.now().since(started)
@@ -472,7 +472,7 @@ Randomness is the `Rand` effect, filled from the operating system by default and
 ```gamma
 random :: import "std/random"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := random.seeded(42)
     with &r {
         print("{} {}\n", random.range(T: u8, 1, 7), random.below(T: u32, 100))
@@ -493,13 +493,13 @@ The same seed gives the same sequence on every run and every platform.
 ```gamma
 log :: import "std/log"
 
-work :: fn() \ {log.Log} {
+work :: fn() needs log.Log {
     log.debug("not shown at the default level")
     log.info("starting {}", "up")
     log.warn("{} of {} retries used", 2, 3)
 }
 
-main :: fn() \ {Out, Err, Alloc} {
+main :: fn() needs Out + Err + Alloc {
     plain := log.ErrLog()                       // lines on standard error
     with &plain { work() }
 
@@ -527,7 +527,7 @@ Job :: struct {
     base: u64
 }
 
-worker :: fn(j: ^Job) \ {Sys} {
+worker :: fn(j: ^Job) needs Sys {
     sum: u64 = 0
     for i in 0..1000 { sum += i * j.base }
     _ = j.results.send(sum)
@@ -536,7 +536,7 @@ worker :: fn(j: ^Job) \ {Sys} {
 
 Fail :: union { Io: IoError, Mem: AllocError }
 
-main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
+main :: fn() -> Fail!() needs Out + Sys + Alloc {
     j := Job(results: try thread.channel(u64, 8), pending: thread.wait_group(), base: 1)
     defer j.results.deinit()
 
@@ -565,7 +565,7 @@ Counter :: struct {
     m: thread.Mutex
 }
 
-count_up :: fn(c: ^Counter) \ {Sys} {
+count_up :: fn(c: ^Counter) needs Sys {
     for _ in 0..1000 {
         c.m.lock()
         c.n += 1
@@ -598,7 +598,7 @@ Job :: struct {
     cost: u32
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // A double-ended queue: constant time at both ends.
     d := dq.deque(u32)
     defer d.deinit()
@@ -651,7 +651,7 @@ bytes :: import "std/bytes"
 hex :: import "std/encoding/hex"
 base64 :: import "std/encoding/base64"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     packet := list(u8)
     defer packet.deinit()
     try bytes.append_int(T: u16, &packet, 0xCAFE, .Big)
@@ -688,7 +688,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
 hash :: import "std/hash"
 hex :: import "std/encoding/hex"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{:08x}\n", hash.crc32.checksum("123456789"))
 
     d := hash.sha256.sum("abc")
@@ -716,7 +716,7 @@ These are for detecting corruption and identifying content. Ciphers, keyed MACs,
 ```gamma
 json :: import "std/json"
 
-main :: fn() -> json.WriteError!() \ {Out, Alloc} {
+main :: fn() -> json.WriteError!() needs Out + Alloc {
     text := "{\"name\": \"gamma\", \"tags\": [1, 2.5, \"x\\u00e9\"], \"n\": 12}"
     doc := json.parse(text) else e => {
         print("bad json: {}\n", e)
@@ -767,7 +767,7 @@ Output can also be produced without building a tree, with a `Writer` that keeps 
 ```gamma
 json :: import "std/json"
 
-main :: fn() -> json.WriteError!() \ {Out, Alloc} {
+main :: fn() -> json.WriteError!() needs Out + Alloc {
     out := list(u8)
     defer out.deinit()
     w := json.writer(&out, 2)               // indent by two spaces; 0 for compact
@@ -803,7 +803,7 @@ A short example of `std/cli` and `std/math` together:
 cli :: import "std/cli"
 math :: import "std/math"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     opts := [_]cli.Opt(
         cli.Opt(short: 'v', long: "verbose", help: "print more"),
         cli.Opt(short: 'o', long: "output", value: "file", help: "where to write"),

@@ -129,7 +129,7 @@ max_abs_diff :: fn(N, M :: usize, x, y: ^const Mat(N, M)) -> f64 {
     return d
 }
 
-show :: fn(N, M :: usize, x: ^const Mat(N, M)) \ {Out} {
+show :: fn(N, M :: usize, x: ^const Mat(N, M)) needs Out {
     fb: [400]u8 = ---
     pb: [64]u8 = ---
     for i in 0..N {
@@ -143,7 +143,7 @@ show :: fn(N, M :: usize, x: ^const Mat(N, M)) \ {Out} {
 
 fixed4 :: fn(x: f64, buf: []u8) -> string => fmt.fixed(x, 4, buf)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fb: [400]u8 = ---
 
     // A well-conditioned 3x3 system with a known solution (1, -2, 3).

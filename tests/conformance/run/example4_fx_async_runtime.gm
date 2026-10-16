@@ -5,7 +5,7 @@ CAP :: 3
 
 Async :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(a: ^TaskArg) -> never \ {Async, Out}, a: ^TaskArg)
+    spawn: ctl(entry: ^fn(a: ^TaskArg) -> never needs Async + Out, a: ^TaskArg)
     exit: ctl() -> never
     park: ctl(chan: u32)          // sleep until `wake(chan)`
     wake: fn(chan: u32)           // make every task parked on `chan` runnable
@@ -64,7 +64,7 @@ occupied :: fn(k: ?cont(())) -> bool {
 }
 
 // Everything is stuck: report the parked tasks.
-report_deadlock :: fn(rt: ^Runtime) \ {Out} {
+report_deadlock :: fn(rt: ^Runtime) needs Out {
     rt.deadlock = true
     for i in 0..MAX_TASKS + 1 {
         if occupied(rt.parked[i]) {
@@ -73,7 +73,7 @@ report_deadlock :: fn(rt: ^Runtime) \ {Out} {
     }
 }
 
-handler Async for ^Runtime \ {Out} {
+handler Async for ^Runtime needs Out {
     yield_now(self, k) => {
         enqueue(self, k)
         r := pop_ready(self)?
@@ -158,7 +158,7 @@ handler Async for ^Runtime \ {Out} {
     }
 }
 
-send :: fn(c: ^Chan, x: i32) -> bool \ {Async} {
+send :: fn(c: ^Chan, x: i32) -> bool needs Async {
     while c.len is CAP {
         if c.closed { return false }
         park(c.id)
@@ -170,7 +170,7 @@ send :: fn(c: ^Chan, x: i32) -> bool \ {Async} {
     return true
 }
 
-recv :: fn(c: ^Chan) -> ?i32 \ {Async} {
+recv :: fn(c: ^Chan) -> ?i32 needs Async {
     while c.len is 0 {
         if c.closed { return null }
         park(c.id)
@@ -182,12 +182,12 @@ recv :: fn(c: ^Chan) -> ?i32 \ {Async} {
     return x
 }
 
-close :: fn(c: ^Chan) \ {Async} {
+close :: fn(c: ^Chan) needs Async {
     c.closed = true
     wake(c.id)
 }
 
-producer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+producer :: fn(a: ^TaskArg) -> never needs Async + Out {
     defer print("  [{}] done\n", a.name)
     for i in 1..=a.n {
         _ = send(a.a, i * 10)
@@ -197,7 +197,7 @@ producer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
     exit()
 }
 
-doubler :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+doubler :: fn(a: ^TaskArg) -> never needs Async + Out {
     defer print("  [{}] done\n", a.name)
     while x := recv(a.a) {
         _ = send(a.b, x * 2)
@@ -206,7 +206,7 @@ doubler :: fn(a: ^TaskArg) -> never \ {Async, Out} {
     exit()
 }
 
-summer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+summer :: fn(a: ^TaskArg) -> never needs Async + Out {
     total: i32 = 0
     defer print("  [{}] done, total {}\n", a.name, total)
     while x := recv(a.a) {
@@ -217,14 +217,14 @@ summer :: fn(a: ^TaskArg) -> never \ {Async, Out} {
 }
 
 // A task that waits for a message nobody will ever send.
-stuck :: fn(a: ^TaskArg) -> never \ {Async, Out} {
+stuck :: fn(a: ^TaskArg) -> never needs Async + Out {
     defer print("  [{}] cancelled\n", a.name)
     v := recv(a.a)
     print("  [{}] unreachable {}\n", a.name, v)
     exit()
 }
 
-pipeline :: fn() \ {Out} {
+pipeline :: fn() needs Out {
     c1 := Chan(id: 1)
     c2 := Chan(id: 2)
     rt := Runtime(ready: [16]?cont(())(fill: null), stacks: ---)
@@ -241,7 +241,7 @@ pipeline :: fn() \ {Out} {
     print("pipeline: deadlock={} live={}\n", rt.deadlock, rt.live)
 }
 
-deadlocked :: fn() \ {Out} {
+deadlocked :: fn() needs Out {
     c1 := Chan(id: 1)
     c2 := Chan(id: 2)
     rt := Runtime(ready: [16]?cont(())(fill: null), stacks: ---)
@@ -256,7 +256,7 @@ deadlocked :: fn() \ {Out} {
     print("deadlocked: deadlock={} live={}\n", rt.deadlock, rt.live)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     pipeline()
     deadlocked()
 }

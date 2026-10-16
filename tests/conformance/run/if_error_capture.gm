@@ -5,7 +5,7 @@ parse :: fn(n: u32) -> Bad!u32 {
     if n > 100 { return !.TooBig(n) }
     return n * 2
 }
-show :: fn(n: u32) -> string \ {Out} {
+show :: fn(n: u32) -> string needs Out {
     if v := parse(n) {
         print("ok {}\n", v)
     } else e => {
@@ -13,7 +13,7 @@ show :: fn(n: u32) -> string \ {Out} {
     }
     return if n > 50 { "big" } else if v := parse(n) { if v > 10 { "mid" } else { "small" } } else e => match e { .Empty => "empty"; .TooBig(_) => "?" }
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ns := [3]u32(0, 7, 30)
     for n in ns { print("{}\n", show(n)) }
     print("{}\n", show(500))

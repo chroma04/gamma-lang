@@ -126,12 +126,12 @@ impl EffectSet {
         self.effects.iter().all(|e| other.contains(e))
     }
 
-    /// Whether the set mentions an effect-set parameter, as `..E` (§16.6).
+    /// Whether the set mentions an effect-set parameter, as a term `E` (§16.6).
     pub fn has_splice(&self) -> bool {
         self.effects.iter().any(|e| e.is_splice())
     }
 
-    /// Replaces each `..E` whose argument has become an effect set (by substitution)
+    /// Replaces each term `E` whose argument has become an effect set (by substitution)
     /// with that set's effects.
     pub fn flatten(self) -> EffectSet {
         if !self.effects.iter().any(|e| e.splice_set().is_some()) {
@@ -159,7 +159,7 @@ impl EffectRef {
         self.effect == EffectId::splice()
     }
 
-    /// For `..E` after `E` was substituted by an effect set: that set.
+    /// For a term `E` after `E` was substituted by an effect set: that set.
     fn splice_set(&self) -> Option<&EffectSet> {
         match (self.is_splice(), self.args.first()) {
             (true, Some(GenericArg::Type(t))) => match t.kind() {
@@ -296,9 +296,9 @@ pub enum TyKind {
         err: Ty,
         ok: Ty,
     },
-    /// `fn(…) -> R \ {E}` — second-class function value (§11.6).
+    /// `fn(…) -> R needs E` — second-class function value (§11.6).
     Fn(Box<FnTy>),
-    /// `^fn(…) -> R \ {E}` — function pointer.
+    /// `^fn(…) -> R needs E` — function pointer.
     FnPtr(Box<FnTy>),
     /// A struct or union type, with its generic arguments (empty if not generic).
     Adt(AdtId, Box<[GenericArg]>),
@@ -328,7 +328,7 @@ pub enum TyKind {
     /// An unresolved literal type variable.
     Infer(InferVar),
     /// A compile-time effect set used as a generic argument: the argument of an
-    /// effect-set parameter (§16.6), such as the `\ {Out}` of `Sched(\ {Out})`.
+    /// effect-set parameter (§16.6), such as the `Out` of `Sched(Out)`.
     /// Never the type of an expression.
     Effects(EffectSet),
     /// The anonymous second-class type of a handler literal (§5.15), identified
@@ -675,7 +675,7 @@ fn map_sig(sig: &FnTy, f: &mut impl FnMut(Ty) -> Option<Ty>) -> FnTy {
 }
 
 /// Maps the type arguments of every effect in `set`, splicing in the effect sets
-/// that `..E` entries become.
+/// that `E` terms become.
 pub fn map_effects(set: &EffectSet, f: &mut impl FnMut(Ty) -> Option<Ty>) -> EffectSet {
     if !set.effects.iter().any(|e| !e.args.is_empty()) {
         return set.clone();
@@ -838,6 +838,7 @@ impl fmt::Display for Ty {
             TyKind::FnPtr(sig) => fmt_sig(f, "^fn", sig),
             TyKind::Adt(id, args) => {
                 write!(f, "{}", id.name())?;
+                let args = shown_args(args);
                 if !args.is_empty() {
                     f.write_str("(")?;
                     for (i, a) in args.iter().enumerate() {
@@ -869,16 +870,7 @@ impl fmt::Display for Ty {
                 Ok(())
             }
             TyKind::Value(k) => write!(f, "{}", k),
-            TyKind::Effects(set) => {
-                f.write_str("\\ {")?;
-                for (i, e) in set.effects.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{}", e)?;
-                }
-                f.write_str("}")
-            }
+            TyKind::Effects(set) => fmt_effects(f, set),
             TyKind::Handler(_) => f.write_str("handler"),
             TyKind::Infer(_) => f.write_str("{integer}"),
             TyKind::Error => f.write_str("{error}"),
@@ -905,27 +897,44 @@ fn fmt_sig(f: &mut fmt::Formatter<'_>, head: &str, sig: &FnTy) -> fmt::Result {
         write!(f, " -> {}", sig.ret)?;
     }
     if !sig.effects.is_empty() {
-        f.write_str(" \\ {")?;
-        for (i, e) in sig.effects.effects.iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            write!(f, "{}", e)?;
-        }
-        f.write_str("}")?;
+        f.write_str(" needs ")?;
+        fmt_effects(f, &sig.effects)?;
     }
     Ok(())
+}
+
+/// `A + B + …`, as after `needs`. The empty set has no written form; it shows as `()`.
+fn fmt_effects(f: &mut fmt::Formatter<'_>, set: &EffectSet) -> fmt::Result {
+    if set.effects.is_empty() {
+        return f.write_str("()");
+    }
+    for (i, e) in set.effects.iter().enumerate() {
+        if i > 0 {
+            f.write_str(" + ")?;
+        }
+        write!(f, "{}", e)?;
+    }
+    Ok(())
+}
+
+/// Generic arguments as written: trailing empty effect sets, which may be left out
+/// (§16.6), are.
+fn shown_args(args: &[GenericArg]) -> &[GenericArg] {
+    let empty = |a: &GenericArg| matches!(a, GenericArg::Type(t) if matches!(t.kind(), TyKind::Effects(s) if s.effects.is_empty()));
+    let n = args.iter().rposition(|a| !empty(a)).map_or(0, |i| i + 1);
+    &args[..n]
 }
 
 impl fmt::Display for EffectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let (true, Some(GenericArg::Type(t))) = (self.is_splice(), self.args.first()) {
-            return write!(f, "..{}", t);
+            return write!(f, "{}", t);
         }
         f.write_str(self.effect.name().as_str())?;
-        if !self.args.is_empty() {
+        let args = shown_args(&self.args);
+        if !args.is_empty() {
             f.write_str("(")?;
-            for (i, a) in self.args.iter().enumerate() {
+            for (i, a) in args.iter().enumerate() {
                 if i > 0 {
                     f.write_str(", ")?;
                 }

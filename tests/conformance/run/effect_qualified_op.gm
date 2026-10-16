@@ -1,10 +1,10 @@
 // An operation can be named through its effect: `E.op(…)` (§12.1).
 Counter :: effect { next: fn() -> u32 }
-nums :: fn() \ {Yield(u32)} {
+nums :: fn() needs Yield(u32) {
     Yield.yield(1)
     yield(2)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n := 0u32
     with (handler Counter { next() => { n += 1; n } }) {
         print("{}\n", Counter.next())

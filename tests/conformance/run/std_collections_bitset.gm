@@ -3,13 +3,13 @@
 bs :: import "std/collections/bitset"
 
 // Prints the members an iterator yields, on one line.
-show :: fn(label: string, it: fn() \ {Yield(usize), Out}) \ {Out} {
+show :: fn(label: string, it: fn() needs Yield(usize) + Out) needs Out {
     print("{}:", label)
     for i in it() { print(" {}", i) }
     print("\n")
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // Capacity zero.
     z := try bs.bitset(0)
     defer z.deinit()
@@ -17,14 +17,14 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
           z.capacity(), z.count(), z.is_empty(), z.contains(0), z.next_member(0))
     z.remove(5)
     z.clear()
-    show("zero items", fn() \ {Yield(usize)} { z.items() })
+    show("zero items", fn() needs Yield(usize) { z.items() })
 
     // Members around the word boundary.
     s := try bs.bitset(130)
     defer s.deinit()
     print("new: capacity {} count {} is_empty {}\n", s.capacity(), s.count(), s.is_empty())
     for i in [_]usize(0, 1, 62, 63, 64, 65, 127, 128, 129) { s.insert(i) }
-    show("members", fn() \ {Yield(usize)} { s.items() })
+    show("members", fn() needs Yield(usize) { s.items() })
     print("count {} is_empty {}\n", s.count(), s.is_empty())
     for i in [_]usize(0, 2, 62, 63, 64, 65, 66, 128, 129, 130, 1000) {
         print("contains({}) {}\n", i, s.contains(i))
@@ -42,7 +42,7 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
           s.count(), s.contains(62), s.contains(63), s.contains(64))
     s.remove(64)
     s.remove(0)
-    show("after more removes", fn() \ {Yield(usize)} { s.items() })
+    show("after more removes", fn() needs Yield(usize) { s.items() })
 
     // next_member steps through the set.
     print("next_member:")
@@ -82,12 +82,12 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer u.deinit()
     u.union_with(&a)
     u.union_with(&b)
-    show("a | b", fn() \ {Yield(usize)} { u.items() })
+    show("a | b", fn() needs Yield(usize) { u.items() })
     i := try bs.bitset(130)
     defer i.deinit()
     i.union_with(&a)
     i.intersect_with(&b)
-    show("a & b", fn() \ {Yield(usize)} { i.items() })
+    show("a & b", fn() needs Yield(usize) { i.items() })
     print("a unchanged: count {}, b unchanged: count {}\n", a.count(), b.count())
     a.union_with(&a)
     a.intersect_with(&a)
@@ -101,19 +101,19 @@ main :: fn() -> AllocError!() \ {Out, Alloc} {
     defer big.deinit()
     for k in [_]usize(3, 64, 150, 199) { big.insert(k) }
     big.union_with(&small)
-    show("big | small", fn() \ {Yield(usize)} { big.items() })
+    show("big | small", fn() needs Yield(usize) { big.items() })
     big.intersect_with(&small)
-    show("big & small", fn() \ {Yield(usize)} { big.items() })
+    show("big & small", fn() needs Yield(usize) { big.items() })
     wide := try bs.bitset(200)
     defer wide.deinit()
     wide.insert(7)
     wide.insert(8)
     small.intersect_with(&wide)
-    show("small & wide", fn() \ {Yield(usize)} { small.items() })
+    show("small & wide", fn() needs Yield(usize) { small.items() })
     narrow := try bs.bitset(10)
     defer narrow.deinit()
     narrow.union_with(&wide)
-    show("narrow | wide", fn() \ {Yield(usize)} { narrow.items() })
+    show("narrow | wide", fn() needs Yield(usize) { narrow.items() })
 
     // A full word.
     f := try bs.bitset(128)

@@ -2,7 +2,7 @@
 // Inserting at the capacity traps; the last valid index does not.
 bs :: import "std/collections/bitset"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     s := try bs.bitset(65)
     defer s.deinit()
     s.insert(64)

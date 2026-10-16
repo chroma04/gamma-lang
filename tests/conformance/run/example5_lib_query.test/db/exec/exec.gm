@@ -14,7 +14,7 @@ pub Tracer :: struct {
     pub prefix: string = "  | "
 }
 
-handler Trace for ^Tracer \ {Out} {
+handler Trace for ^Tracer needs Out {
     step(self, what, n) => print("{}{}: {}\n", self.prefix, what, n)
 }
 
@@ -32,7 +32,7 @@ handler Trace for ^Tally {
 }
 
 /// Yields the rows of `t` that satisfy `q`, in the query's order and up to its limit.
-pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!() \ {Yield(T), Alloc, Trace} {
+pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!() needs Yield(T) + Alloc + Trace {
     all := t.all()
     lim := q.limit_of() else all.len
     step("scan", all.len)
@@ -62,13 +62,13 @@ pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> A
     return ()
 }
 
-pub count :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!usize \ {Alloc, Trace} {
+pub count :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!usize needs Alloc + Trace {
     n: usize = 0
     try for _ in rows(t, q) { n += 1 }
     return n
 }
 
-pub sum :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T), val: fn(row: ^const T) -> i64) -> AllocError!i64 \ {Alloc, Trace} {
+pub sum :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T), val: fn(row: ^const T) -> i64) -> AllocError!i64 needs Alloc + Trace {
     total: i64 = 0
     try for r in rows(t, q) {
         copy := r
@@ -84,7 +84,7 @@ pub Group :: struct {
 
 /// Groups the matching rows by `key` and totals `val` per group.
 pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Query(T),
-                   key: fn(row: ^const T) -> K, val: fn(row: ^const T) -> i64) -> AllocError!HashMap(K, Group) \ {Alloc, Trace} where Eq(K) {
+                   key: fn(row: ^const T) -> K, val: fn(row: ^const T) -> i64) -> AllocError!HashMap(K, Group) needs Alloc + Trace where Eq(K) {
     groups := hash_map(K, Group)
     errdefer groups.deinit()
     try for r in rows(t, q) {
@@ -99,7 +99,7 @@ pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Q
 
 /// An inner hash join of `ta` and `tb` on equal keys; `tb`'s key should be unique.
 pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const table.Table(B),
-               ka: fn(row: ^const A) -> K, kb: fn(row: ^const B) -> K) -> AllocError!() \ {Yield((left: A, right: B)), Alloc, Trace} where Eq(K) {
+               ka: fn(row: ^const A) -> K, kb: fn(row: ^const B) -> K) -> AllocError!() needs Yield((left: A, right: B)) + Alloc + Trace where Eq(K) {
     build := hash_map(K, usize)
     defer build.deinit()
     right := tb.all()
@@ -118,7 +118,7 @@ pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const 
 }
 
 /// The set of row numbers satisfying `pred`.
-pub mask :: fn(T: type, t: ^const table.Table(T), pred: fn(row: ^const T) -> bool) -> AllocError!bits.BitSet \ {Alloc} {
+pub mask :: fn(T: type, t: ^const table.Table(T), pred: fn(row: ^const T) -> bool) -> AllocError!bits.BitSet needs Alloc {
     all := t.all()
     set := try bits.bitset(all.len)
     for i in 0..all.len {

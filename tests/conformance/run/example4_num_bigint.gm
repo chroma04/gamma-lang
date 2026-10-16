@@ -191,7 +191,7 @@ factorial :: fn(n: u32) -> Big(N) {
     return f
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     buf: [300]u8 = ---
 
     f50 := factorial(50)

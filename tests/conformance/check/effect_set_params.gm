@@ -2,11 +2,11 @@
 // Effect-set parameters (§16.6).
 Note :: effect { note: fn(x: i32) }
 
-apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
+apply :: fn(E: effects, f: ^fn(x: i32) -> i32 needs E, x: i32) -> i32 needs E {
     return f(x)
 }
 
-hidden :: fn(E: effects, f: ^fn() \ {..E}) \ {..E} {
+hidden :: fn(E: effects, f: ^fn() needs E) needs E {
     with (handler Note { note(x) => {} }) {
         f()   //~ ERROR which the effect-set parameter might include
     }
@@ -14,16 +14,19 @@ hidden :: fn(E: effects, f: ^fn() \ {..E}) \ {..E} {
 
 as_type :: fn(E: effects, x: E) {}   //~ ERROR is an effect set, not a type
 
-bare :: fn(E: effects, f: ^fn() \ {..E}) \ {E} {}   //~ ERROR splice it into the set as `..E`
+one :: fn(E: effects) needs E + Out {}
+single :: fn(E: effects) {
+    with (handler E { }) {}   //~ ERROR is an effect set, not a single effect
+}
 
-noisy :: fn(x: i32) -> i32 \ {Note} {
+noisy :: fn(x: i32) -> i32 needs Note {
     note(x)
     return x
 }
 
 quiet :: fn(x: i32) -> i32 => x + 1
 
-caller :: fn() -> i32 \ {Note} {
+caller :: fn() -> i32 needs Note {
     return apply(noisy, 1) + apply(quiet, 2)
 }
 

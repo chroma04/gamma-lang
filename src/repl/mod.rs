@@ -103,7 +103,7 @@ struct Tail<'a> {
 /// its type is only fixed by use (`1 + 2`).
 const HELPERS: &str = "__repl_type :: fn(T: type, v: T) -> string => @type_name(T)\n\n";
 
-const ALL_EFFECTS: &str = "Alloc, Out, Err, In, Clock, Rand, Fs, Net, Env, Sys";
+const ALL_EFFECTS: &str = "Alloc + Out + Err + In + Clock + Rand + Fs + Net + Env + Sys";
 
 impl Repl {
     fn new(opts: Options) -> Repl {
@@ -144,7 +144,7 @@ impl Repl {
             src.push_str(d);
             src.push_str("\n\n");
         }
-        src.push_str(&format!("main :: fn() -> AllocError!() \\ {{{}}} {{\n", effects));
+        src.push_str(&format!("main :: fn() -> AllocError!() needs {} {{\n", effects));
         for r in replay {
             src.push_str("    ");
             src.push_str(&r.text);

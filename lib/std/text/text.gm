@@ -168,7 +168,7 @@ pub grapheme_len :: fn(s: string) -> usize {
 /// The grapheme clusters of `s`, in order: what a reader sees as one character, such
 /// as `e` with a combining accent, a flag, or an emoji sequence joined with ZWJs. `\r\n`
 /// is one cluster. Every byte of `s` is in exactly one cluster.
-pub graphemes :: fn(s: string) \ {Yield(string)} {
+pub graphemes :: fn(s: string) needs Yield(string) {
     rest := s
     while rest.len > 0 {
         n := grapheme_len(rest)

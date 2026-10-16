@@ -1,32 +1,32 @@
 //! safe: skip Fil-C rejects inline assembly with pointer operands
 //! arch: x86_64
 // Inline assembly with operand constraints (add, rdtsc, xchg, popcnt) on x86-64, selected with when on target.arch.
-add :: fn(a, b: u32) -> u32 \ {Sys} {
+add :: fn(a, b: u32) -> u32 needs Sys {
     r := a
     @asm("addl %1, %0", ("+r", &r), ("r", b), "cc")
     return r
 }
 
-rdtsc_hi :: fn() -> u32 \ {Sys} {
+rdtsc_hi :: fn() -> u32 needs Sys {
     lo: u32 = 0
     hi: u32 = 0
     @asm("rdtsc", (("=a", &lo), ("=d", &hi)), (), ())
     return hi * 0 + lo * 0
 }
 
-xchg :: fn(p: ^u64, v: u64) -> u64 \ {Sys} {
+xchg :: fn(p: ^u64, v: u64) -> u64 needs Sys {
     r := v
     @asm("xchgq %0, (%1)", ("+r", &r), ("r", p), "memory")
     return r
 }
 
-popcnt :: fn(x: u64) -> u64 \ {Sys} {
+popcnt :: fn(x: u64) -> u64 needs Sys {
     r: u64 = 0
     @asm("popcntq %1, %0", ("=r", &r), ("r", x), "cc")
     return r
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print("{}\n", add(40, 2))
     print("{}\n", rdtsc_hi())
     v: u64 = 5

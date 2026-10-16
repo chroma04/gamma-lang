@@ -30,7 +30,7 @@ Matrix :: struct(T: type, R, C: usize) {
     d: [R][C]T
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := ring(u16, 3)
     print("{} {} {}\n", r.push(1), r.push(2), r.push(3))
     print("{}\n", r.push(4))

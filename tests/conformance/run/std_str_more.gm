@@ -2,13 +2,13 @@
 // nth_field, split_any and dupe.
 str :: import "std/str"
 
-show_any :: fn(s, seps: string) \ {Out} {
+show_any :: fn(s, seps: string) needs Out {
     print("split_any({}, {}):", s, seps)
     for p in str.split_any(s, seps) { print(" <{}>", p) }
     print("\n")
 }
 
-show_into :: fn(s, sep: string, n: usize) \ {Out} {
+show_into :: fn(s, sep: string, n: usize) needs Out {
     parts := [_]string("", "", "", "", "", "")
     k := str.split_into(s, sep, parts[0..n])
     print("split_into({}, {}, {}) = {}:", s, sep, n, k)
@@ -16,7 +16,7 @@ show_into :: fn(s, sep: string, n: usize) \ {Out} {
     print("\n")
 }
 
-show_replace :: fn(s, from, to: string) -> AllocError!() \ {Out, Alloc} {
+show_replace :: fn(s, from, to: string) -> AllocError!() needs Out + Alloc {
     out := list(u8)
     defer out.deinit()
     try str.replace(&out, s, from, to)
@@ -26,14 +26,14 @@ show_replace :: fn(s, from, to: string) -> AllocError!() \ {Out, Alloc} {
     print("replace({}, {}, {}) = <{}> {}\n", s, from, to, a, same)
 }
 
-show_repeat :: fn(s: string, n: usize) -> AllocError!() \ {Out, Alloc} {
+show_repeat :: fn(s: string, n: usize) -> AllocError!() needs Out + Alloc {
     out := list(u8)
     defer out.deinit()
     try str.repeat(&out, s, n)
     print("repeat({}, {}) = <{}>\n", s, n, out.items)
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // strip_prefix, strip_suffix
     print("{} {} {}\n", str.strip_prefix("foobar", "foo"), str.strip_prefix("foobar", "bar"), str.strip_prefix("foo", "foobar"))
     print("{} {} {}\n", str.strip_suffix("foobar", "bar"), str.strip_suffix("foobar", "foo"), str.strip_suffix("bar", "foobar"))

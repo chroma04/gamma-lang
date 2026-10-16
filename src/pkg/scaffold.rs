@@ -23,7 +23,7 @@ pub fn manifest(name: &str) -> String {
 
 pub fn main_source(name: &str) -> String {
     format!(
-        "main :: fn() \\ {{Out}} {{\n    print(\"hello from {}\\n\")\n}}\n\n\
+        "main :: fn() needs Out {{\n    print(\"hello from {}\\n\")\n}}\n\n\
          double :: fn(n: i32) -> i32 => n * 2\n\n\
          test \"double\" {{\n    expect_eq(double(21), 42)\n}}\n",
         name

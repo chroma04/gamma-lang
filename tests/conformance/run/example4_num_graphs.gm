@@ -260,7 +260,7 @@ abs_diff_u :: fn(a, b: usize) -> usize => if a > b { a - b } else { b - a }
 CELLS :: ROWS * COLS
 
 // Returns the path length (number of steps) and draws the path into `canvas`, or null if unreachable.
-astar :: fn(canvas: ^[ROWS][COLS]u8, start, goal: usize) -> ?u32 \ {Out} {
+astar :: fn(canvas: ^[ROWS][COLS]u8, start, goal: usize) -> ?u32 needs Out {
     inf :: 0xFFFF_FFFF
     g := [CELLS]u32(fill: inf)
     from := [CELLS]usize(fill: CELLS)
@@ -316,7 +316,7 @@ astar :: fn(canvas: ^[ROWS][COLS]u8, start, goal: usize) -> ?u32 \ {Out} {
     return null
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     g := build_csr()
     print("bfs hops from 0: {}\n", bfs(&g, 0))
     order: [N_NODES]u32 = ---

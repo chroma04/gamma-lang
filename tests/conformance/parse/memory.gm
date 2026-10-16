@@ -15,7 +15,7 @@ AllocError :: union { OutOfMemory }
 
 handler Alloc for Allocator { current(self) => self }
 
-demo :: fn() -> AllocError!() \ {Alloc} {
+demo :: fn() -> AllocError!() needs Alloc {
     names := list(string)                 // captures the current allocator (the heap)
     defer names.deinit()
     with arena.allocator() {

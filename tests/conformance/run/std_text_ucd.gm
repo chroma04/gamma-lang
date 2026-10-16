@@ -1106,7 +1106,7 @@ CASES :: [_]Case(
     Case(text: "\u{915}\u{94d}\u{94d}\u{924}", lens: "\x0c"),
 )
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     failed: usize = 0
     for i, c in enumerate(CASES[..]) {
         k: usize = 0

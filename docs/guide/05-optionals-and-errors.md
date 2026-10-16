@@ -34,7 +34,7 @@ A `?T` is declared with a prefix `?`, and the prefix applies to everything after
 There are four ways to get a value out of an optional, in decreasing order of how often you want them:
 
 ```gamma
-use_optional :: fn(xs: []const i32) \ {Out} {
+use_optional :: fn(xs: []const i32) needs Out {
     // 1. Test and bind: the value exists only inside the block.
     if v := first_even(xs) {
         print("first even: {}\n", v)
@@ -56,7 +56,7 @@ use_optional :: fn(xs: []const i32) \ {Out} {
 `x else d` evaluates `d` only when `x` is absent. `d` may be a `T`, another `?T` (which makes the whole thing optional, so `a else b else c` chains), or something of type `never` such as `return`, `break`, `continue` or `trap(...)`. `d` may also be a block, whose value is the fallback or which leaves the function:
 
 ```gamma
-first_or_report :: fn(xs: []const i32) -> i32 \ {Out} {
+first_or_report :: fn(xs: []const i32) -> i32 needs Out {
     n := first_even(xs) else {
         print("no even number\n")
         return -1
@@ -134,7 +134,7 @@ Printing a result shows the success value or `!` followed by the error, for exam
 Everything you can do with an optional you can do with a result, with one addition: you can see the error.
 
 ```gamma
-handle_results :: fn(text: string) \ {Out} {
+handle_results :: fn(text: string) needs Out {
     // Bind on success.
     if port := parse_u16(text) {
         print("port {}\n", port)
@@ -161,7 +161,7 @@ handle_results :: fn(text: string) \ {Out} {
 A `match` can handle every case at once. `!p` matches an error, and any other pattern is matched against the success value, so a bare name binds the success:
 
 ```gamma
-report :: fn(text: string) \ {Out} {
+report :: fn(text: string) needs Out {
     match parse_u16(text) {
         !.Empty        => print("empty input\n")
         !.BadDigit(at) => print("bad digit at {}\n", at)
@@ -187,7 +187,7 @@ port_from :: fn(text: ?string) -> ConfigError!u16 {
     return try parse_u16(s)             // a ParseError becomes ConfigError.Parse
 }
 
-main :: fn() -> ConfigError!() \ {Out} {
+main :: fn() -> ConfigError!() needs Out {
     port := try port_from("8080")
     print("port {}\n", port)
     return ()
@@ -215,7 +215,7 @@ Some rules for `try`:
 - Unparenthesized `try x else d` is an error because it could mean either `(try x) else d` or `try (x else d)`. Write the one you mean.
 - Inside a function literal or a handler clause, `try` returns from the literal's function or, for a handler literal's clause, from the enclosing function ([chapter 7](07-effects.md)).
 
-> **Common mistake: `try` in `main` with no result.** `try` needs somewhere to send the error. In `main :: fn() \ {Out} { ... }` there is nowhere, so `try` is a compile error. Either declare `-> E!()` for `main` (above), or handle the result with `else`, `match` or `if`. The same holds for a `test` body, which returns nothing: use `ok(x)`, which gives the success value of a result or fails the test with the error ([chapter 13](13-safety.md)).
+> **Common mistake: `try` in `main` with no result.** `try` needs somewhere to send the error. In `main :: fn() needs Out { ... }` there is nowhere, so `try` is a compile error. Either declare `-> E!()` for `main` (above), or handle the result with `else`, `match` or `if`. The same holds for a `test` body, which returns nothing: use `ok(x)`, which gives the success value of a result or fails the test with the error ([chapter 13](13-safety.md)).
 
 ## Optional chains and iterators
 

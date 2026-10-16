@@ -1,7 +1,7 @@
 // A literal template needs no arguments.
 str :: import "std/str"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     store: [32]u8 = ---
     b := str.builder(store[..])
     b.write("literal")

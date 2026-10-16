@@ -2,7 +2,7 @@
 // A cast to a pointer type with stricter alignment traps when the address is misaligned (§6.6).
 Block :: #align(8) struct { bytes: [16]u8 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b: Block = ---
     p := b.bytes[..].ptr
     ok := (p + 8).cast([^]u32)

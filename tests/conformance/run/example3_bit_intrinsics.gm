@@ -1,5 +1,5 @@
 // Bit intrinsics on odd and wide integer widths (u3, u24, i24, u48, u200, u128): rotates, counts, bit reversal and wrapping arithmetic.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: u24 = 0xABCDEF
     print("{} {}\n", a, @rotl(a, 4))
     print("{} {} {}\n", @clz(a), @ctz(a), @popcount(a))

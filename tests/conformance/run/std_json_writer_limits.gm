@@ -2,7 +2,7 @@
 // leaves its state alone.
 json :: import "std/json"
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     d := list(u8)
     defer d.deinit()
     for _ in 0..512 { d.push('[') else return }

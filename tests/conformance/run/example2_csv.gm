@@ -21,7 +21,7 @@ CsvError :: union { Unterminated: usize, Memory: AllocError }
 
 // Splits `text` into records. Fields are copied into memory from the current allocator when they contain
 // quotes; plain fields are slices of `text`.
-parse_csv :: fn(text: string) -> CsvError!List(Row) \ {Alloc} {
+parse_csv :: fn(text: string) -> CsvError!List(Row) needs Alloc {
     rows := list(Row)
     fields := list(string)
     defer fields.deinit()
@@ -131,7 +131,7 @@ money :: fn(x: f64, buf: []u8) -> string {
     return b.str()
 }
 
-main :: fn() -> CsvError!() \ {Out, Alloc} {
+main :: fn() -> CsvError!() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     rows := try with a.allocator() { parse_csv(DATA) }

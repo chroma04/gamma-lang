@@ -14,7 +14,7 @@ Entry :: struct {
     n: u32
 }
 
-build_spec :: fn() -> AllocError!argp.Spec \ {Alloc} {
+build_spec :: fn() -> AllocError!argp.Spec needs Alloc {
     s := argp.spec("tally", "Counts how often each word occurs in the arguments.")
     errdefer s.deinit()
     try s.add(argp.Opt(name: "top", short: 'n', kind: argp.int_kind(u8), help: "Show at most N words", default: "10", metavar: "N"))
@@ -27,14 +27,14 @@ build_spec :: fn() -> AllocError!argp.Spec \ {Alloc} {
     return s
 }
 
-fold :: fn(w: string, owned: ^List([]u8)) -> AllocError!string \ {Alloc} {
+fold :: fn(w: string, owned: ^List([]u8)) -> AllocError!string needs Alloc {
     buf := try make(u8, w.len)
     errdefer free(buf)
     try owned.push(buf)
     return str.to_lower(w, buf)
 }
 
-emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
+emit :: fn(fmt: Format, rows: []const Entry, sep: string) needs Out {
     match fmt {
         .Text => {
             for r in rows { print("{} x{}\n", r.word, r.n) }
@@ -53,7 +53,7 @@ emit :: fn(fmt: Format, rows: []const Entry, sep: string) \ {Out} {
     }
 }
 
-tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
+tally :: fn(m: ^const argp.Matches) -> AllocError!() needs Alloc + Out {
     top := m.get(u8, "top") else 10
     min_len := m.get(u16, "min-len") else 1
     fmt := m.pick(T: Format, "format", FORMAT_TABLE[..]) else .Text
@@ -90,7 +90,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() \ {Alloc, Out} {
     if verbose >= 2 { print("{} dropped by --min-len\n", dropped) }
 }
 
-run :: fn() \ {Env, Out, Alloc} {
+run :: fn() needs Env + Out + Alloc {
     sp := build_spec() else {
         print("out of memory\n")
         return
@@ -101,7 +101,7 @@ run :: fn() \ {Env, Out, Alloc} {
     tally(&m) else print("out of memory\n")
 }
 
-scenario :: fn(argv: []const string) \ {Out, Alloc} {
+scenario :: fn(argv: []const string) needs Out + Alloc {
     print("$ tally")
     for a in argv { print(" {}", a) }
     print("\n")
@@ -126,7 +126,7 @@ CMD13 :: [_]string("--verbose=1", "a")
 CMD14 :: [_]string("--min-len", "-5", "a")
 CMD15 :: [_]string()
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     scenario(CMD1[..])
     scenario(CMD2[..])
     scenario(CMD3[..])

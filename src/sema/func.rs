@@ -619,7 +619,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 "`{callee}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {callee}(…)`) or pass it to a function that runs it, such as `collect({callee}(…))` (§13.5)"
             );
         }
-        format!("this performs the effect `{}`, which the function does not declare (add `\\ {{{}}}`)", name, name)
+        format!("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)
     }
 
     /// Reports an effect performed at `span` that the function, which declares `declared`,

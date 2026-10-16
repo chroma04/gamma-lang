@@ -3,7 +3,7 @@ Heap :: struct(T: type) {
     data: List(T)
 }
 
-heap :: fn(T: type) -> Heap(T) \ {Alloc} {
+heap :: fn(T: type) -> Heap(T) needs Alloc {
     return Heap(T)(data: list(T))
 }
 
@@ -58,7 +58,7 @@ Graph :: struct {
     adj: List(List(Edge))
 }
 
-graph :: fn(n: usize) -> AllocError!Graph \ {Alloc} {
+graph :: fn(n: usize) -> AllocError!Graph needs Alloc {
     g := Graph(adj: list(List(Edge)))
     errdefer graph_free(&g)
     for _ in 0..n {
@@ -81,7 +81,7 @@ add_edge :: fn(g: ^Graph, a, b, w: u32) -> AllocError!() {
 INF :: 4_000_000_000u32
 
 // Returns distances from `src`; entries are INF when unreachable.
-dijkstra :: fn(g: ^Graph, src: u32, dist: []u32, prev: []?u32) -> AllocError!u32 \ {Alloc} {
+dijkstra :: fn(g: ^Graph, src: u32, dist: []u32, prev: []?u32) -> AllocError!u32 needs Alloc {
     dist.fill(INF)
     prev.fill(null)
     dist[src] = 0
@@ -105,7 +105,7 @@ dijkstra :: fn(g: ^Graph, src: u32, dist: []u32, prev: []?u32) -> AllocError!u32
     return pops
 }
 
-print_path :: fn(prev: []const ?u32, target: u32) \ {Out} {
+print_path :: fn(prev: []const ?u32, target: u32) needs Out {
     path: [16]u32 = ---
     n: usize = 0
     cur: ?u32 = target
@@ -123,7 +123,7 @@ print_path :: fn(prev: []const ?u32, target: u32) \ {Out} {
     print("\n")
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // heap sort check
     h := heap(i32)
     defer heap_free(&h)

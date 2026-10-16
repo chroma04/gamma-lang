@@ -10,7 +10,7 @@ pub List :: struct(T: type) {
 }
 
 /// An empty list using the current allocator.
-pub list :: fn(T: type) -> List(T) \ {Alloc} => List(T)(items: empty_slice(T), cap: 0, alloc: current())
+pub list :: fn(T: type) -> List(T) needs Alloc => List(T)(items: empty_slice(T), cap: 0, alloc: current())
 
 /// Makes room for at least `extra` more elements without further allocation.
 pub reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!() {
@@ -155,7 +155,7 @@ pub into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T {
 }
 
 /// Appends every value the iterator `it` yields (`l.collect(fn() => m.keys())`).
-pub collect :: fn(T: type, l: ^List(T), it: fn() \ {Yield(T)}) -> AllocError!() {
+pub collect :: fn(T: type, l: ^List(T), it: fn() needs Yield(T)) -> AllocError!() {
     for x in it() { try l.push(x) }
     return ()
 }

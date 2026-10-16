@@ -1,6 +1,6 @@
 // A local constant may call a function nested in the same function: it is then
 // evaluated at run time (§17.2).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     sq :: fn(x: u32) -> u32 { return x * x }
     twice :: fn(x: u32) -> u32 { return sq(x) + sq(x) }
     X :: sq(7)

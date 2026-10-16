@@ -7,7 +7,7 @@ zero :: fn(T: type) -> T where Num(T) => 0
 
 apply :: fn(f: ^fn(x: u8) -> u8, v: u8) -> u8 => f(v)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p: ^fn(x: u8) -> u8 = double(T: u8)
     q := double(T: i64)
     print("{} {}\n", p(21), q(1 << 40))

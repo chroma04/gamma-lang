@@ -2,7 +2,7 @@
 Gen :: effect(T: type) { next: ctl(x: T) }
 Ask :: effect(T: type) { ask: ctl(q: string) -> T }
 
-producer :: fn(T: type, items: []const T) \ {Gen(T)} {
+producer :: fn(T: type, items: []const T) needs Gen(T) {
     for x in items { next(x) }
 }
 
@@ -20,7 +20,7 @@ collect_sum :: fn(T: type, items: []const T) -> T where Num(T) {
     return total
 }
 
-quiz :: fn() -> u32 \ {Ask(u32), Out} {
+quiz :: fn() -> u32 needs Ask(u32) + Out {
     defer print("quiz over\n")
     a := ask("a?")
     b := ask("b?")
@@ -28,7 +28,7 @@ quiz :: fn() -> u32 \ {Ask(u32), Out} {
     return a * b
 }
 
-answer :: fn() -> u32 \ {Out} {
+answer :: fn() -> u32 needs Out {
     stack: [16384]u8 = ---
     n: u32 = 6
     return with (handler Ask(u32) {
@@ -45,12 +45,12 @@ answer :: fn() -> u32 \ {Out} {
 // An inner generator driven from inside an outer fiber; the outer gets cancelled mid-way.
 Tick :: effect { tick: ctl(n: u32) }
 
-inner_gen :: fn() \ {Gen(u32), Out} {
+inner_gen :: fn() needs Gen(u32) + Out {
     defer print("  inner gen cleanup\n")
     for i in 0..5 { next(i) }
 }
 
-outer_body :: fn() \ {Tick, Out} {
+outer_body :: fn() needs Tick + Out {
     defer print("  outer body cleanup\n")
     stack: [16384]u8 = ---
     acc: u32 = 0
@@ -66,7 +66,7 @@ outer_body :: fn() \ {Tick, Out} {
     print("  outer finished acc={}\n", acc)
 }
 
-run_outer :: fn(stop_at: u32) \ {Out} {
+run_outer :: fn(stop_at: u32) needs Out {
     stack: [65536]u8 = ---
     with (handler Tick {
         tick(n, k) => {
@@ -82,7 +82,7 @@ run_outer :: fn(stop_at: u32) \ {Out} {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ia := [_]i32(1, 2, 3, 4)
     print("{}\n", collect_sum(ia[..]))
     fa := [_]f64(0.5, 0.25)

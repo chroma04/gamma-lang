@@ -10,12 +10,12 @@ area :: fn(w, h: i32) -> i32 => w * h
 describe :: fn(title: string, w, h: i32) -> string => title
 
 // Arguments are evaluated once each, in the order written.
-note :: fn(s: string, v: i32) -> i32 \ {Out} {
+note :: fn(s: string, v: i32) -> i32 needs Out {
     print("{} ", s)
     return v
 }
 
-pair :: fn(s: string) -> (i32, i32) \ {Out} {
+pair :: fn(s: string) -> (i32, i32) needs Out {
     print("{} ", s)
     return (2, 3)
 }
@@ -32,7 +32,7 @@ Log :: effect {
 
 biggest :: fn(T: type, a, b: T) -> T where Ord(T) => if a > b { a } else { b }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     t: (i32, i32) = (6, 7)
     print("{}\n", area(..t))
     win := Window(title: "main")

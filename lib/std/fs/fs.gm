@@ -29,7 +29,7 @@ pub ReadError :: union {
 
 /// The contents of the file at `path`, in memory from the current allocator; release it
 /// with `free(data)`.
-pub read_all :: fn(path: string) -> ReadError![]u8 \ {Fs, Alloc} {
+pub read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc {
     f := try Fs.open(path, OpenOptions())
     defer Fs.close(f)
     size := (try Fs.stat(path)).size.trunc(usize)
@@ -68,7 +68,7 @@ pub read_all :: fn(path: string) -> ReadError![]u8 \ {Fs, Alloc} {
 
 /// Writes all of `bytes` to `f`, retrying short writes. A write that makes no progress
 /// (returns 0) fails with `.Other(0)`.
-pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
+pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() needs Fs {
     done: usize = 0
     while done < bytes.len {
         n := try f.write_to(bytes[done..bytes.len])
@@ -79,28 +79,28 @@ pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
 }
 
 /// Replaces the contents of the file at `path` with `bytes`, creating it if needed.
-pub write_all :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
+pub write_all :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs {
     f := try Fs.open(path, OpenOptions(read: false, write: true, create: true, truncate: true))
     defer Fs.close(f)
     return write_all_to(f, bytes)
 }
 
 /// Appends `bytes` to the file at `path`, creating it if needed.
-pub append :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs} {
+pub append :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs {
     f := try Fs.open(path, OpenOptions(read: false, append: true, create: true))
     defer Fs.close(f)
     return write_all_to(f, bytes)
 }
 
 /// Whether something exists at `path`. A symbolic link counts only if its target exists.
-pub exists :: fn(path: string) -> bool \ {Fs} {
+pub exists :: fn(path: string) -> bool needs Fs {
     _ = Fs.stat(path) else return false
     return true
 }
 
 /// Copies the file at `from` to `to`, replacing `to`. Copying a file onto itself leaves it
 /// unchanged.
-pub copy :: fn(from, to: string) -> IoError!() \ {Fs} {
+pub copy :: fn(from, to: string) -> IoError!() needs Fs {
     src := try Fs.open(from, OpenOptions())
     defer Fs.close(src)
     // `to` is cut to the copied length at the end rather than emptied first, so that a file
@@ -139,7 +139,7 @@ pub Entry :: struct {
 ///         e := try r
 ///         print("{}\n", e.name)
 ///     }
-pub entries :: fn(path: string) \ {Yield(IoError!Entry), Fs} {
+pub entries :: fn(path: string) needs Yield(IoError!Entry) + Fs {
     d := Fs.open_dir(path) else e => {
         yield(!e)
         return
@@ -171,7 +171,7 @@ Frame :: struct {
     path_len: usize
 }
 
-close_frames :: fn(frames: ^List(Frame)) \ {Fs} {
+close_frames :: fn(frames: ^List(Frame)) needs Fs {
     for f in frames.items { Fs.close_dir(f.dir) }
     frames.deinit()
 }
@@ -189,7 +189,7 @@ close_frames :: fn(frames: ^List(Frame)) \ {Fs} {
 ///         e := try r
 ///         if e.kind is .File { print("{}\n", e.path) }
 ///     }
-pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
+pub walk :: fn(root: string) needs Yield(IoError!WalkEntry) + Fs + Alloc {
     path := list(u8)
     defer path.deinit()
     frames := list(Frame)
@@ -248,7 +248,7 @@ pub walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc} {
 /// Creates the directory `path` and any missing parents, like `mkdir -p`. Directories that
 /// exist already are fine; something else at `path`, or at one of its parents, is an
 /// error.
-pub make_dir_all :: fn(path: string) -> IoError!() \ {Fs} {
+pub make_dir_all :: fn(path: string) -> IoError!() needs Fs {
     i: usize = 0
     while i < path.len {
         // The next prefix ends before a separator, or at the end of the path.
@@ -270,7 +270,7 @@ pub make_dir_all :: fn(path: string) -> IoError!() \ {Fs} {
 /// suffix), which is synced and then renamed over `path`. The new file is removed again
 /// if anything fails. The suffix comes from the `Rand` effect. `path` may be at most 4000
 /// bytes long (`InvalidInput` otherwise).
-pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Rand} {
+pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs + Rand {
     // `path`, ".tmp-" and eight hex digits.
     SUFFIX :: 13
     name: [4096]u8 = ---
@@ -311,7 +311,7 @@ pub write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Ran
     return ()
 }
 
-fill_temp :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs} {
+fill_temp :: fn(f: File, bytes: []const u8) -> IoError!() needs Fs {
     try write_all_to(f, bytes)
     return f.sync()
 }

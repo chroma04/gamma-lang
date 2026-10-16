@@ -26,7 +26,7 @@ Counts :: struct {
     last_line: usize = 0
 }
 
-handler ini.Warn for ^Counts \ {Out} {
+handler ini.Warn for ^Counts needs Out {
     warn(self, line, msg) => {
         self.warnings += 1
         self.last_line = line
@@ -34,7 +34,7 @@ handler ini.Warn for ^Counts \ {Out} {
     }
 }
 
-show :: fn(label: string, v: ?ini.Value) \ {Out} {
+show :: fn(label: string, v: ?ini.Value) needs Out {
     match v {
         null => print("{}: (unset)\n", label)
         .Int(n) => print("{}: int {}\n", label, n)
@@ -48,7 +48,7 @@ int_or :: fn(v: ?ini.Value, fallback: i64) -> i64 {
     return fallback
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     counts := Counts()
     doc := with &counts { try ini.parse(CONFIG) }
     defer ini.free_doc(&doc)

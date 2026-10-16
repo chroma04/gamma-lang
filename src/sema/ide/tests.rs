@@ -110,11 +110,11 @@ sum :: fn(p: Point, extra: i32 = 0) -> i32 {
     return p.x + p.y + extra
 }
 
-greet :: fn(n: i32) \ {Out} {
+greet :: fn(n: i32) needs Out {
     print("{}\n", n)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     pt := Point(x: 1, y: 2)
     total := sum(pt)
     greet(total)
@@ -147,7 +147,7 @@ fn hover_on_a_use_of_a_local() {
 #[test]
 fn hover_on_a_call_shows_the_signature_and_effects() {
     let f = analyze(&PROGRAM.replace("    greet(total)", "    gr$eet(total)"));
-    assert_eq!(f.hover(), "greet :: fn(n: i32) \\ {Out}");
+    assert_eq!(f.hover(), "greet :: fn(n: i32) needs Out");
 }
 
 #[test]
@@ -339,7 +339,7 @@ largest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
     return best
 }
 
-work :: fn() \ {Log} {
+work :: fn() needs Log {
     Log.note("a")
     note("b")
 }

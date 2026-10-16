@@ -30,13 +30,13 @@ Trace :: effect {
     leave: fn(name: string, elapsed: Duration)
 }
 
-debug :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Debug, msg, fields) }
-info :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Info, msg, fields) }
-warn :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Warn, msg, fields) }
-error :: fn(msg: string, fields: []const Field) \ {Trace} { event(.Error, msg, fields) }
+debug :: fn(msg: string, fields: []const Field) needs Trace { event(.Debug, msg, fields) }
+info :: fn(msg: string, fields: []const Field) needs Trace { event(.Info, msg, fields) }
+warn :: fn(msg: string, fields: []const Field) needs Trace { event(.Warn, msg, fields) }
+error :: fn(msg: string, fields: []const Field) needs Trace { event(.Error, msg, fields) }
 
 // Runs `body` inside a named span and reports how long it took on the Clock.
-span :: fn(name: string, body: fn() \ {Trace}) \ {Trace, Clock} {
+span :: fn(name: string, body: fn() needs Trace) needs Trace + Clock {
     enter(name)
     t0 := Clock.now()
     defer leave(name, Clock.now().since(t0))
@@ -45,7 +45,7 @@ span :: fn(name: string, body: fn() \ {Trace}) \ {Trace, Clock} {
 
 // ---- Sinks ----------------------------------------------------------------------
 
-put_value :: fn(v: Value) \ {Out} {
+put_value :: fn(v: Value) needs Out {
     match v {
         .Int(i) => print("{}", i)
         .Str(s) => print("\"{}\"", s)
@@ -58,11 +58,11 @@ TextSink :: struct {
     lines: u32 = 0
 }
 
-indent :: fn(n: u32) \ {Out} {
+indent :: fn(n: u32) needs Out {
     for _ in 0..n { print("  ") }
 }
 
-handler Trace for ^TextSink \ {Out, Clock} {
+handler Trace for ^TextSink needs Out + Clock {
     event(self, level, msg, fields) => {
         print("[{}ms] ", Clock.now().ns / 1_000_000)
         indent(self.depth)
@@ -118,7 +118,7 @@ Filter :: struct {
     dropped: u32 = 0
 }
 
-handler Trace for ^Filter \ {Trace} {
+handler Trace for ^Filter needs Trace {
     event(self, level, msg, fields) => {
         if level >= self.min {
             event(level, msg, fields)
@@ -135,7 +135,7 @@ Context :: struct {
     extra: []const Field
 }
 
-handler Trace for ^Context \ {Trace} {
+handler Trace for ^Context needs Trace {
     event(self, level, msg, fields) => {
         all := [10]Field(fill: Field(key: "", val: .Flag(false)))
         n: usize = 0
@@ -158,7 +158,7 @@ Counter :: struct {
     spans: u32 = 0
 }
 
-handler Trace for ^Counter \ {Trace} {
+handler Trace for ^Counter needs Trace {
     event(self, level, msg, fields) => {
         self.by_level[level.tag()] += 1
         event(level, msg, fields)
@@ -172,14 +172,14 @@ handler Trace for ^Counter \ {Trace} {
 
 // ---- The instrumented application ------------------------------------------------
 
-fetch_user :: fn(id: i64) \ {Trace, Clock} {
+fetch_user :: fn(id: i64) needs Trace + Clock {
     f := [_]Field(fi("id", id))
     debug("cache miss", f[..])
     Clock.sleep(ms(12))
     info("loaded user", f[..])
 }
 
-handle_request :: fn(path: string, user: i64) \ {Trace, Clock} {
+handle_request :: fn(path: string, user: i64) needs Trace + Clock {
     f := [_]Field(fs("path", path), fb("auth", user > 0))
     info("request", f[..])
     span("auth", fn() {
@@ -198,7 +198,7 @@ handle_request :: fn(path: string, user: i64) \ {Trace, Clock} {
     }
 }
 
-app :: fn() \ {Trace, Clock} {
+app :: fn() needs Trace + Clock {
     span("serve", fn() {
         handle_request("/profile", 7)
         handle_request("/admin", 0)

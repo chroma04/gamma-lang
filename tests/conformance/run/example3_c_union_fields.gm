@@ -31,7 +31,7 @@ when target.endian is .Little {
 OFF :: @offset_of(Msg, tail)
 Buf :: struct { raw: [OFF]u8 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     m := Msg(kind: 1, payload: Value(f: 1.0), tail: 9)
     print("{}\n", m.payload.i is 0x3FF0000000000000)
     m.payload.v = Vec2(x: 1.0, y: 2.0)

@@ -2,11 +2,11 @@
 // initialized with an untyped literal and so has its default type (§6.1, §12.6).
 Add :: effect { add: fn(n: i32) }
 handler Add for ^i32 { add(self, n) => { self^ += n } }
-bump :: fn() \ {Add} {
+bump :: fn() needs Add {
     add(2)
     add(3)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x := 0
     with &x { bump() }
     print("{}\n", x)

@@ -8,13 +8,13 @@ DivT :: struct {
 }
 
 libc :: foreign "c" {
-    qsort   :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) \ {}
-    memcmp  :: fn(a, b: rawptr, n: usize) -> c.c_int \ {}
-    strlen  :: fn(s: cstring) -> usize \ {}
+    qsort   :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) needs not
+    memcmp  :: fn(a, b: rawptr, n: usize) -> c.c_int needs not
+    strlen  :: fn(s: cstring) -> usize needs not
     snprintf :: fn(buf: [^]u8, n: usize, fmt: cstring, ...) -> c.c_int
-    div     :: fn(n, d: c.c_int) -> DivT \ {}
-    #link_name("llabs") long_abs :: fn(x: c.c_longlong) -> c.c_longlong \ {}
-    strchr  :: fn(s: cstring, ch: c.c_int) -> ?cstring \ {}
+    div     :: fn(n, d: c.c_int) -> DivT needs not
+    #link_name("llabs") long_abs :: fn(x: c.c_longlong) -> c.c_longlong needs not
+    strchr  :: fn(s: cstring, ch: c.c_int) -> ?cstring needs not
 }
 
 Rec :: struct {
@@ -55,7 +55,7 @@ sum :: fn(p: [^]const i32, n: usize) -> i64 {
     return t
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     nums := [_]i32(42, -7, 19, 0, 100, 3, -50, 8)
     libc.qsort(&nums, nums.len, @size_of(i32), cmp_i32)
     print("sorted: {}\n", nums)

@@ -9,7 +9,7 @@ sum_to :: fn(n: u32) -> u32 {
     return total
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", square(-12))
     print("{} {}\n", sum_to(10), sum_to(0))
     x: u8 = 200

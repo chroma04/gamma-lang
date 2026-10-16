@@ -92,7 +92,7 @@ step :: fn(b: ^Board, rule: Rule) -> u32 {
     return changes
 }
 
-alive_cells :: fn(b: ^const Board) \ {Yield((usize, usize))} {
+alive_cells :: fn(b: ^const Board) needs Yield((usize, usize)) {
     for y in 0..H {
         for x in 0..W {
             if b.cells[y][x].alive { yield((y, x)) }
@@ -100,7 +100,7 @@ alive_cells :: fn(b: ^const Board) \ {Yield((usize, usize))} {
     }
 }
 
-show :: fn(b: ^const Board) \ {Out} {
+show :: fn(b: ^const Board) needs Out {
     for y in 0..H {
         for x in 0..W {
             c := if b.cells[y][x].alive { Cell.Alive } else { Cell.Dead }
@@ -114,7 +114,7 @@ show :: fn(b: ^const Board) \ {Out} {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("mode {}, bits size {}, corner neighbors {}\n", MODE_NAME.len > 0, @size_of(Flags), NEIGHBORS[0][0])
     b := Board(cells: BLANK)
     // a glider

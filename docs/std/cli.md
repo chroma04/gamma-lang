@@ -82,7 +82,7 @@ Variants:
 ### `parse`
 
 ```gamma
-parse :: fn(args: []const string, opts: []const Opt) \ {Yield(Arg)}
+parse :: fn(args: []const string, opts: []const Opt) needs Yield(Arg)
 ```
 
 Parses `args`, which must not include the program name (pass `args()[1..]`), and

@@ -95,7 +95,7 @@ handler Files for ^Disk {
 
 Indent :: struct { prefix: string = "  " }
 
-handler Log for ^Indent \ {Out} {
+handler Log for ^Indent needs Out {
     note(self, depth, msg) => {
         for _ in 0..depth { print("{}", self.prefix) }
         print("{}\n", msg)
@@ -113,7 +113,7 @@ find_task :: fn(graph: []const Task, name: string) -> ?usize {
 
 // Depth-first post-order from `root`, yielding task indices so that dependencies come first.
 // `state` marks tasks: 0 new, 1 on the current path, 2 done.
-visit :: fn(graph: []const Task, state: []u8, i: usize) \ {Yield(usize), Cycle} {
+visit :: fn(graph: []const Task, state: []u8, i: usize) needs Yield(usize) + Cycle {
     state[i] = 1
     for dep in graph[i].deps {
         j := find_task(graph, dep) else trap("unknown dependency")
@@ -124,7 +124,7 @@ visit :: fn(graph: []const Task, state: []u8, i: usize) \ {Yield(usize), Cycle} 
     yield(i)
 }
 
-topo :: fn(graph: []const Task, root: string) \ {Yield(usize), Cycle} {
+topo :: fn(graph: []const Task, root: string) needs Yield(usize) + Cycle {
     state: [16]u8 = [16]u8(fill: 0)
     r := find_task(graph, root) else trap("unknown root")
     visit(graph, state[..], r)
@@ -150,7 +150,7 @@ Build :: struct {
     stats: Stats = Stats()
 }
 
-say :: fn(depth: u32, verb: string, name: string) \ {Log} {
+say :: fn(depth: u32, verb: string, name: string) needs Log {
     buf: [64]u8 = ---
     n := 0
     for c in bytes(verb) {
@@ -166,7 +166,7 @@ say :: fn(depth: u32, verb: string, name: string) \ {Log} {
     note(depth, buf[0..n])
 }
 
-build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() \ {Exec, Files, Log, Alloc} {
+build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() needs Exec + Files + Log + Alloc {
     cycle_from := ""
     cycle_to := ""
     reported :: handler Cycle {
@@ -218,7 +218,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() \ {Ex
     return ()
 }
 
-new_build :: fn() -> Build \ {Alloc} {
+new_build :: fn() -> Build needs Alloc {
     return Build(cache: hash_map(string, CacheEntry), outputs: hash_map(string, u64))
 }
 
@@ -227,7 +227,7 @@ drop :: fn(b: ^Build) {
     b.outputs.deinit()
 }
 
-show_commands :: fn(e: ^FakeExec) \ {Out} {
+show_commands :: fn(e: ^FakeExec) needs Out {
     for i in 0..e.ran.min(8) {
         print("    $ {}\n", e.log[i])
     }
@@ -237,7 +237,7 @@ show_commands :: fn(e: ^FakeExec) \ {Out} {
 // A runner that only counts: it needs the Log effect, which the `with` that installs it must provide.
 DryRun :: struct { would_run: u32 = 0 }
 
-handler Exec for ^DryRun \ {Log} {
+handler Exec for ^DryRun needs Log {
     run(self, cmd, input) => {
         self.would_run += 1
         say(2, "would run", cmd)
@@ -264,7 +264,7 @@ CYCLIC :: [_]Task(
     Task(name: "w", cmd: "gen w", deps: NO_DEPS[..]),
 )
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     exec := FakeExec()
     disk := Disk(names: [6]string("util.c", "lib.c", "app.c", "readme.txt", "", ""), versions: [6]u64(fill: 0), n: 4)
     ind := Indent()

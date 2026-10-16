@@ -22,7 +22,7 @@ pub help :: helpm.help
 
 /// Parses the process arguments. On `--help` prints the help text and exits with 0; on
 /// any other failure prints the problem and the usage line and exits with 2.
-pub parse_or_exit :: fn(sp: ^const Spec) -> Matches \ {Env, Alloc, Out} {
+pub parse_or_exit :: fn(sp: ^const Spec) -> Matches needs Env + Alloc + Out {
     return parse_env(sp) else e => {
         match e {
             .Help => {

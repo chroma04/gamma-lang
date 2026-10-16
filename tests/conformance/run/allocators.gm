@@ -2,7 +2,7 @@
 fixed_buffer :: import "std/fixed_buffer"
 arena :: import "std/arena"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // A fixed buffer: allocations come from `store`, front to back.
     store: [64]u8 = ---
     fb := fixed_buffer.over(store[..])

@@ -7,31 +7,31 @@ DivT :: struct {
 }
 
 libc :: foreign "c" {
-    strlen :: fn(s: cstring) -> usize \ {}
-    abs :: fn(x: c.c_int) -> c.c_int \ {}
-    llabs :: fn(x: c.c_longlong) -> c.c_longlong \ {}
-    memcpy :: fn(dst: rawptr, src: rawptr, n: usize) -> rawptr \ {}
-    memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr \ {}
-    memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int \ {}
+    strlen :: fn(s: cstring) -> usize needs not
+    abs :: fn(x: c.c_int) -> c.c_int needs not
+    llabs :: fn(x: c.c_longlong) -> c.c_longlong needs not
+    memcpy :: fn(dst: rawptr, src: rawptr, n: usize) -> rawptr needs not
+    memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr needs not
+    memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int needs not
     snprintf :: fn(buf: [^]u8, n: usize, fmt: cstring, ...) -> c.c_int
-    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long \ {}
-    strchr :: fn(s: cstring, ch: c.c_int) -> ?cstring \ {}
-    toupper :: fn(ch: c.c_int) -> c.c_int \ {}
-    div :: fn(n, d: c.c_int) -> DivT \ {}
-    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) \ {Sys}
-    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) -> ?rawptr \ {Sys}
+    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long needs not
+    strchr :: fn(s: cstring, ch: c.c_int) -> ?cstring needs not
+    toupper :: fn(ch: c.c_int) -> c.c_int needs not
+    div :: fn(n, d: c.c_int) -> DivT needs not
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int needs Sys) needs Sys
+    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int needs Sys) -> ?rawptr needs Sys
 }
 
 libm :: foreign "m" {
-    sqrt :: fn(x: f64) -> f64 \ {}
-    pow :: fn(x, y: f64) -> f64 \ {}
-    sqrtf :: fn(x: f32) -> f32 \ {}
-    floor :: fn(x: f64) -> f64 \ {}
+    sqrt :: fn(x: f64) -> f64 needs not
+    pow :: fn(x, y: f64) -> f64 needs not
+    sqrtf :: fn(x: f32) -> f32 needs not
+    floor :: fn(x: f64) -> f64 needs not
 }
 
 #global calls: u32 = 0
 
-cmp_i32 :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+cmp_i32 :: fn(a, b: rawptr) -> c.c_int needs Sys {
     calls += 1
     x := a.cast(^const i32)^
     y := b.cast(^const i32)^
@@ -40,13 +40,13 @@ cmp_i32 :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
 
 Rec :: struct { key: i32, weight: f64 }
 
-cmp_rec :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+cmp_rec :: fn(a, b: rawptr) -> c.c_int needs Sys {
     x := a.cast(^const Rec)
     y := b.cast(^const Rec)
     return if x.weight < y.weight { 1 } else if x.weight > y.weight { -1 } else { 0 }
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     // Scalars and strings.
     print("{} {} {}\n", libc.strlen(c"hello"), libc.abs(-12), libc.llabs(-5_000_000_000))
     print("{} {} {} {}\n", libm.sqrt(2.0), libm.pow(2.0, 10.0), libm.sqrtf(2.25), libm.floor(-1.5))

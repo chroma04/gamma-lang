@@ -1,7 +1,7 @@
 // Atomic operations on narrow, signed, bool and pointer places: wraparound, max/min, swap and compare-and-swap results.
 Node :: struct { v: i32, next: ?^Node }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: u8 = 250
     old := @atomic_add(&a, 10, .SeqCst)
     print("{} {}\n", old, a)

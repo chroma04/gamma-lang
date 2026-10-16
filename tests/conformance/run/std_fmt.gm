@@ -2,11 +2,11 @@
 fmt :: import "std/fmt"
 
 // Prints each formatted string between brackets so padding is visible.
-show :: fn(s: string) \ {Out} {
+show :: fn(s: string) needs Out {
     print("[{}]\n", s)
 }
 
-ints :: fn() \ {Out} {
+ints :: fn() needs Out {
     buf := [fmt.INT_BUF]u8(fill: 0)
     b := buf[..]
 
@@ -98,7 +98,7 @@ ints :: fn() \ {Out} {
     print("{} {} {}\n", fmt.max_int_len(u8), fmt.max_int_len(i128), fmt.max_grouped_len(u128))
 }
 
-padding :: fn() \ {Out} {
+padding :: fn() needs Out {
     buf := [64]u8(fill: 0)
     b := buf[..]
 
@@ -151,7 +151,7 @@ padding :: fn() \ {Out} {
     show(fmt.zero_pad(fmt.dec(T: i32, -42, b), 8, b))
 }
 
-fixed_cases :: fn() \ {Out} {
+fixed_cases :: fn() needs Out {
     buf := [fmt.fixed_buf_len(40)]u8(fill: 0)
     b := buf[..]
 
@@ -256,7 +256,7 @@ fixed_cases :: fn() \ {Out} {
     print("{} {}\n", fmt.fixed_buf_len(0), fmt.fixed_buf_len(10))
 }
 
-sci_cases :: fn() \ {Out} {
+sci_cases :: fn() needs Out {
     buf := [fmt.sci_buf_len(30)]u8(fill: 0)
     b := buf[..]
 
@@ -303,7 +303,7 @@ sci_cases :: fn() \ {Out} {
     print("{} {}\n", fmt.sci_buf_len(0), fmt.sci_buf_len(20))
 }
 
-general_cases :: fn() \ {Out} {
+general_cases :: fn() needs Out {
     buf := [fmt.general_buf_len(40)]u8(fill: 0)
     b := buf[..]
 
@@ -339,7 +339,7 @@ general_cases :: fn() \ {Out} {
 }
 
 // Integers of any width (here 200 and 256 bits) in every base.
-wide_ints :: fn() \ {Out} {
+wide_ints :: fn() needs Out {
     buf := [fmt.max_int_len(i256)]u8(fill: 0)
     big: u200 = 1
     big = (big << 199) + 12345
@@ -355,7 +355,7 @@ wide_ints :: fn() \ {Out} {
     print("{}\n", fmt.grouped(i256(-1234567), '_', g[..]))
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ints()
     wide_ints()
     padding()

@@ -10,7 +10,7 @@ top :: fn(s: ^const Stack) -> i32 {
 
 apply :: fn(f: fn(x: i32) -> i32, x: i32) -> i32 => f(x)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s := Stack(items: [4]i32(1, 2, 3, 4), n: 2)
     print("{}\n", top(&s))
     empty := Stack(items: [4]i32(0, 0, 0, 0), n: 0)

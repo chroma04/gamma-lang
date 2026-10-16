@@ -5,10 +5,10 @@ Note :: effect { note: esc(n: i32) }
 Pause :: effect { pause: ctl() }
 Stop :: effect { stop: esc(c: i32) -> never }
 Mixed :: effect { info: fn(s: string); bail: esc() -> never }
-f :: fn() -> i32 \ {Q} => ask(5) + 1
-g :: fn() \ {Pause} { pause() }
-h :: fn() \ {Stop} { stop(1) }
-deferring :: fn() \ {Stop, Pause, Mixed} {
+f :: fn() -> i32 needs Q => ask(5) + 1
+g :: fn() needs Pause { pause() }
+h :: fn() needs Stop { stop(1) }
+deferring :: fn() needs Stop + Pause + Mixed {
     defer stop(1) //~ ERROR a deferred statement may not perform `Stop`
     defer pause() //~ ERROR a deferred statement may not perform `Pause`
     defer h() //~ ERROR a deferred statement may not perform `Stop`

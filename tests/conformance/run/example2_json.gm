@@ -59,7 +59,7 @@ expect_word :: fn(p: ^Parser, word: string) -> ParseError!() {
 }
 
 // Parses a string literal; escapes are decoded into a fresh buffer from the current allocator.
-parse_string :: fn(p: ^Parser) -> ParseError!string \ {Alloc} {
+parse_string :: fn(p: ^Parser) -> ParseError!string needs Alloc {
     try expect_byte(p, '"')
     buf := try make(u8, p.src.len - p.pos)
     n: usize = 0
@@ -115,7 +115,7 @@ parse_number :: fn(p: ^Parser) -> ParseError!f64 {
     return if neg { -int_part } else { int_part }
 }
 
-parse_value :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+parse_value :: fn(p: ^Parser) -> ParseError!Json needs Alloc {
     c := try peek(p)
     return match c {
         'n' => {
@@ -138,7 +138,7 @@ parse_value :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
     }
 }
 
-parse_array :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+parse_array :: fn(p: ^Parser) -> ParseError!Json needs Alloc {
     try expect_byte(p, '[')
     items := list(Json)
     if (try peek(p)) is ']' {
@@ -156,7 +156,7 @@ parse_array :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
     return Json.Arr(items.items)
 }
 
-parse_object :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
+parse_object :: fn(p: ^Parser) -> ParseError!Json needs Alloc {
     try expect_byte(p, '{')
     members := list(Member)
     if (try peek(p)) is '}' {
@@ -177,7 +177,7 @@ parse_object :: fn(p: ^Parser) -> ParseError!Json \ {Alloc} {
     return Json.Obj(members.items)
 }
 
-parse :: fn(src: string) -> ParseError!Json \ {Alloc} {
+parse :: fn(src: string) -> ParseError!Json needs Alloc {
     p := Parser(src: src)
     v := try parse_value(&p)
     skip_ws(&p)
@@ -185,11 +185,11 @@ parse :: fn(src: string) -> ParseError!Json \ {Alloc} {
     return v
 }
 
-indent :: fn(n: u32) \ {Out} {
+indent :: fn(n: u32) needs Out {
     for _ in 0..n { print("  ") }
 }
 
-show :: fn(j: Json, depth: u32) \ {Out} {
+show :: fn(j: Json, depth: u32) needs Out {
     match j {
         .Null => print("null")
         .Bool(b) => print("{}", b)
@@ -227,7 +227,7 @@ show :: fn(j: Json, depth: u32) \ {Out} {
     }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     inputs := [_]string(

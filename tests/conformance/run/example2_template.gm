@@ -37,7 +37,7 @@ Parser :: struct {
 }
 
 // Parses nodes until the closing tag `{{/close}}` (or the end of input when `close` is empty).
-parse_nodes :: fn(p: ^Parser, close: string) -> TplError![]Node \ {Alloc} {
+parse_nodes :: fn(p: ^Parser, close: string) -> TplError![]Node needs Alloc {
     nodes := list(Node)
     while p.pos < p.src.len {
         rest := p.src[p.pos..]
@@ -85,7 +85,7 @@ truthy :: fn(v: Value) -> bool => match v {
     .Flag(b) => b
 }
 
-render :: fn(nodes: []const Node) \ {Emit, Scope, Fail} {
+render :: fn(nodes: []const Node) needs Emit + Scope + Fail {
     for n in nodes {
         match n {
             .Text(t) => put(t)
@@ -125,7 +125,7 @@ render :: fn(nodes: []const Node) \ {Emit, Scope, Fail} {
 }
 
 Sink :: struct { out: List(u8) }
-handler Emit for ^Sink \ {Alloc} {
+handler Emit for ^Sink needs Alloc {
     put(self, s) => {
         for c in bytes(s) { self.out.push(c) else break }
     }
@@ -147,7 +147,7 @@ handler Scope for ^const Globals {
     }
 }
 
-try_render :: fn(src: string, g: ^const Globals) \ {Out, Alloc} {
+try_render :: fn(src: string, g: ^const Globals) needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     p := Parser(src: src)
@@ -173,7 +173,7 @@ try_render :: fn(src: string, g: ^const Globals) \ {Out, Alloc} {
     print("---\n{}\n---\n", sink.out.items)
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     names := [_]string("ada", "grace", "alan")
     g := Globals(title: "Pioneers", names: names[..], admin: true)
     try_render("<h1>{{title}}</h1>\n{{#each names as n}}{{@first}} {{n}};\n{{/each}}{{#if admin}}admin mode{{/if}}", &g)

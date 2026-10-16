@@ -1,4 +1,4 @@
-# 025 Design review (s15) — ADOPTED and implemented (docs/design-review.md §8)
+# 025 Design review (s15) — ADOPTED and implemented (the review doc was removed from the repo in s16; this note is its record)
 
 Thesis: "C in which everything a function depends on appears in its signature". Principles
 P1 plain data, P2 visible cost, P3 context is an effect, P4 mistakes rejected, P5 local

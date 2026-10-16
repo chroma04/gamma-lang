@@ -78,7 +78,7 @@ The base name of `p` without its extension and the dot before it: `a.tar.gz` giv
 ### `components`
 
 ```gamma
-components :: fn(p: string) \ {Yield(string)}
+components :: fn(p: string) needs Yield(string)
 ```
 
 The non-empty components of `p`, in order. An absolute path yields `/` first. A `.`
@@ -113,7 +113,7 @@ dropped (a part of slashes only is skipped). Nothing else is cleaned (use `clean
 ### `join_alloc`
 
 ```gamma
-join_alloc :: fn(parts: []const string) -> AllocError![]u8 \ {Alloc}
+join_alloc :: fn(parts: []const string) -> AllocError![]u8 needs Alloc
 ```
 
 `join` into new memory from the current allocator; release it with `free`.

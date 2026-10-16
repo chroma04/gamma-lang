@@ -185,7 +185,7 @@ def write_test(ucd, ver, out):
     lines += [
         ")",
         "",
-        "main :: fn() \\ {Out} {",
+        "main :: fn() needs Out {",
         "    failed: usize = 0",
         "    for i, c in enumerate(CASES[..]) {",
         "        k: usize = 0",

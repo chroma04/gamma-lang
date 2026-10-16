@@ -3,17 +3,17 @@ STACK :: 16384
 
 // ---- Lazy adapters over iterators passed as second-class functions ----------------
 
-mapped :: fn(T, U: type, src: fn() \ {Yield(T)}, f: fn(x: T) -> U) \ {Yield(U)} {
+mapped :: fn(T, U: type, src: fn() needs Yield(T), f: fn(x: T) -> U) needs Yield(U) {
     for x in src() { yield(f(x)) }
 }
 
-filtered :: fn(T: type, src: fn() \ {Yield(T)}, keep: fn(x: T) -> bool) \ {Yield(T)} {
+filtered :: fn(T: type, src: fn() needs Yield(T), keep: fn(x: T) -> bool) needs Yield(T) {
     for x in src() {
         if keep(x) { yield(x) }
     }
 }
 
-taking :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
+taking :: fn(T: type, n: usize, src: fn() needs Yield(T)) needs Yield(T) {
     if n is 0 { return }
     count: usize = 0
     for x in src() {
@@ -23,7 +23,7 @@ taking :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
     }
 }
 
-skipping :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
+skipping :: fn(T: type, n: usize, src: fn() needs Yield(T)) needs Yield(T) {
     seen: usize = 0
     for x in src() {
         if seen >= n { yield(x) }
@@ -31,7 +31,7 @@ skipping :: fn(T: type, n: usize, src: fn() \ {Yield(T)}) \ {Yield(T)} {
     }
 }
 
-taking_while :: fn(T: type, src: fn() \ {Yield(T)}, ok: fn(x: T) -> bool) \ {Yield(T)} {
+taking_while :: fn(T: type, src: fn() needs Yield(T), ok: fn(x: T) -> bool) needs Yield(T) {
     for x in src() {
         if not ok(x) { break }
         yield(x)
@@ -39,7 +39,7 @@ taking_while :: fn(T: type, src: fn() \ {Yield(T)}, ok: fn(x: T) -> bool) \ {Yie
 }
 
 // Sources.
-naturals :: fn() \ {Yield(i64), Out} {
+naturals :: fn() needs Yield(i64) + Out {
     defer print("  (naturals closed)\n")
     n: i64 = 1
     while true {
@@ -48,7 +48,7 @@ naturals :: fn() \ {Yield(i64), Out} {
     }
 }
 
-fibs :: fn() \ {Yield(i64)} {
+fibs :: fn() needs Yield(i64) {
     a: i64 = 0
     b: i64 = 1
     while true {
@@ -69,17 +69,17 @@ is_prime :: fn(n: i64) -> bool {
     return true
 }
 
-primes :: fn() \ {Yield(i64), Out} {
+primes :: fn() needs Yield(i64) + Out {
     filtered(T: i64, fn() { naturals() }, is_prime)
 }
 
-show_stream :: fn(label: string, src: fn() \ {Yield(i64)}) \ {Out} {
+show_stream :: fn(label: string, src: fn() needs Yield(i64)) needs Out {
     print("{}:", label)
     for x in src() { print(" {}", x) }
     print("\n")
 }
 
-adapters :: fn() \ {Out} {
+adapters :: fn() needs Out {
     print("-- adapters\n")
     show_stream("first 10 primes", fn() { taking(T: i64, 10, primes) })
     show_stream("squares of 1..5", fn() {
@@ -103,10 +103,10 @@ Lock :: effect {
 
 LockArg :: struct {
     side: u8
-    src: ^fn() \ {Yield(i64), Out}
+    src: ^fn() needs Yield(i64) + Out
 }
 
-producer :: fn(a: ^LockArg) -> never \ {Lock, Out} {
+producer :: fn(a: ^LockArg) -> never needs Lock + Out {
     for x in a.src() { head(a.side, x) }
     finished(a.side)
 }
@@ -115,7 +115,7 @@ Act :: union { ResumeLeft, ResumeRight, Stop }
 
 // Calls `pick(l, r)` with the current heads (null once an iterator is exhausted) and
 // advances according to its answer: 0 stops, 1 consumes the left head, 2 the right, 3 both.
-lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pick: fn(l: ?i64, r: ?i64) -> u8) \ {Out} {
+lockstep :: fn(fa: ^fn() needs Yield(i64) + Out, fb: ^fn() needs Yield(i64) + Out, pick: fn(l: ?i64, r: ?i64) -> u8) needs Out {
     stack_main: [STACK]u8 = ---
     stack_l: [STACK]u8 = ---
     stack_r: [STACK]u8 = ---
@@ -212,7 +212,7 @@ lockstep :: fn(fa: ^fn() \ {Yield(i64), Out}, fb: ^fn() \ {Yield(i64), Out}, pic
     }
 }
 
-multiples_of_3 :: fn() \ {Yield(i64)} {
+multiples_of_3 :: fn() needs Yield(i64) {
     n: i64 = 3
     while n < 40 {
         yield(n)
@@ -220,7 +220,7 @@ multiples_of_3 :: fn() \ {Yield(i64)} {
     }
 }
 
-multiples_of_5 :: fn() \ {Yield(i64)} {
+multiples_of_5 :: fn() needs Yield(i64) {
     n: i64 = 5
     while n < 40 {
         yield(n)
@@ -228,17 +228,17 @@ multiples_of_5 :: fn() \ {Yield(i64)} {
     }
 }
 
-squares :: fn() \ {Yield(i64), Out} {
+squares :: fn() needs Yield(i64) + Out {
     for x in naturals() { yield(x * x) }
 }
 
-short :: fn() \ {Yield(i64)} {
+short :: fn() needs Yield(i64) {
     yield(100)
     yield(200)
     yield(300)
 }
 
-lockstep_demo :: fn() \ {Out} {
+lockstep_demo :: fn() needs Out {
     print("-- zip: naturals with squares, stopped by the shorter side\n")
     n: u32 = 0
     lockstep(naturals, short, fn(l: ?i64, r: ?i64) -> u8 {
@@ -290,7 +290,7 @@ lockstep_demo :: fn() \ {Out} {
     print("\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     adapters()
     lockstep_demo()
 }

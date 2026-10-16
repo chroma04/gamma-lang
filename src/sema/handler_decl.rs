@@ -1,4 +1,4 @@
-//! Handler declarations `handler E for T \ {A} { … }` (§12.6).
+//! Handler declarations `handler E for T needs A { … }` (§12.6).
 
 use super::func::{ClauseInfo, FnCx, LocalBinding};
 use super::{FnSig, ModuleId, ParamInfo, Sema};

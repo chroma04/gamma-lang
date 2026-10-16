@@ -44,7 +44,7 @@ skip_ws :: fn(p: ^Parser) {
 }
 
 /// Parses a whole document: one value, then nothing but whitespace.
-pub parse :: fn(src: string) -> Error!Value \ {Alloc} {
+pub parse :: fn(src: string) -> Error!Value needs Alloc {
     p := Parser(src: src)
     v := try parse_value(&p)
     skip_ws(&p)
@@ -55,7 +55,7 @@ pub parse :: fn(src: string) -> Error!Value \ {Alloc} {
     return v
 }
 
-parse_value :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+parse_value :: fn(p: ^Parser) -> Error!Value needs Alloc {
     skip_ws(p)
     c := peek(p) else return !fail(p, .Eof)
     return match c {
@@ -83,7 +83,7 @@ enter :: fn(p: ^Parser) -> Error!() {
     return ()
 }
 
-array :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+array :: fn(p: ^Parser) -> Error!Value needs Alloc {
     try enter(p)
     defer p.depth -= 1
     p.pos += 1
@@ -115,7 +115,7 @@ array :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
     return Value.Arr(items)
 }
 
-object :: fn(p: ^Parser) -> Error!Value \ {Alloc} {
+object :: fn(p: ^Parser) -> Error!Value needs Alloc {
     try enter(p)
     defer p.depth -= 1
     p.pos += 1
@@ -307,7 +307,7 @@ scan_string :: fn(p: ^Parser, out: []u8, write: bool) -> Error!usize {
 }
 
 /// A freshly allocated, decoded copy of the string at the cursor.
-string_value :: fn(p: ^Parser) -> Error!string \ {Alloc} {
+string_value :: fn(p: ^Parser) -> Error!string needs Alloc {
     save := p.pos
     n := try scan_string(p, empty_slice(u8), false)
     p.pos = save

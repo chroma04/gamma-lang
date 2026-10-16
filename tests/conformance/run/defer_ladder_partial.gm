@@ -8,7 +8,7 @@ check :: fn(x: i32) -> E!i32 {
     return x
 }
 
-steps :: fn(x: i32) -> E!i32 \ {Out} {
+steps :: fn(x: i32) -> E!i32 needs Out {
     defer print("  one\n")
     a := try check(x)
     defer print("  two\n")
@@ -21,7 +21,7 @@ steps :: fn(x: i32) -> E!i32 \ {Out} {
 
 Stop :: effect { stop: esc() -> never }
 
-work :: fn(n: i32) \ {Out, Stop} {
+work :: fn(n: i32) needs Out + Stop {
     defer print("  work {} left\n", n)
     for i in 0..n {
         defer print("  step {}\n", i)
@@ -30,7 +30,7 @@ work :: fn(n: i32) \ {Out, Stop} {
     defer print("  work {} finished\n", n)
 }
 
-nested_cleanup :: fn() \ {Out} {
+nested_cleanup :: fn() needs Out {
     defer {
         for i in 0..4 {
             defer print("  cleanup {}\n", i)
@@ -41,7 +41,7 @@ nested_cleanup :: fn() \ {Out} {
     print("  body\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for x in [4]i32(-1, 2, 5, 7) {
         print("steps({}):\n", x)
         print("= {}\n", steps(x))

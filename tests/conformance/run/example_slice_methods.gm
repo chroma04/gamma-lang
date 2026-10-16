@@ -8,7 +8,7 @@ sum_slice :: fn(xs: []const u32) -> u32 {
     return t
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [_]u32(5, 3, 9, 1, 7)
     s := a[..]
     print("{} {}\n", s.starts_with(a[0..2]), s.ends_with(a[3..]))

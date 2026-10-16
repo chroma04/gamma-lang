@@ -30,13 +30,13 @@ Op :: union {
     Add: string
 }
 
-split_lines :: fn(text: string, out: ^List(string)) -> AllocError!() \ {Alloc} {
+split_lines :: fn(text: string, out: ^List(string)) -> AllocError!() needs Alloc {
     for l in str.lines(text) { try out.push(l) }
     return ()
 }
 
 // Yields the edit script turning `a` into `b`.
-edits :: fn(a, b: []const string) -> AllocError!() \ {Yield(Op), Alloc} {
+edits :: fn(a, b: []const string) -> AllocError!() needs Yield(Op) + Alloc {
     n := a.len
     m := b.len
     w := m + 1
@@ -75,7 +75,7 @@ edits :: fn(a, b: []const string) -> AllocError!() \ {Yield(Op), Alloc} {
     return ()
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     a := list(string)
     defer a.deinit()
     b := list(string)

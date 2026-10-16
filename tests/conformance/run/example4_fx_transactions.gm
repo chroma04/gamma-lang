@@ -44,7 +44,7 @@ Outcome :: union { Committed, Aborted: string }
 
 // Runs `body` as a transaction. The body's Store and Abort performs are handled here; an abort
 // unwinds the body and undoes its writes back to where the transaction began.
-atomically :: fn(l: ^Ledger, label: string, body: fn() \ {Store, Abort}) -> Outcome \ {Out} {
+atomically :: fn(l: ^Ledger, label: string, body: fn() needs Store + Abort) -> Outcome needs Out {
     mark := l.undo_len
     why := ""
     failed := false
@@ -65,7 +65,7 @@ atomically :: fn(l: ^Ledger, label: string, body: fn() \ {Store, Abort}) -> Outc
     return .Committed
 }
 
-transfer :: fn(from, to: usize, amount: i64) \ {Store, Abort, Out} {
+transfer :: fn(from, to: usize, amount: i64) needs Store + Abort + Out {
     defer print("    transfer {}->{}: leave\n", NAMES[from], NAMES[to])
     errdefer print("    transfer {}->{}: unwound\n", NAMES[from], NAMES[to])
     bal := read(from)
@@ -76,7 +76,7 @@ transfer :: fn(from, to: usize, amount: i64) \ {Store, Abort, Out} {
     write(to, read(to) + amount)
 }
 
-show :: fn(l: ^Ledger) \ {Out} {
+show :: fn(l: ^Ledger) needs Out {
     total: i64 = 0
     print("  state:")
     for i in 0..4 {
@@ -86,7 +86,7 @@ show :: fn(l: ^Ledger) \ {Out} {
     print("  total={}\n", total)
 }
 
-scenario_plain :: fn(l: ^Ledger) \ {Out} {
+scenario_plain :: fn(l: ^Ledger) needs Out {
     print("-- commit and abort\n")
     r1 := atomically(l, "pay bob", fn() { transfer(0, 1, 30) })
     show(l)
@@ -95,9 +95,9 @@ scenario_plain :: fn(l: ^Ledger) \ {Out} {
     print("  outcomes: {} {}\n", r1, r2)
 }
 
-scenario_nested :: fn(l: ^Ledger) \ {Out} {
+scenario_nested :: fn(l: ^Ledger) needs Out {
     print("-- nested savepoints\n")
-    outer: fn() \ {Store, Abort} : fn() {
+    outer: fn() needs Store + Abort : fn() {
         transfer(1, 2, 10)
         inner := atomically(l, "inner", fn() {
             transfer(2, 0, 999)       // aborts: only the inner part is undone
@@ -110,7 +110,7 @@ scenario_nested :: fn(l: ^Ledger) \ {Out} {
     print("  outcome: {}\n", r)
 }
 
-scenario_outer_abort :: fn(l: ^Ledger) \ {Out} {
+scenario_outer_abort :: fn(l: ^Ledger) needs Out {
     print("-- the outer transaction aborts after the inner one committed\n")
     r := atomically(l, "outer", fn() {
         inner := atomically(l, "inner", fn() { transfer(3, 0, 5) })
@@ -122,7 +122,7 @@ scenario_outer_abort :: fn(l: ^Ledger) \ {Out} {
 }
 
 // A handler literal that forwards to the handler outside it and reports every write.
-scenario_audit :: fn(l: ^Ledger) \ {Out} {
+scenario_audit :: fn(l: ^Ledger) needs Out {
     print("-- audited writes\n")
     r := atomically(l, "audited", fn() {
         // The clauses perform Store themselves; those performs reach the handler installed by `atomically`.
@@ -142,7 +142,7 @@ scenario_audit :: fn(l: ^Ledger) \ {Out} {
     print("  outcome: {}\n", r)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ledger := Ledger(slots: [4]i64(100, 50, 0, 0))
     show(&ledger)
     scenario_plain(&ledger)

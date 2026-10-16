@@ -44,7 +44,7 @@ pub seeded :: fn(seed: u64) -> Rng {
 }
 
 /// A generator seeded from the current `Rand` (the operating system by default).
-pub from_rand :: fn() -> Rng \ {Rand} {
+pub from_rand :: fn() -> Rng needs Rand {
     while true {
         buf: [32]u8 = ---
         Rand.fill(buf[..])
@@ -100,14 +100,14 @@ handler Rand for ^Rng {
 // ---------------------------------------------------------------------------------
 
 /// A uniformly distributed `u64`.
-pub next_u64 :: fn() -> u64 \ {Rand} {
+pub next_u64 :: fn() -> u64 needs Rand {
     buf: [8]u8 = ---
     Rand.fill(buf[..])
     return load_u64(buf[..])
 }
 
 // A uniform value in [0, n) for `n` > 0 (Lemire's multiply-shift with rejection).
-below64 :: fn(n: u64) -> u64 \ {Rand} {
+below64 :: fn(n: u64) -> u64 needs Rand {
     m := u128(next_u64()) * u128(n)
     l := m.trunc(u64)
     if l < n {
@@ -121,7 +121,7 @@ below64 :: fn(n: u64) -> u64 \ {Rand} {
 }
 
 /// A uniform integer in [0, n), without modulo bias. `n` must be greater than 0.
-pub below :: fn(T: type, n: T) -> T \ {Rand} where Int(T) {
+pub below :: fn(T: type, n: T) -> T needs Rand where Int(T) {
     assert(n > 0, "random.below: n must be greater than 0")
     if @size_of(T) <= 8 { return below64(n.trunc(u64)).trunc(T) }
     // Wider than 64 bits: draw masked values until one is below `n`.
@@ -134,7 +134,7 @@ pub below :: fn(T: type, n: T) -> T \ {Rand} where Int(T) {
 }
 
 // A `T` of uniformly random bits, for integer types wider than 64 bits.
-wide_bits :: fn(T: type) -> T \ {Rand} where Int(T) {
+wide_bits :: fn(T: type) -> T needs Rand where Int(T) {
     r: T = 0
     for _ in 0..@size_of(T) / 8 { r = (r <<% 64) | next_u64().trunc(T) }
     return r
@@ -142,7 +142,7 @@ wide_bits :: fn(T: type) -> T \ {Rand} where Int(T) {
 
 /// A uniform integer in [lo, hi). `lo` must be less than `hi`; the span may be the whole
 /// range of `T` minus one value.
-pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
+pub range :: fn(T: type, lo, hi: T) -> T needs Rand where Int(T) {
     assert(lo < hi, "random.range: lo must be less than hi")
     if @size_of(T) > 8 {
         if hi -% lo > 0 { return lo +% below(T: T, hi -% lo) }
@@ -159,15 +159,15 @@ pub range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T) {
 }
 
 /// A uniform `f64` in [0, 1), made from 53 random bits.
-pub float :: fn() -> f64 \ {Rand} {
+pub float :: fn() -> f64 needs Rand {
     return (next_u64() >> 11).to(f64) * (1.0 / 9007199254740992.0)
 }
 
 /// `true` with probability `p` (never for `p` <= 0, always for `p` >= 1).
-pub chance :: fn(p: f64) -> bool \ {Rand} => float() < p
+pub chance :: fn(p: f64) -> bool needs Rand => float() < p
 
 /// A normally distributed `f64` with the given mean and standard deviation (Box-Muller).
-pub normal :: fn(mean, stddev: f64) -> f64 \ {Rand} {
+pub normal :: fn(mean, stddev: f64) -> f64 needs Rand {
     r1 := 1.0 - float()                 // in (0, 1], so the logarithm is finite
     r2 := float()
     z := math.sqrt(-2.0 * math.log(r1)) * math.cos(math.tau * r2)
@@ -175,7 +175,7 @@ pub normal :: fn(mean, stddev: f64) -> f64 \ {Rand} {
 }
 
 /// Rearranges `items` into a uniformly random order (Fisher-Yates).
-pub shuffle :: fn(T: type, items: []T) \ {Rand} {
+pub shuffle :: fn(T: type, items: []T) needs Rand {
     i := items.len
     while i > 1 {
         j := below(i)
@@ -185,7 +185,7 @@ pub shuffle :: fn(T: type, items: []T) \ {Rand} {
 }
 
 /// A uniformly chosen element of `items`, or `null` if it is empty.
-pub choice :: fn(T: type, items: []const T) -> ?T \ {Rand} {
+pub choice :: fn(T: type, items: []const T) -> ?T needs Rand {
     if items.len is 0 { return null }
     return items[below(items.len)]
 }
@@ -193,7 +193,7 @@ pub choice :: fn(T: type, items: []const T) -> ?T \ {Rand} {
 /// An index of `weights` chosen with probability proportional to its weight, or `null`
 /// if there are no weights or their sum is not greater than 0 (or is infinite). Negative
 /// weights count as 0.
-pub weighted :: fn(weights: []const f64) -> ?usize \ {Rand} {
+pub weighted :: fn(weights: []const f64) -> ?usize needs Rand {
     sum: f64 = 0.0
     for w in weights {
         if w > 0.0 { sum += w }

@@ -15,7 +15,7 @@ e :: fn(ok: bool) -> u8!(i64, string) {
     if not ok { return !7 }
     return (5, "five")
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {} {}\n", f(0), g(), h(), k(1))
     print("{} {}\n", k(0), e(true))
     t: (f64, ?i64) = (1, 2)

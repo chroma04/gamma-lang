@@ -70,7 +70,7 @@ Trace :: effect {
     note: fn(msg: string)
 }
 
-step :: fn(name: string, fail: bool) -> StoreError!() \ {Trace} {
+step :: fn(name: string, fail: bool) -> StoreError!() needs Trace {
     note(name)
     defer note("  defer: leave step")
     errdefer note("  errdefer: undo step")
@@ -78,7 +78,7 @@ step :: fn(name: string, fail: bool) -> StoreError!() \ {Trace} {
     return ()
 }
 
-transaction :: fn(fail_at: u32) -> StoreError!u32 \ {Trace} {
+transaction :: fn(fail_at: u32) -> StoreError!u32 needs Trace {
     defer note("  defer: transaction closed")
     errdefer note("  errdefer: rollback")
     for i in 0..3 {
@@ -89,7 +89,7 @@ transaction :: fn(fail_at: u32) -> StoreError!u32 \ {Trace} {
 }
 
 // A failing iterator: yields parsed numbers, returns an error at the first bad token.
-numbers :: fn(items: []const string) -> ParseError!u32 \ {Yield(i64)} {
+numbers :: fn(items: []const string) -> ParseError!u32 needs Yield(i64) {
     count: u32 = 0
     for it in items {
         yield(try parse_int(trim(it)))
@@ -106,7 +106,7 @@ sum_numbers :: fn(items: []const string) -> ParseError!i64 {
     return total * i64(n)
 }
 
-describe :: fn(e: StoreError) \ {Out} {
+describe :: fn(e: StoreError) needs Out {
     match e {
         .Full => print("store full\n")
         .Duplicate(k) => print("duplicate key {}\n", k)
@@ -119,7 +119,7 @@ describe :: fn(e: StoreError) \ {Out} {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     store := Store()
     lines := [_]string("a = 10", "b=-20", "c = 5x", "d", "e =", "a = 1", "f = 5000", "g = 7", "h = 8", "i = 9")
     for line in lines {

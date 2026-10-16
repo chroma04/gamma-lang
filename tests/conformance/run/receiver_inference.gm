@@ -1,6 +1,6 @@
 // A method's receiver fixes its type parameters, and the other arguments coerce to
 // them (§16.2); `T(x)` is a coercion when `x` coerces to `T` (§6.5).
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     buf := [5]u8('h', 'e', 'l', 'l', 'o')
     words := list(string)
     defer words.deinit()

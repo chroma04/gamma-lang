@@ -2,8 +2,8 @@
 // from a clause that performs an outer `esc` operation, and through a cancel (§14.4).
 Inner :: effect { inner: ctl(n: u32) }
 Abort :: effect { abort: esc(code: u32) -> never }
-body :: fn() \ {Inner, Out} { defer print("inner body cleanup\n"); inner(1) }
-first :: fn() \ {Out} {
+body :: fn() needs Inner + Out { defer print("inner body cleanup\n"); inner(1) }
+first :: fn() needs Out {
     stack: [65536]u8 = ---
     code: u32 = 0
     with (handler Abort { abort(c) => { code = c; break } }) {
@@ -13,12 +13,12 @@ first :: fn() \ {Out} {
 }
 
 Outer :: effect { outer: ctl() }
-work :: fn() \ {Inner, Out} {
+work :: fn() needs Inner + Out {
     defer print("work cleanup\n")
     inner(2)
     print("never\n")
 }
-second :: fn() \ {Out} {
+second :: fn() needs Out {
     s1: [65536]u8 = ---
     s2: [32768]u8 = ---
     with (handler Outer { outer(k) => { cancel k; break } }) on s1[..] {
@@ -28,7 +28,7 @@ second :: fn() \ {Out} {
     print("done\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     first()
     second()
 }

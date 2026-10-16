@@ -5,7 +5,7 @@ arena :: import "std/arena"
 
 Node :: struct { value: i64, next: ?^Node }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     ar := arena.new()
     defer ar.deinit()
     total: i64 = 0

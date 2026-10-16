@@ -1,7 +1,7 @@
 // Padding where the text is a slice of the output buffer.
 fmt :: import "std/fmt"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     c: [32]u8 = ---
     s := fmt.dec(T: i32, 42, c[10..])
     print("[{}]\n", fmt.pad_left(s, 5, '*', c[..]))

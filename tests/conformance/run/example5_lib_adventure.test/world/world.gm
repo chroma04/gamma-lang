@@ -62,7 +62,7 @@ pub World :: struct {
 
 pub MAX_WEIGHT :: 10
 
-pub world :: fn() -> World \ {Alloc} {
+pub world :: fn() -> World needs Alloc {
     return World(rooms: reg.registry(Room), things: reg.registry(Item), carried: list(u16))
 }
 
@@ -76,7 +76,7 @@ pub deinit :: fn(w: ^World) {
     w.carried.deinit()
 }
 
-pub add_room :: fn(w: ^World, name, desc: string) -> AllocError!u16 \ {Alloc} {
+pub add_room :: fn(w: ^World, name, desc: string) -> AllocError!u16 needs Alloc {
     return w.rooms.add(name, Room(name: name, desc: desc, items: list(u16)))
 }
 

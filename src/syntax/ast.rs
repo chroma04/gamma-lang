@@ -50,7 +50,7 @@ pub enum ItemKind {
     Binding(Binding),
     /// Top-level `when` (§3.6). Each branch holds items declared as if at top level.
     When(WhenItems),
-    /// `handler E for T \ {A} { … }` (§12.6).
+    /// `handler E for T needs A { … }` (§12.6).
     Handler(HandlerDecl),
     /// `test "name" { … }` (§3.8), or `bench "name" { … }` (§3.9) if `bench`.
     Test { name: StrLit, name_span: Span, body: Block, bench: bool },
@@ -315,16 +315,12 @@ pub enum ExprKind {
         len: Option<Box<Expr>>,
         elem: Box<Expr>,
     },
-    /// `\ {E1, E2}` as a compile-time argument: an effect set (§16.6).
-    EffectSet(Vec<Expr>),
-    /// `..E` in an effect set: the effects of the effect-set parameter `E` (§16.6).
-    EffectSplice(Box<Expr>),
     /// `E!T` in a type position (§5.13).
     ErrorUnionType {
         err: Box<Expr>,
         ok: Box<Expr>,
     },
-    /// `fn(params) -> R \ {E}` as a type.
+    /// `fn(params) -> R needs E` as a type.
     FnType(Box<FnSig>),
     /// `cont(T)` (§14.2). Parsed as an ordinary call `cont(T)` is also acceptable
     /// since `cont` is a predeclared name; the parser produces this node.
@@ -570,7 +566,7 @@ pub struct FnSig {
     /// True if the parameter list ends with `...` (foreign functions only, §19.2).
     pub variadic: bool,
     pub ret: Option<Expr>,
-    /// `\ {E1, E2}`; `None` when omitted (meaning the empty set).
+    /// `needs E1 + E2`; `None` when omitted, `Some(vec![])` for `needs not` (§19.2).
     pub effects: Option<Vec<Expr>>,
     pub span: Span,
 }
@@ -745,7 +741,7 @@ pub struct ForeignMember {
 
 #[derive(Clone, Debug)]
 pub enum ForeignMemberKind {
-    /// `name :: fn(…) -> R \ {E}`
+    /// `name :: fn(…) -> R needs E`
     Fn { name: Ident, sig: FnSig },
     /// `#global name: T` (the `#global` attribute is consumed, not kept in `attrs`).
     Global { name: Ident, ty: Expr },

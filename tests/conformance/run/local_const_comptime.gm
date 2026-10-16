@@ -4,7 +4,7 @@ mk :: fn(N :: usize) -> [N]u8 { return [N]u8(fill: 7) }
 
 square :: fn(x: usize) -> usize => x * x
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     K :: 4
     Z: usize : 3
     S :: square(3)

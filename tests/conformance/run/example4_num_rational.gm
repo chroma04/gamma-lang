@@ -64,7 +64,7 @@ less :: fn(T: type, a, b: Ratio(T)) -> bool where Int(T), Signed(T) {
 
 to_f64 :: fn(T: type, a: Ratio(T)) -> f64 where Int(T) => a.num.to(f64) / a.den.to(f64)
 
-show :: fn(T: type, a: Ratio(T)) \ {Out} where Int(T) {
+show :: fn(T: type, a: Ratio(T)) needs Out where Int(T) {
     if a.den is 1 {
         print("{}", a.num)
     } else {
@@ -106,7 +106,7 @@ convergent :: fn(terms: []const i64, upto: usize) -> Ratio(i64) {
     return Ratio(i64)(num: h1, den: k1)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // Basic canonical form and arithmetic.
     a := make_ratio(T: i64, 6, -8) else { return }
     b := make_ratio(T: i64, 5, 12) else { return }

@@ -6,14 +6,14 @@
 json :: import "std/json"
 fixed_buffer :: import "std/fixed_buffer"
 
-parses :: fn(text: string) -> bool \ {Alloc} {
+parses :: fn(text: string) -> bool needs Alloc {
     doc := json.parse(text) else return false
     doc.deinit()
     return true
 }
 
 // The error `text` produces, if any.
-fails :: fn(text: string) -> ?json.ParseError \ {Alloc} {
+fails :: fn(text: string) -> ?json.ParseError needs Alloc {
     doc := json.parse(text) else e => return e
     doc.deinit()
     return null
@@ -499,7 +499,7 @@ test "float conversion and exactness" {
     expect(m.value > 0.0 and m.exact)
 }
 
-dump :: fn(v: json.Value, indent: usize) -> []u8 \ {Alloc} {
+dump :: fn(v: json.Value, indent: usize) -> []u8 needs Alloc {
     out := list(u8)
     json.write(&out, v, indent) else return empty_slice(u8)
     return out.into_slice() else empty_slice(u8)
@@ -623,7 +623,7 @@ next :: fn(seed: ^u64) -> u32 {
 }
 
 // Writes a pseudo-random value of at most `depth` more levels.
-generate :: fn(w: ^json.Writer, seed: ^u64, depth: u32) -> json.WriteError!() \ {Alloc} {
+generate :: fn(w: ^json.Writer, seed: ^u64, depth: u32) -> json.WriteError!() needs Alloc {
     kinds: u32 = if depth is 0 { 6 } else { 8 }
     match next(seed) % kinds {
         0 => try w.write_null()

@@ -5,7 +5,7 @@ Point :: struct { x, y: i32 }
 hash_len :: fn(k: ^const string, seed: u64) -> u64 => k.len.trunc(u64) +% seed
 eq_str :: fn(a, b: ^const string) -> bool => a^ is b^
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     m := hash_map(u32, u64)
     defer m.deinit()
 

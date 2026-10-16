@@ -3,7 +3,7 @@
 
 P :: struct { x: i32 }
 
-bad :: fn(n: i32) \ {Sys} {
+bad :: fn(n: i32) needs Sys {
     x: i32 = 0
     p := P(x: 1)
     @asm(n, (), (), ())                              //~ ERROR template of `@asm` must be a compile-time string

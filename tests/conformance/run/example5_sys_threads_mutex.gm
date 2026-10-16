@@ -30,7 +30,7 @@ total :: fn(a: Acct) -> i64 {
 
 Job :: struct { sh: ^Shared, who: u32, rounds: u32 }
 
-teller :: fn(job: ^Job) \ {Sys} {
+teller :: fn(job: ^Job) needs Sys {
     for i in 0..job.rounds {
         job.sh.lock.lock()
         a := job.sh.acct                                   // copy out
@@ -52,7 +52,7 @@ Ring :: struct {
     closed: bool
 }
 
-ring_push :: fn(r: ^Ring, m: Msg) -> bool \ {Sys} {
+ring_push :: fn(r: ^Ring, m: Msg) -> bool needs Sys {
     r.lock.lock()
     defer r.lock.unlock()
     if r.count is 8 { return false }
@@ -61,7 +61,7 @@ ring_push :: fn(r: ^Ring, m: Msg) -> bool \ {Sys} {
     return true
 }
 
-ring_pop :: fn(r: ^Ring) -> ?Msg \ {Sys} {
+ring_pop :: fn(r: ^Ring) -> ?Msg needs Sys {
     r.lock.lock()
     defer r.lock.unlock()
     if r.count is 0 { return null }
@@ -87,7 +87,7 @@ PC :: struct { ring: Ring, produced: u32, result: u64, got: u32 }
 
 COUNT :: 500
 
-producer :: fn(pc: ^PC) \ {Sys} {
+producer :: fn(pc: ^PC) needs Sys {
     seq: u32 = 0
     while seq < COUNT {
         if ring_push(&pc.ring, make_msg(seq)) {
@@ -99,7 +99,7 @@ producer :: fn(pc: ^PC) \ {Sys} {
     @atomic_store(&pc.produced, seq, .Release)
 }
 
-consumer :: fn(pc: ^PC) \ {Sys} {
+consumer :: fn(pc: ^PC) needs Sys {
     acc: u64 = 0
     got: u32 = 0
     expect: u32 = 0
@@ -136,11 +136,11 @@ bump_stage :: fn(p: ^u32) {
     }
 }
 
-stage_worker :: fn(p: ^u32) \ {Sys} {
+stage_worker :: fn(p: ^u32) needs Sys {
     for _ in 0..200 { bump_stage(p) }
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     sh := Shared(lock: thread.mutex(), acct: Acct(id: 7, balance: [4]i64(fill: 0), history: [6]i32(fill: 0), ops: 0))
     jobs := [4]Job(fill: Job(sh: &sh, who: 0, rounds: 0))
     ts: [4]thread.Thread = ---

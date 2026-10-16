@@ -12,13 +12,13 @@ Trie :: struct {
     words: u32 = 0
 }
 
-new_node :: fn() -> ^Node \ {Alloc} {
+new_node :: fn() -> ^Node needs Alloc {
     return new(Node(kids: [26]Slot(fill: Slot()))) else trap("oom")
 }
 
-trie :: fn() -> Trie \ {Alloc} => Trie(root: new_node())
+trie :: fn() -> Trie needs Alloc => Trie(root: new_node())
 
-insert :: fn(t: ^Trie, w: string) \ {Alloc} {
+insert :: fn(t: ^Trie, w: string) needs Alloc {
     cur := t.root
     for c in bytes(w) {
         i := usize(c - 'a')
@@ -50,7 +50,7 @@ count_prefix :: fn(t: ^const Trie, prefix: string) -> u32 {
     return n.count
 }
 
-walk :: fn(n: ^const Node, path: []u8, depth: usize) \ {Yield(string)} {
+walk :: fn(n: ^const Node, path: []u8, depth: usize) needs Yield(string) {
     if n.terminal { s: string = path[0..depth]; yield(s) }
     for i in 0..26 {
         if k := n.kids[i].p {
@@ -60,11 +60,11 @@ walk :: fn(n: ^const Node, path: []u8, depth: usize) \ {Yield(string)} {
     }
 }
 
-all_words :: fn(t: ^const Trie, path: []u8) \ {Yield(string)} {
+all_words :: fn(t: ^const Trie, path: []u8) needs Yield(string) {
     walk(t.root, path, 0)
 }
 
-free_node :: fn(n: ^Node) \ {Alloc} {
+free_node :: fn(n: ^Node) needs Alloc {
     for i in 0..26 { if k := n.kids[i].p { free_node(k) } }
     destroy(n)
 }
@@ -108,7 +108,7 @@ union_of :: fn(N :: usize, d: ^Dsu(N), a, b: u32) -> bool {
     return true
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     t := trie()
     defer free_node(t.root)
     input := [_]string("tea", "ten", "to", "inn", "in", "tea", "team", "i", "tent", "a")

@@ -48,7 +48,7 @@ swap_all :: fn(A, B: type, N :: usize, ps: ^const Pairs(A, B, N)) -> Pairs(B, A,
     return out
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     one := Expr(i32).Lit(1)
     two := Expr(i32).Lit(2)
     three := Expr(i32).Lit(3)

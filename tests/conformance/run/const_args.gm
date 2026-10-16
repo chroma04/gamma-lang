@@ -11,11 +11,11 @@ bump :: fn(b: Big) -> i64 {
     return c.n * 1000 + w
 }
 
-show :: fn(b: Big, site: SourceLocation = @caller_location()) \ {Out} {
+show :: fn(b: Big, site: SourceLocation = @caller_location()) needs Out {
     print("{} {} {} {} {} {} {} line {}\n", b.name, b.n, b.xs[0], b.xs[3], b.f, b.ok, b.c[0], site.line)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total: i64 = 0
     for i in 0..3 {
         total += bump(Big(name: "lit", n: -5, xs: [4]i16(1, -2, 3, -4), f: 2.5, ok: true, c: c"abc"))

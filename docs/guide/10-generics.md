@@ -165,7 +165,7 @@ pop :: fn(T: type, N :: usize, s: ^Stack(T, N)) -> ?T {
     return s.items[s.len]
 }
 
-stack_demo :: fn() \ {Out} {
+stack_demo :: fn() needs Out {
     st := stack(i32, 4)
     _ = st.push(10)                // method syntax: push(&st, 10)
     _ = st.push(20)
@@ -225,7 +225,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
     return true
 }
 
-case_insensitive_demo :: fn() -> AllocError!() \ {Alloc} {
+case_insensitive_demo :: fn() -> AllocError!() needs Alloc {
     names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
@@ -240,7 +240,7 @@ A function passed as a type parameter of a generic type must be a *named* functi
 Effects can take parameters, as in `Yield(T)`, and an effect set can mention a function's type parameters:
 
 ```gamma
-repeat_each :: fn(T: type, xs: []const T, times: u32) \ {Yield(T)} {
+repeat_each :: fn(T: type, xs: []const T, times: u32) needs Yield(T) {
     for _ in 0..times {
         for x in xs { yield(x) }
     }
@@ -252,7 +252,7 @@ The outer loop handles the `Yield(u32)` of `0..times`, but only for that source 
 Because generic bodies are checked once, which handler a `yield` reaches must not depend on what `T` turns out to be. The rule: two instantiations of the same effect that meet (in one effect set, or one performed inside a `with` handling the other) must be identical or *provably* different. `Yield(i32)` and `Yield(u8)` are provably different; `Yield(T)` and `Yield(u32)` are not, since `T` might be `u32`. So this is a compile error:
 
 ```gamma
-bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
+bad_sum :: fn(T: type, xs: []const T) -> u32 needs Yield(T) {
     total := 0u32
     with (handler Yield(u32) { yield(v) => { total += v } }) {
         for x in xs { yield(x) }     // error: the `with` handles Yield(u32), and T might be u32
@@ -263,39 +263,39 @@ bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
 
 ### Effect-set parameters
 
-A parameter declared `E: effects` stands for a whole set of effects. Inside an effect set it is spliced with `..E`, so a function can pass on whatever its callback performs:
+A parameter declared `E: effects` stands for a whole set of effects. Written as a term of an effect set, it adds all of those effects, so a function can pass on whatever its callback performs:
 
 ```gamma
-apply :: fn(E: effects, f: ^fn(x: i32) -> i32 \ {..E}, x: i32) -> i32 \ {..E} {
+apply :: fn(E: effects, f: ^fn(x: i32) -> i32 needs E, x: i32) -> i32 needs E {
     return f(x)
 }
 ```
 
-`E` is inferable here (the type of `f` mentions it), so, like a type parameter, it is never positional. It is usually inferred from the argument (`apply(noisy, 4)` with `noisy :: fn(x: i32) -> i32 \ {Out}` gives `E = {Out}`, so that call performs `Out`). To give it, write it by name, as an effect set literal such as `\ {Out, Alloc}` or a single effect (`apply(E: Out, noisy, 4)`), and an `E` that is neither given nor inferred is empty. Generic types, effects and handlers take such parameters too, which is what lets a *stored* function pointer be polymorphic in its effects:
+`E` is inferable here (the type of `f` mentions it), so, like a type parameter, it is never positional. It is usually inferred from the argument (`apply(noisy, 4)` with `noisy :: fn(x: i32) -> i32 needs Out` gives `E = Out`, so that call performs `Out`). To give it, write it by name, as an effect set without `needs` (`apply(E: Out + Alloc, noisy, 4)`) or a single effect (`apply(E: Out, noisy, 4)`), and an `E` that is neither given nor inferred is empty. Generic types, effects and handlers take such parameters too, which is what lets a *stored* function pointer be polymorphic in its effects:
 
 ```gamma
-Holder :: struct(E: effects) { f: ^fn(x: i32) -> i32 \ {..E} }
+Holder :: struct(E: effects) { f: ^fn(x: i32) -> i32 needs E }
 
-run_holder :: fn(E: effects, h: Holder(E), x: i32) -> i32 \ {..E} => h.f(x)
+run_holder :: fn(E: effects, h: Holder(E), x: i32) -> i32 needs E => h.f(x)
 ```
 
 `std/fiber`'s `Sched(E)` is the main example: it lets fiber tasks perform the effects `E`, handled outside the scheduler.
 
-When the same group of effects is written in many signatures, give it a name. A top-level binding whose value is an effect set is a **named effect set**, spliced with `..` like a parameter, and it can be the argument of an effect-set parameter:
+When the same group of effects is written in many signatures, give it a name. A top-level binding whose value is an effect set is a **named effect set**, used in other sets like a parameter, and it can be the argument of an effect-set parameter:
 
 ```gamma
-Io :: \ {Fs, Alloc, Err}
+Io :: Fs + Alloc + Err
 
-report :: fn(msg: string) \ {..Io, Clock} {
+report :: fn(msg: string) needs Io + Clock {
     // may perform Fs, Alloc, Err and Clock
 }
 
-run_holder_io :: fn(h: Holder(Io), x: i32) -> i32 \ {..Io} => h.f(x)
+run_holder_io :: fn(h: Holder(Io), x: i32) -> i32 needs Io => h.f(x)
 ```
 
 A named set is only a compile-time name for a list of effects: it is not a type or a value, and it cannot mention an effect-set parameter.
 
-The same once-checked rule applies: `..E` performed inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type, so it cannot appear outside an effect set.
+The same once-checked rule applies: performing `E` inside a `with` that handles `Out` is an error, because `E` might contain `Out`. `E` is not a type or a value, so it cannot appear outside an effect set.
 
 ## Restrictions
 

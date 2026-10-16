@@ -93,7 +93,7 @@ pub stem :: fn(p: string) -> string {
 /// The non-empty components of `p`, in order. An absolute path yields `/` first. A `.`
 /// component is skipped, except that a relative path made of nothing else yields a
 /// single `.`. `..` is yielded like any other component.
-pub components :: fn(p: string) \ {Yield(string)} {
+pub components :: fn(p: string) needs Yield(string) {
     i: usize = 0
     yielded := false
     if is_absolute(p) {
@@ -180,7 +180,7 @@ pub clean :: fn(p: string, buf: []u8) -> string {
 
 // The pieces `join` writes, in order: each non-empty part (after the first, without
 // its leading slashes), with whether a separator goes before it.
-pieces :: fn(parts: []const string) \ {Yield((sep: bool, text: string))} {
+pieces :: fn(parts: []const string) needs Yield((sep: bool, text: string)) {
     last: u8 = 0
     any := false
     for i in 0..parts.len {
@@ -208,7 +208,7 @@ pub join :: fn(out: ^List(u8), parts: []const string) -> AllocError!() {
 }
 
 /// `join` into new memory from the current allocator; release it with `free`.
-pub join_alloc :: fn(parts: []const string) -> AllocError![]u8 \ {Alloc} {
+pub join_alloc :: fn(parts: []const string) -> AllocError![]u8 needs Alloc {
     n: usize = 0
     for p in pieces(parts) {
         if p.sep { n += 1 }

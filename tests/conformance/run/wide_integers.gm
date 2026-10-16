@@ -20,7 +20,7 @@ classify :: fn(x: u200) -> u8 => match x {
     _     => 4
 }
 
-arithmetic :: fn() \ {Out} {
+arithmetic :: fn() needs Out {
     x: u200 = 12345678901234567890123456789012345678901234567890
     y: u200 = 3
     print("{} {} {} {}\n", x + y, x - y, x * y, x / y)
@@ -45,7 +45,7 @@ arithmetic :: fn() \ {Out} {
     print("{}\n", w)
 }
 
-flavors :: fn() \ {Out} {
+flavors :: fn() needs Out {
     mx: u200 = ((1 << 199) - 1) * 2 + 1
     print("{}\n", mx)
     print("{} {} {}\n", mx +% 1, mx +| 1, mx +? 1)
@@ -67,7 +67,7 @@ flavors :: fn() \ {Out} {
     print("{} {} {}\n", hi.abs(), lo +% 1.abs(), (lo + 1).abs())
 }
 
-bitwise :: fn() \ {Out} {
+bitwise :: fn() needs Out {
     a: u256 = 0xF0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0
     b: u256 = 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF
     print("{}\n{}\n{}\n{}\n", a & b, a | b, a ~ b, ~a)
@@ -88,7 +88,7 @@ bitwise :: fn() \ {Out} {
     print("{}\n", @bitreverse(u200(1)))
 }
 
-comparisons :: fn() \ {Out} {
+comparisons :: fn() needs Out {
     a: i200 = -(1 << 190)
     b: i200 = (1 << 190)
     c: u200 = 1 << 190
@@ -104,7 +104,7 @@ comparisons :: fn() \ {Out} {
     print("{} {} {}\n", c in c..d, d in c..d, d in c..=d)
 }
 
-conversions :: fn() \ {Out} {
+conversions :: fn() needs Out {
     x: u200 = 12345678901234567890123456789012345678901234567890
     print("{} {} {}\n", x.trunc(u8), x.trunc(u64), x.trunc(i128))
     print("{} {} {}\n", x.checked(u64), x.checked(u256), x.checked(i200))
@@ -136,7 +136,7 @@ conversions :: fn() \ {Out} {
     print("{} {}\n", inf.checked(u200), nan.checked(u200))
 }
 
-hashing :: fn() \ {Out} {
+hashing :: fn() needs Out {
     h1 := @hash(u200(1), 0)
     h2 := @hash(i200(1), 0)
     h3 := @hash(u256(1) << 150, 7)
@@ -146,7 +146,7 @@ hashing :: fn() \ {Out} {
     print("{}\n", u200(1).bits(i200) is 1)
 }
 
-containers :: fn() \ {Out} {
+containers :: fn() needs Out {
     w := Wide(id: 7, a: 1 << 150, b: -(1 << 200))
     print("{}\n", w)
     v := w
@@ -173,7 +173,7 @@ containers :: fn() \ {Out} {
 
 twice :: fn(T: type, x: T) -> T where Int(T) => x * 2
 
-library :: fn() \ {Out, Alloc} {
+library :: fn() needs Out + Alloc {
     start: u200 = (1 << 150) - 2
     for i in range(start, start + 5) {
         print("{} ", i)
@@ -210,7 +210,7 @@ library :: fn() \ {Out, Alloc} {
     if v := u and v > 3 { print("opt {}\n", v) }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     library()
     arithmetic()
     flavors()

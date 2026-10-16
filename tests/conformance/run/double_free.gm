@@ -1,6 +1,6 @@
 //! exit: 134
 // Freeing a block twice traps in debug mode.
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     s := make(u8, 8) else return
     free(s)
     print("freed once\n")

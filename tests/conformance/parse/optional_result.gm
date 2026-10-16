@@ -3,7 +3,7 @@
 
 LoadError :: union { Parse: ParseError, Io: IoError, Missing }
 
-load_config :: fn(path: string) -> LoadError!Config \ {Alloc, Fs} {
+load_config :: fn(path: string) -> LoadError!Config needs Alloc + Fs {
     text := try read_file(path)        // IoError lifts to .Io
     port := try parse_u16(text)        // ParseError lifts to .Parse
     cfg := Config(port: port)

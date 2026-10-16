@@ -4,7 +4,7 @@ Indenter :: struct {
     at_start: bool = true
 }
 
-handler Out for ^Indenter \ {Out} {
+handler Out for ^Indenter needs Out {
     write_out(self, bytes) => {
         start: usize = 0
         for i in 0..bytes.len {
@@ -24,7 +24,7 @@ handler Out for ^Indenter \ {Out} {
 
 Numberer :: struct { n: u32 = 0, at_start: bool = true }
 
-handler Out for ^Numberer \ {Out} {
+handler Out for ^Numberer needs Out {
     write_out(self, bytes) => {
         for i in 0..bytes.len {
             if self.at_start {
@@ -38,7 +38,7 @@ handler Out for ^Numberer \ {Out} {
     }
 }
 
-tree :: fn(depth: u32) \ {Out} {
+tree :: fn(depth: u32) needs Out {
     print("node {}\n", depth)
     if depth > 0 {
         ind := Indenter(pad: "  ")
@@ -50,7 +50,7 @@ tree :: fn(depth: u32) \ {Out} {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     tree(3)
     print("--- numbered ---\n")
     num := Numberer()

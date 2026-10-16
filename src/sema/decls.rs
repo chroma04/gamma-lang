@@ -21,7 +21,7 @@ pub enum DeclValue {
     Effect(EffectId),
     /// A generic effect with its arguments: `Ev :: Events(Msg)` (§3.5).
     EffectInst(EffectRef),
-    /// A named effect set: `Io :: \ {Fs, Alloc}` (§12.3), spliced as `\ {..Io}`.
+    /// A named effect set: `Io :: Fs + Alloc` (§12.3), spliced as `needs Io`.
     EffectSet(EffectSet),
     /// A (non-generic) function.
     Fn(FnId),
@@ -341,9 +341,12 @@ impl<'s> Sema<'s> {
             ExprKind::Foreign(block) if b.ty.is_none() => self.declare_foreign(module, name, block),
             ExprKind::Fn(lit) if b.ty.is_none() => self.declare_fn(module, name, lit, item),
             ExprKind::Effect(lit) if b.ty.is_none() => self.declare_effect(module, id, name, lit),
-            // `Io :: \ {Fs, Alloc}`: a named effect set (§12.3).
-            ExprKind::EffectSet(list) if b.ty.is_none() => {
-                let set = self.resolve_effect_set(module, list);
+            // `Io :: Fs + Alloc`: a named effect set (§12.3).
+            ExprKind::Binary { op: ast::BinOp::Add(ast::Flavor::Checked), .. }
+                if b.ty.is_none() && self.is_effect_sum(module, init) =>
+            {
+                let terms = effect_terms(init);
+                let set = self.resolve_effect_set(module, &terms);
                 if set.has_splice() {
                     self.error(init.span, "a named effect set cannot contain an effect-set parameter");
                     return DeclValue::Error;
@@ -656,13 +659,17 @@ impl<'s> Sema<'s> {
         }
     }
 
-    pub fn resolve_effect_set(&mut self, module: ModuleId, list: &[ast::Expr]) -> EffectSet {
+    /// The effects of the terms of `needs A + B` or of a set expression `A + B`: each
+    /// an effect, a named effect set (§12.3), or an effect-set parameter (§16.6).
+    pub fn resolve_effect_set<E: std::borrow::Borrow<ast::Expr>>(&mut self, module: ModuleId, list: &[E]) -> EffectSet {
         let mut v = vec![];
         for e in list {
-            // `..Io`: the effects of a named effect set.
-            if let ExprKind::EffectSplice(inner) = &e.kind
-                && let Some(set) = self.named_effect_set(module, inner)
-            {
+            let e = e.borrow();
+            if let Some(p) = self.effect_param_named(e) {
+                v.push(EffectRef::splice(p));
+                continue;
+            }
+            if let Some(set) = self.named_effect_set(module, e) {
                 v.extend(set.effects.iter().cloned());
                 continue;
             }
@@ -671,6 +678,25 @@ impl<'s> Sema<'s> {
             }
         }
         EffectSet::new(v)
+    }
+
+    /// True if `e`, a sum `A + B + …`, adds effects rather than numbers: its first term
+    /// names an effect, an instantiation of one, or an effect set.
+    fn is_effect_sum(&mut self, module: ModuleId, e: &ast::Expr) -> bool {
+        let first = effect_terms(e)[0];
+        let head = match &first.kind {
+            ExprKind::Call { callee, .. } => &**callee,
+            _ => first,
+        };
+        let d = match &head.kind {
+            ExprKind::Ident(id) => self.lookup_module_name(module, id.name),
+            ExprKind::Field { base, name } => {
+                self.module_named(module, base).and_then(|m| self.module_member(m, *name))
+            }
+            _ => None,
+        };
+        let Some(d) = d else { return false };
+        matches!(self.resolve_decl(d), DeclValue::Effect(_) | DeclValue::EffectInst(_) | DeclValue::EffectSet(_))
     }
 
     /// The effects of the named effect set that `e` names (`Io`, `m.Io`), if it names one.
@@ -690,27 +716,8 @@ impl<'s> Sema<'s> {
     }
 
     pub fn resolve_effect_ref(&mut self, module: ModuleId, e: &ast::Expr) -> Option<EffectRef> {
-        // `..E`: the effects of an effect-set parameter (§16.6).
-        if let ExprKind::EffectSplice(inner) = &e.kind {
-            return match self.effect_param_named(inner) {
-                Some(p) => Some(EffectRef::splice(p)),
-                None if matches!(&inner.kind, ExprKind::Ident(id) if self.lookup_module_name(module, id.name).is_none()) =>
-                {
-                    let ExprKind::Ident(id) = &inner.kind else { unreachable!() };
-                    self.error(inner.span, format!("unknown effect set `{}`", id.name));
-                    None
-                }
-                None => {
-                    self.error(
-                        inner.span,
-                        "only a named effect set or an effect-set parameter (`E: effects`) can be spliced with `..` (§12.3, §16.6)",
-                    );
-                    None
-                }
-            };
-        }
         if let Some(p) = self.effect_param_named(e) {
-            self.error(e.span, format!("`{}` is an effect set; splice it into the set as `..{}` (§16.6)", p, p));
+            self.error(e.span, format!("`{}` is an effect set, not a single effect (§16.6)", p));
             return None;
         }
         // `E(T1, …)`: an instantiation of a generic effect.
@@ -751,13 +758,7 @@ impl<'s> Sema<'s> {
                     DeclValue::EffectInst(r) => Some(r),
                     DeclValue::Error => None,
                     DeclValue::EffectSet(_) => {
-                        self.error(
-                            e.span,
-                            format!(
-                                "`{}` is an effect set; splice it into the set as `..{}` (§12.3)",
-                                id.name, id.name
-                            ),
-                        );
+                        self.error(e.span, format!("`{}` is an effect set, not a single effect (§12.3)", id.name));
                         None
                     }
                     _ => {
@@ -794,7 +795,7 @@ impl<'s> Sema<'s> {
     }
 
     /// An effect named without arguments. An effect whose parameters are all effect
-    /// sets gets empty ones (`Sched` is `Sched(\ {})`); otherwise `args` stay empty.
+    /// sets gets empty ones (`Sched` is `Sched` of the empty set); otherwise `args` stay empty.
     fn bare_effect_ref(&self, eff: crate::types::EffectId) -> EffectRef {
         let params = self.effects.get(&eff).map(|i| i.params.clone()).unwrap_or_default();
         if params.is_empty() || !params.iter().all(|p| self.effect_params.contains(p)) {
@@ -814,8 +815,9 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// The argument of an effect-set parameter (§16.6): `\ {E1, E2}`, a single effect
-    /// `Out`, or another effect-set parameter `E`. An `Effects` type, or a `Param`.
+    /// The argument of an effect-set parameter (§16.6): a set expression `E1 + E2`, a
+    /// single effect `Out`, a named effect set, or another effect-set parameter `E`. An
+    /// `Effects` type, or a `Param`.
     pub fn resolve_effect_arg(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         if let Some(p) = self.effect_param_named(e) {
             return p;
@@ -823,8 +825,8 @@ impl<'s> Sema<'s> {
         if let Some(set) = self.named_effect_set(module, e) {
             return Ty::intern(TyKind::Effects(set));
         }
-        if let ExprKind::EffectSet(list) = &e.kind {
-            let set = self.resolve_effect_set(module, list);
+        if let ExprKind::Binary { op: ast::BinOp::Add(ast::Flavor::Checked), .. } = &e.kind {
+            let set = self.resolve_effect_set(module, &effect_terms(e));
             return Ty::intern(TyKind::Effects(set));
         }
         match self.resolve_effect_ref(module, e) {
@@ -1032,4 +1034,16 @@ fn provably_distinct(a: Ty, b: Ty) -> bool {
 /// Whether a parameter's annotation is `effects`: an effect-set parameter (§16.6).
 pub fn is_effects_kind(t: &ast::Expr) -> bool {
     matches!(&t.kind, ExprKind::Ident(i) if i.name.as_str() == "effects")
+}
+
+/// The terms of a sum `A + B + …`, left to right; `[e]` if `e` is not a sum.
+pub fn effect_terms(e: &ast::Expr) -> Vec<&ast::Expr> {
+    match &e.kind {
+        ExprKind::Binary { op: ast::BinOp::Add(ast::Flavor::Checked), lhs, rhs } => {
+            let mut v = effect_terms(lhs);
+            v.extend(effect_terms(rhs));
+            v
+        }
+        _ => vec![e],
+    }
 }

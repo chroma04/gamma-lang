@@ -79,7 +79,7 @@ jobs:
           cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
           str :: import "std/str"
 
-          main :: fn() \ {Out} {
+          main :: fn() needs Out {
               print("{}\n", str.contains("gamma", "mm"))
           }
           EOF
@@ -99,7 +99,7 @@ jobs:
           cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
           str :: import "std/str"
 
-          main :: fn() \ {Out} {
+          main :: fn() needs Out {
               print("{}\n", str.contains("gamma", "mm"))
           }
           EOF

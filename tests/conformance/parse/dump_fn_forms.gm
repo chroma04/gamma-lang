@@ -6,10 +6,10 @@ f1 :: fn(i32, u8) -> bool
 f2 :: fn(a, b: ^const T) -> bool
 f3 :: fn(a: i32) -> i32 { return a }
 f4 :: fn(a, b) => a + b
-f5 :: fn() \ {Out, Yield(i32)}
-f6 :: fn() -> E!T \ {Alloc} { }
+f5 :: fn() needs Out + Yield(i32)
+f6 :: fn() -> E!T needs Alloc { }
 f7 :: fn(T: type, n :: usize, x: u8 = 0) where Ord(T), Int(T) { }
-f8 :: ^fn(rawptr) -> never \ {Async}
+f8 :: ^fn(rawptr) -> never needs Async
 f9 :: fn(fmt: cstring, ...) -> c_int
 f10 :: fn(List(T), m.U, ?V, fn(A) -> B)
 f11 :: fn(x) => x

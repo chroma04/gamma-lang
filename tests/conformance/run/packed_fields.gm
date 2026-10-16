@@ -4,7 +4,7 @@ H :: #packed struct {
     b: u16
     c: u32
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     h := H(a: 1, b: 513, c: 70000)
     x := h.b
     h.c = 7

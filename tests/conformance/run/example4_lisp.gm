@@ -39,13 +39,13 @@ Interp :: struct {
 
 // ---------------------------------------------------------------- lists
 
-cons :: fn(a, d: Val) -> LispError!Val \ {Alloc} {
+cons :: fn(a, d: Val) -> LispError!Val needs Alloc {
     cell := try new(Cell(car: a, cdr: d))
     return Val.Pair(cell)
 }
 
 // Yields the elements of a proper list; an improper tail is an error result.
-elems :: fn(list: Val) -> LispError!() \ {Yield(Val)} {
+elems :: fn(list: Val) -> LispError!() needs Yield(Val) {
     cur := list
     while true {
         match cur {
@@ -87,7 +87,7 @@ skip_blank :: fn(r: ^Reader) {
     }
 }
 
-read :: fn(r: ^Reader) -> LispError!Val \ {Alloc} {
+read :: fn(r: ^Reader) -> LispError!Val needs Alloc {
     skip_blank(r)
     if r.pos >= r.src.len { return !.Syntax("unexpected end of input") }
     c := r.src[r.pos]
@@ -181,7 +181,7 @@ lookup :: fn(env: ^Frame, name: string) -> ?Val {
     return null
 }
 
-define :: fn(env: ^Frame, name: string, v: Val) -> LispError!() \ {Alloc} {
+define :: fn(env: ^Frame, name: string, v: Val) -> LispError!() needs Alloc {
     bind := try new(Binding(name: name, val: v, next: env.vars))
     env.vars = bind
     return ()
@@ -241,7 +241,7 @@ as_sym :: fn(v: Val) -> ?string => match v {
 
 truthy :: fn(v: Val) -> bool => v is not .Bool(false)
 
-apply_prim :: fn(p: Prim, args: Val) -> LispError!Val \ {Alloc} {
+apply_prim :: fn(p: Prim, args: Val) -> LispError!Val needs Alloc {
     n := try list_len(args)
     match p {
         .Add, .Mul => {
@@ -313,7 +313,7 @@ apply_prim :: fn(p: Prim, args: Val) -> LispError!Val \ {Alloc} {
     }
 }
 
-eval_args :: fn(it: ^Interp, args: Val, env: ^Frame) -> LispError!Val \ {Alloc} {
+eval_args :: fn(it: ^Interp, args: Val, env: ^Frame) -> LispError!Val needs Alloc {
     head: Val = .Nil
     tail: ?^Cell = null
     try for a in elems(args) {
@@ -326,7 +326,7 @@ eval_args :: fn(it: ^Interp, args: Val, env: ^Frame) -> LispError!Val \ {Alloc} 
 }
 
 // Binds parameters to arguments in a fresh frame whose parent is the closure's frame.
-bind_params :: fn(f: ^Closure, args: Val) -> LispError!^Frame \ {Alloc} {
+bind_params :: fn(f: ^Closure, args: Val) -> LispError!^Frame needs Alloc {
     frame := try new(Frame(vars: null, parent: f.env))
     ps := f.params
     as := args
@@ -344,7 +344,7 @@ bind_params :: fn(f: ^Closure, args: Val) -> LispError!^Frame \ {Alloc} {
     }
 }
 
-eval :: fn(it: ^Interp, expr0: Val, env0: ^Frame) -> LispError!Val \ {Alloc} {
+eval :: fn(it: ^Interp, expr0: Val, env0: ^Frame) -> LispError!Val needs Alloc {
     if it.depth >= it.max_depth { return !.TooDeep }
     it.depth += 1
     defer it.depth -= 1
@@ -471,7 +471,7 @@ describe :: fn(e: LispError) -> string => match e {
     .TooDeep => "recursion too deep"
 }
 
-run :: fn(it: ^Interp, global: ^Frame, src: string) \ {Alloc, Out} {
+run :: fn(it: ^Interp, global: ^Frame, src: string) needs Alloc + Out {
     r := Reader(src: src)
     while true {
         skip_blank(&r)
@@ -539,7 +539,7 @@ PROGRAM :: `
 (begin 1 2 3)
 `
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     it := Interp(max_depth: 200)

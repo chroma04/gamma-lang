@@ -31,16 +31,16 @@ BLOCK :: 4096
 MASK: u32 : 0xFF_FF
 LIMIT: usize : BLOCK * 2
 
-main :: fn() -> u8 \ {Out} {
+main :: fn() -> u8 needs Out {
     print("hello, world\n")
     return 0
 }
 
-main2 :: fn() -> E!() \ {Out, Err} {
+main2 :: fn() -> E!() needs Out + Err {
     try run()
 }
 
-main3 :: fn() \ {Alloc, Out, Err, In, Clock, Rand, Fs, Net, Env, Sys} {
+main3 :: fn() needs Alloc + Out + Err + In + Clock + Rand + Fs + Net + Env + Sys {
 }
 
 test "parse rejects letters" {

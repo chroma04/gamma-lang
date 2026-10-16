@@ -59,7 +59,7 @@ Wrapper :: struct(T: type) {
 
 wrap :: fn(T: type, v: T) -> Wrapper(T) => Wrapper(T)(value: v)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s := stack(i32, 3)
     print("{} {} {} {}\n", push(&s, 1), push(&s, 2), push(&s, 3), push(&s, 4))
     while v := pop(&s) { print("{} ", v) }

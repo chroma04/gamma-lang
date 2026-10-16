@@ -3,7 +3,7 @@ Rec :: struct { owner: u32, round: u32, cells: [10]i64 }
 
 Sched :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(slot: ^Slot) -> never \ {Sched}, slot: ^Slot)
+    spawn: ctl(entry: ^fn(slot: ^Slot) -> never needs Sched, slot: ^Slot)
     exit: ctl() -> never
     // Hand a record to the scheduler's mailbox and receive whatever was there before.
     swap: ctl(r: Rec) -> Rec
@@ -22,7 +22,7 @@ mix :: fn(a: Rec, b: Rec, salt: i64) -> Rec {
     return r
 }
 
-task :: fn(slot: ^Slot) -> never \ {Sched} {
+task :: fn(slot: ^Slot) -> never needs Sched {
     for round in 0..4 {
         slot.mine = mix(slot.mine, slot.mine, i64(slot.id))
         yield_now()
@@ -95,7 +95,7 @@ checksum :: fn(r: Rec) -> i64 {
     return s % 1_000_000_007
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     rt := Runtime(ready: [8]?cont(())(fill: null), head: 0, count: 0, stacks: ---, spawned: 0, live: 1,
                   mailbox: Rec(owner: 99, round: 0, cells: [10]i64(fill: 1)), switches: 0)
     slots := [NTASKS]Slot(fill: Slot(id: 0, mine: Rec(owner: 0, round: 0, cells: [10]i64(fill: 0)), history: [4]u32(fill: 0), done: false))

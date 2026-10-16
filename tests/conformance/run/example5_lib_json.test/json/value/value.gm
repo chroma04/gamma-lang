@@ -55,7 +55,7 @@ pub lookup :: fn(v: ^const Value, path: string) -> ?^const Value {
 }
 
 /// Releases everything a value owns (strings, arrays, objects) recursively.
-pub free_value :: fn(v: ^Value) \ {Alloc} {
+pub free_value :: fn(v: ^Value) needs Alloc {
     match v^ {
         .Str(s) => free(s)
         .Arr(xs) => {

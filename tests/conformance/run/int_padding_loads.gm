@@ -1,7 +1,7 @@
 // Padding bits of odd-width integers are ignored when a value is loaded or reinterpreted.
 S :: struct { a: u7, b: i5 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u8 = @black_box(0xFF)
     y := x.bits(u7)
     print("{} {} {}\n", y is 127, y >> 1u8, y.trunc(u32))

@@ -6,6 +6,6 @@ fl :: fn(F: type, x: F) -> i32 where Float(F) => x.floor(i32)
 named :: fn() -> (n: usize, point: usize) {
     return (0, 7)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {} {}\n", low(u32(300)), widen(i8, 200), fl(f64(2.7)), named())
 }

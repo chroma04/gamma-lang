@@ -316,7 +316,7 @@ pub system_output :: fn() -> SystemOutput => SystemOutput()
 // Standard iterators (§13.3, §21.4).
 
 /// The integers `lo, lo + 1, …, hi - 1`.
-pub range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+pub range :: fn(T: type, lo, hi: T) needs Yield(T) where Int(T) {
     i := lo
     while i < hi {
         yield(i)
@@ -325,7 +325,7 @@ pub range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
 }
 
 /// The integers `lo, …, hi`, without overflowing at `hi`; nothing if `lo > hi`.
-pub range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
+pub range_incl :: fn(T: type, lo, hi: T) needs Yield(T) where Int(T) {
     if lo > hi { return }
     i := lo
     while true {
@@ -336,12 +336,12 @@ pub range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) {
 }
 
 /// The elements of `xs`, in order.
-pub each :: fn(T: type, xs: []const T) \ {Yield(T)} {
+pub each :: fn(T: type, xs: []const T) needs Yield(T) {
     for x in xs { yield(x) }
 }
 
 /// Pointers to the elements of `xs`, for modifying them in place.
-pub each_ptr :: fn(T: type, xs: []T) \ {Yield(^T)} {
+pub each_ptr :: fn(T: type, xs: []T) needs Yield(^T) {
     i: usize = 0
     while i < xs.len {
         yield(&xs[i])
@@ -350,7 +350,7 @@ pub each_ptr :: fn(T: type, xs: []T) \ {Yield(^T)} {
 }
 
 /// Each element with its index.
-pub enumerate :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} {
+pub enumerate :: fn(T: type, xs: []const T) needs Yield((i: usize, x: T)) {
     i: usize = 0
     for x in xs {
         yield((i: i, x: x))
@@ -359,7 +359,7 @@ pub enumerate :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} {
 }
 
 /// The elements of `xs`, last to first.
-pub reversed :: fn(T: type, xs: []const T) \ {Yield(T)} {
+pub reversed :: fn(T: type, xs: []const T) needs Yield(T) {
     i := xs.len
     while i > 0 {
         i -= 1
@@ -368,7 +368,7 @@ pub reversed :: fn(T: type, xs: []const T) \ {Yield(T)} {
 }
 
 /// Pairs of the elements of `xs` and `ys` at the same index, up to the shorter length.
-pub zip :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))} {
+pub zip :: fn(A, B: type, xs: []const A, ys: []const B) needs Yield((A, B)) {
     n := if xs.len < ys.len { xs.len } else { ys.len }
     i: usize = 0
     while i < n {
@@ -378,7 +378,7 @@ pub zip :: fn(A, B: type, xs: []const A, ys: []const B) \ {Yield((A, B))} {
 }
 
 /// The values the iterator `it` yields, in a new list: `words := try collect(str.fields(line))`.
-pub collect :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc} {
+pub collect :: fn(T: type, it: fn() needs Yield(T)) -> AllocError!List(T) needs Alloc {
     l := list(T)
     errdefer l.deinit()
     for x in it() { try l.push(x) }
@@ -386,7 +386,7 @@ pub collect :: fn(T: type, it: fn() \ {Yield(T)}) -> AllocError!List(T) \ {Alloc
 }
 
 /// The number of values the iterator `it` yields.
-pub count :: fn(T: type, it: fn() \ {Yield(T)}) -> usize {
+pub count :: fn(T: type, it: fn() needs Yield(T)) -> usize {
     n: usize = 0
     for _ in it() { n += 1 }
     return n
@@ -394,7 +394,7 @@ pub count :: fn(T: type, it: fn() \ {Yield(T)}) -> usize {
 
 /// The value the iterator `it` yields at index `n` (counting from 0), or `null` if it
 /// yields fewer; the iterator is stopped there.
-pub nth :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T {
+pub nth :: fn(T: type, it: fn() needs Yield(T), n: usize) -> ?T {
     i: usize = 0
     for x in it() {
         if i is n { return x }
@@ -404,7 +404,7 @@ pub nth :: fn(T: type, it: fn() \ {Yield(T)}, n: usize) -> ?T {
 }
 
 /// The bytes of a string.
-pub bytes :: fn(s: string) \ {Yield(u8)} {
+pub bytes :: fn(s: string) needs Yield(u8) {
     for b in s { yield(b) }
 }
 
@@ -413,7 +413,7 @@ pub rune :: u32
 
 /// The code points of the UTF-8 text `s`. Each maximal ill-formed subsequence
 /// becomes one U+FFFD REPLACEMENT CHARACTER, as in the Unicode Standard (section 3.9, "Unicode Encoding Forms").
-pub runes :: fn(s: string) \ {Yield(rune)} {
+pub runes :: fn(s: string) needs Yield(rune) {
     i: usize = 0
     while i < s.len {
         b := s[i]
@@ -523,7 +523,7 @@ tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
 }
 
 /// A new object holding `init`.
-pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> AllocError!^T \ {Alloc} {
+pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> AllocError!^T needs Alloc {
     a := current()
     raw := a.vt.alloc(a.data, @size_of(T), @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
@@ -533,7 +533,7 @@ pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> Al
 }
 
 /// `n` objects of plain data, uninitialized.
-pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
+pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc where Plain(T) {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
@@ -544,7 +544,7 @@ pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> 
 
 /// `n` objects of plain data, uninitialized, at an address that is a multiple of
 /// `align` (a power of two; at least the type's own alignment is used).
-pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} where Plain(T) {
+pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc where Plain(T) {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
@@ -554,7 +554,7 @@ pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @
 }
 
 /// `n` copies of `x`.
-pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
+pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
@@ -566,7 +566,7 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 }
 
 /// A copy of `s` in memory from the current allocator, released with `free`.
-pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) -> AllocError![]T \ {Alloc} {
+pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc {
     if s.len is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and s.len > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     a := current()
@@ -579,7 +579,7 @@ pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location())
 
 /// Releases a slice obtained from `make`, `make_fill` or `dupe` under the current allocator.
 /// Memory from `make_aligned` is released with `free_aligned`.
-pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) needs Alloc {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
@@ -588,7 +588,7 @@ pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location())
 
 /// Releases a slice obtained from `make_aligned(T, s.len, align)` under the current
 /// allocator; `align` must be the alignment it was requested with.
-pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation = @caller_location()) needs Alloc {
     if s.len is 0 { return }
     a := current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
@@ -596,7 +596,7 @@ pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation
 }
 
 /// Releases an object obtained from `new` under the current allocator.
-pub destroy :: fn(T: type, p: ^const T, site: SourceLocation = @caller_location()) \ {Alloc} {
+pub destroy :: fn(T: type, p: ^const T, site: SourceLocation = @caller_location()) needs Alloc {
     a := current()
     @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
@@ -645,7 +645,7 @@ pub Test :: effect {
 
 /// Fails the current test unless `cond` holds, reporting `msg` and where `expect` was
 /// called (§21.6).
-pub expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) \ {Test} {
+pub expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) needs Test {
     if cond { return }
     if msg is not "expectation failed" { note("expectation failed: ") }
     fail(msg, loc)
@@ -653,7 +653,7 @@ pub expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLoca
 
 /// The success value of `x`. If `x` is an error, fails the current test, reporting the
 /// error and where `ok` was called (§21.6).
-pub ok :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T \ {Test} {
+pub ok :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T needs Test {
     return x else e => {
         @write(fn(b) => note(b), "error: {}", e)
         fail("", loc)
@@ -702,7 +702,7 @@ track_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 TRACKING :: AllocVtable(alloc: track_alloc, resize: track_resize, free: track_free)
 
 /// Reports the blocks still allocated, with their sites, and frees the bookkeeping.
-leaked :: fn(t: ^TestTracker) -> u8 \ {Err} {
+leaked :: fn(t: ^TestTracker) -> u8 needs Err {
     defer t.blocks.deinit()
     if t.live is 0 { return 0 }
     eprint("leaked {} bytes\n", t.live)
@@ -748,7 +748,7 @@ handler In for ^TestIo {
 }
 
 // Tests see no arguments and no environment variables; `exit` still ends the test.
-handler Env for ^TestIo \ {Env} {
+handler Env for ^TestIo needs Env {
     args(self) => empty_slice(string)
     var(self, name) => null
     exit(self, code) => exit(code)
@@ -1503,15 +1503,15 @@ handler Net for ^TestIo {
 }
 
 // What `main` may perform (§12.9), and a test or benchmark body besides `Test` (§3.8).
-Ambient :: \ {Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}
+Ambient :: Out + Err + Alloc + Env + In + Clock + Rand + Fs + Net
 
 /// Reports a failure of a test or benchmark: the message, then where it happened.
-report_failure :: fn(msg: string, loc: SourceLocation) \ {Err} {
+report_failure :: fn(msg: string, loc: SourceLocation) needs Err {
     eprint("{}\n  at {}:{}:{} in {}\n", msg, loc.file, loc.line, loc.column, loc.function)
 }
 
 /// Runs a test: 0 if it passed, 1 if it failed.
-run_test :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {Out, Err, Env} {
+run_test :: fn(body: ^fn() needs Ambient + Test) -> u8 needs Out + Err + Env {
     t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     checks :: handler Test {
@@ -1554,7 +1554,7 @@ bench_next_iters :: fn(iters: u64, elapsed: u64) -> u64 {
 }
 
 /// Runs a benchmark: 0 if it completed, 1 if it failed.
-run_bench :: fn(body: ^fn() \ {..Ambient, Test}) -> u8 \ {..Ambient} {
+run_bench :: fn(body: ^fn() needs Ambient + Test) -> u8 needs Ambient {
     checks :: handler Test {
         note(bytes) => write_err(bytes)
         fail(msg, loc) => {

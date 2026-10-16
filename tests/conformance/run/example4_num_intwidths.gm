@@ -57,7 +57,7 @@ factorial256 :: fn(n: u32) -> u256 {
     return f
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     buf: [fmt.INT_BUF]u8 = ---
     wb: [200]u8 = ---
 

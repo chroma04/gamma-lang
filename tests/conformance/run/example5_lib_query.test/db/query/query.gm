@@ -5,7 +5,7 @@ pub Query :: struct(T: type) {
     limit: ?usize = null
 }
 
-pub query :: fn(T: type) -> Query(T) \ {Alloc} {
+pub query :: fn(T: type) -> Query(T) needs Alloc {
     return Query(T)(filters: list(^fn(row: ^const T) -> bool))
 }
 

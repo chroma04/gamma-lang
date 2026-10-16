@@ -11,7 +11,7 @@ Job :: struct {
 by_priority :: fn(a, b: ^const Job) -> bool => a.priority < b.priority
 wrong_order :: fn(a, b: Job) -> bool => a.priority < b.priority
 
-misuse :: fn() -> AllocError!() \ {Alloc} {
+misuse :: fn() -> AllocError!() needs Alloc {
     // A heap ordered by `<` needs an element type that has an ordering.
     h := hp.heap(Job)                            //~ ERROR does not satisfy
     jobs := [_]Job(Job(priority: 1))

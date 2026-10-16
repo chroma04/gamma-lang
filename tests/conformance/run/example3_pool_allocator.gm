@@ -56,7 +56,7 @@ Node :: struct {
 }
 
 // Builds 1..n as a linked list, freeing what it built if an allocation fails.
-build :: fn(n: i32) -> AllocError!?^Node \ {Alloc} {
+build :: fn(n: i32) -> AllocError!?^Node needs Alloc {
     head: ?^Node = null
     errdefer free_list(head)
     for i in 1..n + 1 {
@@ -66,7 +66,7 @@ build :: fn(n: i32) -> AllocError!?^Node \ {Alloc} {
     return head
 }
 
-free_list :: fn(h: ?^Node) \ {Alloc} {
+free_list :: fn(h: ?^Node) needs Alloc {
     cur := h
     while n := cur {
         cur = n.next
@@ -90,7 +90,7 @@ failed :: fn(T: type, r: AllocError!T) -> bool {
     if v := r { return false } else { return true }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     mem: Storage = ---                     // 8 blocks of 16 bytes
     pool := pool_over(mem.bytes[..], 16)
     print("Node is {} bytes\n", @size_of(Node))

@@ -7,17 +7,17 @@ Job :: struct {
     sum: u64
 }
 
-work :: fn(j: ^Job) \ {Sys} {
+work :: fn(j: ^Job) needs Sys {
     for i in 1..11 { _ = @atomic_add(&j.sum, i, .Relaxed) }
     j.wg.done()
 }
 
 // Never finishes on its own.
-forever :: fn(j: ^Job) \ {Sys} {
+forever :: fn(j: ^Job) needs Sys {
     while true { thread.yield_now() }
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     j := Job(wg: thread.wait_group(), sum: 0)
     j.wg.add(8)
     for i in 0..8 {

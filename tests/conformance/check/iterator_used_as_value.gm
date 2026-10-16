@@ -3,11 +3,11 @@
 // value: the fix is not to declare `Yield`.
 Words :: struct { text: string }
 
-fields :: fn(s: string) \ {Yield(string)} {
+fields :: fn(s: string) needs Yield(string) {
     yield(s)
 }
 
-pieces :: fn(w: Words) \ {Yield(string)} {
+pieces :: fn(w: Words) needs Yield(string) {
     yield(w.text)
 }
 
@@ -21,15 +21,15 @@ as_other :: fn(w: Words) {
 
 // A real `yield` in a body keeps the original advice.
 bad_body :: fn(s: string) {
-    yield(s)    //~ ERROR add `\ {Yield(string)}`
+    yield(s)    //~ ERROR add `needs Yield(string)`
 }
 
 // Iterators are fine as `for` sources and in functions that declare `Yield`.
-ok :: fn(s: string) \ {Out} {
+ok :: fn(s: string) needs Out {
     for x in fields(s) { print("{}\n", x) }
 }
 
-forward :: fn(s: string) \ {Yield(string)} {
+forward :: fn(s: string) needs Yield(string) {
     fields(s)
 }
 

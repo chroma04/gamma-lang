@@ -5,7 +5,7 @@
 E :: union { Bad: i32 }
 Stop :: effect { stop: esc(code: i32) -> never }
 
-deep :: fn(n: i32) \ {Stop, Out} {
+deep :: fn(n: i32) needs Stop + Out {
     defer print("leave deep {}\n", n)
     errdefer print("unwind deep {}\n", n)
     if n is 0 { stop(42) }
@@ -17,7 +17,7 @@ parse :: fn(x: i32) -> E!i32 {
     return x + 1
 }
 
-in_clause :: fn(x: i32) -> E!i32 \ {Out} {
+in_clause :: fn(x: i32) -> E!i32 needs Out {
     defer print("in_clause {} done\n", x)
     errdefer print("in_clause {} failed\n", x)
     r := with (handler Stop { stop(c) => break try parse(c * x) }) {
@@ -28,7 +28,7 @@ in_clause :: fn(x: i32) -> E!i32 \ {Out} {
     return r
 }
 
-big :: fn(k: usize) -> u64 \ {Out} {
+big :: fn(k: usize) -> u64 needs Out {
     buf: [100000]u64 = ---
     for i in 0..buf.len { buf[i] = i.trunc(u64) * 3 }
     s: u64 = 0
@@ -45,7 +45,7 @@ counter :: fn() -> i32 {
     return total
 }
 
-convert :: fn() \ {Out} {
+convert :: fn() needs Out {
     a: i8 = -1
     print("{} {} {}\n", a.trunc(u32), a.trunc(u8), a.trunc(i64))
     b: u32 = 0x1_2345
@@ -61,7 +61,7 @@ fib :: fn(n: u32) -> u64 {
     return fib(n - 1) + fib(n - 2)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", in_clause(2))
     print("{}\n", in_clause(-1))
     print("{}\n", big(1000))

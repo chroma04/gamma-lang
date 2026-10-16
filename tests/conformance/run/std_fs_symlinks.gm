@@ -26,7 +26,7 @@ at :: fn(buf: []u8, root, rel: string) -> string {
 
 hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 
-scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Sys} {
+scenario :: fn(root: string) -> IoError!() needs Out + Fs + Sys {
     p: [600]u8 = ---
     lb: [600]u8 = ---
     cb: [600]u8 = ---
@@ -49,7 +49,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Sys} {
     print("lstat dangling: {} stat dangling: {}\n", (try Fs.lstat(at(cb[..], root, "dangling"))).kind is .Symlink, Fs.stat(at(cb[..], root, "dangling")) is !.NotFound)
 }
 
-cleanup :: fn(root: string) \ {Fs, Sys} {
+cleanup :: fn(root: string) needs Fs + Sys {
     p: [600]u8 = ---
     lb: [600]u8 = ---
     for rel in [_]string("link", "dirlink", "dangling") {
@@ -60,7 +60,7 @@ cleanup :: fn(root: string) \ {Fs, Sys} {
     _ = Fs.remove_dir(root)
 }
 
-main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env, Sys} {
+main :: fn() -> IoError!() needs Out + Fs + Rand + Alloc + Env + Sys {
     tmp := Env.var("TMPDIR") else "/tmp"
     r: [6]u8 = ---
     Rand.fill(r[..])

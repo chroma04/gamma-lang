@@ -1,14 +1,14 @@
 // std/path: taking paths apart, normalising, joining and relating them.
 path :: import "std/path"
 
-show :: fn(label: string, got: string, want: string) \ {Out} {
+show :: fn(label: string, got: string, want: string) needs Out {
     mark := if got is want { "ok  " } else { "FAIL" }
     print("{} {} -> [{}]", mark, label, got)
     if got is not want { print(" wanted [{}]", want) }
     print("\n")
 }
 
-components_of :: fn(p: string, buf: []u8) -> string \ {Alloc} {
+components_of :: fn(p: string, buf: []u8) -> string needs Alloc {
     list := list(u8)
     defer list.deinit()
     first := true
@@ -21,7 +21,7 @@ components_of :: fn(p: string, buf: []u8) -> string \ {Alloc} {
     return buf[0..list.items.len]
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     print("sep: {}\n", path.SEP)
 
     // is_absolute
@@ -109,7 +109,7 @@ main :: fn() \ {Out, Alloc} {
     }
 }
 
-check_join :: fn(parts: []const string, want: string) \ {Out, Alloc} {
+check_join :: fn(parts: []const string, want: string) needs Out + Alloc {
     jl := list(u8)
     defer jl.deinit()
     join_ok(&jl, parts)
@@ -119,12 +119,12 @@ check_join :: fn(parts: []const string, want: string) \ {Out, Alloc} {
     free(got)
 }
 
-join_ok :: fn(out: ^List(u8), parts: []const string) \ {Out} {
+join_ok :: fn(out: ^List(u8), parts: []const string) needs Out {
     path.join(out, parts) else e => print("join failed: {}\n", e)
 }
 
-try_join_alloc :: fn(parts: []const string) -> []u8 \ {Alloc} {
+try_join_alloc :: fn(parts: []const string) -> []u8 needs Alloc {
     return path.join_alloc(parts) else return make(u8, 0) else return empty_slice(u8)
 }
 
-try_components :: fn(p: string, buf: []u8) -> string \ {Alloc} => components_of(p, buf)
+try_components :: fn(p: string, buf: []u8) -> string needs Alloc => components_of(p, buf)

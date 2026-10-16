@@ -64,7 +64,7 @@ kepler_energy :: fn(s: [4]f64) -> f64 {
 fx :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.fixed(x, d, buf)
 sc :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.sci(x, d, buf)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b1: [400]u8 = ---
     b2: [400]u8 = ---
     b3: [400]u8 = ---

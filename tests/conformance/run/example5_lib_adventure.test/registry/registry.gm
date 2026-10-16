@@ -4,7 +4,7 @@ pub Registry :: struct(T: type) {
     names: HashMap(string, u16)
 }
 
-pub registry :: fn(T: type) -> Registry(T) \ {Alloc} {
+pub registry :: fn(T: type) -> Registry(T) needs Alloc {
     return Registry(T)(items: list(T), names: hash_map(string, u16))
 }
 

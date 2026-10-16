@@ -18,7 +18,7 @@ twice :: fn(N :: usize, a: [N]i64) -> i64 => sum(a) + sum(N: N, a)
 
 zeros :: fn(N :: usize = 4) -> [N]i32 => [N]i32(fill: 0)
 
-repeat :: fn(times :: u8, s: string) \ {Out} {
+repeat :: fn(times :: u8, s: string) needs Out {
     for _ in 0..times { print("{}", s) }
     print("\n")
 }
@@ -29,13 +29,13 @@ dbl :: fn(x: i32) -> i32 => x * 2
 
 pick :: fn(flag :: bool) -> i32 => if flag { 1 } else { 2 }
 
-label :: fn(s :: string, n: i32) \ {Out} => print("{} {} {}\n", s, s.len, n)
+label :: fn(s :: string, n: i32) needs Out => print("{} {} {}\n", s, s.len, n)
 
 GREETING :: "hello"
 SIZE :: @size_of(u64) * 2
 three :: fn() -> usize => 3
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [5]i32(1, 2, 3, 4, 5)
     print("{}\n", rotate(a, 2))
     print("{}\n", rotate(N: 3, T: u8, [3]u8(7, 8, 9), 1))

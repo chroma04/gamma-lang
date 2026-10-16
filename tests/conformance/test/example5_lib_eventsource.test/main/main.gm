@@ -5,7 +5,7 @@ bank :: import "../bank"
 
 Ledger :: es.Store(bank.Bank, bank.Event)
 
-attempt :: fn(l: ^Ledger, body: fn() \ {es.Events(bank.Event), bank.Fail}) -> bank.Why!() {
+attempt :: fn(l: ^Ledger, body: fn() needs es.Events(bank.Event) + bank.Fail) -> bank.Why!() {
     result: bank.Why!() = ()
     h :: handler bank.Fail {
         fail(why) => {

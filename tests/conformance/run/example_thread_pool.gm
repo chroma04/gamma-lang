@@ -31,7 +31,7 @@ is_prime :: fn(n: u32) -> bool {
     return true
 }
 
-worker :: fn(arg: ^JobArg) \ {Sys} {
+worker :: fn(arg: ^JobArg) needs Sys {
     job := arg.job
     while true {
         chunk := @atomic_add(&job.cursor, 1, .Relaxed)
@@ -57,7 +57,7 @@ TransferArg :: struct {
     seed: u32
 }
 
-transfer :: fn(t: ^TransferArg) \ {Sys} {
+transfer :: fn(t: ^TransferArg) needs Sys {
     b := t.bank
     state := t.seed
     for _ in 0..2000 {
@@ -81,7 +81,7 @@ transfer :: fn(t: ^TransferArg) \ {Sys} {
 
 Failure :: union { Io: IoError }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     job := Job(cursor: 0, counts: [NCHUNKS]u32(fill: 0), done_by: [NWORKERS]u32(fill: 0))
     args := [NWORKERS]JobArg(fill: JobArg(job: &job, id: 0))
     ts: [NWORKERS]thread.Thread = ---

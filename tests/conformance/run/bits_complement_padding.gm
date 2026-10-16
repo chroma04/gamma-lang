@@ -2,7 +2,7 @@
 // (§5.10.5).
 Perm :: #bits(u8) struct { r, w, x: bool, owner: u2, _: u3 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := Perm(r: true, w: true, x: false, owner: 3)
     q := ~p
     print("{} {} {} {} {}\n", u8(p), u8(q), q.x, q.owner, u8(~q))

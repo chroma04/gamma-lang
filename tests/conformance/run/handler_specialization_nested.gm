@@ -3,17 +3,17 @@
 // back end does, every exit must still leave the right loop and run the right defers.
 Stop :: effect { stop: esc(code: i32) -> never }
 
-nums :: fn(n: i32) \ {Yield(i32), Out} {
+nums :: fn(n: i32) needs Yield(i32) + Out {
     defer print("nums({}) done\n", n)
     for i in range(0, n) { yield(i) }
 }
 
-squares :: fn(n: i32) \ {Yield(i32), Out} {
+squares :: fn(n: i32) needs Yield(i32) + Out {
     defer print("squares done\n")
     for v in nums(n) { yield(v * v) }
 }
 
-evens :: fn(n: i32) \ {Yield(i32), Out} {
+evens :: fn(n: i32) needs Yield(i32) + Out {
     for v in squares(n) {
         if v % 2 is 1 { continue }
         yield(v)
@@ -21,12 +21,12 @@ evens :: fn(n: i32) \ {Yield(i32), Out} {
 }
 
 // Five levels of adapters, deeper than any limit on nesting.
-add1 :: fn(n: i32) \ {Yield(i32), Out} { for v in evens(n) { yield(v + 1) } }
-add2 :: fn(n: i32) \ {Yield(i32), Out} { for v in add1(n) { yield(v + 1) } }
-add3 :: fn(n: i32) \ {Yield(i32), Out} { for v in add2(n) { yield(v + 1) } }
+add1 :: fn(n: i32) needs Yield(i32) + Out { for v in evens(n) { yield(v + 1) } }
+add2 :: fn(n: i32) needs Yield(i32) + Out { for v in add1(n) { yield(v + 1) } }
+add3 :: fn(n: i32) needs Yield(i32) + Out { for v in add2(n) { yield(v + 1) } }
 
 // An adapter whose loop body leaves its own loop.
-first_over :: fn(n: i32, limit: i32) -> i32 \ {Out} {
+first_over :: fn(n: i32, limit: i32) -> i32 needs Out {
     for v in add3(n) {
         if v > limit { return v }
     }
@@ -34,7 +34,7 @@ first_over :: fn(n: i32, limit: i32) -> i32 \ {Out} {
 }
 
 // An adapter that stops early, and one that performs another effect in its loop body.
-take :: fn(n: i32, k: i32) \ {Yield(i32), Out} {
+take :: fn(n: i32, k: i32) needs Yield(i32) + Out {
     seen := 0
     for v in squares(n) {
         if seen is k { break }
@@ -43,7 +43,7 @@ take :: fn(n: i32, k: i32) \ {Yield(i32), Out} {
     }
 }
 
-checked :: fn(n: i32) \ {Yield(i32), Stop, Out} {
+checked :: fn(n: i32) needs Yield(i32) + Stop + Out {
     for v in nums(n) {
         if v is 3 { stop(v) }
         yield(v)
@@ -52,13 +52,13 @@ checked :: fn(n: i32) \ {Yield(i32), Stop, Out} {
 
 Tree :: struct { val: i32, kids: []const Tree }
 
-walk :: fn(t: ^const Tree) \ {Yield(i32)} {
+walk :: fn(t: ^const Tree) needs Yield(i32) {
     yield(t.val)
     for k in t.kids { for v in walk(&k) { yield(v) } }
 }
 
 // A recursive iterator calling itself directly, with the same handler.
-countdown :: fn(n: i32) \ {Yield(i32)} {
+countdown :: fn(n: i32) needs Yield(i32) {
     if n is 0 { return }
     yield(n)
     countdown(n - 1)
@@ -69,7 +69,7 @@ chain :: fn(depth: i32) -> Tree {
     return leaf(depth)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total := 0
     for v in evens(6) { total += v }
     print("evens total {}\n", total)

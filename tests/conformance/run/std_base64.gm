@@ -7,7 +7,7 @@ std_raw :: base64.Options(pad: false)
 url_pad :: base64.Options(alphabet: .Url)
 url_raw :: base64.Options(alphabet: .Url, pad: false)
 
-encode_check :: fn(src: string, o: base64.Options) \ {Out} {
+encode_check :: fn(src: string, o: base64.Options) needs Out {
     buf: [64]u8 = ---
     text := base64.encode(src, buf[..], o)
     print("[{}] ", text)
@@ -20,7 +20,7 @@ encode_check :: fn(src: string, o: base64.Options) \ {Out} {
     }
 }
 
-vectors :: fn() \ {Out} {
+vectors :: fn() needs Out {
     inputs := [_]string("", "f", "fo", "foo", "foob", "fooba", "foobar")
     for s in inputs {
         encode_check(s, std_pad)
@@ -29,7 +29,7 @@ vectors :: fn() \ {Out} {
     }
 }
 
-show_decode :: fn(label: string, src: string, o: base64.Options) \ {Out} {
+show_decode :: fn(label: string, src: string, o: base64.Options) needs Out {
     buf: [64]u8 = ---
     print("{}: ", label)
     data := base64.decode(src, buf[..], o) else e => {
@@ -45,7 +45,7 @@ show_decode :: fn(label: string, src: string, o: base64.Options) \ {Out} {
     if ascii { print("ok [{}]\n", data) } else { print("ok {} bytes, first {}, last {}\n", data.len, data[0], data[data.len - 1]) }
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     print("-- RFC 4648 section 10\n")
     vectors()
 

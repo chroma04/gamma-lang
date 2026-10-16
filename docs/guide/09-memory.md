@@ -45,7 +45,7 @@ stack_demo :: fn() -> usize {
 
 An `Allocator` is a first-class handle: a pointer to some state plus a table of three functions (allocate, resize, free). The **`Alloc` effect** supplies the *current* allocator. Its one operation is `current: fn() -> Allocator`, called as `Alloc.current()`. The ambient default for `Alloc` is the system heap, so `main` can simply list `Alloc` and allocate; tests get a heap that reports leaks.
 
-The core functions that allocate perform `Alloc`, which is why you see `\ {Alloc}` in signatures:
+The core functions that allocate perform `Alloc`, which is why you see `needs Alloc` in signatures:
 
 | Function | Meaning |
 | --- | --- |
@@ -62,7 +62,7 @@ Allocation can fail, so each of these returns a result and you handle it the usu
 ```gamma
 Point :: struct { x, y: i32 }
 
-heap_demo :: fn() -> AllocError!() \ {Alloc, Out} {
+heap_demo :: fn() -> AllocError!() needs Alloc + Out {
     p := try new(Point(x: 1, y: 2))
     defer destroy(p)                    // release on every path out
     p.x += 10
@@ -87,7 +87,7 @@ The `defer` right after acquisition is Gamma's standard replacement for the `got
 > **Common mistake.** Gamma has no move semantics or destructors, so values copy bitwise like in C. Copying a struct that holds a pointer copies the pointer; freeing through both copies is a double free, which is undefined behavior (Debug builds detect it).
 >
 > ```gamma
-> double_free :: fn() -> AllocError!() \ {Alloc} {
+> double_free :: fn() -> AllocError!() needs Alloc {
 >     a := list(u8)
 >     b := a                  // b shares a's storage
 >     a.deinit()
@@ -109,7 +109,7 @@ make_in :: fn(a: Allocator, n: usize) -> AllocError![]u8 {
 `make_in` declares no `Alloc` effect: it handles it itself with the allocator it was given. This is how arenas and fixed-buffer allocators work: some library provides a value of type `Allocator`, and you install it for a region of code. The core library itself defines no arena type, but `std/arena` (`a := arena.new()`, then `a.allocator()`, released all at once by `a.deinit()`) and `std/fixed_buffer` (`fixed_buffer.over(store[..])` on a buffer you own) do. Here `arena` is such an `Allocator`:
 
 ```gamma
-scratch_demo :: fn(arena: Allocator) -> AllocError!() \ {Alloc} {
+scratch_demo :: fn(arena: Allocator) -> AllocError!() needs Alloc {
     names := list(string)               // captures the current allocator: the heap
     defer names.deinit()
     with arena {
@@ -123,14 +123,14 @@ scratch_demo :: fn(arena: Allocator) -> AllocError!() \ {Alloc} {
 
 `new`, `make` and `free` always use whatever allocator is current at the call, which suits memory that dies inside the `with` that provided it. **Long-lived structures capture their allocator when they are constructed** and use that same handle for every later operation. `names` above was created outside the `with arena`, so `push` keeps growing it on the heap even inside the block. That is the design that prevents the C bug of freeing memory through a different allocator than the one that produced it. Debug builds additionally tag every allocation with its allocator and trap on a mismatch.
 
-A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was handed. So `\ {Alloc}` in a signature is a reliable "this function may allocate" marker.
+A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was handed. So `needs Alloc` in a signature is a reliable "this function may allocate" marker.
 
 ## `List` and `HashMap`
 
 The core library provides two containers, both capturing the current allocator at construction and never performing `Alloc` afterwards. Neither is magical: they are structs with ordinary functions, called with method syntax.
 
 ```gamma
-list_demo :: fn() -> AllocError!() \ {Alloc, Out} {
+list_demo :: fn() -> AllocError!() needs Alloc + Out {
     names := list(string)               // constructed with the current allocator
     defer names.deinit()
     try names.push("ada")               // push can fail to allocate
@@ -144,7 +144,7 @@ list_demo :: fn() -> AllocError!() \ {Alloc, Out} {
     return ()
 }
 
-map_demo :: fn() -> AllocError!() \ {Alloc, Out} {
+map_demo :: fn() -> AllocError!() needs Alloc + Out {
     ages := hash_map(string, u32)
     defer ages.deinit()
     try ages.put("ada", 36)
@@ -234,7 +234,7 @@ Safe builds protect whole allocations, not pieces of them: an allocator that car
 
 ## Summary
 
-- Memory comes from static data, the stack, or an allocator; allocating functions say `\ {Alloc}`.
+- Memory comes from static data, the stack, or an allocator; allocating functions say `needs Alloc`.
 - Pair every acquisition with a `defer` (or `errdefer`) on the next line.
 - The caller can swap the allocator with `with`; long-lived containers remember the allocator they were created with.
 - No construct allocates implicitly, and there is no ownership tracking, so double frees and use-after-free remain your responsibility (with Debug builds and tests to help).

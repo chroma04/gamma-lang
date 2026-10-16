@@ -1,6 +1,6 @@
 // Arguments are evaluated in the order written, also when named arguments are not
 // in parameter order (§11.3).
-order :: fn(tag: string, v: i32) -> i32 \ {Out} {
+order :: fn(tag: string, v: i32) -> i32 needs Out {
     print("{} ", tag)
     return v
 }
@@ -8,7 +8,7 @@ f :: fn(a: i32, b: i32, c: i32) -> i32 => a * 100 + b * 10 + c
 g :: fn(T: type, a: T, b: T) -> T where Num(T) => a * 10 + b
 P :: struct { x: i32 }
 m :: fn(p: ^const P, a: i32, b: i32) -> i32 => p.x + a * 10 + b
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", f(c: order("c", 3), a: order("a", 1), b: order("b", 2)))
     print("{}\n", f(order("a", 1), c: order("c", 3), b: order("b", 2)))
     print("{}\n", g(T: i32, b: order("b", 2), a: order("a", 1)))

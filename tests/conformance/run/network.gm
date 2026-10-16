@@ -3,7 +3,7 @@
 // waits in the listener's backlog until `accept`.
 net :: import "std/net"
 
-send_all :: fn(s: net.Socket, bytes: []const u8) -> IoError!() \ {Net} {
+send_all :: fn(s: net.Socket, bytes: []const u8) -> IoError!() needs Net {
     done: usize = 0
     while done < bytes.len {
         done += try s.send(bytes[done..bytes.len])
@@ -11,7 +11,7 @@ send_all :: fn(s: net.Socket, bytes: []const u8) -> IoError!() \ {Net} {
     return ()
 }
 
-main :: fn() -> IoError!() \ {Out, Net} {
+main :: fn() -> IoError!() needs Out + Net {
     l := try Net.listen("127.0.0.1", 0)
     port := try l.local_port()
     print("listening on a port: {}\n", port > 0)

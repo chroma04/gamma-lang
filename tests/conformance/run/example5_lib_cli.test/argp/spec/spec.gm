@@ -39,7 +39,7 @@ pub Spec :: struct {
     pos: List(Positional)
 }
 
-pub spec :: fn(program, about: string) -> Spec \ {Alloc} {
+pub spec :: fn(program, about: string) -> Spec needs Alloc {
     return Spec(program: program, about: about, opts: list(Opt), pos: list(Positional))
 }
 

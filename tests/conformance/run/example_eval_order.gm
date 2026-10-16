@@ -5,7 +5,7 @@ next :: fn(c: ^Counter) -> usize {
     return (c.n - 1).trunc(usize)
 }
 
-trace :: fn(c: ^Counter, label: string, v: i32) -> i32 \ {Out} {
+trace :: fn(c: ^Counter, label: string, v: i32) -> i32 needs Out {
     print("{}{} ", label, c.n)
     c.n += 1
     return v
@@ -16,7 +16,7 @@ modify :: fn(a: [3]i32, p: ^[3]i32) -> i32 {
     return a[0]
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     c := Counter()
     arr := [_]i32(10, 20, 30, 40)
     arr[next(&c)] += 5

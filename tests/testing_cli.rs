@@ -66,7 +66,7 @@ never_called :: fn() -> i32 {
     return 3
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", sum(10))
 }
 

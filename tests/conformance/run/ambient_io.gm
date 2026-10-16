@@ -1,6 +1,6 @@
 // The ambient `In`, `Clock` and `Rand` effects with their default handlers (§12.9, §21.7).
 
-count_lines :: fn() -> IoError!(lines: usize, bytes: usize) \ {In} {
+count_lines :: fn() -> IoError!(lines: usize, bytes: usize) needs In {
     buf: [7]u8 = ---                 // small, so lines span several reads
     lines: usize = 0
     bytes: usize = 0
@@ -15,7 +15,7 @@ count_lines :: fn() -> IoError!(lines: usize, bytes: usize) \ {In} {
     return (lines: lines, bytes: bytes)
 }
 
-main :: fn() -> IoError!() \ {Out, In, Clock, Rand} {
+main :: fn() -> IoError!() needs Out + In + Clock + Rand {
     t0 := Clock.now()
     c := try count_lines()
     print("{} lines, {} bytes\n", c.lines, c.bytes)

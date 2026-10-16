@@ -32,7 +32,7 @@ seq :: fn(xs: []const i32) -> string => match xs.len {
     _ => "many"
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := u128(0xFFFF_FFFF_FFFF_FFFF) * u128(0xFFFF_FFFF_FFFF_FFFF)
     print("{} {} {}\n", a, a / 12345678901234567, a % 1000000007)
     b := i128(-170141183460469231731687303715884105728) / i128(-3)

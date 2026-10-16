@@ -13,19 +13,19 @@ Tick :: effect {
 
 // ---- business logic: pure in terms of effects ----
 
-withdraw :: fn(id: u32, amount: i64) \ {Storage} {
+withdraw :: fn(id: u32, amount: i64) needs Storage {
     bal := load(id) else abort("no such account")
     if bal < amount { abort("insufficient funds") }
     store(id, bal - amount)
 }
 
-deposit :: fn(id: u32, amount: i64) \ {Storage} {
+deposit :: fn(id: u32, amount: i64) needs Storage {
     bal := load(id) else abort("no such account")
     store(id, bal + amount)
 }
 
 // Transfer must be atomic: if the deposit aborts, the withdrawal is rolled back.
-transfer :: fn(from, to: u32, amount: i64) \ {Storage, Tick, Out} {
+transfer :: fn(from, to: u32, amount: i64) needs Storage + Tick + Out {
     t0 := now()
     original := load(from) else abort("no such account")
     errdefer {
@@ -75,11 +75,11 @@ handler Tick for ^Fake {
     }
 }
 
-dump :: fn(m: ^const Mem) \ {Out} {
+dump :: fn(m: ^const Mem) needs Out {
     for a in m.accts { print("  acct {}: {}\n", a.id, a.balance) }
 }
 
-try_transfer :: fn(m: ^Mem, clock: ^Fake, from, to: u32, amount: i64) -> bool \ {Out} {
+try_transfer :: fn(m: ^Mem, clock: ^Fake, from, to: u32, amount: i64) -> bool needs Out {
     m.reason = ""
     print("transfer {}->{} of {}\n", from, to, amount)
     with m, clock {
@@ -92,7 +92,7 @@ try_transfer :: fn(m: ^Mem, clock: ^Fake, from, to: u32, amount: i64) -> bool \ 
     return true
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     mem := Mem(accts: [4]Account(fill: Account(id: 0, balance: 0)))
     mem.accts[0] = Account(id: 1, balance: 500)
     mem.accts[1] = Account(id: 2, balance: 50)

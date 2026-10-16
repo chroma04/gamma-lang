@@ -4,7 +4,7 @@ NTASKS :: 4
 
 Sched :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(a: ^Args) -> never \ {Sched, Out}, a: ^Args)
+    spawn: ctl(entry: ^fn(a: ^Args) -> never needs Sched + Out, a: ^Args)
     exit: ctl() -> never
     block: ctl()             // park until woken
 }
@@ -41,7 +41,7 @@ dequeue :: fn(rt: ^Runtime) -> cont(()) {
     return k
 }
 
-handler Sched for ^Runtime \ {Out} {
+handler Sched for ^Runtime needs Out {
     yield_now(self, k) => {
         enqueue(self, k)
         r := dequeue(self)
@@ -69,13 +69,13 @@ handler Sched for ^Runtime \ {Out} {
 }
 
 // The channel lives in the (shared) heap of main's frame; tasks reach it through a global-ish pointer.
-send :: fn(c: ^Chan, x: u32) \ {Sched} {
+send :: fn(c: ^Chan, x: u32) needs Sched {
     while c.len is 3 { block() }
     c.buf[(c.head + c.len) % 3] = x
     c.len += 1
 }
 
-recv :: fn(c: ^Chan) -> ?u32 \ {Sched} {
+recv :: fn(c: ^Chan) -> ?u32 needs Sched {
     while c.len is 0 {
         if c.closed { return null }
         block()
@@ -88,7 +88,7 @@ recv :: fn(c: ^Chan) -> ?u32 \ {Sched} {
 
 Args :: struct { c: ^Chan, id: u32 }
 
-producer :: fn(a: ^Args) -> never \ {Sched, Out} {
+producer :: fn(a: ^Args) -> never needs Sched + Out {
     defer print("  producer {} done\n", a.id)
     for i in 0..4 {
         send(a.c, a.id * 100 + i)
@@ -96,7 +96,7 @@ producer :: fn(a: ^Args) -> never \ {Sched, Out} {
     exit()
 }
 
-consumer :: fn(a: ^Args) -> never \ {Sched, Out} {
+consumer :: fn(a: ^Args) -> never needs Sched + Out {
     defer print("  consumer {} done\n", a.id)
     sum: u32 = 0
     n: u32 = 0
@@ -110,7 +110,7 @@ consumer :: fn(a: ^Args) -> never \ {Sched, Out} {
     exit()
 }
 
-closer :: fn(a: ^Args) -> never \ {Sched, Out} {
+closer :: fn(a: ^Args) -> never needs Sched + Out {
     // Give the producers time to run, then close the channel.
     for _ in 0..30 { yield_now() }
     a.c.closed = true
@@ -118,7 +118,7 @@ closer :: fn(a: ^Args) -> never \ {Sched, Out} {
     exit()
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     chan := Chan(buf: [3]u32(fill: 0))
     rt := Runtime(ready: [8]?cont(())(fill: null), stacks: ---)
     a1 := Args(c: &chan, id: 1)

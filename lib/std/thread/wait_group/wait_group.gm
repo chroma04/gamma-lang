@@ -20,7 +20,7 @@ pub done :: fn(w: ^WaitGroup) {
 }
 
 /// Waits until no work is outstanding.
-pub wait :: fn(w: ^WaitGroup) \ {Sys} {
+pub wait :: fn(w: ^WaitGroup) needs Sys {
     while true {
         n := @atomic_load(&w.count, .Acquire)
         if n is 0 { return }

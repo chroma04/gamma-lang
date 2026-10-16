@@ -3,24 +3,24 @@ sum3 :: fn(base: i32, xs: ..(i32, i32, i32)) -> i32 => base + xs.0 + xs.1 + xs.2
 
 count :: fn(A: type, xs: ..A) -> usize => @size_of(A)
 
-show :: fn(A: type, label: string, args: ..A) \ {Out} {
+show :: fn(A: type, label: string, args: ..A) needs Out {
     print("{}: {}\n", label, args)
 }
 
 // Forwarding: a spread passes the whole tuple on.
-fwd :: fn(A: type, args: ..A) \ {Out} => show("fwd", ..args)
+fwd :: fn(A: type, args: ..A) needs Out => show("fwd", ..args)
 
-logf :: fn(A: type, template :: string, args: ..A) \ {Out} {
+logf :: fn(A: type, template :: string, args: ..A) needs Out {
     print("[log] ")
     print(template, ..args)
 }
 
 // A rest parameter before parameters that are bound only by name.
-traced :: fn(A: type, args: ..A, loc: SourceLocation = @caller_location()) \ {Out} {
+traced :: fn(A: type, args: ..A, loc: SourceLocation = @caller_location()) needs Out {
     print("{} at line {}\n", args, loc.line)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", sum3(1, 2, 3, 4))
     print("{}\n", count(1u8, 2u8))
     show("none")

@@ -306,7 +306,6 @@ module.exports = grammar({
       $.parenthesized_expression,
       $.tuple_expression,
       $.variant_expression,
-      $.effect_set,
       $._type_forms,
       $.function_expression,
       $.handler_expression,
@@ -593,12 +592,8 @@ module.exports = grammar({
       ')',
     ),
 
-    effect_set: $ => seq('\\', '{', listBody($._effect_entry, $._separators), '}'),
-    _effect_entry: $ => choice(
-      $.effect_spread,
-      $._type,
-    ),
-    effect_spread: $ => seq('..', $._type),
+    // `needs A + B`, or `needs not` (the empty set, foreign functions only).
+    effect_set: $ => prec.right(seq('needs', choice('not', seq($._type, repeat(seq('+', $._type)))))),
 
     handler_expression: $ => seq(
       'handler',

@@ -10,20 +10,20 @@ Choice :: effect {
     pick: esc(n: u32) -> u32
 }
 
-inner :: fn(depth: u32) -> u32 \ {Log, Fail} {
+inner :: fn(depth: u32) -> u32 needs Log + Fail {
     defer log("inner defer")
     log("inner start")
     if depth is 0 { fail(42) }
     return inner(depth - 1) + 1
 }
 
-middle :: fn(depth: u32) -> u32 \ {Log, Fail} {
+middle :: fn(depth: u32) -> u32 needs Log + Fail {
     defer log("middle defer")
     errdefer log("middle errdefer")
     return inner(depth) * 2
 }
 
-run_nested :: fn() \ {Out} {
+run_nested :: fn() needs Out {
     outer :: handler Log {
         log(m) => print("outer: {}\n", m)
     }
@@ -43,7 +43,7 @@ run_nested :: fn() \ {Out} {
     }
 }
 
-run_fail :: fn(depth: u32) -> i32 \ {Out} {
+run_fail :: fn(depth: u32) -> i32 needs Out {
     printer :: handler Log {
         log(m) => print("  {}\n", m)
     }
@@ -53,7 +53,7 @@ run_fail :: fn(depth: u32) -> i32 \ {Out} {
     return r
 }
 
-find_first :: fn(limit: u32) -> ?u32 \ {Out} {
+find_first :: fn(limit: u32) -> ?u32 needs Out {
     // `return` from inside a `with` inside a loop
     for i in 1..limit {
         r := with (handler Choice { pick(n) => n * 2 }) {
@@ -64,7 +64,7 @@ find_first :: fn(limit: u32) -> ?u32 \ {Out} {
     return null
 }
 
-labelled :: fn() -> u32 \ {Out} {
+labelled :: fn() -> u32 needs Out {
     total: u32 = 0
     outer: for i in 0..5 {
         for j in 0..5 {
@@ -76,7 +76,7 @@ labelled :: fn() -> u32 \ {Out} {
     return total
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     run_nested()
     print("result {}\n", run_fail(2))
     print("find {} {}\n", find_first(10), find_first(3))

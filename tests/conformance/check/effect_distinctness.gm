@@ -2,19 +2,19 @@
 // Instantiations of one generic effect in scope together must be identical or provably
 // distinct (§16.6).
 
-both :: fn(T, U: type, x: T, y: U) \ {Yield(T), Yield(U)} {}            //~ ERROR `Yield(T)` and `Yield(U)` might be the same effect
-fixed :: fn(T: type, x: T) \ {Yield(T), Yield(i32)} {}                  //~ ERROR might be the same effect for some type arguments
+both :: fn(T, U: type, x: T, y: U) needs Yield(T) + Yield(U) {}            //~ ERROR `Yield(T)` and `Yield(U)` might be the same effect
+fixed :: fn(T: type, x: T) needs Yield(T) + Yield(i32) {}                  //~ ERROR might be the same effect for some type arguments
 // A second-class parameter's effects are checked where it is called.
-through_param :: fn(T: type, f: fn() \ {Yield(i32)}) \ {Yield(T)} {
+through_param :: fn(T: type, f: fn() needs Yield(i32)) needs Yield(T) {
     f()                                                                   //~ ERROR performs the effect `Yield(i32)`
 }
-adapter :: fn(A, B: type, src: fn() \ {Yield(A)}, g: fn(a: A) -> B) \ {Yield(B)} {
+adapter :: fn(A, B: type, src: fn() needs Yield(A), g: fn(a: A) -> B) needs Yield(B) {
     for a in src() { yield(g(a)) }
 }
 
 // Fine: concrete and unequal, or different type constructors.
-concrete :: fn(T: type, x: T) \ {Yield(u8), Yield(i32)} {}
-shapes :: fn(T: type, x: T) \ {Yield(^T), Yield(i32)} {}
-slices :: fn(T: type, x: T) \ {Yield([]T), Yield(?T)} {}
+concrete :: fn(T: type, x: T) needs Yield(u8) + Yield(i32) {}
+shapes :: fn(T: type, x: T) needs Yield(^T) + Yield(i32) {}
+slices :: fn(T: type, x: T) needs Yield([]T) + Yield(?T) {}
 
 main :: fn() {}

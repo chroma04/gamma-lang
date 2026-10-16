@@ -1,10 +1,10 @@
 // The list operations of core/list (§21.5).
-show :: fn(l: ^const List(i32)) \ {Out} {
+show :: fn(l: ^const List(i32)) needs Out {
     for x in l.items { print("{} ", x) }
     print("(len {})\n", l.items.len)
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     l := list(i32)
     defer l.deinit()
     try l.reserve(10)

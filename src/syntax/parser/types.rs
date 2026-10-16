@@ -6,7 +6,7 @@
 //! is the infix error-union operator there. In expression positions the same
 //! syntax is reached through [`Parser::parse_primary`] with [`Mode::Expr`].
 
-use super::{PResult, Parser};
+use super::{PResult, Parser, Restr};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Keyword, Punct, TokenKind};
 
@@ -208,20 +208,33 @@ impl Parser<'_> {
     // Functions
     // ------------------------------------------------------------------
 
-    /// `fn(params) [-> T] [\ {E}]`.
+    /// `fn(params) [-> T] [needs E1 + E2]`.
     fn parse_fn_sig(&mut self) -> PResult<FnSig> {
+        self.parse_fn_sig_in(false)
+    }
+
+    /// `foreign` is true for the signature of a foreign function, the one place
+    /// `needs not` is allowed (§19.2).
+    fn parse_fn_sig_in(&mut self, foreign: bool) -> PResult<FnSig> {
         let start = self.lo();
         self.expect_kw(Keyword::Fn, "")?;
         self.expect(Punct::LParen, "to begin the parameter list")?;
         let (params, variadic) = self.parse_params()?;
         let ret = if self.eat(Punct::Arrow) { Some(self.parse_type()?) } else { None };
-        let effects = if self.at(Punct::Backslash) { Some(self.parse_effect_set()?) } else { None };
+        let effects = self.parse_needs_opt(foreign)?;
         Ok(FnSig { params, variadic, ret, effects, span: self.span_from(start) })
     }
 
-    /// A function signature that is a type: `fn(A, B) -> R \ {E}`.
+    /// A function signature that is a type: `fn(A, B) -> R needs E`.
     pub(super) fn parse_fn_type_sig(&mut self) -> PResult<FnSig> {
         let mut sig = self.parse_fn_sig()?;
+        self.fn_sig_to_type(&mut sig);
+        Ok(sig)
+    }
+
+    /// The signature of a foreign function, which may end in `needs not` (§19.2).
+    pub(super) fn parse_foreign_fn_sig(&mut self) -> PResult<FnSig> {
+        let mut sig = self.parse_fn_sig_in(true)?;
         self.fn_sig_to_type(&mut sig);
         Ok(sig)
     }
@@ -374,32 +387,48 @@ impl Parser<'_> {
         Ok(Param { names, comptime, rest, ty, default, span: self.span_from(start) })
     }
 
-    /// `\ { E1, E2 }`.
-    pub(super) fn parse_effect_set(&mut self) -> PResult<Vec<Expr>> {
-        self.expect(Punct::Backslash, "")?;
-        self.expect(Punct::LBrace, "to begin the effect set")?;
-        self.unrestricted(|p| {
-            let mut effects = Vec::new();
-            p.skip_newlines();
-            while !p.at(Punct::RBrace) {
-                if p.at(Punct::DotDot) {
-                    let start = p.lo();
-                    p.bump();
-                    let e = p.parse_type()?;
-                    let span = p.span_from(start);
-                    effects.push(p.mk_expr(ExprKind::EffectSplice(Box::new(e)), span));
-                } else {
-                    effects.push(p.parse_type()?);
-                }
-                p.skip_newlines();
-                if !p.eat(Punct::Comma) {
-                    break;
-                }
-                p.skip_newlines();
+    /// An optional effect clause `needs E1 + E2 + …` (§11.1); `needs not`, the empty
+    /// set, only where `foreign` allows it. `Some(vec![])` is `needs not`.
+    pub(super) fn parse_needs_opt(&mut self, foreign: bool) -> PResult<Option<Vec<Expr>>> {
+        if self.at(Punct::Backslash) {
+            let span = self.span();
+            return self.fail(span, "effects are written after `needs`: `fn() needs Alloc + Out` (§11.1)");
+        }
+        if !self.at_kw(Keyword::Needs) {
+            return Ok(None);
+        }
+        self.bump();
+        if self.at_kw(Keyword::Not) {
+            let span = self.span();
+            self.bump();
+            if !foreign {
+                return self.fail(
+                    span,
+                    "`needs not` is only for foreign functions (§19.2); a Gamma function without `needs` already needs nothing",
+                );
             }
-            p.expect(Punct::RBrace, "to close the effect set")?;
-            Ok(effects)
-        })
+            if self.at_effect_term_start() {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "`needs not` ends the signature: it means the empty effect set, not \"everything but\" (§19.2)",
+                );
+            }
+            return Ok(Some(vec![]));
+        }
+        let mut effects = vec![];
+        loop {
+            effects.push(self.with_restr(Restr { no_brace: true, ..Restr::default() }, |p| p.parse_type())?);
+            if !self.eat(Punct::Plus) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok(Some(effects))
+    }
+
+    fn at_effect_term_start(&self) -> bool {
+        matches!(self.kind(), TokenKind::Ident(_))
     }
 
     /// An optional `where Ord(T), Eq(K)` clause.

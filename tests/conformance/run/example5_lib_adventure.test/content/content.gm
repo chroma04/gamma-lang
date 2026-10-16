@@ -2,7 +2,7 @@
 w :: import "../world"
 
 /// Builds the haunted manor.
-pub manor :: fn() -> AllocError!w.World \ {Alloc} {
+pub manor :: fn() -> AllocError!w.World needs Alloc {
     g := w.world()
     errdefer w.deinit(&g)
 

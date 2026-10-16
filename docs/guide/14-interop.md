@@ -16,7 +16,7 @@ A type can appear in a foreign signature or an exported function only if it is *
 | `f32`, `f64` | `float`, `double` |
 | `bool` | `_Bool` |
 | `^T`, `^const T`, `[^]T`, `[^]const T`, `rawptr`, `cstring`, and `?` of each | `T *`, `const T *`, `void *`, `const char *` (nullable only when `?`) |
-| `^fn(...) -> R` with C-compatible parts, effect set empty or `{Sys}` | function pointer |
+| `^fn(...) -> R` with C-compatible parts, effect set empty or `Sys` | function pointer |
 | `[N]T` as a struct field | `T[N]` |
 | `struct` of C-compatible fields (including `#packed`, `#align`) | `struct` with the same layout |
 | `#c_union` of C-compatible fields | `union` |
@@ -38,7 +38,7 @@ DivT :: struct {
 }
 
 libc :: foreign "c" {
-    div :: fn(n, d: c.c_int) -> DivT \ {}
+    div :: fn(n, d: c.c_int) -> DivT needs not
 }
 
 div_demo :: fn() -> c.c_int {
@@ -55,19 +55,19 @@ A `foreign` block declares functions provided by a library. The block is bound t
 libc :: foreign "c" {
     puts   :: fn(s: cstring) -> c.c_int
     printf :: fn(fmt: cstring, ...) -> c.c_int
-    strlen :: fn(s: cstring) -> usize \ {}          // trusted: performs no effects
+    strlen :: fn(s: cstring) -> usize needs not     // trusted: performs no effects
     qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int)
 }
 ```
 
 - `"c"` is the C standard library; other names are passed to the linker. `#link_name("sym")` on a member overrides the symbol name. `#callconv` selects another calling convention (see [Calling conventions](#calling-conventions-callconv)).
 - Parameter and result types must be C-compatible. A `cstring` is a `[^]const u8`; a `c"..."` literal makes one. A regular `string` is a slice and is not NUL-terminated, so it never converts to a `cstring` by accident.
-- **A foreign function's effect set is `{Sys}`** unless you annotate it. An annotation with a smaller set, like `\ {}` on `strlen`, is a *trusted assertion* by you that the C function touches nothing but its arguments. The compiler does not verify it. Foreign functions are never evaluated at compile time regardless.
+- **A foreign function needs `Sys`** unless you annotate it. An annotation with a smaller set, like `needs not` on `strlen`, is a *trusted assertion* by you that the C function touches nothing but its arguments. `needs not` is the empty set written out, and it is only allowed here: on a Gamma function, leaving out `needs` already means it needs nothing. It ends the signature; `needs not Alloc` is an error, because Gamma has no way to exclude one effect. The compiler does not verify it. Foreign functions are never evaluated at compile time regardless.
 - `gamma run` calls foreign functions from the interpreter itself (it looks the symbols up in the C library and in the libraries the program names, and passes memory across by copying it), so a program that calls C needs no C compiler to run. Where it cannot, it compiles the program with the C back end instead: for inline assembly, a symbol it cannot find, a `#packed` struct or an `i128` passed to C, or a target other than the host's. Two limits of the interpreter's calls: C must not keep a pointer into a Gamma object after the call except to use it in a later call that passes the same object, and a Gamma function that traps while C is calling it ends the program when C returns (the trap is reported as usual). `gamma test` compiles modules that call C. A package can bring its own C files and libraries with the `c-sources`, `include-dirs`, `libs` and `lib-dirs` keys of `gamma.toml`, which every build mode (interpreter, `--backend=c`, `build`, `test`) honours; see [Build settings](15-packages.md#build-settings).
 - Variadic functions end in `...`. Arguments in the variadic position must be C-compatible scalars of at least `c_int` width for integers and `f64` for floats, and C's default argument promotions are not applied for you: convert explicitly.
 
 ```gamma
-main :: fn() \ {Sys} {
+main :: fn() needs Sys {
     _ = libc.puts(c"hello from C")          // the result must be dealt with: here, discarded
     n: c.c_int = 42
     _ = libc.printf(c"%d\n", n)
@@ -88,7 +88,7 @@ c_len :: fn(n: usize) -> c.c_uint {
 
 ### Callbacks
 
-A function pointer can be passed to C when its signature is C-compatible and its effect set is empty or `{Sys}`. Here C's `qsort` calls back into a Gamma comparator:
+A function pointer can be passed to C when its signature is C-compatible and its effect set is empty or `Sys`. Here C's `qsort` calls back into a Gamma comparator:
 
 ```gamma
 cmp_i32 :: fn(a, b: rawptr) -> c.c_int {
@@ -99,7 +99,7 @@ cmp_i32 :: fn(a, b: rawptr) -> c.c_int {
     return 0
 }
 
-sort_with_c :: fn() \ {Sys} {
+sort_with_c :: fn() needs Sys {
     nums := [_]i32(5, 3, 9, 1)
     libc.qsort(&nums, nums.len, @size_of(i32), cmp_i32)
 }
@@ -119,7 +119,7 @@ The result shares memory with the C string; nothing is copied. `print` shows a `
 
 ## Being called from C: `#export`
 
-`#export("sym")` gives a top-level function external linkage under the name `sym`, using the C ABI. Its signature must be C-compatible and its effect set must be empty or `{Sys}`, because C callers cannot supply handlers:
+`#export("sym")` gives a top-level function external linkage under the name `sym`, using the C ABI. Its signature must be C-compatible and its effect set must be empty or `Sys`, because C callers cannot supply handlers:
 
 ```gamma
 #export("gm_checksum")
@@ -163,7 +163,7 @@ register :: fn(cb: Callback) -> c.c_int => cb(0)
 
 The convention is part of a function pointer's type. `plugin_add` used as a value has the type `#callconv(.Win64) ^fn(a: c.c_int, b: c.c_int) -> c.c_int`, and it does not convert to a plain `^fn` of the same signature or the other way round: calling through the wrong convention would corrupt the call, so the compiler refuses the assignment instead. For the same reason such a function can never become a second-class `fn` value, and `@fiber` and thread entry points accept only `.C` pointers.
 
-A function with another convention must be an ordinary C-style function: top-level, non-generic, capturing nothing, with an effect set that is empty or `{Sys}`. Within Gamma, calls behave as always; the convention only changes how arguments and results travel across the machine boundary.
+A function with another convention must be an ordinary C-style function: top-level, non-generic, capturing nothing, with an effect set that is empty or `Sys`. Within Gamma, calls behave as always; the convention only changes how arguments and results travel across the machine boundary.
 
 ## Layout control
 
@@ -231,7 +231,7 @@ Top-level bindings are immutable. Mutable static storage exists only through `#g
 ```gamma
 #global request_count: u32 = 0
 
-next_request :: fn() -> u32 \ {Sys} {
+next_request :: fn() -> u32 needs Sys {
     request_count += 1
     return request_count
 }
@@ -281,12 +281,12 @@ Memory-mapped I/O needs loads and stores that the compiler may not elide, merge 
 ```gamma
 UART_BASE: usize : 0x1000_0000
 
-uart_ready :: fn() -> bool \ {Sys} {
+uart_ready :: fn() -> bool needs Sys {
     status := UART_BASE.to_ptr(^const u32) else return false
     return @volatile_load(status) & 1 is 1
 }
 
-uart_write :: fn(byte: u8) \ {Sys} {
+uart_write :: fn(byte: u8) needs Sys {
     data := (UART_BASE + 4).to_ptr(^u32) else return
     @volatile_store(data, u32(byte))
 }
@@ -295,13 +295,13 @@ uart_write :: fn(byte: u8) \ {Sys} {
 `@asm(template, outputs, inputs, clobbers)` provides inline assembly in the syntax of the target's GCC-compatible assembler, with GNU C's operand constraints. Outputs are pairs of a constraint and a pointer to the place written; inputs are pairs of a constraint and a value; clobbers are strings. Each list is `()`, a single entry, or a tuple of entries:
 
 ```gamma
-add :: fn(a, b: u32) -> u32 \ {Sys} {
+add :: fn(a, b: u32) -> u32 needs Sys {
     r := a
     @asm("addl %1, %0", ("+r", &r), ("r", b), "cc")   // x86-64
     return r
 }
 
-barrier :: fn() \ {Sys} => @asm("", (), (), "memory")
+barrier :: fn() needs Sys => @asm("", (), (), "memory")
 ```
 
 It needs `Sys`, misusing it is undefined behavior, and it is never evaluated at compile time. The interpreter cannot run assembly, so `gamma run` compiles programs that use it. Use `when target.arch is …` to provide each architecture's version.
@@ -317,13 +317,13 @@ Everything in this chapter that crosses into C or bypasses the checks puts a con
 > - **Implicit narrowing** (`usize` to `c_uint`). Use `.checked(...)`, `.trunc(...)` or `.sat(...)`.
 > - **Putting a slice, tuple, optional or result in a foreign signature.** Pass a `[^]T` pointer and a `usize` length instead.
 > - **Variadic arguments of the wrong width.** Convert integers to at least `c_int` width and floats to `f64` yourself.
-> - **Annotating a foreign function `\ {}` when it is not pure.** The compiler trusts you.
+> - **Annotating a foreign function `needs not` when it is not pure.** The compiler trusts you.
 
 ## Summary
 
 - Foreign functions are declared in a `foreign` block and need `Sys` unless you assert otherwise.
 - Only C-compatible types may cross; `std/c` provides `c_int` and friends; `?^T` is a nullable C pointer.
-- `#export` exposes a Gamma function with the C ABI; its effects must be empty or `{Sys}`.
+- `#export` exposes a Gamma function with the C ABI; its effects must be empty or `Sys`.
 - `#callconv(.Win64)` (x86-64 only) selects another ABI for a function, a foreign member or a `^fn` type; it is part of the pointer type.
 - `#packed`, `#align(n)`, `#bits(U)` and `#c_union` control layout; `x.bits(T)` reinterprets plain data.
 - `#global` is mutable static storage and costs `Sys`; atomics follow C11 and do not.

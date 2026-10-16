@@ -3,7 +3,7 @@
 // A trap inside a Gamma callback invoked by C qsort reports a backtrace through the C frames and exits with 134.
 c :: import "std/c"
 libc :: foreign "c" {
-    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) \ {}
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) needs not
 }
 
 table :: [3]i32(1, 2, 3)
@@ -14,7 +14,7 @@ cmp :: fn(a, b: rawptr) -> c.c_int {
     return table[idx]
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     nums := [_]i32(3, 1, 2)
     print("before\n")
     libc.qsort(&nums, 3, 4, cmp)

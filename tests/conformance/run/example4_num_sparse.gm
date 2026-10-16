@@ -14,14 +14,14 @@ Csr :: struct {
     vals: []f64
 }
 
-free_csr :: fn(m: ^Csr) \ {Alloc} {
+free_csr :: fn(m: ^Csr) needs Alloc {
     free(m.row_start)
     free(m.cols)
     free(m.vals)
 }
 
 // Assembles duplicate (row, col) entries by summing them, then builds the CSR arrays.
-assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr \ {Alloc} {
+assemble :: fn(n: usize, entries: []const Entry) -> AllocError!Csr needs Alloc {
     sums := hash_map((u32, u32), f64)
     defer sums.deinit()
     for e in entries {
@@ -64,7 +64,7 @@ dot :: fn(a, b: []const f64) -> f64 {
 }
 
 // Conjugate gradients; returns the iteration count or null if it did not converge.
-cg :: fn(m: ^const Csr, b, x: []f64, tol: f64, max_iter: u32) -> AllocError!?u32 \ {Alloc} {
+cg :: fn(m: ^const Csr, b, x: []f64, tol: f64, max_iter: u32) -> AllocError!?u32 needs Alloc {
     n := m.n
     r := try make(f64, n)
     defer free(r)
@@ -92,7 +92,7 @@ cg :: fn(m: ^const Csr, b, x: []f64, tol: f64, max_iter: u32) -> AllocError!?u32
     return null
 }
 
-main :: fn() -> AllocError!() \ {Alloc, Out} {
+main :: fn() -> AllocError!() needs Alloc + Out {
     fb: [400]u8 = ---
 
     // 2D Poisson (5-point Laplacian) on a K x K grid: unknown (i, j) is row i*K+j.

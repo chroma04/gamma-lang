@@ -113,19 +113,19 @@ Why `read_all` failed.
 ### `handler In for FileIn`
 
 ```gamma
-handler In for FileIn \ {Fs}
+handler In for FileIn needs Fs
 ```
 
 ### `handler Out for ^FileOut`
 
 ```gamma
-handler Out for ^FileOut \ {Fs}
+handler Out for ^FileOut needs Fs
 ```
 
 ### `handler Err for ^FileOut`
 
 ```gamma
-handler Err for ^FileOut \ {Fs}
+handler Err for ^FileOut needs Fs
 ```
 
 ### `handler In for ^StringIn`
@@ -175,7 +175,7 @@ valid while the reader is used.
 ### `next_line`
 
 ```gamma
-next_line :: fn(r: ^Reader) -> IoError!?string \ {In}
+next_line :: fn(r: ^Reader) -> IoError!?string needs In
 ```
 
 The next line, without its `\n` (or `\r\n`), or `null` at the end of the input. The
@@ -190,7 +190,7 @@ longer lines.
 ### `read_to_list`
 
 ```gamma
-read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In}
+read_to_list :: fn(out: ^List(u8)) -> IoError!() needs In
 ```
 
 Reads all of `In` into `out`, appending. A failure to grow the list is `.NoSpace`.
@@ -198,7 +198,7 @@ Reads all of `In` into `out`, appending. A failure to grow the list is `.NoSpace
 ### `read_all`
 
 ```gamma
-read_all :: fn() -> ReadError![]u8 \ {In, Alloc}
+read_all :: fn() -> ReadError![]u8 needs In + Alloc
 ```
 
 All of `In`, in memory from the current allocator; release it with `free(data)`.
@@ -214,7 +214,7 @@ A buffered output handler for the file `f`, with nothing buffered yet.
 ### `flush`
 
 ```gamma
-flush :: fn(o: ^FileOut) -> IoError!() \ {Fs}
+flush :: fn(o: ^FileOut) -> IoError!() needs Fs
 ```
 
 Writes out the buffered output. Returns the first error that has happened on the file,

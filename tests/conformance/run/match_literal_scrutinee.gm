@@ -1,7 +1,7 @@
 // A `match` on a local initialized with a literal uses the type the local was given by
 // any use, before or after the `match`, and tuples of such locals take their default
 // types (§6.1, §7.12).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := 200
     n: u8 = a
     r := match a {

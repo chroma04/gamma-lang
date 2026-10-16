@@ -14,23 +14,23 @@ handler Reader(u32) for ^Counter(u32) {
     }
 }
 
-double_ask :: fn() -> u32 \ {Reader(u32)} {
+double_ask :: fn() -> u32 needs Reader(u32) {
     return ask() + ask()
 }
 
-sum_asks :: fn(n: u32) -> u32 \ {Reader(u32)} {
+sum_asks :: fn(n: u32) -> u32 needs Reader(u32) {
     total: u32 = 0
     for _ in 0..n { total += ask() }
     return total
 }
 
-generic_user :: fn(T: type, n: u32) -> T \ {Reader(T)} where Num(T) {
+generic_user :: fn(T: type, n: u32) -> T needs Reader(T) where Num(T) {
     t: T = 0
     for _ in 0..n { t += ask() }
     return t
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     c := Counter(u32)(value: 21)
     with &c {
         print("{} {}\n", double_ask(), sum_asks(4))

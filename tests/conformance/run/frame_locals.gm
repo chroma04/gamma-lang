@@ -7,7 +7,7 @@ Log :: effect {
 
 Pt :: struct { x: i32, y: i32 }
 
-pairs :: fn(n: u32) \ {Yield(u32)} {
+pairs :: fn(n: u32) needs Yield(u32) {
     i: u32 = 0
     while i < n {
         yield(i)
@@ -24,7 +24,7 @@ parse :: fn(s: string) -> Bad!u32 {
 
 bump :: fn(p: ^i32) { p^ += 10 }
 
-mixed :: fn(n: u32) -> u32 \ {Out} {
+mixed :: fn(n: u32) -> u32 needs Out {
     seen: u32 = 0
     plain: u32 = 1
     sink :: handler Log { log(v) => { seen += v } }
@@ -53,7 +53,7 @@ mixed :: fn(n: u32) -> u32 \ {Out} {
     return seen + plain + q + r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total: u32 = 0
     for k in pairs(4) { total += mixed(k + 3) }
     print("total={}\n", total)

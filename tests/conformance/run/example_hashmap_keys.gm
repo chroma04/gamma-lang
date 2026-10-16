@@ -8,7 +8,7 @@ Life :: struct {
 
 life_free :: fn(l: ^Life) { l.alive.deinit() }
 
-neighbors :: fn(c: Cell) \ {Yield(Cell)} {
+neighbors :: fn(c: Cell) needs Yield(Cell) {
     for dy in 0..3 {
         for dx in 0..3 {
             if dx is 1 and dy is 1 { continue }
@@ -17,7 +17,7 @@ neighbors :: fn(c: Cell) \ {Yield(Cell)} {
     }
 }
 
-step :: fn(l: ^Life) -> AllocError!() \ {Alloc} {
+step :: fn(l: ^Life) -> AllocError!() needs Alloc {
     counts := hash_map(Cell, u32)
     defer counts.deinit()
     for e in l.alive.entries() {
@@ -54,7 +54,7 @@ bounds :: fn(l: ^const Life) -> (min_x: i32, max_x: i32, min_y: i32, max_y: i32)
     return (min_x: min_x, max_x: max_x, min_y: min_y, max_y: max_y)
 }
 
-draw :: fn(l: ^const Life) \ {Out} {
+draw :: fn(l: ^const Life) needs Out {
     b := bounds(l)
     y := b.min_y
     while y <= b.max_y {
@@ -68,7 +68,7 @@ draw :: fn(l: ^const Life) \ {Out} {
     }
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     life := Life(alive: hash_map(Cell, bool))
     defer life_free(&life)
     // a glider

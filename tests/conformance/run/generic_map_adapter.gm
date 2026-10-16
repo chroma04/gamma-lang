@@ -1,13 +1,13 @@
 // A generic iterator adapter that changes the element type (§16.6), instantiated with
 // different and with equal element types.
-map_it :: fn(A, B: type, src: fn() \ {Yield(A)}, f: fn(a: A) -> B) \ {Yield(B)} {
+map_it :: fn(A, B: type, src: fn() needs Yield(A), f: fn(a: A) -> B) needs Yield(B) {
     for a in src() { yield(f(a)) }
 }
-nums :: fn() \ {Yield(i32)} { yield(1); yield(2) }
-main :: fn() \ {Out} {
+nums :: fn() needs Yield(i32) { yield(1); yield(2) }
+main :: fn() needs Out {
     same()
     for s in map_it(A: i32, B: i64, nums, fn(a: i32) -> i64 => i64(a) * 1000000000000) { print("{}\n", s) }
 }
-same :: fn() \ {Out} {
+same :: fn() needs Out {
     for s in map_it(A: i32, B: i32, nums, fn(a: i32) -> i32 => a * 10) { print("{}\n", s) }
 }

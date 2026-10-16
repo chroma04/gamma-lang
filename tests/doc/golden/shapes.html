@@ -205,8 +205,8 @@ UNIT: string : &quot;meter&quot;</code></pre>
     T: type,
     from: []const T,
     n :: usize = 1,
-    notify: ^fn(s: ^const T) \ {Events},
-) -&gt; AllocError![]T \ {Alloc, Events} where Plain(T)</code></pre>
+    notify: ^fn(s: ^const T) needs Events,
+) -&gt; AllocError![]T needs Alloc + Events where Plain(T)</code></pre>
 <p>Copies <code>n</code> shapes with the allocator in effect.</p>
 <h3 id="twice"><code>twice</code></h3>
 <pre><code>#inline
@@ -216,7 +216,7 @@ twice :: fn(x: f64) -&gt; f64</code></pre>
 <h2>Foreign functions</h2>
 <h3 id="native"><code>native</code></h3>
 <pre><code>native :: foreign &quot;m&quot; {
-    sqrt :: fn(x: f64) -&gt; f64 \ {}
+    sqrt :: fn(x: f64) -&gt; f64 needs not
 }</code></pre>
 <p>Foreign helpers.</p>
 <h2>Imports</h2>

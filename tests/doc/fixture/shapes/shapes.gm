@@ -123,8 +123,8 @@ pub copy_all :: fn(
     T: type,
     from: []const T,
     n :: usize = 1,
-    notify: ^fn(s: ^const T) \ {Events},
-) -> AllocError![]T \ {Alloc, Events} where Plain(T) {
+    notify: ^fn(s: ^const T) needs Events,
+) -> AllocError![]T needs Alloc + Events where Plain(T) {
     return try make_fill(T, n, from[0])
 }
 
@@ -145,7 +145,7 @@ when target.os is .Windows {
 
 /// Foreign helpers.
 pub native :: foreign "m" {
-    sqrt :: fn(x: f64) -> f64 \ {}
+    sqrt :: fn(x: f64) -> f64 needs not
 }
 
 /// Another name for the allocator module.

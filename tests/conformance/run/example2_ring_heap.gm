@@ -22,14 +22,14 @@ ring_push :: fn(T: type, N :: usize, r: ^Ring(T, N), x: T) -> ?T {
     return null
 }
 
-ring_items :: fn(T: type, N :: usize, r: ^const Ring(T, N)) \ {Yield(T)} {
+ring_items :: fn(T: type, N :: usize, r: ^const Ring(T, N)) needs Yield(T) {
     for i in 0..r.len {
         yield(r.buf[(r.head + i) % N])
     }
 }
 
 // An iterator whose result type is ?T, so a loop over it can `break x`.
-ring_scan :: fn(T: type, N :: usize, r: ^const Ring(T, N)) -> ?T \ {Yield(T)} {
+ring_scan :: fn(T: type, N :: usize, r: ^const Ring(T, N)) -> ?T needs Yield(T) {
     for i in 0..r.len {
         yield(r.buf[(r.head + i) % N])
     }
@@ -83,7 +83,7 @@ heap_pop :: fn(T: type, N :: usize, h: ^Heap(T, N)) -> ?T {
     return top
 }
 
-drain :: fn(T: type, N :: usize, h: ^Heap(T, N)) \ {Yield(T)} {
+drain :: fn(T: type, N :: usize, h: ^Heap(T, N)) needs Yield(T) {
     while x := heap_pop(h) { yield(x) }
 }
 
@@ -92,7 +92,7 @@ Job :: struct { prio: u32, id: u32 }
 job_less :: fn(a, b: Job) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id)
 int_greater :: fn(a, b: i32) -> bool => a > b
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := ring(i32, 4)
     for i in 1..=6 {
         if ev := ring_push(&r, i * 10) { print("evicted {}\n", ev) }

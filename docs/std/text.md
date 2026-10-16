@@ -39,7 +39,7 @@ least 1 otherwise. `s[0..grapheme_len(s)]` is the cluster.
 ### `graphemes`
 
 ```gamma
-graphemes :: fn(s: string) \ {Yield(string)}
+graphemes :: fn(s: string) needs Yield(string)
 ```
 
 The grapheme clusters of `s`, in order: what a reader sees as one character, such

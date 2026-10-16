@@ -3,7 +3,7 @@
 // are not visible to its clauses, and without a `with` its `break`s have no expected
 // type (§12.5).
 Fail :: effect { fail: esc(why: string) -> never }
-step :: fn(n: i32) -> u8 \ {Fail} {
+step :: fn(n: i32) -> u8 needs Fail {
     if n > 2 { fail("too big") }
     return 7
 }

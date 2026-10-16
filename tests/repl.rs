@@ -51,7 +51,7 @@ fn a_binding_can_be_defined_again_with_another_type() {
 #[test]
 fn statements_run_once() {
     // Printing is not repeated by the replay that keeps variables alive.
-    let (out, _) = repl("greet :: fn() \\ {Out} { print(\"hello\\n\") }\nn := 1\ngreet()\nn := n + 1\nn\ngreet()\n");
+    let (out, _) = repl("greet :: fn() needs Out { print(\"hello\\n\") }\nn := 1\ngreet()\nn := n + 1\nn\ngreet()\n");
     assert_eq!(out, "hello\n2\nhello\n");
 }
 
@@ -100,7 +100,7 @@ fn type_command() {
 
 #[test]
 fn type_command_does_not_run_its_expression() {
-    let (out, _) = repl("noisy :: fn() -> i32 \\ {Out} { print(\"ran\\n\"); return 1 }\n:type noisy()\n");
+    let (out, _) = repl("noisy :: fn() -> i32 needs Out { print(\"ran\\n\"); return 1 }\n:type noisy()\n");
     assert_eq!(out, "i32\n");
 }
 
@@ -140,7 +140,7 @@ fn std_modules_can_be_imported() {
 #[test]
 fn effects_of_definitions_are_noted() {
     let (out, err) =
-        repl("get :: fn() -> i32 \\ {Out} {\n    print(\"once\\n\")\n    return 7\n}\nv := get()\nv + 1\nv + 2\n");
+        repl("get :: fn() -> i32 needs Out {\n    print(\"once\\n\")\n    return 7\n}\nv := get()\nv + 1\nv + 2\n");
     // `v` is evaluated again before each later input, but only the first run is visible.
     assert_eq!(out, "once\n8\n9\n");
     assert!(err.contains("note: v will be evaluated again"), "{}", err);

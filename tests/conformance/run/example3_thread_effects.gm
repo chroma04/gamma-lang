@@ -10,11 +10,11 @@ Job :: struct {
 
 Log :: effect { log: fn(code: u32) }
 
-gen :: fn(n: u32) \ {Yield(u32)} {
+gen :: fn(n: u32) needs Yield(u32) {
     for i in 0..n { yield(i * i) }
 }
 
-compute :: fn(job: ^Job) \ {Log, Alloc} {
+compute :: fn(job: ^Job) needs Log + Alloc {
     l := list(u32)
     defer l.deinit()
     for v in gen(job.id + 10) {
@@ -31,7 +31,7 @@ handler Log for ^Counter {
     log(self, code) => { self.n += 1; self.sum += u64(code) }
 }
 
-run :: fn(job: ^Job) \ {Sys} {
+run :: fn(job: ^Job) needs Sys {
     c := Counter(n: 0, sum: 0)
     thread.defaults(fn() {
         a := arena.new()
@@ -44,7 +44,7 @@ run :: fn(job: ^Job) \ {Sys} {
     job.result += u64(c.n) * 1000000
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     jobs := [4]Job(fill: Job(id: 0, result: 0, cancelled: false))
     ts: [4]thread.Thread = ---
     for i in 0..4 {

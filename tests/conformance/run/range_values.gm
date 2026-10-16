@@ -7,7 +7,7 @@ total :: fn(r: RangeIncl(u32)) -> u32 {
     return t
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := 3..8
     n: u8 = 10
     s := 2..=n

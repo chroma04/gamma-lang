@@ -4,7 +4,7 @@ fs :: import "std/fs"
 
 hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
 
-main :: fn() -> IoError!() \ {Out, Fs, Rand} {
+main :: fn() -> IoError!() needs Out + Fs + Rand {
     // A unique directory name: target/gamma-fs-<random hex>.
     r: [6]u8 = ---
     Rand.fill(r[..])

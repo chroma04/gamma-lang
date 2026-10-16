@@ -7,7 +7,7 @@ Shape :: union {
 }
 Rank :: union { Bronze, Silver, Gold }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     pos := Vec2(x: 1.5, y: -2)
     print("{}\n", pos)
     print("{} scored {} ({})\n", "Ada", 1200, Rank.Gold)

@@ -5,15 +5,15 @@ math :: import "std/math"
 
 NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
 
-p1 :: fn(name: string, x: f64, r: f64) \ {Out} {
+p1 :: fn(name: string, x: f64, r: f64) needs Out {
     print("{}({}) = {}\n", name, x, r)
 }
 
-p2 :: fn(name: string, x: f64, y: f64, r: f64) \ {Out} {
+p2 :: fn(name: string, x: f64, y: f64, r: f64) needs Out {
     print("{}({}, {}) = {}\n", name, x, y, r)
 }
 
-constants :: fn() \ {Out} {
+constants :: fn() needs Out {
     print("pi = {}\n", math.pi)
     print("e = {}\n", math.e)
     print("tau = {}\n", math.tau)
@@ -24,7 +24,7 @@ constants :: fn() \ {Out} {
     print("nan = {}\n", math.nan)
 }
 
-test_sqrt :: fn() \ {Out} {
+test_sqrt :: fn() needs Out {
     p1("sqrt", 0.0, math.sqrt(0.0))
     p1("sqrt", NZ, math.sqrt(NZ))
     p1("sqrt", 1.0, math.sqrt(1.0))
@@ -40,7 +40,7 @@ test_sqrt :: fn() \ {Out} {
     p1("sqrt", math.nan, math.sqrt(math.nan))
 }
 
-test_cbrt :: fn() \ {Out} {
+test_cbrt :: fn() needs Out {
     p1("cbrt", 0.0, math.cbrt(0.0))
     p1("cbrt", NZ, math.cbrt(NZ))
     p1("cbrt", 1.0, math.cbrt(1.0))
@@ -58,7 +58,7 @@ test_cbrt :: fn() \ {Out} {
     p1("cbrt", math.nan, math.cbrt(math.nan))
 }
 
-test_exp :: fn() \ {Out} {
+test_exp :: fn() needs Out {
     p1("exp", 0.0, math.exp(0.0))
     p1("exp", NZ, math.exp(NZ))
     p1("exp", 1.0, math.exp(1.0))
@@ -83,7 +83,7 @@ test_exp :: fn() \ {Out} {
     p1("exp", math.nan, math.exp(math.nan))
 }
 
-test_exp2 :: fn() \ {Out} {
+test_exp2 :: fn() needs Out {
     p1("exp2", 0.0, math.exp2(0.0))
     p1("exp2", NZ, math.exp2(NZ))
     p1("exp2", 1.0, math.exp2(1.0))
@@ -106,7 +106,7 @@ test_exp2 :: fn() \ {Out} {
     p1("exp2", math.nan, math.exp2(math.nan))
 }
 
-test_expm1 :: fn() \ {Out} {
+test_expm1 :: fn() needs Out {
     p1("expm1", 0.0, math.expm1(0.0))
     p1("expm1", NZ, math.expm1(NZ))
     p1("expm1", 1.0, math.expm1(1.0))
@@ -128,7 +128,7 @@ test_expm1 :: fn() \ {Out} {
     p1("expm1", math.nan, math.expm1(math.nan))
 }
 
-test_log :: fn() \ {Out} {
+test_log :: fn() needs Out {
     p1("log", 0.0, math.log(0.0))
     p1("log", NZ, math.log(NZ))
     p1("log", 1.0, math.log(1.0))
@@ -149,7 +149,7 @@ test_log :: fn() \ {Out} {
     p1("log", math.nan, math.log(math.nan))
 }
 
-test_log2 :: fn() \ {Out} {
+test_log2 :: fn() needs Out {
     p1("log2", 0.0, math.log2(0.0))
     p1("log2", NZ, math.log2(NZ))
     p1("log2", 1.0, math.log2(1.0))
@@ -169,7 +169,7 @@ test_log2 :: fn() \ {Out} {
     p1("log2", math.nan, math.log2(math.nan))
 }
 
-test_log10 :: fn() \ {Out} {
+test_log10 :: fn() needs Out {
     p1("log10", 0.0, math.log10(0.0))
     p1("log10", NZ, math.log10(NZ))
     p1("log10", 1.0, math.log10(1.0))
@@ -188,7 +188,7 @@ test_log10 :: fn() \ {Out} {
     p1("log10", math.nan, math.log10(math.nan))
 }
 
-test_log1p :: fn() \ {Out} {
+test_log1p :: fn() needs Out {
     p1("log1p", 0.0, math.log1p(0.0))
     p1("log1p", NZ, math.log1p(NZ))
     p1("log1p", 1.0, math.log1p(1.0))
@@ -208,7 +208,7 @@ test_log1p :: fn() \ {Out} {
     p1("log1p", math.nan, math.log1p(math.nan))
 }
 
-test_sin :: fn() \ {Out} {
+test_sin :: fn() needs Out {
     p1("sin", 0.0, math.sin(0.0))
     p1("sin", NZ, math.sin(NZ))
     p1("sin", 1.0, math.sin(1.0))
@@ -236,7 +236,7 @@ test_sin :: fn() \ {Out} {
     p1("sin", math.nan, math.sin(math.nan))
 }
 
-test_cos :: fn() \ {Out} {
+test_cos :: fn() needs Out {
     p1("cos", 0.0, math.cos(0.0))
     p1("cos", NZ, math.cos(NZ))
     p1("cos", 1.0, math.cos(1.0))
@@ -264,7 +264,7 @@ test_cos :: fn() \ {Out} {
     p1("cos", math.nan, math.cos(math.nan))
 }
 
-test_tan :: fn() \ {Out} {
+test_tan :: fn() needs Out {
     p1("tan", 0.0, math.tan(0.0))
     p1("tan", NZ, math.tan(NZ))
     p1("tan", 1.0, math.tan(1.0))
@@ -292,7 +292,7 @@ test_tan :: fn() \ {Out} {
     p1("tan", math.nan, math.tan(math.nan))
 }
 
-test_asin :: fn() \ {Out} {
+test_asin :: fn() needs Out {
     p1("asin", 0.0, math.asin(0.0))
     p1("asin", NZ, math.asin(NZ))
     p1("asin", 0.5, math.asin(0.5))
@@ -311,7 +311,7 @@ test_asin :: fn() \ {Out} {
     p1("asin", math.nan, math.asin(math.nan))
 }
 
-test_acos :: fn() \ {Out} {
+test_acos :: fn() needs Out {
     p1("acos", 0.0, math.acos(0.0))
     p1("acos", NZ, math.acos(NZ))
     p1("acos", 0.5, math.acos(0.5))
@@ -330,7 +330,7 @@ test_acos :: fn() \ {Out} {
     p1("acos", math.nan, math.acos(math.nan))
 }
 
-test_atan :: fn() \ {Out} {
+test_atan :: fn() needs Out {
     p1("atan", 0.0, math.atan(0.0))
     p1("atan", NZ, math.atan(NZ))
     p1("atan", 0.5, math.atan(0.5))
@@ -349,7 +349,7 @@ test_atan :: fn() \ {Out} {
     p1("atan", math.nan, math.atan(math.nan))
 }
 
-test_sinh :: fn() \ {Out} {
+test_sinh :: fn() needs Out {
     p1("sinh", 0.0, math.sinh(0.0))
     p1("sinh", NZ, math.sinh(NZ))
     p1("sinh", 0.5, math.sinh(0.5))
@@ -373,7 +373,7 @@ test_sinh :: fn() \ {Out} {
     p1("sinh", math.nan, math.sinh(math.nan))
 }
 
-test_cosh :: fn() \ {Out} {
+test_cosh :: fn() needs Out {
     p1("cosh", 0.0, math.cosh(0.0))
     p1("cosh", NZ, math.cosh(NZ))
     p1("cosh", 0.5, math.cosh(0.5))
@@ -397,7 +397,7 @@ test_cosh :: fn() \ {Out} {
     p1("cosh", math.nan, math.cosh(math.nan))
 }
 
-test_tanh :: fn() \ {Out} {
+test_tanh :: fn() needs Out {
     p1("tanh", 0.0, math.tanh(0.0))
     p1("tanh", NZ, math.tanh(NZ))
     p1("tanh", 0.5, math.tanh(0.5))
@@ -416,7 +416,7 @@ test_tanh :: fn() \ {Out} {
     p1("tanh", math.nan, math.tanh(math.nan))
 }
 
-test_floor :: fn() \ {Out} {
+test_floor :: fn() needs Out {
     p1("floor", 0.0, math.floor(0.0))
     p1("floor", NZ, math.floor(NZ))
     p1("floor", 0.5, math.floor(0.5))
@@ -440,7 +440,7 @@ test_floor :: fn() \ {Out} {
     p1("floor", math.nan, math.floor(math.nan))
 }
 
-test_ceil :: fn() \ {Out} {
+test_ceil :: fn() needs Out {
     p1("ceil", 0.0, math.ceil(0.0))
     p1("ceil", NZ, math.ceil(NZ))
     p1("ceil", 0.5, math.ceil(0.5))
@@ -464,7 +464,7 @@ test_ceil :: fn() \ {Out} {
     p1("ceil", math.nan, math.ceil(math.nan))
 }
 
-test_trunc :: fn() \ {Out} {
+test_trunc :: fn() needs Out {
     p1("trunc", 0.0, math.trunc(0.0))
     p1("trunc", NZ, math.trunc(NZ))
     p1("trunc", 0.5, math.trunc(0.5))
@@ -488,7 +488,7 @@ test_trunc :: fn() \ {Out} {
     p1("trunc", math.nan, math.trunc(math.nan))
 }
 
-test_round :: fn() \ {Out} {
+test_round :: fn() needs Out {
     p1("round", 0.0, math.round(0.0))
     p1("round", NZ, math.round(NZ))
     p1("round", 0.5, math.round(0.5))
@@ -515,7 +515,7 @@ test_round :: fn() \ {Out} {
     p1("round", 0.5000000000000001, math.round(0.5000000000000001))
 }
 
-test_abs :: fn() \ {Out} {
+test_abs :: fn() needs Out {
     p1("abs", 0.0, math.abs(0.0))
     p1("abs", NZ, math.abs(NZ))
     p1("abs", 1.5, math.abs(1.5))
@@ -529,7 +529,7 @@ test_abs :: fn() \ {Out} {
     p1("abs", math.nan, math.abs(math.nan))
 }
 
-test_hypot :: fn() \ {Out} {
+test_hypot :: fn() needs Out {
     p2("hypot", 3.0, 4.0, math.hypot(3.0, 4.0))
     p2("hypot", 5.0, 12.0, math.hypot(5.0, 12.0))
     p2("hypot", -3.0, 4.0, math.hypot(-3.0, 4.0))
@@ -549,7 +549,7 @@ test_hypot :: fn() \ {Out} {
     p2("hypot", 1.0, math.nan, math.hypot(1.0, math.nan))
 }
 
-test_pow :: fn() \ {Out} {
+test_pow :: fn() needs Out {
     p2("pow", 2.0, 10.0, math.pow(2.0, 10.0))
     p2("pow", 2.0, 0.5, math.pow(2.0, 0.5))
     p2("pow", 2.0, -1.0, math.pow(2.0, -1.0))
@@ -608,7 +608,7 @@ test_pow :: fn() \ {Out} {
     p2("pow", 1e-200, 2.0, math.pow(1e-200, 2.0))
 }
 
-test_atan2 :: fn() \ {Out} {
+test_atan2 :: fn() needs Out {
     p2("atan2", 1.0, 1.0, math.atan2(1.0, 1.0))
     p2("atan2", 1.0, -1.0, math.atan2(1.0, -1.0))
     p2("atan2", -1.0, -1.0, math.atan2(-1.0, -1.0))
@@ -647,7 +647,7 @@ test_atan2 :: fn() \ {Out} {
     p2("atan2", 1.0, math.nan, math.atan2(1.0, math.nan))
 }
 
-test_fmod :: fn() \ {Out} {
+test_fmod :: fn() needs Out {
     p2("fmod", 5.5, 2.0, math.fmod(5.5, 2.0))
     p2("fmod", -5.5, 2.0, math.fmod(-5.5, 2.0))
     p2("fmod", 5.5, -2.0, math.fmod(5.5, -2.0))
@@ -679,7 +679,7 @@ test_fmod :: fn() \ {Out} {
     p2("fmod", math.inf, math.nan, math.fmod(math.inf, math.nan))
 }
 
-test_copysign :: fn() \ {Out} {
+test_copysign :: fn() needs Out {
     p2("copysign", 3.0, 1.0, math.copysign(3.0, 1.0))
     p2("copysign", 3.0, -1.0, math.copysign(3.0, -1.0))
     p2("copysign", -3.0, 1.0, math.copysign(-3.0, 1.0))
@@ -694,7 +694,7 @@ test_copysign :: fn() \ {Out} {
     p2("copysign", 1.5, -math.inf, math.copysign(1.5, -math.inf))
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     constants()
     test_sqrt()
     test_cbrt()

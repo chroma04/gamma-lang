@@ -3,7 +3,7 @@
 // Debug builds tag allocations with their allocator: freeing arena memory through the heap traps with a report.
 arena :: import "std/arena"
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     s := with a.allocator() {

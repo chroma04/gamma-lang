@@ -79,30 +79,30 @@ pub total :: fn(b: ^const Bank) -> u64 {
     return t
 }
 
-pub open_account :: fn(b: ^const Bank, id: u32, owner: string) \ {es.Events(Event), Fail} {
+pub open_account :: fn(b: ^const Bank, id: u32, owner: string) needs es.Events(Event) + Fail {
     if index_of(b, id) is not null { fail(.AlreadyOpen(id)) }
     if b.n >= MAX_ACCOUNTS { fail(.TooMany) }
     es.emit(Event.Opened(id: id, owner: owner))
 }
 
-pub deposit :: fn(b: ^const Bank, id: u32, cents: u64) \ {es.Events(Event), Fail} {
+pub deposit :: fn(b: ^const Bank, id: u32, cents: u64) needs es.Events(Event) + Fail {
     if index_of(b, id) is null { fail(.NoSuchAccount(id)) }
     es.emit(Event.Deposited(id: id, cents: cents))
 }
 
-pub withdraw :: fn(b: ^const Bank, id: u32, cents: u64) \ {es.Events(Event), Fail} {
+pub withdraw :: fn(b: ^const Bank, id: u32, cents: u64) needs es.Events(Event) + Fail {
     have := balance(b, id) else fail(.NoSuchAccount(id))
     if have < cents { fail(.Insufficient(id: id, have: have, want: cents)) }
     es.emit(Event.Withdrawn(id: id, cents: cents))
 }
 
-pub transfer :: fn(b: ^const Bank, from, to: u32, cents: u64) \ {es.Events(Event), Fail} {
+pub transfer :: fn(b: ^const Bank, from, to: u32, cents: u64) needs es.Events(Event) + Fail {
     if index_of(b, to) is null { fail(.NoSuchAccount(to)) }
     withdraw(b, from, cents)
     deposit(b, to, cents)
 }
 
-pub close :: fn(b: ^const Bank, id: u32) \ {es.Events(Event), Fail} {
+pub close :: fn(b: ^const Bank, id: u32) needs es.Events(Event) + Fail {
     have := balance(b, id) else fail(.NoSuchAccount(id))
     if have is not 0 { fail(.NotEmpty(id)) }
     es.emit(Event.Closed(id))

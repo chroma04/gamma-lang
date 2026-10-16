@@ -6,9 +6,9 @@ Pair :: struct { x: f32, y: f32 }
 LDiv :: struct { quot: c.c_long, rem: c.c_long }
 
 libc :: foreign "c" {
-    ldiv :: fn(n, d: c.c_long) -> LDiv \ {}
-    dog_big :: fn(b: Big, k: c.c_int) -> Big \ {}
-    dog_pair :: fn(p: Pair) -> Pair \ {}
+    ldiv :: fn(n, d: c.c_long) -> LDiv needs not
+    dog_big :: fn(b: Big, k: c.c_int) -> Big needs not
+    dog_pair :: fn(p: Pair) -> Pair needs not
 }
 
 #export("dog_big")
@@ -17,7 +17,7 @@ big :: fn(b: Big, k: c.c_int) -> Big => Big(a: b.a * i64(k), b: b.b + 0.5, c: b.
 #export("dog_pair")
 pair :: fn(p: Pair) -> Pair => Pair(x: p.y, y: p.x)
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     r := libc.ldiv(-17, 5)
     print("{} {}\n", r.quot, r.rem)
     b := libc.dog_big(Big(a: 7, b: 1.0, c: 10, d: 200), 3)

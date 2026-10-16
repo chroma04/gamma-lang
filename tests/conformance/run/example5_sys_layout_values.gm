@@ -55,13 +55,13 @@ flags_roundtrip :: fn(f: Flags) -> Flags {
     return g
 }
 
-fiber_line :: fn() -> u64 \ {Gen} {
+fiber_line :: fn() -> u64 needs Gen {
     l := line(3)
     m := give(l)
     return m.data[0] + m.data[5] + align_of_param(m)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     l := line(7)
     print("line {} {}\n", align_of_param(l), through(l, &l))
     print("after {}\n", l.data[0])

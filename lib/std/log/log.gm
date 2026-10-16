@@ -30,7 +30,7 @@ pub Log :: effect {
 }
 
 /// Writes a record of `level`, formatted from `template` and `args` as `print` does.
-pub log :: fn(A: type, level: Level, template :: string, args: ..A) \ {Log} {
+pub log :: fn(A: type, level: Level, template :: string, args: ..A) needs Log {
     if begin(level) {
         @write(fn(b) => write(b), template, ..args)
         end()
@@ -38,16 +38,16 @@ pub log :: fn(A: type, level: Level, template :: string, args: ..A) \ {Log} {
 }
 
 /// Writes a `Debug` record.
-pub debug :: fn(A: type, template :: string, args: ..A) \ {Log} => log(.Debug, template, ..args)
+pub debug :: fn(A: type, template :: string, args: ..A) needs Log => log(.Debug, template, ..args)
 
 /// Writes an `Info` record.
-pub info :: fn(A: type, template :: string, args: ..A) \ {Log} => log(.Info, template, ..args)
+pub info :: fn(A: type, template :: string, args: ..A) needs Log => log(.Info, template, ..args)
 
 /// Writes a `Warn` record.
-pub warn :: fn(A: type, template :: string, args: ..A) \ {Log} => log(.Warn, template, ..args)
+pub warn :: fn(A: type, template :: string, args: ..A) needs Log => log(.Warn, template, ..args)
 
 /// Writes an `Error` record.
-pub error :: fn(A: type, template :: string, args: ..A) \ {Log} => log(.Error, template, ..args)
+pub error :: fn(A: type, template :: string, args: ..A) needs Log => log(.Error, template, ..args)
 
 // The upper-case name of a level, as written in a line.
 name :: fn(level: Level) -> string {
@@ -65,7 +65,7 @@ pub ErrLog :: struct {
     pub min: Level = .Info
 }
 
-handler Log for ^ErrLog \ {Err} {
+handler Log for ^ErrLog needs Err {
     begin(self, level) => {
         if level < self.min { return false }
         Err.write_err(name(level))
@@ -82,7 +82,7 @@ pub StampedLog :: struct {
     pub min: Level = .Info
 }
 
-handler Log for ^StampedLog \ {Err, Clock} {
+handler Log for ^StampedLog needs Err + Clock {
     begin(self, level) => {
         if level < self.min { return false }
         now := time.from_unix(Clock.wall())

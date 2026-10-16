@@ -47,7 +47,7 @@ SCRIPT :: [_]string(
     "look",
 )
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     g := try content.manor()
     defer world.deinit(&g)
     console := engine.Console()

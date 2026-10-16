@@ -215,10 +215,7 @@ impl Cx<'_> {
 
     fn handler(&self, item: &Item, h: &HandlerDecl, cond: Option<&str>, out: &mut Vec<Decl>) {
         let from = h.effects.as_ref().and_then(|e| e.last()).map_or(h.for_ty.span.hi, |e| e.span.hi);
-        let mut open = from as usize;
-        if h.effects.is_some() {
-            open += self.src[open..].find('}').map_or(0, |i| i + 1);
-        }
+        let open = from as usize;
         let open = open + self.src[open..].find('{').unwrap_or(0);
         let head = self.src[h.span.lo as usize..open].trim_end();
         let name = squash(&self.src[h.span.lo as usize..h.for_ty.span.hi as usize]);

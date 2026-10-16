@@ -3,7 +3,7 @@
 hp :: import "std/collections/heap"
 
 // Prints and removes everything in the order the heap yields it.
-drain_i32 :: fn(label: string, pop: fn() -> ?i32) \ {Out} {
+drain_i32 :: fn(label: string, pop: fn() -> ?i32) needs Out {
     print("{}:", label)
     while x := pop() { print(" {}", x) }
     print("\n")
@@ -23,7 +23,7 @@ next_random :: fn(state: ^u64) -> u64 {
     return state^ >> 33
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // Empty.
     h := hp.heap(i32)
     defer h.deinit()

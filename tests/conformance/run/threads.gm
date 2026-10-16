@@ -8,7 +8,7 @@ Shared :: struct {
     m: thread.Mutex
 }
 
-work :: fn(s: ^Shared) \ {Sys} {
+work :: fn(s: ^Shared) needs Sys {
     for i in 0..1000 {
         _ = @atomic_add(&s.atomic_total, 1, .Relaxed)
         s.m.lock()
@@ -17,17 +17,17 @@ work :: fn(s: ^Shared) \ {Sys} {
     }
 }
 
-greet :: fn(n: ^u32) \ {Sys} {
-    thread.defaults(fn() \ {Out} { print("hello from thread {}\n", n^) })
+greet :: fn(n: ^u32) needs Sys {
+    thread.defaults(fn() needs Out { print("hello from thread {}\n", n^) })
 }
 
 // Waits for the main thread's signal, then answers: a handshake through atomics.
-ping :: fn(flags: ^[2]u32) \ {Sys} {
+ping :: fn(flags: ^[2]u32) needs Sys {
     while @atomic_load(&flags[0], .Acquire) is 0 {}
     @atomic_store(&flags[1], 7, .Release)
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     s := Shared(atomic_total: 0, locked_total: 0, m: thread.mutex())
     ts: [4]thread.Thread = ---
     for i in 0..4 {

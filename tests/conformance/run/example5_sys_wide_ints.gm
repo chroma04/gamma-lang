@@ -38,9 +38,9 @@ apply :: fn(f: ^fn(a: Acc, k: u256) -> Acc, a: Acc, k: u256) -> Acc => f(a, k)
 
 mix :: fn(x: i256, y: u128, z: i128) -> i256 => x * 3 + i256(y) - i256(z)
 
-measured :: fn(x: u256) -> u256 \ {Meter} => observe(x) + observe(x + 1)
+measured :: fn(x: u256) -> u256 needs Meter => observe(x) + observe(x + 1)
 
-pulled :: fn(x: u256) -> u256 \ {Feed} {
+pulled :: fn(x: u256) -> u256 needs Feed {
     a := feed(x)
     b := feed(a + 1)
     return a * b
@@ -48,7 +48,7 @@ pulled :: fn(x: u256) -> u256 \ {Feed} {
 
 STACK :: @stack_size(pulled)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("fact(30) = {}\n", fact(30))
     print("fact(50) = {}\n", fact(50))
     print("fib(150) = {}\n", fib_pair(0, 1, 150))

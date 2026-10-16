@@ -9,7 +9,7 @@ Opt :: union(T: type) { Some: T, None }
 COUNT :: @variants(Color).len
 ALL :: @variants(Color)
 
-next :: fn(counter: ^u32) -> Shape \ {Out} {
+next :: fn(counter: ^u32) -> Shape needs Out {
     print("next called\n")
     counter^ += 1
     return .Circle(1.0)
@@ -17,7 +17,7 @@ next :: fn(counter: ^u32) -> Shape \ {Out} {
 
 name_of :: fn(T: type, o: Opt(T)) -> string => @variant_name(o)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for c in @variants(Color) {
         print("{} {}\n", @variant_name(c), c.tag())
     }

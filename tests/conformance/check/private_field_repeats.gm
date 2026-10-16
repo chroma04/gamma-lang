@@ -1,7 +1,7 @@
 //! stage: check
 // A private field used in code that is checked more than once (loop bodies, function
 // literals passed to generic functions, method chains) is reported once per location.
-main :: fn() \ {Alloc} {
+main :: fn() needs Alloc {
     l := list(u8)
     n := 0
     while n < 3 {

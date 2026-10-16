@@ -1,6 +1,6 @@
 //! stage: check
 // A `struct` declared in a function body is rejected once; its uses are silent.
-main :: fn() \ {Alloc} {
+main :: fn() needs Alloc {
     P :: struct { x: i32, y: i32 }    //~ ERROR types are declared at top level
     ps: [3]P = ---
     ps[0] = P(x: 1, y: 2)

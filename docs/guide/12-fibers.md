@@ -31,7 +31,7 @@ Ask :: effect {
     ask: ctl(question: string) -> u32
 }
 
-quiz :: fn() -> u32 \ {Ask} {
+quiz :: fn() -> u32 needs Ask {
     a := ask("first number?")
     b := ask("second number?")
     return a + b
@@ -40,7 +40,7 @@ quiz :: fn() -> u32 \ {Ask} {
 STACK_SIZE :: 16384
 @static_assert(STACK_SIZE >= @min_stack, "fiber stack too small")
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [STACK_SIZE]u8 = ---
     n := 0u32
     answerer :: handler Ask {
@@ -86,7 +86,7 @@ Budget :: effect {
     tick: ctl()
 }
 
-job :: fn() \ {Budget, Out} {
+job :: fn() needs Budget + Out {
     defer print("job: cleanup\n")
     step: u32 = 1
     while step <= 5 {
@@ -97,7 +97,7 @@ job :: fn() \ {Budget, Out} {
     print("job: finished\n")
 }
 
-run_limited :: fn(limit: u32) \ {Out} {
+run_limited :: fn(limit: u32) needs Out {
     stack: [STACK_SIZE]u8 = ---
     seen: u32 = 0
     meter :: handler Budget {
@@ -135,7 +135,7 @@ A single fiber is enough for generators and cooperative sub-tasks. A scheduler n
 @fiber(f, arg, stack) -> cont(())
 ```
 
-`f` is a **function pointer** `^fn(a: A) -> never \ {S}`, `arg` is its argument, and `stack` is the memory for the new fiber. The result is a continuation which, when resumed, starts the call `f(arg)` on that stack. `A` must be a first-class type; a second-class closure cannot be smuggled into a fiber that may outlive the frame that made it, which is why fibers start from a function pointer plus a data argument, as threads do in C. `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause cancels it (a library `spawn` wraps the user's function to do that). The new fiber runs in the handler context of the `with`'s body, so it can perform the effects that the `with` handles.
+`f` is a **function pointer** `^fn(a: A) -> never needs S`, `arg` is its argument, and `stack` is the memory for the new fiber. The result is a continuation which, when resumed, starts the call `f(arg)` on that stack. `A` must be a first-class type; a second-class closure cannot be smuggled into a fiber that may outlive the frame that made it, which is why fibers start from a function pointer plus a data argument, as threads do in C. `f` returns `never`: a fiber ends by performing a `ctl` operation whose clause cancels it (a library `spawn` wraps the user's function to do that). The new fiber runs in the handler context of the `with`'s body, so it can perform the effects that the `with` handles.
 
 ## A scheduler sketch
 
@@ -144,7 +144,7 @@ The specification's own example is a cooperative round-robin scheduler. This is 
 ```gamma
 Sched :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(arg: rawptr) -> never \ {Sched}, arg: rawptr, stack: []u8)
+    spawn: ctl(entry: ^fn(arg: rawptr) -> never needs Sched, arg: rawptr, stack: []u8)
     exit:  ctl() -> never
     join:  ctl()                       // wait until every spawned task has exited
 }
@@ -199,7 +199,7 @@ A program using it hands the scheduler a main stack, spawns tasks, and `join`s t
 ```gamma
 Counter :: struct { ticks: u32 = 0 }
 
-worker :: fn(c: ^Counter) \ {Sched} {
+worker :: fn(c: ^Counter) needs Sched {
     c.ticks += 1
     yield_now()                        // let the other task run
     c.ticks += 1
@@ -220,7 +220,7 @@ run_two :: fn(main_stack, stack_a, stack_b: []u8) -> u32 {
 
 A `join` at the end means the `with` completes only after both tasks have exited, so every continuation has been consumed.
 
-In this sketch a task can perform only `Sched`, because the type of `spawn`'s entry function names its effects. `std/fiber` lifts that limit with an effect-set parameter (see [generics](10-generics.md)): its `Sched(E)` lets tasks perform the effects `E` as well, and its handler requires `E` where the scheduler is installed, so a task can `print` when the scheduler is made with `fiber.scheduler(Out)` and the task is declared `\ {fiber.Sched(Out), Out}`. The code that installs the scheduler (`with &sched on stack { ... }`) must then be able to perform `Out` itself, and `fiber.scheduler()` takes its queue from the current allocator, so it performs `Alloc`.
+In this sketch a task can perform only `Sched`, because the type of `spawn`'s entry function names its effects. `std/fiber` lifts that limit with an effect-set parameter (see [generics](10-generics.md)): its `Sched(E)` lets tasks perform the effects `E` as well, and its handler requires `E` where the scheduler is installed, so a task can `print` when the scheduler is made with `fiber.scheduler(Out)` and the task is declared `needs fiber.Sched(Out) + Out`. The code that installs the scheduler (`with &sched on stack { ... }`) must then be able to perform `Out` itself, and `fiber.scheduler()` takes its queue from the current allocator, so it performs `Alloc`.
 
 ## Sizing stacks and other notes
 

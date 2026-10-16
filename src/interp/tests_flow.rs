@@ -490,7 +490,7 @@ fn for_style_iteration_with_early_break_unwinds_the_iterator() {
     let mut tb = Tb::new();
     let y = effect_ref("Yield");
     let u = Ty::u32();
-    // count(p, n) \ {Yield}: defer *p += 1000; i := 0; while i < n { yield(i); i += 1 }
+    // count(p, n) needs Yield: defer *p += 1000; i := 0; while i < n { yield(i); i += 1 }
     let mut count = FnB::new("count", Ty::unit());
     let p = count.param("p", ptr_u32());
     let n = count.param("n", u);

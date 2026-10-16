@@ -3,7 +3,7 @@
 // extra words are empty is fine.
 bs :: import "std/collections/bitset"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     small := try bs.bitset(64)
     defer small.deinit()
     big := try bs.bitset(200)

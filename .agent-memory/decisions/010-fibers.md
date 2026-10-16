@@ -8,7 +8,7 @@
 - `with … on s` required iff a handled effect has a ctl op; `s: []u8`.
 - Direct ctl performs inside `defer` are errors (calls are not tracked).
 - `@min_stack` = 16384 (a usize literal). `@fiber(f, arg, stack)`: Builtin::Fiber,
-  f a `^fn(A) -> never \ {S}`; S minus the clause's own effect is recorded as performed.
+  f a `^fn(A) -> never needs S`; S minus the clause's own effect is recorded as performed.
 - TIR: `Program.ctl_ops: HashSet<(EffectId, u32)>` tells back ends which performs suspend.
 
 ## Interpreter (src/interp/fiber.rs)

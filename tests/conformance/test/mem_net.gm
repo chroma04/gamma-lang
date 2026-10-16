@@ -5,13 +5,13 @@
 net :: import "std/net"
 
 // Sends all of `text`, which the fake always accepts whole.
-say :: fn(s: net.Socket, text: string) -> IoError!() \ {Net} {
+say :: fn(s: net.Socket, text: string) -> IoError!() needs Net {
     n := try s.send(text)
     if n is not text.len { return !.NoSpace }
 }
 
 // True if the next `recv` on `s` yields exactly `text`.
-hears :: fn(s: net.Socket, text: string) -> IoError!bool \ {Net} {
+hears :: fn(s: net.Socket, text: string) -> IoError!bool needs Net {
     buf: [64]u8 = ---
     n := try s.recv(buf[..])
     return buf[0..n] is text

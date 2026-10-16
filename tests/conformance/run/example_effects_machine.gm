@@ -44,7 +44,7 @@ Stack :: struct {
     top: usize = 0
 }
 
-push :: fn(v: i32) \ {State(Stack), Fail} {
+push :: fn(v: i32) needs State(Stack) + Fail {
     s := get()
     if s.top is s.items.len { fail(1, "stack overflow") }
     s.items[s.top] = v
@@ -52,7 +52,7 @@ push :: fn(v: i32) \ {State(Stack), Fail} {
     put(s)
 }
 
-pop :: fn() -> i32 \ {State(Stack), Fail} {
+pop :: fn() -> i32 needs State(Stack) + Fail {
     s := get()
     if s.top is 0 { fail(2, "stack underflow") }
     s.top -= 1
@@ -60,7 +60,7 @@ pop :: fn() -> i32 \ {State(Stack), Fail} {
     return s.items[s.top]
 }
 
-run_program :: fn(code: []const Instr) -> i32 \ {State(Stack), Fail, Reader, Trace} {
+run_program :: fn(code: []const Instr) -> i32 needs State(Stack) + Fail + Reader + Trace {
     pc: usize = 0
     steps: u32 = 0
     while pc < code.len {
@@ -129,7 +129,7 @@ Warn :: effect {
     warn: ctl(msg: string) -> bool      // true: keep going
 }
 
-checked_sum :: fn(xs: []const i32, limit: i32) -> i32 \ {Warn, Out} {
+checked_sum :: fn(xs: []const i32, limit: i32) -> i32 needs Warn + Out {
     defer print("  checked_sum finished\n")
     total: i32 = 0
     for x in xs {
@@ -142,7 +142,7 @@ checked_sum :: fn(xs: []const i32, limit: i32) -> i32 \ {Warn, Out} {
     return total
 }
 
-with_warnings :: fn(xs: []const i32, limit: i32, max_warnings: u32) -> i32 \ {Out} {
+with_warnings :: fn(xs: []const i32, limit: i32, max_warnings: u32) -> i32 needs Out {
     stack: [32768]u8 = ---
     seen: u32 = 0
     r := with (handler Warn {
@@ -157,7 +157,7 @@ with_warnings :: fn(xs: []const i32, limit: i32, max_warnings: u32) -> i32 \ {Ou
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     cfg := Config(scale: 1, verbose: false)
     steps: u32 = 0
 

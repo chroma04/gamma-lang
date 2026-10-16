@@ -14,7 +14,7 @@ shadow_locals :: fn() -> u32 {
     return now + write_out + exit
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     print("{} {} {} {}\n", current(), yield(1), read(), range(4))
     print("{}\n", shadow_locals())
 

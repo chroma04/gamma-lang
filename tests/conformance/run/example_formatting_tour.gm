@@ -16,12 +16,12 @@ Item :: struct {
 }
 
 // Right-align `s` in a column of `width` characters, appending to `out`.
-cell_right :: fn(s: string, width: usize) \ {Out} {
+cell_right :: fn(s: string, width: usize) needs Out {
     buf: [64]u8 = ---
     print("{}", fmt.pad_left(s, width, ' ', buf[..]))
 }
 
-cell_left :: fn(s: string, width: usize) \ {Out} {
+cell_left :: fn(s: string, width: usize) needs Out {
     buf: [64]u8 = ---
     print("{}", fmt.pad_right(s, width, ' ', buf[..]))
 }
@@ -41,7 +41,7 @@ money :: fn(cents: u64, buf: []u8) -> string {
     return buf[0..n + 3]
 }
 
-invoice :: fn(items: []const Item) \ {Out} {
+invoice :: fn(items: []const Item) needs Out {
     total: u64 = 0
     cell_left("item", 14)
     cell_right("qty", 5)
@@ -69,7 +69,7 @@ invoice :: fn(items: []const Item) \ {Out} {
     print("\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // ---- every type through `print` -------------------------------------------------
     print("{} {} {}\n", 42, -7i8, 255u8)
     print("{} {} {}\n", u64(18446744073709551615), i128(-170141183460469231731687303715884105728), u128(1) << 100)

@@ -1,7 +1,7 @@
 // std/log: levels, templates, the list and discard handlers, and nested handlers.
 log :: import "std/log"
 
-work :: fn() \ {log.Log} {
+work :: fn() needs log.Log {
     log.debug("starting")
     log.info("loaded {} items from {}", 3, "cache")
     log.warn("slow: {} ms", 250)
@@ -9,7 +9,7 @@ work :: fn() \ {log.Log} {
     log.log(.Info, "explicit level {}", true)
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     out := list(u8)
     defer out.deinit()
 

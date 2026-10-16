@@ -3,7 +3,7 @@
 
 Async :: effect {
     wait:  ctl(fd: Fd, events: Events)
-    spawn: ctl(entry: ^fn(arg: rawptr) -> never \ {Async}, arg: rawptr, stack: []u8)
+    spawn: ctl(entry: ^fn(arg: rawptr) -> never needs Async, arg: rawptr, stack: []u8)
     exit:  ctl() -> never
     join:  ctl()                      // wait until every spawned task has exited
 }
@@ -15,7 +15,7 @@ Scheduler :: struct {
     live:    usize
 }
 
-handler Async for ^Scheduler \ {Sys} {
+handler Async for ^Scheduler needs Sys {
     wait(self, fd, events, k) => {
         self.waiting.add(fd, events, k)
         r := self.next()

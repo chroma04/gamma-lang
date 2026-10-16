@@ -15,7 +15,7 @@ NamedTup :: (a: u8, b: u64)
 Big :: struct { x: u128, y: u8 }
 Mixed :: struct { a: u8, b: i128, c: u256 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("Outer {} {} offsets {} {} {} {}\n", @size_of(Outer), @align_of(Outer), @offset_of(Outer, x), @offset_of(Outer, in_), @offset_of(Outer, y), @offset_of(Outer, z))
     print("POuter {} {} offsets {} {} {} {}\n", @size_of(POuter), @align_of(POuter), @offset_of(POuter, x), @offset_of(POuter, in_), @offset_of(POuter, y), @offset_of(POuter, z))
     print("AP {} {}\n", @size_of(AP), @align_of(AP))

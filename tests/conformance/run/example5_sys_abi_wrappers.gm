@@ -58,7 +58,7 @@ U6 :: #c_union union {
     flat: ^fn(k: u64) -> u128
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     // Typed calls: ordinary Gamma-to-Gamma calls through the pointers.
     t1: ^fn(a: i64, b: i64, c: i64, d: i64, e: i64, s: S3) -> i64 = with_s3
     print("typed s3 {}\n", t1(1, 2, 3, 4, 5, S3(x: 6, y: 7, z: 8)))

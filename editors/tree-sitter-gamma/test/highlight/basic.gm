@@ -24,10 +24,10 @@ Shape :: union {
 //  ^ constant
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
 // <- function
-//           ^ operator
-//              ^ type
+//           ^ keyword
+//                 ^ type
     n := 0x1p4
 //       ^ number.float
 //    ^ operator

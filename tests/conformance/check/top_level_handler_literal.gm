@@ -3,7 +3,7 @@
 // it reports nothing more.
 Who :: effect { who: fn() -> string }
 h1 :: handler Who { who() => "H1" } //~ ERROR a handler literal cannot be a top-level declaration
-f :: fn() -> string \ {Who} { return who() }
+f :: fn() -> string needs Who { return who() }
 main :: fn() {
     with h1 { _ = f() }
 }

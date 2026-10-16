@@ -183,7 +183,7 @@ mode = "fast"
 ```gamma
 c :: import "std/c"
 shim :: foreign "c" {
-    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int \ {}
+    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int needs not
 }
 ```
 

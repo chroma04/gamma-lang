@@ -266,8 +266,8 @@ copy_all :: fn(
     T: type,
     from: []const T,
     n :: usize = 1,
-    notify: ^fn(s: ^const T) \ {Events},
-) -> AllocError![]T \ {Alloc, Events} where Plain(T)
+    notify: ^fn(s: ^const T) needs Events,
+) -> AllocError![]T needs Alloc + Events where Plain(T)
 ```
 
 Copies `n` shapes with the allocator in effect.
@@ -291,7 +291,7 @@ undocumented :: fn()
 
 ```gamma
 native :: foreign "m" {
-    sqrt :: fn(x: f64) -> f64 \ {}
+    sqrt :: fn(x: f64) -> f64 needs not
 }
 ```
 

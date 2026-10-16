@@ -1,7 +1,7 @@
 // std/text: decode_rune, encode_rune and append_rune.
 text :: import "std/text"
 
-show_decode :: fn(s: string) \ {Out} {
+show_decode :: fn(s: string) needs Out {
     if d := text.decode_rune(s) {
         print("{} len {}\n", d.rune, d.len)
     } else {
@@ -9,7 +9,7 @@ show_decode :: fn(s: string) \ {Out} {
     }
 }
 
-show_encode :: fn(cp: u32) \ {Out} {
+show_encode :: fn(cp: u32) needs Out {
     buf: [4]u8 = ---
     if e := text.encode_rune(cp, buf[..]) {
         print("{} ->", cp)
@@ -20,7 +20,7 @@ show_encode :: fn(cp: u32) \ {Out} {
     }
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     // Decoding: one value of each length, and what follows is ignored.
     show_decode("A")
     show_decode("é!")

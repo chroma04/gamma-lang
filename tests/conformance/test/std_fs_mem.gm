@@ -3,12 +3,12 @@
 // The test allocator also checks that `walk` frees everything, also when left early.
 fs :: import "std/fs"
 
-put :: fn(path: string, text: string) -> IoError!() \ {Fs} {
+put :: fn(path: string, text: string) -> IoError!() needs Fs {
     try fs.write_all(path, text)
 }
 
 // Builds:  t/a.txt  t/sub/b.txt  t/sub/deep/c.txt  t/sub/deep/d.txt  t/other/  t/z.txt
-tree :: fn() -> IoError!() \ {Fs} {
+tree :: fn() -> IoError!() needs Fs {
     try fs.make_dir_all("t/sub/deep")
     try fs.make_dir_all("t/other")
     try put("t/a.txt", "a")

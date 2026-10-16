@@ -12,7 +12,7 @@ performs an effect. Text goes into a buffer the caller supplies and the result i
 slice written; each kind of output has a constant giving a size that always suffices.
 
     time :: import "std/time"
-    t := time.now()                                    // \ {Clock}
+    t := time.now()                                    // needs Clock
     buf: [time.RFC3339_LEN]u8 = ---
     print("{}\n", time.format_rfc3339(t, buf[..]))     // 2024-05-17T09:30:00Z
     d := try time.parse_date("2024-02-29")
@@ -206,7 +206,7 @@ if the result does not fit an `i64` (roughly the years 1678 to 2262).
 ### `now`
 
 ```gamma
-now :: fn() -> DateTime \ {Clock}
+now :: fn() -> DateTime needs Clock
 ```
 
 The current date and time from the `Clock`'s wall clock.

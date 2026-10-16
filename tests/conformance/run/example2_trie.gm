@@ -5,11 +5,11 @@ Node :: struct {
     hits: u32 = 0
 }
 
-new_node :: fn() -> AllocError!^Node \ {Alloc} {
+new_node :: fn() -> AllocError!^Node needs Alloc {
     return try new(Node(kids: hash_map(u8, ^Node)))
 }
 
-insert :: fn(root: ^Node, word: string) -> AllocError!() \ {Alloc} {
+insert :: fn(root: ^Node, word: string) -> AllocError!() needs Alloc {
     cur := root
     for c in bytes(word) {
         next := cur.kids.get(c) else {
@@ -25,14 +25,14 @@ insert :: fn(root: ^Node, word: string) -> AllocError!() \ {Alloc} {
     return ()
 }
 
-free_trie :: fn(n: ^Node) \ {Alloc} {
+free_trie :: fn(n: ^Node) needs Alloc {
     for e in n.kids.entries() { free_trie(e.value) }
     n.kids.deinit()
     destroy(n)
 }
 
 // Yields all words below `n`, in unspecified child order; `buf[0..depth]` is the path so far.
-walk :: fn(n: ^const Node, buf: []u8, depth: usize) \ {Yield(string)} {
+walk :: fn(n: ^const Node, buf: []u8, depth: usize) needs Yield(string) {
     if n.end {
         s: string = buf[0..depth]
         yield(s)
@@ -51,13 +51,13 @@ find_prefix :: fn(root: ^const Node, prefix: string) -> ?^const Node {
     return cur
 }
 
-complete :: fn(root: ^const Node, prefix: string, buf: []u8) \ {Yield(string)} {
+complete :: fn(root: ^const Node, prefix: string, buf: []u8) needs Yield(string) {
     start := find_prefix(root, prefix) else return
     buf[0..prefix.len].copy_from(prefix)
     walk(start, buf, prefix.len)
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     root := try new_node()
     defer free_trie(root)
     words := [_]string("tea", "ten", "inn", "in", "i", "team", "tea", "teapot", "to", "tent")

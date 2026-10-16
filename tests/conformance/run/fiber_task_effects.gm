@@ -12,7 +12,7 @@ Job :: struct {
 }
 
 // Prints as it goes: `Out` is handled outside the scheduler's `with`.
-talker :: fn(j: ^Job) \ {fiber.Sched(Out), Out} {
+talker :: fn(j: ^Job) needs fiber.Sched(Out) + Out {
     defer print("{} done\n", j.name)
     for i in 0..j.rounds {
         print("{} {}\n", j.name, i)
@@ -21,25 +21,25 @@ talker :: fn(j: ^Job) \ {fiber.Sched(Out), Out} {
 }
 
 // Uses only part of what the scheduler allows.
-silent :: fn(j: ^Job) \ {fiber.Sched(Out)} {
+silent :: fn(j: ^Job) needs fiber.Sched(Out) {
     for _ in 0..j.rounds {
         fiber.yield_now()
     }
 }
 
 // A user effect, with a handler outside the scheduler.
-ticker :: fn(j: ^Job) \ {fiber.Sched(\ {Tick, Out}), Tick} {
+ticker :: fn(j: ^Job) needs fiber.Sched(Tick + Out) + Tick {
     for _ in 0..j.rounds {
         tick(j.name)
         fiber.yield_now()
     }
 }
 
-talky :: fn(j: ^Job) \ {fiber.Sched(\ {Tick, Out}), Out} {
+talky :: fn(j: ^Job) needs fiber.Sched(Tick + Out) + Out {
     print("{} says hi\n", j.name)
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     main_stack: [65536]u8 = ---
     sa: [32768]u8 = ---
     sb: [32768]u8 = ---
@@ -58,7 +58,7 @@ main :: fn() \ {Out, Alloc} {
     }
 
     ticks: u32 = 0
-    t := fiber.scheduler(\ {Tick, Out})
+    t := fiber.scheduler(Tick + Out)
     defer t.deinit()
     x := Job(name: "x", rounds: 2)
     y := Job(name: "y", rounds: 3)

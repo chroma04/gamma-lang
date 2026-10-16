@@ -3,7 +3,7 @@
 Inner :: #bits(u8) struct { a: u4, b: u4 }
 Reg :: #bits(u16) struct { i: Inner, y: u7, on: bool }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := Reg(i: Inner(a: 1, b: 2), y: 4, on: false)
     print("{} {} {} {}\n", r.i.b, r.i.a, r.y, r.on)
     r.i.b = 9

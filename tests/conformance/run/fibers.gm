@@ -8,7 +8,7 @@ Ask :: effect {
     ask: ctl(prompt: string) -> i32
 }
 
-numbers :: fn(n: i32) \ {Gen} {
+numbers :: fn(n: i32) needs Gen {
     i := 0
     while i < n {
         emit(i)
@@ -32,7 +32,7 @@ sum_of :: fn(n: i32) -> i32 {
 }
 
 // Resuming with a value: the perform returns it.
-asking :: fn() -> i32 \ {Out} {
+asking :: fn() -> i32 needs Out {
     stack: [32768]u8 = ---
     next := 10
     r := with (handler Ask {
@@ -51,7 +51,7 @@ asking :: fn() -> i32 \ {Out} {
 
 // `break` from a clause completes the `with`; the continuation is discarded first,
 // which runs the suspended fiber's defers.
-first_big :: fn(limit: i32) -> i32 \ {Out} {
+first_big :: fn(limit: i32) -> i32 needs Out {
     stack: [32768]u8 = ---
     r := with (handler Gen {
         emit(x, k) => {
@@ -72,7 +72,7 @@ first_big :: fn(limit: i32) -> i32 \ {Out} {
 // A scheduler: tasks are fibers made with `@fiber`, kept in a queue of continuations.
 Task :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(n: i32) -> never \ {Task, Out}, arg: i32)
+    spawn: ctl(entry: ^fn(n: i32) -> never needs Task + Out, arg: i32)
     exit: ctl() -> never
 }
 
@@ -95,7 +95,7 @@ next_task :: fn(s: ^Sched) -> cont(()) {
     return k
 }
 
-handler Task for ^Sched \ {Alloc, Out} {
+handler Task for ^Sched needs Alloc + Out {
     yield_now(self, k) => {
         _ = self.ready.push(k)
         r := next_task(self)
@@ -117,7 +117,7 @@ handler Task for ^Sched \ {Alloc, Out} {
     }
 }
 
-worker :: fn(n: i32) -> never \ {Task, Out} {
+worker :: fn(n: i32) -> never needs Task + Out {
     defer print("worker {} done\n", n)
     i := 0
     while i < 3 {
@@ -128,7 +128,7 @@ worker :: fn(n: i32) -> never \ {Task, Out} {
     exit()
 }
 
-run_tasks :: fn() \ {Out, Alloc} {
+run_tasks :: fn() needs Out + Alloc {
     stacks: [4 * 32768]u8 = ---
     s := Sched(ready: list(cont(())), stack_mem: stacks[..], used: 0, live: 1)
     main_stack: [32768]u8 = ---
@@ -148,10 +148,10 @@ Fail :: effect {
 }
 
 Job :: effect {
-    start: ctl(entry: ^fn(n: i32) -> never \ {Fail, Out}, arg: i32)
+    start: ctl(entry: ^fn(n: i32) -> never needs Fail + Out, arg: i32)
 }
 
-crossing :: fn() -> i32 \ {Out} {
+crossing :: fn() -> i32 needs Out {
     stack: [32768]u8 = ---
     s1: [32768]u8 = ---
     r := with (handler Fail { fail(c) => break c }) {
@@ -171,7 +171,7 @@ crossing :: fn() -> i32 \ {Out} {
     return r
 }
 
-failing :: fn(n: i32) -> never \ {Fail, Out} {
+failing :: fn(n: i32) -> never needs Fail + Out {
     defer print("failing task unwound\n")
     fail(n)
 }
@@ -196,7 +196,7 @@ Lines :: effect {
     read_line: ctl() -> ?string
 }
 
-echo :: fn() \ {Out} {
+echo :: fn() needs Out {
     stack: [32768]u8 = ---
     input := [2]string("alpha", "beta")
     i: usize = 0
@@ -210,11 +210,11 @@ echo :: fn() \ {Out} {
             resume k(null)
         }
     }) on stack[..] {
-        each :: fn(f: fn(s: string) \ {Lines}) \ {Lines} {
+        each :: fn(f: fn(s: string) needs Lines) needs Lines {
             while line := read_line() { f(line) }
         }
         n := 0
-        each(fn(s: string) \ {Lines} {
+        each(fn(s: string) needs Lines {
             print("line {} ({})\n", s, s.len)
             n += 1
         })
@@ -222,7 +222,7 @@ echo :: fn() \ {Out} {
     }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     print("sum {}\n", sum_of(5))
     print("asking {}\n", asking())
     print("first big {}\n", first_big(3))

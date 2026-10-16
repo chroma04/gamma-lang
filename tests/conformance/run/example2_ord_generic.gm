@@ -24,7 +24,7 @@ contains :: fn(T: type, xs: []const T, v: T) -> bool where Eq(T) {
 
 Color :: union { Red, Green, Blue }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ts := [_](u8, string)((3, "c"), (1, "z"), (3, "a"), (2, "m"))
     insertion_sort(ts[..])
     print("{}\n", ts)

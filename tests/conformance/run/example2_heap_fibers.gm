@@ -1,7 +1,7 @@
 // Cooperative tasks on heap-allocated fiber stacks, with the scheduler written as a handler declaration that allocates; tasks use Alloc themselves.
 Task :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(arg: ^Job) -> never \ {Task, Alloc, Out}, arg: ^Job)
+    spawn: ctl(entry: ^fn(arg: ^Job) -> never needs Task + Alloc + Out, arg: ^Job)
     exit: ctl() -> never
 }
 
@@ -20,7 +20,7 @@ pop_front :: fn(s: ^Sched) -> cont(()) {
     return k
 }
 
-handler Task for ^Sched \ {Alloc, Out} {
+handler Task for ^Sched needs Alloc + Out {
     yield_now(self, k) => {
         self.ready.push(k) else trap("oom")
         r := pop_front(self)
@@ -42,7 +42,7 @@ handler Task for ^Sched \ {Alloc, Out} {
     }
 }
 
-fib_task :: fn(j: ^Job) -> never \ {Task, Alloc, Out} {
+fib_task :: fn(j: ^Job) -> never needs Task + Alloc + Out {
     scratch := make(u64, 3) else trap("oom")
     defer free(scratch)
     scratch[0] = 0
@@ -58,7 +58,7 @@ fib_task :: fn(j: ^Job) -> never \ {Task, Alloc, Out} {
     exit()
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     jobs := [_]Job(Job(id: 1, n: 10), Job(id: 2, n: 50), Job(id: 3, n: 20))
     s := Sched(ready: list(cont(())), stacks: list([]u8))
     defer s.ready.deinit()

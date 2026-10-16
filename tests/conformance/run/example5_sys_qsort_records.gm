@@ -10,10 +10,10 @@ Rec :: struct {
 }
 
 libc :: foreign "c" {
-    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) \ {Sys}
-    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) -> ?rawptr \ {Sys}
-    memcpy :: fn(d: rawptr, s: rawptr, n: usize) -> rawptr \ {}
-    memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int \ {}
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int needs Sys) needs Sys
+    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int needs Sys) -> ?rawptr needs Sys
+    memcpy :: fn(d: rawptr, s: rawptr, n: usize) -> rawptr needs not
+    memcmp :: fn(a: rawptr, b: rawptr, n: usize) -> c.c_int needs not
 }
 
 #global compares: u32 = 0
@@ -27,13 +27,13 @@ order :: fn(a: Rec, b: Rec) -> c.c_int {
     return 0
 }
 
-cmp_rec :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+cmp_rec :: fn(a, b: rawptr) -> c.c_int needs Sys {
     compares += 1
     return order(a.cast(^const Rec)^, b.cast(^const Rec)^)
 }
 
 // The same comparison reading fields through pointers: no copies at all.
-cmp_rec_ptr :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+cmp_rec_ptr :: fn(a, b: rawptr) -> c.c_int needs Sys {
     x := a.cast(^const Rec)
     y := b.cast(^const Rec)
     compares += 1
@@ -42,7 +42,7 @@ cmp_rec_ptr :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
 }
 
 // Key-only comparison for bsearch: the search key is a whole record.
-cmp_key :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+cmp_key :: fn(a, b: rawptr) -> c.c_int needs Sys {
     x := a.cast(^const Rec)^
     y := b.cast(^const Rec)^
     return if x.key < y.key { -1 } else if x.key > y.key { 1 } else { 0 }
@@ -61,7 +61,7 @@ describe :: fn(r: Rec) -> u64 {
 
 N :: 14
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     recs: [N]Rec = ---
     for i in 0..N { recs[i] = make_rec(i.trunc(u32)) }
     orig := recs

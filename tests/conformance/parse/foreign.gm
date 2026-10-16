@@ -5,10 +5,10 @@ libc :: foreign "c" {
     puts   :: fn(s: cstring) -> c_int
     qsort  :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c_int)
     printf :: fn(fmt: cstring, ...) -> c_int
-    strlen :: fn(s: cstring) -> usize \ {}          // trusted: performs no effects
+    strlen :: fn(s: cstring) -> usize needs not          // trusted: performs no effects
     #global errno: c_int                            // a foreign variable
     #link_name("write")
-    sys_write :: fn(fd: c_int, buf: rawptr, n: usize) -> isize \ {Sys}
+    sys_write :: fn(fd: c_int, buf: rawptr, n: usize) -> isize needs Sys
     #callconv(.Stdcall)
     win_call :: fn(x: u32) -> u32
     getenv :: fn(name: cstring) -> ?cstring
@@ -16,7 +16,7 @@ libc :: foreign "c" {
     #global tls_slot: u32
 }
 
-m :: foreign "m" { sqrt :: fn(x: f64) -> f64 \ {} }
+m :: foreign "m" { sqrt :: fn(x: f64) -> f64 needs not }
 
 #export("gm_checksum")
 checksum :: fn(data: [^]const u8, len: usize) -> u32 {
@@ -24,7 +24,7 @@ checksum :: fn(data: [^]const u8, len: usize) -> u32 {
 }
 
 #export("gm_load")
-load :: fn(path: cstring) -> c_int \ {Sys} {
+load :: fn(path: cstring) -> c_int needs Sys {
     with heap_allocator(), stderr_log(), real_fs() {
         cfg := load_config(path_from(path)) else e => { last_error = code(e); return -1 }
         apply(cfg)

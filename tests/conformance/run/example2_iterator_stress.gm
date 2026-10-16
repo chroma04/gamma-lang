@@ -1,22 +1,22 @@
 // Iterator specialization stress: recursive iterators, iterators of iterators, break values, defers in iterators, second-class iterator arguments, nested labeled loops.
-count :: fn(n: u32) \ {Yield(u32)} {
+count :: fn(n: u32) needs Yield(u32) {
     for i in 0..n { yield(i) }
 }
 
-pairs :: fn(n: u32) \ {Yield((u32, u32))} {
+pairs :: fn(n: u32) needs Yield((u32, u32)) {
     for i in count(n) {
         for j in count(i) { yield((i, j)) }
     }
 }
 
-tri :: fn(d: u32) \ {Yield(u32)} {
+tri :: fn(d: u32) needs Yield(u32) {
     if d is 0 { yield(0); return }
     yield(d)
     tri(d - 1)
     yield(d)
 }
 
-search :: fn(n: u32, target: u32) -> ?u32 \ {Yield(u32), Out} {
+search :: fn(n: u32, target: u32) -> ?u32 needs Yield(u32) + Out {
     defer print("(search done)\n")
     for x in count(n) {
         yield(x)
@@ -29,12 +29,12 @@ run_with :: fn(body: fn(u32)) {
     for i in count(3) { body(i) }
 }
 
-twice :: fn(f: fn() \ {Yield(u32)}) \ {Yield(u32)} {
+twice :: fn(f: fn() needs Yield(u32)) needs Yield(u32) {
     for x in f() { yield(x) }
     for x in f() { yield(x + 100) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     acc := 0
     for i in count(4) { acc = acc * 10 + i.trunc(i32) }
     print("{}\n", acc)
@@ -52,7 +52,7 @@ main :: fn() \ {Out} {
     total := 0
     run_with(fn(i) { total += i.trunc(i32) * 2 })
     print("{}\n", total)
-    cc :: fn() \ {Yield(u32)} { count(2) }
+    cc :: fn() needs Yield(u32) { count(2) }
     for x in twice(cc) { print("{} ", x) }
     print("\n")
     // same iterator, two different loop bodies in one function

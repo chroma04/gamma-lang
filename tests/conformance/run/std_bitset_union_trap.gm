@@ -2,7 +2,7 @@
 // union_with traps when the other set has a member beyond the receiver's capacity, also when
 // both capacities lie in the same 64-bit word.
 bs :: import "std/collections/bitset"
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     a := try bs.bitset(10)
     defer a.deinit()
     b := try bs.bitset(60)

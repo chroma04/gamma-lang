@@ -107,7 +107,7 @@ handler Exec for Config {
     }
 }
 
-run_effect :: fn(start: Vm, code: []const Instr) -> Vm \ {Exec} {
+run_effect :: fn(start: Vm, code: []const Instr) -> Vm needs Exec {
     vm := start
     while not vm.halted {
         vm = exec(vm, code[usize(vm.pc)])
@@ -138,7 +138,7 @@ program :: [_]Instr(
 Gen :: effect { give: ctl(v: i64) }
 
 // A fiber runs the machine and hands every output value to the driver, passing the VM by value to the driver too.
-run_gen :: fn(start: Vm, code: []const Instr) -> Vm \ {Gen} {
+run_gen :: fn(start: Vm, code: []const Instr) -> Vm needs Gen {
     vm := start
     while not vm.halted {
         ins := code[usize(vm.pc)]
@@ -148,7 +148,7 @@ run_gen :: fn(start: Vm, code: []const Instr) -> Vm \ {Gen} {
     return vm
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     code := program[..]
     a := run(fresh(), code)
     print("switch: out {} steps {} sum {}\n", a.out[0], a.steps, a.regs[2])

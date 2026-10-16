@@ -227,8 +227,8 @@ Function types
 
 a: fn(i32, u8) -> bool = f
 b: ^fn(a: i32) -> i32 = f
-c: fn() \ {Out} = f
-d: fn(T) -> ?T \ {Alloc, Yield(T)} = f
+c: fn() needs Out = f
+d: fn(T) -> ?T needs Alloc + Yield(T) = f
 
 --------------------------------------------------------------------------------
 
@@ -640,10 +640,10 @@ Yield :: effect(T: type) {
 Effect sets
 ================================================================================
 
-f :: fn() \ {}
-g :: fn() -> i32 \ {Out, Err}
-h :: fn() \ {Yield(T), m.Net, Sched(\ {Out})}
-i :: fn(it: fn() \ {Yield(T), ..E}) \ {..E}
+f :: fn() needs not
+g :: fn() -> i32 needs Out + Err
+h :: fn() needs Yield(T) + m.Net + Sched(Out)
+i :: fn(it: fn() needs Yield(T) + E) needs E
 
 --------------------------------------------------------------------------------
 
@@ -676,8 +676,7 @@ i :: fn(it: fn() \ {Yield(T), ..E}) \ {..E}
         (generic_type
           (identifier)
           (arguments
-            (effect_set
-              (identifier)))))))
+            (identifier))))))
   (const_declaration
     (identifier)
     (function_type
@@ -691,8 +690,6 @@ i :: fn(it: fn() \ {Yield(T), ..E}) \ {..E}
                 (identifier)
                 (arguments
                   (identifier)))
-              (effect_spread
-                (identifier))))))
+              (identifier)))))
       (effect_set
-        (effect_spread
-          (identifier))))))
+        (identifier)))))
