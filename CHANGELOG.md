@@ -39,6 +39,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- Very long functions, such as a chain of thousands of checked operations, took hours
+  to compile with Clang 19 and later (Apple clang 17 and later, the compiler of current
+  macOS): a 50,000-link chain now takes about 35 seconds with Clang 20.
 - Very long expression chains compile much faster with gcc and Clang. A 100,000-term
   sum took gcc over 3 minutes and Clang many minutes; both now take under 30 seconds.
   A 100,000-link method chain took gcc 8 s and Clang 13 s, and now takes 4 s and 9 s.
