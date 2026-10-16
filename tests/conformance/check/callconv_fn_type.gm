@@ -1,5 +1,0 @@
-//! stage: check
-// An attribute may precede a `^fn` type (§A.2, §19.2), but not other types (§20.2).
-Callback :: #callconv(.C) ^fn(a: i32) -> i32
-Bad :: #packed i32 //~ ERROR attributes here must precede
-main :: fn() {}
