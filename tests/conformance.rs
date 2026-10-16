@@ -219,12 +219,15 @@ struct Reported {
 /// Standard error with the standard library's directory, which differs between
 /// checkouts, written as `<std>` and the rest of such a path with `/` separators.
 fn normalize_stderr(stderr: &str) -> String {
-    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std").display().to_string();
+    let native = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std").display().to_string();
+    // On Windows the path may be printed with either separator.
+    let forward = native.replace('\\', "/");
     let mut out = String::with_capacity(stderr.len());
     for line in stderr.split_inclusive('\n') {
-        match line.find(&std_dir) {
-            Some(i) => {
-                let rest = &line[i + std_dir.len()..];
+        let found = [&native, &forward].into_iter().find_map(|d| line.find(d.as_str()).map(|i| (i, d.len())));
+        match found {
+            Some((i, len)) => {
+                let rest = &line[i + len..];
                 let end = rest.find(':').unwrap_or(rest.len());
                 out.push_str(&line[..i]);
                 out.push_str("<std>");
