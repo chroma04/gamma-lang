@@ -288,6 +288,29 @@ parser is up to date (`npx tree-sitter generate`) and that it parses the standar
 every conformance test the compiler accepts. Change the grammars along with the language's syntax; see
 `editors/README.md`.
 
+## Fuzzing
+
+`fuzz/` is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) crate (outside the
+main workspace, so `cargo build` and `cargo test` never compile it). Its targets feed
+arbitrary text to the front end: `parse` lexes and parses it, and `fmt` formats
+text the parser accepts and checks that the result formats to itself. Diagnostics for
+invalid input are expected; panics, stack overflows, hangs and quadratic blowups are bugs.
+
+```sh
+rustup toolchain install nightly --profile minimal
+cargo install cargo-fuzz
+fuzz/seed.sh                      # corpus from lib/, examples/ and tests/conformance/
+cargo +nightly fuzz run parse -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
+cargo +nightly fuzz run fmt -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
+```
+
+Crashing inputs are saved in `fuzz/artifacts/<target>/`; `fuzz/corpus/` and
+`fuzz/artifacts/` are not checked in. To turn a crash into a regression test, shrink it
+with `cargo +nightly fuzz tmin <target> <artifact>`, fix the bug, and add the small input
+as a conformance test (for example `tests/conformance/parse/<name>.gm` with
+`//! stage: parse` and `//~ ERROR` annotations) or a unit test in the module concerned.
+Fuzzing is not part of CI.
+
 ## The specification
 
 `gamma-spec.md` is the definition of the language. If an implementation question

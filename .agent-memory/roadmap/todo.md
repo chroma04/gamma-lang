@@ -16,9 +16,11 @@ nvim-treesitter submissions.
   Its small papercuts were fixed in s19; the rest: bugs-open.md "Dogfood papercuts".
 
 ## P2 — worth doing early
-(s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md.)
-- Fuzzing: cargo-fuzz on the parser; random-program differential (interp vs gcc vs clang);
-  tree-sitter as a second parser.
+(s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
+fuzz targets.)
+- Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
+  parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
+  differential (interp vs gcc vs clang), tree-sitter as a second parser.
 - bugs-open #48–49 (gcc on huge functions / deep expressions).
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.

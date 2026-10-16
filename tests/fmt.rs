@@ -96,6 +96,16 @@ fn check(input: &str, expected: &str) {
 }
 
 #[test]
+fn dot_after_a_space_at_line_start_stays_apart() {
+    // `. p` is not a continuation line; gluing it to `p` would turn it into one (§2.8) and
+    // change the indentation the second time around.
+    check(
+        "f :: fn() {\n    if b {\n.        p.q = 1\n    }\n}\n",
+        "f :: fn() {\n    if b {\n        . p.q = 1\n    }\n}\n",
+    );
+}
+
+#[test]
 fn binary_operators_get_spaces() {
     check("x:=a+b*c\n", "x := a + b * c\n");
     check("x   =   a<<2|b\n", "x = a << 2 | b\n");

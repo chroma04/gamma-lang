@@ -15,6 +15,8 @@ Versions and what each kind of change means are described in
 - `SECURITY.md` and GitHub issue forms for bug reports and language proposals.
 - `Cargo.toml` metadata: description, license, repository and the minimum Rust
   version (1.95), which CI now checks.
+- `fuzz/`: cargo-fuzz targets for the lexer, the parser and the formatter (see
+  `docs/contributing.md`).
 
 ### Changed
 
@@ -33,6 +35,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma fmt` glued a line-initial `. name` after a `{` into `.name`, which changed the
+  indentation when the output was formatted again; the space is now kept.
 - The `std/net` documentation called `connect` and `close_socket` without `Net.`.
 - `r is !.V` with a variant `V` that has a payload was rejected; it now tests the
   variant, as `u is .V` does (§7.6).
