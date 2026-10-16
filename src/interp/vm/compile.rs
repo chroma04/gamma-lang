@@ -1873,6 +1873,20 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     }
                     return Ok(dst);
                 }
+                if matches!(op, Builtin::Rotl | Builtin::Rotr)
+                    && args.len() == 2
+                    && let (Some(k), Some(bk)) = (self.small(args[0].ty), self.small(args[1].ty))
+                {
+                    let ops = self.operands(&[&args[0], &args[1]], span)?;
+                    let dst = self.dst(e, want);
+                    let (Arg::Data { reg: a, .. }, Arg::Data { reg: b, .. }, Arg::Data { reg, .. }) =
+                        (ops[0], ops[1], dst)
+                    else {
+                        return Err(unsupported!());
+                    };
+                    self.emit(Op::RotI { left: op == Builtin::Rotl, dst: reg, a, b, k, bk }, span);
+                    return Ok(dst);
+                }
                 let refs: Vec<&'a Expr> = args.iter().collect();
                 let list = self.operands(&refs, span)?;
                 if list.iter().any(|a| matches!(a, Arg::Val(_))) {

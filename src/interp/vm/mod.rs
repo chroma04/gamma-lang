@@ -511,6 +511,16 @@ pub enum Op {
         a: Reg,
         k: IntK,
     },
+    /// `@rotl(a, b)` (`left`) or `@rotr(a, b)` of a small integer of kind `k` by an
+    /// amount of kind `bk`.
+    RotI {
+        left: bool,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        k: IntK,
+        bk: IntK,
+    },
     /// `+ - * /` of `f32` or `f64` values.
     BinF {
         op: FArith,
@@ -958,6 +968,7 @@ impl Code<'_> {
                 | Op::MulI { dst, a, b, .. }
                 | Op::CmpI { dst, a, b, .. }
                 | Op::BinF { dst, a, b, .. }
+                | Op::RotI { dst, a, b, .. }
                 | Op::CmpF { dst, a, b, .. }
                 | Op::AndW { dst, a, b }
                 | Op::OrW { dst, a, b }

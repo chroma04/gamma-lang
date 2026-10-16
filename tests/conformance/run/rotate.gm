@@ -26,4 +26,21 @@ main :: fn() needs Out {
     print("{} {} {}\n", @bswap(w24), @bswap(s24), @bswap(w48))
     n: u32 = 13
     print("{}\n", @rotl(b, n) is @rotr(b, 32 - n))
+    // Every amount up to past twice the width, with amounts of other types.
+    x8: i8 = -77
+    x7: u7 = 0b101_1001
+    x32: i32 = -0x1234_5679
+    x64: u64 = 0xdead_beef_0bad_f00d
+    h8: i64 = 0
+    h7: u64 = 0
+    h32: i64 = 0
+    h64: u64 = 0
+    for k in 0..140 {
+        s: u8 = k.trunc(u8)
+        h8 = h8 *% 31 +% i64(@rotl(x8, s)) +% i64(@rotr(x8, k))
+        h7 = h7 *% 31 +% u64(@rotl(x7, k)) +% u64(@rotr(x7, s))
+        h32 = h32 *% 31 +% i64(@rotl(x32, k)) +% i64(@rotr(x32, s))
+        h64 = h64 *% 31 +% @rotl(x64, s) +% @rotr(x64, k)
+    }
+    print("{} {} {} {}\n", h8, h7, h32, h64)
 }

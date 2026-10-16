@@ -67,3 +67,5 @@
   1.00 s → 0.12 s. Register words hold target-order bytes: BE swaps (fval/fput in exec.rs);
   checked with `gamma run --target=s390x-linux-gnu` (interp emulates BE).
 - life.gm profile: AddI/BinI/IndexAddr/Load/BrI mixes — no single dominant slow op left.
+- RotI for @rotl/@rotr on small ints (sha256sum: Builtin was 11.6% of ops): 2 MB 2.88 → 1.54 s.
+  Other bit intrinsics (clz/ctz/popcount/bswap) stay Builtin: 2 uses in lib/examples.

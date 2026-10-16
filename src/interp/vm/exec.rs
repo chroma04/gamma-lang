@@ -1101,6 +1101,17 @@ impl<'a> Machine<'a> {
                         jump!(t);
                     }
                 }
+                Op::RotI { left, dst, a, b, k, bk } => {
+                    // The amount is taken modulo the width; a negative one counts as 0.
+                    let n = k.bits as u64;
+                    let mask = u64::MAX >> (64 - n);
+                    let x = ival::<LE>(k, r!(a)) as u64 & mask;
+                    let s = ival::<LE>(bk, r!(b));
+                    let s = if s < 0 { 0 } else { (s as u128 % n as u128) as u64 };
+                    let s = if left { s } else { (n - s) % n };
+                    let v = if s == 0 { x } else { ((x << s) | (x >> (n - s))) & mask };
+                    w!(dst, iput::<LE>(k, k.si().value(v)));
+                }
                 Op::BinF { op, dst, a, b, k } => w!(dst, f_arith::<LE>(op, k, r!(a), r!(b))),
                 Op::CmpF { cmp, dst, a, b, k } => w!(dst, f_cmp::<LE>(cmp, k, r!(a), r!(b)) as u64),
                 Op::BrF { cmp, a, b, k, t } => {

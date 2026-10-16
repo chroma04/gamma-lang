@@ -36,7 +36,8 @@ Versions and what each kind of change means are described in
 ### Changed
 
 - Faster `f32` and `f64` code on the interpreter: arithmetic, comparisons and branches
-  on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster).
+  on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster),
+  and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
 - The C back end passes a large argument read from an element of an array, slice or
   many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its
