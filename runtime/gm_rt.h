@@ -89,6 +89,20 @@
 #define GM_HUGE_FN
 #endif
 
+/* GM_LONG_FN: marks a generated function with a very long body (thousands of operations,
+ * such as a long chain). From LLVM 19 on, Clang's early common-subexpression pass asks for
+ * the known bits of values through the selects and checks of such a body at a cost that
+ * grows with its length, so the whole function takes time that grows about with the cube
+ * of its length (minutes for ten thousand links, hours for fifty thousand). Such a function
+ * is compiled without optimization there. Apple numbers its Clang differently: Apple clang
+ * 17 is the first based on LLVM 19. */
+#if defined(__clang__) && ((defined(__apple_build_version__) && __clang_major__ >= 17) || \
+                           (!defined(__apple_build_version__) && __clang_major__ >= 19))
+#define GM_LONG_FN __attribute__((optnone, noinline))
+#else
+#define GM_LONG_FN
+#endif
+
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
 /* The assembler name of C symbol `s` (macOS prefixes an underscore). */

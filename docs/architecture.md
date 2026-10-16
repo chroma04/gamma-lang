@@ -529,7 +529,13 @@ early exits are unchanged. Chains of large values (structs, arrays) and chains t
 other operations keep one scope. A generated function of more than 20,000 temporaries
 is marked `GM_HUGE_FN`, which turns off those two gcc passes for it, and `-w` is
 accompanied by `-Wno-free-nonheap-object` because gcc otherwise still runs its
-access-warning pass over such functions.
+access-warning pass over such functions. Clang from LLVM 19 on (Apple clang 17 on)
+has a pass of its own that is superlinear in such a body: EarlyCSE asks for the known
+bits of values through the selects and checks of every link, and a chain of 10,000
+checked operations takes minutes, 50,000 hours. A generated function of more than
+2,000 temporaries, several times more than the largest functions of ordinary programs,
+is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optnone`)
+on those versions of Clang and means nothing elsewhere.
 
 How the runtime is linked depends on the build mode:
 

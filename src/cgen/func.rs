@@ -165,6 +165,12 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
 /// a chain of several thousand operations to reach.
 const HUGE_FN_NAMES: u32 = 20_000;
 
+/// The number of temporaries and labels above which a function is marked `GM_LONG_FN`,
+/// which recent versions of Clang compile without optimization (see `runtime/gm_rt.h`).
+/// The largest functions of ordinary programs have a few hundred; a long chain of
+/// operations has about one per link.
+const LONG_FN_NAMES: u32 = 2_000;
+
 fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: Option<Spec>) -> CResult<()> {
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
@@ -329,6 +335,12 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     let mut out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
     if fg.counter > HUGE_FN_NAMES {
         out = out.replacen("static __attribute__", "static GM_HUGE_FN __attribute__", 1);
+    }
+    // `optnone` conflicts with `always_inline` (an `#inline` hint, which such a function
+    // will hardly carry).
+    let header = out.split('\n').next().unwrap_or("");
+    if fg.counter > LONG_FN_NAMES && header.starts_with("static ") && !header.contains("always_inline") {
+        out.insert_str("static ".len(), "GM_LONG_FN ");
     }
     g.bodies.push_str(&out);
     Ok(())
