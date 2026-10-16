@@ -55,13 +55,14 @@ change to the specification names the section it touches. When a release is cut,
 ## Cutting a release
 
 1. Move the `Unreleased` entries of `CHANGELOG.md` under a heading for the new version
-   and date, and set `version` in `Cargo.toml` to match (then `cargo build` to update
-   `Cargo.lock`).
+   and date (`## 0.2.0 - 2027-01-31`), and set `version` in `Cargo.toml` to match (then
+   `cargo build` to update `Cargo.lock`). That section becomes the release notes.
 2. Run the Release workflow by hand on that commit (Actions → Release → Run workflow).
    It builds and smoke-tests the archives for every platform without publishing them.
 3. Merge, then tag the merge commit `vX.Y.Z` and push the tag. The workflow checks that
    the tag matches `Cargo.toml`, builds the archives again and publishes the release with
-   `install.sh`, `install.ps1` and `SHA256SUMS` attached.
+   the version's section of `CHANGELOG.md` as its notes and `install.sh`, `install.ps1`
+   and `SHA256SUMS` attached.
 4. Check the installer on a clean Linux and macOS machine:
    `curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh`,
    and on Windows `irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex`,
