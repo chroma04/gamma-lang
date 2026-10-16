@@ -136,6 +136,35 @@ jobs:
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
 
+  difftest:
+    # Differential testing (tools/difftest): random well-typed programs must behave the same
+    # on the interpreter and on the C back end compiled by gcc and by clang. The first batch
+    # of seeds is fixed, so a failure there reproduces anywhere; the second moves with the run
+    # number, so successive runs cover new programs. A failing seed is printed with the three
+    # outputs and can be inspected with `difftest --print SEED`.
+    name: Differential tests (gcc, clang)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build gamma and difftest
+        run: |
+          cargo build --release
+          cargo build --release --manifest-path tools/difftest/Cargo.toml --target-dir target
+      - name: Compilers
+        run: |
+          gcc --version | head -n 1
+          clang --version | head -n 1
+      - name: Fixed seeds
+        run: target/release/difftest --start 0 --count 100 --cc gcc,clang
+      - name: Rotating seeds
+        run: |
+          start=$((1000 + (GITHUB_RUN_NUMBER % 500) * 200))
+          echo "seeds $start..$((start + 200))"
+          target/release/difftest --start "$start" --count 200 --cc gcc,clang
+
   benchmarks:
     # Runs `gamma bench bench/` with the compiler of the pull request and with the base
     # branch's, and prints the ratios in the job summary. Informational: timing never fails it.

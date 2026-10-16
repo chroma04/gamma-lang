@@ -332,6 +332,33 @@ and `for`, local variables and assignment, functions and bounded recursion, stru
 arrays, unions and `match`, optionals and results with `try`, and `print`. Checked
 operations may trap; the back ends must then trap in the same way.
 
+Four optional areas are switched on per program by the seed (so some programs stay small and
+focused), and the generator keeps them well typed and terminating:
+
+- **Generics**: generic functions with inferred or written type arguments instantiated at
+  many integer types (`g_pick(T: type, a: T, b: T, c: bool)`, constrained `Ord` and `Int`
+  functions, a generic function that takes a closure capturing variables) and the generic
+  struct `Pair(T)` with functions taking pointers to it.
+- **Strings**: literals (empty, UTF-8, escapes), `.len`, `first`, `get`, `index_of`,
+  in-bounds slicing, comparison and `is`, `starts_with`, `std/str` (`find`, `count`, `trim`,
+  `parse_int`, ...), and strings built in a growable buffer with `write` templates (padding,
+  alignment), also in loops, which needs the `Alloc` effect. A string that points into such a
+  buffer is never reassigned or returned, since its scope frees the buffer.
+- **Effects and handlers**: a user-defined effect `Ev` with a `fn` operation, an `esc`
+  operation (the handler prints and breaks out of the `with` with a value) and a counter
+  captured by the handler, and an effect `Co` with `ctl` operations whose handler resumes
+  with values or cancels the suspended code and leaves the `with`, running on a fiber stack
+  (`with h on stack { ... }`). Functions declare `needs Ev` / `needs Co`, and are only called
+  where the effect is available or after `main` installs handlers; `with` blocks nest, so
+  exits cross fibers and handlers perform `Ev` handled further out.
+- **Fibers**: producer and consumer tasks that talk through `std/fiber/channel` under the
+  cooperative scheduler of `std/fiber` (`fiber.spawn`, `fiber.yield_now`, `fiber.join`).
+  Scheduling is round-robin and uses no clock, so the output is deterministic.
+
+When a trap happens inside a fiber, the backtrace is compared only down to the first frame
+of the `std/fiber` library: the interpreter and the C back end name the library's entry
+frames differently.
+
 Each program runs with the interpreter (`gamma run`) and with the C back end
 (`gamma run --backend=c`) compiled by every C compiler listed in `--cc` (default: gcc and
 clang; compilers that are not installed are skipped). Standard output, standard error
@@ -354,7 +381,12 @@ generator should never produce one. `--mode=checked` tests Checked builds, `--ga
 (or `$GAMMA`) selects the executable. To turn a disagreement into a regression test, decide
 from the specification which side is wrong, fix it, and add the reduced program as
 `tests/conformance/run/<name>.gm`, which runs on both back ends. Like fuzzing,
-differential testing is not part of CI.
+differential testing is not part of the main test job, but CI runs it in its own job
+("Differential tests (gcc, clang)", Ubuntu only): it builds `gamma` in release mode and
+`difftest`, runs the fixed seeds 0..100 (reproducible anywhere), and then 200 seeds starting
+at a point that moves with the run number, so successive runs cover new programs. Both need
+gcc and clang. A failure prints the seed and the three outputs; `difftest --print SEED`
+shows the program and `--reduce` shrinks it. The job takes a few minutes.
 
 ## The specification
 
