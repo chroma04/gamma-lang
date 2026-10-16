@@ -59,7 +59,7 @@
   ])
 
 (const_declaration
-  name: (identifier) @namespace
+  name: (identifier) @type @namespace
   value: [
     (import_expression)
     (foreign_block)
@@ -69,10 +69,10 @@
   name: (identifier) @function)
 
 (operation
-  name: (identifier) @function.method)
+  name: (identifier) @function)
 
 (handler_clause
-  name: (identifier) @function.method)
+  name: (identifier) @function)
 
 (handler_declaration
   effect: (identifier) @type)
@@ -106,7 +106,7 @@
 
 (call_expression
   function: (field_expression
-    field: (identifier) @function.method))
+    field: (identifier) @function))
 
 (call_expression
   function: (result_unwrap_expression
@@ -133,7 +133,7 @@
 (label
   (identifier) @label)
 
-(intrinsic_name) @function.builtin
+(intrinsic_name) @function @function.builtin
 (attribute_name) @attribute
 
 ; Keywords
