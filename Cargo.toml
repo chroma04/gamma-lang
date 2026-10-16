@@ -2,6 +2,14 @@
 name = "gamma"
 version = "0.1.0"
 edition = "2024"
+# The oldest toolchain that builds the crate (`if let` guards); CI checks it.
+rust-version = "1.95"
+description = "Compiler, interpreter and tools for the Gamma programming language"
+license = "MIT"
+repository = "https://github.com/chroma04/gamma-lang"
+readme = "README.md"
+keywords = ["compiler", "interpreter", "programming-language", "gamma"]
+categories = ["compilers", "development-tools"]
 
 [dependencies]
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }

@@ -589,7 +589,7 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 /// The methods of arrays and slices implemented by `core/slice`.
-const SLICE_FNS: &[&str] = &[
+pub(super) const SLICE_FNS: &[&str] = &[
     "swap",
     "fill",
     "copy_from",

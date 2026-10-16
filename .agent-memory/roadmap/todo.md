@@ -13,17 +13,14 @@ nvim-treesitter submissions.
 
 ## P1 — should land before the tag
 - Done in s18 (PR #41): `examples/` (19 programs, tests/examples.rs) = the dogfood pass.
-  Leftover papercuts from it: see bugs-open.md "Dogfood papercuts".
+  Its small papercuts were fixed in s19; the rest: bugs-open.md "Dogfood papercuts".
 
 ## P2 — worth doing early
+(s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md.)
 - Fuzzing: cargo-fuzz on the parser; random-program differential (interp vs gcc vs clang);
   tree-sitter as a second parser.
-- Tree-sitter scanner: a block comment containing a line break must count as a newline
-  (§2.8); scanner.c only handles newlines it sees directly (not verified by running).
 - bugs-open #48–49 (gcc on huge functions / deep expressions).
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
-- Cargo.toml metadata: license (MIT), description, repository, rust-version.
-- GitHub issue templates and SECURITY.md (.github has only workflows).
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (none shipped), Emacs untested.
 - Library tests runnable from a dependency root (bugs-open #30).

@@ -1,5 +1,5 @@
 # Open implementation bugs, gaps and wishes (current; delete entries when fixed)
-Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fixed in s17).
+Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fixed in s17; s19 fixed the small dogfood papercuts).
 
 ## Performance
 7. C big values: gm_out results + in-place construction + borrowed params of pure fns
@@ -26,16 +26,7 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
 23. std channels/queue/generator; lstat on symlinks untested; reflection.
 30. Library tests runnable from a dependency root (only same-package modules run today).
-- Name-check gap: field-access aliases (`T :: m.U`) are not recognized as types by the
-  locals-not-named-like-types rule (decisions/024).
 
 ## Dogfood papercuts (s18 examples; unscheduled)
-- Matching a result with `.Ok/.Err` patterns: "`.Err` matches a union variant, but this
-  is u32" — say that results are matched with `!e` / `else e =>`, not variants.
-- `str.starts_with` (module lacks it) could suggest the builtin method `s.starts_with`.
-- `r is !.Variant` for a payload variant needs `(_)`; payload-less `is` test would help.
-- `enumerate(bytes(s))` gives two misleading errors ("cannot infer T", "is an iterator").
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).
-- std wishes: std/fiber channel + sleep-aware scheduler (Clock.sleep blocks the thread);
-  fs.ReadError and io.ReadError are separate identical unions; `thread.defaults` takes a
-  closure typed with 8 effects (undocumented that fewer works).
+- std wish: std/fiber channel + sleep-aware scheduler (Clock.sleep blocks the thread).

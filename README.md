@@ -100,7 +100,7 @@ interpreter (`gamma run`) needs none.
 
 ## Building from source
 
-You need a recent stable Rust toolchain.
+You need Rust 1.95 or newer.
 
 ```sh
 cargo build --release

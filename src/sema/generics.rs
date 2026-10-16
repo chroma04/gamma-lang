@@ -1001,6 +1001,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!unbound || partial).then_some(expect));
                 self.temp_ref_arg = false;
+                if lit.is_none() && self.iterator_call_as_value(e, &v, p.ty) {
+                    return error_expr(span);
+                }
                 let v = self.array_arg_as_slice(v, p.ty);
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));

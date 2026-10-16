@@ -456,3 +456,47 @@ f :: fn() {
           (block
             (return_expression)))
         (return_expression)))))
+
+================================================================================
+A block comment with a line break ends a statement
+================================================================================
+
+f :: fn() {
+    a := 1 /* one
+    two */ b := 2
+    c := 3 /* same line */
+    d := 4 /* x
+    */
+    e := s /* y
+    */ .len
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (block_comment)
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (block_comment)
+        (short_declaration
+          (identifier)
+          (integer_literal))
+        (block_comment)
+        (short_declaration
+          (identifier)
+          (field_expression
+            (identifier)
+            (block_comment)
+            (identifier)))))))

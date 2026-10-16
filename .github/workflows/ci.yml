@@ -36,6 +36,17 @@ jobs:
           GAMMA_TEST_C: "0"
         run: cargo test --test conformance --test examples
 
+  msrv:
+    # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --all-targets
+
   windows:
     # x86_64 Windows: the compiler is built with the MSVC toolchain; the C back end uses
     # MinGW-w64 gcc (MSVC's cl.exe is not supported), here from MSYS2.

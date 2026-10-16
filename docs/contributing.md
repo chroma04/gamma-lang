@@ -1,8 +1,12 @@
 # Contributing
 
+Bugs and proposals go in GitHub issues (the issue forms ask for what helps); security
+problems are reported privately, as [`SECURITY.md`](../SECURITY.md) describes.
+
 ## Building
 
-The compiler is a single Rust crate. With a stable Rust toolchain:
+The compiler is a single Rust crate. With a stable Rust toolchain (1.95 or newer, the
+`rust-version` in `Cargo.toml`):
 
 ```sh
 cargo build            # debug build (lightly optimized)

@@ -95,18 +95,16 @@ A handler for `Out` (and `Err`) that appends to the list `list`, so any code tha
 prints can build a growable string. The first allocation failure is kept in `err` and
 later output is dropped.
 
-## Unions
+## Type aliases
 
 ### `ReadError`
 
 ```gamma
-ReadError :: union {
-    Io: IoError
-    Alloc: AllocError
-}
+ReadError :: fs.ReadError
 ```
 
-Why `read_all` failed.
+Why `read_all` failed: the same type as `fs.ReadError`, so one error path can
+handle both.
 
 ## Handlers
 

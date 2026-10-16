@@ -9,7 +9,7 @@ The generated parser (`src/parser.c`) is committed, so using the grammar does no
 | Path | Contents |
 | --- | --- |
 | `grammar.js` | The grammar. |
-| `src/scanner.c` | The external scanner (newlines, nested block comments, raw strings, two-word operators). |
+| `src/scanner.c` | The external scanner (newlines, including the line break of a multi-line block comment; nested block comments, raw strings, two-word operators). |
 | `src/parser.c`, `src/grammar.json`, `src/node-types.json`, `src/tree_sitter/` | Generated. Do not edit. |
 | `queries/` | `highlights.scm`, `locals.scm`, `indents.scm`, `folds.scm`, `injections.scm`. |
 | `test/corpus/` | Parse tree tests, one file per topic. |
@@ -47,5 +47,4 @@ The grammar is permissive. It accepts some programs the compiler rejects and it 
 - `a, b: T` in a parameter list gives two `parameter` nodes. Only the second has a type.
 - In `break x`, the grammar takes `x` as the value. Whether it is a label or a value depends on the enclosing loops, which a grammar cannot see. With two operands, as in `break outer x`, the first one is the label.
 - `E!T` in an expression position is an `error_union_expression`. A `!` followed by something that cannot be a type is an unwrap. Where both fit, such as `x!(a, b)`, the unwrap wins.
-- A block comment that contains a line break does not count as a line break.
 - `==` and `!=` are not tokens. They produce `ERROR` nodes, as they are errors in the compiler.

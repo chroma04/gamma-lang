@@ -21,7 +21,7 @@ pub DirEntry :: core.DirEntry
 /// Where `Fs.seek` counts from.
 pub SeekFrom :: core.SeekFrom
 
-/// Why reading a whole file failed.
+/// Why reading a whole file failed (`io.ReadError` is the same type).
 pub ReadError :: union {
     Io: IoError
     Alloc: AllocError

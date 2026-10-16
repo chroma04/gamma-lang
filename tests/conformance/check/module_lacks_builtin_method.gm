@@ -1,0 +1,10 @@
+//! stage: check
+// `str.starts_with(s, p)` for the built-in method `s.starts_with(p)` (§21.3): the
+// error says it is a method of strings and slices.
+str :: import "std/str"
+
+main :: fn() {
+    s := "hello"
+    _ = str.starts_with(s, "he") //~ ERROR the module `str` has no declaration `starts_with` //~ NOTE write `s.starts_with(…)`
+    _ = str.no_such_thing //~ ERROR has no declaration `no_such_thing`
+}

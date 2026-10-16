@@ -1,0 +1,24 @@
+// `r is !.V` tests for the error variant `V` whether or not it has a payload, like
+// `u is .V` does for a union (§7.6).
+ParseError :: union {
+    BadDigit: usize
+    Empty
+}
+
+parse :: fn(s: string) -> ParseError!u32 {
+    if s.len is 0 { return !.Empty }
+    n: u32 = 0
+    for i, c in enumerate(s) {
+        if c not in '0'..='9' { return !.BadDigit(i) }
+        n = n * 10 + u32(c - '0')
+    }
+    return n
+}
+
+main :: fn() needs Out {
+    for s in each([_]string("12", "1x", "")[..]) {
+        r := parse(s)
+        o: ?(ParseError!u32) = r
+        print("{} {} {} {}\n", r is !.BadDigit, r is !.Empty, r is not !.BadDigit, o is !.BadDigit)
+    }
+}
