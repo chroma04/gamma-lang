@@ -19,8 +19,10 @@ Versions and what each kind of change means are described in
 - `SECURITY.md` and GitHub issue forms for bug reports and language proposals.
 - `Cargo.toml` metadata: description, license, repository and the minimum Rust
   version (1.95), which CI now checks.
-- `fuzz/`: cargo-fuzz targets for the lexer, the parser and the formatter (see
-  `docs/contributing.md`).
+- `fuzz/`: cargo-fuzz targets for the lexer, the parser, the formatter and the type
+  checker (see `docs/contributing.md`).
+- `tools/difftest/`: a differential tester that generates random, well-typed programs
+  and checks that the interpreter and the C back end (with gcc and Clang) agree.
 - `std/fiber/channel`: a bounded channel between fiber tasks. A task that sends to a
   full channel or receives from an empty one is parked until another task changes it.
   Underneath, `std/fiber` gains `Waiters`, the `park` operation of `Sched` and `wake`,
@@ -51,6 +53,10 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A conversion `T(x)` no longer pushes `T` into `x`'s branches and operands:
+  `f32(if c { a } else { b })` with `a, b: i16` was rejected.
+- `gamma check` no longer crashes on a constant whose initializer has a type error
+  (`X :: "ab" < 5usize`).
 - Generated C names each source file once rather than at every trap site, which makes
   very large functions faster to compile (a 100,000-term sum: 31 s to 27 s with gcc).
 - Very long expression chains compile much faster with gcc and Clang. A 100,000-term

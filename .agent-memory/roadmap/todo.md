@@ -19,9 +19,12 @@ nvim-treesitter submissions.
 (s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
 fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.
 s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
-- Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
-  parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
-  differential (interp vs gcc vs clang), tree-sitter as a second parser.
+- Fuzzing: fuzz/ targets parse, fmt, check (s20: ~345k execs, 1 const-eval panic fixed;
+  ~25 exec/s/worker, loading std dominates). tools/difftest (s20): random programs, interp
+  vs gcc vs clang, ~10k programs, 0 disagreements; found `T(x)` pushing T into branches.
+  Left: tree-sitter as a second parser; difftest coverage of effects/handlers/fibers/
+  generics/strings (generator in tools/difftest/src/program.rs); CI job running a few
+  hundred seeds.
 - bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
