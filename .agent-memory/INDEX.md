@@ -21,16 +21,15 @@
 ## Next steps
 1. Drive the s17 PR (branch claude/wonderful-cerf-sfn0qf) to merge; then the user tags
    v0.1.0 (release workflow re-run by hand on the s17 branch incl. Windows — see s17 log).
-2. Pre-release list agreed with the user (s17): dogfood the new syntax + an `examples/`
-   dir; fuzzing; tree-sitter multi-line block comment as newline; Cargo.toml metadata;
-   issue templates/SECURITY.md; #48–49; Safe new/destroy (~4x Checked).
-3. Windows follow-ups (Safe, gamma debug, gdb printers Linux-only; ARM64); VM follow-ups
-   in decisions/020; the user's [nice] items.
+2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). Next up: P1
+   dogfood pass + `examples/`, then P2 (fuzzing, tree-sitter newline, Cargo metadata, …).
+3. VM follow-ups in decisions/020; bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).
 
 ## Map
-- roadmap/        milestones.md (M0–M12 summary + gaps), bugs-open.md, c-backend-plan.md
+- roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
+                  c-backend-plan.md
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)
