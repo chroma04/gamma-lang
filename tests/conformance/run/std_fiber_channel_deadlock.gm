@@ -1,0 +1,23 @@
+//! exit: 134
+// A task waiting on a channel that no task will ever send on is a deadlock: once no task
+// is ready to run, the scheduler traps.
+fiber :: import "std/fiber"
+chan :: import "std/fiber/channel"
+
+wait :: fn(c: ^chan.Channel(u32)) needs fiber.Sched(Out) + Out {
+    print("waiting\n")
+    _ = c.recv()
+    print("never printed\n")
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    s := fiber.scheduler(Out)
+    defer s.deinit()
+    c := try chan.channel(u32, 1)
+    stack: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    with &s on main_stack[..] {
+        fiber.spawn(wait, &c, stack[..])
+        fiber.join()
+    }
+}

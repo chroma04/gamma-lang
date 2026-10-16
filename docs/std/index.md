@@ -14,6 +14,8 @@
 | [`std/encoding/base64`](encoding/base64.md) | Base64 as in RFC 4648, with the standard alphabet (section 4) or the URL and filename safe one (section 5), with or without `=` padding. |
 | [`std/encoding/hex`](encoding/hex.md) | Base16 as in RFC 4648 section 8, two hexadecimal digits per byte. |
 | [`std/fiber`](fiber.md) | A cooperative round-robin scheduler for fibers (§14). |
+| [`std/fiber/channel`](fiber/channel.md) | A bounded channel between the tasks of a `std/fiber` scheduler. |
+| [`std/fiber/waiters`](fiber/waiters.md) | The queue of waiting tasks of std/fiber, which re-exports it. |
 | [`std/fixed_buffer`](fixed_buffer.md) | An allocator over a buffer the caller owns (§15.2). |
 | [`std/fmt`](fmt.md) | Number formatting into caller-provided buffers. |
 | [`std/fs`](fs.md) | Whole-file operations over the `Fs` effect (§21.7). |

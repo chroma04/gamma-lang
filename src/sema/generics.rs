@@ -9,7 +9,7 @@ use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Expr, FnId, HandlerId};
 use crate::types::{ConstKey, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The closed set of constraints (§16.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -812,6 +812,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // A rest parameter's arguments become one tuple argument (§11.3).
         if self.sema.sigs[&f].params.iter().any(|p| p.rest) {
             let sig = self.sema.sigs[&f].clone();
+            let effect_params = self.sema.effect_params.clone();
             let recv = receiver.as_ref().and_then(|_| sig.params.iter().position(|p| p.generic.is_none()));
             let named: Vec<crate::symbol::Symbol> = args
                 .iter()
@@ -822,7 +823,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 .collect();
             let slot = |i: usize| {
                 Some(i) != recv
-                    && !inferable_param(&sig, i)
+                    && !inferable_param(&sig, i, &effect_params)
                     && !sig.params[i].is_site()
                     && !named.contains(&sig.params[i].name)
             };
@@ -863,7 +864,8 @@ impl<'a, 's> FnCx<'a, 's> {
         // An inferable compile-time parameter is never bound positionally (§16.2): it is
         // inferred, or written by name. Positional arguments bind the other parameters,
         // in order.
-        let inferable = |i: usize| inferable_param(&sig, i);
+        let effect_params = self.sema.effect_params.clone();
+        let inferable = |i: usize| inferable_param(&sig, i, &effect_params);
         let targets: Vec<usize> = (0..sig.params.len())
             .filter(|&i| {
                 !inferable(i)
@@ -973,11 +975,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     && !self.clearly_value(e)
                     && !matches!(e.kind, ast::ExprKind::Tuple(_) | ast::ExprKind::Paren(_))
                     && self.denotes_type(e)
-                    && let Some(q) = sig
-                        .params
-                        .iter()
-                        .enumerate()
-                        .find(|(k, q)| q.generic.is_some() && inferable_param(&sig, *k) && !named.contains(&q.name))
+                    && let Some(q) = sig.params.iter().enumerate().find(|(k, q)| {
+                        q.generic.is_some()
+                            && inferable_param(&sig, *k, &self.sema.effect_params)
+                            && !named.contains(&q.name)
+                    })
                 {
                     let text = self.sema.sess.sources.text(e.span).to_string();
                     self.error(
@@ -1073,6 +1075,23 @@ impl<'a, 's> FnCx<'a, 's> {
                 binds.entry(*pid).or_insert(Ty::unit());
             }
         }
+        // An effect-set parameter named in an effect of the function's own set
+        // (`needs Sched(E)`) takes its effects from the one instantiation of that effect
+        // available here, as an operation call does (§12.1, §16.6).
+        for pid in &sig.generics {
+            if binds.contains_key(pid) || !self.sema.effect_params.contains(pid) {
+                continue;
+            }
+            for e in sig.effects.effects.iter().filter(|e| effect_args_name(e, *pid)) {
+                if let [one] = self.available(e.effect).as_slice() {
+                    for (x, y) in e.args.iter().zip(one.args.iter()) {
+                        if let (GenericArg::Type(x), GenericArg::Type(y)) = (x, y) {
+                            super::effects::match_params_pub(*x, *y, &mut binds);
+                        }
+                    }
+                }
+            }
+        }
         // An argument with an error (already reported) leaves its parameters unbound;
         // say nothing more about them.
         let failed_arg = values.iter().flatten().any(|v| {
@@ -1133,7 +1152,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         ""
                     };
                     let how = match sig.params.iter().position(|q| q.generic == Some(*pid)) {
-                        Some(k) if inferable_param(&sig, k) => {
+                        Some(k) if inferable_param(&sig, k, &self.sema.effect_params) => {
                             format!("write it by name: `{}({}: …)`", name, pid.name())
                         }
                         _ => format!("write it: `{}({}, …)`", name, pid.name()),
@@ -1240,7 +1259,9 @@ impl<'a, 's> FnCx<'a, 's> {
         // The positional arguments bind the leading positional parameters, which must all
         // be compile-time ones, and every compile-time parameter must be given.
         let targets: Vec<usize> = (0..sig.params.len())
-            .filter(|&i| !inferable_param(sig, i) && !named(&sig.params[i]) && !sig.params[i].is_site())
+            .filter(|&i| {
+                !inferable_param(sig, i, &self.sema.effect_params) && !named(&sig.params[i]) && !sig.params[i].is_site()
+            })
             .collect();
         if positional.len() > targets.len()
             || targets[..positional.len()].iter().any(|&i| sig.params[i].generic.is_none())
@@ -1370,8 +1391,11 @@ impl<'a, 's> FnCx<'a, 's> {
 /// Whether the compile-time parameter `i` of `sig` is inferable (§16.2): another
 /// parameter's type mentions it, other than inside a computed array length. An inferable
 /// parameter is never bound positionally.
-pub fn inferable_param(sig: &super::FnSig, i: usize) -> bool {
+pub fn inferable_param(sig: &super::FnSig, i: usize, effect_params: &HashSet<ParamId>) -> bool {
     let Some(pid) = sig.params[i].generic else { return false };
+    if effect_params.contains(&pid) && sig.effects.effects.iter().any(|e| effect_args_name(e, pid)) {
+        return true;
+    }
     let is_pid = |t: Ty| matches!(t.kind(), TyKind::Param(x) if *x == pid);
     sig.params.iter().enumerate().any(|(j, q)| {
         if j == i {
@@ -1384,6 +1408,18 @@ pub fn inferable_param(sig: &super::FnSig, i: usize) -> bool {
         });
         all > computed
     })
+}
+
+/// Whether parameter `pid` occurs in the arguments of effect `e` (`Sched(E)`,
+/// `Sched(E + Out)`), so that the instantiation of `e` available at a call determines it.
+fn effect_args_name(e: &crate::types::EffectRef, pid: ParamId) -> bool {
+    !e.is_splice()
+        && e.args.iter().any(|a| {
+            let GenericArg::Type(t) = a else { return false };
+            let mut found = false;
+            t.walk(&mut |x| found |= matches!(x.kind(), TyKind::Param(q) if *q == pid));
+            found
+        })
 }
 
 fn same_int_value(a: Ty, b: Ty) -> bool {

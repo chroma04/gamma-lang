@@ -1,0 +1,101 @@
+// std/fiber/channel: a pipeline of tasks over bounded channels, where a full or empty
+// channel parks the task until another one changes it; several receivers share one
+// channel; `try_send`/`try_recv` never wait; sends fail once the channel is closed. The
+// channel operations take the scheduler's effect set from the calling task (§16.6).
+fiber :: import "std/fiber"
+chan :: import "std/fiber/channel"
+
+Task :: fiber.Sched(Out)
+
+Pipe :: struct {
+    a: chan.Channel(u32)
+    b: chan.Channel(u32)
+}
+
+produce :: fn(p: ^Pipe) needs Task + Out {
+    for i in 1..8 {
+        ok := p.a.send(i)
+        print("sent {} {}\n", i, ok)
+    }
+    p.a.close()
+}
+
+double :: fn(p: ^Pipe) needs Task + Out {
+    while x := p.a.recv() {
+        print("doubling {}\n", x)
+        _ = p.b.send(x * 2)
+    }
+    p.b.close()
+}
+
+consume :: fn(p: ^Pipe) needs Task + Out {
+    sum: u32 = 0
+    while x := p.b.recv() { sum += x }
+    print("sum {}, send after close: {}, closed: {}\n", sum, p.b.send(1), p.b.is_closed())
+}
+
+// A helper generic in the scheduler's effects: its `E` comes from the caller's `Sched`.
+drain :: fn(E: effects, name: string, c: ^chan.Channel(u32)) -> u32 needs fiber.Sched(E) + Out {
+    n: u32 = 0
+    while x := c.recv() {
+        print("{} got {}\n", name, x)
+        n += 1
+        fiber.yield_now()
+    }
+    return n
+}
+
+Worker :: struct {
+    name: string
+    c: ^chan.Channel(u32)
+    got: u32 = 0
+}
+
+work :: fn(w: ^Worker) needs Task + Out {
+    w.got = drain(w.name, w.c)
+}
+
+feed :: fn(c: ^chan.Channel(u32)) needs Task {
+    for i in 0..6 { _ = c.send(i) }
+    c.close()
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    s := fiber.scheduler(Out)
+    defer s.deinit()
+    s1: [32768]u8 = ---
+    s2: [32768]u8 = ---
+    s3: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+
+    p := Pipe(a: try chan.channel(u32, 2), b: try chan.channel(u32, 1))
+    defer p.a.deinit()
+    defer p.b.deinit()
+    with &s on main_stack[..] {
+        fiber.spawn(consume, &p, s3[..])
+        fiber.spawn(double, &p, s2[..])
+        fiber.spawn(produce, &p, s1[..])
+        fiber.join()
+    }
+
+    c := try chan.channel(u32, 2)
+    defer c.deinit()
+    x := Worker(name: "x", c: &c)
+    y := Worker(name: "y", c: &c)
+    with &s on main_stack[..] {
+        fiber.spawn(work, &x, s1[..])
+        fiber.spawn(work, &y, s2[..])
+        fiber.spawn(feed, &c, s3[..])
+        fiber.join()
+    }
+    print("x got {}, y got {}\n", x.got, y.got)
+
+    d := try chan.channel(u8, 1)
+    defer d.deinit()
+    with &s on main_stack[..] {
+        print("{} {} {}\n", d.try_send(1), d.try_send(2), d.len())
+        print("{} {}\n", d.try_recv(), d.try_recv())
+        d.close()
+        print("{} {}\n", d.try_send(3), d.recv())
+    }
+}

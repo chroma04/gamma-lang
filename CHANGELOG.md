@@ -21,6 +21,15 @@ Versions and what each kind of change means are described in
   version (1.95), which CI now checks.
 - `fuzz/`: cargo-fuzz targets for the lexer, the parser and the formatter (see
   `docs/contributing.md`).
+- `std/fiber/channel`: a bounded channel between fiber tasks. A task that sends to a
+  full channel or receives from an empty one is parked until another task changes it.
+  Underneath, `std/fiber` gains `Waiters`, the `park` operation of `Sched` and `wake`,
+  for other ways for tasks to wait for each other.
+- An effect-set parameter that occurs in an effect of the function's own set
+  (`fn(E: effects) needs Sched(E)`) is inferable: a call takes it from the instantiation
+  of that effect available there, as an operation call does (§16.6). Helpers that tasks
+  call no longer need their scheduler's effects spelled out. Like other inferable
+  parameters it is given by name (`f(E: Out)`), no longer positionally.
 
 ### Changed
 
@@ -32,6 +41,9 @@ Versions and what each kind of change means are described in
   without follow-on exhaustiveness errors; `str.starts_with` (and the other built-in
   slice methods called through a module) suggests `s.starts_with(…)`; an iterator
   passed where a value is expected (`enumerate(bytes(s))`) is one error instead of two.
+- Performing one instantiation of a generic effect where only another is declared or
+  handled (a task declared `needs Sched` spawned under `fiber.scheduler(Out)`) says
+  that the two are different effects, instead of suggesting to declare the effect.
 - A local may not take the name of a type alias that reaches into another module
   (`Handle :: fs.File`), as for any other type name (§4.6).
 - `io.ReadError` is now the same type as `fs.ReadError`, so one function can propagate
@@ -39,6 +51,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- Generated C names each source file once rather than at every trap site, which makes
+  very large functions faster to compile (a 100,000-term sum: 31 s to 27 s with gcc).
 - Very long expression chains compile much faster with gcc and Clang. A 100,000-term
   sum took gcc over 3 minutes and Clang many minutes; both now take under 30 seconds.
   A 100,000-link method chain took gcc 8 s and Clang 13 s, and now takes 4 s and 9 s.

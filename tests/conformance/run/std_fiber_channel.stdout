@@ -1,0 +1,25 @@
+sent 1 true
+sent 2 true
+doubling 1
+doubling 2
+sent 3 true
+sent 4 true
+doubling 3
+sent 5 true
+doubling 4
+sent 6 true
+doubling 5
+sent 7 true
+doubling 6
+doubling 7
+sum 56, send after close: false, closed: true
+x got 0
+y got 1
+x got 2
+y got 3
+x got 4
+y got 5
+x got 3, y got 3
+true false 1
+1 null
+false null

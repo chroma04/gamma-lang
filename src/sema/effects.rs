@@ -121,7 +121,7 @@ fn match_effects(pat: &EffectSet, actual: &EffectSet, binds: &mut HashMap<ParamI
 impl<'a, 's> FnCx<'a, 's> {
     /// The instantiations of `eff` available at this point: declared by the
     /// enclosing functions or handled by enclosing `with`s.
-    fn available(&self, eff: EffectId) -> Vec<EffectRef> {
+    pub(super) fn available(&self, eff: EffectId) -> Vec<EffectRef> {
         let mut out: Vec<EffectRef> = vec![];
         let mut add = |list: &mut dyn Iterator<Item = &EffectRef>| {
             for e in list {
@@ -488,6 +488,13 @@ impl<'a, 's> FnCx<'a, 's> {
         self.handled.truncate(n);
         self.labels.pop();
         self.pop_scope();
+        for (p, at) in &self.performed[start..] {
+            if !handled.contains(p)
+                && let Some(h) = handled.iter().find(|h| h.effect == p.effect)
+            {
+                self.near_misses.push((*at, h.clone()));
+            }
+        }
         // Whether this `with` handles a perform must not depend on type arguments (§16.6).
         let mut ambiguous = vec![];
         for (p, at) in &self.performed[start..] {

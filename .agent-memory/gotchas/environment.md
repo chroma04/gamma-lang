@@ -49,3 +49,4 @@
 - Windows compile check without CI: `apt-get install gcc-mingw-w64-x86-64; rustup target add x86_64-pc-windows-gnu; cargo check --target x86_64-pc-windows-gnu` (libffi-sys needs the mingw gcc).
 - Brief agents never to `pkill -f "cargo build"` (or any shared pattern): it kills the other
   agents' builds too (s14, twice).
+- `cargo test` stops after the first failing test binary: use `--no-fail-fast` to see all.

@@ -133,6 +133,9 @@ pub struct FnCx<'a, 's> {
     pub clause: Option<ClauseInfo>,
     /// Effects handled by enclosing `with`s (and `for` loops) of this body.
     pub handled: Vec<EffectRef>,
+    /// Performs that escaped a `with` handling another instantiation of their effect
+    /// (`Sched` inside a `with` handling `Sched(Out)`), for the undeclared-effect message.
+    pub near_misses: Vec<(Span, EffectRef)>,
     /// The `break`s to each label, keyed by the frame depth and the label, with the
     /// type and span of the value given (`()` for loops). Taken out when the labeled
     /// construct is finished: a `with` checks the values.
@@ -325,6 +328,7 @@ impl<'a, 's> FnCx<'a, 's> {
             nested: vec![],
             clause: None,
             handled: vec![],
+            near_misses: vec![],
             label_breaks: Default::default(),
         }
     }
@@ -626,6 +630,25 @@ impl<'a, 's> FnCx<'a, 's> {
             let callee = callee.rsplit('.').next().unwrap_or(callee).trim();
             return format!(
                 "`{callee}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {callee}(…)`) or pass it to a function that runs it, such as `collect({callee}(…))` (§13.5)"
+            );
+        }
+        // Another instantiation of the same effect is declared or handled around the
+        // perform: `Sched` against `Sched(Out)`.
+        let mut others: Vec<String> =
+            declared.effects.iter().filter(|d| d.effect == e.effect && *d != e).map(|d| format!("`{}`", d)).collect();
+        let what = if others.is_empty() { "an enclosing `with` handles" } else { "the function declares" };
+        for (_, h) in self.near_misses.iter().filter(|(s, h)| *s == span && h.effect == e.effect) {
+            let h = format!("`{}`", h);
+            if !others.contains(&h) {
+                others.push(h);
+            }
+        }
+        if !others.is_empty() {
+            return format!(
+                "this performs the effect `{}`, but {} {}: instantiations with different arguments are different effects (§12.3)",
+                name,
+                what,
+                others.join(" and ")
             );
         }
         format!("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)

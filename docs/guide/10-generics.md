@@ -281,6 +281,24 @@ run_holder :: fn(E: effects, h: Holder(E), x: i32) -> i32 needs E => h.f(x)
 
 `std/fiber`'s `Sched(E)` is the main example: it lets fiber tasks perform the effects `E`, handled outside the scheduler.
 
+A helper that tasks call, and that performs `Sched(E)` itself, takes `E` from its caller. An effect-set parameter that occurs in an effect of the function's own set is inferable, and the instantiation of that effect available at the call determines it, the way an operation call picks its instantiation:
+
+```gamma
+fiber :: import "std/fiber"
+
+pause_twice :: fn(E: effects) needs fiber.Sched(E) {
+    fiber.yield_now()
+    fiber.yield_now()
+}
+
+task :: fn(n: ^u32) needs fiber.Sched(Out) + Out {
+    pause_twice()                      // E = Out, from this function's `Sched(Out)`
+    print("{}\n", n^)
+}
+```
+
+This is how `std/fiber/channel`'s `send` and `recv` work in any task, whatever its scheduler's effects.
+
 When the same group of effects is written in many signatures, give it a name. A top-level binding whose value is an effect set is a **named effect set**, used in other sets like a parameter, and it can be the argument of an effect-set parameter:
 
 ```gamma

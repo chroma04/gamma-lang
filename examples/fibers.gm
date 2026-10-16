@@ -2,48 +2,24 @@
 //! through bounded channels, scheduled by `std/fiber`.
 //!
 //! Shows: `fiber.scheduler(Out + Clock)`, whose effect set says what tasks may perform
-//! besides `Sched`; `with &sched on stack { ... }`; `fiber.spawn` and `fiber.join`; a
-//! small channel built on `std/collections/deque`; `Clock.sleep` and `Clock.now`; and a
+//! besides `Sched`; `with &sched on stack { ... }`; `fiber.spawn` and `fiber.join`;
+//! `std/fiber/channel`, where a task waiting on a full or empty channel is parked until
+//! another task changes it; `Clock.sleep` and `Clock.now`; and a
 //! `test` that runs the same pipeline on the test runner's fake clock, where `sleep`
 //! advances time instead of waiting.
 //!
 //! Run from the examples/ directory:  gamma run fibers.gm      (or: gamma test fibers.gm)
 
 fiber :: import "std/fiber"
-queue :: import "std/collections/deque"
+chan :: import "std/fiber/channel"
 
-/// What a task may do: yield to the others, and print and sleep through the effects
+/// What a task may do: work with the scheduler, and print and sleep through the effects
 /// that are handled outside the scheduler.
 Task :: fiber.Sched(Out + Clock)
 
 STACK :: 32768
 
-/// A bounded queue between two fibers. `send` and `recv` give way to the other fibers
-/// (`yield_now`) while they cannot make progress, so no locking is needed: only one
-/// fiber runs at a time and switches happen only at `yield_now`.
-Chan :: struct {
-    items: queue.Deque(u32)
-    capacity: usize
-    closed: bool = false
-}
-
-channel :: fn(capacity: usize) -> Chan needs Alloc {
-    return Chan(items: queue.deque(u32), capacity: capacity)
-}
-
-send :: fn(c: ^Chan, x: u32) needs Task {
-    while c.items.len() >= c.capacity { fiber.yield_now() }
-    c.items.push_back(x) else trap("out of memory")
-}
-
-/// The next value, or null once the channel is closed and empty.
-recv :: fn(c: ^Chan) -> ?u32 needs Task {
-    while c.items.is_empty() {
-        if c.closed { return null }
-        fiber.yield_now()
-    }
-    return c.items.pop_front()
-}
+Chan :: chan.Channel(u32)
 
 /// One pipeline stage. Every stage sleeps `delay` per item, as if the work took that long.
 Stage :: struct {
@@ -57,28 +33,28 @@ Stage :: struct {
 
 generate :: fn(s: ^Stage) needs Task + Out + Clock {
     out := s.output?
-    defer out.closed = true
+    defer out.close()
     for i in 1..s.count + 1 {
         Clock.sleep(s.delay)
         print("{}: {}\n", s.name, i)
-        send(out, i)
+        _ = out.send(i)
     }
 }
 
 square :: fn(s: ^Stage) needs Task + Out + Clock {
     input := s.input?
     out := s.output?
-    defer out.closed = true
-    while x := recv(input) {
+    defer out.close()
+    while x := input.recv() {
         Clock.sleep(s.delay)
         print("{}: {} -> {}\n", s.name, x, x * x)
-        send(out, x * x)
+        _ = out.send(x * x)
     }
 }
 
 sum :: fn(s: ^Stage) needs Task + Out + Clock {
     input := s.input?
-    while x := recv(input) {
+    while x := input.recv() {
         Clock.sleep(s.delay)
         s.total += x
         print("{}: +{} = {}\n", s.name, x, s.total)
@@ -86,11 +62,11 @@ sum :: fn(s: ^Stage) needs Task + Out + Clock {
 }
 
 /// Runs the pipeline to completion and returns the sum and the time it took.
-pipeline :: fn(count: u32) -> (total: u32, took: Duration) needs Out + Clock + Alloc {
-    a := channel(2)
-    defer a.items.deinit()
-    b := channel(2)
-    defer b.items.deinit()
+pipeline :: fn(count: u32) -> AllocError!(total: u32, took: Duration) needs Out + Clock + Alloc {
+    a := try chan.channel(u32, 2)
+    defer a.deinit()
+    b := try chan.channel(u32, 2)
+    defer b.deinit()
     gen := Stage(name: "generate", input: null, output: &a, count: count, delay: ms(5))
     sq := Stage(name: "square", input: &a, output: &b, count: 0, delay: ms(10))
     acc := Stage(name: "sum", input: &b, output: null, count: 0, delay: ms(2))
@@ -113,8 +89,8 @@ pipeline :: fn(count: u32) -> (total: u32, took: Duration) needs Out + Clock + A
     return (total: acc.total, took: Clock.now().since(start))
 }
 
-main :: fn() needs Out + Clock + Alloc {
-    r := pipeline(6)
+main :: fn() -> AllocError!() needs Out + Clock + Alloc {
+    r := try pipeline(6)
     print("sum of squares: {}\n", r.total)
     // The sleeps run one after another (one fiber runs at a time), so at least
     // 6 * (5 + 10 + 2) ms went by. The exact figure is not printed: it is real time.
@@ -122,13 +98,13 @@ main :: fn() needs Out + Clock + Alloc {
 }
 
 test "the pipeline sums the squares" {
-    r := pipeline(4)
+    r := ok(pipeline(4))
     expect_eq(r.total, 30)
 }
 
 test "tests run on a fake clock" {
     // `sleep` advances the fake clock and returns at once, so the elapsed time is
     // exact and the test is instant.
-    r := pipeline(5)
+    r := ok(pipeline(5))
     expect_eq(r.took.to_ms(), 5 * (5 + 10 + 2))
 }

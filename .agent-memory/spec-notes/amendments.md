@@ -82,3 +82,5 @@
   §7.2 mutation-visible principle; §6.1 shift fallback usize.
 - s16: effect-set syntax `needs A + B` everywhere (§5.14, §11.1, §12.3, §12.6, §16.6, §19.2,
   A.4/A.7, B tables, C.7); `needs not` foreign-only; `..E` splice removed; keyword list gains `needs`.
+- s20: §16.6 effect-set param in an effect of the fn's own set (`needs Sched(E)`) is
+  inferable, from the one available instantiation at the call (decisions/027).

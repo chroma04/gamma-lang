@@ -17,7 +17,8 @@ nvim-treesitter submissions.
 
 ## P2 — worth doing early
 (s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
-fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.)
+fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.
+s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
   parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
   differential (interp vs gcc vs clang), tree-sitter as a second parser.

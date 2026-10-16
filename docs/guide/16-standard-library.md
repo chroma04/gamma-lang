@@ -581,7 +581,24 @@ counter 4000
 
 A thread starts with no handlers installed; `thread.defaults(body)` installs the usual ones for a thread that prints or allocates. `t.detach()` lets a thread run on its own: its resources are released when it ends. When `main` returns the process exits, and a detached thread still running is stopped where it is, without running its `defer`s, so wait for the ones whose work you need.
 
-`std/fiber` is a cooperative scheduler for [fibers](12-fibers.md): tasks that take turns on one thread by calling `fiber.yield_now()`. It is the scheduler sketched in chapter 12, ready to use.
+`std/fiber` is a cooperative scheduler for [fibers](12-fibers.md): tasks that take turns on one thread by calling `fiber.yield_now()`. It is the scheduler sketched in chapter 12, ready to use. Tasks pass values through `std/fiber/channel`, a bounded channel like `thread.Channel` but without locks: a task that sends to a full channel or receives from an empty one is parked, and runs again once another task changes the channel.
+
+```gamma
+fiber :: import "std/fiber"
+chan :: import "std/fiber/channel"
+
+produce :: fn(c: ^chan.Channel(u32)) needs fiber.Sched(Out) {
+    defer c.close()                    // receivers then drain the channel and get null
+    for i in 1..6 { _ = c.send(i * i) }
+}
+
+consume :: fn(c: ^chan.Channel(u32)) needs fiber.Sched(Out) + Out {
+    while x := c.recv() { print("{} ", x) }
+    print("\n")
+}
+```
+
+Both tasks run under `fiber.scheduler(Out)`, so both name its `Sched(Out)`; only `consume` prints. The channel operations take the scheduler's effects from the task that calls them, and `close` performs none, so a `defer` can close the channel. `examples/fibers.gm` is a complete pipeline.
 
 ## Collections
 
