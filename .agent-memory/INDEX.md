@@ -26,7 +26,7 @@
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
-   next P2: fuzz sema/differential, gcc on huge functions (#48–49), perf, Windows, Zed, dep-root tests.
+   next P2: fuzz sema/differential, statement-run outlining (#48), perf, Windows, Zed, dep-root tests.
 3. VM follow-ups in decisions/020; bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).

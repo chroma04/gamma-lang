@@ -503,6 +503,7 @@ both use it. The files:
 | `types.rs` | C representations of types (`Types`: typed structs, blobs, mirrors) and the type descriptors for `@write` |
 | `func.rs` | functions: frames, blocks, statements, the exit ladders, handler specialization |
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
+| `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
 | `arith.rs`, `elementwise.rs`, `wide.rs` | checked scalar operators, elementwise array arithmetic (§7.4.6), integers wider than 128 bits |
 | `helpers.rs` | per-type equality, ordering and hashing |
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
@@ -514,6 +515,21 @@ both use it. The files:
 The generated code follows the interpreter exactly, and the conformance
 runner checks this: every `run` test also runs natively and must print the same
 output and exit with the same status.
+
+Operands are evaluated into C temporaries in order, so expressions are never nested in
+the C text. A function with tens of thousands of operations is still expensive to
+compile: Clang tracks the lifetime of every variable of a scope at each branch out of
+it, and gcc's points-to analysis and jump threading are superlinear in the size of one
+function. A chain of more than 256 operations that each take the previous one's value
+as their first operand (binary operators, `and`/`or`, unary operators, built-in and
+function-call links with a scalar value) is therefore emitted as an accumulator
+variable updated by one block per link (`chain.rs`), which keeps the live temporaries of
+any scope bounded; the first operand is still evaluated first, so order, traps and
+early exits are unchanged. Chains of large values (structs, arrays) and chains through
+other operations keep one scope. A generated function of more than 20,000 temporaries
+is marked `GM_HUGE_FN`, which turns off those two gcc passes for it, and `-w` is
+accompanied by `-Wno-free-nonheap-object` because gcc otherwise still runs its
+access-warning pass over such functions.
 
 How the runtime is linked depends on the build mode:
 

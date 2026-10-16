@@ -8,12 +8,15 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 24. Interpreter: the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
     is dispatch/call-bound (~15 ns/op), plus `new`/`destroy` spread over builtins. Follow-ups
     listed in decisions/020.
-48. gcc time superlinear in the size of ONE C function (9.4k-line main: ~20 s at -O1; -O0
-    worse). Real fix: outline long statement runs into functions sharing the frame (like
-    fiber.rs with-on outlining; defers, gm_unw exits, backtrace, stack accounting). Remaining
-    C ≈14 lines/statement (checked-arith option memsets, ie/ix labels, F.lN).
-49. gcc superlinear / segfaults on very deep nested C expressions (60k `.abs()` chain: 12 s;
-    100k: gcc crash, reported cleanly). Flatten emitted expression chains into statements.
+48. C compilers superlinear in the size of ONE C function (9.4k-line main: ~20 s gcc -O1;
+    gcc -O0 "expand vars" quadratic). s19 mitigations: long op chains (>256 links) go through
+    an accumulator with one block per link (cgen/chain.rs; fixed clang lifetime-marker blowup),
+    GM_HUGE_FN (>20k temps: gcc no-tree-pta/no-thread-jumps), -Wno-free-nonheap-object in
+    BASE_CFLAGS (stops gcc's waccess pass). 100k-term sum: gcc 187→25 s, clang >8 min→17 s.
+    Left: outline long statement runs into functions sharing the frame (defers, gm_unw exits,
+    backtrace, stack accounting); trap sites repeat the absolute path string (38 MB C for 100k
+    terms, ~10 s gcc parse); by-ref (struct) chains not flattened. (Old #49 "deep nested C
+    expressions" was a misdiagnosis: cgen already spills every operand into temps.)
 - Safe mode: new/destroy ≈ 4x Checked (GC alloc of `new`; `&key` in std maps escapes).
 
 ## Behaviour differences (allowed, documented)

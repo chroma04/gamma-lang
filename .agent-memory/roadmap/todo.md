@@ -17,11 +17,11 @@ nvim-treesitter submissions.
 
 ## P2 — worth doing early
 (s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
-fuzz targets, `gamma test --package=<dep>`, Zed extension.)
+fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.)
 - Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
   parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
   differential (interp vs gcc vs clang), tree-sitter as a second parser.
-- bugs-open #48–49 (gcc on huge functions / deep expressions).
+- bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions

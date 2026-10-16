@@ -39,6 +39,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- Very long expression chains compile much faster with gcc and Clang. A 100,000-term
+  sum took gcc over 3 minutes and Clang many minutes; both now take under 30 seconds.
+  A 100,000-link method chain took gcc 8 s and Clang 13 s, and now takes 4 s and 9 s.
 - `gamma fmt` glued a line-initial `. name` after a `{` into `.name`, which changed the
   indentation when the output was formatted again; the space is now kept.
 - A path dependency such as `../json` was not found when the input was a bare file name
