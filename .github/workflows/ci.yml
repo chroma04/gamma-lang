@@ -29,12 +29,12 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
-      - name: Conformance tests on the tree-walking interpreter
+      - name: Conformance tests and examples on the tree-walking interpreter
         if: matrix.os == 'ubuntu-latest'
         env:
           GAMMA_INTERP: tree
           GAMMA_TEST_C: "0"
-        run: cargo test --test conformance
+        run: cargo test --test conformance --test examples
 
   windows:
     # x86_64 Windows: the compiler is built with the MSVC toolchain; the C back end uses

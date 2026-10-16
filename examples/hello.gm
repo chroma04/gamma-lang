@@ -1,0 +1,4 @@
+// The smallest program: `needs Out` says that it prints.
+main :: fn() needs Out {
+    print("hello, world\n")
+}
