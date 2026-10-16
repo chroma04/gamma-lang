@@ -169,12 +169,11 @@ fn prune(dir: &Path) {
     }
 }
 
-#[cfg(test)]
+// Marking a cached file as used needs no write access to it outside Windows (see `touch`).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    // Marking a cached file as used needs no write access to it (see `touch`).
-    #[cfg(unix)]
     #[test]
     fn touch_marks_a_read_only_file_as_used() {
         use std::os::unix::fs::PermissionsExt;
