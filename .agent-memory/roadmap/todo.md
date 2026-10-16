@@ -17,7 +17,7 @@ nvim-treesitter submissions.
 
 ## P2 — worth doing early
 (s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
-fuzz targets.)
+fuzz targets, `gamma test --package=<dep>`.)
 - Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
   parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
   differential (interp vs gcc vs clang), tree-sitter as a second parser.
@@ -25,7 +25,6 @@ fuzz targets.)
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (none shipped), Emacs untested.
-- Library tests runnable from a dependency root (bugs-open #30).
 
 ## Nice — after 0.1.0
 - Language: `@fields(T)` reflection (§22 deferred), SIMD types (C.10), enum-indexed arrays

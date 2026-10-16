@@ -354,6 +354,26 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
     };
     let (mut sess, toolchain) = new_session(opts);
     let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
+    // `--package=name`: the dependency's root module stands in for the input, and its own
+    // dependencies resolve through this package's graph.
+    let dep;
+    let path = match &opts.package {
+        None => path,
+        Some(name) => {
+            let Some(root) = gamma::pkg::find_root(path) else {
+                eprintln!("gamma: `--package` needs the input to be in a package (a directory with a `gamma.toml`)");
+                return ExitCode::from(2);
+            };
+            match gamma::pkg::dependency_dir(&root, sess.packages.as_deref(), name) {
+                Ok(d) => dep = d,
+                Err(e) => {
+                    eprintln!("gamma: {}", e);
+                    return ExitCode::from(2);
+                }
+            }
+            &dep
+        }
+    };
     let prog = gamma::sema::analyze_package_tests(&mut sess, path, opts.all);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(mut prog) = prog else { return ExitCode::FAILURE };

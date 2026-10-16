@@ -1445,3 +1445,60 @@ fn an_empty_lock_is_a_missing_lock() {
     assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "1\n");
     assert_eq!(w.read("app/gamma.lock"), lock);
 }
+
+#[test]
+fn path_dependencies_are_found_when_the_input_is_a_file() {
+    let w = World::new("paths_by_file");
+    w.write("json/gamma.toml", "[package]\nname = \"json\"\n");
+    w.write("json/lib.gm", &lib_source(9));
+    sum_app(&w, "json = { path = \"../json\" }\n", &["json"]);
+    // `main.gm` alone has no directory part; `../json` is still relative to the app.
+    assert_eq!(w.gamma("app", &["run", "main.gm"]).success().stdout, "9\n");
+    assert_eq!(w.gamma(".", &["run", "app/main.gm"]).success().stdout, "9\n");
+}
+
+#[test]
+fn the_tests_of_a_dependency_run_with_package() {
+    need_git!();
+    let w = World::new("dep_tests");
+    w.lib("util", 40, Some("v0.3.0"));
+    w.repo(
+        "http",
+        &[
+            (
+                "gamma.toml",
+                &format!(
+                    "[package]\nname = \"http\"\n\n[dependencies]\nutil = {{ git = \"{}\", version = \"0.3\" }}\n",
+                    w.url("util")
+                ),
+            ),
+            (
+                "lib.gm",
+                "util :: import \"util\"\npub value :: fn() -> i32 => util.value() + 2\n\
+                 test \"adds two\" { expect_eq(value(), 42) }\n",
+            ),
+            ("parse/parse.gm", "test \"nothing imports this\" {}\n"),
+        ],
+        Some("v1.0.0"),
+    );
+    w.write("json/gamma.toml", "[package]\nname = \"json\"\n");
+    w.write("json/lib.gm", "pub value :: fn() -> i32 => 1\ntest \"json one\" { expect_eq(value(), 1) }\n");
+    sum_app(
+        &w,
+        &format!("http = {{ git = \"{}\", version = \"1\" }}\njson = {{ path = \"../json\" }}\n", w.url("http")),
+        &["http", "json"],
+    );
+    // The fetched library's own git dependency resolves through the app's lock.
+    let out = w.gamma("app", &["test", "--package=http", "."]).success();
+    assert!(out.stdout.contains("test \"adds two\" ... ok"), "{}", out.stdout);
+    assert!(!out.stdout.contains("nothing imports this"), "{}", out.stdout);
+    let out = w.gamma("app", &["test", "--package=http", "--all", "."]).success();
+    assert!(out.stdout.contains("nothing imports this"), "{}", out.stdout);
+    // A path dependency, and a dependency of a dependency.
+    assert!(w.gamma("app", &["test", "--package=json", "main.gm"]).success().stdout.contains("json one"));
+    assert!(w.gamma("app", &["test", "--package=util", "."]).success().stdout.contains("0 passed"));
+    let out = w.gamma("app", &["test", "--package=nope", "."]).failure();
+    assert!(out.stderr.contains("no dependency `nope`; its dependencies are `http`, `json`"), "{}", out.stderr);
+    let out = w.gamma("cache", &["test", "--package=http", "."]).failure();
+    assert!(out.stderr.contains("`--package` needs the input to be in a package"), "{}", out.stderr);
+}

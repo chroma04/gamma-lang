@@ -327,6 +327,7 @@ Options of `gamma test`:
 
 - `--filter=text` runs only the tests whose name or module directory contains `text`; the summary line then also counts the tests left out (`2 passed, 0 failed, 5 filtered out`).
 - `--all` also runs the tests of the package's modules that nothing imports.
+- `--package=name` runs the tests of the dependency `name` instead, with the versions your package locks ([chapter 15](15-packages.md#commands)).
 - `--show-output` prints the output of passing tests too, and `--time` reports how long each test took.
 - `-j n` (or `--jobs=n`) runs `n` tests at a time, `0` meaning one per processor; the report stays in order.
 - `--coverage` counts the lines of the package that the tests run and prints a table; `--coverage=out.lcov` also writes an LCOV file.

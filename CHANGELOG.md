@@ -12,6 +12,8 @@ Versions and what each kind of change means are described in
   `sha256sum`, `json_query`) through effects, allocators, fibers, threads, TCP and C
   interop to a multi-file calculator and a package. The test suite runs each of them
   on both back ends.
+- `gamma test --package=<name>` (and `gamma bench`) runs the tests of a dependency, with
+  the revisions the package's lockfile holds for it and its own dependencies.
 - `SECURITY.md` and GitHub issue forms for bug reports and language proposals.
 - `Cargo.toml` metadata: description, license, repository and the minimum Rust
   version (1.95), which CI now checks.
@@ -37,6 +39,8 @@ Versions and what each kind of change means are described in
 
 - `gamma fmt` glued a line-initial `. name` after a `{` into `.name`, which changed the
   indentation when the output was formatted again; the space is now kept.
+- A path dependency such as `../json` was not found when the input was a bare file name
+  (`gamma run main.gm` in the package directory): the leading `..` was dropped.
 - The `std/net` documentation called `connect` and `close_socket` without `Net.`.
 - `r is !.V` with a variant `V` that has a payload was rejected; it now tests the
   variant, as `u is .V` does (§7.6).

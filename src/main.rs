@@ -47,6 +47,9 @@ options:
                               contains <text>
   --all                       (test, bench) also run those of the modules of the package
                               that nothing imports (every directory with `.gm` files)
+  --package=<name>            (test, bench) run those of the dependency <name> of the input's
+                              package (or of one of its dependencies) instead, with the
+                              dependency versions this package locks
   --show-output               (test, bench) also print the output of the tests that pass
   --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
                               the output is still in order)
@@ -106,6 +109,8 @@ struct Options {
     filter: Option<String>,
     /// `--all`: also the tests of modules that nothing imports.
     all: bool,
+    /// `--package=name`: the tests of that dependency instead of the package's own.
+    package: Option<String>,
     /// `--show-output`: print the output of passing tests too.
     show_output: bool,
     /// `--jobs=n`: how many tests run at once.
@@ -162,6 +167,7 @@ fn parse_args() -> Result<Options, String> {
         debug_info: false,
         filter: None,
         all: false,
+        package: None,
         show_output: false,
         jobs: 1,
         time: false,
@@ -239,6 +245,7 @@ fn parse_args() -> Result<Options, String> {
                 opts.target = Some(triple.to_string());
             }
             a if a.starts_with("--filter=") => opts.filter = Some(a["--filter=".len()..].to_string()),
+            a if a.starts_with("--package=") => opts.package = Some(a["--package=".len()..].to_string()),
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
             a => {
                 if opts.file.is_some() {

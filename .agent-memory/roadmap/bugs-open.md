@@ -25,7 +25,6 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
 23. std channels/queue/generator; lstat on symlinks untested; reflection.
-30. Library tests runnable from a dependency root (only same-package modules run today).
 
 ## Dogfood papercuts (s18 examples; unscheduled)
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).

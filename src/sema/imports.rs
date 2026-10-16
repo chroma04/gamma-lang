@@ -285,8 +285,13 @@ fn normalize(p: &Path) -> PathBuf {
     for c in p.components() {
         match c {
             Component::CurDir => {}
+            // A leading `..` of a relative path stays: `../lib` is not `lib`.
             Component::ParentDir => {
-                out.pop();
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
             }
             other => out.push(other.as_os_str()),
         }
@@ -301,5 +306,8 @@ mod tests {
     #[test]
     fn normalizes_paths() {
         assert_eq!(normalize(Path::new("/a/b/./../c")), PathBuf::from("/a/c"));
+        assert_eq!(normalize(Path::new("../lib")), PathBuf::from("../lib"));
+        assert_eq!(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
+        assert_eq!(normalize(Path::new("/../a")), PathBuf::from("/a"));
     }
 }

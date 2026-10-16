@@ -35,6 +35,59 @@ impl Resolution {
     }
 }
 
+/// The directory of the package that the graph rooted at `root` knows as `name`: a
+/// dependency of `root`, or of one of its dependencies, nearest first. `res` holds the
+/// resolved git and archive dependencies; path dependencies are read from the manifests.
+pub fn dependency_dir(root: &Path, res: Option<&Resolution>, name: &str) -> Result<PathBuf, String> {
+    let canon = |p: &Path| crate::source::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let deps_of = |dir: &Path| -> Result<Vec<(String, PathBuf)>, String> {
+        if let Some(deps) = res.and_then(|r| r.deps_of(dir)) {
+            let mut v: Vec<_> = deps.iter().map(|(n, d)| (n.clone(), d.clone())).collect();
+            v.sort();
+            return Ok(v);
+        }
+        let path = dir.join("gamma.toml");
+        let Ok(text) = std::fs::read_to_string(&path) else { return Ok(vec![]) };
+        let manifest =
+            manifest::Manifest::parse(&text).map_err(|e| format!("{}:{}: {}", path.display(), e.line, e.msg))?;
+        Ok(manifest
+            .deps
+            .into_iter()
+            .filter_map(|d| match d.source {
+                manifest::Source::Path(p) => Some((d.name, canon(&dir.join(p)))),
+                _ => None,
+            })
+            .collect())
+    };
+    let root = canon(root);
+    let mut seen = vec![root.clone()];
+    let mut queue = std::collections::VecDeque::from([root.clone()]);
+    let mut direct = vec![];
+    while let Some(dir) = queue.pop_front() {
+        for (n, d) in deps_of(&dir)? {
+            if dir == root {
+                direct.push(n.clone());
+            }
+            if n == name {
+                return Ok(d);
+            }
+            if !seen.contains(&d) {
+                seen.push(d.clone());
+                queue.push_back(d);
+            }
+        }
+    }
+    if direct.is_empty() {
+        return Err(format!("the package in {} has no dependency `{}`; it has no dependencies", root.display(), name));
+    }
+    Err(format!(
+        "the package in {} has no dependency `{}`; its dependencies are {}",
+        root.display(),
+        name,
+        direct.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(", ")
+    ))
+}
+
 /// How a resolution may use the network and the lockfile.
 #[derive(Debug, Default, Clone)]
 pub struct Options {
