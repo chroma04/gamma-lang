@@ -50,8 +50,30 @@ Versions and what each kind of change means are described in
   (`Handle :: fs.File`), as for any other type name (§4.6).
 - `io.ReadError` is now the same type as `fs.ReadError`, so one function can propagate
   both with `try`.
+- Optimized C builds declare small functions `inline`, so gcc inlines them as Clang
+  does: a loop adding 32-byte structs through a small function ran three times slower
+  with gcc than with Clang and now runs as fast.
+- A large argument read from a field of a variable or of a pointer's target (`f(m.a)`)
+  is passed in place in C, as one read from the variable itself already was, instead of
+  being copied to a temporary first.
+- Generated C clears only the padding of a small struct, optional, result or union
+  value it builds, instead of the whole value with `memset`, which Fil-C turns into a
+  call: a Safe build's `new` + `destroy` loop runs about 13% faster.
+- `tools/difftest` generates generic functions and structs, strings, effects with
+  `fn`/`ctl`/`esc` handlers, and fiber tasks with channels; a CI job runs 300 seeds on
+  every push.
+- The interpreter performs an operation with less work (about 6% fewer instructions in
+  a loop of handled performs).
 
 ### Fixed
+
+- In Debug builds, a trap in a task started by `@fiber` (such as a `std/fiber` task)
+  named a different caller for the task on each back end; both now name the
+  `with … on` that drives it.
+
+- `bench/benches.gm` used an old form of `new` and `destroy` and no longer built, which
+  the benchmark job of CI reported only in its summary; that job now fails when the
+  benchmarks do not build or run.
 
 - A conversion `T(x)` no longer pushes `T` into `x`'s branches and operands:
   `f32(if c { a } else { b })` with `a, b: i16` was rejected.

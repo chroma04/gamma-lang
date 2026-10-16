@@ -101,8 +101,15 @@ fn copy_words(dst: &mut [u64], d: usize, src: &[u64], s: usize, n: usize) {
 /// Writes the value of `size` bytes whose first bytes are `b` (zeros after them) at `r`.
 #[inline]
 fn put_bytes(regs: &mut [u64], r: Reg, size: u32, b: &[u8]) {
-    let n = (size as usize).min(b.len());
     let r = r as usize;
+    if size == 8
+        && let Some(w) = b.first_chunk::<8>()
+    {
+        // A pointer or a 64-bit number: the common case of a handler value or argument.
+        regs[r] = u64::from_le_bytes(*w);
+        return;
+    }
+    let n = (size as usize).min(b.len());
     for i in 0..words(size) as usize {
         let lo = i * 8;
         let w = if lo + 8 <= n {

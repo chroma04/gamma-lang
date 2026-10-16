@@ -3,9 +3,11 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 
 ## Performance
 7. C big values: gm_out results + in-place construction + borrowed params of pure fns
-   (decisions/016). Left: nested aggregate elements still go through a temp; gcc SRA is weak
-   on uint8_t-array blobs (bigcopy bench: gcc 1.9 s vs clang 0.13 s).
-24. Interpreter: the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
+   (decisions/016); s21: args that are fields of locals/derefs/params passed in place
+   (expr.rs in_place_root), small fns `static inline` in non-debug builds (gcc -O2 did not
+   inline them: bigcopy-style bench gcc 1.13 → 0.33 s, clang 0.4 s). Left: nested
+   aggregate elements still go through a temp; Index places are still copied.
+24. Interpreter (s21: perform 873 → 817 instr/op over a call's ~616): the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
     is dispatch/call-bound (~15 ns/op), plus `new`/`destroy` spread over builtins. Follow-ups
     listed in decisions/020.
 48. C compilers superlinear in the size of ONE C function (9.4k-line main: ~20 s gcc -O1;
@@ -23,7 +25,9 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     (>2,000 names, func.rs LONG_FN_NAMES) = optnone,noinline on those clangs; 50k ≈ 35 s.
     Real programs: max ~770 names/function (examples/calc). (Old #49 "deep nested C
     expressions" was a misdiagnosis: cgen already spills every operand into temps.)
-- Safe mode: new/destroy ≈ 4x Checked (GC alloc of `new`; `&key` in std maps escapes).
+- Safe mode: new/destroy ≈ 3.6x Checked net of startup (s21 measured: Fil-C malloc+free is
+  3.7x glibc on its own; by-ref `site` param copies and handler blob loads cost ~50–90 instr
+  each under Fil-C; `&key` in std maps escapes).
 
 ## Behaviour differences (allowed, documented)
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by

@@ -116,7 +116,11 @@ impl Ctx {
     pub fn find(&self, effect: &EffectRef) -> Option<&Rc<CtxNode>> {
         let mut cur = self.0.as_ref();
         while let Some(n) = cur {
-            if &n.effect == effect {
+            // Compare the effect first: most effects have no arguments, and comparing two
+            // empty argument lists is a call.
+            if n.effect.effect == effect.effect
+                && (n.effect.args.is_empty() && effect.args.is_empty() || n.effect.args == effect.args)
+            {
                 return Some(n);
             }
             cur = n.parent.0.as_ref();

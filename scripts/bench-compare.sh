@@ -3,6 +3,7 @@
 # $2 (the base branch's), and writes a Markdown table of the time per run and the ratio of
 # the first to the second to $GITHUB_STEP_SUMMARY (or standard output). It is informational:
 # it never fails on timing, and a base compiler without `gamma bench` just leaves the ratio out.
+# It fails when the benchmarks do not build or run with the compiler at $1.
 #
 # usage: scripts/bench-compare.sh <head gamma> <base gamma or ""> <bench directory>
 set -u
@@ -37,7 +38,8 @@ if ! "$head_gamma" bench "$dir" --backend=c >"$tmp/head.txt" 2>"$tmp/head.err"; 
         cat "$tmp/head.err" "$tmp/head.txt"
         echo '```'
     } >>"$out"
-    exit 0
+    cat "$tmp/head.err" "$tmp/head.txt" >&2
+    exit 1
 fi
 to_ns <"$tmp/head.txt" >"$tmp/head.tsv"
 

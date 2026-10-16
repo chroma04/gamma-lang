@@ -1,0 +1,38 @@
+//! exit: 134
+//! stderr
+// A trap in a task that `@fiber` started (here through `std/fiber`) is reported with the
+// `with … on` that drives the task as the task's caller, on both back ends, whatever the
+// body of the `with` called before the task first ran (§18.3).
+fiber :: import "std/fiber"
+
+Work :: struct { n: i64 }
+
+half :: fn(w: ^Work) -> i64 {
+    return 10 / (w.n - 3)
+}
+
+task :: fn(w: ^Work) needs fiber.Sched(Out) + Out {
+    for i in 0..5 {
+        w.n = i
+        print("task {} -> {}\n", i, half(w))
+        fiber.yield_now()
+    }
+}
+
+note :: fn(s: string) needs Out {
+    print("{}\n", s)
+}
+
+main :: fn() needs Out + Alloc {
+    main_stack: [32768]u8 = ---
+    task_stack: [32768]u8 = ---
+    w := Work(n: 0)
+    sched := fiber.scheduler(Out)
+    defer sched.deinit()
+    with &sched on main_stack[..] {
+        note("start")
+        fiber.spawn(task, &w, task_stack[..])
+        note("spawned")
+        fiber.join()
+    }
+}

@@ -1,0 +1,5 @@
+trap: division by zero
+  at tests/conformance/run/backtrace_fiber_task.gm:11:12 in half
+  called from tests/conformance/run/backtrace_fiber_task.gm:17:37 in task
+  called from <std>/fiber/fiber.gm:145:5 in entry
+  called from tests/conformance/run/backtrace_fiber_task.gm:32:5 in main

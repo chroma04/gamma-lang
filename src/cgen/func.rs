@@ -171,6 +171,15 @@ const HUGE_FN_NAMES: u32 = 20_000;
 /// operations has about one per link.
 const LONG_FN_NAMES: u32 = 2_000;
 
+/// The number of temporaries and labels up to which an optimized build declares a function
+/// without an `#inline` hint `inline`. GCC at `-O2` inlines a function that is not declared
+/// `inline` only when it is tiny by its estimate, which the frame set-up of a generated
+/// function already exceeds; a small function taking or returning a large value (vector
+/// arithmetic, say) then stays a call, at several times the cost of the inlined code that
+/// Clang produces. Declared `inline`, it is inlined up to GCC's larger limit for such
+/// functions, which still keeps big functions out.
+const SMALL_FN_NAMES: u32 = 64;
+
 fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: Option<Spec>) -> CResult<()> {
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
@@ -333,6 +342,9 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     }
     fg.end_lines();
     let mut out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
+    if !fg.g.opts.debug && fg.counter <= SMALL_FN_NAMES && def.hints.inline.is_none() {
+        out = out.replacen("static __attribute__", "static inline __attribute__", 1);
+    }
     if fg.counter > HUGE_FN_NAMES {
         out = out.replacen("static __attribute__", "static GM_HUGE_FN __attribute__", 1);
     }
