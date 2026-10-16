@@ -8,6 +8,7 @@
 
 mod arith;
 mod borrow;
+mod chain;
 mod constarg;
 mod csrc;
 pub use csrc::{CSource, Extras, Link, link_inputs, load_for_interpreter};
@@ -857,7 +858,12 @@ pub struct Build {
 /// type, and values are blobs written and read piecewise with memcpy), so C's type-based
 /// alias analysis does not hold: `-fno-strict-aliasing`. Without it gcc 13 at -O2 drops
 /// some of those writes (a slice length written into a temporary was lost).
-const BASE_CFLAGS: [&str; 5] = ["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off"];
+///
+/// `-w` hides all warnings, but gcc still runs its access-warning pass unless some such
+/// warning is switched off by name, and the pass takes time that grows much faster than
+/// the length of a very long function: `-Wno-free-nonheap-object` stops it.
+const BASE_CFLAGS: [&str; 6] =
+    ["-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off"];
 
 /// The flags every build uses on `target`: [`BASE_CFLAGS`], and `-pthread` except on Windows,
 /// where the runtime uses the Win32 API and programs need no thread library.

@@ -178,6 +178,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // --- expressions ------------------------------------------------------------------------------
 
     pub fn expr(&mut self, e: &'a Expr) -> CResult<String> {
+        if let Some(acc) = self.chain_operand(e) {
+            return Ok(acc);
+        }
+        match self.long_chain(e) {
+            Some(r) => r,
+            None => self.expr_node(e),
+        }
+    }
+
+    /// Emits `e` itself, without regard to the chain it may be the end of (see `chain`).
+    pub(super) fn expr_node(&mut self, e: &'a Expr) -> CResult<String> {
         let t = e.ty;
         match &e.kind {
             ExprKind::Int(v) => Ok(self.int_lit(t, v)),

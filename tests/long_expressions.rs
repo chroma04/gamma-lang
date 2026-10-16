@@ -99,3 +99,120 @@ fn postfix_chain_limit_is_an_error() {
         check_error("run", name, &src, "nested too deeply");
     }
 }
+
+// --- the C back end ---------------------------------------------------------------------------
+//
+// A chain of operations is emitted as an accumulator updated by one block per link once it is
+// longer than a few hundred links (see `src/cgen/chain.rs`); without that, the C compilers take
+// minutes on chains of tens of thousands of links. These tests build chains well past the
+// threshold and compare the native program with the interpreter. The longest ones take a few
+// seconds with gcc at the default optimization level.
+
+/// Whether a C compiler is available (the tests are skipped otherwise, or with `GAMMA_TEST_C=0`).
+fn have_cc() -> bool {
+    if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
+        return false;
+    }
+    gamma::toolchain::Toolchain::from_env()
+        .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
+}
+
+/// Runs `src` with the interpreter and through the C back end; returns the exit code and
+/// standard output of each.
+fn run_both(name: &str, src: &str) -> [(Option<i32>, String); 2] {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("long-expressions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.gm"));
+    std::fs::write(&path, src).unwrap();
+    ["interp", "c"].map(|backend| {
+        let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+            .arg("run")
+            .arg(format!("--backend={backend}"))
+            .arg(&path)
+            .env("GAMMA_CACHE_DIR", dir.join("cache"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("C compiler"), "the C compiler failed:\n{}", &stderr[..stderr.len().min(800)]);
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+}
+
+fn same_output(name: &str, src: &str, expected: &str) {
+    if !have_cc() {
+        eprintln!("skipped: no C compiler");
+        return;
+    }
+    let [interp, native] = run_both(name, src);
+    assert_eq!(interp.1, expected, "interpreter output");
+    assert_eq!(native, interp, "native run differs from the interpreter");
+}
+
+fn main_with(prelude: &str, body: &str) -> String {
+    format!("{prelude}main :: fn() needs Out {{\n    a := -5\n    y := 1\n{body}    print(\"{{}}\\n\", x)\n}}\n")
+}
+
+#[test]
+fn native_long_method_chain() {
+    // The longest chain the parser accepts: 100,000 links (`.abs` and `()` count one each).
+    let src = main_with("", &format!("    x := a{}\n", ".abs()".repeat(50_000)));
+    same_output("native_abs", &src, "5\n");
+}
+
+#[test]
+fn native_long_sum() {
+    let sum = vec!["y"; 40_000].join(" + ");
+    same_output("native_sum", &main_with("", &format!("    x := {sum}\n")), "40000\n");
+}
+
+#[test]
+fn native_long_user_method_chain() {
+    let prelude = "N :: struct { v: i32 }\nf :: fn(n: N) -> N { return N(v: n.v + 1) }\n";
+    let src = main_with(prelude, &("    n := N(v: 1)\n    x := n".to_string() + &".f()".repeat(5_000) + ".v\n"));
+    same_output("native_user_chain", &src, "5001\n");
+}
+
+#[test]
+fn native_chain_keeps_evaluation_order() {
+    // Each term has a visible effect; the order of the output is the order of evaluation.
+    let prelude = "f :: fn(k: i64) -> i64 needs Out {\n    print(\"{} \", k)\n    return k\n}\n";
+    let n = 600;
+    let sum = (1..=n).map(|k| format!("f({k})")).collect::<Vec<_>>().join(" + ");
+    let expected: String = (1..=n).map(|k| format!("{k} ")).collect::<String>() + &format!("{}\n", n * (n + 1) / 2);
+    same_output("native_order", &main_with(prelude, &format!("    x := {sum}\n")), &expected);
+}
+
+#[test]
+fn native_chain_short_circuits() {
+    // The right operands of `and` are evaluated only while the chain so far is true.
+    let prelude = "t :: fn(k: i64) -> bool needs Out {\n    print(\"{} \", k)\n    return k < 400\n}\n";
+    let chain = (1..=600).map(|k| format!("t({k})")).collect::<Vec<_>>().join(" and ");
+    let expected: String = (1..=400).map(|k| format!("{k} ")).collect::<String>() + "false\n";
+    same_output("native_and", &main_with(prelude, &format!("    x := {chain}\n")), &expected);
+    // `or` stops at the first true operand.
+    let prelude = "t :: fn(k: i64) -> bool needs Out {\n    print(\"{} \", k)\n    return k >= 300\n}\n";
+    let chain = (1..=600).map(|k| format!("t({k})")).collect::<Vec<_>>().join(" or ");
+    let expected: String = (1..=300).map(|k| format!("{k} ")).collect::<String>() + "true\n";
+    same_output("native_or", &main_with(prelude, &format!("    x := {chain}\n")), &expected);
+}
+
+#[test]
+fn native_chain_changes_type() {
+    // A comparison ends a sum: the chain's accumulator changes from a number to a bool.
+    let sum = vec!["y"; 500].join(" + ");
+    same_output("native_type", &main_with("", &format!("    x := {sum} > 499\n")), "true\n");
+}
+
+#[test]
+fn native_chain_traps_where_the_interpreter_does() {
+    if !have_cc() {
+        return;
+    }
+    // 300 terms of 1 overflow an `i8` at the 128th.
+    let sum = vec!["z"; 300].join(" + ");
+    let src = main_with("", &format!("    z: i8 = 1\n    x := {sum}\n"));
+    let [interp, native] = run_both("native_trap", &src);
+    assert_eq!(interp.0, native.0, "exit codes");
+    assert_ne!(interp.0, Some(0));
+    assert_eq!(interp.1, native.1);
+}
