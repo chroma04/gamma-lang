@@ -355,10 +355,6 @@ focused), and the generator keeps them well typed and terminating:
   cooperative scheduler of `std/fiber` (`fiber.spawn`, `fiber.yield_now`, `fiber.join`).
   Scheduling is round-robin and uses no clock, so the output is deterministic.
 
-When a trap happens inside a fiber, the backtrace is compared only down to the first frame
-of the `std/fiber` library: the interpreter and the C back end name the library's entry
-frames differently.
-
 Each program runs with the interpreter (`gamma run`) and with the C back end
 (`gamma run --backend=c`) compiled by every C compiler listed in `--cc` (default: gcc and
 clang; compilers that are not installed are skipped). Standard output, standard error

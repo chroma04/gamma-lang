@@ -1,0 +1,5 @@
+start
+spawned
+task 0 -> -3
+task 1 -> -5
+task 2 -> -10

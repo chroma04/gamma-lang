@@ -27,8 +27,8 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   generics/strings (generator in tools/difftest/src/program.rs); CI job running a few
   hundred seeds.
 - bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
-- Perf: Safe new/destroy ~4x Checked (needs Fil-C: its setup.sh was refused by the
-  auto-mode classifier in s21 — ask the user to allow or run it); interpreter `perform`
+- Perf: Safe new/destroy ~3.6x Checked (s21: memset → gap stores; rest is Fil-C cost of
+  by-ref param copies and blob loads with pointers, see sessions/s21); interpreter `perform`
   (s21 trimmed it ~6%; vm_perform still ~200 instr self).
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions

@@ -84,6 +84,9 @@ struct WithRec {
     body_cx: Ctx,
     /// The fibers this `with` created.
     owned: Vec<u64>,
+    /// Where the `with` is: the call site that backtraces give the fibers made by `@fiber`
+    /// for it, which it drives, as the C runtime does.
+    span: Span,
 }
 
 enum Start {
@@ -199,7 +202,7 @@ impl<'a> Machine<'a> {
         self.check_stack(span, stack)?;
         let key = (a.fr.id, label);
         let (tx, rx) = channel();
-        let rec = WithRec { tx, rx: Rc::new(rx), suspended: vec![], body_cx: cx.clone(), owned: vec![] };
+        let rec = WithRec { tx, rx: Rc::new(rx), suspended: vec![], body_cx: cx.clone(), owned: vec![], span };
         if self.fib.withs.insert(key, rec).is_some() {
             return self.trap(span, "internal error: a `with … on` is active twice");
         }
@@ -492,7 +495,7 @@ impl<'a> Machine<'a> {
         let Some(w) = self.fib.withs.get(&key) else {
             return self.trap(span, "internal error: `@fiber` in a clause of a `with` without `on`");
         };
-        let start = Start::Call { f, fty: args[0].ty, arg, cx: w.body_cx.clone(), span };
+        let start = Start::Call { f, fty: args[0].ty, arg, cx: w.body_cx.clone(), span: w.span };
         let id = self.new_fiber(key, start, State::Suspended(key), &stack);
         self.fib.withs.get_mut(&key).unwrap().suspended.push(id);
         Ok(self.cont_bytes(id, 1))

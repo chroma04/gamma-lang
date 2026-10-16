@@ -9,7 +9,8 @@
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
 //! - `//! stderr` also compares the standard error of a `run` or `test` test
-//!   with the sibling `<name>.stderr`, for tests of trap reports.
+//!   with the sibling `<name>.stderr`, for tests of trap reports. Paths into the
+//!   standard library are written `<std>/…` there (see `normalize_stderr`).
 //! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in
 //!   that build mode (default: debug). `//! mode: safe` tests run only through
 //!   the C back end, and only where Safe builds are available (below), since
@@ -215,6 +216,27 @@ struct Reported {
 
 /// Parses `path:line:col: severity: message` and `severity: message` lines.
 /// `files` are the test's files, to recognize the path prefix.
+/// Standard error with the standard library's directory, which differs between
+/// checkouts, written as `<std>` and the rest of such a path with `/` separators.
+fn normalize_stderr(stderr: &str) -> String {
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std").display().to_string();
+    let mut out = String::with_capacity(stderr.len());
+    for line in stderr.split_inclusive('\n') {
+        match line.find(&std_dir) {
+            Some(i) => {
+                let rest = &line[i + std_dir.len()..];
+                let end = rest.find(':').unwrap_or(rest.len());
+                out.push_str(&line[..i]);
+                out.push_str("<std>");
+                out.push_str(&rest[..end].replace('\\', "/"));
+                out.push_str(&rest[end..]);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
 fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
     let mut out = vec![];
     for line in stderr.lines() {
@@ -404,7 +426,7 @@ fn run_c(
     }
     if let Some(g) = stderr_golden {
         let expected = fs::read_to_string(g).unwrap_or_default();
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = normalize_stderr(&String::from_utf8_lossy(&output.stderr));
         if expected != stderr {
             problems.push(format!(
                 "{} standard error differs from {}:\n{}",
@@ -467,6 +489,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let golden_stderr = normalize_stderr(&stderr);
     let mut problems = vec![];
 
     // Diagnostics.
@@ -543,11 +566,15 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         .then_some(stderr_golden.as_path());
     if let Some(g) = stderr_golden {
         if bless {
-            fs::write(g, &stderr).map_err(|e| format!("cannot write {}: {}", g.display(), e))?;
+            fs::write(g, &golden_stderr).map_err(|e| format!("cannot write {}: {}", g.display(), e))?;
         } else {
             let expected = fs::read_to_string(g).unwrap_or_default();
-            if expected != stderr {
-                problems.push(format!("standard error differs from {}:\n{}", g.display(), diff(&expected, &stderr)));
+            if expected != golden_stderr {
+                problems.push(format!(
+                    "standard error differs from {}:\n{}",
+                    g.display(),
+                    diff(&expected, &golden_stderr)
+                ));
             }
         }
     }

@@ -47,6 +47,40 @@ impl<'g, 'a> FnGen<'g, 'a> {
         n
     }
 
+    /// A blob temporary of type `t` whose bytes outside `parts` (offset and size of each
+    /// piece the caller is about to store) are zero. Only the gaps are cleared, with a few
+    /// stores, rather than the whole value with `memset`: under Fil-C a `memset` is a call
+    /// into its runtime, which cost more than building the value.
+    fn blob_over(&mut self, t: Ty, parts: &[(u64, u64)]) -> String {
+        let size = self.g.ty.size(t);
+        let mut covered = vec![false; size as usize];
+        for &(off, len) in parts {
+            for b in covered.iter_mut().skip(off as usize).take(len as usize) {
+                *b = true;
+            }
+        }
+        let gaps = covered.iter().filter(|c| !**c).count();
+        if gaps > 32 {
+            return self.blob(t);
+        }
+        let n = self.tmp_uninit(t);
+        let mut i = 0;
+        while i < covered.len() {
+            if covered[i] {
+                i += 1;
+                continue;
+            }
+            // The largest aligned piece of the gap at `i`.
+            let k = [8usize, 4, 2, 1]
+                .into_iter()
+                .find(|&k| i % k == 0 && i + k <= covered.len() && covered[i..i + k].iter().all(|c| !*c))
+                .unwrap();
+            self.line(&format!("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", k * 8, n, i));
+            i += k;
+        }
+        n
+    }
+
     fn store(&mut self, t: Ty, addr: &str, v: &str) {
         let c = self.g.ty.cty(t);
         self.line(&format!("GM_ST({}, {}, {});", c, addr, v));
@@ -73,8 +107,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return payload.to_string();
         }
         let TyKind::Optional(inner) = t.kind() else { unreachable!() };
-        let b = self.blob(t);
         let off = self.g.ty.offsets(t)[1];
+        let b = self.blob_over(t, &[(0, self.g.ty.size(*inner)), (off, 1)]);
         self.store(*inner, &format!("((uint8_t *)&{})", b), payload);
         self.line(&format!("((uint8_t *)&{})[{}] = 1;", b, off));
         b
@@ -94,8 +128,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     pub fn make_res(&mut self, t: Ty, is_err: bool, payload_ty: Ty, payload: &str) -> String {
-        let b = self.blob(t);
         let offs = self.g.ty.offsets(t);
+        let b = self.blob_over(t, &[(offs[0], 1), (offs[1], self.g.ty.size(payload_ty))]);
         self.line(&format!("((uint8_t *)&{})[{}] = {};", b, offs[0], is_err as u8));
         self.store(payload_ty, &format!("((uint8_t *)&{} + {})", b, offs[1]), payload);
         b
@@ -106,8 +140,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let def = self.adt_def(t);
         let AdtKind::Union { tag, variants } = &def.kind else { unreachable!() };
         let (tag, variant) = (*tag, variants[v].clone());
-        let b = self.blob(t);
         let offs = self.g.ty.offsets(t);
+        let mut parts = vec![(offs[0], self.g.ty.size(tag))];
+        if let (Some(_), Some(pt)) = (payload, variant.payload) {
+            parts.push((offs[1], self.g.ty.size(pt)));
+        }
+        let b = self.blob_over(t, &parts);
         let tag_val = self.int_lit(tag, &variant.tag);
         self.store(tag, &format!("((uint8_t *)&{} + {})", b, offs[0]), &tag_val);
         if let (Some(p), Some(pt)) = (payload, variant.payload) {
@@ -349,8 +387,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 for x in elems {
                     vals.push(self.expr(x)?);
                 }
-                let b = self.blob(t);
                 let offs = self.g.ty.offsets(t);
+                let parts: Vec<(u64, u64)> = elems.iter().zip(&offs).map(|(x, o)| (*o, self.g.ty.size(x.ty))).collect();
+                let b = self.blob_over(t, &parts);
                 for (i, (x, v)) in elems.iter().zip(&vals).enumerate() {
                     self.store(x.ty, &format!("((uint8_t *)&{} + {})", b, offs[i]), v);
                 }
@@ -361,7 +400,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 for x in elems {
                     vals.push(self.expr(x)?);
                 }
-                let b = self.blob(t);
+                let parts: Vec<(u64, u64)> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| (i as u64 * self.g.ty.size(x.ty), self.g.ty.size(x.ty)))
+                    .collect();
+                let b = self.blob_over(t, &parts);
                 for (i, (x, v)) in elems.iter().zip(&vals).enumerate() {
                     let esz = self.g.ty.size(x.ty);
                     self.store(x.ty, &format!("((uint8_t *)&{} + {})", b, i as u64 * esz), v);

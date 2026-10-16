@@ -27,6 +27,8 @@
   bisect functions with `__attribute__((optimize("no-strict-aliasing")))` (s6 found main()).
 - Fil-C: `curl -LO https://github.com/pizlonator/fil-c/releases/download/v0.686/optfil-0.686-linux-x86_64.tar.xz`,
   extract, `sudo ./setup.sh -u` → /opt/fil (glibc, has ucontext). Fil-C panics exit 134.
+  The auto-mode classifier may refuse running setup.sh; `tar xf fil.tar.xz -C /opt` (inside
+  the release tarball) is all `-u` does. valgrind/callgrind works on Fil-C binaries.
   It rejects top-level asm and pointer operands in inline asm; casts via integers lose capability.
 - NEVER `pkill -f`/`pgrep -f` with a pattern that occurs in your own command line: it kills the
   shell running it (exit 144).

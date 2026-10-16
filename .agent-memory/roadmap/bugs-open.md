@@ -25,7 +25,9 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     (>2,000 names, func.rs LONG_FN_NAMES) = optnone,noinline on those clangs; 50k ≈ 35 s.
     Real programs: max ~770 names/function (examples/calc). (Old #49 "deep nested C
     expressions" was a misdiagnosis: cgen already spills every operand into temps.)
-- Safe mode: new/destroy ≈ 4x Checked (GC alloc of `new`; `&key` in std maps escapes).
+- Safe mode: new/destroy ≈ 3.6x Checked net of startup (s21 measured: Fil-C malloc+free is
+  3.7x glibc on its own; by-ref `site` param copies and handler blob loads cost ~50–90 instr
+  each under Fil-C; `&key` in std maps escapes).
 
 ## Behaviour differences (allowed, documented)
 12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
