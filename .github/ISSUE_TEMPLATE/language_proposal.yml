@@ -1,0 +1,28 @@
+name: Language or library proposal
+description: A change to the language specification or a new standard library feature.
+labels: [proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gamma's specification is gamma-spec.md. Library additions must meet the
+        standard library policy in §22 of the spec.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible to write today? Show the code you write now.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would write instead, and the spec sections it affects.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and costs
+      description: Other designs, and what the change costs (complexity, compile time, interaction with effects, C interop).

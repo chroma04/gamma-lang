@@ -37,9 +37,14 @@ impl<'a, 's> FnCx<'a, 's> {
             sty = Ty::error();
         }
         let mut arms = vec![];
+        // A pattern that was reported stands for nothing; checking coverage with it would
+        // only add follow-on errors.
+        let mut bad_pattern = false;
         for arm in &m.arms {
             self.push_scope();
+            let before = self.sema.sess.diags.error_count();
             let pat = self.arm_pattern(&arm.pats, sty);
+            bad_pattern |= self.sema.sess.diags.error_count() > before;
             let guard = arm.guard.as_ref().map(|g| {
                 let e = self.expr(g, Some(Ty::bool()));
                 self.expect_bool(e)
@@ -55,7 +60,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // Exhaustiveness and reachability.
         if deferred {
             self.deferred_matches.push((m.span, m.arms.iter().map(|a| a.span).collect()));
-        } else if !sty.is_error() {
+        } else if !sty.is_error() && !bad_pattern {
             let report = {
                 let checker = self.checker();
                 let list: Vec<(&Pat, bool)> = arms.iter().map(|a| (&a.pat, a.guard.is_some())).collect();
@@ -216,7 +221,18 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// True if `p` names a variant with a payload without giving one (`.Circle`).
     fn omits_payload(&mut self, p: &ast::Pattern, ty: Ty) -> bool {
-        let ty = super::call::strip_wrappers(self.infer.resolve(ty));
+        let ty = self.infer.resolve(ty);
+        if let PatternKind::Err(inner) = &p.kind {
+            let mut t = ty;
+            while let crate::types::TyKind::Optional(i) = t.kind() {
+                t = *i;
+            }
+            return match t.kind() {
+                crate::types::TyKind::Result { err, .. } => self.omits_payload(inner, *err),
+                _ => false,
+            };
+        }
+        let ty = super::call::strip_wrappers(ty);
         match &p.kind {
             PatternKind::Path { path, args: None } => {
                 let name = match &path.kind {
@@ -227,10 +243,6 @@ impl<'a, 's> FnCx<'a, 's> {
                     .union_variants(ty)
                     .is_some_and(|(vs, _)| vs.iter().any(|v| v.name == name && v.payload.is_some()))
             }
-            PatternKind::Err(inner) => match ty.kind() {
-                crate::types::TyKind::Result { err, .. } => self.omits_payload(inner, *err),
-                _ => false,
-            },
             _ => false,
         }
     }

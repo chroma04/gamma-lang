@@ -516,6 +516,9 @@ impl<'a, 's> FnCx<'a, 's> {
         self.temp_ref_arg = is_const_ref_arg(e, ty);
         let v = self.expr(e, Some(ty));
         self.temp_ref_arg = false;
+        if self.iterator_call_as_value(e, &v, ty) {
+            return error_expr(e.span);
+        }
         let v = self.array_arg_as_slice(v, ty);
         self.coerce(v, ty)
     }

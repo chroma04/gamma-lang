@@ -2,3 +2,6 @@
 *.o
 *.out.c
 /.claude/worktrees/
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

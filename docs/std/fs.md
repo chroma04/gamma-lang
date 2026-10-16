@@ -42,7 +42,7 @@ ReadError :: union {
 }
 ```
 
-Why reading a whole file failed.
+Why reading a whole file failed (`io.ReadError` is the same type).
 
 ## Type aliases
 

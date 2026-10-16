@@ -11,13 +11,17 @@
 //   _not_in       the two-word operator `not in`
 //   _test_keyword the contextual keyword `test`, only before a string
 //
-// The scanner keeps no state. Newlines inside parentheses and brackets never reach it
-// as significant, because the grammar does not accept `_newline` there.
+// A block comment that contains a line break counts as a line break (spec 2.2). The
+// comment is still produced as a `block_comment` token; its line break follows it as a
+// zero-width `_newline`, which the scanner remembers in its one byte of state between
+// the two calls. Newlines inside parentheses and brackets never reach the scanner as
+// significant, because the grammar does not accept `_newline` there.
 
 #include "tree_sitter/parser.h"
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum TokenType {
@@ -32,17 +36,20 @@ enum TokenType {
   ERROR_SENTINEL,
 };
 
-void *tree_sitter_gamma_external_scanner_create(void) { return NULL; }
-void tree_sitter_gamma_external_scanner_destroy(void *payload) { (void)payload; }
+// The scanner's state: whether the last token was a block comment whose line break is
+// a significant newline still to be produced.
+typedef struct {
+  bool pending_newline;
+} Scanner;
+
+void *tree_sitter_gamma_external_scanner_create(void) { return calloc(1, sizeof(Scanner)); }
+void tree_sitter_gamma_external_scanner_destroy(void *payload) { free(payload); }
 unsigned tree_sitter_gamma_external_scanner_serialize(void *payload, char *buffer) {
-  (void)payload;
-  (void)buffer;
-  return 0;
+  buffer[0] = (char)((Scanner *)payload)->pending_newline;
+  return 1;
 }
 void tree_sitter_gamma_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
-  (void)payload;
-  (void)buffer;
-  (void)length;
+  ((Scanner *)payload)->pending_newline = length > 0 && buffer[0];
 }
 
 static inline void advance(TSLexer *lexer) { lexer->advance(lexer, false); }
@@ -54,13 +61,14 @@ static bool is_ident_start(int32_t c) {
 
 static bool is_ident_cont(int32_t c) { return is_ident_start(c) || (c >= '0' && c <= '9'); }
 
-// Skips the rest of a block comment whose `/*` has been consumed. Returns false at the
-// end of the file.
-static bool skip_block_comment_body(TSLexer *lexer) {
+// Skips the rest of a block comment whose `/*` has been consumed, setting `*newline` if
+// it contains a line break. Returns false at the end of the file.
+static bool skip_block_comment_body(TSLexer *lexer, bool *newline) {
   int depth = 1;
   while (depth > 0) {
     if (lexer->eof(lexer)) return false;
     int32_t c = lexer->lookahead;
+    if (c == '\n') *newline = true;
     advance(lexer);
     if (c == '/' && lexer->lookahead == '*') {
       advance(lexer);
@@ -136,7 +144,8 @@ static bool newline_is_significant(TSLexer *lexer, bool in_match_body) {
         while (!lexer->eof(lexer) && lexer->lookahead != '\n') advance(lexer);
       } else if (lexer->lookahead == '*') {
         advance(lexer);
-        if (!skip_block_comment_body(lexer)) return true;
+        bool newline = false;
+        if (!skip_block_comment_body(lexer, &newline)) return true;
       } else {
         return true;
       }
@@ -182,8 +191,17 @@ static void skip_blanks_advance(TSLexer *lexer) {
 }
 
 bool tree_sitter_gamma_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
-  (void)payload;
+  Scanner *scanner = payload;
+  bool pending = scanner->pending_newline;
+  scanner->pending_newline = false;
   if (valid[ERROR_SENTINEL]) return false;
+
+  // The line break of the block comment just produced.
+  if (pending && (valid[NEWLINE] || valid[ARM_NEWLINE])) {
+    lexer->mark_end(lexer);
+    lexer->result_symbol = valid[ARM_NEWLINE] ? ARM_NEWLINE : NEWLINE;
+    return true;
+  }
 
   while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\r') skip(lexer);
 
@@ -203,9 +221,15 @@ bool tree_sitter_gamma_external_scanner_scan(void *payload, TSLexer *lexer, cons
     advance(lexer);
     if (lexer->lookahead != '*') return false;
     advance(lexer);
-    if (!skip_block_comment_body(lexer)) return false;
+    bool newline = false;
+    if (!skip_block_comment_body(lexer, &newline)) return false;
     lexer->mark_end(lexer);
     lexer->result_symbol = BLOCK_COMMENT;
+    // A line break inside the comment is a newline where one may end the statement,
+    // subject to the continuation rule for what follows (spec 2.8).
+    if (newline && (valid[NEWLINE] || valid[ARM_NEWLINE])) {
+      scanner->pending_newline = newline_is_significant(lexer, valid[ARM_NEWLINE]);
+    }
     return true;
   }
 

@@ -471,7 +471,27 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, super::matching::c_union_match(u));
                 return pat(ty, PatKind::Wild, span);
             }
-            self.error(span, format!("`.{}` matches a union variant, but this is `{}`", vname.name, u));
+            let mut d = crate::diag::Diagnostic::error(
+                span,
+                format!("`.{}` matches a union variant, but this is `{}`", vname.name, u),
+            );
+            // Results and optionals have no variants; their patterns unwrap (§9.3).
+            match vname.name.as_str() {
+                "Ok" | "Err" => {
+                    d = d.with_note(
+                        "a result is not a union: match its error with `!e` (or `!.Variant`) and its \
+                         success value with a plain pattern, as in `!e => …` and `v => …` (§9.3)",
+                    )
+                }
+                "Some" | "None" => {
+                    d = d.with_note(
+                        "an optional is not a union: match absence with `null` and the present value \
+                         with a plain pattern, as in `null => …` and `v => …` (§9.3)",
+                    )
+                }
+                _ => {}
+            }
+            self.sema.emit(d);
             return pat(ty, PatKind::Wild, span);
         };
         let Some(idx) = variants.iter().position(|v| v.name == vname.name) else {

@@ -85,6 +85,8 @@ pub struct FnGen<'g, 'a> {
     pub dest_call: Option<(*const Expr, String, Observed)>,
     /// The destination of the call being emitted, from `dest_call`.
     pub call_dest: Option<String>,
+    /// The link of a long chain being emitted; see `chain`.
+    pub spine: Option<super::chain::Spine>,
     pub def: &'a FnDef,
     pub out: String,
     pub indent: usize,
@@ -158,6 +160,11 @@ pub fn gen_fn(g: &mut Gen, f: FnId, spec: Option<Spec>) -> CResult<()> {
     gen_body(g, f, def, body, spec)
 }
 
+/// The number of temporaries and labels (see `FnGen::fresh`) above which a function is
+/// marked `GM_HUGE_FN`. Ordinary functions, even large ones, stay far below it; it takes
+/// a chain of several thousand operations to reach.
+const HUGE_FN_NAMES: u32 = 20_000;
+
 fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: Option<Spec>) -> CResult<()> {
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
@@ -216,6 +223,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         spec_call: None,
         dest_call: None,
         call_dest: None,
+        spine: None,
         def,
         out: String::new(),
         indent: 1,
@@ -318,7 +326,10 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         fg.temp_bytes += 2 * fg.g.ty.size(def.ret);
     }
     fg.end_lines();
-    let out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
+    let mut out = std::mem::take(&mut fg.out).replacen("GM_TEMP_BYTES", &format!("{}u", fg.temp_bytes), 1);
+    if fg.counter > HUGE_FN_NAMES {
+        out = out.replacen("static __attribute__", "static GM_HUGE_FN __attribute__", 1);
+    }
     g.bodies.push_str(&out);
     Ok(())
 }

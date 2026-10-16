@@ -1,0 +1,10 @@
+//! stage: check
+// A type alias reached through a module (`T :: m.U`) is a type too, so a local may
+// not take its name (§4.6).
+fs :: import "std/fs"
+Handle :: fs.File
+
+main :: fn() {
+    Handle := 3 //~ ERROR `Handle` names a type
+    _ = Handle
+}

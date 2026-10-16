@@ -1,11 +1,12 @@
 # Editor support
 
-Gamma has three kinds of editor support. They are independent, so you can use any of them alone.
+Gamma has three kinds of editor support, plus extensions that package them for VS Code and Zed. The three are independent, so you can use any of them alone.
 
 | Piece | What it gives you | Where it is |
 | --- | --- | --- |
 | TextMate grammar | Syntax highlighting in VS Code and other editors that read TextMate grammars. | `editors/vscode/syntaxes/gamma.tmLanguage.json` |
 | Tree-sitter grammar | Syntax highlighting, indentation, folding and a syntax tree in Neovim, Helix, Emacs, Zed and others. | `editors/tree-sitter-gamma/` |
+| Zed extension | The tree-sitter grammar's highlighting, outline and indentation in Zed, and the language server. | `editors/zed/` |
 | Language server | Diagnostics, hover, go to definition, find references, rename, completion, signature help, document symbols and formatting, for any editor with an LSP client. | `gamma lsp` |
 
 Source files use the extension `.gm`.
@@ -13,8 +14,9 @@ Source files use the extension `.gm`.
 The Neovim setup below has been checked with Neovim 0.11.4 (tree-sitter highlighting,
 and diagnostics, hover and go to definition from the language server), and the Helix
 setup with Helix 25.07.1 (`hx --health gamma` finds the server, the parser and the
-highlight queries). The VS Code extension packages with `vsce`; the Zed and Emacs
-instructions have not been tried yet. Reports of what works in other versions are
+highlight queries). The VS Code extension packages with `vsce`. The Zed extension is checked by building it
+and running its queries over the repository's sources, but has not been tried in Zed;
+the Emacs instructions have not been tried yet. Reports of what works in other versions are
 welcome.
 
 ## The gamma executable
@@ -175,7 +177,7 @@ Run `hx --health gamma` to check the setup.
 
 ## Zed
 
-Zed adds languages through extensions. An extension for Gamma needs an `extension.toml` with a `[grammars.gamma]` entry that names the repository and a commit, and a `languages/gamma/` directory with a `config.toml` and the query files. This repository does not ship that extension yet. The grammar is in a subdirectory, so check that your Zed version can load a grammar from a path inside a repository. The language server is `gamma lsp`.
+`editors/zed/` is a Zed extension: highlighting, outline, bracket matching, indentation and text objects from the tree-sitter grammar, and the language server `gamma lsp`, which the extension starts from the `gamma` on your `PATH`. Until it is in Zed's extension registry, install it with the command palette's `zed: install dev extension`, choosing the `editors/zed` directory of a checkout. Zed builds the extension's WebAssembly itself, so it needs a Rust toolchain installed through `rustup`. See `editors/zed/README.md`.
 
 ## Emacs
 

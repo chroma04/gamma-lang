@@ -5,7 +5,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ItemKind};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
@@ -116,7 +116,9 @@ impl<'s> Sema<'s> {
         if self.sess.diags.has_errors() && !self.keep_going {
             return None;
         }
-        let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
+        // `main.gm` has the empty path as its parent; the current directory is meant.
+        let dir =
+            root.parent().filter(|d| !d.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let canon = crate::source::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let package = self.package_of(&canon, None);
         let name = root.file_stem().map_or("main".to_string(), |s| s.to_string_lossy().into_owned());
@@ -378,7 +380,19 @@ impl<'s> Sema<'s> {
                 None
             }
             None => {
-                self.error(name.span, format!("the module `{}` has no declaration `{}`", module_name, name.name));
+                let mut d = crate::diag::Diagnostic::error(
+                    name.span,
+                    format!("the module `{}` has no declaration `{}`", module_name, name.name),
+                );
+                // `str.starts_with(s, p)` for the built-in method `s.starts_with(p)` (§21.3).
+                let builtin = name.name.as_str();
+                if super::methods::SLICE_FNS.contains(&builtin) || matches!(builtin, "get" | "first" | "last") {
+                    d = d.with_note(format!(
+                        "`{0}` is a built-in method of slices and strings: write `s.{0}(…)`",
+                        builtin
+                    ));
+                }
+                self.emit(d);
                 None
             }
         }

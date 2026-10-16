@@ -255,7 +255,10 @@ fn classify(src: &str, toks: &[Token]) -> Vec<Info> {
                         ta = true;
                         // A `.` that starts a statement continues the previous line only
                         // when a name follows immediately (§2.8).
-                        if p == Punct::Dot && prev.is_none() && !src[hi..].starts_with(|c: char| !c.is_whitespace()) {
+                        // The line break before it may not be a token (after `{`, say), so look at the text.
+                        let starts_line =
+                            prev.is_none() || src[..lo].rsplit('\n').next().is_some_and(|l| l.trim().is_empty());
+                        if p == Punct::Dot && starts_line && !src[hi..].starts_with(|c: char| !c.is_whitespace()) {
                             ta = false;
                         }
                         // Between two integers (`t.0.1`, `1. 5`) keep the source spacing:

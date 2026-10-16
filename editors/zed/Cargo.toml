@@ -1,0 +1,16 @@
+[package]
+name = "gamma-zed"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
+
+# This crate is built for WebAssembly by Zed; it is not part of the compiler's workspace.
+[workspace]

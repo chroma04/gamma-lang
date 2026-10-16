@@ -60,9 +60,57 @@ impl<'s> Sema<'s> {
                     Some(d) => self.decl_is_type(d, depth + 1),
                     None => false,
                 },
+                ExprKind::Field { .. } => self.syntax_is_type(module, callee, depth),
                 _ => false,
             },
+            // `T :: m.U`: a public declaration of another module.
+            ExprKind::Field { base, name } => {
+                let Some(m) = self.syntax_module(module, base, depth) else { return false };
+                match self.modules[m.0 as usize].scope.get(&name.name).copied() {
+                    Some(d) if self.decls[d.0 as usize].item.is_pub => self.decl_is_type(d, depth + 1),
+                    _ => false,
+                }
+            }
             _ => false,
+        }
+    }
+
+    /// The module that `e` names (`m` or `m.sub`), judged without resolving anything but
+    /// imports, which evaluate nothing.
+    fn syntax_module(&mut self, module: ModuleId, e: &ast::Expr, depth: u32) -> Option<ModuleId> {
+        if depth > 16 {
+            return None;
+        }
+        let d = match &e.kind {
+            ExprKind::Ident(id) => self.lookup_module_name(module, id.name)?,
+            ExprKind::Field { base, name } => {
+                let m = self.syntax_module(module, base, depth + 1)?;
+                let d = self.modules[m.0 as usize].scope.get(&name.name).copied()?;
+                if !self.decls[d.0 as usize].item.is_pub {
+                    return None;
+                }
+                d
+            }
+            _ => return None,
+        };
+        let decl = &self.decls[d.0 as usize];
+        match &decl.state {
+            super::DeclState::Done(DeclValue::Module(m)) => return Some(*m),
+            super::DeclState::Done(_) => return None,
+            _ => {}
+        }
+        let (dm, item) = (decl.module, decl.item.clone());
+        match &item.kind {
+            ast::ItemKind::Binding(b) if b.ty.is_none() && b.names.len() == 1 => match &b.init.kind {
+                ExprKind::Import(_) => match self.resolve_decl(d) {
+                    DeclValue::Module(m) => Some(m),
+                    _ => None,
+                },
+                // `sub :: m.sub`: a module re-exported by name.
+                ExprKind::Ident(_) | ExprKind::Field { .. } => self.syntax_module(dm, &b.init, depth + 1),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

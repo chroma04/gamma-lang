@@ -631,6 +631,36 @@ impl<'a, 's> FnCx<'a, 's> {
         format!("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)
     }
 
+    /// An iterator call passed for a parameter that is not an iterator parameter
+    /// (`enumerate(bytes(s))`, §13.5): reports it once, in place of the type and effect
+    /// errors it would cause, and returns true. `v` is the checked argument.
+    pub fn iterator_call_as_value(&mut self, e: &ast::Expr, v: &Expr, param: Ty) -> bool {
+        let mut inner = e;
+        while let ast::ExprKind::Paren(x) = &inner.kind {
+            inner = x;
+        }
+        if !matches!(inner.kind, ast::ExprKind::Call { .. })
+            || !self.infer.resolve(v.ty).is_unit()
+            || self.infer.resolve(param).is_unit()
+            || !self.iterator_calls.contains(&inner.span)
+        {
+            return false;
+        }
+        let text = self.sema.sess.sources.text(inner.span);
+        let callee = text.split('(').next().unwrap_or(text);
+        let callee = callee.rsplit('.').next().unwrap_or(callee).trim().to_string();
+        let param = self.infer.resolve(param);
+        self.error(
+            inner.span,
+            format!(
+                "`{callee}(…)` is an iterator, not a value: it cannot be passed for a parameter of type `{param}`; run it with `for x in {callee}(…)`, or gather its values with `collect({callee}(…))` (§13.5)"
+            ),
+        );
+        let span = inner.span;
+        self.performed.retain(|(_, s)| *s != span);
+        true
+    }
+
     /// Reports an effect performed at `span` that the function, which declares `declared`,
     /// does not declare.
     pub fn undeclared_effect(&mut self, e: &EffectRef, span: Span, declared: &EffectSet) {

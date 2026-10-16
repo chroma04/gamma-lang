@@ -146,6 +146,8 @@ If a locked commit has disappeared from the repository (history was rewritten), 
      Locking http v1.2.3
 ```
 
+`gamma test --package=<name>` runs the tests of the dependency `name` instead of your own: of a direct dependency, or of a dependency of one, found by name. The library is tested with the revisions your `gamma.lock` holds for it and for its own dependencies, so you can check that the versions you locked work together. `--all`, `--filter` and the other options of `gamma test` apply as usual, and `gamma bench --package=<name>` runs its benchmarks the same way.
+
 Two options apply to `fetch`, `check`, `run`, `build` and `test` (`--profile=<name>`, described next, applies to the last four):
 
 - `--locked` fails if `gamma.lock` is missing or would change. Use it in CI to be sure the committed lock is complete.

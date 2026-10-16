@@ -1,0 +1,16 @@
+id = "gamma"
+name = "Gamma"
+description = "Gamma language support: tree-sitter highlighting, outline and indentation, and the gamma language server."
+version = "0.1.0"
+schema_version = 1
+authors = ["quang nguyen"]
+repository = "https://github.com/chroma04/gamma-lang"
+
+[language_servers.gamma-lsp]
+name = "Gamma Language Server"
+languages = ["Gamma"]
+
+[grammars.gamma]
+repository = "https://github.com/chroma04/gamma-lang"
+rev = "559fa49b992b93e3f69ea09c36fa63d9c0a074b7"
+path = "editors/tree-sitter-gamma"

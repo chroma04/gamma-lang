@@ -8,10 +8,19 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `editors/zed/`: a Zed extension for Gamma (highlighting, outline, indentation and the
+  language server).
 - `examples/`: runnable programs, from command-line tools (`wordfreq`, `grep`,
   `sha256sum`, `json_query`) through effects, allocators, fibers, threads, TCP and C
   interop to a multi-file calculator and a package. The test suite runs each of them
   on both back ends.
+- `gamma test --package=<name>` (and `gamma bench`) runs the tests of a dependency, with
+  the revisions the package's lockfile holds for it and its own dependencies.
+- `SECURITY.md` and GitHub issue forms for bug reports and language proposals.
+- `Cargo.toml` metadata: description, license, repository and the minimum Rust
+  version (1.95), which CI now checks.
+- `fuzz/`: cargo-fuzz targets for the lexer, the parser and the formatter (see
+  `docs/contributing.md`).
 
 ### Changed
 
@@ -19,10 +28,29 @@ Versions and what each kind of change means are described in
   variable points at that conversion; a missing method or field `.name` at the start of
   a line explains that the line continues the previous one; `else` as a `match` pattern
   suggests `_`; `---` on an array that is not plain data suggests `fill:`.
+  `.Ok`/`.Err`/`.Some`/`.None` patterns explain how results and optionals are matched,
+  without follow-on exhaustiveness errors; `str.starts_with` (and the other built-in
+  slice methods called through a module) suggests `s.starts_with(…)`; an iterator
+  passed where a value is expected (`enumerate(bytes(s))`) is one error instead of two.
+- A local may not take the name of a type alias that reaches into another module
+  (`Handle :: fs.File`), as for any other type name (§4.6).
+- `io.ReadError` is now the same type as `fs.ReadError`, so one function can propagate
+  both with `try`.
 
 ### Fixed
 
+- Very long expression chains compile much faster with gcc and Clang. A 100,000-term
+  sum took gcc over 3 minutes and Clang many minutes; both now take under 30 seconds.
+  A 100,000-link method chain took gcc 8 s and Clang 13 s, and now takes 4 s and 9 s.
+- `gamma fmt` glued a line-initial `. name` after a `{` into `.name`, which changed the
+  indentation when the output was formatted again; the space is now kept.
+- A path dependency such as `../json` was not found when the input was a bare file name
+  (`gamma run main.gm` in the package directory): the leading `..` was dropped.
 - The `std/net` documentation called `connect` and `close_socket` without `Net.`.
+- `r is !.V` with a variant `V` that has a payload was rejected; it now tests the
+  variant, as `u is .V` does (§7.6).
+- The tree-sitter grammar treats a block comment that contains a line break as a line
+  break (§2.2).
 
 ## 0.1.0 - 2026-10-16
 

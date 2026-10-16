@@ -1,0 +1,20 @@
+//! stage: check
+// A result or an optional is not a union: `.Ok`, `.Err`, `.Some` and `.None`
+// patterns are reported with how such values are matched (§9.3), and the match
+// is not also reported as not exhaustive.
+
+ParseError :: union { Empty, BadDigit }
+
+parse :: fn(s: string) -> ParseError!u32 => if s.len > 0 { 1 } else { !.Empty }
+
+main :: fn() {
+    match parse("1") {
+        .Ok(v) => { _ = v } //~ ERROR `.Ok` matches a union variant //~ NOTE match its error with `!e`
+        .Err(e) => { _ = e } //~ ERROR `.Err` matches a union variant //~ NOTE a result is not a union
+    }
+    o: ?u32 = 3
+    match o {
+        .Some(v) => { _ = v } //~ ERROR `.Some` matches a union variant //~ NOTE match absence with `null`
+        .None => {} //~ ERROR `.None` matches a union variant //~ NOTE an optional is not a union
+    }
+}

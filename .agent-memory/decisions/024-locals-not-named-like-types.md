@@ -9,7 +9,7 @@
 - Implementation: FnCx::declare → Sema::names_type (ty_expr.rs): type_params, then the
   module decl judged syntactically (decl_is_type / syntax_is_type, Done state if resolved),
   never resolving — so no evaluation cycles from a name check. Field-access aliases
-  (`T :: m.U`) are not recognized as types (minor gap).
+  (`T :: m.U`, `m.G(…)`) go through syntax_module, which resolves only import decls (s19).
 - Same session: Sema.local_consts (Untyped/Const bindings in scope, truncated with scopes)
   make local constants visible to compile-time expressions; enter_module_scope /
   leave_module_scope (decls.rs) hide body scopes (type_params, value_scope, local_fns,

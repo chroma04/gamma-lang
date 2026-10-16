@@ -145,6 +145,7 @@ defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net
 
 Runs `body` under the default handlers of the ambient effects: the system heap,
 standard output and error, and the real input, clocks, randomness, files and network.
+`body` may need any subset of these effects: `fn() needs Out { … }` is accepted too.
 
 ### `mutex`
 

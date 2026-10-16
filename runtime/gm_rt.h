@@ -80,6 +80,15 @@
 #define GM_API_VAR static
 #endif
 
+/* GM_HUGE_FN: marks a generated function with an enormous body (a very long chain of
+ * operations). GCC's points-to analysis and jump threading take time that grows much
+ * faster than such a function, so they are switched off for it. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define GM_HUGE_FN __attribute__((optimize("no-tree-pta", "no-thread-jumps")))
+#else
+#define GM_HUGE_FN
+#endif
+
 #define GM_XSTR(x) GM_STR(x)
 #define GM_STR(x) #x
 /* The assembler name of C symbol `s` (macOS prefixes an underscore). */

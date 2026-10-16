@@ -13,20 +13,19 @@ nvim-treesitter submissions.
 
 ## P1 — should land before the tag
 - Done in s18 (PR #41): `examples/` (19 programs, tests/examples.rs) = the dogfood pass.
-  Leftover papercuts from it: see bugs-open.md "Dogfood papercuts".
+  Its small papercuts were fixed in s19; the rest: bugs-open.md "Dogfood papercuts".
 
 ## P2 — worth doing early
-- Fuzzing: cargo-fuzz on the parser; random-program differential (interp vs gcc vs clang);
-  tree-sitter as a second parser.
-- Tree-sitter scanner: a block comment containing a line break must count as a newline
-  (§2.8); scanner.c only handles newlines it sees directly (not verified by running).
-- bugs-open #48–49 (gcc on huge functions / deep expressions).
+(s19 did: tree-sitter comment newline, Cargo metadata + MSRV job, issue forms + SECURITY.md,
+fuzz targets, `gamma test --package=<dep>`, Zed extension, long-chain C compile time.)
+- Fuzzing: fuzz/ has cargo-fuzz targets parse + fmt (s19; ~40 min run, 1 fmt bug fixed;
+  parse target slow ~110 exec/s with big seeds). Left: a sema/check target, random-program
+  differential (interp vs gcc vs clang), tree-sitter as a second parser.
+- bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
 - Perf: Safe new/destroy ~4x Checked; interpreter `perform` cost.
-- Cargo.toml metadata: license (MIT), description, repository, rust-version.
-- GitHub issue templates and SECURITY.md (.github has only workflows).
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
-- Editors: Zed extension (none shipped), Emacs untested.
-- Library tests runnable from a dependency root (bugs-open #30).
+- Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions
+  is the user's; Emacs untested.
 
 ## Nice — after 0.1.0
 - Language: `@fields(T)` reflection (§22 deferred), SIMD types (C.10), enum-indexed arrays

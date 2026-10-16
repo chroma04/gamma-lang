@@ -1,0 +1,18 @@
+//! stage: check
+// An iterator call is not a value (§13.5): passing one for a parameter that is not
+// an iterator parameter is one error, not a type error plus an effect error.
+
+total :: fn(xs: []const u8) -> u32 {
+    n: u32 = 0
+    for x in each(xs) { n += x }
+    return n
+}
+
+main :: fn() {
+    s := "hey"
+    for i, b in enumerate(bytes(s)) { _ = (i, b) } //~ ERROR `bytes(…)` is an iterator, not a value: it cannot be passed for a parameter of type `[]const T`
+    _ = total(bytes(s)) //~ ERROR `bytes(…)` is an iterator, not a value
+    // What was meant:
+    for i, b in enumerate(s) { _ = (i, b) }
+    _ = total(s)
+}

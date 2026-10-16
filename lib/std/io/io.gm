@@ -110,11 +110,9 @@ pub read_to_list :: fn(out: ^List(u8)) -> IoError!() needs In {
     }
 }
 
-/// Why `read_all` failed.
-pub ReadError :: union {
-    Io: IoError
-    Alloc: AllocError
-}
+/// Why `read_all` failed: the same type as `fs.ReadError`, so one error path can
+/// handle both.
+pub ReadError :: fs.ReadError
 
 /// All of `In`, in memory from the current allocator; release it with `free(data)`.
 pub read_all :: fn() -> ReadError![]u8 needs In + Alloc {
