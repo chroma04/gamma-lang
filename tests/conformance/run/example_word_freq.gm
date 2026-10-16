@@ -15,7 +15,7 @@ is_letter :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '\''
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
 
 // Splits a line into words (maximal runs of letters and apostrophes).
-words_of :: fn(line: string) \ {Yield(string)} {
+words_of :: fn(line: string) needs Yield(string) {
     start: ?usize = null
     for i in 0..line.len {
         if is_letter(line[i]) {
@@ -28,13 +28,13 @@ words_of :: fn(line: string) \ {Yield(string)} {
     if s := start { yield(line[s..]) }
 }
 
-dup_lower :: fn(w: string) -> AllocError!string \ {Alloc} {
+dup_lower :: fn(w: string) -> AllocError!string needs Alloc {
     buf := try make(u8, w.len)
     for i in 0..w.len { buf[i] = lower(w[i]) }
     return buf
 }
 
-release :: fn(w: string) \ {Alloc} {
+release :: fn(w: string) needs Alloc {
     free(T: u8, w.ptr.cast([^]u8)[0..w.len])
 }
 
@@ -43,12 +43,12 @@ more_frequent :: fn(a, b: ^const Entry) -> bool {
     return a.word < b.word
 }
 
-free_keys :: fn(m: ^HashMap(string, u32)) \ {Alloc} {
+free_keys :: fn(m: ^HashMap(string, u32)) needs Alloc {
     for e in m.entries() { release(e.key) }
     m.deinit()
 }
 
-main :: fn() -> Failure!() \ {Out, In, Alloc} {
+main :: fn() -> Failure!() needs Out + In + Alloc {
     counts := hash_map(string, u32)
     defer free_keys(&counts)
     lines: u32 = 0

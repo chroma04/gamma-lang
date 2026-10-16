@@ -1,5 +1,5 @@
 // `free` and `destroy` accept read-only views of what was allocated (§21.2).
-main :: fn() -> AllocError!() \ {Alloc, Out} {
+main :: fn() -> AllocError!() needs Alloc + Out {
     s := try make(u8, 3)
     t: string = s
     free(t)

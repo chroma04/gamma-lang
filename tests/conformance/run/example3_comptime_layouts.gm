@@ -104,7 +104,7 @@ when target.ptr_bits is 64 {
 }
 @static_assert(WORD_BYTES is @size_of(usize))
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("crc32(\"123456789\") = {}\n", crc32("123456789"))
     print("crc32 empty = {}\n", crc32(""))
     print("endian {} word {}\n", ENDIAN.len >= 3, WORD_BYTES)

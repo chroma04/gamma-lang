@@ -25,7 +25,7 @@ sum :: fn(n: i64) -> i64 {
     return total
 }
 
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     p := Point(x: 3, y: 4)
     stdout := sum(10)
     s := Stat(st_mtime: 1, linux: 2)
@@ -54,7 +54,7 @@ parse :: fn(x: i64) -> Error!i64 {
     return x * 2
 }
 
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     pair := (1, true)
     rect := Shape.Rect(w: 2, h: 3)
     circle := Shape.Circle(1.5)

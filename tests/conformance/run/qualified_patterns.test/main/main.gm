@@ -9,7 +9,7 @@ classify :: fn(x: u8) -> string => match x {
     _ => "large"
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     xs := [5]u8(200, 3, 10, 150, 255)
     for x in xs { print("{} ", classify(x)) }
     print("\n")

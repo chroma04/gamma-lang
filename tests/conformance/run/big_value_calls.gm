@@ -25,14 +25,14 @@ both :: fn(x: Big, n: i64, y: Big) -> i64 => total(x) * 10000 + n + total(y)
 
 Log :: effect { note: fn(b: Big) -> Big }
 
-logged :: fn(b: Big) -> i64 \ {Log} {
+logged :: fn(b: Big) -> i64 needs Log {
     c := note(b)
     return total(c)
 }
 
 Pull :: effect { give: ctl(b: Big) -> i64 }
 
-producer :: fn() -> i64 \ {Pull} {
+producer :: fn() -> i64 needs Pull {
     x := make(2)
     r := give(x)
     x.a[1] = 50
@@ -51,7 +51,7 @@ apply :: fn(f: ^fn(b: Big) -> i64, b: Big) -> i64 => f(b)
 
 twice :: fn(f: fn(b: Big) -> Big, b: Big) -> Big => f(f(b))
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b := make(3)
     print("total {}\n", total(b))
     // The first argument is read before `bump` changes it.

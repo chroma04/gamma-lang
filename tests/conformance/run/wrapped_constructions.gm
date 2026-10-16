@@ -5,7 +5,7 @@ f :: fn(k: i32) -> ?(E!u16) {
     if k is 0 { return null }
     return !.B(7)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: i32 = 5
     p := [_]^i32(&x)
     q := [_]?^const i32(&x, null)

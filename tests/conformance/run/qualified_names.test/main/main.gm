@@ -7,7 +7,7 @@ Holder :: struct { a: s.A(u8), b: s.A(i32, 4) }
 
 show :: fn(a: s.A(i32)) -> i32 => a.x
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     x: s.A(i32) = s.mk(T: i32, 5)
     y := AI(x: 7)
     h := Holder(a: s.A(u8)(x: 1), b: s.A(i32, 4)(x: 2))

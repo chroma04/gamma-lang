@@ -3,7 +3,7 @@
 // it exactly once on every path (§14.2).
 Gen :: effect { emit: ctl(x: i32) }
 
-gen :: fn() \ {Gen} {
+gen :: fn() needs Gen {
     emit(1)
     emit(2)
 }

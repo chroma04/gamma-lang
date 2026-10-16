@@ -157,7 +157,7 @@ it, or `null` if `sep` does not occur. An empty `sep` splits at the start.
 ### `split`
 
 ```gamma
-split :: fn(s, sep: string) \ {Yield(string)}
+split :: fn(s, sep: string) needs Yield(string)
 ```
 
 The pieces of `s` between occurrences of `sep`, in order. Adjacent separators give
@@ -167,7 +167,7 @@ An empty `sep` does not split: `s` is yielded once.
 ### `split_any`
 
 ```gamma
-split_any :: fn(s, seps: string) \ {Yield(string)}
+split_any :: fn(s, seps: string) needs Yield(string)
 ```
 
 The pieces of `s` between bytes that occur in `seps`, in order, with the same empty
@@ -197,7 +197,7 @@ The piece number `n` (counting from 0) of `s` split at `sep` as `split` does, or
 ### `lines`
 
 ```gamma
-lines :: fn(s: string) \ {Yield(string)}
+lines :: fn(s: string) needs Yield(string)
 ```
 
 The lines of `s`, split on `\n` with a `\r` before it dropped. A final line without
@@ -206,7 +206,7 @@ a terminator is yielded; there is no empty line after a terminating `\n`.
 ### `fields`
 
 ```gamma
-fields :: fn(s: string) \ {Yield(string)}
+fields :: fn(s: string) needs Yield(string)
 ```
 
 The maximal runs of non-whitespace bytes of `s` (ASCII whitespace separates them);
@@ -249,7 +249,7 @@ left) replaced by `to`. Traps if `from` is empty.
 ### `replace_alloc`
 
 ```gamma
-replace_alloc :: fn(s, from, to: string) -> AllocError![]u8 \ {Alloc}
+replace_alloc :: fn(s, from, to: string) -> AllocError![]u8 needs Alloc
 ```
 
 `s` with every non-overlapping occurrence of `from` replaced by `to`, in memory from
@@ -368,7 +368,7 @@ Appends `args` formatted by `template`, as `print` would write them (§21.6.1):
 ### `format`
 
 ```gamma
-format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 \ {Alloc}
+format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 needs Alloc
 ```
 
 Formatted text (§21.6.1) in memory from the current allocator (release it with
@@ -378,7 +378,7 @@ Formatted text (§21.6.1) in memory from the current allocator (release it with
 ### `join`
 
 ```gamma
-join :: fn(parts: []const string, sep: string) -> AllocError![]u8 \ {Alloc}
+join :: fn(parts: []const string, sep: string) -> AllocError![]u8 needs Alloc
 ```
 
 The `parts` with `sep` between them, in memory from the current allocator. The result

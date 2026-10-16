@@ -1,10 +1,10 @@
 //! stage: check
 // Format specs (§21.6.1) must be well formed and suit their argument's type.
-log :: fn(A: type, template :: string, args: ..A) \ {Out} { print(template, ..args) }
+log :: fn(A: type, template :: string, args: ..A) needs Out { print(template, ..args) }
 
-hexes :: fn(T: type, x: T) \ {Out} { print("{:x}\n", x) }
+hexes :: fn(T: type, x: T) needs Out { print("{:x}\n", x) }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{:q}\n", 1)                //~ ERROR unknown format spec `{:q}`
     print("{:5x5}\n", 1)              //~ ERROR invalid format spec
     print("{:<05}\n", 1)              //~ ERROR either `0` padding or an alignment

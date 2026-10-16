@@ -1,0 +1,4 @@
+//! stage: parse
+// `needs not` is for foreign functions only (§19.2).
+
+pure :: fn(x: i32) -> i32 needs not => x   //~ ERROR `needs not` is only for foreign functions

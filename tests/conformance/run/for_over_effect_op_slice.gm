@@ -20,7 +20,7 @@ handler Names for ^Fixed {
     }
 }
 
-main :: fn() \ {Out, Env} {
+main :: fn() needs Out + Env {
     n: usize = 0
     for _ in Env.args() { n += 1 }
     print("args {}\n", (n is Env.args().len))

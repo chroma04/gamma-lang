@@ -79,7 +79,7 @@ direct_convolve :: fn(a, b: []const i64, out: []i64) {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fbuf: [400]u8 = ---
 
     // The DFT of a unit impulse is flat; of a constant it is a single spike.

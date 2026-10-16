@@ -1,6 +1,6 @@
 top :: import "../top"
 
-nested :: fn() \ {Out} {
+nested :: fn() needs Out {
     a: top.s.A(i32) = top.s.mk(T: i32, 11)
     b: top.A(u8) = top.make(T: u8, 12)
     c := top.s.B(y: 13)

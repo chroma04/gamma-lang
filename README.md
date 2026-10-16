@@ -4,7 +4,7 @@ Gamma is a systems programming language intended to replace C. It is **C in whic
 everything a function depends on appears in its signature**: its inputs in the parameter
 list, its failures in `E!T`, its absences in `?T`, and its *context* (the allocator,
 input and output, the clock, randomness, its scheduler, the outside world) in its effect
-set after `\`. **Algebraic effects and handlers** supply that context, so it is explicit
+set after `needs`. **Algebraic effects and handlers** supply that context, so it is explicit
 without being passed by hand, and tests can replace it.
 
 ```gamma
@@ -12,7 +12,7 @@ fs    :: import "std/fs"
 arena :: import "std/arena"
 
 // Counts the lines of a file. The signature says everything it touches.
-count_lines :: fn(path: string) -> fs.ReadError!usize \ {Fs, Alloc} {
+count_lines :: fn(path: string) -> fs.ReadError!usize needs Fs + Alloc {
     text := try fs.read_all(path)          // memory from whatever allocator is current
     defer free(text)
     n: usize = 0
@@ -20,7 +20,7 @@ count_lines :: fn(path: string) -> fs.ReadError!usize \ {Fs, Alloc} {
     return n
 }
 
-main :: fn() -> fs.ReadError!() \ {Fs, Alloc, Out} {
+main :: fn() -> fs.ReadError!() needs Fs + Alloc + Out {
     scratch := arena.new()                 // you choose where memory comes from
     defer scratch.deinit()
     with scratch.allocator() {

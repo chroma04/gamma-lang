@@ -26,14 +26,14 @@ fn program(name: &str, src: &str) -> std::path::PathBuf {
 const LIBC_CALLS: &str = r#"
 c :: import "std/c"
 libc :: foreign "c" {
-    strlen :: fn(s: cstring) -> usize \ {}
-    abs :: fn(x: c.c_int) -> c.c_int \ {}
+    strlen :: fn(s: cstring) -> usize needs not
+    abs :: fn(x: c.c_int) -> c.c_int needs not
     puts :: fn(s: cstring) -> c.c_int
 }
 libm :: foreign "m" {
-    sqrt :: fn(x: f64) -> f64 \ {}
+    sqrt :: fn(x: f64) -> f64 needs not
 }
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print("{} {} {}\n", libc.strlen(c"four"), libc.abs(-3), libm.sqrt(16.0))
     print("before\n")
     _ = libc.puts(c"from C")
@@ -66,15 +66,15 @@ fn callbacks_and_pointers_run_in_the_interpreter() {
     let src = r#"
 c :: import "std/c"
 libc :: foreign "c" {
-    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int \ {Sys}) \ {Sys}
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int needs Sys) needs Sys
     snprintf :: fn(buf: [^]u8, n: usize, fmt: cstring, ...) -> c.c_int
 }
-by_value :: fn(a, b: rawptr) -> c.c_int \ {Sys} {
+by_value :: fn(a, b: rawptr) -> c.c_int needs Sys {
     x := a.cast(^const i32)^
     y := b.cast(^const i32)^
     return if x < y { -1 } else if x > y { 1 } else { 0 }
 }
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     xs := [_]i32(5, 3, 9, 1, 4)
     libc.qsort(&xs, xs.len, @size_of(i32), by_value)
     print("{}\n", xs)
@@ -94,14 +94,14 @@ fn a_trap_in_a_callback_is_reported() {
     let src = r#"
 c :: import "std/c"
 libc :: foreign "c" {
-    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) \ {}
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) needs not
 }
 boom :: fn(a, b: rawptr) -> c.c_int {
     xs := [_]i32(1)
     i := a.cast(^const i32)^.trunc(usize)
     return xs[i + 5]
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     nums := [_]i32(3, 1, 2)
     libc.qsort(&nums, 3, 4, boom)
 }
@@ -118,7 +118,7 @@ fn a_missing_symbol_falls_back_to_the_native_build() {
 lib :: foreign "c" {
     gamma_no_such_function_anywhere :: fn(x: i32) -> i32
 }
-main :: fn() \ {Sys} {
+main :: fn() needs Sys {
     _ = lib.gamma_no_such_function_anywhere(1)
 }
 "#;
@@ -135,10 +135,10 @@ fn foreign_calls_are_rejected_at_compile_time() {
     let src = r#"
 c :: import "std/c"
 libc :: foreign "c" {
-    abs :: fn(x: c.c_int) -> c.c_int \ {}
+    abs :: fn(x: c.c_int) -> c.c_int needs not
 }
 N :: libc.abs(-4)
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", N)
 }
 "#;
@@ -159,14 +159,14 @@ fn host_memory_persistent_pointers_and_errno() {
     let src = r#"
 c :: import "std/c"
 libc :: foreign "c" {
-    strtok :: fn(s: ?[^]u8, delim: cstring) -> ?[^]u8 \ {Sys}
-    malloc :: fn(n: usize) -> ?[^]u8 \ {Sys}
-    free :: fn(p: rawptr) \ {Sys}
-    strlen :: fn(s: cstring) -> usize \ {}
-    open :: fn(path: cstring, flags: c.c_int) -> c.c_int \ {Sys}
+    strtok :: fn(s: ?[^]u8, delim: cstring) -> ?[^]u8 needs Sys
+    malloc :: fn(n: usize) -> ?[^]u8 needs Sys
+    free :: fn(p: rawptr) needs Sys
+    strlen :: fn(s: cstring) -> usize needs not
+    open :: fn(path: cstring, flags: c.c_int) -> c.c_int needs Sys
     #global errno: c.c_int
 }
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     buf := [_]u8('a', ',', 'b', ',', 'c', 0)
     t := libc.strtok(buf[..].ptr, c",")
     n := 0

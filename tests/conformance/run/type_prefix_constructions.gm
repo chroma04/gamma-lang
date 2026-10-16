@@ -4,7 +4,7 @@ Node :: struct { v: i32 }
 Link :: ?^Item
 Item :: struct { next: Link, v: i32 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n := Node(v: 1)
     ptrs := [3]^Node(fill: &n)
     opts := [2]?^Node(fill: null)

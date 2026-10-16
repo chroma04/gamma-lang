@@ -25,7 +25,7 @@ pub BitSet :: struct {
 words_for :: fn(n: usize) -> usize => n / 64 + (if n % 64 is 0 { 0 } else { 1 })
 
 /// An empty set that can hold the integers `0..n`, using the current allocator.
-pub bitset :: fn(n: usize) -> AllocError!BitSet \ {Alloc} {
+pub bitset :: fn(n: usize) -> AllocError!BitSet needs Alloc {
     a := Alloc.current()
     count := words_for(n)
     if count is 0 { return BitSet(words: empty_slice(u64), cap: n, alloc: a) }
@@ -110,7 +110,7 @@ pub next_member :: fn(b: ^const BitSet, from: usize) -> ?usize {
 }
 
 /// The members in increasing order. The set must not change during the iteration.
-pub items :: fn(b: ^const BitSet) \ {Yield(usize)} {
+pub items :: fn(b: ^const BitSet) needs Yield(usize) {
     from: usize = 0
     while i := next_member(b, from) {
         yield(i)

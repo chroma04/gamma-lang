@@ -24,7 +24,7 @@ Wrapper :: struct { lines: u32 = 0 }
 
 // (The loop lives in a plain function: a `for` over an iterator that updates a local, written
 // directly in a handler declaration's clause, makes the C back end fail.)
-wrap_paragraph :: fn(self: ^Wrapper, text: string) \ {Out} {
+wrap_paragraph :: fn(self: ^Wrapper, text: string) needs Out {
     col: usize = 0
     for w in str.fields(text) {
         if col > 0 and col + 1 + w.len > WIDTH {
@@ -43,7 +43,7 @@ wrap_paragraph :: fn(self: ^Wrapper, text: string) \ {Out} {
     self.lines += 1
 }
 
-handler Say for ^Wrapper \ {Out} {
+handler Say for ^Wrapper needs Out {
     say(self, text) => wrap_paragraph(self, text)
 }
 
@@ -122,7 +122,7 @@ visible :: fn(w: ^const World) -> bool => not ROOMS[w.here].dark or has_lamp(w)
 
 // ---- Commands -------------------------------------------------------------------
 
-look :: fn(w: ^World) \ {Say} {
+look :: fn(w: ^World) needs Say {
     r := ROOMS[w.here]
     if not visible(w) {
         say("It is pitch dark. You can't see a thing.")
@@ -139,7 +139,7 @@ look :: fn(w: ^World) \ {Say} {
     }
 }
 
-go :: fn(w: ^World, dir: usize) -> CmdError!() \ {Say} {
+go :: fn(w: ^World, dir: usize) -> CmdError!() needs Say {
     next := ROOMS[w.here].exits[dir]
     if next is NO_EXIT { return !.NoExit }
     // The iron door in the cave mouth is locked until the key is used.
@@ -149,7 +149,7 @@ go :: fn(w: ^World, dir: usize) -> CmdError!() \ {Say} {
     look(w)
 }
 
-take :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+take :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     id := item_id(name) else return !.Unknown(name)
     if not visible(w) or w.where_[id] is not w.here { return !.NotHere(name) }
     if id is ROCK { return !.Heavy }
@@ -159,7 +159,7 @@ take :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
     say("Taken.")
 }
 
-drop :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+drop :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     id := item_id(name) else return !.Unknown(name)
     if w.where_[id] is not HELD { return !.NotCarrying(name) }
     w.where_[id] = w.here
@@ -167,7 +167,7 @@ drop :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
     say("Dropped.")
 }
 
-use :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
+use :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     id := item_id(name) else return !.Unknown(name)
     if w.where_[id] is not HELD { return !.NotCarrying(name) }
     if id is KEY and w.here is 2 {
@@ -179,7 +179,7 @@ use :: fn(w: ^World, name: string) -> CmdError!() \ {Say} {
     say("Nothing happens.")
 }
 
-inventory :: fn(w: ^const World) \ {Say} {
+inventory :: fn(w: ^const World) needs Say {
     n := carried(w)
     if n is 0 {
         say("You carry nothing.")
@@ -205,7 +205,7 @@ direction :: fn(name: string) -> ?usize {
     return null
 }
 
-report :: fn(e: CmdError) \ {Say} {
+report :: fn(e: CmdError) needs Say {
     buf: [96]u8 = ---
     b := str.builder(buf[..])
     match e {
@@ -226,7 +226,7 @@ report :: fn(e: CmdError) \ {Say} {
 
 // Runs one command line. Returns an error for the player to read; `leave` ends the session.
 // Error payloads point into `scratch`, which therefore has to outlive the call.
-execute :: fn(w: ^World, line: string, scratch: []u8) -> CmdError!() \ {Say, Quit} {
+execute :: fn(w: ^World, line: string, scratch: []u8) -> CmdError!() needs Say + Quit {
     trimmed := str.trim(line)
     text := str.to_lower(trimmed[0..trimmed.len.min(scratch.len)], scratch)
     text = str.trim(text)
@@ -281,7 +281,7 @@ push_snapshot :: fn(s: ^Session, w: ^const World) {
     s.depth += 1
 }
 
-play :: fn(r: ^io.Reader) -> IoError!Outcome \ {Say, In} {
+play :: fn(r: ^io.Reader) -> IoError!Outcome needs Say + In {
     w := new_world()
     s := Session(history: [UNDO_DEPTH]World(fill: new_world()))
     scratch: [80]u8 = ---
@@ -316,7 +316,7 @@ play :: fn(r: ^io.Reader) -> IoError!Outcome \ {Say, In} {
     return outcome
 }
 
-main :: fn() -> IoError!() \ {Out, In} {
+main :: fn() -> IoError!() needs Out + In {
     wrap := Wrapper()
     r := io.reader()
     // One reader serves several games in a row, until the input runs out.

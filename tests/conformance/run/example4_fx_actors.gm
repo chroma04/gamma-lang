@@ -12,7 +12,7 @@ Mailbox :: struct(T: type, N: usize) {
     closed: bool = false
 }
 
-post :: fn(T: type, N :: usize, mb: ^Mailbox(T, N), x: T) \ {Sys} {
+post :: fn(T: type, N :: usize, mb: ^Mailbox(T, N), x: T) needs Sys {
     while true {
         mb.m.lock()
         if mb.len < N {
@@ -27,7 +27,7 @@ post :: fn(T: type, N :: usize, mb: ^Mailbox(T, N), x: T) \ {Sys} {
 }
 
 // The next message, or null once the mailbox is closed and drained.
-take :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) -> ?T \ {Sys} {
+take :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) -> ?T needs Sys {
     while true {
         mb.m.lock()
         if mb.len > 0 {
@@ -44,7 +44,7 @@ take :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) -> ?T \ {Sys} {
     }
 }
 
-shut :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) \ {Sys} {
+shut :: fn(T: type, N :: usize, mb: ^Mailbox(T, N)) needs Sys {
     mb.m.lock()
     mb.closed = true
     mb.m.unlock()
@@ -93,7 +93,7 @@ Pipe :: struct {
     sum_log: ActorLog
 }
 
-source_body :: fn(p: ^Pipe) \ {Sys, Log} {
+source_body :: fn(p: ^Pipe) needs Sys + Log {
     for i in 1..=200 {
         post(&p.a, i)
     }
@@ -101,7 +101,7 @@ source_body :: fn(p: ^Pipe) \ {Sys, Log} {
     log("source done")
 }
 
-square_body :: fn(p: ^Pipe) \ {Sys, Log} {
+square_body :: fn(p: ^Pipe) needs Sys + Log {
     n: i64 = 0
     while x := take(&p.a) {
         post(&p.b, x * x)
@@ -112,7 +112,7 @@ square_body :: fn(p: ^Pipe) \ {Sys, Log} {
     if n is 200 { log("saw all 200") }
 }
 
-sum_body :: fn(p: ^Pipe) \ {Sys, Log} {
+sum_body :: fn(p: ^Pipe) needs Sys + Log {
     while x := take(&p.b) {
         p.sum += x
         p.count += 1
@@ -120,19 +120,19 @@ sum_body :: fn(p: ^Pipe) \ {Sys, Log} {
     log("summer done")
 }
 
-source_main :: fn(p: ^Pipe) \ {Sys} {
+source_main :: fn(p: ^Pipe) needs Sys {
     thread.defaults(fn() { with &p.source_log { source_body(p) } })
 }
 
-square_main :: fn(p: ^Pipe) \ {Sys} {
+square_main :: fn(p: ^Pipe) needs Sys {
     thread.defaults(fn() { with &p.square_log { square_body(p) } })
 }
 
-sum_main :: fn(p: ^Pipe) \ {Sys} {
+sum_main :: fn(p: ^Pipe) needs Sys {
     thread.defaults(fn() { with &p.sum_log { sum_body(p) } })
 }
 
-pipeline :: fn() -> IoError!() \ {Out, Sys} {
+pipeline :: fn() -> IoError!() needs Out + Sys {
     p := Pipe(a: mailbox(T: i64, 4, 0), b: mailbox(T: i64, 3, 0), count: 0, sum: 0,
               source_log: ActorLog(storage: [256]u8(fill: 0)),
               square_log: ActorLog(storage: [256]u8(fill: 0)),
@@ -161,7 +161,7 @@ ProducerArg :: struct {
     id: u64
 }
 
-producer_main :: fn(a: ^ProducerArg) \ {Sys} {
+producer_main :: fn(a: ^ProducerArg) needs Sys {
     for i in 0..50 {
         post(&a.f.box, a.id * 1000 + u64(i))
     }
@@ -171,14 +171,14 @@ producer_main :: fn(a: ^ProducerArg) \ {Sys} {
     }
 }
 
-consumer_main :: fn(f: ^FanIn) \ {Sys} {
+consumer_main :: fn(f: ^FanIn) needs Sys {
     while x := take(&f.box) {
         f.total += x
         f.received += 1
     }
 }
 
-fan_in :: fn() -> IoError!() \ {Out, Sys} {
+fan_in :: fn() -> IoError!() needs Out + Sys {
     f := FanIn(box: mailbox(T: u64, 2, 0), producers_left: 3, total: 0, received: 0)
     args := [3]ProducerArg(fill: ProducerArg(f: &f, id: 0))
     for i in 0..3 { args[i] = ProducerArg(f: &f, id: u64(i) + 1) }
@@ -220,7 +220,7 @@ fib :: fn(n: u32) -> u64 {
     return a
 }
 
-server_body :: fn(s: ^Server) \ {Sys, Log} {
+server_body :: fn(s: ^Server) needs Sys + Log {
     while req := take(&s.inbox) {
         if r := req {
             r.reply.value = fib(r.n)
@@ -232,21 +232,21 @@ server_body :: fn(s: ^Server) \ {Sys, Log} {
     log("server stopped")
 }
 
-server_main :: fn(s: ^Server) \ {Sys} {
+server_main :: fn(s: ^Server) needs Sys {
     thread.defaults(fn() { with &s.log { server_body(s) } })
 }
 
-ask :: fn(s: ^Server, n: u32, reply: ^Reply) \ {Sys} {
+ask :: fn(s: ^Server, n: u32, reply: ^Reply) needs Sys {
     reply.ready = 0
     s.inbox.post(Request(n: n, reply: reply))
 }
 
-await :: fn(reply: ^Reply) -> u64 \ {Sys} {
+await :: fn(reply: ^Reply) -> u64 needs Sys {
     while @atomic_load(&reply.ready, .Acquire) is 0 { thread.yield_now() }
     return reply.value
 }
 
-request_reply :: fn() -> IoError!() \ {Out, Sys} {
+request_reply :: fn() -> IoError!() needs Out + Sys {
     s := Server(inbox: mailbox(T: ?Request, 4, null), served: 0, log: ActorLog(storage: [256]u8(fill: 0)))
     t := try thread.spawn(server_main, &s)
     replies := [6]Reply(fill: Reply(ready: 0, value: 0))
@@ -258,7 +258,7 @@ request_reply :: fn() -> IoError!() \ {Out, Sys} {
     print("server handled {} requests; log: {}\n", s.served, text(&s.log))
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     try pipeline()
     try fan_in()
     try request_reply()

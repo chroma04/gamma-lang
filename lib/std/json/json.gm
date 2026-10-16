@@ -324,7 +324,7 @@ unexpected :: fn(p: ^Parser, pos: usize) -> ParseError {
 is_digit :: fn(c: u8) -> bool => c >= '0' and c <= '9'
 
 /// Parses `text`, which must be one JSON value.
-pub parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document \ {Alloc} {
+pub parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document needs Alloc {
     a := arena.new()
     p := Parser(text: text, pos: 0, max_depth: max_depth)
     res: ParseError!Value = .Null
@@ -336,7 +336,7 @@ pub parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document \ {
     return Document(root: root, arena: a)
 }
 
-parse_document :: fn(p: ^Parser) -> ParseError!Value \ {Alloc} {
+parse_document :: fn(p: ^Parser) -> ParseError!Value needs Alloc {
     skip_ws(p)
     v := try parse_value(p, 0)
     skip_ws(p)
@@ -344,7 +344,7 @@ parse_document :: fn(p: ^Parser) -> ParseError!Value \ {Alloc} {
     return v
 }
 
-parse_value :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+parse_value :: fn(p: ^Parser, depth: usize) -> ParseError!Value needs Alloc {
     if p.pos >= p.text.len { return !.UnexpectedEnd(p.text.len) }
     c := p.text[p.pos]
     return match c {
@@ -377,7 +377,7 @@ literal :: fn(p: ^Parser, word: string) -> ParseError!() {
     return ()
 }
 
-parse_number :: fn(p: ^Parser) -> ParseError!Number \ {Alloc} {
+parse_number :: fn(p: ^Parser) -> ParseError!Number needs Alloc {
     t := p.text
     start := p.pos
     i := start
@@ -543,7 +543,7 @@ read_string :: fn(p: ^Parser, buf: []u8) -> ParseError!(end: usize, len: usize) 
     }
 }
 
-parse_string :: fn(p: ^Parser) -> ParseError!string \ {Alloc} {
+parse_string :: fn(p: ^Parser) -> ParseError!string needs Alloc {
     r := try read_string(p, empty_slice(u8))
     if r.len is 0 {
         p.pos = r.end + 1
@@ -555,7 +555,7 @@ parse_string :: fn(p: ^Parser) -> ParseError!string \ {Alloc} {
     return buf
 }
 
-parse_array :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+parse_array :: fn(p: ^Parser, depth: usize) -> ParseError!Value needs Alloc {
     if depth >= p.max_depth { return !.TooDeep(p.pos) }
     p.pos += 1
     items := list(Value)
@@ -583,7 +583,7 @@ parse_array :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
     return Value.Array(try items.into_slice())
 }
 
-parse_object :: fn(p: ^Parser, depth: usize) -> ParseError!Value \ {Alloc} {
+parse_object :: fn(p: ^Parser, depth: usize) -> ParseError!Value needs Alloc {
     if depth >= p.max_depth { return !.TooDeep(p.pos) }
     p.pos += 1
     members := list(Member)

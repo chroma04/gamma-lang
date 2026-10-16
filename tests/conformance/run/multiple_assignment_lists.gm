@@ -1,15 +1,15 @@
 // A list on the right of a multiple assignment or binding is a tuple (§4.5, §4.7),
 // and a perform uses the one available instantiation of a generic effect (§12.1).
-words :: fn(buf: []u8) \ {Yield(string)} {
+words :: fn(buf: []u8) needs Yield(string) {
     yield(buf[..2])
     yield(buf[2..])
 }
 
-widen :: fn(xs: []const u8) \ {Yield(u32)} {
+widen :: fn(xs: []const u8) needs Yield(u32) {
     for x in xs { yield(x) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a, b := 0, 1
     for i in 0..10 { a, b = b, a + b }
     x := [3]i32(1, 2, 3)

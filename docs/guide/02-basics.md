@@ -20,7 +20,7 @@ Every name is introduced by one of a small family of forms (§4.1 of the [specif
 The pattern is regular: a `:` followed by a type is a type annotation, a second `:` makes the binding immutable, an `=` makes it mutable, and `::` and `:=` are the short forms when the type is inferred.
 
 ```gamma
-demo :: fn() \ {Out} {
+demo :: fn() needs Out {
     greeting :: "hello"            // immutable, type string
     count := 0                     // mutable; the type is inferred from use
     ratio: f32 = 0.5               // mutable with an explicit type
@@ -242,7 +242,7 @@ The one other place where an operand widens is the right side of a compound assi
 The same four flavors exist for `-`, `*` and `<<` (`-%`, `*|`, `<<?`, ...), and as compound assignments (`+%=`, `-|=`, ...; there is no `+?=`).
 
 ```gamma
-overflow_demo :: fn() \ {Out} {
+overflow_demo :: fn() needs Out {
     x: u8 = 250
     a := x +% 10              // 4
     b := x +| 10              // 255
@@ -339,7 +339,7 @@ Two lexical notes: `---` is always a single token, so `a---b` is an error (write
 
 A newline ends a statement; `;` is an equivalent separator that is never required. A line continues onto the next only in these cases (§2.8):
 
-1. The line **ends with** a binary operator (including `and`, `or`, `else`, `is`, `in`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `\`, `.`, or an opening bracket.
+1. The line **ends with** a binary operator (including `and`, `or`, `else`, `is`, `in`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `needs`, `.`, or an opening bracket.
 2. The **next line starts with** `else`, `and`, `or`, or `.` followed by an identifier.
 3. The newline is directly inside `( )` or `[ ]`. (Inside a `{ }` block, even one nested inside parentheses, newlines count again.)
 

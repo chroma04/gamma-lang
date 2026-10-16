@@ -9,7 +9,7 @@ Gamma's data types will be familiar to a C programmer, with a few deliberate dif
 `[N]T` is exactly `N` elements of type `T`, where `N` is a compile-time `usize` constant. Arrays are **values**: assignment, parameter passing and return copy all the elements.
 
 ```gamma
-arrays_demo :: fn() \ {Out} {
+arrays_demo :: fn() needs Out {
     v := [_]i32(1, 2, 3)               // [_] lets the compiler count: [3]i32
     w := [_]i32(10, 20, 30)
     sum := v + w                       // elementwise arithmetic: [11, 22, 33]
@@ -35,7 +35,7 @@ Unlike C, an array never decays to a pointer. Passing an array to a function tha
 `[]T` is a pointer and a length. It is what you use in C when you pass `(T *p, size_t n)`, packaged so the two cannot get separated. The fields `.ptr` and `.len` can be read but not assigned. `[]const T` is a read-only view.
 
 ```gamma
-slices_demo :: fn() \ {Out} {
+slices_demo :: fn() needs Out {
     data := [_]i32(1, 2, 3, 4, 5, 6)
     mid := data[1..4]                  // []i32 viewing 2, 3, 4
     mid[0] = 20                        // writes through: data[1] is now 20
@@ -96,7 +96,7 @@ Since a string is just a slice, assembling text means writing into a buffer you 
 Tuples are anonymous, structural product types. Elements are accessed by position or, if the tuple is named, by name:
 
 ```gamma
-tuples_demo :: fn() \ {Out} {
+tuples_demo :: fn() needs Out {
     pair := (3, "three")                    // (i32, string)
     point := (x: 1.5, y: 2.5)               // named; both elements default to f64
     single := (7,)                          // a one-element tuple needs the comma
@@ -128,7 +128,7 @@ Window :: struct {
 `S(...)` constructs a struct, and the arguments are **named**. Fields you leave out take their defaults; a field with no default must be supplied. `..e` spreads all the fields of another struct or a named tuple, and an explicit field after it overrides:
 
 ```gamma
-structs_demo :: fn() \ {Out} {
+structs_demo :: fn() needs Out {
     v := Vec2(x: 1.5, y: -2)
     w := Window(title: "main")                    // size and open use defaults
     w2 := Window(..w, title: "other")             // w with a different title
@@ -215,7 +215,7 @@ Errno :: union(i32) { Ok = 0, Perm = 1, NoEnt = 2 }   // explicit tag type and v
 Construct a variant with `.Name(payload)` when the union type is known from context, or `Shape.Circle(1.0)` otherwise. A tuple payload's elements are written directly. Take values apart with `match`, `if pattern := e` or test them with `is`:
 
 ```gamma
-unions_demo :: fn(s: Shape) \ {Out} {
+unions_demo :: fn(s: Shape) needs Out {
     unit_circle := Shape.Circle(1.0)
     box: Shape = .Rect(w: 2, h: 3)
     if s is .Circle(_) { print("a circle\n") }
@@ -358,7 +358,7 @@ lossless_demo :: fn(a: u8, b: i16, flag: bool, d: Dir) {
 | `x.bits(T)` | reinterpret the bytes of one plain-data type as another of the same size |
 
 ```gamma
-lossy_demo :: fn(big: u32, f: f64, g: f32) \ {Out} {
+lossy_demo :: fn(big: u32, f: f64, g: f32) needs Out {
     a := big.trunc(u8)                    // low 8 bits, always defined
     b := big.checked(u8) else 255         // 255 if it does not fit
     c := big.sat(u8)                      // clamps to 255

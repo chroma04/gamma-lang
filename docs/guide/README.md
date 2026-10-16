@@ -1,6 +1,6 @@
 # The Gamma Guide
 
-Gamma is a systems programming language meant to replace C, built on one idea: **everything a function depends on appears in its signature.** Its inputs are its parameters, its failures are in `E!T`, a possibly absent result is `?T`, and its *context* — the allocator, input and output, the clock, randomness, the outside world — is its effect set, written after `\`. Gamma keeps what makes C useful (explicit memory, C-compatible layout, no garbage collector, no hidden allocation, predictable cost) and removes the parts that make C dangerous: implicit numeric conversions, null by default, undefined signed overflow, fallthrough, and operator-precedence traps such as `x & 1 == 0`. The context that C reaches through globals, callbacks plus `void*`, `setjmp` and hand-written state machines is handled by **algebraic effects**: allocation, I/O, logging, iteration, early exit, coroutines and testing. Five principles follow from that, and the design rationale of the specification (its Appendix C) derives each rule from one of them: data is bytes you can lay out; cost is visible where it is paid; context is an effect; mistakes are rejected, not interpreted; every rule is local.
+Gamma is a systems programming language meant to replace C, built on one idea: **everything a function depends on appears in its signature.** Its inputs are its parameters, its failures are in `E!T`, a possibly absent result is `?T`, and its *context* — the allocator, input and output, the clock, randomness, the outside world — is its effect set, written after `needs`. Gamma keeps what makes C useful (explicit memory, C-compatible layout, no garbage collector, no hidden allocation, predictable cost) and removes the parts that make C dangerous: implicit numeric conversions, null by default, undefined signed overflow, fallthrough, and operator-precedence traps such as `x & 1 == 0`. The context that C reaches through globals, callbacks plus `void*`, `setjmp` and hand-written state machines is handled by **algebraic effects**: allocation, I/O, logging, iteration, early exit, coroutines and testing. Five principles follow from that, and the design rationale of the specification (its Appendix C) derives each rule from one of them: data is bytes you can lay out; cost is visible where it is paid; context is an effect; mistakes are rejected, not interpreted; every rule is local.
 
 This guide is for experienced programmers, especially C programmers, who want to learn how to *use* Gamma. Each chapter introduces one area with short, realistic examples and a sentence or two on why the design is the way it is. It is a tutorial, not a reference: when you need the exact rule, the guide points to the numbered section of the [language specification](../../gamma-spec.md), which is the normative definition.
 
@@ -51,7 +51,7 @@ area :: fn(s: Shape) -> f32 => match s {
     .Empty      => 0
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     shapes := [_]Shape(.Circle(1.0), .Rect(w: 2, h: 3), .Empty)
     for s in shapes {
         print("{} has area {}\n", s, area(s))
@@ -59,4 +59,4 @@ main :: fn() \ {Out} {
 }
 ```
 
-`::` binds names, `T(...)` constructs values, `match` must be exhaustive, and `\ {Out}` says that `main` performs output. The chapters that follow explain each of these pieces.
+`::` binds names, `T(...)` constructs values, `match` must be exhaustive, and `needs Out` says that `main` performs output. The chapters that follow explain each of these pieces.

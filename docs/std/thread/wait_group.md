@@ -46,7 +46,7 @@ Marks one piece of work as finished. Calling it more often than `add` is a bug a
 ### `wait`
 
 ```gamma
-wait :: fn(w: ^WaitGroup) \ {Sys}
+wait :: fn(w: ^WaitGroup) needs Sys
 ```
 
 Waits until no work is outstanding.

@@ -2,7 +2,7 @@
 // the place's type (§4.7).
 Stats :: struct { total: u64 = 0, sum: f64 = 0.0 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total: u64 = 0
     ages := [3]u32(30, 41, 4_000_000_000)
     for a in ages { total += a }

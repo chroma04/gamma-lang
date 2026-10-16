@@ -30,7 +30,7 @@ mode_name :: fn() -> string {
         else { return "fast" }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     @static_assert(BEST > 100)
     print("{}\n", BEST)
     s := Stats()

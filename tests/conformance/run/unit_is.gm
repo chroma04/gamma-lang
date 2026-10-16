@@ -7,6 +7,6 @@ f :: fn(ok: bool) -> E!() {
 Log :: effect { note: fn(m: string) }
 S :: struct { n: u32 = 0 }
 handler Log for ^S { note(self, m) => { self.n += 1 } }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {}\n", f(true) is (), f(false) is not (), () is ())
 }

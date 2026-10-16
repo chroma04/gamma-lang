@@ -22,7 +22,7 @@ count_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 
 COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_free)
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     c := Counter(live: 0, allocs: 0, inner: Alloc.current())
     with Allocator(data: &c, vt: &COUNTING) {
         p := new(T: u64, 1) else return

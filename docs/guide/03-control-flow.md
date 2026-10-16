@@ -9,7 +9,7 @@ Gamma's control flow has few keywords and one theme: conditions are always `bool
 The condition must be a `bool`, and the braces are always required:
 
 ```gamma
-describe :: fn(n: i32) \ {Out} {
+describe :: fn(n: i32) needs Out {
     if n < 0 {
         print("negative\n")
     } else if n is 0 {
@@ -47,7 +47,7 @@ lookup :: fn(id: u32) -> ?string {
     return null
 }
 
-greet :: fn(id: u32) \ {Out} {
+greet :: fn(id: u32) needs Out {
     if name := lookup(id) {
         print("found {}\n", name)        // name: string, definitely present
     } else {
@@ -94,7 +94,7 @@ digit_value :: fn(c: u8) -> ParseError!u8 {
     return !.BadDigit
 }
 
-show :: fn(c: u8) \ {Out} {
+show :: fn(c: u8) needs Out {
     if d := digit_value(c) {
         print("digit {}\n", d)
     } else e => {
@@ -155,7 +155,7 @@ sum_all :: fn(first: ?u32, rest: []const u32) -> u32 {
 `for` loops over *anything that yields values*. The three everyday forms need no library knowledge:
 
 ```gamma
-for_demo :: fn(xs: []const i32) \ {Out} {
+for_demo :: fn(xs: []const i32) needs Out {
     for i in 0..3 {                      // 0, 1, 2   (half-open)
         print("{}\n", i)
     }
@@ -290,7 +290,7 @@ parse_label :: fn(c: u8) -> string => match digit_value(c) {
 When an arm needs several statements, use a block; its value is the arm's value:
 
 ```gamma
-describe_shape :: fn(s: Shape) -> f32 \ {Out} => match s {
+describe_shape :: fn(s: Shape) -> f32 needs Out => match s {
     .Circle(r) => {
         print("a circle\n")
         PI * r * r
@@ -322,7 +322,7 @@ The elements of a tuple payload are written directly (`.Rect(w, h)`); a single n
 `defer S` schedules the statement `S` to run when control leaves the enclosing block, however it leaves: falling off the end, `return`, `break`, `continue`, a `try` that propagates an error. Deferred statements of one block run in reverse order of registration, like a stack. This is Gamma's replacement for `goto cleanup`.
 
 ```gamma
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     defer print("goodbye\n")
     defer print("cleaning up\n")
     print("working\n")
@@ -333,7 +333,7 @@ main :: fn() \ {Out} {
 A `defer` that is never reached is never registered, so you can safely write the cleanup right after the acquisition:
 
 ```gamma
-copy_into :: fn(src: []const u8) -> AllocError!usize \ {Alloc} {
+copy_into :: fn(src: []const u8) -> AllocError!usize needs Alloc {
     buf := try make(u8, 64)
     defer free(buf)                   // runs on every exit below
     n := src.len
@@ -348,7 +348,7 @@ copy_into :: fn(src: []const u8) -> AllocError!usize \ {Alloc} {
 `errdefer S` runs only when the block is left *abnormally*: by returning an error value (including a `try` that propagates one) or when the frame is unwound by an early exit through it (chapter 7). It is for undoing partial work:
 
 ```gamma
-make_pair :: fn() -> AllocError!(a: []u8, b: []u8) \ {Alloc} {
+make_pair :: fn() -> AllocError!(a: []u8, b: []u8) needs Alloc {
     first := try make(u8, 64)
     errdefer free(first)              // only if we fail after this point
     second := try make(u8, 64)        // if this fails, `first` is freed

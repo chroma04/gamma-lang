@@ -1,7 +1,7 @@
 //! stage: check
 // `free` takes a slice; a pointer from `new` is released with `destroy` (§21.2).
 Cell :: struct { a: i64 }
-main :: fn() \ {Alloc} {
+main :: fn() needs Alloc {
     c := new(Cell(a: 1)) else return
     free(c)          //~ ERROR release a value from `new` with `destroy(p)`
 }

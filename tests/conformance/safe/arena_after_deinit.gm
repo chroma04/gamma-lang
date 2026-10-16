@@ -4,7 +4,7 @@
 // arena that was released traps when used (§18.7).
 arena :: import "std/arena"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     ar := arena.new()
     p: ?^u64 = null
     with ar.allocator() {

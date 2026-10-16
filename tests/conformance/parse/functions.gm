@@ -4,9 +4,9 @@
 add    :: fn(a, b: i32) -> i32 { return a + b }
 square :: fn(x: f32) -> f32 => x * x
 divmod :: fn(n, d: u32) -> (q: u32, r: u32) => (n / d, n % d)
-greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
+greet  :: fn(name: string) needs Out => print("hi {}\n", name)
 nothing :: fn() {}
-never_returns :: fn() -> never \ {Abort} { abort() }
+never_returns :: fn() -> never needs Abort { abort() }
 with_defaults :: fn(a: i32, b: i32 = 10, name: string = "x") -> i32 => a + b
 caller :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> never {
     @unreachable()
@@ -14,8 +14,8 @@ caller :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> 
 generic :: fn(T: type, xs: []const T) -> ?T where Ord(T) => xs.first()
 constrained :: fn(T: type, a, b: T) -> T where Int(T), Signed(T) { return a }
 compile_time :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T { return a }
-print_it :: fn(A: type, template :: string, args: ..A) \ {Out} { }
-effectful :: fn(x: i32) -> E!i32 \ {Alloc, Yield(i32)} where Eq(E) => x
+print_it :: fn(A: type, template :: string, args: ..A) needs Out { }
+effectful :: fn(x: i32) -> E!i32 needs Alloc + Yield(i32) where Eq(E) => x
 variadic_user :: fn() { }
 
 calls :: fn() {
@@ -54,8 +54,8 @@ named_fns :: fn() {
 fn_params :: fn(
     op: fn(a: i32) -> i32,
     cmp: fn(a, b: ^const T) -> bool,
-    cb: ^fn(rawptr) -> never \ {Async},
-    cap: fn() \ {Out},
+    cb: ^fn(rawptr) -> never needs Async,
+    cap: fn() needs Out,
     plain: fn(i32, u8),
 ) { }
 

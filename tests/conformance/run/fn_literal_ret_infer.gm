@@ -1,6 +1,6 @@
 // A block-bodied literal without `-> R` or an expected type takes its return type
 // from its `return`s (§11.1).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     double := fn(x: i32) {
         return x * 2
     }

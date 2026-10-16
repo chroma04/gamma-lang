@@ -10,7 +10,7 @@ sum :: fn(p: [^]const i32, n: usize) -> i32 {
     return total
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [6]i32(1, 2, 3, 4, 5, 6)
     p: [^]i32 = &a
     print("{}\n", sum(p, 6))
@@ -24,7 +24,7 @@ main :: fn() \ {Out} {
     stepped()
 }
 
-stepped :: fn() \ {Out} {
+stepped :: fn() needs Out {
     a := [3]i32(7, 8, 9)
     p: [^]i32 = &a
     p += 2

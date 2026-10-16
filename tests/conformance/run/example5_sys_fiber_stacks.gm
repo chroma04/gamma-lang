@@ -41,7 +41,7 @@ make_chunk :: fn(seed: u8) -> Chunk {
     return c
 }
 
-worker :: fn(rounds: u32) -> u32 \ {Gen, Log} {
+worker :: fn(rounds: u32) -> u32 needs Gen + Log {
     f := Frame(regs: [12]i64(fill: 1), pc: 0, flags: 7)
     total: u32 = 0
     for r in 0..rounds {
@@ -53,7 +53,7 @@ worker :: fn(rounds: u32) -> u32 \ {Gen, Log} {
 }
 
 // The fiber's entry: the Log handler is installed on the fiber, so its clause is part of the bound.
-fiber_main :: fn(rounds: u32) -> u32 \ {Gen} {
+fiber_main :: fn(rounds: u32) -> u32 needs Gen {
     calls: u32 = 0
     r := with (handler Log { log(c) => { calls += 1; checksum(c) + calls } }) {
         worker(rounds)
@@ -69,7 +69,7 @@ sum_regs :: fn(f: Frame) -> i64 {
     return s
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("stack ok {}\n", STACK >= @min_stack)
     stack: [STACK]u8 = ---
     seen: i64 = 0

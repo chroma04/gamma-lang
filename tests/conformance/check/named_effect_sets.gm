@@ -1,16 +1,19 @@
 //! stage: check
 // Named effect sets (§12.3).
-Io :: \ {Out, Alloc}
+Io :: Out + Alloc
 
 f :: fn(E: effects) {
-    Bad :: \ {..E}                          //~ ERROR an effect set is not a value
+    x := E                            //~ ERROR expected a value, found the effect set `E`
 }
 
-g :: fn() \ {..Missing} {}                  //~ ERROR unknown effect set `Missing`
+g :: fn() needs Missing {}                  //~ ERROR unknown effect `Missing`
 
-h :: fn() \ {Io} {}                         //~ ERROR splice it into the set as `..Io`
+h :: fn() needs Io + Clock {}
+k2 :: fn() {
+    with (handler Io { }) {}                //~ ERROR is an effect set, not a single effect
+}
 
-k :: fn() \ {..Io} {
+k :: fn() needs Io {
     x := Io                                 //~ ERROR expected a value, found the effect set `Io`
     _ = x
     Clock.sleep(ms(1))                      //~ ERROR which the function does not declare

@@ -30,14 +30,14 @@ pub HashMap :: struct(K, V: type,
 }
 
 /// An empty map using `@hash` and `is`, and the current allocator.
-pub hash_map :: fn(K, V: type) -> HashMap(K, V) \ {Alloc} where Eq(K) {
+pub hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K) {
     return HashMap(K, V)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
 }
 
 /// An empty map using the given hash and equality functions, and the current allocator.
 pub hash_map_with :: fn(K, V: type,
     hash :: ^fn(key: ^const K, seed: u64) -> u64,
-    eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) \ {Alloc} {
+    eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc {
     return HashMap(K, V, hash, eq)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
 }
 
@@ -179,7 +179,7 @@ pub len :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?
 
 /// The entries, in an unspecified order. The map must not change during the iteration.
 pub entries :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
-                  m: ^const HashMap(K, V, hash, eq)) \ {Yield((key: K, value: V))} {
+                  m: ^const HashMap(K, V, hash, eq)) needs Yield((key: K, value: V)) {
     for i in 0..m.slots.len {
         s := m.slots[i]
         if s.state is FULL { yield((key: s.key, value: s.value)) }
@@ -188,7 +188,7 @@ pub entries :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq 
 
 /// The keys, in the order of `entries`. The map must not change during the iteration.
 pub keys :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
-               m: ^const HashMap(K, V, hash, eq)) \ {Yield(K)} {
+               m: ^const HashMap(K, V, hash, eq)) needs Yield(K) {
     for i in 0..m.slots.len {
         if m.slots[i].state is FULL { yield(m.slots[i].key) }
     }
@@ -196,7 +196,7 @@ pub keys :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: 
 
 /// The values, in the order of `entries`. The map must not change during the iteration.
 pub values :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
-                 m: ^const HashMap(K, V, hash, eq)) \ {Yield(V)} {
+                 m: ^const HashMap(K, V, hash, eq)) needs Yield(V) {
     for i in 0..m.slots.len {
         if m.slots[i].state is FULL { yield(m.slots[i].value) }
     }

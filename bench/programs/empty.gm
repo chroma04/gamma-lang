@@ -1,4 +1,4 @@
 // Startup cost only: subtract this from the other benchmarks.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", 0)
 }

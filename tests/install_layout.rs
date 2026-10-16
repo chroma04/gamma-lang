@@ -21,7 +21,7 @@ fn installed_compiler_finds_its_standard_library() {
     let src = prefix.join("main.gm");
     std::fs::write(
         &src,
-        "m :: import \"std/only_installed\"\n\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", m.answer())\n}\n",
+        "m :: import \"std/only_installed\"\n\nmain :: fn() needs Out {\n    print(\"{}\\n\", m.answer())\n}\n",
     )
     .unwrap();
     let out = Command::new(&exe).env_remove("GAMMA_STD").arg("run").arg(&src).output().unwrap();

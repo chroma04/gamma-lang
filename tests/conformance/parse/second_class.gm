@@ -10,7 +10,7 @@ demo :: fn() {
     retry(3, fn() => send(packet))      // send's Net effect is handled by retry's caller
 }
 
-capture_output :: fn(body: fn() \ {Out}) -> string \ {Alloc} {
+capture_output :: fn(body: fn() needs Out) -> string needs Alloc {
     buf := string_builder()
     with buf.out_handler() { body() }         // body's Out is handled here
     return buf.finish()

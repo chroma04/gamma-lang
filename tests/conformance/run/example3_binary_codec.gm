@@ -103,7 +103,7 @@ Regs :: struct {
     data: u32
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     storage: Aligned = ---
     buf := storage.bytes[..]
     buf.fill(0xEE)

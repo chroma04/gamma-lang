@@ -3,7 +3,7 @@ Suit :: union { Clubs, Diamonds }
 
 N :: 3
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a :: [_]i32(1, 2)
     b :: [3]u8(7, 8, 9)
     c :: [N]i32(fill: 4)

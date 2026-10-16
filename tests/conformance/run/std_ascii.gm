@@ -9,7 +9,7 @@ count :: fn(pred: fn(c: u8) -> bool) -> usize {
     return n
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("alpha {} digit {} alnum {} space {}\n", count(ascii.is_alpha), count(ascii.is_digit), count(ascii.is_alnum), count(ascii.is_space))
     print("upper {} lower {} hex {} punct {}\n", count(ascii.is_upper), count(ascii.is_lower), count(ascii.is_hex_digit), count(ascii.is_punct))
     print("print {} control {}\n", count(ascii.is_print), count(ascii.is_control))

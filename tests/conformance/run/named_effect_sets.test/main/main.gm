@@ -4,23 +4,23 @@ fx :: import "../fx"
 fiber :: import "std/fiber"
 
 Io :: fx.Console
-Wider :: \ {..fx.Timed, Rand}
+Wider :: fx.Timed + Rand
 
-greet :: fn(name: string) \ {..Io} {
+greet :: fn(name: string) needs Io {
     l := list(u8)
     defer l.deinit()
     l.write("hi {}", name) else return
     print("{}\n", string(l.items))
 }
 
-later :: fn() \ {..Wider} {
+later :: fn() needs Wider {
     _ = Clock.now()
     greet("later")
 }
 
-apply :: fn(E: effects, f: ^fn(s: string) \ {..E}, s: string) \ {..E} => f(s)
+apply :: fn(E: effects, f: ^fn(s: string) needs E, s: string) needs E => f(s)
 
-main :: fn() \ {..Io, Clock, Rand} {
+main :: fn() needs Io + Clock + Rand {
     greet("ada")
     later()
     apply(greet, "a pointer")

@@ -5,7 +5,7 @@ Gen :: effect {
     emit: ctl(x: i32)
 }
 
-deep :: fn(n: i32) -> i32 \ {Gen} {
+deep :: fn(n: i32) -> i32 needs Gen {
     if n is 0 {
         emit(0)
         return 0
@@ -13,7 +13,7 @@ deep :: fn(n: i32) -> i32 \ {Gen} {
     return deep(n - 1) + 1
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [20000]u8 = ---
     with (handler Gen { emit(x, k) => resume k() }) on stack[..] {
         print("{}\n", deep(100000))

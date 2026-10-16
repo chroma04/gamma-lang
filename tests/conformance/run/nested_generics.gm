@@ -1,7 +1,7 @@
 // Nested named functions may be generic (§11.8, §16.1): they capture nothing, so each
 // is checked once and instantiated per use like a top-level generic function.
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     twice :: fn(T: type, x: T) -> (T, T) => (x, x)
     biggest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
         if xs.len is 0 { return null }

@@ -246,7 +246,7 @@ gives 0 or -0 and is exact.
 ### `parse`
 
 ```gamma
-parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document \ {Alloc}
+parse :: fn(text: string, max_depth: usize = 512) -> ParseError!Document needs Alloc
 ```
 
 Parses `text`, which must be one JSON value.

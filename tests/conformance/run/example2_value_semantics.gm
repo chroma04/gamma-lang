@@ -15,7 +15,7 @@ twist :: fn(b: Big) -> Big {
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x := [_]i32(1, 2, 3, 4)
     i := 0
     j := 3

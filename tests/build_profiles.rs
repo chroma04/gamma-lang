@@ -114,10 +114,10 @@ const SHIM_MAIN: &str = "\
 c :: import \"std/c\"
 
 shim :: foreign \"c\" {
-    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int \\ {}
+    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int needs not
 }
 
-main :: fn() \\ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print(\"{}\\n\", shim.shim_add(2, 3))
 }
 
@@ -134,7 +134,7 @@ mode_name :: fn() -> string {
         else { return \"fast\" }
 }
 
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     print(\"{}\\n\", mode_name())
 }
 ";
@@ -329,7 +329,7 @@ fn c_dependency(w: &World, dir: &str) {
     );
     w.write(
         &format!("{}/lib.gm", dir),
-        "c :: import \"std/c\"\nlib :: foreign \"c\" {\n    wrap_value :: fn() -> c.c_int \\ {}\n}\npub value :: fn() -> i32 \\ {Sys} => lib.wrap_value()\n",
+        "c :: import \"std/c\"\nlib :: foreign \"c\" {\n    wrap_value :: fn() -> c.c_int needs not\n}\npub value :: fn() -> i32 needs Sys => lib.wrap_value()\n",
     );
 }
 
@@ -338,10 +338,10 @@ wrap :: import \"wrap\"
 c :: import \"std/c\"
 
 own :: foreign \"c\" {
-    own_value :: fn() -> c.c_int \\ {}
+    own_value :: fn() -> c.c_int needs not
 }
 
-main :: fn() \\ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print(\"{} {}\\n\", wrap.value(), own.own_value())
 }
 ";
@@ -432,7 +432,7 @@ fn libraries_and_library_directories() {
     assert!(status.success());
     w.write(
         "app/main.gm",
-        "c :: import \"std/c\"\nv :: foreign \"vendored\" {\n    vendored_answer :: fn() -> c.c_int \\ {}\n}\nmain :: fn() \\ {Out, Sys} {\n    print(\"{}\\n\", v.vendored_answer())\n}\n",
+        "c :: import \"std/c\"\nv :: foreign \"vendored\" {\n    vendored_answer :: fn() -> c.c_int needs not\n}\nmain :: fn() needs Out + Sys {\n    print(\"{}\\n\", v.vendored_answer())\n}\n",
     );
     // The interpreter opens the library from `lib-dirs`; the executable finds it by an
     // rpath of the same directory.

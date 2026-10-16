@@ -1,13 +1,13 @@
 // An allocation no allocator can provide is an `AllocError` value, never a trap.
 arena :: import "std/arena"
 
-ok_alloc :: fn(n: usize) -> bool \ {Alloc} {
+ok_alloc :: fn(n: usize) -> bool needs Alloc {
     p := make(u8, n) else return false
     free(p)
     return true
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     print("{}\n", ok_alloc(1 << 62))
     print("{}\n", ok_alloc(0xFFFF_FFFF_FFFF_FFF0))
     print("{}\n", ok_alloc(100))

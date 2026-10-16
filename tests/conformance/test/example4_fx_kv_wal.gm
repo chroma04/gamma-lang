@@ -40,7 +40,7 @@ MemKv :: struct {
     m: HashMap(Key, i64)
 }
 
-mem_new :: fn() -> MemKv \ {Alloc} => MemKv(m: hash_map(Key, i64))
+mem_new :: fn() -> MemKv needs Alloc => MemKv(m: hash_map(Key, i64))
 
 mem_put :: fn(s: ^MemKv, key: string, val: i64) -> KvError!() {
     k := try key_of(key)
@@ -66,7 +66,7 @@ handler Kv for ^MemKv {
 }
 
 // Live entries sorted by key.
-sorted_entries :: fn(s: ^MemKv) -> KvError!List(Entry) \ {Alloc} {
+sorted_entries :: fn(s: ^MemKv) -> KvError!List(Entry) needs Alloc {
     l := list(Entry)
     errdefer l.deinit()
     for e in s.m.entries() {
@@ -83,7 +83,7 @@ sorted_entries :: fn(s: ^MemKv) -> KvError!List(Entry) \ {Alloc} {
 }
 
 // "a=1 b=2" for the whole store, in key order.
-describe :: fn(s: ^MemKv, out: []u8) -> string \ {Alloc} {
+describe :: fn(s: ^MemKv, out: []u8) -> string needs Alloc {
     b := str.builder(out)
     l := sorted_entries(s) else return "?"
     defer l.deinit()
@@ -103,7 +103,7 @@ checksum :: fn(s: string) -> u32 {
 }
 
 // Appends "<body> #<checksum>\n" to `path`.
-append_record :: fn(path: string, body: string) -> KvError!() \ {Fs} {
+append_record :: fn(path: string, body: string) -> KvError!() needs Fs {
     buf: [128]u8 = ---
     b := str.builder(buf[..])
     b.write("{} #{}\n", body, checksum(body))
@@ -115,7 +115,7 @@ DiskKv :: struct {
     records: u32 = 0           // records in the log since the last compaction
 }
 
-handler Kv for ^DiskKv \ {Fs} {
+handler Kv for ^DiskKv needs Fs {
     put(self, key, val) => {
         _ = try key_of(key)          // reject bad keys before they reach the log
         buf: [96]u8 = ---
@@ -191,7 +191,7 @@ replay :: fn(mem: ^MemKv, data: string, rep: ^Report) -> KvError!() {
 }
 
 // The contents of a file, which the caller frees.
-read_whole :: fn(path: string) -> KvError![]u8 \ {Fs, Alloc} {
+read_whole :: fn(path: string) -> KvError![]u8 needs Fs + Alloc {
     data := fs.read_all(path) else e => {
         match e {
             .Io(io) => return !.Io(io)
@@ -202,13 +202,13 @@ read_whole :: fn(path: string) -> KvError![]u8 \ {Fs, Alloc} {
 }
 
 // Like read_whole, but a missing file is `null`.
-slurp :: fn(path: string) -> KvError!?[]u8 \ {Fs, Alloc} {
+slurp :: fn(path: string) -> KvError!?[]u8 needs Fs + Alloc {
     if not fs.exists(path) { return null }
     return try read_whole(path)
 }
 
 // Opens the database: snapshot first, then the log; a damaged log tail is cut off.
-recover :: fn(rep: ^Report) -> KvError!DiskKv \ {Fs, Alloc} {
+recover :: fn(rep: ^Report) -> KvError!DiskKv needs Fs + Alloc {
     db := DiskKv(mem: mem_new())
     snap_rep := Report()
     if data := try slurp(SNAP) {
@@ -230,7 +230,7 @@ recover :: fn(rep: ^Report) -> KvError!DiskKv \ {Fs, Alloc} {
 CrashPoint :: union { Never, AfterTmp, AfterRename }
 
 // Writes a snapshot of the live entries, atomically replaces the old one, then empties the log.
-compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool \ {Fs, Alloc} {
+compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool needs Fs + Alloc {
     l := try sorted_entries(&db.mem)
     defer l.deinit()
     try fs.write_all(SNAP_TMP, "")
@@ -250,7 +250,7 @@ compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool \ {Fs, Alloc} {
 
 // ---- A workload that works with any Kv handler -----------------------------------
 
-workload :: fn() -> KvError!u32 \ {Kv} {
+workload :: fn() -> KvError!u32 needs Kv {
     try put("apple", 3)
     try put("pear", 10)
     try put("fig", 7)
@@ -264,7 +264,7 @@ workload :: fn() -> KvError!u32 \ {Kv} {
     return sum + size().trunc(u32)
 }
 
-fresh :: fn() -> DiskKv \ {Alloc} => DiskKv(mem: mem_new())
+fresh :: fn() -> DiskKv needs Alloc => DiskKv(mem: mem_new())
 
 test "the same workload runs against both handlers" {
     mem := mem_new()

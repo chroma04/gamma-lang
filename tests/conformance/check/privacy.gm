@@ -1,6 +1,6 @@
 //! stage: check
 // Private struct fields are visible only in the declaring module (§3.3).
-main :: fn() \ {Alloc} {
+main :: fn() needs Alloc {
     l := list(u8)
     _ = l.items                                  // public
     _ = l.cap                                    //~ ERROR the field `cap` of `List(u8)` is private

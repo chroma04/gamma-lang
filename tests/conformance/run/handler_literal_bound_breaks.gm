@@ -3,16 +3,16 @@
 // perform their effects where the literal is written.
 Fail :: effect { fail: esc(why: string) -> never }
 Log :: effect { log: fn(msg: string) }
-step :: fn(n: i32) -> u8 \ {Fail} {
+step :: fn(n: i32) -> u8 needs Fail {
     if n > 2 { fail("too big") }
     return 7
 }
-noisy :: fn(n: i32) -> u8 \ {Fail, Log} {
+noisy :: fn(n: i32) -> u8 needs Fail + Log {
     log("step")
     return step(n)
 }
 Color :: union { Red, Green, Blue }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     count := 0
     lg :: handler Log { log(m) => { count += 1 } }
     with lg {

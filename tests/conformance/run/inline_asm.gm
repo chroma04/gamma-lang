@@ -1,13 +1,13 @@
 // Inline assembly (§19.5). Programs using it run natively.
 
 when target.arch is .X86_64 {
-    add :: fn(a, b: u32) -> u32 \ {Sys} {
+    add :: fn(a, b: u32) -> u32 needs Sys {
         r := a
         @asm("addl %1, %0", ("+r", &r), ("r", b), "cc")
         return r
     }
 
-    mul_add :: fn(a, b, c: u64) -> u64 \ {Sys} {
+    mul_add :: fn(a, b, c: u64) -> u64 needs Sys {
         r := a
         @asm("imulq %1, %0\n\taddq %2, %0", ("+r", &r), (("r", b), ("r", c)), ("cc",))
         return r
@@ -15,20 +15,20 @@ when target.arch is .X86_64 {
 
     // Two outputs, one of them a float: the constraints tie each output to an
     // input's register, so the empty template copies them.
-    split :: fn(x: f64) -> (bits: u64, copy: f64) \ {Sys} {
+    split :: fn(x: f64) -> (bits: u64, copy: f64) needs Sys {
         bits: u64 = 0
         copy: f64 = 0.0
         @asm("", (("=r", &bits), ("=x", &copy)), (("0", x.bits(u64)), ("1", x)), ())
         return (bits: bits, copy: copy)
     }
 } else when target.arch is .Aarch64 {
-    add :: fn(a, b: u32) -> u32 \ {Sys} {
+    add :: fn(a, b: u32) -> u32 needs Sys {
         r: u32 = 0
         @asm("add %w0, %w1, %w2", ("=r", &r), (("r", a), ("r", b)), ())
         return r
     }
 
-    mul_add :: fn(a, b, c: u64) -> u64 \ {Sys} {
+    mul_add :: fn(a, b, c: u64) -> u64 needs Sys {
         r: u64 = 0
         @asm("madd %0, %1, %2, %3", ("=r", &r), (("r", a), ("r", b), ("r", c)), ())
         return r
@@ -36,19 +36,19 @@ when target.arch is .X86_64 {
 
     // Two outputs, one of them a float: the constraints tie each output to an
     // input's register, so the empty template copies them.
-    split :: fn(x: f64) -> (bits: u64, copy: f64) \ {Sys} {
+    split :: fn(x: f64) -> (bits: u64, copy: f64) needs Sys {
         bits: u64 = 0
         copy: f64 = 0.0
         @asm("", (("=r", &bits), ("=w", &copy)), (("0", x.bits(u64)), ("1", x)), ())
         return (bits: bits, copy: copy)
     }
 } else {
-    add :: fn(a, b: u32) -> u32 \ {Sys} => a + b
-    mul_add :: fn(a, b, c: u64) -> u64 \ {Sys} => a * b + c
-    split :: fn(x: f64) -> (bits: u64, copy: f64) \ {Sys} => (bits: x.bits(u64), copy: x)
+    add :: fn(a, b: u32) -> u32 needs Sys => a + b
+    mul_add :: fn(a, b, c: u64) -> u64 needs Sys => a * b + c
+    split :: fn(x: f64) -> (bits: u64, copy: f64) needs Sys => (bits: x.bits(u64), copy: x)
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print("{}\n", add(40, 2))
     print("{}\n", mul_add(6, 7, 100))
     // A compiler barrier: an empty template that clobbers memory.

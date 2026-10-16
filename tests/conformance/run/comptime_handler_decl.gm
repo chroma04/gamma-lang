@@ -29,7 +29,7 @@ K :: calc()
 T :: build()
 Buf :: struct { b: [calc()]u8 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     L :: calc()
     x := Buf(b: ---)
     print("{} {} {} {} {}\n", K, L, x.b.len, T[5], T.len)

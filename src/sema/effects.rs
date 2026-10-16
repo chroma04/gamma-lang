@@ -90,7 +90,7 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
 }
 
 /// Binds the parameters of effect set `pat` from `actual` (§16.6): the arguments of an
-/// effect that occurs once in each, then a single `..E` from the effects of `actual`
+/// effect that occurs once in each, then a single term `E` from the effects of `actual`
 /// that `pat` does not name.
 fn match_effects(pat: &EffectSet, actual: &EffectSet, binds: &mut HashMap<ParamId, Ty>) {
     for p in pat.effects.iter().filter(|p| !p.is_splice() && !p.args.is_empty()) {
@@ -669,7 +669,7 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => {
                 self.error(
                     f.span,
-                    format!("`@fiber` needs a function pointer `^fn(a: A) -> never \\ {{…}}` with the C calling convention, found `{}`", ft),
+                    format!("`@fiber` needs a function pointer `^fn(a: A) -> never needs …` with the C calling convention, found `{}`", ft),
                 );
                 return error_expr(span);
             }

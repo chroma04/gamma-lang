@@ -23,10 +23,10 @@ Ctx :: struct {
 Cmd :: struct {
     name: string
     arity: usize
-    run: ^fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out}
+    run: ^fn(ctx: ^Ctx, args: []const string) -> ?string needs Out
 }
 
-cmd_add :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+cmd_add :: fn(ctx: ^Ctx, args: []const string) -> ?string needs Out {
     for a in args {
         ctx.total += parse(a) else return "not a number"
     }
@@ -34,12 +34,12 @@ cmd_add :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
     return null
 }
 
-cmd_reset :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+cmd_reset :: fn(ctx: ^Ctx, args: []const string) -> ?string needs Out {
     ctx.total = 0
     return null
 }
 
-cmd_echo :: fn(ctx: ^Ctx, args: []const string) -> ?string \ {Out} {
+cmd_echo :: fn(ctx: ^Ctx, args: []const string) -> ?string needs Out {
     for i, a in enumerate(args) {
         if i > 0 { print(" ") }
         print("{}", a)
@@ -65,7 +65,7 @@ largest_by :: fn(T: type, xs: []const T, better: fn(a, b: T) -> bool) -> ?T {
     return best
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     table := hash_map_with(K: string, Cmd, fold_hash, fold_eq)
     defer table.deinit()
     try table.put("ADD", Cmd(name: "add", arity: 1, run: cmd_add))

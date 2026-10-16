@@ -1,5 +1,5 @@
 // The `?` flavors take optional operands, so `a *? b +? c` chains (§7.4.2).
-note :: fn(x: u8) -> u8 \ {Out} {
+note :: fn(x: u8) -> u8 needs Out {
     print("evaluated {}\n", x)
     return x
 }
@@ -12,7 +12,7 @@ parse_u8 :: fn(s: string) -> ?u8 {
     return n
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     m := 100u8
     print("{} {}\n", m *? 2 +? 1, m +? 2 *? 2)
     print("{}\n", 1 +? m *? 2 +? 3)

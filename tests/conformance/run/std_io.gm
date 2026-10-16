@@ -2,7 +2,7 @@
 io :: import "std/io"
 
 // Prints the length of every line `r` gives, or the error.
-walk :: fn(r: ^io.Reader) \ {In, Out} {
+walk :: fn(r: ^io.Reader) needs In + Out {
     n: u32 = 1
     while true {
         next := r.next_line() else e => {
@@ -18,7 +18,7 @@ walk :: fn(r: ^io.Reader) \ {In, Out} {
     }
 }
 
-main :: fn() -> io.ReadError!() \ {In, Out, Alloc} {
+main :: fn() -> io.ReadError!() needs In + Out + Alloc {
     // Everything on standard input.
     data := try io.read_all()
     defer free(data)

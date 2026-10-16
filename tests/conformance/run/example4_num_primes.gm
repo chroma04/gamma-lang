@@ -174,7 +174,7 @@ totient :: fn(n: u32) -> u32 {
     return result
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     sv := Sieve(bits: [WORDS]u64(fill: 0))
     build_sieve(&sv)
     print("primes up to {}: {}\n", LIMIT, count_primes(&sv))

@@ -9,7 +9,7 @@ hurt :: fn(e: ^Entity) { e.hp -= 1 }
 show :: fn(e: ^const Entity) -> i32 => e.hp
 rename :: fn(p: ^Player, n: string) { p.name = n }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     h := Hero(player: Player(base: Entity(id: 7, hp: 10), name: "ada"), level: 3)
     hurt(&h)                          // two levels: ^Hero → ^Entity
     rename(&h, "grace")

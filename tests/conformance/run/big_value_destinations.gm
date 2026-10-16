@@ -29,13 +29,13 @@ clobber :: fn(p: ^Big) -> Big {
 }
 
 // A deferred statement runs after the result is computed and before it is stored.
-deferred :: fn(p: ^const Big) -> Big \ {Out} {
+deferred :: fn(p: ^const Big) -> Big needs Out {
     defer print("deferred sees {}\n", p.a[0])
     return big(70)
 }
 
 // Exits before returning: the destination keeps its value.
-maybe :: fn(k: i64) -> Big \ {Stop} {
+maybe :: fn(k: i64) -> Big needs Stop {
     b := big(k)
     if k > 50 { stop(k) }
     return b
@@ -46,7 +46,7 @@ checked :: fn(k: i64) -> Fail!Big {
     return big(k)
 }
 
-relay :: fn(k: i64) -> Fail!Big \ {Out} {
+relay :: fn(k: i64) -> Fail!Big needs Out {
     errdefer print("relay failed for {}\n", k)
     b := try checked(k)
     return b
@@ -78,7 +78,7 @@ handler Make for Maker {
     make(self, k) => big(self.base + k)
 }
 
-build :: fn() -> Big \ {Make} => make(5)
+build :: fn() -> Big needs Make => make(5)
 
 // A body whose final expression is its value.
 pair_of :: fn(k: i64) -> Pair {
@@ -86,7 +86,7 @@ pair_of :: fn(k: i64) -> Pair {
     return Pair(x: t, y: big(k + 1))
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := Pair(x: big(1), y: big(10))
     p = swap(p)
     print("swap {} {}\n", p.x.a[0], p.y.a[0])

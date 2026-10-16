@@ -52,7 +52,7 @@ find :: fn(ch: u8) -> Cell {
 
 NONE: u32 : 0xffff_ffff
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     start := find('S')
     goal := find('E')
 

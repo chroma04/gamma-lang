@@ -4,11 +4,11 @@
 
 Threads and the synchronization built on futexes (§19.6).
 
-A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
+A thread runs a plain function `^fn(arg: ^T) needs Sys` and starts with no handlers
 installed; `defaults` installs the usual ones:
 
-    work :: fn(arg: ^State) \ {Sys} {
-        thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
+    work :: fn(arg: ^State) needs Sys {
+        thread.defaults(fn() needs Out + Alloc { print("hello from a thread\n") })
     }
     t := try thread.spawn(State, work, &state)
     t.join()
@@ -94,7 +94,7 @@ A wait group with nothing outstanding.
 ### `spawn`
 
 ```gamma
-spawn :: fn(T: type, f: ^fn(arg: ^T) \ {Sys}, arg: ^T) -> IoError!Thread \ {Sys}
+spawn :: fn(T: type, f: ^fn(arg: ^T) needs Sys, arg: ^T) -> IoError!Thread needs Sys
 ```
 
 Starts a thread calling `f(arg)`; `arg` must stay valid until the thread is done with it.
@@ -103,7 +103,7 @@ The thread starts with no handlers (see `defaults`). A failure to start one is `
 ### `join`
 
 ```gamma
-join :: fn(t: Thread) \ {Sys}
+join :: fn(t: Thread) needs Sys
 ```
 
 Waits for `t` to finish. A thread is joined or detached once, not both.
@@ -111,7 +111,7 @@ Waits for `t` to finish. A thread is joined or detached once, not both.
 ### `detach`
 
 ```gamma
-detach :: fn(t: Thread) \ {Sys}
+detach :: fn(t: Thread) needs Sys
 ```
 
 Lets `t` run on its own: it is never joined, and its resources are released when it
@@ -124,7 +124,7 @@ the whole process, as in any thread.
 ### `yield_now`
 
 ```gamma
-yield_now :: fn() \ {Sys}
+yield_now :: fn() needs Sys
 ```
 
 Lets other threads run.
@@ -132,7 +132,7 @@ Lets other threads run.
 ### `cpu_count`
 
 ```gamma
-cpu_count :: fn() -> u32 \ {Sys}
+cpu_count :: fn() -> u32 needs Sys
 ```
 
 The number of processors available to the program (at least 1).
@@ -140,7 +140,7 @@ The number of processors available to the program (at least 1).
 ### `defaults`
 
 ```gamma
-defaults :: fn(body: fn() \ {Out, Err, Alloc, In, Clock, Rand, Fs, Net}) \ {Sys}
+defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net) needs Sys
 ```
 
 Runs `body` under the default handlers of the ambient effects: the system heap,
@@ -157,7 +157,7 @@ An unlocked mutex.
 ### `lock`
 
 ```gamma
-lock :: fn(m: ^Mutex) \ {Sys}
+lock :: fn(m: ^Mutex) needs Sys
 ```
 
 Takes the mutex, waiting for it if another thread holds it.
@@ -189,7 +189,7 @@ A condition variable nobody waits on.
 ### `wait`
 
 ```gamma
-wait :: fn(c: ^Condvar, m: ^Mutex) \ {Sys}
+wait :: fn(c: ^Condvar, m: ^Mutex) needs Sys
 ```
 
 Unlocks `m`, waits for a signal, and locks `m` again. It may also return without a
@@ -198,7 +198,7 @@ signal, so call it in a loop that tests the condition: `while not ready { c.wait
 ### `wait_timeout`
 
 ```gamma
-wait_timeout :: fn(c: ^Condvar, m: ^Mutex, d: Duration) -> bool \ {Sys}
+wait_timeout :: fn(c: ^Condvar, m: ^Mutex, d: Duration) -> bool needs Sys
 ```
 
 Like `wait`, but gives up after `d`; returns `false` if it did so without a signal.
@@ -223,7 +223,7 @@ Wakes every thread waiting on `c`.
 ### `channel`
 
 ```gamma
-channel :: fn(T: type, capacity: usize) -> AllocError!Channel(T) \ {Alloc}
+channel :: fn(T: type, capacity: usize) -> AllocError!Channel(T) needs Alloc
 ```
 
 A channel holding up to `capacity` (at least 1) values, using the current allocator.
@@ -231,7 +231,7 @@ A channel holding up to `capacity` (at least 1) values, using the current alloca
 ### `send`
 
 ```gamma
-send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys}
+send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys
 ```
 
 Sends `x`, waiting while the channel is full. Returns `false` if the channel is closed.
@@ -239,7 +239,7 @@ Sends `x`, waiting while the channel is full. Returns `false` if the channel is 
 ### `recv`
 
 ```gamma
-recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys}
+recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys
 ```
 
 Receives the oldest value, waiting while the channel is empty. Returns `null` once the
@@ -248,7 +248,7 @@ channel is closed and drained.
 ### `try_send`
 
 ```gamma
-try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys}
+try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys
 ```
 
 Sends `x` if there is room right now; returns whether it did.
@@ -256,7 +256,7 @@ Sends `x` if there is room right now; returns whether it did.
 ### `try_recv`
 
 ```gamma
-try_recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys}
+try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys
 ```
 
 Receives a value if one is waiting right now.
@@ -264,7 +264,7 @@ Receives a value if one is waiting right now.
 ### `close`
 
 ```gamma
-close :: fn(T: type, c: ^Channel(T)) \ {Sys}
+close :: fn(T: type, c: ^Channel(T)) needs Sys
 ```
 
 Closes the channel: later sends fail, and blocked senders and receivers wake up.

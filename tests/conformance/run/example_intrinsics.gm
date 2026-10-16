@@ -1,6 +1,6 @@
 Point :: struct { x, y: i32 }
 
-require :: fn(ok: bool, msg: string = "requirement failed", loc: SourceLocation = @caller_location()) \ {Out} {
+require :: fn(ok: bool, msg: string = "requirement failed", loc: SourceLocation = @caller_location()) needs Out {
     if not ok {
         print("{} (line {}, in {})\n", msg, loc.line, loc.function)
     }
@@ -13,7 +13,7 @@ Tally :: struct { bytes: usize = 0, calls: u32 = 0 }
 leaf :: fn(n: u32) -> u32 => n + 1
 worker :: fn(a: ^u32) -> u32 => leaf(a^)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     require(1 + 1 is 2)
     require(1 + 1 is 3)
     require(false, "custom message")

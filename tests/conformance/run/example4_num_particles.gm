@@ -43,14 +43,14 @@ init :: fn() -> Bodies {
 }
 
 // Iterates over the indices of live particles.
-live :: fn(b: ^const Bodies) \ {Yield(usize)} {
+live :: fn(b: ^const Bodies) needs Yield(usize) {
     for i in 0..COUNT {
         if b.alive[i] { yield(i) }
     }
 }
 
 // Iterates over every pair of live particles closer than `radius`.
-near_pairs :: fn(b: ^const Bodies, radius: f32) \ {Yield((usize, usize)), Collide} {
+near_pairs :: fn(b: ^const Bodies, radius: f32) needs Yield((usize, usize)) + Collide {
     for i in live(b) {
         for j in live(b) {
             if j <= i { continue }
@@ -92,7 +92,7 @@ momentum :: fn(b: ^const Bodies) -> (px: f32, py: f32) {
 }
 
 // Perfectly inelastic merge of j into i.
-merge :: fn(b: ^Bodies, i, j: usize) \ {Log} {
+merge :: fn(b: ^Bodies, i, j: usize) needs Log {
     m := b.mass[i] + b.mass[j]
     b.vx[i] = (b.mass[i] * b.vx[i] + b.mass[j] * b.vx[j]) / m
     b.vy[i] = (b.mass[i] * b.vy[i] + b.mass[j] * b.vy[j]) / m
@@ -103,7 +103,7 @@ merge :: fn(b: ^Bodies, i, j: usize) \ {Log} {
     log(.Info, "merged")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fb: [64]u8 = ---
     fb2: [64]u8 = ---
     b := init()

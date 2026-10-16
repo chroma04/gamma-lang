@@ -5,7 +5,7 @@ cap_of :: fn(T: type, l: List(T)) -> usize {
     return l.cap                             //~ ERROR the field `cap` of `List(
 }
 
-main :: fn() \ {Alloc} {
+main :: fn() needs Alloc {
     a := list(u8)
     b := list(i32)
     c := list(string)

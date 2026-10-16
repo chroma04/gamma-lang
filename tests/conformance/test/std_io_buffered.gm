@@ -7,11 +7,11 @@ fs :: import "std/fs"
 WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
 
 // The size of the file at `path` as the file system sees it now.
-size_of_file :: fn(path: string) -> IoError!u64 \ {Fs} {
+size_of_file :: fn(path: string) -> IoError!u64 needs Fs {
     return (try Fs.stat(path)).size
 }
 
-slurp :: fn(path: string, buf: []u8) -> IoError!usize \ {Fs} {
+slurp :: fn(path: string, buf: []u8) -> IoError!usize needs Fs {
     f := try Fs.open(path, fs.OpenOptions())
     defer f.close()
     total: usize = 0

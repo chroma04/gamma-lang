@@ -3,7 +3,7 @@
 // Safe builds trap on an access through a many-pointer outside its allocation
 // (§18.7). Pointer arithmetic itself is allowed; only the access is checked.
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     xs := try make(u32, 4)
     defer free(xs)
     p := xs.ptr

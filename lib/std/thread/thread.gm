@@ -1,10 +1,10 @@
 //! Threads and the synchronization built on futexes (§19.6).
 //!
-//! A thread runs a plain function `^fn(arg: ^T) \ {Sys}` and starts with no handlers
+//! A thread runs a plain function `^fn(arg: ^T) needs Sys` and starts with no handlers
 //! installed; `defaults` installs the usual ones:
 //!
-//!     work :: fn(arg: ^State) \ {Sys} {
-//!         thread.defaults(fn() \ {Out, Alloc} { print("hello from a thread\n") })
+//!     work :: fn(arg: ^State) needs Sys {
+//!         thread.defaults(fn() needs Out + Alloc { print("hello from a thread\n") })
 //!     }
 //!     t := try thread.spawn(State, work, &state)
 //!     t.join()
@@ -24,14 +24,14 @@ pub Thread :: struct { handle: i64 }
 
 /// Starts a thread calling `f(arg)`; `arg` must stay valid until the thread is done with it.
 /// The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`.
-pub spawn :: fn(T: type, f: ^fn(arg: ^T) \ {Sys}, arg: ^T) -> IoError!Thread \ {Sys} {
+pub spawn :: fn(T: type, f: ^fn(arg: ^T) needs Sys, arg: ^T) -> IoError!Thread needs Sys {
     h := @thread_spawn(f, arg.cast(rawptr))
     if h < 0 { return !.Other(0) }
     return Thread(handle: h)
 }
 
 /// Waits for `t` to finish. A thread is joined or detached once, not both.
-pub join :: fn(t: Thread) \ {Sys} {
+pub join :: fn(t: Thread) needs Sys {
     _ = @thread_join(t.handle)
 }
 
@@ -41,19 +41,19 @@ pub join :: fn(t: Thread) \ {Sys} {
 /// returns the process exits at once, stopping detached threads that are still running
 /// wherever they are, without running their `defer`s; a trap in a detached thread stops
 /// the whole process, as in any thread.
-pub detach :: fn(t: Thread) \ {Sys} {
+pub detach :: fn(t: Thread) needs Sys {
     _ = @thread_detach(t.handle)
 }
 
 /// Lets other threads run.
-pub yield_now :: fn() \ {Sys} => @thread_yield()
+pub yield_now :: fn() needs Sys => @thread_yield()
 
 /// The number of processors available to the program (at least 1).
-pub cpu_count :: fn() -> u32 \ {Sys} => @cpu_count()
+pub cpu_count :: fn() -> u32 needs Sys => @cpu_count()
 
 /// Runs `body` under the default handlers of the ambient effects: the system heap,
 /// standard output and error, and the real input, clocks, randomness, files and network.
-pub defaults :: fn(body: fn() \ {Out, Err, Alloc, In, Clock, Rand, Fs, Net}) \ {Sys} {
+pub defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net) needs Sys {
     with heap_allocator(), system_io(), system_output() { body() }
 }
 
@@ -69,7 +69,7 @@ pub Mutex :: struct { state: u32 }
 pub mutex :: fn() -> Mutex => Mutex(state: 0)
 
 /// Takes the mutex, waiting for it if another thread holds it.
-pub lock :: fn(m: ^Mutex) \ {Sys} {
+pub lock :: fn(m: ^Mutex) needs Sys {
     if @atomic_cas(&m.state, 0, 1, .Acquire, .Relaxed) is null { return }
     while @atomic_swap(&m.state, 2, .Acquire) is not 0 {
         _ = @futex_wait(&m.state, 2, -1)
@@ -97,7 +97,7 @@ pub condvar :: fn() -> Condvar => Condvar(seq: 0)
 
 /// Unlocks `m`, waits for a signal, and locks `m` again. It may also return without a
 /// signal, so call it in a loop that tests the condition: `while not ready { c.wait(&m) }`.
-pub wait :: fn(c: ^Condvar, m: ^Mutex) \ {Sys} {
+pub wait :: fn(c: ^Condvar, m: ^Mutex) needs Sys {
     seen := @atomic_load(&c.seq, .Acquire)
     unlock(m)
     _ = @futex_wait(&c.seq, seen, -1)
@@ -106,7 +106,7 @@ pub wait :: fn(c: ^Condvar, m: ^Mutex) \ {Sys} {
 
 /// Like `wait`, but gives up after `d`; returns `false` if it did so without a signal.
 /// `m` is locked again either way.
-pub wait_timeout :: fn(c: ^Condvar, m: ^Mutex, d: Duration) -> bool \ {Sys} {
+pub wait_timeout :: fn(c: ^Condvar, m: ^Mutex, d: Duration) -> bool needs Sys {
     seen := @atomic_load(&c.seq, .Acquire)
     unlock(m)
     deadline := @clock_now() + d.ns
@@ -172,7 +172,7 @@ pub Channel :: struct(T: type) {
 }
 
 /// A channel holding up to `capacity` (at least 1) values, using the current allocator.
-pub channel :: fn(T: type, capacity: usize) -> AllocError!Channel(T) \ {Alloc} {
+pub channel :: fn(T: type, capacity: usize) -> AllocError!Channel(T) needs Alloc {
     assert(capacity >= 1, "a channel needs room for at least one value")
     a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * capacity, @align_of(T)) else return !.OutOfMemory
@@ -201,7 +201,7 @@ pop :: fn(T: type, c: ^Channel(T)) -> T {
 }
 
 /// Sends `x`, waiting while the channel is full. Returns `false` if the channel is closed.
-pub send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys} {
+pub send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys {
     lock(&c.m)
     while c.count is c.buf.len and not c.closed { wait(&c.not_full, &c.m) }
     ok := not c.closed
@@ -212,7 +212,7 @@ pub send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys} {
 
 /// Receives the oldest value, waiting while the channel is empty. Returns `null` once the
 /// channel is closed and drained.
-pub recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys} {
+pub recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys {
     lock(&c.m)
     while c.count is 0 and not c.closed { wait(&c.not_empty, &c.m) }
     r: ?T = null
@@ -222,7 +222,7 @@ pub recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys} {
 }
 
 /// Sends `x` if there is room right now; returns whether it did.
-pub try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys} {
+pub try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys {
     lock(&c.m)
     ok := not c.closed and c.count < c.buf.len
     if ok { push(c, x) }
@@ -231,7 +231,7 @@ pub try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool \ {Sys} {
 }
 
 /// Receives a value if one is waiting right now.
-pub try_recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys} {
+pub try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys {
     lock(&c.m)
     r: ?T = null
     if c.count > 0 { r = pop(c) }
@@ -240,7 +240,7 @@ pub try_recv :: fn(T: type, c: ^Channel(T)) -> ?T \ {Sys} {
 }
 
 /// Closes the channel: later sends fail, and blocked senders and receivers wake up.
-pub close :: fn(T: type, c: ^Channel(T)) \ {Sys} {
+pub close :: fn(T: type, c: ^Channel(T)) needs Sys {
     lock(&c.m)
     c.closed = true
     unlock(&c.m)

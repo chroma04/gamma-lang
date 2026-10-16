@@ -39,18 +39,18 @@ find :: fn(T: type, xs: []const T, pred: fn(T) -> bool) -> ?T {
 
 // ---- iterators --------------------------------------------------------------------------
 
-filtered :: fn(T: type, xs: []const T, pred: fn(T) -> bool) \ {Yield(T)} {
+filtered :: fn(T: type, xs: []const T, pred: fn(T) -> bool) needs Yield(T) {
     for x in xs {
         if pred(x) { yield(x) }
     }
 }
 
-windows :: fn(xs: []const i32, n: usize) \ {Yield([]const i32)} {
+windows :: fn(xs: []const i32, n: usize) needs Yield([]const i32) {
     if xs.len < n { return }
     for i in 0..=(xs.len - n) { yield(xs[i..i + n]) }
 }
 
-take_while_sum :: fn(limit: u32) \ {Yield(u32)} {
+take_while_sum :: fn(limit: u32) needs Yield(u32) {
     i: u32 = 1
     total: u32 = 0
     while total < limit {
@@ -78,7 +78,7 @@ make_counter_fn :: fn(step: i32) -> ^fn(x: i32) -> i32 {
     return fn(x: i32) -> i32 => x + 10
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     people := [_]Person(
         Person(name: "Ada", age: 36, dept: "eng"),
         Person(name: "Grace", age: 45, dept: "navy"),

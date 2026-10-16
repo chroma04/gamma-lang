@@ -3,7 +3,7 @@
 
 Yield :: effect(T: type) { yield: esc(x: T) }
 
-evens :: fn(xs: []const i32) \ {Yield(i32)} {
+evens :: fn(xs: []const i32) needs Yield(i32) {
     for x in xs { if x % 2 is 0 { yield(x) } }   // yield goes to evens's caller
 }
 
@@ -14,7 +14,7 @@ use_evens :: fn(data: []const i32) {
     }
 }
 
-tokenize :: fn(src: string) -> LexError!() \ {Yield(Token)} {
+tokenize :: fn(src: string) -> LexError!() needs Yield(Token) {
     return ()
 }
 
@@ -26,14 +26,14 @@ lockstep :: fn(a, b: []const i32) {
     }
 }
 
-range :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) { }
-range_incl :: fn(T: type, lo, hi: T) \ {Yield(T)} where Int(T) { }
-each       :: fn(T: type, xs: []const T) \ {Yield(T)} { }
-each_ptr   :: fn(T: type, xs: []T) \ {Yield(^T)} { }
-enumerate  :: fn(T: type, xs: []const T) \ {Yield((i: usize, x: T))} { }
-reversed   :: fn(T: type, xs: []const T) \ {Yield(T)} { }
-bytes      :: fn(s: string) \ {Yield(u8)} { }
-runes      :: fn(s: string) \ {Yield(rune)} { }
+range :: fn(T: type, lo, hi: T) needs Yield(T) where Int(T) { }
+range_incl :: fn(T: type, lo, hi: T) needs Yield(T) where Int(T) { }
+each       :: fn(T: type, xs: []const T) needs Yield(T) { }
+each_ptr   :: fn(T: type, xs: []T) needs Yield(^T) { }
+enumerate  :: fn(T: type, xs: []const T) needs Yield((i: usize, x: T)) { }
+reversed   :: fn(T: type, xs: []const T) needs Yield(T) { }
+bytes      :: fn(s: string) needs Yield(u8) { }
+runes      :: fn(s: string) needs Yield(rune) { }
 
 loops :: fn(scores: []u32, names: []string) {
     for p in each_ptr(scores) { p^ = p^ +| 10 }

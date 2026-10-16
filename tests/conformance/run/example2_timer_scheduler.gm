@@ -4,7 +4,7 @@ STACK :: 24576
 Task :: effect {
     sleep: ctl(ms: u64)
     now: fn() -> u64
-    spawn: ctl(entry: ^fn(id: u32) -> never \ {Task, Out}, id: u32)
+    spawn: ctl(entry: ^fn(id: u32) -> never needs Task + Out, id: u32)
     done: ctl() -> never
 }
 
@@ -77,7 +77,7 @@ wait :: fn(self: ^Kernel, ms: u64, k: cont(())) {
     heap_push(&self.sleepers, Sleeper(wake: self.clock + ms, seq: self.seq, k: k))
 }
 
-handler Task for ^Kernel \ {Out} {
+handler Task for ^Kernel needs Out {
     sleep(self, ms, k) => {
         wait(self, ms, k)
         s := heap_pop(&self.sleepers)?
@@ -115,7 +115,7 @@ handler Task for ^Kernel \ {Out} {
     }
 }
 
-worker :: fn(id: u32) -> never \ {Task, Out} {
+worker :: fn(id: u32) -> never needs Task + Out {
     defer print("  [t={}] worker {} cleanup\n", now(), id)
     period: u64 = 10 * u64(id)
     i: u32 = 0
@@ -127,7 +127,7 @@ worker :: fn(id: u32) -> never \ {Task, Out} {
     done()
 }
 
-run :: fn(deadline: u64) \ {Out} {
+run :: fn(deadline: u64) needs Out {
     k := Kernel(sleepers: heap(T: Sleeper, 8, earlier), deadline: deadline, stacks: ---)
     main_stack: [STACK]u8 = ---
     print("deadline {}\n", deadline)
@@ -140,7 +140,7 @@ run :: fn(deadline: u64) \ {Out} {
     print("end: clock {}, cancelled {}, live {}\n", k.clock, k.cancelled, k.live)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     run(1000)
     run(25)
 }

@@ -3,7 +3,7 @@ classify :: fn(n: i32) -> string {
     return if n < 0 { "negative" } else if n is 0 { "zero" } else { "positive" }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     i := 0
     while i < 5 {
         i += 1

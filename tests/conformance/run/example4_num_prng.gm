@@ -50,14 +50,14 @@ handler Rng for ^XorShift {
 }
 
 // ---- generic consumers of the Rng effect ----
-next_u64 :: fn() -> u64 \ {Rng} {
+next_u64 :: fn() -> u64 needs Rng {
     hi := u64(next_u32())
     lo := u64(next_u32())
     return (hi << 32) | lo
 }
 
 // Unbiased bounded integer (rejection of the short final bucket).
-below :: fn(n: u32) -> u32 \ {Rng} {
+below :: fn(n: u32) -> u32 needs Rng {
     // 2^32 mod n, computed without a 64-bit division
     threshold := (0 -% n) % n
     while true {
@@ -66,12 +66,12 @@ below :: fn(n: u32) -> u32 \ {Rng} {
     }
 }
 
-unit :: fn() -> f64 \ {Rng} {
+unit :: fn() -> f64 needs Rng {
     bits := next_u64() >> 11
     return bits.to(f64) * (1.0 / 9007199254740992.0)
 }
 
-monte_carlo_pi :: fn(samples: u32) -> f64 \ {Rng} {
+monte_carlo_pi :: fn(samples: u32) -> f64 needs Rng {
     inside: u32 = 0
     for _ in 0..samples {
         x := unit()
@@ -81,7 +81,7 @@ monte_carlo_pi :: fn(samples: u32) -> f64 \ {Rng} {
     return 4.0 * inside.to(f64) / samples.to(f64)
 }
 
-roll_two_dice :: fn(counts: ^[13]u32, rolls: u32) \ {Rng} {
+roll_two_dice :: fn(counts: ^[13]u32, rolls: u32) needs Rng {
     for _ in 0..rolls {
         s := below(6) + below(6) + 2
         counts[s] += 1
@@ -120,7 +120,7 @@ population :: fn(g: ^const Grid) -> u32 {
     return n
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // Reference vector from the PCG paper's demo: seed (42, 54).
     p := pcg_new(42, 54)
     print("pcg32 (42,54):")

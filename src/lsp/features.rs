@@ -390,9 +390,9 @@ mod tests {
 
     #[test]
     fn splits_signatures() {
-        let (ps, tail) = split_signature("sum :: fn(p: Point, extra: (i32, u8) = (1, 2)) -> i32 \\ {Out}").unwrap();
+        let (ps, tail) = split_signature("sum :: fn(p: Point, extra: (i32, u8) = (1, 2)) -> i32 needs Out").unwrap();
         assert_eq!(ps, vec!["p: Point", "extra: (i32, u8) = (1, 2)"]);
-        assert_eq!(tail, " -> i32 \\ {Out}");
+        assert_eq!(tail, " -> i32 needs Out");
         assert_eq!(split_signature("greet :: fn()").unwrap().0, Vec::<String>::new());
         assert!(split_signature("x: i32").is_none());
     }

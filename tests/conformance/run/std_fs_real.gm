@@ -11,12 +11,12 @@ at :: fn(buf: []u8, root, rel: string) -> string {
     return buf[0..root.len + 1 + rel.len]
 }
 
-put :: fn(root, rel, text: string) -> IoError!() \ {Fs} {
+put :: fn(root, rel, text: string) -> IoError!() needs Fs {
     buf: [512]u8 = ---
     try fs.write_all(at(buf[..], root, rel), text)
 }
 
-count :: fn(path: string) -> IoError!u32 \ {Fs} {
+count :: fn(path: string) -> IoError!u32 needs Fs {
     n: u32 = 0
     for r in fs.entries(path) {
         _ = try r
@@ -25,7 +25,7 @@ count :: fn(path: string) -> IoError!u32 \ {Fs} {
     return n
 }
 
-scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
+scenario :: fn(root: string) -> IoError!() needs Out + Fs + Rand + Alloc {
     p: [512]u8 = ---
 
     // make_dir_all: nested, repeated, with odd separators.
@@ -152,7 +152,7 @@ scenario :: fn(root: string) -> IoError!() \ {Out, Fs, Rand, Alloc} {
     try Fs.remove(target)
 }
 
-cleanup :: fn(root: string) \ {Fs} {
+cleanup :: fn(root: string) needs Fs {
     p: [512]u8 = ---
     for rel in [_]string("a/b/c/three.txt", "a/b/two.txt", "a/one.txt", "top.txt") {
         _ = Fs.remove(at(p[..], root, rel))
@@ -163,7 +163,7 @@ cleanup :: fn(root: string) \ {Fs} {
     _ = Fs.remove_dir(root)
 }
 
-main :: fn() -> IoError!() \ {Out, Fs, Rand, Alloc, Env} {
+main :: fn() -> IoError!() needs Out + Fs + Rand + Alloc + Env {
     tmp := Env.var("TMPDIR") else (Env.var("TEMP") else "/tmp")
     r: [6]u8 = ---
     Rand.fill(r[..])

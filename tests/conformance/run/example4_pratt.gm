@@ -36,7 +36,7 @@ keyword :: fn(word: string) -> Kind => match word {
 
 // ------------------------------------------------------------------ lexer
 
-tokens :: fn(src: string) -> Failure!() \ {Yield(Token)} {
+tokens :: fn(src: string) -> Failure!() needs Yield(Token) {
     i: usize = 0
     while i < src.len {
         c := src[i]
@@ -149,7 +149,7 @@ expect :: fn(p: ^Parser, kind: Kind, what: string) -> Failure!Token {
     return bump(p)
 }
 
-mk :: fn(pos: usize, kind: NodeKind) -> Failure!^Node \ {Alloc} {
+mk :: fn(pos: usize, kind: NodeKind) -> Failure!^Node needs Alloc {
     return try new(Node(pos: pos, kind: kind))
 }
 
@@ -177,7 +177,7 @@ infix :: fn(k: Kind) -> ?Infix => match k {
 
 PREFIX_BP: u8 : 15
 
-parse_expr :: fn(p: ^Parser, min_bp: u8) -> Failure!^Node \ {Alloc} {
+parse_expr :: fn(p: ^Parser, min_bp: u8) -> Failure!^Node needs Alloc {
     t := bump(p)
     lhs := match t.kind {
         .Num => try mk(t.pos, .Num(t.num))
@@ -241,7 +241,7 @@ end_of_stmt :: fn(p: ^Parser) -> Failure!() {
     return ()
 }
 
-parse_stmt :: fn(p: ^Parser) -> Failure!Stmt \ {Alloc} {
+parse_stmt :: fn(p: ^Parser) -> Failure!Stmt needs Alloc {
     t := cur(p)
     if t.kind is .Let {
         _ = bump(p)
@@ -315,7 +315,7 @@ ipow :: fn(base, exp: i64, pos: usize) -> Failure!i64 {
     return r
 }
 
-eval :: fn(it: ^Interp, sc: ^Scope, n: ^Node) -> Failure!i64 \ {Alloc} {
+eval :: fn(it: ^Interp, sc: ^Scope, n: ^Node) -> Failure!i64 needs Alloc {
     return match n.kind {
         .Num(v) => v
         .Var(name) => lookup(it, sc, name) else return !at(n.pos, "undefined variable")
@@ -383,7 +383,7 @@ eval :: fn(it: ^Interp, sc: ^Scope, n: ^Node) -> Failure!i64 \ {Alloc} {
     }
 }
 
-run_stmt :: fn(it: ^Interp, stmt: Stmt) -> Failure!?i64 \ {Alloc} {
+run_stmt :: fn(it: ^Interp, stmt: Stmt) -> Failure!?i64 needs Alloc {
     root := Scope()
     match stmt {
         .Let(name, value) => {
@@ -401,7 +401,7 @@ run_stmt :: fn(it: ^Interp, stmt: Stmt) -> Failure!?i64 \ {Alloc} {
 
 // ------------------------------------------------------------------ diagnostics
 
-show_failure :: fn(src: string, pos: usize, msg: string) \ {Out} {
+show_failure :: fn(src: string, pos: usize, msg: string) needs Out {
     line: usize = 1
     line_start: usize = 0
     for i in 0..pos {
@@ -419,7 +419,7 @@ show_failure :: fn(src: string, pos: usize, msg: string) \ {Out} {
     print("^\n")
 }
 
-run_source :: fn(it: ^Interp, src: string) \ {Out, Alloc} {
+run_source :: fn(it: ^Interp, src: string) needs Out + Alloc {
     toks := list(Token)
     lexed := try_collect(src, &toks)
     if lexed is !_ {
@@ -457,7 +457,7 @@ run_source :: fn(it: ^Interp, src: string) \ {Out, Alloc} {
     }
 }
 
-try_collect :: fn(src: string, out: ^List(Token)) -> Failure!() \ {Alloc} {
+try_collect :: fn(src: string, out: ^List(Token)) -> Failure!() needs Alloc {
     try for t in tokens(src) {
         try out.push(t)
     }
@@ -485,7 +485,7 @@ gcd(1071, 462)
 def add3(a, b, c) = a + b + c; add3(1, 2, 3)
 `
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {

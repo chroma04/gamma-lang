@@ -1,7 +1,7 @@
 // A sieve of Eratosthenes on a bit set, and set algebra on its results.
 bs :: import "std/collections/bitset"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     limit: usize = 10_000
     composite := try bs.bitset(limit)
     defer composite.deinit()

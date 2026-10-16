@@ -4,7 +4,7 @@ Gen :: effect {
     emit: ctl(x: i32)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [32768]u8 = ---
     saved: ?cont(()) = null
     with (handler Gen {

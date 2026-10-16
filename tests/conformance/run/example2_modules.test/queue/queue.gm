@@ -23,6 +23,6 @@ pub pop :: fn(T: type, N :: usize, q: ^Queue(T, N)) -> ?T {
 
 pub len :: fn(T: type, N :: usize, q: ^const Queue(T, N)) -> usize => q.count
 
-pub items :: fn(T: type, N :: usize, q: ^const Queue(T, N)) \ {Yield(T)} {
+pub items :: fn(T: type, N :: usize, q: ^const Queue(T, N)) needs Yield(T) {
     for i in 0..q.count { yield(q.buf[(q.head + i) % N]) }
 }

@@ -16,7 +16,7 @@ Async :: effect {
 }
 Async2 :: effect {
     wait:  ctl(fd: Fd, events: Events)
-    spawn: ctl(entry: ^fn(arg: rawptr) -> never \ {Async2}, arg: rawptr, stack: []u8)
+    spawn: ctl(entry: ^fn(arg: rawptr) -> never needs Async2, arg: rawptr, stack: []u8)
     exit:  ctl() -> never
     join:  ctl()                      // wait until every spawned task has exited
 }
@@ -37,10 +37,12 @@ Generic :: effect(K, V: type) {
 }
 Empty :: effect {}
 
-sets :: fn() \ {Yield(i32), Yield(u8), m.Net, Log} { }
-sets2 :: fn() \ {
-    Alloc,
-    Out,
-} { }
-sets3 :: fn() \ {} { }
-sets4 :: fn(T: type) -> ?T \ {Yield((i: usize, x: T))} { return null }
+sets :: fn() needs Yield(i32) + Yield(u8) + m.Net + Log { }
+sets2 :: fn() needs Alloc + Out { }
+sets3 :: fn() needs Out +
+    Clock { }
+libc :: foreign "c" {
+    abs :: fn(x: i32) -> i32 needs not
+    exit :: fn(code: i32) -> never
+}
+sets4 :: fn(T: type) -> ?T needs Yield((i: usize, x: T)) { return null }

@@ -36,7 +36,7 @@ test "the first error still returns" {
     _ = ok(parse(""))
 }
 
-check_positive :: fn(n: i32) -> u32 \ {Test} {
+check_positive :: fn(n: i32) -> u32 needs Test {
     expect(n > 0, "not positive")
     return ok(other(true))
 }

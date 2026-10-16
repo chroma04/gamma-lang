@@ -2,7 +2,7 @@
 
 scale :: fn(v: [3]f64, k: f64) -> [3]f64 => v * [3]f64(fill: k)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [3]i32(1, 2, 3)
     b := [3]i32(10, 20, 30)
     print("{} {} {} {}\n", a + b, b - a, a * b, b / a)

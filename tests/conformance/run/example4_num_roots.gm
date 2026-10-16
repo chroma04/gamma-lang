@@ -10,7 +10,7 @@ Diverged :: effect {
     diverged: esc(iters: u32) -> never
 }
 
-newton :: fn(f: fn(f64) -> f64, df: fn(f64) -> f64, x0, tol: f64) -> f64 \ {Trace, Diverged} {
+newton :: fn(f: fn(f64) -> f64, df: fn(f64) -> f64, x0, tol: f64) -> f64 needs Trace + Diverged {
     x := x0
     for i in 0..50 {
         fx := f(x)
@@ -85,7 +85,7 @@ gauss5 :: fn(f: fn(f64) -> f64, a, b: f64) -> f64 {
 
 fx :: fn(x: f64, d: u32, buf: []u8) -> string => fmt.fixed(x, d, buf)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b1: [400]u8 = ---
     b2: [400]u8 = ---
     b3: [400]u8 = ---

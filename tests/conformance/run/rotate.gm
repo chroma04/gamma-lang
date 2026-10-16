@@ -1,6 +1,6 @@
 // `@rotl` and `@rotr` rotate an integer's bits (§20.3), for any width and signedness;
 // `@bswap` reverses the bytes of any whole-byte width.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: u8 = 0b1000_0001
     print("{} {} {} {}\n", @rotl(a, 1), @rotr(a, 1), @rotl(a, 8), @rotl(a, 9))
     b: u32 = 0x1234_5678

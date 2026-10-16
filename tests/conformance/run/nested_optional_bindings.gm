@@ -5,7 +5,7 @@ res :: fn(k: i32) -> E!?u16 {
     if k is 1 { return null }
     return 7
 }
-show :: fn(v: ??u8) \ {Out} {
+show :: fn(v: ??u8) needs Out {
     match v {
         null => print("absent\n")
         n => match n {
@@ -14,7 +14,7 @@ show :: fn(v: ??u8) \ {Out} {
         }
     }
 }
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     m := hash_map(string, ?u32)
     defer m.deinit()
     try m.put("none", null)

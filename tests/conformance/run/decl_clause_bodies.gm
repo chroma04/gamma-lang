@@ -6,7 +6,7 @@ Parse :: effect { parse: fn(s: string) -> u8!u32 }
 
 Wrapper :: struct { lines: u32 = 0 }
 
-countdown :: fn(n: u32) \ {Yield(u32)} {
+countdown :: fn(n: u32) needs Yield(u32) {
     i := n
     while i > 0 {
         yield(i)
@@ -49,7 +49,7 @@ handler Parse for ^Dec {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     wrap := Wrapper()
     with &wrap {
         say(4)

@@ -50,7 +50,7 @@ advance :: fn(s: ^Search) -> bool {
 
 // Runs `body` once per path; `found` is called for every path on which `body` completes.
 // `found` returns false to stop the search.
-search_all :: fn(body: fn() \ {Choose}, found: fn() -> bool) -> u32 {
+search_all :: fn(body: fn() needs Choose, found: fn() -> bool) -> u32 {
     s := Search()
     solutions: u32 = 0
     while true {
@@ -71,7 +71,7 @@ search_all :: fn(body: fn() \ {Choose}, found: fn() -> bool) -> u32 {
 
 // ---- N queens -------------------------------------------------------------------
 
-queens :: fn(n: usize, cols: []usize) \ {Choose} {
+queens :: fn(n: usize, cols: []usize) needs Choose {
     for row in 0..n {
         c := choose(n)
         for r in 0..row {
@@ -81,7 +81,7 @@ queens :: fn(n: usize, cols: []usize) \ {Choose} {
     }
 }
 
-draw :: fn(cols: []const usize) \ {Out} {
+draw :: fn(cols: []const usize) needs Out {
     for row in 0..cols.len {
         print("   ")
         for c in 0..cols.len {
@@ -91,7 +91,7 @@ draw :: fn(cols: []const usize) \ {Out} {
     }
 }
 
-queens_demo :: fn() \ {Out} {
+queens_demo :: fn() needs Out {
     print("-- 6 queens\n")
     cols: [8]usize = [8]usize(fill: 0)
     n6 := search_all(fn() { queens(6, cols[..]) }, fn() -> bool {
@@ -140,7 +140,7 @@ conflicts :: fn(grid: []const u8, i: usize, v: u8) -> bool {
     return false
 }
 
-sudoku :: fn(grid: []u8) \ {Choose} {
+sudoku :: fn(grid: []u8) needs Choose {
     for i in 0..16 {
         if PUZZLE[i] is not 0 { continue }
         v := (choose(4) + 1).trunc(u8)
@@ -149,7 +149,7 @@ sudoku :: fn(grid: []u8) \ {Choose} {
     }
 }
 
-sudoku_demo :: fn() \ {Out} {
+sudoku_demo :: fn() needs Out {
     print("-- 4x4 sudoku\n")
     grid := PUZZLE
     count := search_all(fn() {
@@ -169,7 +169,7 @@ sudoku_demo :: fn() \ {Out} {
 
 // ---- Subset sum and map colouring -----------------------------------------------
 
-subset_sum :: fn(items: []const i32, target: i32, taken: []bool) \ {Choose} {
+subset_sum :: fn(items: []const i32, target: i32, taken: []bool) needs Choose {
     sum: i32 = 0
     for i in 0..items.len {
         taken[i] = choose(2) is 1
@@ -183,14 +183,14 @@ BORDERS :: [_](Region, Region)(
     (.WA, .NT), (.WA, .SA), (.NT, .SA), (.NT, .Q), (.SA, .Q), (.SA, .NSW), (.SA, .V), (.Q, .NSW), (.NSW, .V),
 )
 
-colour_map :: fn(colours: usize, assigned: []usize) \ {Choose} {
+colour_map :: fn(colours: usize, assigned: []usize) needs Choose {
     for i in 0..7 { assigned[i] = choose(colours) }
     for b in BORDERS {
         if assigned[b.0.tag()] is assigned[b.1.tag()] { fail() }
     }
 }
 
-misc_demo :: fn() \ {Out} {
+misc_demo :: fn() needs Out {
     print("-- subset sums of 3 5 7 9 11 equal to 20\n")
     items := [5]i32(3, 5, 7, 9, 11)
     taken := [5]bool(fill: false)
@@ -225,7 +225,7 @@ misc_demo :: fn() \ {Out} {
     })
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     queens_demo()
     sudoku_demo()
     misc_demo()

@@ -1,7 +1,7 @@
 //! exit: 134
 add :: fn(a: u8, b: u8) -> u8 => a + b
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", add(100, 100))
     print("{}\n", add(200, 100))
     print("unreachable\n")

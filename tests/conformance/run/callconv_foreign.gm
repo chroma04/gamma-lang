@@ -17,9 +17,9 @@ when target.arch is .X86_64 {
 
     lib :: foreign "c" {
         #callconv(.Win64)
-        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 needs not
         #callconv(.SysV)
-        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 needs not
     }
 } else {
     #export("gm_test_cc_sum")
@@ -29,12 +29,12 @@ when target.arch is .X86_64 {
     sysv_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 => f64(a) * 2.0 + x + v.x + v.y
 
     lib :: foreign "c" {
-        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
-        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 \ {}
+        gm_test_cc_sum :: fn(a: i32, x: f64, v: Vec2) -> f64 needs not
+        gm_test_cc_sysv :: fn(a: i32, x: f64, v: Vec2) -> f64 needs not
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     v := Vec2(x: 2.0, y: 3.0)
     print("{} {}\n", win_sum(1, 0.5, v), lib.gm_test_cc_sum(1, 0.5, v))
     print("{} {}\n", sysv_sum(1, 0.5, v), lib.gm_test_cc_sysv(1, 0.5, v))

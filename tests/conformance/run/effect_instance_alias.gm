@@ -5,19 +5,19 @@ EvI :: Ev(i32)
 EvS :: Ev(string)
 Bytes :: Yield(u8)
 
-g :: fn() \ {EvI, EvS} {
+g :: fn() needs EvI + EvS {
     EvI.ev(5)
     EvS.ev("five")
     Ev(i32).ev(6)
 }
 
-gen :: fn() \ {Bytes} {
+gen :: fn() needs Bytes {
     yield(u8(3))
     Yield(u8).yield(4)
     Bytes.yield(5)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     with (handler EvI { ev(x) => print("int {}\n", x) }) {
         with (handler EvS { ev(s) => print("str {}\n", s) }) { g() }
     }

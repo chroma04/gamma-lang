@@ -3,7 +3,7 @@ Value :: union { Null, Num: i32, Arr: []Value }
 
 Node :: union { Leaf, Branch: List(Node) }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     a: Value = .Null
     b: Value = .Null
     print("{} {} {}\n", a is b, a is .Null, a is .Num(1))

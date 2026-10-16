@@ -3,7 +3,7 @@ greet :: fn() {
     print("hi\n")               //~ ERROR does not declare
 }
 
-greet2 :: fn() \ {Out} {
+greet2 :: fn() needs Out {
     print("hi\n")
 }
 
@@ -11,6 +11,6 @@ Sized :: effect(N: usize) {                  //~ ERROR effect parameters are typ
     take: fn(n: usize)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     greet2()
 }

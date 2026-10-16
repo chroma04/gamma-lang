@@ -3,7 +3,7 @@ json :: import "../json"
 
 Doc :: json.Value
 
-describe :: fn(label: string, r: json.Error!Doc) \ {Out, Alloc} {
+describe :: fn(label: string, r: json.Error!Doc) needs Out + Alloc {
     match r {
         !.Syntax(e) => print("{}: syntax error at {}: {}\n", label, e.pos, e.kind)
         !.Memory(_) => print("{}: out of memory\n", label)
@@ -15,14 +15,14 @@ describe :: fn(label: string, r: json.Error!Doc) \ {Out, Alloc} {
     }
 }
 
-show :: fn(v: ^const Doc) \ {Out, Alloc} {
+show :: fn(v: ^const Doc) needs Out + Alloc {
     b := json.buffer()
     defer b.deinit()
     with &b { json.compact(v) }
     print("{} ({} chunks)\n", b.text(), b.puts)
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     src :: `{"name": "gamma", "tags": ["lang", "fx", "c"], "ver": {"major": 0, "minor": 5}, "pi": 3.25, "neg": -12, "big": 1.5e3, "ok": true, "none": null, "esc": "a\"b\\c\ndéA"}`
     doc := json.parse(src) else {
         print("failed\n")

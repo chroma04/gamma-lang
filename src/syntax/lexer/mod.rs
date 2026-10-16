@@ -656,7 +656,9 @@ impl<'a> Lexer<'a> {
 /// Rule 1 of §2.8: a newline after this token is not significant.
 fn suppresses_newline_after(kind: &TokenKind) -> bool {
     match kind {
-        TokenKind::Keyword(k) => matches!(k, Keyword::Is | Keyword::In | Keyword::And | Keyword::Or | Keyword::Else),
+        TokenKind::Keyword(k) => {
+            matches!(k, Keyword::Is | Keyword::In | Keyword::And | Keyword::Or | Keyword::Else | Keyword::Needs)
+        }
         // Every operator except the postfix/sigil ones, `...`, `---` and closing brackets.
         TokenKind::Punct(p) => !matches!(
             p,

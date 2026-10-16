@@ -15,7 +15,7 @@ Yield :: effect(T: type) { yield: esc(x: T) }
 It has a single `esc` operation, so a handler can resume the producer (let it continue with its next value) or stop it. Any function whose effect set contains `Yield(T)` is an iterator:
 
 ```gamma
-countdown :: fn(start: u32) \ {Yield(u32)} {
+countdown :: fn(start: u32) needs Yield(u32) {
     n := start
     while n > 0 {
         yield(n)
@@ -23,7 +23,7 @@ countdown :: fn(start: u32) \ {Yield(u32)} {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for n in countdown(3) {
         print("{}\n", n)          // 3, 2, 1
     }
@@ -43,7 +43,7 @@ Ranges are ordinary values of the core types `Range(T)` and `RangeIncl(T)`, stru
 ```gamma
 Span :: struct { name: string, r: Range(usize) }
 
-ranges_demo :: fn() \ {Out} {
+ranges_demo :: fn() needs Out {
     word := "abcdefgh"
     sp := Span(name: "mid", r: 2..5)
     print("{} {}\n", sp.name, word[sp.r])      // mid cde
@@ -59,7 +59,7 @@ When nothing else fixes the type of a stored range's bounds, they are `usize`; w
 Writing an iterator is just writing the loop you want and calling `yield`. Compare this with a callback-based tokenizer in C, which has to package its state into a `void *` or invert its control flow:
 
 ```gamma
-words :: fn(s: string) \ {Yield(string)} {
+words :: fn(s: string) needs Yield(string) {
     start := 0
     for i in 0..s.len {
         if s[i] is ' ' {
@@ -70,7 +70,7 @@ words :: fn(s: string) \ {Yield(string)} {
     if s.len > start { yield(s[start..]) }
 }
 
-words_demo :: fn() \ {Out} {
+words_demo :: fn() needs Out {
     for w in words("the quick  brown fox") {
         print("[{}]\n", w)           // [the] [quick] [brown] [fox]
     }
@@ -82,7 +82,7 @@ Observe that `words` contains a `for` loop of its own (over a range), and `yield
 An iterator can wrap another by looping over it:
 
 ```gamma
-evens :: fn(xs: []const i32) \ {Yield(i32)} {
+evens :: fn(xs: []const i32) needs Yield(i32) {
     for x in xs {
         if x % 2 is 0 { yield(x) }       // goes to evens's caller, not to the loop above
     }
@@ -92,12 +92,12 @@ evens :: fn(xs: []const i32) \ {Yield(i32)} {
 An iterator can also have other effects. Callers must handle those too:
 
 ```gamma
-numbered :: fn(n: u32) \ {Yield(u32), Out} {
+numbered :: fn(n: u32) needs Yield(u32) + Out {
     defer print("iterator cleaned up\n")
     for i in 1..=n { yield(i) }
 }
 
-early_exit_demo :: fn() \ {Out} {
+early_exit_demo :: fn() needs Out {
     for i in numbered(10) {
         if i > 3 { break }               // stops the iterator, which runs its defer
     }
@@ -106,7 +106,7 @@ early_exit_demo :: fn() \ {Out} {
 
 The `Out` that `numbered` performs becomes a requirement of `early_exit_demo`, and the `defer` runs when `break` unwinds `numbered`.
 
-> **Common mistake: yielding the wrong type.** `Yield(u32)` and `Yield(u8)` are different effects. A function that yields a `u32` must declare `Yield(u32)`. A function may declare several, for example `\ {Yield(i32), Yield(u8)}`, but then it cannot be the source of a `for` loop, which requires exactly one `Yield(T)` in the callee's effect set.
+> **Common mistake: yielding the wrong type.** `Yield(u32)` and `Yield(u8)` are different effects. A function that yields a `u32` must declare `Yield(u32)`. A function may declare several, for example `needs Yield(i32) + Yield(u8)`, but then it cannot be the source of a `for` loop, which requires exactly one `Yield(T)` in the callee's effect set.
 
 ## Loops with values and failing iterators
 
@@ -117,7 +117,7 @@ This is how iterators report failure. An iterator returns a result, and the surr
 ```gamma
 Overflow :: union { TooMany }
 
-limited :: fn(xs: []const u32, cap: usize) -> Overflow!() \ {Yield(u32)} {
+limited :: fn(xs: []const u32, cap: usize) -> Overflow!() needs Yield(u32) {
     if xs.len > cap { return !.TooMany }
     for x in xs { yield(x) }
     return ()
@@ -150,7 +150,7 @@ The core library provides these iterators (§21.4). All are `#inline`.
 | `zip(xs, ys)` | `(x, y)` pairs from two slices, up to the shorter |
 
 ```gamma
-std_demo :: fn(names: []const string, scores: []u32) \ {Out} {
+std_demo :: fn(names: []const string, scores: []u32) needs Out {
     for i, name in enumerate(names) {
         print("{}: {}\n", i, name)
     }
@@ -185,7 +185,7 @@ words := try collect(str.fields(line))     // List(string)
 n := count(runes(text))                    // usize
 third := nth(str.split(row, ","), 2)       // ?string; stops the iterator there
 
-sum_of :: fn(T: type, it: fn() \ {Yield(T)}) -> T where Num(T) {
+sum_of :: fn(T: type, it: fn() needs Yield(T)) -> T where Num(T) {
     s: T = 0
     for x in it() { s += x }
     return s

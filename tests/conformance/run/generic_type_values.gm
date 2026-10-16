@@ -20,7 +20,7 @@ hash_of :: fn(K: type, key :: ?^fn(x: K) -> u64, x: Keyed(K, key)) -> u64 {
 
 ident :: fn(x: u32) -> u64 => u64(x) * 10
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := Ring(u8, 3)(items: [3]u8(fill: 0))
     for i in 1..=5 { r.push(u8(i)) }
     print("{}\n", r)

@@ -3,4 +3,4 @@
 #export("index")
 plus_one :: fn(x: u32) -> u32 => x + 1
 
-main :: fn() \ {Out} { print("{}\n", plus_one(41)) }
+main :: fn() needs Out { print("{}\n", plus_one(41)) }

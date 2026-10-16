@@ -105,7 +105,7 @@ rot :: fn(a: Arr) -> Arr {
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     g := LCG(s: 12345)
     a := Arr(v: [32]i32(fill: 0), n: 32)
     for i in 0..32 { a.v[i] = (next(&g) % 1000).trunc(i32) - 500 }

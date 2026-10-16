@@ -44,7 +44,7 @@ sum_all :: fn(xs: []const string) -> ParseErr!i64 {
     return t
 }
 
-show :: fn(r: ParseErr!i64) \ {Out} {
+show :: fn(r: ParseErr!i64) needs Out {
     match r {
         !.Empty => print("empty\n")
         !.NotNum(s) => print("not a number: {}\n", s)
@@ -64,7 +64,7 @@ Cfg :: struct { w: u32 = 80, h: u32 = 24, name: string = "term", bold: bool = fa
 
 mk :: fn(base: Cfg, extra: u32 = 5, scale: u32 = 1) -> Cfg => Cfg(..base, w: base.w * scale + extra)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for n in [_]i64(0, 5, 20, -4, 99) { print("{} ", classify(n)) }
     print("\n")
     toks := [_]Tok(.Num(7), .Op('-'), .Op('*'), .Word("hi"), .Word("hello"), .Word("yo"), .Pair(.A, .B(3)), .Pair(.B(1), .A))

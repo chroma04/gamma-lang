@@ -1,7 +1,7 @@
 // @type_of in type positions (§20.3).
 X :: 5u16
 Y: @type_of(X) : 7
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: i64 = 3
     b: @type_of(a) = 4
     print("{} {} {}\n", @type_name(@type_of(b)), @type_name(@type_of(Y)), b + a)

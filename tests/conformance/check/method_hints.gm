@@ -1,5 +1,5 @@
 //! stage: check
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     names := [2]string("a", "b")
     for (i, n) in enumerate(names) { print("{}\n", n) }
     s := "ab"

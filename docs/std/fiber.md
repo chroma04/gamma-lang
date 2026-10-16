@@ -9,7 +9,7 @@ take turns when they call `yield_now`. The scheduler is a handler for the `Sched
 
     fiber :: import "std/fiber"
 
-    worker :: fn(c: ^Counter) \ {Sched} {
+    worker :: fn(c: ^Counter) needs Sched {
         c.ticks += 1
         fiber.yield_now()               // let the other tasks run
         c.ticks += 1
@@ -30,8 +30,8 @@ the `with` joins, not the tasks, and a task that never ends is a deadlock, which
 A task's `arg` and `stack` must outlive the task.
 
 Tasks may perform other effects too, handled where the scheduler is installed. They are
-the scheduler's effect-set parameter (§16.6): with `s := fiber.scheduler(\ {Out, Clock})`
-a task is a `fn(arg: ^T) \ {Sched(\ {Out, Clock}), Out, Clock}` (or uses fewer of them), and
+the scheduler's effect-set parameter (§16.6): with `s := fiber.scheduler(Out + Clock)`
+a task is a `fn(arg: ^T) needs Sched(Out + Clock) + Out + Clock` (or uses fewer of them), and
 the `with &s` needs `Out` and `Clock` itself.
 
 `Scheduler` keeps the allocator it was created with for its queue of ready tasks and
@@ -57,7 +57,7 @@ may perform the effects `E`.
 ```gamma
 Sched :: effect(E: effects) {
     yield_now: ctl()
-    spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never \ {Sched(E), ..E}, arg: rawptr, stack: []u8)
+    spawn_raw: ctl(entry: ^fn(arg: rawptr) -> never needs Sched(E) + E, arg: rawptr, stack: []u8)
     exit: ctl() -> never
     join: ctl()
 }
@@ -65,14 +65,14 @@ Sched :: effect(E: effects) {
 
 What a task can ask of its scheduler. `spawn`, which takes a typed task function, is the
 way to start a task; `spawn_raw` is the operation underneath.
-`E` is what tasks may perform besides `Sched`; `Sched` alone is `Sched(\ {})`.
+`E` is what tasks may perform besides `Sched`; `Sched` alone is `Sched` of the empty set.
 
 ## Handlers
 
 ### `handler(E: effects) Sched(E) for ^Scheduler(E)`
 
 ```gamma
-handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}
+handler(E: effects) Sched(E) for ^Scheduler(E) needs E
 ```
 
 ## Functions
@@ -80,7 +80,7 @@ handler(E: effects) Sched(E) for ^Scheduler(E) \ {..E}
 ### `scheduler`
 
 ```gamma
-scheduler :: fn(E: effects) -> Scheduler(E) \ {Alloc}
+scheduler :: fn(E: effects) -> Scheduler(E) needs Alloc
 ```
 
 A scheduler with no tasks, using the current allocator for its queue. Its tasks may
@@ -97,7 +97,7 @@ Frees the scheduler's queue. All tasks must have ended.
 ### `spawn`
 
 ```gamma
-spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) \ {Sched(E), ..E}, arg: ^T, stack: []u8) \ {Sched(E)}
+spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) needs Sched(E) + E, arg: ^T, stack: []u8) needs Sched(E)
 ```
 
 Starts a task calling `f(arg)` on `stack`, to run once the current task gives way. The

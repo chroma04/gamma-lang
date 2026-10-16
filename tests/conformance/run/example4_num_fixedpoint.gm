@@ -95,7 +95,7 @@ Q8 :: Fx(8)
 
 show :: fn(F :: u32, x: Fx(F), digits: u32, buf: []u8) -> string => fmt.fixed(to_f64(F: F, x), digits, buf)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b1: [400]u8 = ---
     b2: [400]u8 = ---
     b3: [400]u8 = ---

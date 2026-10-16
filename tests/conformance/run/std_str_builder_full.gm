@@ -2,7 +2,7 @@
 // Appending beyond the builder's buffer traps.
 str :: import "std/str"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     store: [4]u8 = ---
     b := str.builder(store[..])
     b.push("abcd")

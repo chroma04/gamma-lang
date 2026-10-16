@@ -790,7 +790,7 @@ Structural `is`, ordering and `@hash` use C functions generated per type
 values, so hash maps iterate in the same order.
 
 **Calling conventions and foreign code.** A function whose effects are at most
-`{Sys}` takes no hidden parameters: it has the plain C calling convention, so it
+`Sys` takes no hidden parameters: it has the plain C calling convention, so it
 can be passed to C as a callback, and function pointer types with such effect
 sets are C function pointers (§19.1). Where a plain function is used as code
 of the hidden convention (a closure, or a pointer widened to a type with
@@ -811,7 +811,7 @@ floating-point registers, a 16-byte blob in integer registers. So a struct,
 `#c_union` or `#bits` struct whose fields are all C-compatible also gets a
 *mirror* C type with the same fields (`Types::mirror`), with static assertions
 that the C compiler lays it out exactly as Gamma does. Plain-convention
-signatures (foreign functions, exports, functions with at most `{Sys}`, and
+signatures (foreign functions, exports, functions with at most `Sys`, and
 calls through their pointers) take and return mirrors, and values are copied
 between blob and mirror with `GM_CONV` at those calls; the C compiler removes
 the copies.
@@ -901,7 +901,7 @@ reference in `docs/std/` is checked in and `tests/doc.rs` fails when it is stale
 - `input.rs` classifies text by parsing it twice, as top-level items and as the body of a function. `x := e` parses as an item but is not a declaration, so it is read as a statement. Items that are plain `name :: value` bindings are tried as constants first and as local variables if that fails.
 - `main` returns `AllocError!()` so `try` works on allocation.
 - An expression statement is tried as written (it must have type `()`), then as `__repl_v := e` followed by `print("{}\n", __repl_v)`.
-- Variables are replayed before the new input, with the output of `Out` and `Err` hidden until a marker string (`report::Filter`). A statement is kept if it checks with the effect set `{Alloc}` and the kept statements before it, which separates repeatable statements from those with visible effects. A variable defined from an effectful expression is kept anyway, and flagged.
+- Variables are replayed before the new input, with the output of `Out` and `Err` hidden until a marker string (`report::Filter`). A statement is kept if it checks with the effect set `Alloc` and the kept statements before it, which separates repeatable statements from those with visible effects. A variable defined from an effectful expression is kept anyway, and flagged.
 - Redefining a variable renames the new one (`x__2`) and rewrites later inputs at the token level (identifiers after `.` or before `:` are left alone).
 - `report::render_region` maps diagnostics in the input to positions relative to it; errors elsewhere in the synthesized file are shown against the whole text.
 

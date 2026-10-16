@@ -4,7 +4,7 @@ pub Table :: struct(T: type) {
     rows: List(T)
 }
 
-pub table :: fn(T: type, name: string) -> Table(T) \ {Alloc} {
+pub table :: fn(T: type, name: string) -> Table(T) needs Alloc {
     return Table(T)(name: name, rows: list(T))
 }
 
@@ -30,7 +30,7 @@ pub Index :: struct(T: type, K: type) {
     map: HashMap(K, usize)
 }
 
-pub index :: fn(T: type, K: type, t: ^const Table(T), key: ^fn(row: ^const T) -> K) -> AllocError!Index(T, K) \ {Alloc} where Eq(K) {
+pub index :: fn(T: type, K: type, t: ^const Table(T), key: ^fn(row: ^const T) -> K) -> AllocError!Index(T, K) needs Alloc where Eq(K) {
     m := hash_map(K, usize)
     errdefer m.deinit()
     for i in 0..t.rows.items.len {

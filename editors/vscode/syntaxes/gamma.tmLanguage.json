@@ -223,21 +223,34 @@
     },
     "effect-set": {
       "name": "meta.effect-set.gamma",
-      "begin": "(\\\\)\\s*(\\{)",
-      "end": "\\}",
+      "begin": "\\b(needs)\\b",
+      "end": "(?=[{,)=;]|$|\\bwhere\\b)",
       "beginCaptures": {
-        "1": { "name": "keyword.operator.effect.gamma" },
-        "2": { "name": "punctuation.section.braces.begin.gamma" }
+        "1": { "name": "keyword.other.needs.gamma" }
       },
-      "endCaptures": { "0": { "name": "punctuation.section.braces.end.gamma" } },
       "patterns": [
         { "include": "#comments" },
-        { "include": "#effect-set" },
-        { "match": "\\.\\.(?=[A-Za-z_])", "name": "keyword.operator.spread.gamma" },
+        { "match": "\\bnot\\b", "name": "keyword.other.needs.gamma" },
+        { "match": "\\+", "name": "keyword.operator.effect.gamma" },
+        { "include": "#effect-args" },
         { "match": "\\b[A-Z][A-Za-z0-9_]*\\b", "name": "entity.name.type.effect.gamma" },
         { "include": "#types" },
         { "include": "#field" },
-        { "include": "#operators" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "effect-args": {
+      "begin": "\\(",
+      "end": "\\)",
+      "beginCaptures": { "0": { "name": "punctuation.section.parens.begin.gamma" } },
+      "endCaptures": { "0": { "name": "punctuation.section.parens.end.gamma" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "match": "\\+", "name": "keyword.operator.effect.gamma" },
+        { "include": "#effect-args" },
+        { "match": "\\b[A-Z][A-Za-z0-9_]*\\b", "name": "entity.name.type.effect.gamma" },
+        { "include": "#types" },
+        { "include": "#field" },
         { "include": "#numbers" },
         { "include": "#punctuation" }
       ]
@@ -389,10 +402,6 @@
         {
           "name": "keyword.operator.sigil.gamma",
           "match": "[?!^]"
-        },
-        {
-          "name": "keyword.operator.effect.gamma",
-          "match": "\\\\"
         }
       ]
     },

@@ -27,7 +27,7 @@ naive_f64 :: fn(n: u32, x: f64) -> f64 {
     return sum
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fb: [400]u8 = ---
 
     // Shortest round-trip printing at each precision.

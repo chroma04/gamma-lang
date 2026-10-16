@@ -19,7 +19,7 @@ Entry :: struct {
 is_letter :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '\''
 
 // Yields each maximal run of letters in `line`, lower-cased into memory from the current allocator.
-words_of :: fn(line: string) -> AllocError!() \ {Yield(string), Alloc} {
+words_of :: fn(line: string) -> AllocError!() needs Yield(string) + Alloc {
     i: usize = 0
     while i < line.len {
         if not is_letter(line[i]) {
@@ -40,7 +40,7 @@ words_of :: fn(line: string) -> AllocError!() \ {Yield(string), Alloc} {
 }
 
 // Yields the entries that are at least `min_len` letters long; returns the last one it saw.
-long_entries :: fn(es: []const Entry, min_len: usize) -> ?Entry \ {Yield(Entry)} {
+long_entries :: fn(es: []const Entry, min_len: usize) -> ?Entry needs Yield(Entry) {
     last: ?Entry = null
     for e in es {
         if e.word.len >= min_len {
@@ -57,7 +57,7 @@ bar :: fn(n: u32, out: []u8) -> string {
     return out[0..k]
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     counts := hash_map(string, u32)

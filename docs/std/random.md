@@ -55,7 +55,7 @@ gives the same sequence.
 ### `from_rand`
 
 ```gamma
-from_rand :: fn() -> Rng \ {Rand}
+from_rand :: fn() -> Rng needs Rand
 ```
 
 A generator seeded from the current `Rand` (the operating system by default).
@@ -71,7 +71,7 @@ The next output of the generator.
 ### `next_u64`
 
 ```gamma
-next_u64 :: fn() -> u64 \ {Rand}
+next_u64 :: fn() -> u64 needs Rand
 ```
 
 A uniformly distributed `u64`.
@@ -79,7 +79,7 @@ A uniformly distributed `u64`.
 ### `below`
 
 ```gamma
-below :: fn(T: type, n: T) -> T \ {Rand} where Int(T)
+below :: fn(T: type, n: T) -> T needs Rand where Int(T)
 ```
 
 A uniform integer in [0, n), without modulo bias. `n` must be greater than 0.
@@ -87,7 +87,7 @@ A uniform integer in [0, n), without modulo bias. `n` must be greater than 0.
 ### `range`
 
 ```gamma
-range :: fn(T: type, lo, hi: T) -> T \ {Rand} where Int(T)
+range :: fn(T: type, lo, hi: T) -> T needs Rand where Int(T)
 ```
 
 A uniform integer in [lo, hi). `lo` must be less than `hi`; the span may be the whole
@@ -96,7 +96,7 @@ range of `T` minus one value.
 ### `float`
 
 ```gamma
-float :: fn() -> f64 \ {Rand}
+float :: fn() -> f64 needs Rand
 ```
 
 A uniform `f64` in [0, 1), made from 53 random bits.
@@ -104,7 +104,7 @@ A uniform `f64` in [0, 1), made from 53 random bits.
 ### `chance`
 
 ```gamma
-chance :: fn(p: f64) -> bool \ {Rand}
+chance :: fn(p: f64) -> bool needs Rand
 ```
 
 `true` with probability `p` (never for `p` <= 0, always for `p` >= 1).
@@ -112,7 +112,7 @@ chance :: fn(p: f64) -> bool \ {Rand}
 ### `normal`
 
 ```gamma
-normal :: fn(mean, stddev: f64) -> f64 \ {Rand}
+normal :: fn(mean, stddev: f64) -> f64 needs Rand
 ```
 
 A normally distributed `f64` with the given mean and standard deviation (Box-Muller).
@@ -120,7 +120,7 @@ A normally distributed `f64` with the given mean and standard deviation (Box-Mul
 ### `shuffle`
 
 ```gamma
-shuffle :: fn(T: type, items: []T) \ {Rand}
+shuffle :: fn(T: type, items: []T) needs Rand
 ```
 
 Rearranges `items` into a uniformly random order (Fisher-Yates).
@@ -128,7 +128,7 @@ Rearranges `items` into a uniformly random order (Fisher-Yates).
 ### `choice`
 
 ```gamma
-choice :: fn(T: type, items: []const T) -> ?T \ {Rand}
+choice :: fn(T: type, items: []const T) -> ?T needs Rand
 ```
 
 A uniformly chosen element of `items`, or `null` if it is empty.
@@ -136,7 +136,7 @@ A uniformly chosen element of `items`, or `null` if it is empty.
 ### `weighted`
 
 ```gamma
-weighted :: fn(weights: []const f64) -> ?usize \ {Rand}
+weighted :: fn(weights: []const f64) -> ?usize needs Rand
 ```
 
 An index of `weights` chosen with probability proportional to its weight, or `null`

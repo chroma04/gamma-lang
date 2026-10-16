@@ -54,7 +54,7 @@ swap_fields :: fn(a: Big, p: ^Big) -> Big {
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b := mk(3)
     print("sum {}\n", sum(b))
     // 1. earlier arg read before later arg's side effect

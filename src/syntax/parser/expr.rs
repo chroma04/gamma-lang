@@ -609,12 +609,6 @@ impl Parser<'_> {
         let tok = self.tok();
         let span = tok.span;
         match &tok.kind {
-            // `\ {E1, E2}`: an effect set as a compile-time argument (§16.6).
-            TokenKind::Punct(Punct::Backslash) => {
-                let list = self.parse_effect_set()?;
-                let span = self.span_from(span.lo);
-                Ok(self.mk_expr(ExprKind::EffectSet(list), span))
-            }
             TokenKind::Int(lit) => {
                 self.bump();
                 Ok(self.mk_expr(ExprKind::Int(lit.clone()), span))

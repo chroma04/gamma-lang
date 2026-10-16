@@ -2,15 +2,15 @@
 // instantiation (§12.1), so shorthand variants and literals take their types from it.
 Events :: effect(E: type) { emit: fn(e: E) }
 Event :: union { Opened: (id: u32, owner: string), Closed: u32 }
-open_account :: fn(id: u32) \ {Events(Event)} {
+open_account :: fn(id: u32) needs Events(Event) {
     emit(.Opened(id: id, owner: "ada"))
     emit(.Closed(id))
 }
 Nums :: effect(T: type) { put: fn(x: T) }
-nums :: fn() \ {Nums(u8)} {
+nums :: fn() needs Nums(u8) {
     put(200)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n: u32 = 0
     with (handler Events(Event) {
         emit(e) => {

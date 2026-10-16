@@ -1,6 +1,6 @@
 // The right side of `is` is a value unless it is a pattern form (§7.6): a method call on
 // a value is a value, while `T.V(_)` on a union type is a pattern test.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u8 = 3
     t: u32 = 259
     print("{} {} {}\n", x is t.trunc(u8), x is (t + 0).trunc(u8), x is u8(3))

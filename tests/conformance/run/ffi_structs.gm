@@ -23,19 +23,19 @@ ComplexF :: struct {
 }
 
 libc :: foreign "c" {
-    div :: fn(n, d: c.c_int) -> DivT \ {}
-    ldiv :: fn(n, d: c.c_long) -> LDivT \ {}
+    div :: fn(n, d: c.c_int) -> DivT needs not
+    ldiv :: fn(n, d: c.c_long) -> LDivT needs not
     // Exported below, and called through C's calling convention.
-    gm_test_mix :: fn(m: Mixed, scale: f64) -> Mixed \ {}
-    gm_test_big :: fn(b: Big) -> Big \ {}
-    gm_test_word :: fn(w: Word, f: Flags) -> u32 \ {}
-    gm_test_layout :: fn(p: Packed, a: Aligned) -> Packed \ {}
+    gm_test_mix :: fn(m: Mixed, scale: f64) -> Mixed needs not
+    gm_test_big :: fn(b: Big) -> Big needs not
+    gm_test_word :: fn(w: Word, f: Flags) -> u32 needs not
+    gm_test_layout :: fn(p: Packed, a: Aligned) -> Packed needs not
 }
 
 libm :: foreign "m" {
-    cabs :: fn(z: Complex) -> f64 \ {}
-    conj :: fn(z: Complex) -> Complex \ {}
-    cabsf :: fn(z: ComplexF) -> f32 \ {}
+    cabs :: fn(z: Complex) -> f64 needs not
+    conj :: fn(z: Complex) -> Complex needs not
+    cabsf :: fn(z: ComplexF) -> f32 needs not
 }
 
 // Integers and floats mixed, nested structs and arrays.
@@ -107,7 +107,7 @@ apply :: fn(f: ^fn(z: Complex) -> Complex, z: Complex) -> Complex => f(z)
 
 swap_parts :: fn(z: Complex) -> Complex => Complex(re: z.im, im: z.re)
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     d := libc.div(17, 5)
     print("div {} {}\n", d.quot, d.rem)
     l := libc.ldiv(-1000000007, 10)

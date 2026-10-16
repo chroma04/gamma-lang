@@ -19,7 +19,7 @@ count_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 
 COUNTING :: AllocVtable(alloc: count_alloc, resize: count_resize, free: count_free)
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     b := try new(Big(a: [20]i64(fill: 7)))
     b.a[19] += 1
     u := try new(Unit())

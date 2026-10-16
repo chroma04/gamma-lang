@@ -5,7 +5,7 @@ Log :: effect { log: fn(msg: string, n: i32) -> i32 }
 Stop :: effect { stop: esc(code: i32) -> never }
 Gen :: effect { emit: ctl(x: i32) }
 
-count :: fn(n: i32) \ {Yield(i32), Out} {
+count :: fn(n: i32) needs Yield(i32) + Out {
     defer print("count({}) done\n", n)
     i := 0
     while i < n {
@@ -15,7 +15,7 @@ count :: fn(n: i32) \ {Yield(i32), Out} {
 }
 
 // A perform inside a `with` of the same effect goes to the inner handler.
-shadowed :: fn() \ {Yield(i32)} {
+shadowed :: fn() needs Yield(i32) {
     yield(1)
     with (handler Yield(i32) { yield(x) => {} }) {
         yield(100)
@@ -25,25 +25,25 @@ shadowed :: fn() \ {Yield(i32)} {
 
 // Recursion: the inner calls are made through `for` loops of their own.
 Tree :: struct { val: i32, kids: []const Tree }
-walk :: fn(t: ^const Tree) \ {Yield(i32)} {
+walk :: fn(t: ^const Tree) needs Yield(i32) {
     yield(t.val)
     for k in t.kids { for v in walk(&k) { yield(v) } }
 }
 
 // A direct recursive call passes the same handler on.
-down :: fn(n: i32) \ {Yield(i32)} {
+down :: fn(n: i32) needs Yield(i32) {
     if n is 0 { return }
     yield(n)
     down(n - 1)
 }
 
-work :: fn(base: i32) -> i32 \ {Log} {
+work :: fn(base: i32) -> i32 needs Log {
     a := log("first", base)
     b := log("second", a)
     return a + b
 }
 
-checked_sum :: fn(xs: []const i32) -> i32 \ {Stop} {
+checked_sum :: fn(xs: []const i32) -> i32 needs Stop {
     total := 0
     for x in xs {
         if x < 0 { stop(x) }
@@ -52,15 +52,15 @@ checked_sum :: fn(xs: []const i32) -> i32 \ {Stop} {
     return total
 }
 
-numbers :: fn(n: i32) \ {Gen} {
+numbers :: fn(n: i32) needs Gen {
     for i in 0..n { emit(i) }
 }
 
-pairs :: fn(T: type, xs: []const T) \ {Yield((T, T))} {
+pairs :: fn(T: type, xs: []const T) needs Yield((T, T)) {
     for i in 1..xs.len { yield((xs[i - 1], xs[i])) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     total := 0
     for x in count(4) { total += x }
     print("total {}\n", total)

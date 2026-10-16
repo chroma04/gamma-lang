@@ -4,7 +4,7 @@ util :: import "../util"
 json :: import "json"
 also :: import "../main/geom"    // the same module as `geom`
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := geom.Point(x: 3, y: 4)
     print("{} {}\n", geom.norm2(p), util.twice(21))
     o: geom.Origin = .Center

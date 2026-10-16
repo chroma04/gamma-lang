@@ -1,7 +1,7 @@
 // `bool` is ordered, `false` before `true` (§7.5), so it can be a sort key.
 Task :: struct { done: bool, name: string }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {} {}\n", false < true, true < false, true >= true, false <= false)
     print("{}\n", (true, 1) < (false, 2))
     print("{}\n", [2]bool(false, true) < [2]bool(true, false))

@@ -24,7 +24,7 @@ find_from :: fn(s, needle: string, from: usize) -> ?usize {
 }
 
 // Writes `s` with the characters that are special in HTML replaced.
-emit_escaped :: fn(s: string) \ {Emit} {
+emit_escaped :: fn(s: string) needs Emit {
     run: usize = 0
     for i in 0..s.len {
         repl := match s[i] {
@@ -44,7 +44,7 @@ emit_escaped :: fn(s: string) \ {Emit} {
 }
 
 // A heading's anchor: lower-case letters and digits, with runs of anything else as one '-'.
-emit_slug :: fn(title: string) \ {Emit} {
+emit_slug :: fn(title: string) needs Emit {
     pending_dash := false
     started := false
     for c in bytes(title) {
@@ -75,7 +75,7 @@ find_close :: fn(s: string, at: usize, delim: u8, width: usize) -> ?usize {
     return null
 }
 
-inline :: fn(s: string) \ {Emit} {
+inline :: fn(s: string) needs Emit {
     i: usize = 0
     run: usize = 0
     while i < s.len {
@@ -142,7 +142,7 @@ Conv :: struct {
     blocks: u32 = 0
 }
 
-close_block :: fn(c: ^Conv) \ {Emit} {
+close_block :: fn(c: ^Conv) needs Emit {
     match c.block {
         .None => {}
         .Para => emit("</p>\n")
@@ -154,7 +154,7 @@ close_block :: fn(c: ^Conv) \ {Emit} {
     c.block = .None
 }
 
-open_block :: fn(c: ^Conv, b: Block, tag: string) \ {Emit} {
+open_block :: fn(c: ^Conv, b: Block, tag: string) needs Emit {
     if c.block is not b {
         close_block(c)
         emit(tag)
@@ -186,7 +186,7 @@ is_rule :: fn(line: string) -> bool {
     return line[0] in ('-', '*', '_')
 }
 
-convert_line :: fn(c: ^Conv, line: string) \ {Emit} {
+convert_line :: fn(c: ^Conv, line: string) needs Emit {
     if c.block is .Code {
         if starts_with(line, "```") {
             close_block(c)
@@ -245,7 +245,7 @@ convert_line :: fn(c: ^Conv, line: string) \ {Emit} {
     }
 }
 
-convert :: fn(text: string) -> u32 \ {Emit} {
+convert :: fn(text: string) -> u32 needs Emit {
     c := Conv()
     for line in str.lines(text) {
         convert_line(&c, line)
@@ -277,7 +277,7 @@ collect_headings :: fn(text: string, out: []Heading) -> usize {
     return n
 }
 
-emit_toc :: fn(heads: []const Heading) \ {Emit} {
+emit_toc :: fn(heads: []const Heading) needs Emit {
     emit("<nav>\n")
     for h in heads {
         emit("<li class=\"l")
@@ -323,7 +323,7 @@ if a < b && c > d {
 Final paragraph with an unclosed *star and a lone [bracket.
 `
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // A raw string cannot contain a backtick, so the document uses ^ in its place.
     doc: [1024]u8 = ---
     n: usize = 0

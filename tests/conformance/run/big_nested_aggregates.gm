@@ -79,7 +79,7 @@ describe :: fn(s: Shape) -> i64 => match s {
     .Nothing => -1
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     g := grid(1)
     print("{}\n", sum(g))
 

@@ -35,7 +35,7 @@ classify :: fn(raw: string) -> Value {
 }
 
 /// Parses `text`. Problems that do not stop parsing are reported with `warn`.
-pub parse :: fn(text: string) -> AllocError!Doc \ {Alloc, Warn} {
+pub parse :: fn(text: string) -> AllocError!Doc needs Alloc + Warn {
     doc := Doc(sections: list(Section))
     errdefer free_doc(&doc)
     try doc.sections.push(Section(name: "", entries: list(Entry)))
@@ -67,7 +67,7 @@ pub parse :: fn(text: string) -> AllocError!Doc \ {Alloc, Warn} {
     return doc
 }
 
-pub free_doc :: fn(d: ^Doc) \ {Alloc} {
+pub free_doc :: fn(d: ^Doc) needs Alloc {
     for s in each_ptr(d.sections.items) { s.entries.deinit() }
     d.sections.deinit()
 }

@@ -1,6 +1,6 @@
 //! exit: 134
 // A narrowing conversion that does not fit is caught with `.checked`.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u300 = 1 << 200
     small := x >> 150
     print("{}\n", small.checked(u64))

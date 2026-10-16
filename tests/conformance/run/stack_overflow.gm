@@ -15,7 +15,7 @@ deep :: fn(b: Big, n: u32) -> u32 {
     return deep(c, n - 1)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     b: Big = ---
     b.data[0] = 0
     print("{}\n", deep(b, 1))

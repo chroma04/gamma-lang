@@ -1,6 +1,6 @@
 // The numeric intrinsics (§20.3): @sqrt and @fma on floats (one rounding for fma), and
 // the bit operations, whose counts are u32 and whose other results keep the operand's type.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u16 = 0x00f0
     y: u64 = 1
     print("{} {} {} {} {}\n", @clz(x), @ctz(x), @popcount(x), @bswap(x), @bitreverse(x))

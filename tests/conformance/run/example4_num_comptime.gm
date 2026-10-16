@@ -125,7 +125,7 @@ when target.ptr_bits is 64 {
     word_name :: fn() -> string => "narrow words"
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for row in 0..H { print("{}\n", IMAGE[row][..]) }
 
     // The run-time evaluation of the same function agrees byte for byte.

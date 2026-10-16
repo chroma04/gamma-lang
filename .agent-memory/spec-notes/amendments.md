@@ -80,3 +80,5 @@
   positional; §12.3 named effect sets; §12.6 no overlapping handler decls; §14.5 `cancel`;
   §21.1 universe without ops/Fs-Net types; §21.6.1 template = one value per placeholder;
   §7.2 mutation-visible principle; §6.1 shift fallback usize.
+- s16: effect-set syntax `needs A + B` everywhere (§5.14, §11.1, §12.3, §12.6, §16.6, §19.2,
+  A.4/A.7, B tables, C.7); `needs not` foreign-only; `..E` splice removed; keyword list gains `needs`.

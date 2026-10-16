@@ -3,7 +3,7 @@
 model :: import "../model"
 store :: import "../store"
 
-report :: fn(label: string, r: store.Failure!()) \ {Out} {
+report :: fn(label: string, r: store.Failure!()) needs Out {
     match r {
         !.Stock(.Insufficient(have, want)) => print("{}: only {} in stock, wanted {}\n", label, have, want)
         !.Stock(.Unknown(sku)) => print("{}: unknown sku {}\n", label, sku)
@@ -13,7 +13,7 @@ report :: fn(label: string, r: store.Failure!()) \ {Out} {
     }
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     s := store.store()
     defer s.deinit()
     journal := store.Journal()

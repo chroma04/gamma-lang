@@ -156,7 +156,7 @@ impl World {
             "app/gamma.toml",
             &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{}", deps),
         );
-        self.write("app/main.gm", &format!("{}\nmain :: fn() \\ {{Out}} {{\n{}\n}}\n", imports, body));
+        self.write("app/main.gm", &format!("{}\nmain :: fn() needs Out {{\n{}\n}}\n", imports, body));
     }
 }
 
@@ -217,7 +217,10 @@ fn add_fetch_and_run_a_git_dependency() {
     let w = World::new("add_run");
     w.lib("http", 7, Some("v1.0.0"));
     w.write("app/gamma.toml", "# my app\n[package]\nname = \"app\"\n");
-    w.write("app/main.gm", "http :: import \"http\"\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", http.value())\n}\n");
+    w.write(
+        "app/main.gm",
+        "http :: import \"http\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", http.value())\n}\n",
+    );
     let out = w.gamma("app", &["add", "http", "--git", &w.url("http")]).success();
     assert!(out.stderr.contains("Fetching http"), "{}", out.stderr);
     assert!(out.stderr.contains("Locking http v1.0.0"), "{}", out.stderr);
@@ -246,7 +249,7 @@ fn add_fetch_and_run_a_git_dependency() {
     w.gamma("app", &["fetch"]).success();
     assert_eq!(w.read("app/gamma.lock"), lock);
     // Diagnostics name the package's module after the dependency, not its directory.
-    w.write("app/main.gm", "http :: import \"http\"\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", http.nope())\n}\n");
+    w.write("app/main.gm", "http :: import \"http\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", http.nope())\n}\n");
     let out = w.gamma("app", &["check", "."]).failure();
     assert!(out.stderr.contains("the module `http` has no declaration `nope`"), "{}", out.stderr);
 }
@@ -696,7 +699,7 @@ fn add_chooses_a_version_or_the_default_branch_and_accepts_paths() {
     w.lib("untagged", 3, None);
     w.lib("local", 4, None);
     w.write("app/gamma.toml", "[package]\nname = \"app\"\n");
-    w.write("app/main.gm", "main :: fn() \\ {Out} {}\n");
+    w.write("app/main.gm", "main :: fn() needs Out {}\n");
     w.gamma("app", &["add", "tagged", "--git", &w.url("tagged")]).success();
     w.gamma("app", &["add", "untagged", "--git", &w.url("untagged")]).success();
     w.gamma("app", &["add", "local", "--path", "../local"]).success();
@@ -723,7 +726,7 @@ fn add_chooses_a_version_or_the_default_branch_and_accepts_paths() {
 #[test]
 fn manifest_errors_name_the_line() {
     let w = World::new("manifest_errors");
-    w.write("app/main.gm", "main :: fn() \\ {Out} {}\n");
+    w.write("app/main.gm", "main :: fn() needs Out {}\n");
     for (manifest, line, msg) in [
         (
             "[package]\nname = \"app\"\n[dependencies]\nx = { path = \"a\", colour = \"red\" }\n",
@@ -764,7 +767,7 @@ fn a_git_dependency_needs_the_package_manager_when_used_as_a_library() {
         "app/gamma.toml",
         "[package]\nname = \"app\"\n[dependencies]\nhttp = { git = \"https://example.invalid/http\" }\n",
     );
-    w.write("app/main.gm", "main :: fn() \\ {Out} {}\n");
+    w.write("app/main.gm", "main :: fn() needs Out {}\n");
     let mut sess = gamma::driver::Session::new();
     let ok = gamma::sema::analyze(&mut sess, &w.path("app")).is_some();
     let text = sess.render_diagnostics(gamma::diag::DiagFormat::Short);
@@ -820,7 +823,7 @@ fn new_creates_a_working_package() {
 #[test]
 fn init_never_overwrites() {
     let w = World::outside("init");
-    w.write("proj/main.gm", "main :: fn() \\ {Out} {\n    print(\"mine\\n\")\n}\n");
+    w.write("proj/main.gm", "main :: fn() needs Out {\n    print(\"mine\\n\")\n}\n");
     w.write("proj/.gitignore", "custom\n");
     let out = run_ok(&w, "proj", &["init", "--vcs=none"]);
     assert!(out.stdout.contains("Skipped main.gm (already exists)"), "{}", out.stdout);
@@ -1336,7 +1339,7 @@ fn archive_subdirectories_add_and_bad_archives() {
     w.write("app2/gamma.toml", "# my app\n[package]\nname = \"app2\"\n");
     w.write(
         "app2/main.gm",
-        "inner :: import \"inner\"\nmain :: fn() \\ {Out} {\n    print(\"{}\\n\", inner.value())\n}\n",
+        "inner :: import \"inner\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", inner.value())\n}\n",
     );
     w.gamma("app2", &["add", "inner", "--url", &url, "--sha256", &hash, "--subdir", "pkgs/inner"]).success();
     let manifest = w.read("app2/gamma.toml");

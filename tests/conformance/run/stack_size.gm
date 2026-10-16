@@ -32,7 +32,7 @@ sorted_sum :: fn() -> i32 {
 }
 
 // A performed operation whose handler is installed here is a call to its clause.
-logged :: fn(n: i32) -> i32 \ {Log} {
+logged :: fn(n: i32) -> i32 needs Log {
     log(n)
     return n
 }
@@ -47,7 +47,7 @@ with_log :: fn() -> i32 {
 }
 
 // A fiber's work: it suspends with `ctl` performs, whose clauses run elsewhere.
-work :: fn() \ {Gen} {
+work :: fn() needs Gen {
     emit(top(1))
     emit(sorted_sum())
     emit(with_log())
@@ -60,7 +60,7 @@ Task :: effect {
     stop: ctl() -> never
 }
 
-entry :: fn(n: i32) -> never \ {Task} {
+entry :: fn(n: i32) -> never needs Task {
     report(top(n.trunc(u8)))
     report(sorted_sum())
     stop()
@@ -69,7 +69,7 @@ entry :: fn(n: i32) -> never \ {Task} {
 @static_assert(@stack_size(leaf) >= @min_stack, "the result is at least @min_stack")
 @static_assert(@stack_size(top) > @stack_size(mid), "callers need more than their callees")
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [@stack_size(work)]u8 = ---
     with (handler Gen { emit(x, k) => { print("{}\n", x); resume k() } }) on stack[..] {
         work()

@@ -20,7 +20,7 @@ apply :: fn(f: fn(b: []const u8), s: []const u8) => f(s)
 
 Pos :: struct { x: f64, y: f64 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     line := Line(buf: [64]u8(fill: 0), len: 0)
     @write(fn(b: []const u8) { append(&line, b) }, "{} + {} = {}", 2, 3, 2 + 3)
     print("{} ({} bytes)\n", line.buf[0..line.len], line.len)

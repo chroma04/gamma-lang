@@ -1,7 +1,7 @@
 //! stage: parse
 // Spec 12.5-12.6: handler literals and handler declarations.
 
-save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
+save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) needs Fs {
     warnings := 0u32
     quiet :: handler Log {
         log(level, msg) => if level is .Warn { warnings += 1 }
@@ -12,13 +12,13 @@ save_quietly :: fn(doc: ^const Doc) -> (IoError!(), u32) \ {Fs} {
 
 FileLogger :: struct { fd: Fd; min: Level }
 
-handler Log for ^FileLogger \ {Fs} {
+handler Log for ^FileLogger needs Fs {
     log(self, level, msg) => if level >= self.min { _ = fs.write(self.fd, msg) }
 }
 
 handler Alloc for Allocator { current(self) => self }
 
-handler Async for ^Scheduler \ {Sys} {
+handler Async for ^Scheduler needs Sys {
     wait(self, fd, events, k) => {
         self.waiting.add(fd, events, k)
         r := self.next()
@@ -48,7 +48,7 @@ handler Yield(i32) for ^Collector {
     yield(self, x) => self.items.push(x)
 }
 
-handler m.Net for ^Loopback \ {Alloc, Sys} { send(self, data) => {}; recv(self) => {} }
+handler m.Net for ^Loopback needs Alloc + Sys { send(self, data) => {}; recv(self) => {} }
 
 literals :: fn() {
     h1 := handler Log { log(l, m) => {} }

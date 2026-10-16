@@ -9,6 +9,6 @@ f :: fn(n: i32) -> i32 {
     }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{}\n", f(20))
 }

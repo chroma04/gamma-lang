@@ -19,7 +19,7 @@ handler Counter for ^Acc {
     }
 }
 
-work :: fn(n: i64) -> i64 \ {Counter} {
+work :: fn(n: i64) -> i64 needs Counter {
     s: i64 = 0
     for i in 0..n {
         s += bump(@black_box(i))

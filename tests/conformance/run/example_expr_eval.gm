@@ -122,7 +122,7 @@ evaluate :: fn(src: string) -> EvalError!i64 {
     return v
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     inputs := [_]string(
         "1 + 2 * 3",
         "(1 + 2) * 3",

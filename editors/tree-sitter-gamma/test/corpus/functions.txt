@@ -183,7 +183,7 @@ pairs :: fn(K, V: type, m: ^Map(K, V)) where Eq(K), Hash(K) {}
 Function with effects
 ================================================================================
 
-main :: fn() -> IoError!() \ {Out, Err(IoError)} {
+main :: fn() -> IoError!() needs Out + Err(IoError) {
     print("hi\n")
 }
 

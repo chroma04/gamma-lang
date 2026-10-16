@@ -230,13 +230,6 @@ impl<'a, 's> FnCx<'a, 's> {
                 self.error(span, "expected a value, found a type");
                 error_expr(span)
             }
-            ExprKind::EffectSet(_) => {
-                self.error(
-                    span,
-                    "an effect set is not a value; name one with a top-level declaration: `Io :: \\ {Fs, Alloc}` (§12.3)",
-                );
-                error_expr(span)
-            }
             _ => {
                 self.error(span, "this kind of expression is not supported yet");
                 error_expr(span)
@@ -292,7 +285,12 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(d) = self.sema.lookup_module_name(module, name) {
             return self.decl_expr(d, name, expect, span);
         }
-        if super::builtins::builtin_type(name.as_str()).is_some() {
+        let effect_param = self.sema.type_params.iter().rev().find(|(n, _)| *n == name).is_some_and(
+            |(_, t)| matches!(t.kind(), crate::types::TyKind::Param(p) if self.sema.effect_params.contains(p)),
+        );
+        if effect_param {
+            self.error(span, format!("expected a value, found the effect set `{}`", name));
+        } else if super::builtins::builtin_type(name.as_str()).is_some() {
             self.error(span, format!("expected a value, found the type `{}`", name));
         } else if super::builtins::builtin_fn(name.as_str()).is_some() {
             self.error(span, format!("the builtin function `{}` can only be called", name));
@@ -1429,7 +1427,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 for (i, (a, t)) in args.iter().zip(params).enumerate() {
                     let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
                     if op == tir::SysOp::ThreadSpawn && i == 0 {
-                        // A thread starts from a plain function: `^fn(arg: rawptr) \ {Sys}` (§19.6);
+                        // A thread starts from a plain function: `^fn(arg: rawptr) needs Sys` (§19.6);
                         // a typed `^T` argument has the same representation as `rawptr`.
                         let v = self.expr(e, None);
                         let vt = self.infer.resolve(v.ty);
@@ -1444,7 +1442,7 @@ impl<'a, 's> FnCx<'a, 's> {
                             _ => false,
                         };
                         if !ok && !vt.is_error() {
-                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) \\ {{Sys}}` with the C calling convention, not `{}`", vt));
+                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", vt));
                         }
                         vals.push(v);
                         continue;

@@ -4,7 +4,7 @@ thread :: import "std/thread"
 Fail :: union { Io: IoError, Mem: AllocError }
 
 // Receives everything until the channel is closed and drained, in order.
-drain :: fn(arg: ^thread.Channel(u32)) \ {Sys} {
+drain :: fn(arg: ^thread.Channel(u32)) needs Sys {
     total: u32 = 0
     while true {
         x := arg.recv() else break
@@ -21,7 +21,7 @@ Signal :: struct {
     ready: bool
 }
 
-notify :: fn(s: ^Signal) \ {Sys} {
+notify :: fn(s: ^Signal) needs Sys {
     thread.yield_now()
     s.m.lock()
     s.ready = true
@@ -29,7 +29,7 @@ notify :: fn(s: ^Signal) \ {Sys} {
     s.cv.signal()
 }
 
-main :: fn() -> Fail!() \ {Out, Sys, Alloc} {
+main :: fn() -> Fail!() needs Out + Sys + Alloc {
     ch := try thread.channel(u32, 2)
 
     // Empty, full and closed, without blocking.

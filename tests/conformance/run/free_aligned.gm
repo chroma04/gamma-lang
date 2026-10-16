@@ -21,7 +21,7 @@ rec_free :: fn(data: rawptr, p: [^]u8, size, align: usize) {
 
 RECORDER :: AllocVtable(alloc: rec_alloc, resize: rec_resize, free: rec_free)
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     r := Recorder(inner: Alloc.current(), alloc_align: 0, free_align: 0, frees: 0)
     with Allocator(data: (&r).cast(rawptr), vt: &RECORDER) {
         s := try make_aligned(u32, 4, 64)

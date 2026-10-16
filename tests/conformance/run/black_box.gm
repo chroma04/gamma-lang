@@ -3,7 +3,7 @@ Pair :: struct { a: u8, b: u64 }
 
 Shape :: union { Dot, Circle: f64 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x := @black_box(41) + 1
     print("{}\n", x)
     print("{}\n", @black_box("text"))

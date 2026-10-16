@@ -2,14 +2,14 @@
 // A perform inside a `with` that might handle it for some type arguments is ambiguous (§16.6).
 Log :: effect(T: type) { log: fn(x: T) }
 
-bad_sum :: fn(T: type, xs: []const T) -> u32 \ {Yield(T)} {
+bad_sum :: fn(T: type, xs: []const T) -> u32 needs Yield(T) {
     total := 0u32
     with (handler Yield(u32) { yield(v) => { total += v } }) {
         for x in xs { yield(x) }      //~ ERROR this performs `Yield(T)` inside a `with` that handles `Yield(u32)`
     }
     return total
 }
-distinct :: fn(T: type, x: T) \ {Log(^const T)} {
+distinct :: fn(T: type, x: T) needs Log(^const T) {
     p := &x
     with (handler Log(u32) { log(v) => {} }) {
         log(p)                        // `^const T` is never `u32`

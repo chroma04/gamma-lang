@@ -3,7 +3,7 @@
 Log :: effect { log: fn(msg: string) }
 Stop :: effect { stop: esc() -> never }
 
-needs_log :: fn() \ {Log} { log("x") }
+needs_log :: fn() needs Log { log("x") }
 
 handled :: fn() {
     with (handler Log { log(m) => {} }) {
@@ -40,11 +40,11 @@ stored :: fn() {
     h := handler Log { log(m) => {} }     //~ ERROR only be bound with `::`
 }
 
-not_iter :: fn() \ {Log} {
+not_iter :: fn() needs Log {
     for x in needs_log() { }              //~ ERROR not an iterator
 }
 
-yields :: fn() \ {Yield(u8)} {
+yields :: fn() needs Yield(u8) {
     yield(1)                              // the instantiation is inferred from the effect set
 }
 
@@ -56,7 +56,7 @@ Job :: effect { job: fn(x: u32) -> u32 }
 Noter :: struct { n: u32 = 0 }
 handler Note for ^Noter { note(self, msg) => { self.n += 1 } }
 Runner :: struct { n: u32 = 0 }
-handler Job for ^Runner \ {Note} {
+handler Job for ^Runner needs Note {
     job(self, x) => {
         note("job")
         x + 1

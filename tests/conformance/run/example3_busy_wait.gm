@@ -3,7 +3,7 @@ thread :: import "std/thread"
 
 Shared :: struct { lock: u32, counter: u64, ready: u32, data: u64 }
 
-worker :: fn(s: ^Shared) \ {Sys} {
+worker :: fn(s: ^Shared) needs Sys {
     for _ in 0..200 {
         while @atomic_swap(&s.lock, 1, .Acquire) is 1 {}
         s.counter += 1
@@ -11,12 +11,12 @@ worker :: fn(s: ^Shared) \ {Sys} {
     }
 }
 
-waiter :: fn(s: ^Shared) \ {Sys} {
+waiter :: fn(s: ^Shared) needs Sys {
     while @atomic_load(&s.ready, .Acquire) is 0 {}
     s.counter += s.data
 }
 
-main :: fn() -> IoError!() \ {Out, Sys} {
+main :: fn() -> IoError!() needs Out + Sys {
     s := Shared(lock: 0, counter: 0, ready: 0, data: 1000)
     w := try thread.spawn(waiter, &s)
     ts: [8]thread.Thread = ---

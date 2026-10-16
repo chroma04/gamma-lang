@@ -23,7 +23,7 @@ pub Deque :: struct(T: type) {
 }
 
 /// An empty deque using the current allocator. It allocates on the first push.
-pub deque :: fn(T: type) -> Deque(T) \ {Alloc} {
+pub deque :: fn(T: type) -> Deque(T) needs Alloc {
     return Deque(T)(buf: empty_slice(T), head: 0, count: 0, alloc: Alloc.current())
 }
 
@@ -141,7 +141,7 @@ pub deinit :: fn(T: type, d: ^Deque(T)) {
 }
 
 /// The elements from front to back. The deque must not change during the iteration.
-pub items :: fn(T: type, d: ^const Deque(T)) \ {Yield(T)} {
+pub items :: fn(T: type, d: ^const Deque(T)) needs Yield(T) {
     for i in 0..d.count { yield(d.buf[slot(d, i)]) }
 }
 

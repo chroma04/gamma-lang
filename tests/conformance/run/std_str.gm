@@ -1,13 +1,13 @@
 // std/str: trimming, searching, splitting, case, integer parsing, builder and join.
 str :: import "std/str"
 
-show_split :: fn(s, sep: string) \ {Out} {
+show_split :: fn(s, sep: string) needs Out {
     print("split({}, {}):", s, sep)
     for p in str.split(s, sep) { print(" <{}>", p) }
     print("\n")
 }
 
-show_lines :: fn(s: string) \ {Out} {
+show_lines :: fn(s: string) needs Out {
     n: usize = 0
     for l in str.lines(s) {
         print("<{}>", l)
@@ -16,7 +16,7 @@ show_lines :: fn(s: string) \ {Out} {
     print(" ({} lines)\n", n)
 }
 
-show_fields :: fn(s: string) \ {Out} {
+show_fields :: fn(s: string) needs Out {
     n: usize = 0
     for f in str.fields(s) {
         print("<{}>", f)
@@ -25,7 +25,7 @@ show_fields :: fn(s: string) \ {Out} {
     print(" ({} fields)\n", n)
 }
 
-show_once :: fn(s, sep: string) \ {Out} {
+show_once :: fn(s, sep: string) needs Out {
     if r := str.split_once(s, sep) {
         print("split_once({}, {}): <{}> <{}>\n", s, sep, r.before, r.after)
     } else {
@@ -33,11 +33,11 @@ show_once :: fn(s, sep: string) \ {Out} {
     }
 }
 
-pr :: fn(T: type, s: string) \ {Out} where Int(T) {
+pr :: fn(T: type, s: string) needs Out where Int(T) {
     print("{}: {}\n", s, str.parse_int(T, s))
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     // trim
     print("[{}] [{}] [{}]\n", str.trim("  a b \t\n"), str.trim_start("  a b  "), str.trim_end("  a b  "))
     print("[{}] [{}] [{}]\n", str.trim(""), str.trim(" \t\r\n\x0b\x0c "), str.trim("x"))

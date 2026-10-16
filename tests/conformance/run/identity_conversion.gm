@@ -1,7 +1,7 @@
 // `T(x)` of a value that already has type `T` is that value (§6.5).
 Bytes :: []const u8
 E :: union { A, B: i32 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s: string = "abc"
     b: Bytes = s
     e: E = .B(4)

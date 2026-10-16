@@ -15,7 +15,7 @@ Tree :: struct(K, V: type) {
 
 tree :: fn(K, V: type) -> Tree(K, V) => Tree(K, V)()
 
-insert :: fn(K, V: type, t: ^Tree(K, V), key: K, value: V) -> AllocError!bool \ {Alloc} where Ord(K) {
+insert :: fn(K, V: type, t: ^Tree(K, V), key: K, value: V) -> AllocError!bool needs Alloc where Ord(K) {
     link: ^?^Node(K, V) = &t.root
     while true {
         n := link^ else break
@@ -44,14 +44,14 @@ height :: fn(K, V: type, n: ?^const Node(K, V)) -> u32 {
     return 1 + height(p.left).max(height(p.right))
 }
 
-in_order :: fn(K, V: type, n: ?^const Node(K, V)) \ {Yield((K, V))} {
+in_order :: fn(K, V: type, n: ?^const Node(K, V)) needs Yield((K, V)) {
     p := n else return
     in_order(p.left)
     yield((p.key, p.value))
     in_order(p.right)
 }
 
-entries :: fn(K, V: type, t: ^const Tree(K, V)) \ {Yield((K, V))} {
+entries :: fn(K, V: type, t: ^const Tree(K, V)) needs Yield((K, V)) {
     in_order(t.root)
 }
 
@@ -62,7 +62,7 @@ min_node :: fn(K, V: type, start: ^Node(K, V)) -> ^Node(K, V) {
 }
 
 // Removes `key`; returns whether it was present.
-remove :: fn(K, V: type, t: ^Tree(K, V), key: K) -> bool \ {Alloc} where Ord(K) {
+remove :: fn(K, V: type, t: ^Tree(K, V), key: K) -> bool needs Alloc where Ord(K) {
     link: ^?^Node(K, V) = &t.root
     while true {
         n := link^ else return false
@@ -98,14 +98,14 @@ remove :: fn(K, V: type, t: ^Tree(K, V), key: K) -> bool \ {Alloc} where Ord(K) 
     }
 }
 
-free_nodes :: fn(K, V: type, n: ?^Node(K, V)) \ {Alloc} {
+free_nodes :: fn(K, V: type, n: ?^Node(K, V)) needs Alloc {
     p := n else return
     free_nodes(p.left)
     free_nodes(p.right)
     destroy(p)
 }
 
-clear :: fn(K, V: type, t: ^Tree(K, V)) \ {Alloc} {
+clear :: fn(K, V: type, t: ^Tree(K, V)) needs Alloc {
     free_nodes(t.root)
     t.root = null
     t.size = 0
@@ -123,13 +123,13 @@ Dog :: struct {
     tricks: u32 = 0
 }
 
-describe :: fn(a: ^const Animal) \ {Out} {
+describe :: fn(a: ^const Animal) needs Out {
     print("{} has {} legs\n", a.name, a.legs)
 }
 
 teach :: fn(d: ^Dog) { d.tricks += 1 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     t := tree(i32, string)
     defer t.clear()
     keys := [_]i32(50, 30, 70, 20, 40, 60, 80, 35, 45, 65, 30)

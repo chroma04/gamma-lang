@@ -9,7 +9,7 @@ SUM :: (fn() -> i32 { s := 0; for v in ARR { s += v }; return s })()
 OPT: ?i32 : null
 D :: OPT else 4
 M :: [2]P(P(x: 1), P(x: 2, y: 3))[1].y
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {} {} {}\n", A, ARR, SUM, D, M)
     print("{} {}\n", first(), count())
 }

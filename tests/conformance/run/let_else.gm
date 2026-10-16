@@ -9,7 +9,7 @@ num :: fn(v: Val) -> Err!i64 {
     return n + m
 }
 
-sum_pair :: fn(v: Val) -> Err!i64 \ {Out} {
+sum_pair :: fn(v: Val) -> Err!i64 needs Out {
     defer print("checked\n")
     Val.Pair(a, b) := v else {
         print("not a pair\n")
@@ -40,7 +40,7 @@ lengths :: fn(items: []const string) -> u32 {
     return total
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {}\n", num(.Num(4)), num(.Nil))
     print("{}\n", sum_pair(.Pair(a: 2, b: 3)))
     print("{}\n", sum_pair(.Num(1)))

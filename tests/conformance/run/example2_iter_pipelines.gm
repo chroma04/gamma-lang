@@ -4,7 +4,7 @@ Tree :: union {
     Node: (left: ^const Tree, val: i32, right: ^const Tree)
 }
 
-in_order :: fn(t: ^const Tree) \ {Yield(i32)} {
+in_order :: fn(t: ^const Tree) needs Yield(i32) {
     match t^ {
         .Leaf => {}
         .Node(l, v, r) => {
@@ -15,7 +15,7 @@ in_order :: fn(t: ^const Tree) \ {Yield(i32)} {
     }
 }
 
-pre_order :: fn(t: ^const Tree, depth: u32) \ {Yield((u32, i32))} {
+pre_order :: fn(t: ^const Tree, depth: u32) needs Yield((u32, i32)) {
     match t^ {
         .Leaf => {}
         .Node(l, v, r) => {
@@ -26,7 +26,7 @@ pre_order :: fn(t: ^const Tree, depth: u32) \ {Yield((u32, i32))} {
     }
 }
 
-naturals :: fn(start: i32) \ {Yield(i32)} {
+naturals :: fn(start: i32) needs Yield(i32) {
     n := start
     while true {
         yield(n)
@@ -35,13 +35,13 @@ naturals :: fn(start: i32) \ {Yield(i32)} {
 }
 
 // An adapter: forwards the squares of whatever `src` yields that satisfy `keep`.
-squares_where :: fn(src: fn() \ {Yield(i32)}, keep: fn(i32) -> bool) \ {Yield(i32)} {
+squares_where :: fn(src: fn() needs Yield(i32), keep: fn(i32) -> bool) needs Yield(i32) {
     for x in src() {
         if keep(x) { yield(x * x) }
     }
 }
 
-take :: fn(n: u32, src: fn() \ {Yield(i32)}) \ {Yield(i32)} {
+take :: fn(n: u32, src: fn() needs Yield(i32)) needs Yield(i32) {
     if n is 0 { return }
     left := n
     for x in src() {
@@ -51,7 +51,7 @@ take :: fn(n: u32, src: fn() \ {Yield(i32)}) \ {Yield(i32)} {
     }
 }
 
-collatz :: fn(start: u64) -> u32 \ {Yield(u64)} {
+collatz :: fn(start: u64) -> u32 needs Yield(u64) {
     n := start
     steps: u32 = 0
     while n is not 1 {
@@ -73,7 +73,7 @@ dot :: fn(a, b: []const i32) -> i32 {
     return total
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     leaf := Tree.Leaf
     n1 := Tree.Node(&leaf, 1, &leaf)
     n3 := Tree.Node(&leaf, 3, &leaf)
@@ -89,8 +89,8 @@ main :: fn() \ {Out} {
 
     // pipeline: odd naturals from 1, squared, first five
     odd :: fn(x: i32) -> bool => x % 2 is 1
-    src :: fn() \ {Yield(i32)} { naturals(1) }
-    sq :: fn() \ {Yield(i32)} { squares_where(src, odd) }
+    src :: fn() needs Yield(i32) { naturals(1) }
+    sq :: fn() needs Yield(i32) { squares_where(src, odd) }
     for x in take(5, sq) { print("{} ", x) }
     print("\n")
 

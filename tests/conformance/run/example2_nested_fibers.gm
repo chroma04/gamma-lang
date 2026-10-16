@@ -2,7 +2,7 @@
 Outer :: effect { outer: ctl(n: u32) -> u32 }
 Inner :: effect { inner: ctl(n: u32) }
 
-leaf :: fn() \ {Outer, Inner, Out} {
+leaf :: fn() needs Outer + Inner + Out {
     defer print("leaf cleanup\n")
     for i in 1..=3 {
         inner(i)                 // handled by the inner with (this fiber suspends, clause runs on mid's stack)
@@ -11,7 +11,7 @@ leaf :: fn() \ {Outer, Inner, Out} {
     }
 }
 
-mid :: fn() \ {Outer, Out} {
+mid :: fn() needs Outer + Out {
     defer print("mid cleanup\n")
     stack: [65536]u8 = ---
     seen: u32 = 0
@@ -27,7 +27,7 @@ mid :: fn() \ {Outer, Out} {
     print("  mid saw {}\n", seen)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     stack: [262144]u8 = ---
     total: u32 = 0
     with (handler Outer {

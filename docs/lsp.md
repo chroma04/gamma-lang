@@ -10,7 +10,7 @@ server is part of the `gamma` binary and needs no configuration.
 | Feature | What it does |
 | --- | --- |
 | Diagnostics | Errors and warnings of the compiler, as you type. Secondary locations are attached as related information. |
-| Hover | The type of a name or expression. For a function: its signature with the effect set, for example `greet :: fn(n: i32) \ {Out}`. For a type: its declaration. The doc comment (`///`) follows. |
+| Hover | The type of a name or expression. For a function: its signature with the effect set, for example `greet :: fn(n: i32) needs Out`. For a type: its declaration. The doc comment (`///`) follows. |
 | Go to definition | Locals and parameters, functions, types, constants, effects and their operations, struct fields, union variants, methods, module members (`util.double`) and imports. It works across files, into the standard library and into the core library (`List`, `list`, `HashMap`, …; see below). `print` and the other builtin functions are part of the language and have no source to open. |
 | Find references | Uses of a declaration in every module of the package (and of its path dependencies) that uses it, not only in the open module. |
 | Rename | Renames a local, parameter, field, variant, function, type, constant or import binding, and all its uses in every module of the package. `prepareRename` shows the name that will change. Renaming is refused, with a message, for names of the core or standard library and of dependencies outside the package, for a new name that is not an identifier or is a keyword or builtin type name, and when the new name is already taken in a scope the declaration or one of its uses is in. |

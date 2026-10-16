@@ -45,7 +45,7 @@ pub reader_with :: fn(buf: []u8) -> Reader {
 /// after that skips the rest of that line and goes on with the next one, so a caller that
 /// only wants to report the problem can simply continue. Use `reader_with` to read
 /// longer lines.
-pub next_line :: fn(r: ^Reader) -> IoError!?string \ {In} {
+pub next_line :: fn(r: ^Reader) -> IoError!?string needs In {
     buf := if r.buf.len > 0 { r.buf } else { r.store[..] }
     while true {
         if r.skipping {
@@ -99,7 +99,7 @@ trim_cr :: fn(line: []u8) -> string {
 }
 
 /// Reads all of `In` into `out`, appending. A failure to grow the list is `.NoSpace`.
-pub read_to_list :: fn(out: ^List(u8)) -> IoError!() \ {In} {
+pub read_to_list :: fn(out: ^List(u8)) -> IoError!() needs In {
     buf: [4096]u8 = ---
     while true {
         n := try In.read(buf[..])
@@ -117,7 +117,7 @@ pub ReadError :: union {
 }
 
 /// All of `In`, in memory from the current allocator; release it with `free(data)`.
-pub read_all :: fn() -> ReadError![]u8 \ {In, Alloc} {
+pub read_all :: fn() -> ReadError![]u8 needs In + Alloc {
     cap: usize = 4096
     data := try make(u8, cap)
     len: usize = 0
@@ -153,7 +153,7 @@ pub read_all :: fn() -> ReadError![]u8 \ {In, Alloc} {
 /// A handler for `In` that reads the file `f`.
 pub FileIn :: struct { pub f: fs.File }
 
-handler In for FileIn \ {Fs} {
+handler In for FileIn needs Fs {
     read(self, buf) => self.f.read_from(buf)
 }
 
@@ -179,7 +179,7 @@ pub FileOut :: struct {
 pub file_out :: fn(f: fs.File) -> FileOut => FileOut(f: f)
 
 // Writes all of `bytes` to the file, keeping the first error.
-write_through :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
+write_through :: fn(o: ^FileOut, bytes: []const u8) needs Fs {
     done: usize = 0
     while done < bytes.len {
         n := o.f.write_to(bytes[done..bytes.len]) else e => {
@@ -195,20 +195,20 @@ write_through :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
 }
 
 // Writes out what is buffered. Once there is an error the buffered output is dropped.
-flush_buffer :: fn(o: ^FileOut) \ {Fs} {
+flush_buffer :: fn(o: ^FileOut) needs Fs {
     if o.err is null { write_through(o, o.buf[0..o.len]) }
     o.len = 0
 }
 
 /// Writes out the buffered output. Returns the first error that has happened on the file,
 /// in this call or earlier; it stays in `err`.
-pub flush :: fn(o: ^FileOut) -> IoError!() \ {Fs} {
+pub flush :: fn(o: ^FileOut) -> IoError!() needs Fs {
     flush_buffer(o)
     if e := o.err { return !e }
     return ()
 }
 
-write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
+write_file_out :: fn(o: ^FileOut, bytes: []const u8) needs Fs {
     if o.err is not null { return }
     if bytes.len > o.buf.len - o.len {
         flush_buffer(o)
@@ -223,11 +223,11 @@ write_file_out :: fn(o: ^FileOut, bytes: []const u8) \ {Fs} {
     o.len += bytes.len
 }
 
-handler Out for ^FileOut \ {Fs} {
+handler Out for ^FileOut needs Fs {
     write_out(self, bytes) => write_file_out(self, bytes)
 }
 
-handler Err for ^FileOut \ {Fs} {
+handler Err for ^FileOut needs Fs {
     write_err(self, bytes) => write_file_out(self, bytes)
 }
 

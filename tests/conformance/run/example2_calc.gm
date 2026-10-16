@@ -21,7 +21,7 @@ is_digit :: fn(c: u8) -> bool => c in '0'..='9'
 is_alpha :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c is '_'
 
 // Iterator over the tokens of a line; the last token yielded is always End.
-tokens :: fn(src: string) \ {Yield(Token), Report} {
+tokens :: fn(src: string) needs Yield(Token) + Report {
     i: usize = 0
     while i < src.len {
         c := src[i]
@@ -72,7 +72,7 @@ advance :: fn(p: ^Parser) {
     if p.at + 1 < p.toks.len { p.at += 1 }
 }
 
-power :: fn(base, exp: i64, pos: usize) -> i64 \ {Report} {
+power :: fn(base, exp: i64, pos: usize) -> i64 needs Report {
     if exp < 0 { fail("negative exponent", pos) }
     r: i64 = 1
     for _ in 0..exp {
@@ -81,7 +81,7 @@ power :: fn(base, exp: i64, pos: usize) -> i64 \ {Report} {
     return r
 }
 
-primary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+primary :: fn(p: ^Parser) -> i64 needs Vars + Report {
     t := cur(p)
     match t.kind {
         .Num => {
@@ -108,7 +108,7 @@ primary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
     }
 }
 
-unary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+unary :: fn(p: ^Parser) -> i64 needs Vars + Report {
     base := primary(p)
     if cur(p).kind is .Caret {
         pos := cur(p).pos
@@ -118,7 +118,7 @@ unary :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
     return base
 }
 
-product :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+product :: fn(p: ^Parser) -> i64 needs Vars + Report {
     acc := unary(p)
     while true {
         op := cur(p)
@@ -134,7 +134,7 @@ product :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
     return acc
 }
 
-sum :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+sum :: fn(p: ^Parser) -> i64 needs Vars + Report {
     acc := product(p)
     while true {
         op := cur(p)
@@ -146,7 +146,7 @@ sum :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
     return acc
 }
 
-statement :: fn(p: ^Parser) -> i64 \ {Vars, Report} {
+statement :: fn(p: ^Parser) -> i64 needs Vars + Report {
     if cur(p).kind is .Let {
         advance(p)
         name := cur(p)
@@ -167,7 +167,7 @@ Store :: struct {
     defs: u32 = 0
 }
 
-handler Vars for ^Store \ {Alloc} {
+handler Vars for ^Store needs Alloc {
     lookup(self, name) => self.vars.get(name)
     define(self, name, value) => {
         self.defs += 1
@@ -175,7 +175,7 @@ handler Vars for ^Store \ {Alloc} {
     }
 }
 
-run_line :: fn(store: ^Store, src: string) -> ?i64 \ {Alloc, Out} {
+run_line :: fn(store: ^Store, src: string) -> ?i64 needs Alloc + Out {
     outcome: ?i64 = run: with store {
         with (handler Report {
             fail(msg, pos) => {
@@ -199,7 +199,7 @@ run_line :: fn(store: ^Store, src: string) -> ?i64 \ {Alloc, Out} {
     return outcome
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     store := Store(vars: hash_map(string, i64))
     defer store.vars.deinit()
     lines := [_]string(

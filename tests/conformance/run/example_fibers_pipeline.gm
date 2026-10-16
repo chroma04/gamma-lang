@@ -6,7 +6,7 @@ Emit :: effect {
     emit: ctl(x: i64)
 }
 
-fib_gen :: fn(limit: i64) \ {Emit} {
+fib_gen :: fn(limit: i64) needs Emit {
     a: i64 = 0
     b: i64 = 1
     while a <= limit {
@@ -18,7 +18,7 @@ fib_gen :: fn(limit: i64) \ {Emit} {
 }
 
 // Collect up to `take` values from the generator, abandoning it afterwards.
-collect :: fn(limit: i64, take: usize, out: []i64) -> usize \ {Out} {
+collect :: fn(limit: i64, take: usize, out: []i64) -> usize needs Out {
     stack: [STACK]u8 = ---
     n: usize = 0
     with (handler Emit {
@@ -45,7 +45,7 @@ Out2 :: effect {
 }
 
 // The filter stage's clause runs on the outer fiber, so it may perform the outer `pass`.
-filter_stage :: fn(limit: i64) \ {Out2} {
+filter_stage :: fn(limit: i64) needs Out2 {
     stack: [STACK]u8 = ---
     with (handler Emit {
         emit(x, k) => {
@@ -77,7 +77,7 @@ pipeline :: fn(limit: i64) -> (count: u32, sum: i64) {
 
 Task :: effect {
     yield_now: ctl()
-    spawn: ctl(entry: ^fn(id: u32) -> never \ {Task, Out}, id: u32)
+    spawn: ctl(entry: ^fn(id: u32) -> never needs Task + Out, id: u32)
     exit: ctl() -> never
 }
 
@@ -100,7 +100,7 @@ pop_front :: fn(s: ^Sched) -> cont(()) {
     return k
 }
 
-handler Task for ^Sched \ {Alloc, Out} {
+handler Task for ^Sched needs Alloc + Out {
     yield_now(self, k) => {
         _ = self.ready.push(k)
         r := pop_front(self)
@@ -122,7 +122,7 @@ handler Task for ^Sched \ {Alloc, Out} {
     }
 }
 
-worker :: fn(id: u32) -> never \ {Task, Out} {
+worker :: fn(id: u32) -> never needs Task + Out {
     defer print("  worker {} cleaned up\n", id)
     steps := id + 1
     for i in 0..steps {
@@ -132,7 +132,7 @@ worker :: fn(id: u32) -> never \ {Task, Out} {
     exit()
 }
 
-run_scheduler :: fn() \ {Out, Alloc} {
+run_scheduler :: fn() needs Out + Alloc {
     mem: [3 * STACK]u8 = ---
     main_stack: [STACK]u8 = ---
     s := Sched(ready: list(cont(())), stacks: mem[..])
@@ -147,7 +147,7 @@ run_scheduler :: fn() \ {Out, Alloc} {
     s.ready.deinit()
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     vals: [64]i64 = ---
     print("take 10 of fib:\n")
     n := collect(1_000_000, 10, vals[..])

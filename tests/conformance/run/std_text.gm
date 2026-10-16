@@ -1,17 +1,17 @@
 // std/text: grapheme clusters, with the byte length of each.
 text :: import "std/text"
 
-show :: fn(s: string) \ {Out} {
+show :: fn(s: string) needs Out {
     for g in text.graphemes(s) { print("[{} {}]", g, g.len) }
     print("\n")
 }
 
-lens :: fn(s: string) \ {Out} {
+lens :: fn(s: string) needs Out {
     for g in text.graphemes(s) { print("{} ", g.len) }
     print("\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("Unicode {}\n", text.UNICODE_VERSION)
     show("ae\u{301}o") // a combining accent joins its base
     show("🇫🇷🇩🇪🇮") // regional indicators pair up; a lone one is its own cluster

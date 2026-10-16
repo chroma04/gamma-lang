@@ -7,7 +7,7 @@ H :: #packed struct {
     d: [3]u8
 }
 read :: fn(p: ^const u16) -> u16 => p^
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     h := H(a: 1, b: 2, c: [2]u32(3, 4), d: [3]u8(5, 6, 7))
     _ = read(&h.b)                    //~ ERROR where a `u16` may be misaligned
     _ = h.c[..]                       //~ ERROR where a `u32` may be misaligned

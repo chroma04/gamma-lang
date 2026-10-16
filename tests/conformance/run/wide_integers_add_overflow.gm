@@ -1,6 +1,6 @@
 //! exit: 134
 // Overflow of a checked addition on a wide integer traps.
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     x: u200 = ((1 << 199) - 1) * 2 + 1
     print("{}\n", x - 1 + 1)
     print("{}\n", x + 1)

@@ -4,7 +4,7 @@ bytes :: import "std/bytes"
 digit :: fn(d: u8) -> u8 => if d < 10 { '0' + d } else { 'a' + d - 10 }
 
 // Prints `b` as hexadecimal pairs.
-hex :: fn(b: []const u8) \ {Out} {
+hex :: fn(b: []const u8) needs Out {
     for x in b {
         pair := [_]u8(digit(x >> 4), digit(x & 15))
         print("{}", pair[..])
@@ -12,12 +12,12 @@ hex :: fn(b: []const u8) \ {Out} {
 }
 
 // Prints `b` as hexadecimal pairs, or `null`.
-hex_opt :: fn(b: ?[]const u8) \ {Out} {
+hex_opt :: fn(b: ?[]const u8) needs Out {
     if v := b { hex(v) } else { print("null") }
 }
 
 // Writes `x` in both orders, shows the bytes, and reads each back.
-roundtrip :: fn(T: type, x: T) \ {Out} where Int(T) {
+roundtrip :: fn(T: type, x: T) needs Out where Int(T) {
     buf: [16]u8 = ---
     n := @size_of(T)
     bytes.write_int(buf[0..n], x, .Little)
@@ -30,7 +30,7 @@ roundtrip :: fn(T: type, x: T) \ {Out} where Int(T) {
     print(" {}\n", bytes.read_int(T, buf[0..n], .Big) is x)
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     roundtrip(T: u8, 0)
     roundtrip(T: u8, 0xAB)
     roundtrip(T: u16, 0x1234)

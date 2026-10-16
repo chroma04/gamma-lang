@@ -1,7 +1,7 @@
 // `atan2` with operands at the top of the exponent range.
 math :: import "std/math"
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     big: f64 = 1.7976931348623157e308
     print("{}\n", math.atan2(big, big))
     print("{}\n", math.atan2(-big, big))

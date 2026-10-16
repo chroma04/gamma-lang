@@ -35,7 +35,7 @@ A set of the integers below its capacity, stored one bit each.
 ### `bitset`
 
 ```gamma
-bitset :: fn(n: usize) -> AllocError!BitSet \ {Alloc}
+bitset :: fn(n: usize) -> AllocError!BitSet needs Alloc
 ```
 
 An empty set that can hold the integers `0..n`, using the current allocator.
@@ -125,7 +125,7 @@ the member plus one steps through the set in increasing order.
 ### `items`
 
 ```gamma
-items :: fn(b: ^const BitSet) \ {Yield(usize)}
+items :: fn(b: ^const BitSet) needs Yield(usize)
 ```
 
 The members in increasing order. The set must not change during the iteration.

@@ -47,14 +47,14 @@ pub OrderedMap :: struct(K, V: type) {
 }
 
 /// An empty map ordered by `<`, using the current allocator.
-pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K) {
+pub ordered_map :: fn(K, V: type) -> OrderedMap(K, V) needs Alloc where Ord(K) {
     return ordered_map_by(K: K, V, fn(a, b: ^const K) -> bool => a^ < b^)
 }
 
 /// An empty map ordered by `less`, using the current allocator. `less(a, b)` says that
 /// `a` comes before `b`; it should be a strict weak ordering. It is stored in the map, so it
 /// is a plain function pointer: it cannot capture variables.
-pub ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) \ {Alloc} {
+pub ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) needs Alloc {
     return OrderedMap(K, V)(root: null, count: 0, less: less, alloc: Alloc.current())
 }
 
@@ -407,7 +407,7 @@ pub last :: fn(K, V: type, m: ^const OrderedMap(K, V)) -> ?(key: K, value: V) {
 }
 
 // Yields the entries of the subtree at `x` in key order.
-walk :: fn(K, V: type, x: ^const Node(K, V)) \ {Yield((key: K, value: V))} {
+walk :: fn(K, V: type, x: ^const Node(K, V)) needs Yield((key: K, value: V)) {
     for i in 0..x.count {
         if not x.leaf {
             if c := x.kids[i] { walk(c) }
@@ -420,23 +420,23 @@ walk :: fn(K, V: type, x: ^const Node(K, V)) \ {Yield((key: K, value: V))} {
 }
 
 /// The entries in key order. The map must not change during the iteration.
-pub entries :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield((key: K, value: V))} {
+pub entries :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield((key: K, value: V)) {
     if root := m.root { walk(root) }
 }
 
 /// The keys in order.
-pub keys :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(K)} {
+pub keys :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield(K) {
     for e in entries(m) { yield(e.key) }
 }
 
 /// The values, in the order of their keys.
-pub values :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(V)} {
+pub values :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield(V) {
     for e in entries(m) { yield(e.value) }
 }
 
 // Yields the entries of the subtree at `x` with `lo <= key < hi` (a missing bound is no
 // bound); returns false once a key at or past `hi` was seen, which ends the iteration.
-walk_range :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K, V), lo, hi: ?K) -> bool \ {Yield((key: K, value: V))} {
+walk_range :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K, V), lo, hi: ?K) -> bool needs Yield((key: K, value: V)) {
     i: usize = 0
     if l := lo { i = lower_bound(less, x, &l) }
     for j in i..x.count {
@@ -459,7 +459,7 @@ walk_range :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool, x: ^const Node(K
 /// The entries with `lo <= key < hi`, in key order. A bound that is `null` is left open:
 /// `range(5, null)` yields the keys from 5 on. The map must not change during the
 /// iteration.
-pub range :: fn(K, V: type, m: ^const OrderedMap(K, V), lo, hi: ?K) \ {Yield((key: K, value: V))} {
+pub range :: fn(K, V: type, m: ^const OrderedMap(K, V), lo, hi: ?K) needs Yield((key: K, value: V)) {
     root := m.root else return
     _ = walk_range(m.less, root, lo, hi)
 }

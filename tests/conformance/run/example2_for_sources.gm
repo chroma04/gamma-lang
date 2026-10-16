@@ -1,13 +1,13 @@
 // Every way of driving a for loop: method-call iterators, array calls, pointers to arrays, stored ranges, runes/bytes, cursors, map entries, inclusive ranges.
 Bag :: struct { vals: [5]u32, n: usize }
 
-items :: fn(b: ^const Bag) \ {Yield(u32)} {
+items :: fn(b: ^const Bag) needs Yield(u32) {
     for i in 0..b.n { yield(b.vals[i]) }
 }
 
 mk :: fn() -> [3]u32 => [_]u32(7, 8, 9)
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     b := Bag(vals: [_]u32(1, 2, 3, 4, 5), n: 4)
     for v in b.items() { print("{} ", v) }
     print("\n")

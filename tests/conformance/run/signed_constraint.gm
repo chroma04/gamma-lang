@@ -1,4 +1,4 @@
 // `Signed(T)` grants `Num` and unary `-` (§16.3).
 sg :: fn(T: type, a: T) -> T where Signed(T) => -a
 absv :: fn(T: type, a: T) -> T where Signed(T) => if a < 0 { -a } else { a }
-main :: fn() \ {Out} { print("{} {} {}\n", sg(T: i32, 5), absv(T: f64, -2.5), absv(T: i8, 3)) }
+main :: fn() needs Out { print("{} {} {}\n", sg(T: i32, 5), absv(T: f64, -2.5), absv(T: i8, 3)) }

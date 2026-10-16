@@ -166,14 +166,14 @@ fn types() {
     check("r : IoError ! usize\ns : E ! ? ^ T\n", "r: IoError!usize\ns: E!?^T\n");
     check("f :: fn ( ) -> AllocError ! ( ) { }\n", "f :: fn() -> AllocError!() {}\n");
     check("g :: fn ( ) -> E ! [ ] u8 { }\n", "g :: fn() -> E![]u8 {}\n");
-    check("h :: fn ( p : ^ fn ( a : i32 ) \\ { Out } ) { }\n", "h :: fn(p: ^fn(a: i32) \\ {Out}) {}\n");
+    check("h :: fn ( p : ^ fn ( a : i32 ) needs Out ) { }\n", "h :: fn(p: ^fn(a: i32) needs Out) {}\n");
     check("x = f ( ) !\ny = z ^ . w\n", "x = f()!\ny = z^.w\n");
 }
 
 #[test]
 fn effect_sets_are_tight() {
-    check("f :: fn() \\ { Out , Err } { }\n", "f :: fn() \\ {Out, Err} {}\n");
-    check("f :: fn()   \\   {}  { }\n", "f :: fn() \\ {} {}\n");
+    check("f :: fn() needs Out + Err { }\n", "f :: fn() needs Out + Err {}\n");
+    check("f :: fn() needs not  { }\n", "f :: fn() needs not {}\n");
 }
 
 #[test]

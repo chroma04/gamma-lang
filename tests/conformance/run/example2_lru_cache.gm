@@ -15,7 +15,7 @@ Lru :: struct(K, V: type) {
     misses: u32 = 0
 }
 
-lru :: fn(K, V: type, cap: usize) -> Lru(K, V) \ {Alloc} where Eq(K) {
+lru :: fn(K, V: type, cap: usize) -> Lru(K, V) needs Alloc where Eq(K) {
     return Lru(K, V)(index: hash_map(K, ^Node(K, V)), cap: cap)
 }
 
@@ -46,7 +46,7 @@ get :: fn(K, V: type, c: ^Lru(K, V), key: K) -> ?V {
 }
 
 // Returns the evicted key, if any.
-put :: fn(K, V: type, c: ^Lru(K, V), key: K, val: V) -> AllocError!?K \ {Alloc} {
+put :: fn(K, V: type, c: ^Lru(K, V), key: K, val: V) -> AllocError!?K needs Alloc {
     if n := c.index.get(key) {
         n.val = val
         unlink(c, n)
@@ -69,7 +69,7 @@ put :: fn(K, V: type, c: ^Lru(K, V), key: K, val: V) -> AllocError!?K \ {Alloc} 
 }
 
 // Most- to least-recently used.
-entries :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield((K, V))} {
+entries :: fn(K, V: type, c: ^const Lru(K, V)) needs Yield((K, V)) {
     cur := c.head
     while n := cur {
         yield((n.key, n.val))
@@ -78,7 +78,7 @@ entries :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield((K, V))} {
 }
 
 // Least- to most-recently used, walking the list backwards.
-oldest_first :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield(K)} {
+oldest_first :: fn(K, V: type, c: ^const Lru(K, V)) needs Yield(K) {
     cur := c.tail
     while n := cur {
         yield(n.key)
@@ -86,7 +86,7 @@ oldest_first :: fn(K, V: type, c: ^const Lru(K, V)) \ {Yield(K)} {
     }
 }
 
-free_all :: fn(K, V: type, c: ^Lru(K, V)) \ {Alloc} {
+free_all :: fn(K, V: type, c: ^Lru(K, V)) needs Alloc {
     cur := c.head
     while n := cur {
         cur = n.next
@@ -97,12 +97,12 @@ free_all :: fn(K, V: type, c: ^Lru(K, V)) \ {Alloc} {
     c.index.deinit()
 }
 
-show :: fn(c: ^const Lru(u32, string)) \ {Out} {
+show :: fn(c: ^const Lru(u32, string)) needs Out {
     for k, v in entries(c) { print("{}={} ", k, v) }
     print("\n")
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     c := lru(u32, string, 3)
     defer free_all(&c)
     names := [_]string("zero", "one", "two", "three", "four", "five")

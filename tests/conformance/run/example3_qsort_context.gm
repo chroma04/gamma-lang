@@ -3,27 +3,27 @@
 c :: import "std/c"
 when target.os is .Linux {
     sorting :: foreign "c" {
-        qsort_r :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b, ctx: rawptr) -> c.c_int \ {Sys}, ctx: rawptr)
+        qsort_r :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b, ctx: rawptr) -> c.c_int needs Sys, ctx: rawptr)
     }
 } else {
     sorting :: foreign "c" {
-        qsort_r :: fn(base: rawptr, n, size: usize, ctx: rawptr, cmp: ^fn(ctx, a, b: rawptr) -> c.c_int \ {Sys})
+        qsort_r :: fn(base: rawptr, n, size: usize, ctx: rawptr, cmp: ^fn(ctx, a, b: rawptr) -> c.c_int needs Sys)
     }
 }
 
 libc :: foreign "c" {
-    strlen :: fn(s: cstring) -> usize \ {}
-    strncpy :: fn(d: [^]u8, s: cstring, n: usize) -> [^]u8 \ {}
-    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long \ {}
-    toupper :: fn(ch: c.c_int) -> c.c_int \ {}
-    memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr \ {}
+    strlen :: fn(s: cstring) -> usize needs not
+    strncpy :: fn(d: [^]u8, s: cstring, n: usize) -> [^]u8 needs not
+    strtol :: fn(s: cstring, end: ?^cstring, base: c.c_int) -> c.c_long needs not
+    toupper :: fn(ch: c.c_int) -> c.c_int needs not
+    memset :: fn(p: rawptr, v: c.c_int, n: usize) -> rawptr needs not
 }
 
 #global calls: u32 = 0
 
 SortCtx :: struct { desc: bool, keys: [^]const i32 }
 
-by_key :: fn(a, b, ctx: rawptr) -> c.c_int \ {Sys} {
+by_key :: fn(a, b, ctx: rawptr) -> c.c_int needs Sys {
     calls += 1
     sc := ctx.cast(^const SortCtx)
     x := sc.keys[a.cast(^const u32)^.trunc(usize)]
@@ -33,9 +33,9 @@ by_key :: fn(a, b, ctx: rawptr) -> c.c_int \ {Sys} {
 }
 
 // The comparator with the context first, as BSD and macOS pass it.
-by_key_ctx_first :: fn(ctx, a, b: rawptr) -> c.c_int \ {Sys} => by_key(a, b, ctx)
+by_key_ctx_first :: fn(ctx, a, b: rawptr) -> c.c_int needs Sys => by_key(a, b, ctx)
 
-sort_indices :: fn(idx: ^[5]u32, sc: ^SortCtx) \ {Sys} {
+sort_indices :: fn(idx: ^[5]u32, sc: ^SortCtx) needs Sys {
     when target.os is .Linux {
         sorting.qsort_r(idx, 5, 4, by_key, sc)
     } else {
@@ -43,7 +43,7 @@ sort_indices :: fn(idx: ^[5]u32, sc: ^SortCtx) \ {Sys} {
     }
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     keys := [_]i32(50, 20, 40, 10, 30)
     idx := [_]u32(0, 1, 2, 3, 4)
     sc := SortCtx(desc: false, keys: keys[..].ptr)

@@ -1,6 +1,6 @@
 // Float printing picks, among the shortest digit strings that read back, the one nearest the
 // exact value, and on an exact tie the one with an even last digit (as Ryu and Python's repr do).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // f64 exact ties: the exact values end in .25 and .75.
     print("{}\n", 1618551636065423.25)
     print("{}\n", 1840508283716554.75)

@@ -14,7 +14,7 @@ handler Fail for Quit {
         break //~ ERROR this `break` gives a `with` a `()`, but the `with` has the type `i64`
     }
 }
-step :: fn(n: i32) -> i32 \ {Fail} {
+step :: fn(n: i32) -> i32 needs Fail {
     if n > 2 { fail("too big") }
     return n * 10
 }

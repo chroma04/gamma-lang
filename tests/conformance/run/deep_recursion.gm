@@ -6,4 +6,4 @@ depth :: fn(n: u64) -> u64 {
     return 1 + depth(n - 1)
 }
 
-main :: fn() \ {Out} { print("{}\n", depth(100000)) }
+main :: fn() needs Out { print("{}\n", depth(100000)) }

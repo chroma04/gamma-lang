@@ -2,7 +2,7 @@
 //! exit: 134
 // Safe builds trap when memory is freed twice (§18.7).
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     xs := try make(u8, 16)
     free(xs)
     print("freed once\n")

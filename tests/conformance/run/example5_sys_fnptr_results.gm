@@ -66,7 +66,7 @@ run_holder :: fn(h: Holder) -> i64 {
     return total(cb(h.r))
 }
 
-log_total :: fn(r: Rec) -> i64 \ {Out} {
+log_total :: fn(r: Rec) -> i64 needs Out {
     // the deferred call reads the variable at exit time but the argument is copied when `defer` runs
     x := r
     defer print("defer total {}\n", total(x))
@@ -74,7 +74,7 @@ log_total :: fn(r: Rec) -> i64 \ {Out} {
     return total(x)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     r := mkrec(7)
     print("base {}\n", total(r))
     print("ptr {}\n", total(apply_ptr(inc, r)))

@@ -107,7 +107,7 @@ Where `Fs.seek` counts from.
 ### `read_all`
 
 ```gamma
-read_all :: fn(path: string) -> ReadError![]u8 \ {Fs, Alloc}
+read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc
 ```
 
 The contents of the file at `path`, in memory from the current allocator; release it
@@ -116,7 +116,7 @@ with `free(data)`.
 ### `write_all_to`
 
 ```gamma
-write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() \ {Fs}
+write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() needs Fs
 ```
 
 Writes all of `bytes` to `f`, retrying short writes. A write that makes no progress
@@ -125,7 +125,7 @@ Writes all of `bytes` to `f`, retrying short writes. A write that makes no progr
 ### `write_all`
 
 ```gamma
-write_all :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs}
+write_all :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs
 ```
 
 Replaces the contents of the file at `path` with `bytes`, creating it if needed.
@@ -133,7 +133,7 @@ Replaces the contents of the file at `path` with `bytes`, creating it if needed.
 ### `append`
 
 ```gamma
-append :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs}
+append :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs
 ```
 
 Appends `bytes` to the file at `path`, creating it if needed.
@@ -141,7 +141,7 @@ Appends `bytes` to the file at `path`, creating it if needed.
 ### `exists`
 
 ```gamma
-exists :: fn(path: string) -> bool \ {Fs}
+exists :: fn(path: string) -> bool needs Fs
 ```
 
 Whether something exists at `path`. A symbolic link counts only if its target exists.
@@ -149,7 +149,7 @@ Whether something exists at `path`. A symbolic link counts only if its target ex
 ### `copy`
 
 ```gamma
-copy :: fn(from, to: string) -> IoError!() \ {Fs}
+copy :: fn(from, to: string) -> IoError!() needs Fs
 ```
 
 Copies the file at `from` to `to`, replacing `to`. Copying a file onto itself leaves it
@@ -158,7 +158,7 @@ unchanged.
 ### `entries`
 
 ```gamma
-entries :: fn(path: string) \ {Yield(IoError!Entry), Fs}
+entries :: fn(path: string) needs Yield(IoError!Entry) + Fs
 ```
 
 The entries of the directory at `path`, in the order the operating system gives them
@@ -174,7 +174,7 @@ error and ends the iteration.
 ### `walk`
 
 ```gamma
-walk :: fn(root: string) \ {Yield(IoError!WalkEntry), Fs, Alloc}
+walk :: fn(root: string) needs Yield(IoError!WalkEntry) + Fs + Alloc
 ```
 
 Every entry below the directory `root` (which is not itself yielded), depth first and
@@ -194,7 +194,7 @@ walk finishes or the loop is left early.
 ### `make_dir_all`
 
 ```gamma
-make_dir_all :: fn(path: string) -> IoError!() \ {Fs}
+make_dir_all :: fn(path: string) -> IoError!() needs Fs
 ```
 
 Creates the directory `path` and any missing parents, like `mkdir -p`. Directories that
@@ -204,7 +204,7 @@ error.
 ### `write_atomic`
 
 ```gamma
-write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() \ {Fs, Rand}
+write_atomic :: fn(path: string, bytes: []const u8) -> IoError!() needs Fs + Rand
 ```
 
 Replaces the contents of the file at `path` with `bytes` so that no reader ever sees a

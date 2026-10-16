@@ -11,7 +11,7 @@ handler Clock for ^Fixed {
     sleep(self, d) => {}
 }
 
-work :: fn() \ {log.Log} {
+work :: fn() needs log.Log {
     log.debug("debug hidden by default")
     log.info("starting {}", "up")
     log.warn("{} of {} retries used", 2, 3)
@@ -19,12 +19,12 @@ work :: fn() \ {log.Log} {
 }
 
 // Without a timestamp the handler needs no `Clock`.
-plain_only :: fn() \ {Err} {
+plain_only :: fn() needs Err {
     plain := log.ErrLog(min: .Error)
     with &plain { work() }
 }
 
-main :: fn() \ {Out, Err, Clock} {
+main :: fn() needs Out + Err + Clock {
     plain := log.ErrLog()
     with &plain { work() }
     plain_only()

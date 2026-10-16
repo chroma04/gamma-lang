@@ -4,11 +4,11 @@
 Point :: struct { x: i32, y: i32 }
 Suit :: union { Hearts, Spades }
 
-show :: fn(T: type, x: T) \ {Out} where Int(T) {
+show :: fn(T: type, x: T) needs Out where Int(T) {
     print("[{:>6}] [{:x}] [{:#010b}]\n", x, x, x)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // Width and alignment: numbers default to the right, everything else to the left.
     print("[{:5}] [{:5}] [{:5}]\n", 42, "ab", true)
     print("[{:<5}] [{:>5}] [{:^5}] [{:^6}]\n", 42, "ab", "ab", "ab")

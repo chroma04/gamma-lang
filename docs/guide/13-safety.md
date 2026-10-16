@@ -120,7 +120,7 @@ Failing a test is itself an effect. A test body may perform `Test`, whose `fail`
 ```gamma
 str :: import "std/str"
 
-check_sorted :: fn(xs: []const i32) \ {Test} {
+check_sorted :: fn(xs: []const i32) needs Test {
     for i in 1..xs.len {
         expect(xs[i - 1] <= xs[i], "not sorted")
     }
@@ -190,7 +190,7 @@ The compile-time evaluator ([chapter 11](11-compile-time.md)) always performs ev
 A Safe build (§18.7) performs every check of a Checked build and also checks every memory access. Each pointer carries, invisibly, the allocation it came from. An access traps unless it lies inside that allocation, the allocation is still live, and the access is permitted. That turns most of the undefined-behavior list into traps: use after free, a dangling pointer to a dead local or a finished fiber's stack, a many-pointer access out of bounds, a double free, a write to read-only memory, and access through a pointer made from an integer with `to_ptr`. A data race still gives unspecified values, but it cannot corrupt memory.
 
 ```gamma
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     p := try new(T: i32, 7)
     destroy(p)
     print("{}\n", p^)    // Checked: undefined behavior. Safe: traps.

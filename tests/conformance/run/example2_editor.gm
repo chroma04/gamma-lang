@@ -55,17 +55,17 @@ Editor :: struct {
     budget: ^const Budget
 }
 
-release :: fn(s: string) \ {Alloc} {
+release :: fn(s: string) needs Alloc {
     free(T: u8, s.ptr.cast([^]u8)[0..s.len])
 }
 
-copy_of :: fn(s: string) -> AllocError!string \ {Alloc} {
+copy_of :: fn(s: string) -> AllocError!string needs Alloc {
     buf := try make(u8, s.len)
     buf.copy_from(s)
     return buf
 }
 
-upper_copy :: fn(s: string) -> AllocError!string \ {Alloc} {
+upper_copy :: fn(s: string) -> AllocError!string needs Alloc {
     buf := try make(u8, s.len)
     for i in 0..s.len {
         c := s[i]
@@ -101,7 +101,7 @@ log_undo :: fn(ed: ^Editor, u: Undo) -> AllocError!() {
 }
 
 // Adds `text` as a new line at `at`. Either everything happens or nothing does.
-insert_line :: fn(ed: ^Editor, at: usize, text: string) -> EditError!() \ {Alloc} {
+insert_line :: fn(ed: ^Editor, at: usize, text: string) -> EditError!() needs Alloc {
     mine := try copy_of(text)
     errdefer release(mine)
     try list_insert(&ed.lines, at, mine)
@@ -122,7 +122,7 @@ number :: fn(s: string, usage: string) -> EditError!usize {
 }
 
 // Runs one command; the result says whether the session is over.
-execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
+execute :: fn(ed: ^Editor, line: string) -> EditError!bool needs Alloc + Out {
     parts := str.split_once(line, " ") else (before: line, after: "")
     cmd := parts.before
     rest := parts.after
@@ -196,7 +196,7 @@ execute :: fn(ed: ^Editor, line: string) -> EditError!bool \ {Alloc, Out} {
     return false
 }
 
-main :: fn() -> IoError!() \ {Out, In, Alloc} {
+main :: fn() -> IoError!() needs Out + In + Alloc {
     budget := Budget(limit: 260, inner: Alloc.current())
     ed := with Allocator(data: &budget, vt: &BUDGET_VT) { Editor(lines: list(string), undo: list(Undo), budget: &budget) }
     defer {

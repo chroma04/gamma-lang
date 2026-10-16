@@ -14,7 +14,7 @@ apply :: fn(xs: []i32, f: fn(x: i32) -> i32) {
 
 double :: fn(x: i32) -> i32 => x * 2
 
-caller :: fn(xs: []i32) \ {Net} {
+caller :: fn(xs: []i32) needs Net {
     total := 0
     apply(xs, fn(x) => x + 1)
     apply(xs, double)

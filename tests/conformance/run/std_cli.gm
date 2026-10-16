@@ -12,7 +12,7 @@ opts :: [_]cli.Opt(
     cli.Opt(short: 'b'),
 )
 
-show :: fn(args: []const string) \ {Out} {
+show :: fn(args: []const string) needs Out {
     for a in args { print("[{}] ", a) }
     print("=>")
     table := opts
@@ -28,7 +28,7 @@ show :: fn(args: []const string) \ {Out} {
     print("\n")
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     none := [_]string()
     show(none[..])
     a1 := [_]string("file1", "file2")

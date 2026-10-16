@@ -70,7 +70,7 @@ arg :: fn(w: Words, i: usize, what: string) -> CmdError!string {
     return w.parts[i]
 }
 
-execute :: fn(db: ^Db, w: Words) -> CmdError!() \ {Out} {
+execute :: fn(db: ^Db, w: Words) -> CmdError!() needs Out {
     cmd := w.parts[0]
     alloc := db.arena.allocator()
     db.ops += 1
@@ -115,7 +115,7 @@ execute :: fn(db: ^Db, w: Words) -> CmdError!() \ {Out} {
     return ()
 }
 
-main :: fn() -> IoError!() \ {Out, In, Alloc, Env} {
+main :: fn() -> IoError!() needs Out + In + Alloc + Env {
     db := Db(arena: arena.new(), data: hash_map(string, i64))
     defer print("cleanup done\n")
     defer db.arena.deinit()

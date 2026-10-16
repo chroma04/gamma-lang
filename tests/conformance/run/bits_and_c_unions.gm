@@ -21,7 +21,7 @@ Word :: #c_union union {
     bytes: [4]u8
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     m := Mode(read: true, write: false, exec: true, kind: 9, level: -2, sort: .Odd)
     print("{} {}\n", m.bits(u16), m)
     m.write = true

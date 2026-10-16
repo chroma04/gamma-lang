@@ -6,7 +6,7 @@ mean :: fn(T: type, xs: []const T) -> f64 where Int(T) {
     return s.to(f64) / xs.len.to(f64)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     n: usize = 7
     print("{}\n", n.to(f64) / 2.0)
     print("{}\n", u64(9007199254740993).to(f64))

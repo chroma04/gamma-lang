@@ -3,7 +3,7 @@ Sink :: effect {
     put: fn(bytes: []const u8)
 }
 
-emit :: fn(A: type, x: A) \ {Sink} {
+emit :: fn(A: type, x: A) needs Sink {
     if begin() {
         @write(fn(b) => put(b), "abc {}", x)
     }
@@ -16,7 +16,7 @@ handler Sink for ^S {
     put(self, bytes) => { self.n += bytes.len.trunc(u32) }
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     s := S(n: 0)
     with &s { emit(5) }
     print("{}\n", s.n)

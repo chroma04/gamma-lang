@@ -3,12 +3,12 @@ c :: import "std/c"
 libc :: foreign "c" {
     puts :: fn(s: cstring) -> c.c_int
     printf :: fn(fmt: cstring, ...) -> c.c_int
-    atexit :: fn(cb: ^fn() \ {Sys}) -> c.c_int
-    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) -> ?rawptr \ {}
+    atexit :: fn(cb: ^fn() needs Sys) -> c.c_int
+    bsearch :: fn(key: rawptr, base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int) -> ?rawptr needs not
     fflush :: fn(f: rawptr) -> c.c_int
 }
 
-bye :: fn() \ {Sys} {
+bye :: fn() needs Sys {
     _ = libc.puts(c"atexit callback")
 }
 
@@ -19,7 +19,7 @@ cmp :: fn(a, b: rawptr) -> c.c_int {
 }
 
 #export("dog_greet")
-greet :: fn(n: c.c_int) -> c.c_int \ {Sys} {
+greet :: fn(n: c.c_int) -> c.c_int needs Sys {
     out := system_output()
     with out {
         print("greet {}\n", n)
@@ -27,7 +27,7 @@ greet :: fn(n: c.c_int) -> c.c_int \ {Sys} {
     return n * 2
 }
 
-main :: fn() \ {Out, Sys} {
+main :: fn() needs Out + Sys {
     print("gamma 1\n")
     _ = libc.puts(c"c 1")
     print("gamma 2\n")

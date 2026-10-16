@@ -25,7 +25,7 @@ fwd :: fn(xs: []const u32) -> Err1!u32 {
 }
 
 // `try` inside a handler clause returns from the enclosing function
-run :: fn(xs: []const u32) -> Err1!u32 \ {Out} {
+run :: fn(xs: []const u32) -> Err1!u32 needs Out {
     total: u32 = 0
     h :: handler Visit {
         visit(n) => {
@@ -51,7 +51,7 @@ nested_try :: fn(xs: []const u32) -> Err1!u32 {
     return r
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     ok := [_]u32(1, 2, 3)
     bad := [_]u32(1, 13, 3)
     worse := [_]u32(1, 200, 13)

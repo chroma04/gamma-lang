@@ -1,6 +1,6 @@
 // `entry` exposes the stored key so a map can own copies of borrowed keys; `remove_entry`
 // returns the stored key to release it; `keys` and `values` iterate (§21.5).
-count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() \ {Alloc} {
+count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() needs Alloc {
     // `buf` is reused for every word, as a reader's buffer would be.
     buf: [16]u8 = ---
     start: usize = 0
@@ -23,7 +23,7 @@ count_words :: fn(m: ^HashMap(string, u32), text: string) -> AllocError!() \ {Al
     return ()
 }
 
-main :: fn() \ {Out, Alloc} {
+main :: fn() needs Out + Alloc {
     m := hash_map(string, u32)
     count_words(&m, "the cat and the hat and the bat") else trap()
     words := list(string)

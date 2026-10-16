@@ -13,7 +13,7 @@ pub Matches :: struct {
     rest: List(string)
 }
 
-pub matches :: fn() -> Matches \ {Alloc} {
+pub matches :: fn() -> Matches needs Alloc {
     return Matches(vals: hash_map(string, Value), rest: list(string))
 }
 

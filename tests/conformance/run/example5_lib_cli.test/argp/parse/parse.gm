@@ -18,7 +18,7 @@ pub Error :: union {
 }
 
 /// Prints a one-line description of a parse failure.
-pub report :: fn(e: Error) \ {Out} {
+pub report :: fn(e: Error) needs Out {
     match e {
         .Unknown(a) => print("unknown option `{}`\n", a)
         .MissingValue(n) => print("option --{} needs a value\n", n)
@@ -35,7 +35,7 @@ pub report :: fn(e: Error) \ {Out} {
 }
 
 /// Validates `text` against the option's kind and records it.
-store :: fn(m: ^matches.Matches, o: ^const spec.Opt, text: string) -> Error!() \ {Alloc} {
+store :: fn(m: ^matches.Matches, o: ^const spec.Opt, text: string) -> Error!() needs Alloc {
     match o.kind {
         .Str => try m.set(o.name, .Str(text))
         .Int(fits) => {
@@ -62,7 +62,7 @@ is_valued :: fn(o: ^const spec.Opt) -> bool => match o.kind {
 }
 
 /// Applies one option occurrence; returns the index of the next unread argument.
-take :: fn(m: ^matches.Matches, o: ^const spec.Opt, attached: ?string, args: []const string, next: usize) -> Error!usize \ {Alloc} {
+take :: fn(m: ^matches.Matches, o: ^const spec.Opt, attached: ?string, args: []const string, next: usize) -> Error!usize needs Alloc {
     match o.kind {
         .Flag => {
             if attached is not null { return !.NoValueAllowed(o.name) }
@@ -87,7 +87,7 @@ take :: fn(m: ^matches.Matches, o: ^const spec.Opt, attached: ?string, args: []c
 }
 
 /// Fills in defaults and checks that required options and arguments are present.
-finish :: fn(sp: ^const spec.Spec, m: ^matches.Matches) -> Error!() \ {Alloc} {
+finish :: fn(sp: ^const spec.Spec, m: ^matches.Matches) -> Error!() needs Alloc {
     opts := sp.options()
     for i in 0..opts.len {
         o := &opts[i]
@@ -115,7 +115,7 @@ finish :: fn(sp: ^const spec.Spec, m: ^matches.Matches) -> Error!() \ {Alloc} {
 }
 
 /// Parses `args` (without the program name) against `sp`.
-pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Matches \ {Alloc} {
+pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Matches needs Alloc {
     m := matches.matches()
     errdefer m.deinit()
     only_positional := false
@@ -161,4 +161,4 @@ pub parse :: fn(sp: ^const spec.Spec, args: []const string) -> Error!matches.Mat
 }
 
 /// Parses the process arguments, as the `Env` effect supplies them.
-pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches \ {Env, Alloc} => parse(sp, Env.args())
+pub parse_env :: fn(sp: ^const spec.Spec) -> Error!matches.Matches needs Env + Alloc => parse(sp, Env.args())

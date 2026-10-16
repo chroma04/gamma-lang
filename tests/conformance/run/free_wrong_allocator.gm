@@ -4,7 +4,7 @@
 // allocated it, reporting both sites (§18.3).
 fixed_buffer :: import "std/fixed_buffer"
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     xs := try make(u8, 4)
     print("allocated\n")
     store: [16]u8 = ---

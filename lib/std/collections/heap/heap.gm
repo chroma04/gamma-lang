@@ -23,26 +23,26 @@ pub Heap :: struct(T: type) {
 }
 
 /// An empty heap that yields the smallest element first (by `<`), using the current allocator.
-pub heap :: fn(T: type) -> Heap(T) \ {Alloc} where Ord(T) {
+pub heap :: fn(T: type) -> Heap(T) needs Alloc where Ord(T) {
     return Heap(T)(data: list(T), less: fn(a, b: ^const T) -> bool => a^ < b^)
 }
 
 /// An empty heap that yields first the element that `less` puts before all others, using
 /// the current allocator. `less(a, b)` says that `a` must come out before `b`; it should
 /// be a strict weak ordering (`fn(a, b) => a^ > b^` makes a max-heap).
-pub heap_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool) -> Heap(T) \ {Alloc} {
+pub heap_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool) -> Heap(T) needs Alloc {
     return Heap(T)(data: list(T), less: less)
 }
 
 /// A heap holding a copy of `xs`, built in O(n) time, that yields the smallest element first.
-pub heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) \ {Alloc} where Ord(T) {
+pub heap_from :: fn(T: type, xs: []const T) -> AllocError!Heap(T) needs Alloc where Ord(T) {
     h := heap(T)
     try fill(&h, xs)
     return h
 }
 
 /// Like `heap_from`, ordered by `less` as for `heap_by`.
-pub heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) \ {Alloc} {
+pub heap_from_by :: fn(T: type, less: ^fn(a, b: ^const T) -> bool, xs: []const T) -> AllocError!Heap(T) needs Alloc {
     h := heap_by(less)
     try fill(&h, xs)
     return h

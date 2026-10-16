@@ -131,7 +131,7 @@ checksum :: fn(xs: []const i32) -> i64 {
 
 N :: 4000
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     base: [N]i32 = ---
     fill_random(base[..], 2024)
     print("first values: {}\n", base[0..6])

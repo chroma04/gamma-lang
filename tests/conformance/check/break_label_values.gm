@@ -1,10 +1,10 @@
 //! stage: check
 // What `break L v` may supply depends on what `L` labels (§8.5).
-nums :: fn() \ {Yield(i32)} {
+nums :: fn() needs Yield(i32) {
     yield(1)
 }
 
-flag :: fn() -> bool \ {Yield(i32)} {
+flag :: fn() -> bool needs Yield(i32) {
     yield(1)
     return true
 }

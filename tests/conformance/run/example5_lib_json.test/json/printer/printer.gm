@@ -15,13 +15,13 @@ pub Buffer :: struct {
     pub puts: u32 = 0
 }
 
-pub buffer :: fn() -> Buffer \ {Alloc} => Buffer(bytes: list(u8))
+pub buffer :: fn() -> Buffer needs Alloc => Buffer(bytes: list(u8))
 
 pub text :: fn(b: ^const Buffer) -> string => b.bytes.items
 
 pub deinit :: fn(b: ^Buffer) { b.bytes.deinit() }
 
-handler Sink for ^Buffer \ {Alloc} {
+handler Sink for ^Buffer needs Alloc {
     put(self, t) => {
         self.puts += 1
         self.bytes.extend(t) else trap("out of memory")
@@ -31,13 +31,13 @@ handler Sink for ^Buffer \ {Alloc} {
 /// A sink that writes through the Out effect.
 pub Stdout :: struct {}
 
-handler Sink for ^Stdout \ {Out} {
+handler Sink for ^Stdout needs Out {
     put(self, t) => print("{}", t)
 }
 
 hex_digit :: fn(n: u8) -> u8 => if n < 10 { '0' + n } else { 'a' + (n - 10) }
 
-quote :: fn(s: string) \ {Sink} {
+quote :: fn(s: string) needs Sink {
     put("\"")
     start: usize = 0
     for i in 0..s.len {
@@ -65,18 +65,18 @@ quote :: fn(s: string) \ {Sink} {
     put("\"")
 }
 
-number :: fn(x: f64) \ {Sink} {
+number :: fn(x: f64) needs Sink {
     buf: [400]u8 = ---
     put(fmt.general(x, 12, buf[..]))
 }
 
-int :: fn(x: i64) \ {Sink} {
+int :: fn(x: i64) needs Sink {
     buf: [fmt.INT_BUF]u8 = ---
     put(fmt.dec(x, buf[..]))
 }
 
 /// Compact output: no whitespace at all.
-pub compact :: fn(v: ^const Value) \ {Sink} {
+pub compact :: fn(v: ^const Value) needs Sink {
     match v^ {
         .Null => put("null")
         .Bool(b) => put(if b { "true" } else { "false" })
@@ -104,16 +104,16 @@ pub compact :: fn(v: ^const Value) \ {Sink} {
     }
 }
 
-indent :: fn(level: u32, width: u32) \ {Sink} {
+indent :: fn(level: u32, width: u32) needs Sink {
     for _ in 0..level * width { put(" ") }
 }
 
 /// Indented output; empty containers stay on one line.
-pub pretty :: fn(v: ^const Value, width: u32 = 2) \ {Sink} {
+pub pretty :: fn(v: ^const Value, width: u32 = 2) needs Sink {
     pretty_at(v, 0, width)
 }
 
-pretty_at :: fn(v: ^const Value, level: u32, width: u32) \ {Sink} {
+pretty_at :: fn(v: ^const Value, level: u32, width: u32) needs Sink {
     match v^ {
         .Arr(xs) => {
             if xs.items.len is 0 {

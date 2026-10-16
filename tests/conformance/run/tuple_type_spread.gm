@@ -1,6 +1,6 @@
 // A tuple is built from another by spreading it, each element coercing (§6.5, §7.11).
 P :: (x: i64, y: i64)
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     p := (1i32, 2i32)
     a := (i64, i64)(..p)
     b := P(..p)

@@ -90,7 +90,7 @@ handler Log for ^CountingLog {
     log(self, m) => { self.count += 1 }
 }
 
-handler(T: type, N: usize) Yield(T) for ^Collector(T, N) \ {Alloc} {
+handler(T: type, N: usize) Yield(T) for ^Collector(T, N) needs Alloc {
     yield(self, x) => push(self, x)
 }
 
@@ -299,9 +299,9 @@ g :: fn(k: cont(i32)) {}
 Effect performing and passing effect sets
 ================================================================================
 
-f :: fn() \ {Log} {
+f :: fn() needs Log {
     log("x")
-    g(\ {Out, Err})
+    g(Out + Err)
 }
 
 --------------------------------------------------------------------------------
@@ -322,6 +322,6 @@ f :: fn() \ {Log} {
         (call_expression
           (identifier)
           (arguments
-            (effect_set
+            (binary_expression
               (identifier)
               (identifier))))))))

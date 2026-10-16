@@ -24,7 +24,7 @@ squares :: fn(N :: usize) -> [N]u32 {
 
 Color :: union(u8) { Red = 1, Green = 2, Blue = 4 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     for p in PLANETS { print("{} {} {}\n", p.name, p.mass, p.moons) }
     print("{} {}\n", NAMES[2], NAMES.len)
     for n in NAMES { print("{} ", n) }

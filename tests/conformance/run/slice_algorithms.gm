@@ -79,7 +79,7 @@ run_variant :: fn(v: usize, s: []u32) {
 
 // Sorts `src` with every variant; reports whether all give the same sorted
 // permutation of the input, and the checksum of the result.
-check_variants :: fn(name: string, src: []const u32) \ {Out} {
+check_variants :: fn(name: string, src: []const u32) needs Out {
     buf := [2048]u32(fill: 0)
     ref := [2048]u32(fill: 0)
     n := src.len
@@ -100,7 +100,7 @@ check_variants :: fn(name: string, src: []const u32) \ {Out} {
     print("{} n={} ok={} checksum={}\n", name, n, ok, checksum(ref[0..n]))
 }
 
-sort_shapes :: fn() \ {Out} {
+sort_shapes :: fn() needs Out {
     patterns := [_]string("sorted", "reverse", "equal", "dups", "random", "organ", "almost")
     sizes := [_]usize(0, 1, 2, 3, 10, 16, 17, 33, 100, 129, 1000, 2000)
     data := [2048]u32(fill: 0)
@@ -114,7 +114,7 @@ sort_shapes :: fn() \ {Out} {
 }
 
 // Sorting through array receivers and sub-slices.
-receivers :: fn() \ {Out} {
+receivers :: fn() needs Out {
     a := [_]i32(5, -3, 9, 0, 9, -7, 2, 2)
     a.sort()
     print("{}\n", a)
@@ -145,7 +145,7 @@ receivers :: fn() \ {Out} {
 
 abs_i32 :: fn(x: ^const i32) -> i32 => if x^ < 0 { -x^ } else { x^ }
 
-computed_keys :: fn() \ {Out} {
+computed_keys :: fn() needs Out {
     a := [_]i32(3, -1, -3, 2, 1, -2, 0, 3, -3, 1)
     a.stable_sort_by_key(abs_i32)
     print("{}\n", a)
@@ -185,7 +185,7 @@ is_permutation :: fn(items: []const Item) -> bool {
     return true
 }
 
-stability :: fn() \ {Out} {
+stability :: fn() needs Out {
     store := [1000]Item(fill: Item(key: 0, seq: 0))
     ns := [_]usize(2, 15, 40, 300, 1000)
     keysets := [_]u32(2, 5, 50)
@@ -219,7 +219,7 @@ stability :: fn() \ {Out} {
 }
 
 // A sum of the non-NaN values and their count, after sorting with each variant.
-nan_sorts :: fn() \ {Out} {
+nan_sorts :: fn() needs Out {
     zero := 0.0
     nan := zero / zero
     buf := [600]f64(fill: 0.0)
@@ -264,7 +264,7 @@ nan_sorts :: fn() \ {Out} {
 
 // An ordering that disagrees with itself from call to call: the result must still be a
 // permutation, and the sort must terminate without trapping.
-chaotic :: fn() \ {Out} {
+chaotic :: fn() needs Out {
     ns := [_]usize(2, 3, 17, 50, 400, 1000)
     for n in ns {
         for v in 0..5 {
@@ -290,7 +290,7 @@ chaotic :: fn() \ {Out} {
     }
 }
 
-searching :: fn() \ {Out} {
+searching :: fn() needs Out {
     a := [_]i32(1, 3, 3, 5, 7)
     probes := [_]i32(0, 1, 2, 3, 4, 5, 7, 8)
     for x in probes {
@@ -311,7 +311,7 @@ searching :: fn() \ {Out} {
     print("{} {}\n", f.min() else 0.0, f.max() else 0.0)
 }
 
-mutation :: fn() \ {Out} {
+mutation :: fn() needs Out {
     a := [_]u32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
     a.swap(0, 9)
     a.swap(4, 4)
@@ -340,7 +340,7 @@ mutation :: fn() \ {Out} {
     print("{}\n", e)
 }
 
-utf8 :: fn() \ {Out} {
+utf8 :: fn() needs Out {
     ok := [_]string(
         "", "abc", "h\xc3\xa9llo", "\xc2\x80", "\xdf\xbf", "\xe0\xa0\x80", "\xe2\x82\xac",
         "\xed\x9f\xbf", "\xee\x80\x80", "\xef\xbf\xbf", "\xf0\x90\x80\x80", "\xf0\x9f\x98\x80",
@@ -360,7 +360,7 @@ utf8 :: fn() \ {Out} {
     print("\n")
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     sort_shapes()
     receivers()
     computed_keys()

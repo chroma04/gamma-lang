@@ -134,7 +134,7 @@ pub enum SysOp {
     /// `@net_peer(h: i64, buf: []u8) -> i64`: stores the peer's `host:port` in `buf` and
     /// returns its length; `InvalidInput` if it does not fit.
     NetPeer,
-    /// `@thread_spawn(f: ^fn(arg: rawptr) \ {Sys}, arg: rawptr) -> i64`: a new thread
+    /// `@thread_spawn(f: ^fn(arg: rawptr) needs Sys, arg: rawptr) -> i64`: a new thread
     /// running `f(arg)` with no handlers installed (§19.6); its handle.
     ThreadSpawn,
     /// `@thread_join(h: i64) -> i64`: waits for the thread to finish.
@@ -211,7 +211,7 @@ impl SysOp {
             SysOp::NetShutdown => ("net_shutdown", vec![i64, Ty::int(false, 32)], i64),
             SysOp::NetSetTimeouts => ("net_set_timeouts", vec![i64, Ty::int(false, 64), Ty::int(false, 64)], i64),
             SysOp::NetPeer => ("net_peer", vec![i64, buf], i64),
-            // The function's type is checked separately: any `^fn(arg: rawptr) \ {Sys}`.
+            // The function's type is checked separately: any `^fn(arg: rawptr) needs Sys`.
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
             SysOp::ThreadDetach => ("thread_detach", vec![i64], i64),

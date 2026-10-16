@@ -51,14 +51,14 @@ load :: fn(staff: ^Staff, depts: ^Depts) -> AllocError!() {
     return ()
 }
 
-names :: fn(label: string, q: ^const Query(Employee), staff: ^const Staff) -> AllocError!() \ {Out, Alloc, db.Trace} {
+names :: fn(label: string, q: ^const Query(Employee), staff: ^const Staff) -> AllocError!() needs Out + Alloc + db.Trace {
     print("{}:", label)
     try for e in db.rows(staff, q) { print(" {}", e.name) }
     print("\n")
     return ()
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     staff := db.new_table(Employee, "staff")
     defer staff.deinit()
     depts: Depts = db.new_table(Dept, "depts")

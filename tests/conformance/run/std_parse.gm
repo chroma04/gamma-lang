@@ -3,28 +3,28 @@
 str :: import "std/str"
 fmt :: import "std/fmt"
 
-radix :: fn(T: type, s: string, base: u32) \ {Out} where Int(T) {
+radix :: fn(T: type, s: string, base: u32) needs Out where Int(T) {
     print("radix({}, {}): {}\n", s, base, str.parse_radix(T, s, base))
 }
 
-flt :: fn(s: string) \ {Out} {
+flt :: fn(s: string) needs Out {
     print("{}: {}\n", s, str.parse_float(f64, s))
 }
 
 // Parses `s` as an f64 and prints the number and its bits.
-bits :: fn(s: string) \ {Out} {
+bits :: fn(s: string) needs Out {
     labelled(s, s)
 }
 
 // The same for a long input, which is named by number and length instead of shown.
-long_bits :: fn(n: u32, s: string) \ {Out} {
+long_bits :: fn(n: u32, s: string) needs Out {
     hb: [48]u8 = ---
     b := str.builder(hb[..])
     b.write("long {} ({} bytes)", n, s.len)
     labelled(b.str(), s)
 }
 
-labelled :: fn(label, s: string) \ {Out} {
+labelled :: fn(label, s: string) needs Out {
     hb: [16]u8 = ---
     r := str.parse_float(f64, s)
     if x := r {
@@ -60,7 +60,7 @@ round_trip32 :: fn(x: f32) -> bool {
     return y.bits(u32) is x.bits(u32)
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // parse_radix: bases, digits of either case, signs, separators.
     radix(u8, "ff", 16)
     radix(u8, "FF", 16)

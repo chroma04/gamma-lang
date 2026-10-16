@@ -13,7 +13,7 @@ area :: fn(n: Node) -> u32 => match n {
     .Pair(_) => 99
     .Leaf(x) => x
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {}\n", size(.Cat(a: 2, b: 3)), size(.Leaf(7)), size(.Pair(4, 5)))
     print("{} {} {} {}\n", area(.Cat(a: 0, b: 3)), area(.Cat(a: 2, b: 3)), area(.Pair(4, 1)), area(.Pair(4, 5)))
     n := Node.Cat(a: 1, b: 1)

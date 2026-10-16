@@ -2,8 +2,8 @@
 bump_all :: fn(T: type, xs: []T, f: fn(p: ^T)) {
     for p in each_ptr(xs) { f(p) }
 }
-count_to :: fn(n: u32) \ {Yield(u32)} { for i in 1..=n { yield(i) } }
-total :: fn(T: type, src: fn() \ {Yield(u32)}) -> u32 {
+count_to :: fn(n: u32) needs Yield(u32) { for i in 1..=n { yield(i) } }
+total :: fn(T: type, src: fn() needs Yield(u32)) -> u32 {
     t: u32 = 0
     for x in src() { t += x }
     return t
@@ -15,7 +15,7 @@ tally :: fn(T: type, xs: []const T) -> u32 {
     with h { for x in xs { note(1) } }
     return count
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     xs := [3]u32(1, 2, 3)
     bump_all(xs[..], fn(p: ^u32) { p^ += 10 })
     print("{} {} {}\n", xs[0], xs[1], xs[2])

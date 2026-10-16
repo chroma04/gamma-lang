@@ -42,7 +42,7 @@ Which direction of a connection `Net.shutdown` closes.
 ### `send_all`
 
 ```gamma
-send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() \ {Net}
+send_all :: fn(s: Socket, bytes: []const u8) -> IoError!() needs Net
 ```
 
 Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress (returns
@@ -51,7 +51,7 @@ Sends all of `bytes` on `s`, retrying short sends. A send that makes no progress
 ### `recv_exact`
 
 ```gamma
-recv_exact :: fn(s: Socket, buf: []u8) -> IoError!() \ {Net}
+recv_exact :: fn(s: Socket, buf: []u8) -> IoError!() needs Net
 ```
 
 Fills `buf` completely from `s`. `UnexpectedEof` if the peer closes the connection

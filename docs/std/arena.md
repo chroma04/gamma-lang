@@ -29,7 +29,7 @@ most recent allocation (other blocks stay until `deinit`; shrinking is always al
 ### `new`
 
 ```gamma
-new :: fn() -> Arena \ {Alloc}
+new :: fn() -> Arena needs Alloc
 ```
 
 An empty arena whose chunks come from the current allocator.

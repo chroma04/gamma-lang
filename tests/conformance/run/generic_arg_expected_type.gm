@@ -6,6 +6,6 @@ h :: fn(T: type, x: T) -> bool {
     y: ??T = x
     return g(y)
 }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     print("{} {} {}\n", g(T: u8, null), f(T: u8, 1), h(T: u8, 1))
 }

@@ -3,7 +3,7 @@
 // In a Safe build an address is not a pointer: `to_ptr` of a valid pointer's address
 // gives a pointer that grants no access (§6.6, §18.7).
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     p := try new(T: u32, 5)
     defer destroy(p)
     n := p.addr()

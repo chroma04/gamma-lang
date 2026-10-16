@@ -5,9 +5,9 @@ Graph :: struct {
     adj: HashMap(Pt, List(Pt))
 }
 
-graph :: fn() -> Graph \ {Alloc} => Graph(adj: hash_map(Pt, List(Pt)))
+graph :: fn() -> Graph needs Alloc => Graph(adj: hash_map(Pt, List(Pt)))
 
-add_edge :: fn(g: ^Graph, a, b: Pt) -> AllocError!() \ {Alloc} {
+add_edge :: fn(g: ^Graph, a, b: Pt) -> AllocError!() needs Alloc {
     la := (try g.adj.entry(a, list(Pt))).value
     try la.push(b)
     lb := (try g.adj.entry(b, list(Pt))).value
@@ -23,7 +23,7 @@ deinit :: fn(g: ^Graph) {
 }
 
 // BFS distances from `start`; the queue is a fixed ring.
-bfs :: fn(g: ^Graph, start: Pt, goal: Pt) -> ?u32 \ {Alloc} {
+bfs :: fn(g: ^Graph, start: Pt, goal: Pt) -> ?u32 needs Alloc {
     dist := hash_map(Pt, u32)
     defer dist.deinit()
     ring: [64]Pt = ---
@@ -49,7 +49,7 @@ bfs :: fn(g: ^Graph, start: Pt, goal: Pt) -> ?u32 \ {Alloc} {
     return null
 }
 
-main :: fn() -> AllocError!() \ {Out, Alloc} {
+main :: fn() -> AllocError!() needs Out + Alloc {
     g := graph()
     defer deinit(&g)
     // a 4x4 grid with a wall

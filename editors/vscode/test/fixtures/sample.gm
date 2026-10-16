@@ -19,7 +19,7 @@ Log :: effect {
 #inline
 add :: fn(a: i32, b: i32) -> i32 => a +% b
 
-main :: fn() -> IoError!() \ {Out, Err(IoError)} {
+main :: fn() -> IoError!() needs Out + Err(IoError) {
     n := 1_000u32
     h := 0x1p4
     f := 1f32

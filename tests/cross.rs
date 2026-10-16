@@ -14,7 +14,7 @@ use std::process::{Command, Output};
 const PROGRAM: &str = "\
 S :: struct { a: u8, p: rawptr, c: u16 }
 
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     when target.arch is .Aarch64 {
         print(\"aarch64\\n\")
     } else when target.arch is .X86_64 {

@@ -11,13 +11,13 @@ A function is a value written as a **function literal** and almost always given 
 ```gamma
 add    :: fn(a, b: i32) -> i32 { return a + b }
 square :: fn(x: f32) -> f32 => x * x
-greet  :: fn(name: string) \ {Out} => print("hi {}\n", name)
+greet  :: fn(name: string) needs Out => print("hi {}\n", name)
 ```
 
 - `a, b: i32` declares two parameters of one type.
 - There are two body forms: a block `{ ... }` that uses `return`, or `=> expr` for a single expression whose value is returned.
 - `-> R` gives the return type. **If you omit it, a named top-level function returns `()`**; its return type is never inferred from the body. (A function literal or nested function written where no type is expected does take its return type from its body, and a literal passed to a parameter of function type takes it from that type.) With a block body, the end of the block must be unreachable (every path returns) unless the return type is `()`, in which case falling off the end returns `()`.
-- `\ { ... }` lists the effects the function may perform ([chapter 7](07-effects.md)); omitting it means none.
+- `needs …` lists the effects the function may perform ([chapter 7](07-effects.md)); omitting it means none.
 
 > **Common mistake: forgetting `-> R`.** The compiler takes the missing arrow at its word:
 >
@@ -100,7 +100,7 @@ A parameter's default may also be `@caller_location()`, which is evaluated at ea
 
 ```gamma
 require :: fn(ok: bool, msg: string = "requirement failed",
-              loc: SourceLocation = @caller_location()) \ {Err} {
+              loc: SourceLocation = @caller_location()) needs Err {
     if not ok {
         eprint("{} (line {})\n", msg, loc.line)
         trap(msg)
@@ -115,11 +115,11 @@ require :: fn(ok: bool, msg: string = "requirement failed",
 C's variadic functions take any number of arguments of unchecked types. Gamma's equivalent is a **rest parameter**, declared `name: ..T`: it takes the remaining positional arguments as one tuple, so they keep their types and their count is known at compile time. With a type parameter for `T`, the tuple's type is inferred from the arguments:
 
 ```gamma
-show :: fn(A: type, label: string, values: ..A) \ {Out} {
+show :: fn(A: type, label: string, values: ..A) needs Out {
     print("{}: {}\n", label, values)
 }
 
-rest_demo :: fn() \ {Out} {
+rest_demo :: fn() needs Out {
     show("nothing")                 // values is ()
     show("pair", 1, "one")          // values is (1, "one")
 }
@@ -128,7 +128,7 @@ rest_demo :: fn() \ {Out} {
 `A` is a type parameter that another parameter's type mentions, so it is inferred from the arguments and never written positionally ([chapter 10](10-generics.md) covers the rare case where you write one by name). Inside the function a rest parameter is an ordinary tuple. To pass it on to another function with a rest parameter, spread it: `print(template, ..values)`. This is how `print`, `eprint`, `@write` and the logging and formatting functions of the standard library take the values for their templates, and how you write your own wrappers around them:
 
 ```gamma
-log_line :: fn(A: type, template :: string, values: ..A) \ {Out} {
+log_line :: fn(A: type, template :: string, values: ..A) needs Out {
     print("[log] ")
     print(template, ..values)
 }
@@ -153,7 +153,7 @@ Counter :: struct {
 bump  :: fn(c: ^Counter) { c.count += c.step }
 total :: fn(c: ^const Counter) -> u32 => c.count
 
-method_demo :: fn() \ {Out} {
+method_demo :: fn() needs Out {
     c := Counter(step: 5)
     c.bump()                               // means bump(&c)
     c.bump()
@@ -218,7 +218,7 @@ Op :: struct {
     apply: ^fn(x: i32) -> i32
 }
 
-table_demo :: fn() \ {Out} {
+table_demo :: fn() needs Out {
     ops := [_]Op(
         Op(name: "double", apply: double),
         Op(name: "negate", apply: negate),
@@ -270,7 +270,7 @@ mix :: fn(a, b, t: f32) -> f32 => lerp(a, b, t)
 
 ## Summary
 
-- Functions are values bound with `::`. `-> R` is required unless the function returns `()`, and `\ {...}` lists its effects.
+- Functions are values bound with `::`. `-> R` is required unless the function returns `()`, and `needs …` lists its effects.
 - Calls mix positional and named arguments (named ones may appear anywhere); defaults must be constants; `..e` spreads tuples and structs; a last parameter `name: ..A` collects the remaining arguments as a tuple.
 - Methods are module functions called with dot syntax; receiver adjustments are limited to taking or dereferencing one address.
 - `fn(...)` values capture by reference but only flow downward; `^fn(...)` values capture nothing and can go anywhere.

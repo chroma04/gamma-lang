@@ -3,7 +3,7 @@
 W :: struct(f: ^fn(a, b: ^const i32) -> bool) { x: u8 }
 top :: fn(a, b: ^const i32) -> bool => a^ > b^
 pick :: fn(f :: ^fn(a, b: ^const i32) -> bool) -> bool { x: i32 = 1; y: i32 = 2; return f(&x, &y) }
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     fl :: fn(a, b: ^const i32) -> bool => a^ > b^
     p: ^fn(a, b: ^const i32) -> bool = fl
     x: i32 = 3

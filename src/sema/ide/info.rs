@@ -39,7 +39,7 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// `fn(a: i32, b: string) -> bool \ {Out}`: the signature of function `f`.
+    /// `fn(a: i32, b: string) -> bool needs Out`: the signature of function `f`.
     pub(super) fn fn_signature(&self, f: FnId, skip_receiver: bool) -> String {
         let Some(sig) = self.sigs.get(&f) else { return "fn()".into() };
         let mut params: Vec<String> = vec![];
@@ -63,7 +63,7 @@ impl<'s> Sema<'s> {
         }
         if !sig.effects.effects.is_empty() {
             let es: Vec<String> = sig.effects.effects.iter().map(|e| e.to_string()).collect();
-            out.push_str(&format!(" \\ {{{}}}", es.join(", ")));
+            out.push_str(&format!(" needs {}", es.join(" + ")));
         }
         out
     }

@@ -6,15 +6,15 @@ Sched :: effect {
     exit: fn()
 }
 
-run :: fn() \ {Sched} {
+run :: fn() needs Sched {
     exit()                       // this module's `Sched.exit`
 }
 
-stop :: fn() \ {Env} {
+stop :: fn() needs Env {
     Env.exit(1)
 }
 
-clock :: fn() -> Instant \ {Clock} {
+clock :: fn() -> Instant needs Clock {
     return now()                 //~ ERROR unknown name `now` //~ NOTE write `Clock.now(…)`
 }
 

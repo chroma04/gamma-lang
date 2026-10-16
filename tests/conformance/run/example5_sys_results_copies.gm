@@ -57,7 +57,7 @@ wide_res :: fn(k: u256) -> Big!u256 {
     return k << 100
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // binding from an optional is a copy
     o: ?Big = mk(1)
     if v := o {

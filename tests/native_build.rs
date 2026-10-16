@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PROGRAM: &str = "\
-main :: fn() \\ {Out} {
+main :: fn() needs Out {
     total := 0
     for i in 0..10 {
         total += i
@@ -135,7 +135,7 @@ fn safe_builds_with_fil_c() {
     let (dir, src) = setup("filc");
     std::fs::write(
         &src,
-        "main :: fn() \\ {Out} {\n    when target.mode is .Safe { print(\"safe\\n\") } else { print(\"other\\n\") }\n}\n",
+        "main :: fn() needs Out {\n    when target.mode is .Safe { print(\"safe\\n\") } else { print(\"other\\n\") }\n}\n",
     )
     .unwrap();
     let exe = dir.join("a");
@@ -167,7 +167,7 @@ fn run_reports_a_closed_pipe_as_a_signal_status() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("lines.gm");
-    std::fs::write(&src, "main :: fn() \\ {Out} {\n    for i in 0..200000 { print(\"line {}\\n\", i) }\n}\n").unwrap();
+    std::fs::write(&src, "main :: fn() needs Out {\n    for i in 0..200000 { print(\"line {}\\n\", i) }\n}\n").unwrap();
     for backend in ["--backend=interp", "--backend=c"] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
             .args(["run", backend])
@@ -239,7 +239,7 @@ fn prints_and_black_boxes_do_not_grow_the_c_per_site() {
     const N: usize = 200;
     let (dir, _) = setup("many-prints");
     let src = dir.join("many.gm");
-    let mut text = String::from("main :: fn() \\ {Out} {\n");
+    let mut text = String::from("main :: fn() needs Out {\n");
     for i in 0..N {
         text.push_str(&format!("    {{ x: i32 = @black_box({i}); print(\"v {{}} {{}}\\n\", x, x + 1) }}\n"));
     }

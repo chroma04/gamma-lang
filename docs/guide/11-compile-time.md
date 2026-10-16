@@ -116,7 +116,7 @@ Values of type `type`, effect types, modules and untyped constants exist only at
 > **Common mistake: effects in a constant.** A constant initializer must perform no effects:
 >
 > ```gamma
-> noisy :: fn() -> u32 \ {Out} {
+> noisy :: fn() -> u32 needs Out {
 >     print("computing\n")
 >     return 7
 > }
@@ -158,7 +158,7 @@ Stats :: struct {
     }
 }
 
-mode_demo :: fn() \ {Out} {
+mode_demo :: fn() needs Out {
     when target.mode is .Fast {
         print("checks are off\n")
     } else {

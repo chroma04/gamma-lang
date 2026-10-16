@@ -154,10 +154,10 @@ Test :: effect {
 }
 ```
 
-- `expect(cond)` becomes an ordinary function `\ {Test}` that performs `fail` when `cond`
+- `expect(cond)` becomes an ordinary function `needs Test` that performs `fail` when `cond`
   is false. Helpers can call it, and their signature shows that they can fail a test.
 - A test body is checked against the ambient effects plus `Test`. Its type is
-  `fn() \ {…, Test}` with no result type, and `try` inside it is a compile error. Errors
+  `fn() needs … + Test` with no result type, and `try` inside it is a compile error. Errors
   are surfaced with `x else e => fail(…)`, or with a core helper `ok(x)` that performs
   `fail` with the formatted error, the way `expect` does for booleans.
 - The two special rules above are deleted.
@@ -248,7 +248,7 @@ everywhere: spread `f(..t)` at a call, `..E` in an effect set. Add the declarati
 of type `A`.**
 
 ```
-print :: fn(A: type, template :: string, args: ..A) \ {Out}
+print :: fn(A: type, template :: string, args: ..A) needs Out
 
 print("{} squared is {}\n", i, i * i)
 ```
@@ -348,7 +348,7 @@ only.
 | `Signed(T)` is satisfied by floats | P4 | Rename to `Neg(T)` (it grants unary `-`) or document why |
 | Overflow flavors are operators for `+ - * <<` (`+?`) but methods for `pow` (`pow_checked`) | Tie-breaker | Keep the operators, and name the method forms by the same sigil story (`pow_wrap`, `pow_sat`, `pow_opt`) |
 | Error lifting (§10.6) is an implicit, type-directed conversion in a language that otherwise has none | P5 | Keep: it is local, unambiguous and checked at the site. Name it in C.2 as the one implicit conversion between distinct nominal types, and why it is allowed |
-| No way to name an effect set: the full ambient set `{Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}` is written out in full in several places | P3 at scale | Allow `Io :: \ {Fs, Alloc, Err}` as a top-level binding, spliced as `\ {..Io}`. It reuses the §16.6 machinery and addresses the main practical complaint about effect systems, the annotation tax |
+| No way to name an effect set: the full ambient set `{Out, Err, Alloc, Env, In, Clock, Rand, Fs, Net}` is written out in full in several places | P3 at scale | Allow `Io :: Fs + Alloc + Err` as a top-level binding, spliced as `needs Io`. It reuses the §16.6 machinery and addresses the main practical complaint about effect systems, the annotation tax |
 | `discard`, `esc` and `ctl` are abbreviations, while every other keyword is a full word | Taste | Rename `discard` (F8). `esc` and `ctl` can stay, since they label kinds and are seen mostly in declarations |
 
 ---
@@ -374,7 +374,7 @@ it, return a result. If whoever installed the context is, perform an `esc` opera
 
 ## 6. What a newcomer should see first
 
-The README's example (`for i in 1..=3 { print(…) }` with `\ {Out}`) shows the syntax but
+The README's example (`for i in 1..=3 { print(…) }` with `needs Out`) shows the syntax but
 not the idea. The first program a reader sees should show the thesis in under 25 lines:
 a function whose signature lists its context, a handler that supplies it, and a test that
 swaps it.
@@ -384,7 +384,7 @@ fs    :: import "std/fs"
 arena :: import "std/arena"
 
 // Count the lines of a file. The signature says everything it touches.
-count_lines :: fn(path: string) -> fs.ReadError!usize \ {Fs, Alloc} {
+count_lines :: fn(path: string) -> fs.ReadError!usize needs Fs + Alloc {
     text := try fs.read_all(path)          // allocates through the current allocator
     defer free(text)
     n: usize = 0
@@ -392,7 +392,7 @@ count_lines :: fn(path: string) -> fs.ReadError!usize \ {Fs, Alloc} {
     return n
 }
 
-main :: fn() -> fs.ReadError!() \ {Fs, Alloc, Out} {
+main :: fn() -> fs.ReadError!() needs Fs + Alloc + Out {
     scratch := arena.new()                 // C-style: you choose where memory comes from
     defer scratch.deinit()
     with scratch.allocator() {
@@ -407,7 +407,7 @@ test "counts lines" {                      // the test handlers give an in-memor
 ```
 
 From this a reader can see C (explicit memory, bytes, `defer`), modernity (results,
-`try`, tests in the language) and the effects thesis (the `\ {…}` row, `with`, test
+`try`, tests in the language) and the effects thesis (the `needs …` row, `with`, test
 handlers replacing the file system), all of it plainly derived. It uses the F2 (`ok`) and
 F5 recommendations. Without them, the example needs a tuple and a `try` whose meaning
 depends on its position.

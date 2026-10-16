@@ -12,12 +12,12 @@ pattern :: fn(buf: []u8, n: usize) -> []u8 {
     return buf[0..n]
 }
 
-show :: fn(d: sha256.Digest) \ {Out} {
+show :: fn(d: sha256.Digest) needs Out {
     buf: [64]u8 = ---
     print("{}\n", hex.encode(d[..], buf[..], false))
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // CRC-32
     print("crc32 empty {:08x}\n", crc32.checksum(""))
     print("crc32 a {:08x}\n", crc32.checksum("a"))

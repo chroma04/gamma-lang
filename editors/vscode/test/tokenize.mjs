@@ -98,7 +98,7 @@ const expectations = [
   ["+%", "keyword.operator.arithmetic.wrapping.gamma"],
   ["+|=", "keyword.operator.assignment.compound.gamma"],
   ["<<%", "keyword.operator.arithmetic.wrapping.gamma"],
-  ["\\", "keyword.operator.effect.gamma"],
+  ["needs", "keyword.other.needs.gamma"],
   ["Out", "entity.name.type.effect.gamma"],
   ["Err", "entity.name.type.effect.gamma"],
   ["IoError", "support.type.builtin.gamma"],

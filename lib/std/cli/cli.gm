@@ -91,7 +91,7 @@ find_long :: fn(opts: []const Opt, name: string) -> ?usize {
 ///   takes a value belongs to it.
 /// - A value is taken from the next argument whatever it looks like, even `-x` or `--`.
 /// - An option that needs a value at the end of the arguments is `MissingValue`.
-pub parse :: fn(args: []const string, opts: []const Opt) \ {Yield(Arg)} {
+pub parse :: fn(args: []const string, opts: []const Opt) needs Yield(Arg) {
     i: usize = 0
     while i < args.len {
         a := args[i]

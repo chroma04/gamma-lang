@@ -8,7 +8,7 @@ stdcall_fn :: fn(a: i32) -> i32 => a
 bare_name :: fn(a: i32) -> i32 => a
 
 #callconv(.Win64)                                         //~ ERROR effects at most `{Sys}`
-effectful :: fn() \ {Out} {}
+effectful :: fn() needs Out {}
 
 #callconv(.Win64)                                         //~ ERROR generic function
 generic :: fn(T: type, x: T) -> T => x
@@ -37,7 +37,7 @@ mismatches :: fn() {
     d: #callconv(.Win64) ^fn(a: i32, b: i32) -> i32 = ms_add
 }
 
-effectful_ptr :: fn(f: #callconv(.Win64) ^fn() \ {Out}) {}   //~ ERROR effects at most `{Sys}`
+effectful_ptr :: fn(f: #callconv(.Win64) ^fn() needs Out) {}   //~ ERROR effects at most `{Sys}`
 
 // An attribute belongs to a function or to a `^fn` type.
 #callconv(.Win64)                                         //~ ERROR applies only to a function

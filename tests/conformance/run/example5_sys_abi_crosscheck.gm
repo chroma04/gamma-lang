@@ -43,25 +43,25 @@ mixed_pair :: fn(packed: u64, c, extra: i64) -> i64 => (packed & 0xffff_ffff).tr
 
 lib :: foreign "c" {
     #link_name("abi_sum9")
-    sum9s :: fn(a1, a2, a3, a4, a5, a6: i64, s: S3) -> i64 \ {}
+    sum9s :: fn(a1, a2, a3, a4, a5, a6: i64, s: S3) -> i64 needs not
     #link_name("abi_two_doubles")
-    two_doubles_s :: fn(v: V2) -> f64 \ {}
+    two_doubles_s :: fn(v: V2) -> f64 needs not
     #link_name("abi_mixed")
-    mixed_s :: fn(p: IF, k: c.c_int) -> f64 \ {}
+    mixed_s :: fn(p: IF, k: c.c_int) -> f64 needs not
     #link_name("abi_pair_f32")
-    pair_f32_s :: fn(p: F2) -> u64 \ {}
+    pair_f32_s :: fn(p: F2) -> u64 needs not
     #link_name("abi_fill")
-    fill_s :: fn(k: i64) -> S3 \ {}
+    fill_s :: fn(k: i64) -> S3 needs not
     #link_name("abi_u128")
-    take_u128_s :: fn(v: u128) -> u64 \ {}
+    take_u128_s :: fn(v: u128) -> u64 needs not
     #link_name("abi_ret_pair")
-    ret_pair_s :: fn(a, b: u64) -> u128 \ {}
+    ret_pair_s :: fn(a, b: u64) -> u128 needs not
     #link_name("abi_mixed_pair")
-    mixed_pair_s :: fn(m: Mixed, c: i64) -> i64 \ {}
-    ldiv :: fn(n, d: c.c_long) -> LDiv \ {}
+    mixed_pair_s :: fn(m: Mixed, c: i64) -> i64 needs not
+    ldiv :: fn(n, d: c.c_long) -> LDiv needs not
 }
 
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     // Memory class: three eightbytes on the stack after the six register arguments.
     print("sum9 {} {}\n", sum9(1, 2, 3, 4, 5, 6, 7, 8, 9), lib.sum9s(1, 2, 3, 4, 5, 6, S3(x: 7, y: 8, z: 9)))
     // SSE, SSE.

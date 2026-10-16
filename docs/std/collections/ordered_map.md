@@ -45,7 +45,7 @@ A map from `K` to `V`, ordered by the comparison function it was created with.
 ### `ordered_map`
 
 ```gamma
-ordered_map :: fn(K, V: type) -> OrderedMap(K, V) \ {Alloc} where Ord(K)
+ordered_map :: fn(K, V: type) -> OrderedMap(K, V) needs Alloc where Ord(K)
 ```
 
 An empty map ordered by `<`, using the current allocator.
@@ -53,7 +53,7 @@ An empty map ordered by `<`, using the current allocator.
 ### `ordered_map_by`
 
 ```gamma
-ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) \ {Alloc}
+ordered_map_by :: fn(K, V: type, less: ^fn(a, b: ^const K) -> bool) -> OrderedMap(K, V) needs Alloc
 ```
 
 An empty map ordered by `less`, using the current allocator. `less(a, b)` says that
@@ -145,7 +145,7 @@ The entry with the largest key.
 ### `entries`
 
 ```gamma
-entries :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield((key: K, value: V))}
+entries :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield((key: K, value: V))
 ```
 
 The entries in key order. The map must not change during the iteration.
@@ -153,7 +153,7 @@ The entries in key order. The map must not change during the iteration.
 ### `keys`
 
 ```gamma
-keys :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(K)}
+keys :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield(K)
 ```
 
 The keys in order.
@@ -161,7 +161,7 @@ The keys in order.
 ### `values`
 
 ```gamma
-values :: fn(K, V: type, m: ^const OrderedMap(K, V)) \ {Yield(V)}
+values :: fn(K, V: type, m: ^const OrderedMap(K, V)) needs Yield(V)
 ```
 
 The values, in the order of their keys.
@@ -169,7 +169,7 @@ The values, in the order of their keys.
 ### `range`
 
 ```gamma
-range :: fn(K, V: type, m: ^const OrderedMap(K, V), lo, hi: ?K) \ {Yield((key: K, value: V))}
+range :: fn(K, V: type, m: ^const OrderedMap(K, V), lo, hi: ?K) needs Yield((key: K, value: V))
 ```
 
 The entries with `lo <= key < hi`, in key order. A bound that is `null` is left open:

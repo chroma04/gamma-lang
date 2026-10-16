@@ -8,7 +8,7 @@ This is Gamma's distinguishing feature, so this chapter goes slowly. It explains
 
 A C library that needs to allocate takes a custom allocator through a global or a struct field. One that logs takes a callback and a `void *`. One that can bail out in the middle of a deep call chain uses `setjmp` or threads an error code through every frame. One that iterates takes a visitor callback. Each time, the *policy* (which allocator, where logs go, what to do on failure) is supplied by the caller's context, but nothing in the function's type says so.
 
-An **effect** is an interface whose implementation is supplied by the caller's context instead of by an argument. A function lists the effects it performs after a backslash. Somewhere up the call chain, a `with` block installs a **handler** for each. Call sites look like ordinary calls. The compiler checks that every effect is handled, so there is no "unhandled" runtime condition.
+An **effect** is an interface whose implementation is supplied by the caller's context instead of by an argument. A function lists the effects it performs after the word `needs`, joined with `+`: `needs Alloc + Out`. Somewhere up the call chain, a `with` block installs a **handler** for each. Call sites look like ordinary calls. The compiler checks that every effect is handled, so there is no "unhandled" runtime condition.
 
 ## Declaring and performing an effect
 
@@ -22,10 +22,10 @@ Log :: effect {
 }
 ```
 
-Declaring `Log` also declares `log` as a function. Calling it **performs** the operation, and its effect set is `{Log}`. Any function that performs `log`, directly or through a call, must list `Log`:
+Declaring `Log` also declares `log` as a function. Calling it **performs** the operation, and its signature says `needs Log`. Any function that performs `log`, directly or through a call, must list `Log`:
 
 ```gamma
-connect :: fn(host: string) -> bool \ {Log} {
+connect :: fn(host: string) -> bool needs Log {
     log(.Info, "connecting")
     if host.len is 0 {
         log(.Error, "empty host name")
@@ -36,7 +36,7 @@ connect :: fn(host: string) -> bool \ {Log} {
 }
 ```
 
-This is what `\ {Out}` on `main` has meant all along: `print` performs the `Out` effect, so callers must provide it. The compiler checks that the set a function body performs is a subset of the set it declares.
+This is what `needs Out` on `main` has meant all along: `print` performs the `Out` effect, so callers must provide it. The compiler checks that the set a function body performs is a subset of the set it declares.
 
 > **Common mistake: a missing effect.** Calling a function with effects from one that does not declare or handle them is a compile error:
 >
@@ -46,16 +46,16 @@ This is what `\ {Out}` on `main` has meant all along: `print` performs the `Out`
 > }
 > ```
 >
-> Add `\ {Out}` to `helper`, or install a handler for `Out` around the call.
+> Add `needs Out` to `helper`, or install a handler for `Out` around the call.
 
-An effect declared `pub` in another module is named through the module, like its types and functions: `\ {log.Log}` in an effect set, `handler log.Log { ... }` for a handler, and `log.log(...)` to perform its operation.
+An effect declared `pub` in another module is named through the module, like its types and functions: `needs log.Log` in an effect set, `handler log.Log { ... }` for a handler, and `log.log(...)` to perform its operation.
 
 ## Handling an effect
 
 A **handler literal** supplies one *clause* for each operation. A `with` expression installs handlers around a block:
 
 ```gamma
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     printer :: handler Log {
         log(level, msg) => print("[{}] {}\n", level, msg)
     }
@@ -117,7 +117,7 @@ Ids :: effect {
     next_id: fn() -> u32
 }
 
-ids_demo :: fn() \ {Out} {
+ids_demo :: fn() needs Out {
     counter := 100u32
     ids :: handler Ids {
         next_id() => {
@@ -144,7 +144,7 @@ Fail :: effect {
     fail: esc(msg: string) -> never
 }
 
-digit :: fn(c: u8) -> u32 \ {Fail} {
+digit :: fn(c: u8) -> u32 needs Fail {
     if c not in '0'..='9' { fail("not a digit") }
     return u32(c - '0')
 }
@@ -165,7 +165,7 @@ sum_digits :: fn(s: string) -> ?u32 {
     return null
 }
 
-fail_demo :: fn() \ {Out} {
+fail_demo :: fn() needs Out {
     print("{}\n", sum_digits("1234"))      // 10
     print("{}\n", sum_digits("12x4"))      // null
 }
@@ -205,20 +205,20 @@ handler Log for ^CountingLog {
     }
 }
 
-work :: fn() \ {Log} {
+work :: fn() needs Log {
     log(.Info, "starting")
     log(.Warn, "disk almost full")
     log(.Error, "write failed")
 }
 
-stats_demo :: fn() \ {Out} {
+stats_demo :: fn() needs Out {
     stats := CountingLog()
     with &stats { work() }
     print("{} warnings, {} errors\n", stats.warnings, stats.errors)
 }
 ```
 
-The first clause parameter (`self`) has the handler's type; the rest are the operation's parameters. A handler declaration must appear in the module that declares the effect or the one that declares the type. A declaration may add `\ {A}` after the type to say which effects its clauses perform (those are handled *outside* the `with` that installs it). This is how the allocator types in [chapter 9](09-memory.md) work, and it is also how you give a struct a handler without writing a handler literal at every use. Clauses of a declaration have no enclosing function, so labeled `break`/`continue` and captures are not available there. A `return v` (or `try`) ends the clause with the value `v`, as if it were the clause's last expression, and an unlabeled `break` still exits the `with`.
+The first clause parameter (`self`) has the handler's type; the rest are the operation's parameters. A handler declaration must appear in the module that declares the effect or the one that declares the type. A declaration may add `needs A` after the type to say which effects its clauses perform (those are handled *outside* the `with` that installs it). This is how the allocator types in [chapter 9](09-memory.md) work, and it is also how you give a struct a handler without writing a handler literal at every use. Clauses of a declaration have no enclosing function, so labeled `break`/`continue` and captures are not available there. A `return v` (or `try`) ends the clause with the value `v`, as if it were the clause's last expression, and an unlabeled `break` still exits the `with`.
 
 A generic type gets one declaration for all its instances by listing the parameters after `handler`, written as for a generic struct:
 
@@ -229,7 +229,7 @@ handler(T: type, N: usize) Yield(T) for ^Collector(T, N) {
     yield(self, x) => if self.len < N { self.items[self.len] = x; self.len += 1 }
 }
 
-collect_demo :: fn() \ {Out} {
+collect_demo :: fn() needs Out {
     c := Collector(u32, 4)(items: [4]u32(fill: 0))
     with &c { for i in 0..10 { yield(u32(i)) } }      // keeps 0, 1, 2 and 3
     print("{}\n", c.len)                              // 4
@@ -260,7 +260,7 @@ The universe scope holds these effects but not their operations (except `yield`,
 Here is a function that runs a callback and counts the bytes it would print, by installing its own handler for `Out` around the callback:
 
 ```gamma
-count_output :: fn(body: fn() \ {Out}) -> usize {
+count_output :: fn(body: fn() needs Out) -> usize {
     total := 0
     counter :: handler Out {
         write_out(chunk) => { total += chunk.len }
@@ -269,7 +269,7 @@ count_output :: fn(body: fn() \ {Out}) -> usize {
     return total
 }
 
-measure_demo :: fn() \ {Out} {
+measure_demo :: fn() needs Out {
     n := count_output(fn() { print("hello\n") })
     print("{} bytes\n", n)                 // 6 bytes
 }
@@ -279,16 +279,16 @@ The hello is swallowed by `counter` and never reaches standard output.
 
 ### Naming a set of effects
 
-Effect sets get long when a family of functions does the same kinds of things. A top-level binding can name a set, and `..` splices it into another:
+Effect sets get long when a family of functions does the same kinds of things. A top-level binding can name a set, and using the name in another set adds its effects:
 
 ```gamma
-Io :: \ {Fs, Alloc, Err}
+Io :: Fs + Alloc + Err
 
-load :: fn(path: string) -> fs.ReadError![]u8 \ {..Io} { … }
-save :: fn(path: string, data: []const u8) -> IoError!() \ {..Io, Clock} { … }
+load :: fn(path: string) -> fs.ReadError![]u8 needs Io { … }
+save :: fn(path: string, data: []const u8) -> IoError!() needs Io + Clock { … }
 ```
 
-A named effect set is only a name for a list of effects: `\ {..Io, Clock}` is exactly `\ {Fs, Alloc, Err, Clock}`. It can be `pub`, imported, aliased, and given where an effect-set parameter is expected ([chapter 10](10-generics.md)).
+A named effect set is only a name for a list of effects: `needs Io + Clock` is exactly `needs Fs + Alloc + Err + Clock`. It can be `pub`, imported, aliased, and given where an effect-set parameter is expected ([chapter 10](10-generics.md)).
 
 ### `Sys`: the edge of the model
 
@@ -303,16 +303,16 @@ repeat :: fn(times: u32, body: fn()) {
     for _ in 0..times { body() }
 }
 
-repeat_demo :: fn() \ {Out} {
+repeat_demo :: fn() needs Out {
     repeat(3, fn() => print("hi\n"))       // Out is repeat_demo's requirement, not repeat's
 }
 ```
 
-`repeat` declares no effects, and still accepts a callback that prints, because that `Out` belongs to the context of the call, which is `repeat_demo`. Contrast `count_output` above, whose parameter is `fn() \ {Out}`: by listing `Out` in the parameter type, `count_output` promises to handle it, and it does. A callee that wants to *provide* an effect to its callback lists the effect in the callback's type; a callee that just calls it lists nothing.
+`repeat` declares no effects, and still accepts a callback that prints, because that `Out` belongs to the context of the call, which is `repeat_demo`. Contrast `count_output` above, whose parameter is `fn() needs Out`: by listing `Out` in the parameter type, `count_output` promises to handle it, and it does. A callee that wants to *provide* an effect to its callback lists the effect in the callback's type; a callee that just calls it lists nothing.
 
-This is why ordinary higher-order functions need no effect variables or effect-polymorphism syntax: second-class callbacks give you the same expressiveness with no extra notation. A **function pointer** `^fn(...) \ {E}`, being first-class, has a fixed effect set that is handled by whoever calls it. A pointer or named function whose effects are a subset of `E` can be used where `^fn(...) \ {E}` is expected. When a *stored* function pointer has to be polymorphic in its effects, a generic function, type, effect or handler can take an effect-set parameter `E: effects` and splice it into effect sets as `..E` ([chapter 10](10-generics.md)). Such a set is fixed for each instantiation, so there are still no effect variables in the types of values.
+This is why ordinary higher-order functions need no effect variables or effect-polymorphism syntax: second-class callbacks give you the same expressiveness with no extra notation. A **function pointer** `^fn(...) needs E`, being first-class, has a fixed effect set that is handled by whoever calls it. A pointer or named function whose effects are a subset of `E` can be used where `^fn(...) needs E` is expected. When a *stored* function pointer has to be polymorphic in its effects, a generic function, type, effect or handler can take an effect-set parameter `E: effects` and use it as a term of effect sets, `needs E` ([chapter 10](10-generics.md)). Such a set is fixed for each instantiation, so there are still no effect variables in the types of values.
 
-Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and an effect set may mention type parameters of an enclosing generic function (`\ {Yield(T)}`). An instantiation can be given a name, usable in effect sets and handler literals and for performing it directly: after `Bytes :: Yield(u8)`, a function may declare `\ {Bytes}` and call `Bytes.yield(b)`.
+Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and an effect set may mention type parameters of an enclosing generic function (`needs Yield(T)`). An instantiation can be given a name, usable in effect sets and handler literals and for performing it directly: after `Bytes :: Yield(u8)`, a function may declare `needs Bytes` and call `Bytes.yield(b)`.
 
 ## Static guarantees
 
@@ -330,7 +330,7 @@ Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and 
 
 ## Summary
 
-- An effect is an interface supplied by the caller's context; `\ {E}` lists what a function performs, and `with` installs handlers.
+- An effect is an interface supplied by the caller's context; `needs E` lists what a function performs, and `with` installs handlers.
 - Operation kinds `fn`, `esc` and `ctl` tell you whether a perform returns, may exit, or may suspend.
 - Handlers come from handler literals or from `handler E for T` declarations.
 - `Out`, `Alloc`, `Fs` and the other ambient effects are ordinary effects; `Sys` marks what escapes the model.

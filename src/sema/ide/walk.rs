@@ -302,7 +302,6 @@ impl<'a, 's> Walker<'a, 's> {
             | ExprKind::ResUnwrap(i)
             | ExprKind::Deref(i)
             | ExprKind::OptionalType(i)
-            | ExprKind::EffectSplice(i)
             | ExprKind::ContType(i) => self.expr(i),
             ExprKind::Unary { operand, .. } => self.expr(operand),
             ExprKind::PtrType { inner, .. }
@@ -310,7 +309,6 @@ impl<'a, 's> Walker<'a, 's> {
             | ExprKind::ManyPtrType { inner, .. }
             | ExprKind::Attributed { inner, .. } => self.expr(inner),
             ExprKind::Tuple(elems) => elems.iter().for_each(|el| self.expr(&el.value)),
-            ExprKind::EffectSet(es) => es.iter().for_each(|x| self.expr(x)),
             ExprKind::Binary { lhs, rhs, .. }
             | ExprKind::Bang { lhs, rhs }
             | ExprKind::ErrorUnionType { err: lhs, ok: rhs } => {

@@ -3,7 +3,7 @@ NZ :: -0.0
 NZ2 :: NZ * 2
 PZ :: NZ + 0.0
 M :: -(0.0 * -1)
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a: f64 = NZ
     b: f32 = NZ2
     c: f64 = PZ

@@ -1,6 +1,6 @@
 //! exit: 134
 // An elementwise operation checks each element like the scalar operator (§7.4.6).
-main :: fn() \ {Out} {
+main :: fn() needs Out {
     a := [3]i8(1, -128, 3)
     print("{}\n", a + a)
 }
