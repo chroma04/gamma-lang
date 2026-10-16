@@ -1,11 +1,12 @@
 # Editor support
 
-Gamma has three kinds of editor support. They are independent, so you can use any of them alone.
+Gamma has three kinds of editor support, plus extensions that package them for VS Code and Zed. The three are independent, so you can use any of them alone.
 
 | Piece | What it gives you | Where it is |
 | --- | --- | --- |
 | TextMate grammar | Syntax highlighting in VS Code and other editors that read TextMate grammars. | `editors/vscode/syntaxes/gamma.tmLanguage.json` |
 | Tree-sitter grammar | Syntax highlighting, indentation, folding and a syntax tree in Neovim, Helix, Emacs, Zed and others. | `editors/tree-sitter-gamma/` |
+| Zed extension | The tree-sitter grammar's highlighting, outline and indentation in Zed, and the language server. | `editors/zed/` |
 | Language server | Diagnostics, hover, go to definition, find references, rename, completion, signature help, document symbols and formatting, for any editor with an LSP client. | `gamma lsp` |
 
 Source files use the extension `.gm`.
