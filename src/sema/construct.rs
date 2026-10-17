@@ -358,8 +358,16 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
     }
 
-    /// `[N]T(e1, …)`, `[_]T(…)` and `[N]T(fill: x)` (§7.11).
-    pub fn construct_array(&mut self, len: Option<u64>, elem: Ty, args: &[ast::Arg], span: Span) -> Expr {
+    /// `[N]T(e1, …)`, `[_]T(…)` and `[N]T(fill: x)` (§7.11), and the same for a vector
+    /// type `ty` (§5.6.2); `ty` is `None` for a plain array.
+    pub fn construct_array(
+        &mut self,
+        ty: Option<Ty>,
+        len: Option<u64>,
+        elem: Ty,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Expr {
         if let [ast::Arg { kind: ArgKind::Named(n, e), .. }] = args
             && n.name.as_str() == "fill"
         {
@@ -368,7 +376,26 @@ impl<'a, 's> FnCx<'a, 's> {
                 return error_expr(span);
             };
             let v = self.field_value(e, elem);
-            return mk(Ty::array(len, elem), tir::ExprKind::ArrayFill(Box::new(v)), span);
+            return mk(ty.unwrap_or(Ty::array(len, elem)), tir::ExprKind::ArrayFill(Box::new(v)), span);
+        }
+        // `[N]T(v)` and `V(a)` with one argument that is itself an array or a vector:
+        // a conversion between a vector and an array or another vector (§6.5, §5.6.2).
+        if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
+            && let Some(n) = len
+            && !matches!(e.kind, ast::ExprKind::Uninit)
+        {
+            let v = self.expr(e, Some(elem));
+            let vt = self.infer.resolve(v.ty);
+            let target = ty.unwrap_or(Ty::array(n, elem));
+            if vt.is_array() && vt != elem && (vt.is_vector() || target.is_vector()) {
+                return self.vector_conversion(target, v, span).expect("a vector conversion");
+            }
+            let v = self.coerce(v, elem);
+            if n != 1 {
+                self.error(span, format!("`{}` needs exactly {} elements, but 1 is given", target, n));
+                return error_expr(span);
+            }
+            return mk(target, tir::ExprKind::Array(vec![v]), span);
         }
         let mut values = vec![];
         // `[N]T(..t)` spreads a tuple's elements (§11.4); with spreads, every value goes
@@ -397,10 +424,11 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(n) = len
             && n != values.len() as u64
         {
-            self.error(span, format!("`[{}]{}` needs exactly {} elements, but {} are given", n, elem, n, values.len()));
+            let t = ty.unwrap_or(Ty::array(n, elem));
+            self.error(span, format!("`{}` needs exactly {} elements, but {} are given", t, n, values.len()));
             return error_expr(span);
         }
-        let t = Ty::array(values.len() as u64, elem);
+        let t = ty.unwrap_or(Ty::array(values.len() as u64, elem));
         let arr = mk(t, tir::ExprKind::Array(values), span);
         if stmts.is_empty() {
             return arr;
@@ -410,6 +438,76 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
+    /// `[E]T(fill: x)` and `[E]T(A: a, B: b, …)`, naming every variant of the enum `E`
+    /// once (§5.6). Values are evaluated in the order written.
+    pub fn construct_enum_array(&mut self, ty: Ty, index: Ty, elem: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        let names: Vec<Symbol> =
+            self.sema.union_variants(index).map(|(vs, _)| vs.iter().map(|v| v.name).collect()).unwrap_or_default();
+        if let [ast::Arg { kind: ArgKind::Named(n, e), .. }] = args
+            && n.name.as_str() == "fill"
+            && !names.contains(&n.name)
+        {
+            let v = self.field_value(e, elem);
+            return mk(ty, tir::ExprKind::ArrayFill(Box::new(v)), span);
+        }
+        let mut stmts: Vec<Stmt> = vec![];
+        let mut slots: Vec<Option<Expr>> = vec![None; names.len()];
+        let mut written: Vec<usize> = vec![];
+        let mut bad_args = false;
+        for arg in args {
+            match &arg.kind {
+                ArgKind::Named(name, e) => {
+                    let Some(i) = names.iter().position(|v| *v == name.name) else {
+                        let fill =
+                            if name.name.as_str() == "fill" { " (`fill:` must be the only argument)" } else { "" };
+                        self.error(name.span, format!("`{}` has no variant `{}`{}", index, name.name, fill));
+                        let _ = self.expr(e, None);
+                        bad_args = true;
+                        continue;
+                    };
+                    if slots[i].is_some() {
+                        self.error(name.span, format!("the element for `{}` is given twice", name.name));
+                    }
+                    let v = self.field_value(e, elem);
+                    written.push(i);
+                    slots[i] = Some(v);
+                }
+                _ => {
+                    if !bad_args {
+                        self.error(
+                            arg.span,
+                            format!(
+                                "`{}` is constructed by naming each variant of `{}`: `{}({}: …)`, or with `fill:`",
+                                ty,
+                                index,
+                                ty,
+                                names.first().map(|n| n.as_str()).unwrap_or("A")
+                            ),
+                        );
+                    }
+                    bad_args = true;
+                }
+            }
+        }
+        if written.windows(2).any(|w| w[0] > w[1]) {
+            for &w in &written {
+                let v = slots[w].take().unwrap();
+                slots[w] = Some(self.bind_temp(v, &mut stmts));
+            }
+        }
+        let missing: Vec<String> =
+            names.iter().zip(&slots).filter(|(_, s)| s.is_none()).map(|(n, _)| format!("`{}`", n)).collect();
+        if !missing.is_empty() && !bad_args {
+            self.error(span, format!("`{}` needs an element for every variant: missing {}", ty, missing.join(", ")));
+        }
+        let values = slots.into_iter().map(|s| s.unwrap_or_else(|| error_expr(span))).collect();
+        let arr = mk(ty, tir::ExprKind::Array(values), span);
+        if stmts.is_empty() {
+            return arr;
+        }
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(arr), span })), span)
+    }
+
     /// Construction of `[N]T` where `N` is a compile-time parameter: only
     /// `fill:` can give an element count that is not known yet.
     pub fn construct_param_array(&mut self, t: Ty, elem: Ty, args: &[ast::Arg], span: Span) -> Expr {

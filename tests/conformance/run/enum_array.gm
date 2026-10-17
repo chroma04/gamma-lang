@@ -1,0 +1,32 @@
+// Enum-indexed arrays `[E]T` (§5.6): construction by variant name or `fill:`, indexing by
+// enum values (with `.V` inferred), places, pointers, whole slices, sparse and signed tags.
+Dir :: union { N, E, S, W }
+Errno :: union(i32) { Ok = 0, Perm = 1, NoEnt = 2 }
+Sparse :: union(u8) { A = 5, B = 3, C = 9 }
+
+NAMES :: [Dir]string(N: "north", E: "east", S: "south", W: "west")
+OPPOSITE :: [Dir]Dir(N: .S, S: .N, E: .W, W: .E)
+
+Grid :: struct {
+    counts: [Dir]u32
+}
+
+name_of :: fn(d: Dir) -> string => NAMES[d]
+
+main :: fn() needs Out {
+    for d in @variants(Dir) { print("{} -> {}\n", name_of(d), NAMES[OPPOSITE[d]]) }
+    g := Grid(counts: [Dir]u32(fill: 0))
+    g.counts[.E] += 3
+    g.counts[Dir.W] = 7
+    p := &g.counts
+    p[.N] += 1
+    print("{} {} {}\n", g.counts, g.counts.len, g.counts[..])
+    msgs := [Errno]string(Perm: "perm", Ok: "ok", NoEnt: "noent")
+    for e in @variants(Errno) { print("{} ", msgs[e]) }
+    s := [Sparse]u8(C: 3, A: 1, B: 2)
+    for v in @variants(Sparse) { print("{}:{} ", @variant_name(v), s[v]) }
+    print("\n")
+    t := s
+    t[.B] = 20
+    print("{} {}\n", s is t, s + t)
+}

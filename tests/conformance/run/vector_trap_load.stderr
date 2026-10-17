@@ -1,0 +1,2 @@
+trap: vector load of 4 lanes with a slice of 3 elements
+  at tests/conformance/run/vector_trap_load.gm:8:19 in main

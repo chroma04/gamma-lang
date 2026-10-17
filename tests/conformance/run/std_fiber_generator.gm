@@ -1,0 +1,261 @@
+// std/fiber/generator: iterators advanced by hand. Two sorted streams are merged in lockstep, two
+// trees are compared leaf by leaf (stopping at the first difference, which cancels the walks so
+// their defers run), a generator is drained and asked again, an infinite one is taken from, the
+// consumer leaves its scope early by `return` and by an `esc` operation, and producers perform
+// the effects `E` of the generator type.
+gen :: import "std/fiber/generator"
+
+Span :: struct {
+    from: u32
+    step: u32
+    count: u32
+}
+
+// An arithmetic progression, with a defer and an effect besides `Yield`.
+progression :: fn(s: ^Span) needs Yield(u32) + Out {
+    defer print("[progression from {} closed]\n", s.from)
+    for i in 0..s.count { yield(s.from + i * s.step) }
+}
+
+merge :: fn(a, b: ^gen.Generator(u32, Out)) needs gen.Pull(u32, Out) + Out {
+    x := a.next()
+    y := b.next()
+    print("merged:")
+    while true {
+        if xv := x {
+            if yv := y {
+                if xv <= yv {
+                    print(" {}", xv)
+                    x = a.next()
+                } else {
+                    print(" {}", yv)
+                    y = b.next()
+                }
+            } else {
+                print(" {}", xv)
+                x = a.next()
+            }
+        } else if yv := y {
+            print(" {}", yv)
+            y = b.next()
+        } else {
+            break
+        }
+    }
+    print("\n")
+}
+
+lockstep :: fn() needs Out {
+    s1 := Span(from: 1, step: 3, count: 5)
+    s2 := Span(from: 2, step: 2, count: 4)
+    st1: [32768]u8 = ---
+    st2: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    a := gen.generator(progression, &s1, st1[..])
+    b := gen.generator(progression, &s2, st2[..])
+    gen.pull(main_stack[..], fn() => merge(&a, &b))
+}
+
+// ---- same fringe ---------------------------------------------------------------------------
+
+Node :: struct {
+    key: u32
+    left: ?^Node = null
+    right: ?^Node = null
+}
+
+Tree :: struct {
+    name: string
+    root: ?^Node
+}
+
+leaves :: fn(n: ?^const Node) needs Yield(u32) {
+    p := n else return
+    if p.left is null and p.right is null {
+        yield(p.key)
+        return
+    }
+    leaves(p.left)
+    leaves(p.right)
+}
+
+walk :: fn(t: ^Tree) needs Yield(u32) + Out {
+    defer print("[walk of {} closed]\n", t.name)
+    leaves(t.root)
+}
+
+leaf :: fn(pool: []Node, i: usize, key: u32) -> ^Node {
+    pool[i] = Node(key: key)
+    return &pool[i]
+}
+
+inner :: fn(pool: []Node, i: usize, l, r: ^Node) -> ^Node {
+    pool[i] = Node(key: 0, left: l, right: r)
+    return &pool[i]
+}
+
+same_fringe :: fn(a, b: ^gen.Generator(u32, Out)) -> bool needs gen.Pull(u32, Out) + Out {
+    while true {
+        x := a.next()
+        y := b.next()
+        if x is null and y is null { return true }
+        if not (x is y) {
+            print("differ: {} vs {}\n", x, y)
+            return false
+        }
+    }
+}
+
+compare :: fn(ta, tb: ^Tree) needs Out {
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    a := gen.generator(walk, ta, sa[..])
+    b := gen.generator(walk, tb, sb[..])
+    r := gen.pull(main_stack[..], fn() -> bool => same_fringe(&a, &b))
+    print("{} and {} have the same fringe: {}\n", ta.name, tb.name, r)
+}
+
+fringes :: fn() needs Out {
+    // ((1 2) 3) and (1 (2 3)): the same leaves, different shapes.
+    p1 := [5]Node(fill: Node(key: 0))
+    t1 := Tree(name: "left-leaning", root: inner(p1[..], 0, inner(p1[..], 1, leaf(p1[..], 2, 1), leaf(p1[..], 3, 2)), leaf(p1[..], 4, 3)))
+    p2 := [5]Node(fill: Node(key: 0))
+    t2 := Tree(name: "right-leaning", root: inner(p2[..], 0, leaf(p2[..], 1, 1), inner(p2[..], 2, leaf(p2[..], 3, 2), leaf(p2[..], 4, 3))))
+    // (1 (2 4)): the third leaf differs, and the walks are abandoned there.
+    p3 := [5]Node(fill: Node(key: 0))
+    t3 := Tree(name: "other", root: inner(p3[..], 0, leaf(p3[..], 1, 1), inner(p3[..], 2, leaf(p3[..], 3, 2), leaf(p3[..], 4, 4))))
+    // (1 2): shorter than the others.
+    p4 := [3]Node(fill: Node(key: 0))
+    t4 := Tree(name: "short", root: inner(p4[..], 0, leaf(p4[..], 1, 1), leaf(p4[..], 2, 2)))
+    compare(&t1, &t2)
+    compare(&t1, &t3)
+    compare(&t1, &t4)
+}
+
+// ---- draining, and an infinite generator -----------------------------------------------------
+
+drain :: fn() needs Out {
+    s := Span(from: 10, step: 10, count: 2)
+    st: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    g := gen.generator(progression, &s, st[..])
+    gen.pull(main_stack[..], fn() => print("{} {} {} {} {}\n", g.next(), g.next(), g.next(), g.next(), g.next()))
+}
+
+Nothing :: struct {}
+
+fib :: fn(n: ^Nothing) needs Yield(u64) + Out {
+    defer print("[fib closed]\n")
+    a: u64 = 0
+    b: u64 = 1
+    while true {
+        yield(a)
+        a, b = b, a + b
+    }
+}
+
+take_fib :: fn() needs Out {
+    st: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    nothing := Nothing()
+    g := gen.generator(fib, &nothing, st[..])
+    sum := gen.pull(main_stack[..], fn() -> u64 {
+        total: u64 = 0
+        for i in 0..10 {
+            v := g.next() else break
+            print("{} ", v)
+            total += v
+        }
+        print("\n")
+        return total
+    })
+    print("sum of the first ten: {}\n", sum)
+}
+
+// ---- leaving the scope early ---------------------------------------------------------------
+
+// The scope written by hand: `return` from inside the `with` cancels the producer.
+first_above :: fn(limit: u64) -> ?u64 needs Out {
+    st: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    nothing := Nothing()
+    g := gen.generator(fib, &nothing, st[..])
+    d := gen.driver(u64, Out)
+    defer d.close()
+    with &d on main_stack[..] {
+        while x := g.next() {
+            if x > limit { return x }
+        }
+        gen.finish()
+    }
+    return null
+}
+
+// A consumer that is itself an iterator: the `for` loop that calls it breaks, which exits the
+// `pull` through the `Yield` handler outside it.
+Pairs :: struct {
+    a: Span
+    b: Span
+}
+
+sums :: fn(p: ^Pairs) needs Yield(u32) + Out {
+    st1: [32768]u8 = ---
+    st2: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    ga := gen.generator(progression, &p.a, st1[..])
+    gb := gen.generator(progression, &p.b, st2[..])
+    gen.pull(main_stack[..], fn() {
+        while true {
+            x := ga.next() else break
+            y := gb.next() else break
+            yield(x + y)
+        }
+    })
+    print("[sums finished]\n")
+}
+
+early :: fn() needs Out {
+    print("first Fibonacci number above 50: {}\n", first_above(50))
+    p := Pairs(a: Span(from: 0, step: 1, count: 100), b: Span(from: 100, step: 100, count: 100))
+    for s in sums(&p) {
+        print("sum {}\n", s)
+        if s > 300 { break }
+    }
+    print("after the loop\n")
+}
+
+// Producers that perform nothing but `Yield`: `E` is the empty set.
+count_to :: fn(limit: ^u32) needs Yield(u32) {
+    for i in 1..=limit^ { yield(i) }
+}
+
+dot :: fn(a, b: ^gen.Generator(u32)) -> u32 needs gen.Pull(u32) {
+    total: u32 = 0
+    while x := a.next() {
+        y := b.next() else break
+        total += x * y
+    }
+    return total
+}
+
+pure :: fn() needs Out {
+    n := u32(5)
+    m := u32(7)
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    ga := gen.generator(count_to, &n, sa[..])
+    gb := gen.generator(count_to, &m, sb[..])
+    total := gen.pull(main_stack[..], fn() => dot(&ga, &gb))
+    print("dot product of 1..5 and 1..7: {}\n", total)
+}
+
+main :: fn() needs Out {
+    lockstep()
+    pure()
+    fringes()
+    drain()
+    take_fib()
+    early()
+}

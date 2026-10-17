@@ -55,7 +55,7 @@ impl Helpers {
                     }
                     b.push_str("    return true;\n");
                 }
-                TyKind::Array { len, elem } => {
+                TyKind::Array { len, elem, .. } => {
                     let f = self.eq_fn(ty, *elem);
                     let esz = ty.size(*elem);
                     let _ = writeln!(
@@ -163,7 +163,7 @@ impl Helpers {
                 }
                 TyKind::Array { .. } | TyKind::Slice { .. } => {
                     let (elem, array_len) = match t.kind() {
-                        TyKind::Array { len, elem } => (*elem, Some(*len)),
+                        TyKind::Array { len, elem, .. } => (*elem, Some(*len)),
                         TyKind::Slice { elem, .. } => (*elem, None),
                         _ => unreachable!(),
                     };
@@ -249,7 +249,7 @@ impl Helpers {
                     }
                     b.push_str("    return h;\n");
                 }
-                TyKind::Array { len, elem } => {
+                TyKind::Array { len, elem, .. } => {
                     let f = self.hash_fn(ty, *elem);
                     let esz = ty.size(*elem);
                     let _ = writeln!(

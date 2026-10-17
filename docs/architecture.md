@@ -234,6 +234,7 @@ lowers each function body to TIR.
 | `call.rs`, `methods.rs`, `construct.rs` | calls, method calls and builtin methods, construction |
 | `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
+| `vector.rs` | vector types `#simd [N]T`: their lane-wise operators, conversions and methods (§5.6.2) |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
 | `fnlit.rs` | function literals, captures and second-class rules |
 | `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations (generic ones are templates instantiated by `handlers_for`), `with`, `for` over iterators |
@@ -248,7 +249,7 @@ lowers each function body to TIR.
 
 The core library is ordinary Gamma source in `lib/core/`, compiled into the
 tool. The prelude (`prelude.gm`) is visible in every module: it declares the
-ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, and
+ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, and
 `Sys`), the standard iterators and allocation (`Allocator`, `new`, `make`, `free`, …). The
 containers live in their own core modules, `list.gm` and `map.gm`, and the builtin methods
 of arrays and slices that are written in Gamma (the sorts, …) in `slice.gm`; only their types and
@@ -269,7 +270,7 @@ is checked on every compilation, so mistakes in it surface immediately.
 The program's entry is a synthesized function that calls `main` inside the
 prelude's default handlers for the ambient effects it performs:
 `with heap_allocator(), system_io() { main() }` (only the providers for the effects
-`main` performs), where `system_io()` handles `In`, `Clock`, `Rand`, `Fs` and `Net`
+`main` performs), where `system_io()` handles `In`, `Clock`, `Rand`, `Fs`, `Net` and `Proc`
 through the intrinsics above. The ambient effects with
 host-provided handlers (`Out`, `Err`, `Env`) are installed by the runtime
 itself. Tests run under the prelude's test handlers instead (`run_test`): a
@@ -531,6 +532,7 @@ both use it. The files:
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
 | `arith.rs`, `elementwise.rs`, `wide.rs` | checked scalar operators, elementwise array arithmetic (§7.4.6), integers wider than 128 bits |
+| `vector.rs` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.rs` | per-type equality, ordering and hashing |
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.rs`, `constarg.rs` | parameters read in place; static storage for constant arguments |

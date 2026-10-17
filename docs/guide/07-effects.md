@@ -250,6 +250,7 @@ Some effects are predeclared, and the runtime installs a default handler for eac
 | `Clock` | `Clock.now()`, `Clock.wall()`, `Clock.sleep(d)` | system clock | fake clock |
 | `Rand` | `Rand.fill(buf)` fills a buffer | OS-seeded generator | fixed seed |
 | `Fs`, `Net` | `Fs.open(path, opts)`, `Net.connect(host, port)` and so on: files, sockets | the real ones | in-memory fakes |
+| `Proc` | `Proc.spawn(argv, opts)`, `Proc.wait(child)` and so on: child processes | the real ones | `spawn` is refused |
 | `Env` | `Env.args()`, `Env.var(name)`, `Env.exit(code)` | process environment | empty |
 | `Sys` | none | none | not replaceable |
 

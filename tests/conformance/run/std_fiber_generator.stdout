@@ -1,0 +1,28 @@
+merged: 1 2 4 4 6 7 8[progression from 2 closed]
+ 10 13[progression from 1 closed]
+
+dot product of 1..5 and 1..7: 55
+[walk of left-leaning closed]
+[walk of right-leaning closed]
+left-leaning and right-leaning have the same fringe: true
+differ: 3 vs 4
+[walk of other closed]
+[walk of left-leaning closed]
+left-leaning and other have the same fringe: false
+[walk of short closed]
+differ: 3 vs null
+[walk of left-leaning closed]
+left-leaning and short have the same fringe: false
+[progression from 10 closed]
+10 20 null null null
+0 1 1 2 3 5 8 13 21 34 
+[fib closed]
+sum of the first ten: 88
+[fib closed]
+first Fibonacci number above 50: 55
+sum 100
+sum 201
+sum 302
+[progression from 100 closed]
+[progression from 0 closed]
+after the loop

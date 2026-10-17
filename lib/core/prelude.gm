@@ -141,6 +141,42 @@ pub Net :: effect {
     peer: fn(s: Socket, buf: []u8) -> IoError!usize                    // `host:port` into buf
 }
 
+/// A child process that was started with `Proc.spawn` (§21.7).
+pub Child :: struct { handle: i64 }
+
+/// What a child's standard stream is connected to: ours (`Inherit`), the null device
+/// (`Null`), or a pipe to this process (`Pipe`).
+pub Stdio :: union { Inherit, Null, Pipe }
+
+/// One of a child's output streams.
+pub Stream :: union { Stdout, Stderr }
+
+/// How `spawn` starts a process. The default runs the program in our working directory
+/// and with our environment, sharing our standard streams.
+pub SpawnOptions :: struct {
+    pub stdin, stdout, stderr: Stdio = .Inherit
+    pub dir: ?string = null                 // the child's working directory; null: ours
+    pub env: ?[]const string = null         // `NAME=value` entries that replace the environment; null: ours
+}
+
+/// What `read_out` reports: which stream the bytes it stored in the buffer came from, and
+/// how many there are.
+pub Chunk :: struct { pub from: Stream; pub len: usize }
+
+/// How a child ended: its exit code, or (on POSIX systems) the signal that ended it.
+pub ExitStatus :: union { Exited: u32, Signaled: i32 }
+
+/// Child processes (§12.9, §21.7). A program name without a path separator is searched
+/// for in the directories of our `PATH`.
+pub Proc :: effect {
+    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // empty argv: InvalidInput; no such program: NotFound
+    write_in: fn(c: Child, bytes: []const u8) -> IoError!usize   // to the piped stdin; may write fewer bytes
+    close_in: fn(c: Child)                                        // the child sees the end of its input
+    read_out: fn(c: Child, buf: []u8) -> IoError!?Chunk           // waits for data on a piped output stream; null once all have ended
+    wait: fn(c: Child) -> IoError!ExitStatus                      // closes our ends of the pipes and waits; releases the child
+    kill: fn(c: Child) -> IoError!()                              // forcibly ends the child, which must still be waited for
+}
+
 /// `n` nanoseconds.
 pub ns :: fn(n: u64) -> Duration => Duration(ns: n)
 /// `n` microseconds.
@@ -296,7 +332,40 @@ handler Net for SystemIo {
     peer(self, s, buf) => io_result(@net_peer(s.handle, buf))
 }
 
-/// The default handlers of `In`, `Clock`, `Rand`, `Fs` and `Net`, for code that starts
+/// The flags of `@proc_spawn` for the options: two bits per standard stream (stdin from bit 0,
+/// stdout from bit 2, stderr from bit 4: 0 inherit, 1 null, 2 pipe), and 64 if `env` replaces
+/// the environment.
+stdio_flags :: fn(o: SpawnOptions) -> u32 {
+    flags := o.stdin.tag().trunc(u32) | (o.stdout.tag().trunc(u32) << 2) | (o.stderr.tag().trunc(u32) << 4)
+    if o.env is not null { flags |= 64 }
+    return flags
+}
+
+handler Proc for SystemIo {
+    spawn(self, argv, o) => {
+        if argv.len is 0 { return !.InvalidInput }
+        env := o.env else empty_slice(string)
+        dir := o.dir else ""
+        h := try io_result(@proc_spawn(argv, env, dir, stdio_flags(o)))
+        return Child(handle: h.trunc(i64))
+    }
+    write_in(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))
+    close_in(self, c) => { _ = @proc_close_in(c.handle) }
+    read_out(self, c, buf) => {
+        n := try io_result(@proc_read_out(c.handle, buf))
+        if n is 0 { return null }
+        from: Stream = if (n >> 32) is 0 { .Stdout } else { .Stderr }
+        return Chunk(from: from, len: n & 0xffff_ffff)
+    }
+    wait(self, c) => {
+        n := try io_result(@proc_wait(c.handle))
+        status: ExitStatus = if (n >> 32) is 0 { .Exited((n & 0xffff_ffff).trunc(u32)) } else { .Signaled((n & 0xffff_ffff).trunc(i32)) }
+        return status
+    }
+    kill(self, c) => io_unit(@proc_kill(c.handle))
+}
+
+/// The default handlers of `In`, `Clock`, `Rand`, `Fs`, `Net` and `Proc`, for code that starts
 /// without handlers: a new thread, or a function exported to C (§19.4, §19.6).
 pub system_io :: fn() -> SystemIo => SystemIo()
 
@@ -1502,8 +1571,18 @@ handler Net for ^TestIo {
     peer(self, s, buf) => mem_peer(&self.net, s, buf)
 }
 
+// The test handler of `Proc` (§12.9): tests start no processes.
+handler Proc for ^TestIo {
+    spawn(self, argv, o) => !.PermissionDenied
+    write_in(self, c, bytes) => !.InvalidInput
+    close_in(self, c) => {}
+    read_out(self, c, buf) => !.InvalidInput
+    wait(self, c) => !.InvalidInput
+    kill(self, c) => !.InvalidInput
+}
+
 // What `main` may perform (§12.9), and a test or benchmark body besides `Test` (§3.8).
-Ambient :: Out + Err + Alloc + Env + In + Clock + Rand + Fs + Net
+Ambient :: Out + Err + Alloc + Env + In + Clock + Rand + Fs + Net + Proc
 
 /// Reports a failure of a test or benchmark: the message, then where it happened.
 report_failure :: fn(msg: string, loc: SourceLocation) needs Err {

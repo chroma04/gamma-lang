@@ -65,6 +65,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sched.h>
+#include <poll.h>
+#include <sys/wait.h>
 #if defined(__linux__) && !defined(__FILC__)
 #include <sys/syscall.h>
 #endif
@@ -466,6 +468,21 @@ GM_API int64_t gm_net_close(int64_t h);
 GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2 both */
 GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
 GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
+
+/* Child processes. gm_proc_spawn takes the argument vector, the environment (used when flags has
+ * GM_PROC_ENV; "NAME=value" entries) and the working directory (empty: ours); the flags hold two
+ * bits per standard stream (stdin from bit 0, stdout from bit 2, stderr from bit 4: 0 inherit,
+ * 1 the null device, 2 a pipe). It returns a handle. gm_proc_read_out waits until a piped output
+ * stream has data and reads from it: the length plus 2^32 for stderr, or 0 once both streams
+ * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. */
+enum { GM_PROC_ENV = 64 };
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags);
+GM_API int64_t gm_proc_write_in(int64_t h, const void *p, size_t n);
+GM_API int64_t gm_proc_close_in(int64_t h);
+GM_API int64_t gm_proc_read_out(int64_t h, void *p, size_t n);
+GM_API int64_t gm_proc_wait(int64_t h);
+GM_API int64_t gm_proc_kill(int64_t h);
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
  *

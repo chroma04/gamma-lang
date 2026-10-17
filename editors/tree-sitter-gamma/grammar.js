@@ -190,8 +190,9 @@ module.exports = grammar({
     _lhs_list: $ => commaSep1($._expression),
     _rhs_list: $ => commaSep1($._value),
 
-    // A value that may carry attributes in front: `#packed struct { ... }`.
-    _value: $ => choice($._expression, $.attributed_type),
+    // A value; a type with attributes in front (`#packed struct { ... }`, `#simd [4]f32`)
+    // is one of the expressions.
+    _value: $ => $._expression,
 
     // ------------------------------------------------------------------
     // Statements
@@ -307,6 +308,7 @@ module.exports = grammar({
       $.tuple_expression,
       $.variant_expression,
       $._type_forms,
+      $.attributed_type,
       $.function_expression,
       $.handler_expression,
       $.import_expression,
@@ -675,10 +677,10 @@ module.exports = grammar({
       field('type', $._type),
     ),
 
-    attributed_type: $ => seq(
+    attributed_type: $ => prec(1, seq(
       $._attributes,
       $._type_forms,
-    ),
+    )),
 
     struct_type: $ => seq(
       'struct',

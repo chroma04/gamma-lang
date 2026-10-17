@@ -12,6 +12,10 @@
         "named": true
       },
       {
+        "type": "attributed_type",
+        "named": true
+      },
+      {
         "type": "binary_expression",
         "named": true
       },
@@ -452,10 +456,6 @@
           },
           {
             "type": "_expression",
-            "named": true
-          },
-          {
-            "type": "attributed_type",
             "named": true
           }
         ]
@@ -964,10 +964,6 @@
           },
           {
             "type": "_expression",
-            "named": true
-          },
-          {
-            "type": "attributed_type",
             "named": true
           }
         ]
@@ -2578,10 +2574,6 @@
           {
             "type": "_expression",
             "named": true
-          },
-          {
-            "type": "attributed_type",
-            "named": true
           }
         ]
       }
@@ -2875,10 +2867,6 @@
           },
           {
             "type": "_expression",
-            "named": true
-          },
-          {
-            "type": "attributed_type",
             "named": true
           }
         ]

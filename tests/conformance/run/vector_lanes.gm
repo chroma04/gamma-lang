@@ -1,0 +1,74 @@
+// Vectors of every lane type: compile-time constants, struct fields and heap objects
+// (aligned to their size), compound assignment, saturating and wrapping lanes, shifts,
+// NaN and signed zeros in comparisons, `min` and `abs`, masks of masks, iteration.
+F4 :: #simd [4]f32
+D2 :: #simd [2]f64
+I4 :: #simd [4]i32
+U8x16 :: #simd [16]u8
+I16x8 :: #simd [8]i16
+U64x2 :: #simd [2]u64
+M4 :: #simd [4]bool
+Big :: #simd [64]u8
+
+ONES :: F4(fill: 1)
+SQUARES :: squares()
+squares :: fn() -> I4 {
+    v := I4(0, 1, 2, 3)
+    return v * v
+}
+
+Particle :: struct {
+    tag: u8
+    pos: F4
+}
+
+lerp :: fn(a, b: F4, t: f32) -> F4 => a + (b - a) * F4(fill: t)
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    print("{} {} {}\n", ONES, SQUARES, SQUARES.reduce_sum())
+    print("{} {} {} {}\n", @size_of(F4), @align_of(F4), @align_of(Big), @offset_of(Particle, pos))
+    p := try new(Particle(tag: 1, pos: F4(1, 2, 3, 4)))
+    defer destroy(p)
+    print("{} {}\n", addr_mod16(&p.pos), lerp(p.pos, F4(fill: 0), 0.5))
+    v := I4(10, 20, 30, 40)
+    v += I4(1, 2, 3, 4)
+    v *= I4(fill: 2)
+    print("{}\n", v)
+    s := U8x16(fill: 250)
+    print("{} {}\n", s +| U8x16(fill: 10), s +% U8x16(fill: 10))
+    h := I16x8(1, -1, 2, -2, 3, -3, 4, -4)
+    print("{} {} {}\n", h >> 1, h <<% 14, h & I16x8(fill: 3))
+    d := D2(0.5, -0.0)
+    nan := D2(fill: 0.0) / D2(fill: 0.0)
+    print("{} {} {}\n", d.abs(), d.min(nan), nan is nan)
+    print("{} {}\n", d.min(D2(fill: 0)), d.max(D2(fill: 0)))
+    a := F4(1, 5, 3, 7)
+    b := F4(4, 2, 3, 8)
+    print("{} {} {}\n", a < b, a <= b, a is b)
+    print("{} {} {}\n", a > b, a >= b, a is not b)
+    m := a < b
+    n := a >= b
+    print("{} {} {} {}\n", m & n, m | n, m ~ M4(fill: true), ~m)
+    print("{} {}\n", (m | n).all(), (m & n).any())
+    print("{}\n", (a is b).select(m, ~m))
+    w := U64x2(1 << 40, 7)
+    print("{} {}\n", w.reduce_max(), #simd [4]u32(U8x16(fill: 3).shuffle(0, 1, 2, 3)))
+    print("{} {}\n", I4(1, 2, 3, 4).shuffle(0, 0), I4(1, 2, 3, 4).shuffle(3, 2, 1, 0, 3, 2, 1, 0))
+    print("{} {}\n", #simd [4]f64(a), #simd [4]u8(m))
+    print("{}\n", I4(-1, 2, -3, 2147483647).to(f32))
+    big := Big(fill: 2)
+    big[63] = 5
+    print("{} {}\n", big.reduce_sum(), (big is Big(fill: 2)).count())
+    xs := [_]f32(1, 2, 3, 4, 5, 6, 7, 8)
+    acc := F4(fill: 0)
+    i: usize = 0
+    while i < xs.len {
+        acc += F4.load(xs[i..])
+        i += 4
+    }
+    print("{} {}\n", acc, acc.reduce_sum())
+    for x in acc { print("{} ", x) }
+    print("\n")
+}
+
+addr_mod16 :: fn(v: ^const F4) -> usize => v.addr() % 16

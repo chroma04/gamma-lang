@@ -41,10 +41,12 @@ mod machine;
 pub mod memory;
 pub mod num;
 mod ops;
+mod proc;
 mod stmt;
 mod sys;
 mod threads;
 mod value;
+mod vector;
 mod vm;
 
 #[cfg(test)]

@@ -332,6 +332,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let cx = self.cx.clone();
                 Ok(self.tmp(t, &format!("((gm_hval){{(void *)&F.h, {}}})", cx)))
             }
+            ExprKind::Unary { op, operand } if operand.ty.is_vector() => self.vector_unary(e, *op, operand),
+            ExprKind::Binary { op, lhs, rhs } if lhs.ty.is_vector() => self.vector_binary(e, *op, lhs, rhs),
             ExprKind::Unary { op, operand } if matches!(operand.ty.kind(), TyKind::Array { .. }) => {
                 self.elementwise(e, Err(*op), None, operand)
             }
@@ -414,7 +416,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::ArrayFill(x) => {
                 let v = self.expr(x)?;
-                let TyKind::Array { len, elem } = t.kind() else { return unsupported(e.span, "this array fill") };
+                let TyKind::Array { len, elem, .. } = t.kind() else { return unsupported(e.span, "this array fill") };
                 let b = self.tmp_uninit(t);
                 let esz = self.g.ty.size(*elem);
                 let c = self.g.ty.cty(*elem);
@@ -887,7 +889,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     }
                 };
                 match base.ty.kind() {
-                    TyKind::Array { len, elem } => {
+                    TyKind::Array { len, elem, .. } => {
                         let (len, esz) = (*len, self.g.ty.size(*elem));
                         let b = match early {
                             Some(b) => b,
@@ -942,7 +944,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         inclusive: bool,
     ) -> CResult<String> {
         let (ptr, len, esz) = match base.ty.kind() {
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let a = self.place_addr(base)?;
                 (a, Some(len.to_string()), self.g.ty.size(*elem))
             }
@@ -2018,7 +2020,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         match container.ty.kind() {
             TyKind::Array { .. } | TyKind::Slice { .. } => {
                 let (et, n, p) = match container.ty.kind() {
-                    TyKind::Array { len, elem } => (*elem, len.to_string(), ca.clone()),
+                    TyKind::Array { len, elem, .. } => (*elem, len.to_string(), ca.clone()),
                     TyKind::Slice { elem, .. } => {
                         let (p, l) = (self.slice_ptr(&ca), self.slice_len(&ca));
                         (*elem, l, format!("((uint8_t *){})", p))

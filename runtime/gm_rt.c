@@ -2026,6 +2026,52 @@ GM_API void gm_write_err(const uint8_t *p, size_t len) {
 GM_API void gm_flush(void) { fflush(stdout); }
 
 typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
+
+/* The command line that starts a Windows process from `argc` arguments, as UTF-8 in a new
+ * NUL-terminated buffer of *len bytes: the arguments joined by spaces, each quoted by the
+ * rules of the Microsoft C runtime (which splits it again): an argument that is empty or has a
+ * space, tab, newline, vertical tab or quote is enclosed in quotes; a quote is preceded by a
+ * backslash, and the backslashes before a quote (or before the closing quote) are doubled.
+ * Defined on every system so that it can be tested everywhere. */
+static char *gm_win_cmdline(const gm_rt_str *argv, size_t argc, size_t *len) {
+    size_t cap = 1;
+    for (size_t i = 0; i < argc; i++) cap += 2 * argv[i].len + 3;
+    char *out = (char *)malloc(cap);
+    if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
+    size_t n = 0;
+    for (size_t i = 0; i < argc; i++) {
+        const uint8_t *a = argv[i].ptr;
+        size_t al = argv[i].len;
+        if (i > 0) out[n++] = ' ';
+        int quote = al == 0;
+        for (size_t k = 0; k < al; k++)
+            if (a[k] == ' ' || a[k] == '\t' || a[k] == '\n' || a[k] == '\v' || a[k] == '"') quote = 1;
+        if (!quote) {
+            if (al > 0) memcpy(out + n, a, al);
+            n += al;
+            continue;
+        }
+        out[n++] = '"';
+        for (size_t k = 0; k < al;) {
+            size_t bs = 0;
+            while (k < al && a[k] == '\\') bs++, k++;
+            if (k == al) {
+                for (size_t j = 0; j < 2 * bs; j++) out[n++] = '\\';
+            } else if (a[k] == '"') {
+                for (size_t j = 0; j < 2 * bs + 1; j++) out[n++] = '\\';
+                out[n++] = '"';
+                k++;
+            } else {
+                for (size_t j = 0; j < bs; j++) out[n++] = '\\';
+                out[n++] = (char)a[k++];
+            }
+        }
+        out[n++] = '"';
+    }
+    out[n] = 0;
+    *len = n;
+    return out;
+}
 #ifdef _WIN32
 static char *gm_utf8_arg(const wchar_t *w, size_t *len) {
     int wn = (int)wcslen(w);
@@ -2533,6 +2579,361 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
     if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
     memcpy(p, text, (size_t)len);
     return len;
+}
+/* ---- child processes (the Proc effect) -------------------------------------------------
+ *
+ * A handle is the index of the child in a table, plus one. Our ends of the pipes are
+ * close-on-exec, so no child inherits another's. */
+
+typedef struct {
+    pid_t pid;
+    int in_fd, out_fd, err_fd;   /* our ends of the pipes; -1 when there is none or it is closed */
+    int reaped;                  /* the process has been waited for (guarded by gm_rt_lock) */
+} gm_proc;
+
+static gm_proc **gm_procs;
+static size_t gm_nprocs;
+
+/* A pipe whose both ends are close-on-exec. */
+static int gm_pipe_cloexec(int fds[2]) {
+#if defined(__linux__) && !defined(__FILC__)
+    return pipe2(fds, O_CLOEXEC);
+#else
+    if (pipe(fds) != 0) return -1;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#endif
+}
+
+/* Moves *fd to a descriptor above 2 (so that the child's dup2 calls cannot clobber it). */
+static int gm_fd_above_std(int *fd) {
+    if (*fd > 2) return 0;
+    int n = fcntl(*fd, F_DUPFD_CLOEXEC, 3);
+    if (n < 0) return -1;
+    close(*fd);
+    *fd = n;
+    return 0;
+}
+
+/* A NUL-terminated copy of n bytes, or NULL if they contain a NUL. */
+static char *gm_cstr(const void *p, size_t n) {
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n > 0) memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+/* The file that the program named in `name` stands for, as execvp finds it: a name with a
+ * slash is used as it is; any other is searched for in the directories of PATH (an empty
+ * entry is the current directory) and must be an executable file. Returns a new string, or
+ * NULL with *err set. */
+static char *gm_find_program(const char *name, int *err) {
+    if (strchr(name, '/') != NULL) return strdup(name);
+    if (name[0] == 0) {
+        *err = ENOENT;
+        return NULL;
+    }
+    const char *path = getenv("PATH");
+    if (path == NULL) path = "/usr/bin:/bin";
+    size_t nl = strlen(name);
+    int denied = 0;
+    for (const char *p = path;;) {
+        const char *end = strchr(p, ':');
+        size_t dl = end ? (size_t)(end - p) : strlen(p);
+        char *file = (char *)malloc(dl + nl + 3);
+        if (file == NULL) gm_trap("out of memory", NULL, 0, 0);
+        if (dl == 0) {
+            memcpy(file, ".", 1);
+            dl = 1;
+        } else {
+            memcpy(file, p, dl);
+        }
+        file[dl] = '/';
+        memcpy(file + dl + 1, name, nl + 1);
+        struct stat st;
+        if (stat(file, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (access(file, X_OK) == 0) return file;
+            denied = 1;
+        }
+        free(file);
+        if (end == NULL) break;
+        p = end + 1;
+    }
+    *err = denied ? EACCES : ENOENT;
+    return NULL;
+}
+
+static void gm_free_cstrs(char **v, size_t n) {
+    if (v == NULL) return;
+    for (size_t i = 0; i < n; i++) free(v[i]);
+    free(v);
+}
+
+/* Copies n strings into a NULL-terminated array; NULL if one contains a NUL (or, for
+ * `env`, has no `=`). */
+static char **gm_cstr_array(const gm_rt_str *v, size_t n, int is_env) {
+    char **out = (char **)calloc(n + 1, sizeof(char *));
+    if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (size_t i = 0; i < n; i++) {
+        if (is_env && (v[i].len == 0 || memchr(v[i].ptr, '=', v[i].len) == NULL)) {
+            gm_free_cstrs(out, i);
+            return NULL;
+        }
+        out[i] = gm_cstr(v[i].ptr, v[i].len);
+        if (out[i] == NULL) {
+            gm_free_cstrs(out, i);
+            return NULL;
+        }
+    }
+    return out;
+}
+
+extern char **environ;
+
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    if (argc == 0) return gm_io_error(EINVAL);
+    char **av = gm_cstr_array((const gm_rt_str *)argv, argc, 0);
+    char **ev = (flags & 64) ? gm_cstr_array((const gm_rt_str *)env, envc, 1) : NULL;
+    char *cwd = gm_cstr(dir, dir_len);
+    int err = 0;
+    char *prog = NULL;
+    if (av == NULL || ((flags & 64) && ev == NULL) || cwd == NULL) {
+        err = EINVAL;
+    } else {
+        prog = gm_find_program(av[0], &err);
+    }
+    if (prog == NULL) {
+        gm_free_cstrs(av, argc);
+        gm_free_cstrs(ev, envc);
+        free(cwd);
+        return gm_io_error(err);
+    }
+    /* What we have printed comes before anything the child prints. */
+    gm_flush();
+    fflush(stderr);
+
+    /* Per stream: the child's end, and ours. */
+    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1}, errp[2] = {-1, -1};
+    int null_fd = -1;
+    for (int i = 0; i < 3 && err == 0; i++) {
+        int mode = (int)((flags >> (2 * i)) & 3);
+        if (mode == 1) {
+            if (null_fd < 0) {
+                null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+                if (null_fd < 0 || gm_fd_above_std(&null_fd) != 0) err = errno;
+            }
+            child_fd[i] = null_fd;
+        } else if (mode == 2) {
+            int p[2];
+            if (gm_pipe_cloexec(p) != 0) {
+                err = errno;
+                break;
+            }
+            int c = i == 0 ? p[0] : p[1], m = i == 0 ? p[1] : p[0];
+            if (gm_fd_above_std(&c) != 0 || gm_fd_above_std(&m) != 0) {
+                err = errno;
+                close(c);
+                close(m);
+                break;
+            }
+            child_fd[i] = c;
+            mine[i] = m;
+#if defined(F_SETNOSIGPIPE)
+            if (i == 0) fcntl(m, F_SETNOSIGPIPE, 1);
+#endif
+        }
+    }
+    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
+    pid_t pid = -1;
+    if (err == 0) {
+        sigset_t all, old;
+        sigfillset(&all);
+        pthread_sigmask(SIG_SETMASK, &all, &old);
+        pid = fork();
+        if (pid == 0) {
+            /* The child: only async-signal-safe calls. */
+            for (int i = 0; i < 3; i++)
+                if (child_fd[i] >= 0 && dup2(child_fd[i], i) < 0) goto child_fail;
+            signal(SIGPIPE, SIG_DFL);
+            sigset_t none;
+            sigemptyset(&none);
+            pthread_sigmask(SIG_SETMASK, &none, NULL);
+            if (cwd[0] != 0 && chdir(cwd) != 0) goto child_fail;
+            execve(prog, av, (flags & 64) ? ev : environ);
+        child_fail:;
+            int e = errno;
+            ssize_t w = write(errp[1], &e, sizeof e);
+            (void)w;
+            _exit(127);
+        }
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+        if (pid < 0) err = errno;
+    }
+    if (errp[1] >= 0) close(errp[1]);
+    if (err == 0) {
+        /* A failed exec (or chdir) reports its errno through the pipe, which closes on exec. */
+        int e = 0;
+        ssize_t r;
+        do r = read(errp[0], &e, sizeof e); while (r < 0 && errno == EINTR);
+        if (r == (ssize_t)sizeof e) {
+            err = e;
+            int st;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        }
+    }
+    if (errp[0] >= 0) close(errp[0]);
+    for (int i = 0; i < 3; i++)
+        if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
+    if (null_fd >= 0) close(null_fd);
+    gm_free_cstrs(av, argc);
+    gm_free_cstrs(ev, envc);
+    free(cwd);
+    free(prog);
+    if (err != 0) {
+        for (int i = 0; i < 3; i++)
+            if (mine[i] >= 0) close(mine[i]);
+        return gm_io_error(err);
+    }
+    gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
+    if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+    p->pid = pid;
+    p->in_fd = mine[0];
+    p->out_fd = mine[1];
+    p->err_fd = mine[2];
+    gm_rt_acquire();
+    size_t i = 0;
+    while (i < gm_nprocs && gm_procs[i] != NULL) i++;
+    if (i == gm_nprocs) {
+        gm_proc **t = (gm_proc **)realloc(gm_procs, sizeof(gm_proc *) * (gm_nprocs * 2 + 4));
+        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memset(t + gm_nprocs, 0, sizeof(gm_proc *) * (gm_nprocs + 4));
+        gm_procs = t;
+        gm_nprocs = gm_nprocs * 2 + 4;
+    }
+    gm_procs[i] = p;
+    gm_rt_release();
+    return (int64_t)i + 1;
+}
+
+static gm_proc *gm_proc_get(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_rt_release();
+    return p;
+}
+
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_fd < 0) return gm_io_error(EINVAL);
+    if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
+#if defined(F_SETNOSIGPIPE)
+    for (;;) {
+        ssize_t r = write(p->in_fd, data, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+#else
+    /* Block SIGPIPE for this thread while writing; a signal that the write raised is
+     * taken off again, so a closed pipe is only an error. */
+    sigset_t block, old, pending;
+    sigemptyset(&block);
+    sigaddset(&block, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &block, &old);
+    sigpending(&pending);
+    int was_pending = sigismember(&pending, SIGPIPE);
+    ssize_t r;
+    do r = write(p->in_fd, data, n); while (r < 0 && errno == EINTR);
+    int e = errno;
+    if (r < 0 && e == EPIPE && !was_pending) {
+        struct timespec zero = {0, 0};
+        while (sigtimedwait(&block, NULL, &zero) < 0 && errno == EINTR) {}
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    return r >= 0 ? (int64_t)r : gm_io_error(e);
+#endif
+}
+
+GM_API int64_t gm_proc_close_in(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_fd >= 0) {
+        close(p->in_fd);
+        p->in_fd = -1;
+    }
+    return 0;
+}
+
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (n > 0xffffffffu) n = 0xffffffffu;
+    if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
+    for (;;) {
+        struct pollfd f[2];
+        int stream[2], nf = 0;
+        if (p->out_fd >= 0) {
+            f[nf] = (struct pollfd){.fd = p->out_fd, .events = POLLIN};
+            stream[nf++] = 0;
+        }
+        if (p->err_fd >= 0) {
+            f[nf] = (struct pollfd){.fd = p->err_fd, .events = POLLIN};
+            stream[nf++] = 1;
+        }
+        if (nf == 0) return 0;
+        if (n == 0) return gm_io_error(EINVAL);
+        if (poll(f, (nfds_t)nf, -1) < 0) {
+            if (errno == EINTR) continue;
+            return gm_io_error(errno);
+        }
+        for (int k = 0; k < nf; k++) {
+            if (f[k].revents == 0) continue;
+            int *fd = stream[k] == 0 ? &p->out_fd : &p->err_fd;
+            ssize_t r = read(*fd, buf, n);
+            if (r < 0 && errno == EINTR) break;
+            if (r < 0) return gm_io_error(errno);
+            if (r == 0) {
+                close(*fd);
+                *fd = -1;
+                break;
+            }
+            return (int64_t)r + ((int64_t)stream[k] << 32);
+        }
+    }
+}
+
+GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_fd >= 0) close(p->in_fd);
+    if (p->out_fd >= 0) close(p->out_fd);
+    if (p->err_fd >= 0) close(p->err_fd);
+    p->in_fd = p->out_fd = p->err_fd = -1;
+    /* Wait without reaping, so that no kill can reach a recycled process id. */
+    siginfo_t si;
+    while (waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT) != 0)
+        if (errno != EINTR) return gm_io_error(errno);
+    int st = 0;
+    gm_rt_acquire();
+    while (waitpid(p->pid, &st, 0) < 0 && errno == EINTR) {}
+    p->reaped = 1;
+    gm_procs[h - 1] = NULL;
+    gm_rt_release();
+    free(p);
+    if (WIFSIGNALED(st)) return (int64_t)WTERMSIG(st) + ((int64_t)1 << 32);
+    return (int64_t)WEXITSTATUS(st);
+}
+
+GM_API int64_t gm_proc_kill(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    int64_t r = p == NULL || p->reaped ? gm_io_error(EBADF) : (kill(p->pid, SIGKILL) != 0 ? gm_io_error(errno) : 0);
+    gm_rt_release();
+    return r;
 }
 #else
 /* Windows: the system services on the Win32 API and Winsock 2. Paths and names cross the
@@ -3083,6 +3484,250 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
     if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
     memcpy(p, text, (size_t)len);
     return len;
+}
+
+/* ---- child processes (the Proc effect) -------------------------------------------------
+ *
+ * A handle is the index of the child in a table, plus one. The pipes are anonymous pipes;
+ * only the child's ends are inheritable, and starting a child is serialized, so no child
+ * gets another's. */
+
+typedef struct {
+    HANDLE process;
+    HANDLE in_h, out_h, err_h;   /* our ends of the pipes; NULL when there is none or it is closed */
+    int reaped;                  /* guarded by gm_rt_lock */
+} gm_proc;
+
+static gm_proc **gm_procs;
+static size_t gm_nprocs;
+
+static int gm_env_cmp(const void *a, const void *b) {
+    return _wcsicmp(*(const wchar_t *const *)a, *(const wchar_t *const *)b);
+}
+
+/* A child's end of a pipe is inheritable; ours is not. */
+static int gm_make_pipe(HANDLE *child_end, HANDLE *our_end, int child_reads) {
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, 0)) return -1;
+    *child_end = child_reads ? r : w;
+    *our_end = child_reads ? w : r;
+    SetHandleInformation(*our_end, HANDLE_FLAG_INHERIT, 0);
+    return 0;
+}
+
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    if (argc == 0) return gm_io_error(EINVAL);
+    const gm_rt_str *av = (const gm_rt_str *)argv, *ev = (const gm_rt_str *)env;
+    size_t clen;
+    char *cmd8 = gm_win_cmdline(av, argc, &clen);
+    wchar_t *cmd = cmd8 ? gm_wide(cmd8, clen) : NULL;
+    free(cmd8);
+    wchar_t *cwd = dir_len ? gm_wide(dir, dir_len) : NULL;
+    wchar_t **entries = NULL;
+    wchar_t *block = NULL;
+    int bad = cmd == NULL || (dir_len && cwd == NULL);
+    if ((flags & 64) && !bad) {
+        entries = (wchar_t **)calloc(envc + 1, sizeof(wchar_t *));
+        if (entries == NULL) gm_trap("out of memory", NULL, 0, 0);
+        size_t total = 1;
+        for (size_t i = 0; i < envc && !bad; i++) {
+            entries[i] = gm_wide(ev[i].ptr, ev[i].len);
+            if (entries[i] == NULL || ev[i].len == 0 || memchr(ev[i].ptr, '=', ev[i].len) == NULL) bad = 1;
+            else total += wcslen(entries[i]) + 1;
+        }
+        if (!bad) {
+            qsort(entries, envc, sizeof(wchar_t *), gm_env_cmp);
+            block = (wchar_t *)calloc(total + 1, sizeof(wchar_t));
+            if (block == NULL) gm_trap("out of memory", NULL, 0, 0);
+            wchar_t *q = block;
+            for (size_t i = 0; i < envc; i++) {
+                size_t l = wcslen(entries[i]) + 1;
+                memcpy(q, entries[i], l * sizeof(wchar_t));
+                q += l;
+            }
+        }
+    }
+    int64_t result = 0;
+    HANDLE child_h[3] = {NULL, NULL, NULL}, mine[3] = {NULL, NULL, NULL};
+    HANDLE null_h = INVALID_HANDLE_VALUE;
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    if (bad) {
+        result = gm_io_error(EINVAL);
+    } else {
+        gm_flush();
+        fflush(stderr);
+        gm_rt_acquire();   /* only one child's pipes are inheritable at a time */
+        for (int i = 0; i < 3 && result == 0; i++) {
+            int mode = (int)((flags >> (2 * i)) & 3);
+            if (mode == 0) {
+                child_h[i] = GetStdHandle(i == 0 ? STD_INPUT_HANDLE : i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+                if (child_h[i] != NULL && child_h[i] != INVALID_HANDLE_VALUE)
+                    SetHandleInformation(child_h[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            } else if (mode == 1) {
+                if (null_h == INVALID_HANDLE_VALUE) {
+                    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+                    null_h = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                         &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if (null_h == INVALID_HANDLE_VALUE) result = gm_win_err(GetLastError());
+                }
+                child_h[i] = null_h;
+            } else if (gm_make_pipe(&child_h[i], &mine[i], i == 0) != 0) {
+                result = gm_win_err(GetLastError());
+            }
+        }
+        if (result == 0) {
+            STARTUPINFOW si;
+            memset(&si, 0, sizeof si);
+            si.cb = sizeof si;
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = child_h[0];
+            si.hStdOutput = child_h[1];
+            si.hStdError = child_h[2];
+            if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, block, cwd, &si, &pi))
+                result = gm_win_err(GetLastError());
+        }
+        for (int i = 0; i < 3; i++)
+            if (mine[i] != NULL && child_h[i] != NULL && child_h[i] != null_h) CloseHandle(child_h[i]);
+        if (null_h != INVALID_HANDLE_VALUE) CloseHandle(null_h);
+        gm_rt_release();
+    }
+    if (entries != NULL) {
+        for (size_t i = 0; i < envc; i++) free(entries[i]);
+        free(entries);
+    }
+    free(block);
+    free(cmd);
+    free(cwd);
+    if (result != 0) {
+        for (int i = 0; i < 3; i++)
+            if (mine[i] != NULL) CloseHandle(mine[i]);
+        return result;
+    }
+    CloseHandle(pi.hThread);
+    gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
+    if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+    p->process = pi.hProcess;
+    p->in_h = mine[0];
+    p->out_h = mine[1];
+    p->err_h = mine[2];
+    gm_rt_acquire();
+    size_t i = 0;
+    while (i < gm_nprocs && gm_procs[i] != NULL) i++;
+    if (i == gm_nprocs) {
+        gm_proc **t = (gm_proc **)realloc(gm_procs, sizeof(gm_proc *) * (gm_nprocs * 2 + 4));
+        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memset(t + gm_nprocs, 0, sizeof(gm_proc *) * (gm_nprocs + 4));
+        gm_procs = t;
+        gm_nprocs = gm_nprocs * 2 + 4;
+    }
+    gm_procs[i] = p;
+    gm_rt_release();
+    return (int64_t)i + 1;
+}
+
+static gm_proc *gm_proc_get(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_rt_release();
+    return p;
+}
+
+/* The error code of a failed pipe operation: a pipe whose other end is closed. */
+static int64_t gm_pipe_err(DWORD e) {
+    if (e == ERROR_NO_DATA || e == ERROR_BROKEN_PIPE) return gm_io_error(EPIPE);
+    return gm_win_err(e);
+}
+
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_h == NULL) return gm_io_error(EINVAL);
+    DWORD wrote = 0;
+    if (!WriteFile(p->in_h, data, (DWORD)(n < GM_CHUNK ? n : GM_CHUNK), &wrote, NULL)) return gm_pipe_err(GetLastError());
+    return (int64_t)wrote;
+}
+
+GM_API int64_t gm_proc_close_in(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_h != NULL) {
+        CloseHandle(p->in_h);
+        p->in_h = NULL;
+    }
+    return 0;
+}
+
+/* True if the pipe has data, or its writer has gone (a read then reports the end). */
+static int gm_pipe_ready(HANDLE h) {
+    DWORD avail = 0;
+    return !PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail > 0;
+}
+
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (n > 0xffffffffu) n = 0xffffffffu;
+    if (n > GM_CHUNK) n = GM_CHUNK;
+    for (;;) {
+        if (p->out_h == NULL && p->err_h == NULL) return 0;
+        if (n == 0) return gm_io_error(EINVAL);
+        HANDLE *hs[2] = {&p->out_h, &p->err_h};
+        int took = 0;
+        for (int k = 0; k < 2; k++) {
+            if (*hs[k] == NULL || !gm_pipe_ready(*hs[k])) continue;
+            DWORD got = 0;
+            if (!ReadFile(*hs[k], buf, (DWORD)n, &got, NULL)) {
+                DWORD e = GetLastError();
+                if (e != ERROR_BROKEN_PIPE) return gm_pipe_err(e);
+                got = 0;
+            }
+            if (got == 0) {
+                CloseHandle(*hs[k]);
+                *hs[k] = NULL;
+                took = 1;
+                break;
+            }
+            return (int64_t)got + ((int64_t)k << 32);
+        }
+        if (!took) Sleep(1);
+    }
+}
+
+GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_h != NULL) CloseHandle(p->in_h);
+    if (p->out_h != NULL) CloseHandle(p->out_h);
+    if (p->err_h != NULL) CloseHandle(p->err_h);
+    p->in_h = p->out_h = p->err_h = NULL;
+    if (WaitForSingleObject(p->process, INFINITE) != WAIT_OBJECT_0) return gm_win_err(GetLastError());
+    DWORD code = 0;
+    GetExitCodeProcess(p->process, &code);
+    gm_rt_acquire();
+    p->reaped = 1;
+    gm_procs[h - 1] = NULL;
+    gm_rt_release();
+    CloseHandle(p->process);
+    free(p);
+    return (int64_t)code;
+}
+
+GM_API int64_t gm_proc_kill(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    int64_t r = 0;
+    if (p == NULL || p->reaped) {
+        r = gm_io_error(EBADF);
+    } else if (!TerminateProcess(p->process, 1)) {
+        /* Access is denied once the process has ended; killing it then is not an error. */
+        DWORD e = GetLastError();
+        if (WaitForSingleObject(p->process, 0) != WAIT_OBJECT_0) r = gm_win_err(e);
+    }
+    gm_rt_release();
+    return r;
 }
 #endif
 

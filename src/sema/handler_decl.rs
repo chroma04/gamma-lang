@@ -334,22 +334,23 @@ impl<'s> Sema<'s> {
     /// The parameters and result type of a clause for operation `op` of an instantiated
     /// effect, and the operation's kind. A `ctl` clause takes the continuation as a final
     /// parameter `k: cont(R)` and has type `never` (§14.2, §14.3).
-    pub fn clause_signature(&self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
+    pub fn clause_signature(&mut self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
         let info = &self.effects[&eref.effect];
-        let o = &info.ops[op];
+        let o = info.ops[op].clone();
+        let info_params = info.params.clone();
         let mut params: Vec<ParamInfo> = o
             .params
             .iter()
             .map(|p| ParamInfo {
                 name: p.name,
-                ty: super::effects::subst(p.ty, &info.params, &eref.args),
+                ty: self.subst_effect_args(p.ty, &info_params, &eref.args),
                 span: p.span,
                 default: None,
                 generic: None,
                 rest: false,
             })
             .collect();
-        let ret = super::effects::subst(o.ret, &info.params, &eref.args);
+        let ret = self.subst_effect_args(o.ret, &info_params, &eref.args);
         if o.kind != ast::OpKind::Ctl {
             return (params, ret, o.kind);
         }
@@ -461,7 +462,9 @@ fn may_unify(a: Ty, b: Ty) -> bool {
         (TyKind::ParamArray { elem: x, .. }, TyKind::ParamArray { elem: y, .. })
         | (TyKind::ParamArray { elem: x, .. }, TyKind::Array { elem: y, .. })
         | (TyKind::Array { elem: x, .. }, TyKind::ParamArray { elem: y, .. }) => may_unify(*x, *y),
-        (TyKind::Array { len: m, elem: x }, TyKind::Array { len: n, elem: y }) => m == n && may_unify(*x, *y),
+        (TyKind::Array { len: m, elem: x, kind: i }, TyKind::Array { len: n, elem: y, kind: j }) => {
+            m == n && i == j && may_unify(*x, *y)
+        }
         (TyKind::Ptr { is_const: c, pointee: x }, TyKind::Ptr { is_const: d, pointee: y })
         | (TyKind::Slice { is_const: c, elem: x }, TyKind::Slice { is_const: d, elem: y })
         | (TyKind::ManyPtr { is_const: c, elem: x }, TyKind::ManyPtr { is_const: d, elem: y }) => {

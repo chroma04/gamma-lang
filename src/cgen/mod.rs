@@ -22,6 +22,7 @@ mod rtcache;
 pub use rtcache::{cache_dir, cached_program};
 mod types;
 mod units;
+mod vector;
 mod views;
 mod wide;
 

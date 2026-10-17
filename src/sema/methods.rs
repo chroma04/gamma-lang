@@ -22,6 +22,9 @@ impl<'a, 's> FnCx<'a, 's> {
             if name.name.as_str() == "from_tag" {
                 return self.check_from_tag(t, args, span);
             }
+            if t.is_vector() && name.name.as_str() == "load" {
+                return self.vector_load(t, args, span);
+            }
             return self.construct_variant(t, name, Some(args), span);
         }
         let recv = self.expr(base, None);
@@ -80,7 +83,7 @@ impl<'a, 's> FnCx<'a, 's> {
         self.sema.emit(d);
     }
 
-    fn type_arg(&mut self, args: &[ast::Arg], i: usize, span: Span) -> Option<Ty> {
+    pub(super) fn type_arg(&mut self, args: &[ast::Arg], i: usize, span: Span) -> Option<Ty> {
         match args.get(i).map(|a| &a.kind) {
             Some(ArgKind::Positional(e)) => {
                 let t = self.resolve_type(e);
@@ -93,7 +96,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
-    fn value_arg(&mut self, args: &[ast::Arg], i: usize, ty: Ty, span: Span) -> Expr {
+    pub(super) fn value_arg(&mut self, args: &[ast::Arg], i: usize, ty: Ty, span: Span) -> Expr {
         match args.get(i).map(|a| &a.kind) {
             Some(ArgKind::Positional(e)) => {
                 let v = self.expr(e, Some(ty));
@@ -106,7 +109,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
-    fn arity(&mut self, args: &[ast::Arg], n: usize, name: &str, span: Span) -> bool {
+    pub(super) fn arity(&mut self, args: &[ast::Arg], n: usize, name: &str, span: Span) -> bool {
         if args.len() != n {
             self.error(span, format!("`{}` takes {} argument{}", name, n, if n == 1 { "" } else { "s" }));
             return false;
@@ -358,6 +361,24 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn collection_method(&mut self, recv: &mut Expr, rty: Ty, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
         // Methods of arrays and slices; a pointer to an array also works.
+        let arr = match rty.kind() {
+            TyKind::Ptr { pointee, .. } => *pointee,
+            _ => rty,
+        };
+        if arr.is_vector() {
+            let recv = match rty.kind() {
+                TyKind::Ptr { .. } => mk(arr, tir::ExprKind::Deref(Box::new(take_expr(recv))), span),
+                _ => take_expr(recv),
+            };
+            return Some(self.vector_method(recv, arr, n, args, span));
+        }
+        if arr.enum_index().is_some() {
+            self.error(
+                span,
+                format!("`{}` has no methods; `a[..]` is a slice of its elements, which has `.{}`", arr, n),
+            );
+            return Some(error_expr(span));
+        }
         let (base, elem, is_const) = match rty.kind() {
             TyKind::Slice { elem, is_const } => (take_expr(recv), *elem, *is_const),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {

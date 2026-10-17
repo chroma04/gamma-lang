@@ -1,0 +1,9 @@
+//! exit: 134
+//! stderr
+// A failing check on vector lanes traps with the message of the scalar check (§5.6.2).
+I4 :: #simd [4]i32
+
+main :: fn() needs Out {
+    v := I4(1, 2, -2147483648, 4)
+    print("{}\n", v.abs())
+}

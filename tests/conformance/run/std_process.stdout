@@ -1,0 +1,27 @@
+status .Exited(3), success false
+out [out
+] err [err
+]
+exit 0: true
+missing program: .NotFound
+empty argv: .InvalidInput
+before
+from child
+after
+wrote 13
+read [HELLO, PIPES
+]
+then .Exited(0)
+write to inherited stdin: .InvalidInput
+read from nothing: true
+wait: .Exited(4)
+dir [/
+]
+env [1|two words|unset
+]
+null stdin gives 0 bytes
+writing to a closed pipe: .BrokenPipe
+write failed: true
+killed: .Signaled(9)
+killed: .Signaled(9)
+big: .Exited(0) 300000 300000

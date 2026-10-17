@@ -4,8 +4,8 @@
 
 Calendar dates and times, RFC 3339 text, and durations as text.
 
-Dates are in the proleptic Gregorian calendar and times are UTC: there are no time
-zones (they need the tz database), no leap seconds and no daylight saving. `Clock`'s
+Dates are in the proleptic Gregorian calendar and times are UTC: there are no leap
+seconds, and time zones and daylight saving are in `std/time/zone`. `Clock`'s
 `wall()` is Unix time in nanoseconds, which `from_unix` turns into a `DateTime` and
 `to_unix` back. Everything is plain arithmetic: nothing allocates, and only `now`
 performs an effect. Text goes into a buffer the caller supplies and the result is the

@@ -30,6 +30,25 @@ third :: fn(a: [4]i32) -> i32 => a.get(2) else 0
 
 Unlike C, an array never decays to a pointer. Passing an array to a function that wants a slice is explicit: take a slice of it (`a[..]`) or a pointer to it (`&a`).
 
+### Vectors
+
+`#simd [N]T` is a vector: an array of `N` lanes whose operators work lane by lane and compile to the processor's vector instructions. Lanes are fixed-width integers, `f32`, `f64` or `bool`; `N` is a power of two and a vector holds at most 64 bytes. Give the type a name and construct it like an array:
+
+```gamma
+F4 :: #simd [4]f32
+
+vectors_demo :: fn() needs Out {
+    a := F4(1, 2, 3, 4)
+    b := F4(fill: 2.5)
+    print("{}\n", a * b)                          // [2.5, 5, 7.5, 10]
+    big := a > b                                   // a mask: [false, false, true, true]
+    print("{} {}\n", big.count(), big.select(a, b))   // 2 [2.5, 2.5, 3, 4]
+    print("{}\n", (a * a).reduce_sum())           // 30
+}
+```
+
+Comparisons, `is` included, give a mask `#simd [N]bool`, so a vector is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+
 ## Slices
 
 `[]T` is a pointer and a length. It is what you use in C when you pass `(T *p, size_t n)`, packaged so the two cannot get separated. The fields `.ptr` and `.len` can be read but not assigned. `[]const T` is a read-only view.
@@ -251,6 +270,23 @@ errno_name :: fn(code: i32) -> string {
 }
 ```
 
+### Arrays indexed by an enum
+
+Where C keeps a table indexed by an enumeration constant (`names[COLOR_COUNT]`), Gamma has `[E]T`: one element per variant of the enum `E`, indexed by `E` values. It is built by naming every variant, so an entry cannot be forgotten or listed against the wrong variant, and indexing it needs no bounds check:
+
+```gamma
+NAMES :: [Dir]string(N: "north", E: "east", S: "south", W: "west")
+
+compass_demo :: fn() needs Out {
+    visits := [Dir]u32(fill: 0)
+    visits[.E] += 1                                // `.E` is a `Dir`, from the index
+    visits[turn_right(.E)] += 2
+    for d in @variants(Dir) { print("{}: {}\n", NAMES[d], visits[d]) }
+}
+```
+
+An integer index is a compile error. The elements sit in declaration order (the order of `@variants`), and `a[..]` gives them as a slice when you do want positions, for example to call a slice method; there is no other slicing, no array method and no implicit conversion to a slice. `[Dir]bool` doubles as a set of directions.
+
 (Untagged C-style unions exist for interop and are described in [chapter 14](14-interop.md).)
 
 ## Pointers
@@ -395,6 +431,7 @@ Only `struct`, `union` and `effect` literals create new types, and they are decl
 
 - Arrays are values, slices are `(ptr, len)`, strings are `[]const u8`, and none of them converts implicitly to a pointer.
 - Structs are constructed by name; `using` gives embedding; unions are tagged and matched exhaustively.
+- `[E]T` is an array indexed by an enum, built by naming every variant.
 - Pointers are never null unless spelled `?`; `[^]T` is for C-style arithmetic.
 - `T(x)` is lossless, and everything lossy is a named method.
 

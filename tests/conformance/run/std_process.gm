@@ -1,0 +1,132 @@
+// std/process and the `Proc` effect over real child processes: collected output, exit
+// statuses, a piped stdin, options, kill, and output large enough to need both pipes read
+// at once.
+//! os: unix
+process :: import "std/process"
+
+sh :: fn(script: string) -> [3]string => [_]string("sh", "-c", script)
+
+/// The next chunk of output, or null at the end (or on an error).
+next :: fn(c: process.Child, buf: []u8) -> ?process.Chunk needs Proc {
+    r := Proc.read_out(c, buf) else e => return null
+    return r
+}
+
+main :: fn() needs Out + Proc + Alloc {
+    // Output and exit status.
+    o := process.output(sh("echo out; echo err >&2; exit 3")) else e => {
+        print("output failed: {}\n", e)
+        return
+    }
+    print("status {}, success {}\n", o.status, process.success(o.status))
+    print("out [{}] err [{}]\n", string(o.out.items), string(o.err.items))
+    o.deinit()
+
+    ok := process.status(sh("exit 0")) else e => {
+        print("status failed: {}\n", e)
+        return
+    }
+    print("exit 0: {}\n", process.success(ok))
+
+    // A missing program, an empty argv.
+    _: process.ExitStatus = process.status([_]string("no-such-program-for-gamma-tests")) else e => {
+        print("missing program: {}\n", e)
+        process.ExitStatus.Exited(0)
+    }
+    _: process.ExitStatus = process.status(empty_slice(string)) else e => {
+        print("empty argv: {}\n", e)
+        process.ExitStatus.Exited(0)
+    }
+
+    // Our output comes before what an inheriting child prints.
+    print("before\n")
+    _: process.ExitStatus = process.status(sh("echo from child")) else e => .Exited(0)
+    print("after\n")
+
+    // Feeding a program through a pipe.
+    c := Proc.spawn([_]string("tr", "a-z", "A-Z"), process.SpawnOptions(stdin: .Pipe, stdout: .Pipe)) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    n := Proc.write_in(c, "hello, ") else e => 0
+    m := Proc.write_in(c, "pipes\n") else e => 0
+    print("wrote {}\n", n + m)
+    Proc.close_in(c)
+    Proc.close_in(c)
+    buf: [64]u8 = ---
+    got: usize = 0
+    while true {
+        if k := next(c, buf[got..]) { got += k.len } else { break }
+    }
+    print("read [{}]\n", string(buf[0..got]))
+    print("then {}\n", Proc.wait(c) else e => process.ExitStatus.Exited(99))
+
+    // Not piped: writing is refused, and there is nothing to read.
+    t := Proc.spawn(sh("exit 4"), process.SpawnOptions()) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    w := Proc.write_in(t, "x") else e => {
+        print("write to inherited stdin: {}\n", e)
+        0
+    }
+    r := next(t, buf[..])
+    print("read from nothing: {}\n", r is null)
+    print("wait: {}\n", Proc.wait(t) else e => process.ExitStatus.Exited(99))
+
+    // Options: the working directory and the environment.
+    d := process.output(sh("pwd"), process.SpawnOptions(dir: "/")) else e => {
+        print("dir failed: {}\n", e)
+        return
+    }
+    print("dir [{}]\n", string(d.out.items))
+    d.deinit()
+    env := [_]string("GM_A=1", "GM_B=two words")
+    v := process.output(sh("echo \"$GM_A|$GM_B|${HOME:-unset}\""), process.SpawnOptions(env: env[..])) else e => {
+        print("env failed: {}\n", e)
+        return
+    }
+    print("env [{}]\n", string(v.out.items))
+    v.deinit()
+    null_in := process.output([_]string("cat"), process.SpawnOptions(stdin: .Null)) else e => {
+        print("null stdin failed: {}\n", e)
+        return
+    }
+    print("null stdin gives {} bytes\n", null_in.out.items.len)
+    null_in.deinit()
+
+    // A program that ignores its input: writing ends in an error, not in a signal.
+    z := Proc.spawn(sh("exec <&-; sleep 5"), process.SpawnOptions(stdin: .Pipe)) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    big: [65536]u8 = ---
+    for i in 0..big.len { big[i] = 65 }
+    failed := false
+    for _ in 0..100 {
+        _ = Proc.write_in(z, big[..]) else e => {
+            print("writing to a closed pipe: {}\n", e)
+            failed = true
+            break
+        }
+    }
+    print("write failed: {}\n", failed)
+    Proc.kill(z) else e => {}
+    print("killed: {}\n", Proc.wait(z) else e => process.ExitStatus.Exited(99))
+
+    // Kill a running program.
+    k := Proc.spawn([_]string("sleep", "30"), process.SpawnOptions()) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    Proc.kill(k) else e => print("kill failed: {}\n", e)
+    print("killed: {}\n", Proc.wait(k) else e => process.ExitStatus.Exited(99))
+
+    // Much output on both streams at once.
+    big_out := process.output(sh("head -c 300000 /dev/zero >&2 & head -c 300000 /dev/zero; wait")) else e => {
+        print("big output failed: {}\n", e)
+        return
+    }
+    print("big: {} {} {}\n", big_out.status, big_out.out.items.len, big_out.err.items.len)
+    big_out.deinit()
+}
