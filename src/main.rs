@@ -15,6 +15,8 @@ commands:
   lex     print the tokens of a source file
   parse   check the syntax of a source file (--dump prints the syntax tree)
   check   type-check a program (a .gm file or a module directory)
+  fix     check a program and apply the fixes its diagnostics suggest where there is only
+          one, to the files of its package; prints the diagnostics left
   run     run a program; arguments after the file go to the program
   build   compile a program to a native executable (via the system C compiler)
   test    run the `test` declarations of a module and of the modules of its package
@@ -40,7 +42,9 @@ commands:
   version print the compiler version
 
 options:
-  --diag-format=human|short   how to print diagnostics (default: human)
+  --diag-format=human|short|json
+                              how to print diagnostics (default: human); json prints one
+                              object per line, with locations and fixes
   --dump                      (parse) print the syntax tree
   --backend=interp|c          (run, test, bench) use the interpreter (default) or compile via C
   --filter=<text>             (test, bench) run only the tests whose name or module path
@@ -234,8 +238,9 @@ fn parse_args() -> Result<Options, String> {
             }
             "--diag-format=human" => opts.format = DiagFormat::Human,
             "--diag-format=short" => opts.format = DiagFormat::Short,
+            "--diag-format=json" => opts.format = DiagFormat::Json,
             a if a.starts_with("--diag-format=") => {
-                return Err(invalid_value("--diag-format", &a["--diag-format=".len()..], "human or short"));
+                return Err(invalid_value("--diag-format", &a["--diag-format=".len()..], "human, short or json"));
             }
             a if a.starts_with("--target=") => {
                 let triple = &a["--target=".len()..];
@@ -374,6 +379,7 @@ fn compiler_main() -> ExitCode {
         }
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
+        "fix" => fix(&opts),
         "run" => run(&opts),
         "test" => testing::run(&opts, testing::Kind::Test),
         "bench" => testing::run(&opts, testing::Kind::Bench),
@@ -394,7 +400,7 @@ fn compiler_main() -> ExitCode {
 /// Applies the build settings of the package that holds the input (gamma.toml's `[build]`
 /// and the selected profile) under the command line: an option given there wins.
 fn apply_build_settings(opts: &mut Options) -> Result<(), String> {
-    if !matches!(opts.command.as_str(), "check" | "run" | "build" | "test" | "bench") {
+    if !matches!(opts.command.as_str(), "check" | "fix" | "run" | "build" | "test" | "bench") {
         return Ok(());
     }
     let Some(path) = opts.file.clone() else { return Ok(()) };
@@ -530,6 +536,68 @@ fn check(opts: &Options) -> ExitCode {
     let ok = gamma::sema::analyze(&mut sess, path).is_some();
     eprint!("{}", sess.render_diagnostics(opts.format));
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// `gamma fix`: checks the program and applies the fixes of its diagnostics, again until
+/// none is left to apply (a fix can let checking go further), then reports what is left.
+fn fix(opts: &Options) -> ExitCode {
+    let Some(path) = &opts.file else {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    };
+    // Only the files of the input's package (or, outside a package, of the input's
+    // directory) are changed: never the standard library or other packages.
+    let scope = match gamma::pkg::find_root(path) {
+        Some(root) => root,
+        None => match gamma::source::canonicalize(path) {
+            Ok(p) if p.is_dir() => p,
+            Ok(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),
+            Err(e) => {
+                eprintln!("gamma: cannot read `{}`: {}", path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let std_root = gamma::source::canonical(&gamma::sema::std_root());
+    let (mut fixes, mut files) = (0, std::collections::BTreeSet::new());
+    // Each round applies fixes that do not overlap; ten rounds are plenty for real code.
+    for round in 0.. {
+        let (mut sess, _) = new_session(opts);
+        if prepare_packages(opts, &mut sess, path).is_none() {
+            return ExitCode::FAILURE;
+        }
+        let ok = gamma::sema::analyze(&mut sess, path).is_some();
+        let editable = |f: gamma::source::FileId| {
+            let p = gamma::source::canonical(&sess.sources.file(f).path);
+            p.starts_with(&scope) && !p.starts_with(&std_root)
+        };
+        let (plan, n) = if round < 10 { gamma::fix::plan(sess.diags.iter(), editable) } else { Default::default() };
+        if n == 0 {
+            eprint!("{}", sess.render_diagnostics(opts.format));
+            if fixes > 0 && opts.format != DiagFormat::Json {
+                let s = |k: usize| if k == 1 { "" } else { "s" };
+                eprintln!(
+                    "gamma: applied {} fix{} in {} file{}",
+                    fixes,
+                    if fixes == 1 { "" } else { "es" },
+                    files.len(),
+                    s(files.len())
+                );
+            }
+            return if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+        }
+        for (f, edits) in &plan {
+            let file = sess.sources.file(*f);
+            let text = gamma::fix::apply(&file.src, edits);
+            if let Err(e) = std::fs::write(&file.path, text) {
+                eprintln!("gamma: cannot write `{}`: {}", file.path.display(), e);
+                return ExitCode::FAILURE;
+            }
+            files.insert(file.path.clone());
+        }
+        fixes += n;
+    }
+    unreachable!()
 }
 
 fn run(opts: &Options) -> ExitCode {

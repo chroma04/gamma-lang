@@ -6,6 +6,7 @@ use super::expr::{apply_steps, base_coercion};
 use super::func::{FnCx, Obligation};
 use crate::diag::Diagnostic;
 use crate::float;
+use crate::source::Span;
 use crate::tir::{self, Coercion, Expr, ExprKind};
 use crate::types::{IntTy, Ty, TyKind};
 use num_bigint::BigInt;
@@ -80,13 +81,12 @@ impl<'a, 's> FnCx<'a, 's> {
             Obligation::UnitStatement { ty, span } => {
                 let t = self.infer.resolve(ty);
                 if !t.is_unit() && !t.is_never() && !t.is_error() {
-                    self.error(
-                        span,
-                        format!(
-                            "the value of this expression (of type `{}`) is unused; write `_ = …` to discard it",
-                            t
-                        ),
+                    let msg = format!(
+                        "the value of this expression (of type `{}`) is unused; write `_ = …` to discard it",
+                        t
                     );
+                    let at = Span { hi: span.lo, ..span };
+                    self.sema.emit(Diagnostic::error(span, msg).with_fix("discard the value with `_ = …`", at, "_ = "));
                 }
             }
             Obligation::Conversion { from, to, span } => {
@@ -100,7 +100,12 @@ impl<'a, 's> FnCx<'a, 's> {
                         (true, false) => &["trunc", "round", "checked", "sat"],
                         _ => &["to"],
                     };
-                    let hint = if methods.is_empty() {
+                    let hint = if self.sema.bits_struct_ty(to) == Some(from) {
+                        format!(
+                            ": not every `{}` is a valid `{}`, since a field has a type with invalid bit patterns; build it with `{}(field: …)` (§5.10.5)",
+                            from, to, to
+                        )
+                    } else if methods.is_empty() {
                         " (§6.5)".to_string()
                     } else {
                         let list: Vec<String> = methods.iter().map(|m| format!("`x.{}({})`", m, to)).collect();

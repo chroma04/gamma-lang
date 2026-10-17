@@ -2,6 +2,7 @@
 
 use super::types::Mode;
 use super::{PResult, Parser, Restr};
+use crate::diag::{Diagnostic, Edit};
 use crate::source::Span;
 use crate::syntax::ast::*;
 use crate::syntax::token::{Keyword, Punct, TokenKind};
@@ -173,15 +174,13 @@ impl Parser<'_> {
         if !self.at_kw(Keyword::Else) {
             return Ok(lhs);
         }
-        if matches!(lhs.kind, ExprKind::Unary { op: UnOp::Try, .. }) {
-            self.report(lhs.span, "`try x else d` is ambiguous: write `try (x else d)` or `(try x) else d`");
-        }
         self.bump();
         // `else x => d`: error capture.
         if self.nth_is_name(0) && self.nth_is(1, Punct::FatArrow) {
             let capture = self.parse_name("a name")?;
             self.bump();
             let rhs = self.parse_capture_body()?;
+            self.ambiguous_try_else(&lhs, &rhs);
             let span = lhs.span.to(rhs.span);
             return Ok(
                 self.mk_expr(ExprKind::Else { lhs: Box::new(lhs), capture: Some(capture), rhs: Box::new(rhs) }, span)
@@ -193,8 +192,21 @@ impl Parser<'_> {
         } else {
             self.nest(|p| p.parse_else())?
         };
+        self.ambiguous_try_else(&lhs, &rhs);
         let span = lhs.span.to(rhs.span);
         Ok(self.mk_expr(ExprKind::Else { lhs: Box::new(lhs), capture: None, rhs: Box::new(rhs) }, span))
+    }
+
+    /// Reports `try x else d`, whose `try` could apply to either side of the `else`.
+    fn ambiguous_try_else(&mut self, lhs: &Expr, rhs: &Expr) {
+        let ExprKind::Unary { op: UnOp::Try, operand } = &lhs.kind else { return };
+        let at = |lo, hi| Span { file: lhs.span.file, lo, hi };
+        let paren =
+            |lo, hi| vec![Edit { span: at(lo, lo), text: "(".into() }, Edit { span: at(hi, hi), text: ")".into() }];
+        let d = Diagnostic::error(lhs.span, "`try x else d` is ambiguous: write `try (x else d)` or `(try x) else d`")
+            .with_fix_edits("write `try (x else d)`", paren(operand.span.lo, rhs.span.hi))
+            .with_fix_edits("write `(try x) else d`", paren(lhs.span.lo, lhs.span.hi));
+        self.report_diag(d);
     }
 
     /// The body after `else x =>`: a block or an expression.
@@ -322,8 +334,16 @@ impl Parser<'_> {
             {
                 let span = tok.span.to(self.span());
                 let (c, word) = if op == BinOp::BitAnd { ("&&", "and") } else { ("||", "or") };
+                // `a&&b` needs spaces around the word.
+                let before = if lhs.span.hi == span.lo { " " } else { "" };
                 self.bump();
-                return self.fail(span, format!("`{}` is not an operator; use `{}`", c, word));
+                let after = if self.span().lo == span.hi { " " } else { "" };
+                let d = Diagnostic::error(span, format!("`{}` is not an operator; use `{}`", c, word)).with_fix(
+                    format!("replace `{c}` with `{word}`"),
+                    span,
+                    format!("{before}{word}{after}"),
+                );
+                return self.fail_diag(d);
             }
             let rhs = self.parse_shift()?;
             lhs = self.binary(op, lhs, rhs);

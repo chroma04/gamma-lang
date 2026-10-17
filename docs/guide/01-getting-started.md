@@ -90,6 +90,7 @@ A binary built this way finds the standard library in the `lib/std` directory of
 gamma run hello.gm         type-check the program and run it
 gamma build hello.gm       compile it to a native executable `hello` (-o picks the name)
 gamma check hello.gm       type-check without running
+gamma fix hello.gm         apply the fixes the compiler's errors suggest, where there is one
 gamma test hello.gm        run the `test` declarations (see Tests below)
 gamma bench hello.gm       run the `bench` declarations and report the time per run
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)

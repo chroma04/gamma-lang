@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// The overflow trap of `pow` names the operands, on every back end and at every width.
+main :: fn() needs Out {
+    small: i8 = @black_box(-3)
+    print("{} {}\n", small.pow(3), small.pow_checked(5))
+    big: i128 = @black_box(-170141183460469231731687303715884105)
+    print("{}\n", big.pow(1))
+    print("{}\n", big.pow(3))
+}

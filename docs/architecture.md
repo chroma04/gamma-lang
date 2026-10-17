@@ -66,6 +66,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/driver.rs` | `Session`: runs the stages for the CLI and tests |
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |
+| `src/fix.rs` | `gamma fix`: choosing and applying the fixes diagnostics carry |
 | `src/ice.rs` | the report printed for an internal compiler error |
 | `src/symbol.rs` | interned identifiers |
 | `src/syntax/token.rs` | token definitions |
@@ -179,6 +180,24 @@ lowercase and specific. The `--diag-format=short` flag prints one
 `path:line:col: severity: message` line per diagnostic, followed by a
 `note` line for each secondary location and each attached explanation; this is
 what the test suite matches against.
+
+A diagnostic may carry *fixes* (`Diagnostic::with_fix`): source edits that resolve
+it, each a replacement of a span's text. Human-oriented output does not show them,
+since the message says what to write; `--diag-format=json` prints one JSON object per
+diagnostic, with byte offsets, lines and columns, notes and fixes; the language
+server sends a diagnostic's fixes along with it in the `data` field and returns them
+as quick fixes when the client asks for code actions on that diagnostic; and
+`gamma fix` (`src/fix.rs`) checks the program, applies every fix that is the only
+one of its diagnostic to the files of the input's package (never the standard library
+or other packages), skipping fixes that overlap, and checks again until nothing is
+left to apply, since a fix can let checking get further (a syntax error stops
+analysis). Fixes are attached where the right edit is unambiguous: the lexer
+(uppercase radix prefixes), the parser (`&&`/`||`, `else` as a pattern, a trailing
+comma after a match arm, `try x else d` with both readings) and semantic analysis
+(an unused value, `s.len()` on a slice, a payload variant pattern without `(_)`,
+`x := v` at top level). To tell a comma at the end of a line from one in the middle,
+the lexer records the line breaks it drops after a token that continues the line
+(`LexOutput::joined_lines`).
 
 Cascades are kept down in three ways. `Diagnostics::push` drops a diagnostic that
 repeats an earlier one with the same severity, location and message, and an error
@@ -368,7 +387,7 @@ program names, opened as `lib<name>.so`/`.dylib`, also in the `-L` directories o
 declaration: integers of 8 to 64 bits, floats, pointers, `bool`, structs by value
 (a `#c_union` by value is described to libffi as the struct the C ABI treats
 alike) and variadic calls (`ffi_prep_cif_var`, with the argument types read from
-the call site; the VM leaves such calls to the tree-walker). The `libffi` crate
+the call site; the VM keeps them with the call's argument list). The `libffi` crate
 builds its own copy of libffi, so no system library is needed. On Windows the symbols
 come from `LoadLibrary`/`GetProcAddress`: the C library is looked up in both
 `ucrtbase.dll` and `msvcrt.dll` (UCRT does not export `printf` and its relatives, and a
@@ -439,7 +458,8 @@ registers directly; calls to and from tree-walked code go through `Value`s.
   code: `with … on`, `resume`, `cancel`, `@fiber`, system calls, and a
   statement whose value is too large for registers (over 64 KiB). Locals they
   mention live in the frame, where both engines see them. A function the
-  compiler cannot handle at all runs on the tree-walker as a whole.
+  compiler cannot handle at all (one with an array of 2^32 or more elements)
+  runs on the tree-walker as a whole.
 
 Calls between compiled functions do not nest Rust calls: the dispatch loop makes the
 callee the running activation, with the caller, the place for the result and where to go

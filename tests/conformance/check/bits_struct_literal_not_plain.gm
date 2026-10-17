@@ -1,0 +1,12 @@
+//! stage: check
+// A `#bits` struct converts from its integer only if every bit pattern is a valid value
+// (§5.10.5), a literal included: here `k` has invalid patterns.
+K :: union(u2) { A, B, C }
+W :: #bits(u8) struct { k: K, rest: u6 }
+F :: #bits(u8) struct { a: u4, b: u4 }
+
+main :: fn() {
+    _ = W(255) //~ ERROR not every `u8` is a valid `W`
+    _ = W(k: .C, rest: 63)
+    _ = F(0x21)
+}

@@ -1,6 +1,7 @@
 //! Patterns (Appendix A.6, spec §9.1).
 
 use super::{PResult, Parser};
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast::*;
 use crate::syntax::token::{Keyword, Punct, TokenKind};
@@ -48,7 +49,15 @@ impl Parser<'_> {
             | TokenKind::Str(_)
             | TokenKind::Keyword(Keyword::True | Keyword::False) => self.parse_literal_pattern(),
             TokenKind::Ident(_) => self.parse_path_pattern(),
-            TokenKind::Keyword(Keyword::Else) => self.expected("a pattern (the pattern that matches anything is `_`)"),
+            TokenKind::Keyword(Keyword::Else) => {
+                let span = self.span();
+                let d = Diagnostic::error(
+                    span,
+                    "expected a pattern (the pattern that matches anything is `_`), found keyword `else`",
+                )
+                .with_fix("write `_`", span, "_");
+                self.fail_diag(d)
+            }
             _ => self.expected("a pattern"),
         }
     }

@@ -397,12 +397,17 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ if SLICE_FNS.contains(&n) => Some(self.slice_fn(base, n, args, span)),
             _ => {
-                let msg = if n == "len" || n == "ptr" {
-                    format!("`.{}` of a slice is a field, not a method: write `s.{}` without `()`", n, n)
+                if n == "len" || n == "ptr" {
+                    let msg = format!("`.{}` of a slice is a field, not a method: write `s.{}` without `()`", n, n);
+                    let mut d = Diagnostic::error(span, msg);
+                    if args.is_empty() && self.sema.sess.sources.text(span).ends_with("()") {
+                        let parens = Span { lo: span.hi - 2, ..span };
+                        d = d.with_fix("remove `()`", parens, "");
+                    }
+                    self.sema.emit(d);
                 } else {
-                    format!("slices have no method `.{}` (§21.3)", n)
-                };
-                self.error(span, msg);
+                    self.error(span, format!("slices have no method `.{}` (§21.3)", n));
+                }
                 Some(error_expr(span))
             }
         }

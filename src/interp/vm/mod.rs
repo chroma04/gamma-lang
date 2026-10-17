@@ -851,6 +851,8 @@ pub struct Code<'a> {
     pub args: Vec<Box<[Arg]>>,
     /// Single operands of the instructions that have too many to hold them.
     pub operands: Vec<Arg>,
+    /// The types that go with each argument list: those of a builtin's arguments, and those
+    /// of the variadic arguments of a call of a variadic foreign function.
     pub arg_tys: Vec<Box<[Ty]>>,
     pub bins: Vec<BinInfo>,
     pub builtins: Vec<BuiltinInfo>,

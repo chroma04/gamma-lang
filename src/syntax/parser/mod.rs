@@ -96,6 +96,8 @@ pub(super) struct Parser<'a> {
     file: FileId,
     toks: &'a [Token],
     docs: &'a [DocComment],
+    /// See [`LexOutput::joined_lines`].
+    joined_lines: &'a [u32],
     ids: &'a mut NodeIdGen,
     diags: &'a mut Diagnostics,
     pos: usize,
@@ -135,6 +137,7 @@ pub fn parse_file(file: FileId, lexed: &LexOutput, ids: &mut NodeIdGen, diags: &
         &fallback
     };
     let mut p = Parser::new(file, toks, &lexed.docs, ids, diags);
+    p.joined_lines = &lexed.joined_lines;
     let items = p.parse_file_items();
     let end = toks.last().map_or(0, |t| t.span.hi);
     File { items, span: Span::new(file, 0, end) }
@@ -153,6 +156,7 @@ impl<'a> Parser<'a> {
             file,
             toks,
             docs,
+            joined_lines: &[],
             ids,
             diags,
             pos: 0,
@@ -367,12 +371,23 @@ impl<'a> Parser<'a> {
         self.diags.error(span, msg);
     }
 
+    /// Reports the error `d` without aborting.
+    pub(super) fn report_diag(&mut self, d: Diagnostic) {
+        self.err_count += 1;
+        self.diags.push(d);
+    }
+
     /// Reports an error and returns `Err(Abort)`. A second error at the same
     /// token as the previous one is dropped (it is almost always a cascade).
     pub(super) fn fail<T>(&mut self, span: Span, msg: impl Into<String>) -> PResult<T> {
+        self.fail_diag(Diagnostic::error(span, msg))
+    }
+
+    /// [`Self::fail`] with the error `d`.
+    pub(super) fn fail_diag<T>(&mut self, d: Diagnostic) -> PResult<T> {
         if self.last_err_pos != Some(self.pos) {
             self.last_err_pos = Some(self.pos);
-            self.report(span, msg);
+            self.report_diag(d);
         } else {
             self.err_count += 1;
         }
@@ -432,7 +447,20 @@ impl<'a> Parser<'a> {
         match self.kind() {
             TokenKind::Newline | TokenKind::Eof | TokenKind::Punct(Punct::RBrace) => {}
             _ => {
-                let _: PResult<()> = self.expected(&format!("a newline or `;` after {}", what));
+                let span = self.span();
+                let found = self.kind().describe();
+                let mut d =
+                    Diagnostic::error(span, format!("expected a newline or `;` after {}, found {}", what, found));
+                // A comma at the end of a line, as other languages put after match arms.
+                if self.at(Punct::Comma) {
+                    let next = self.toks[(self.pos + 1).min(self.toks.len() - 1)].span.lo;
+                    let i = self.joined_lines.partition_point(|&o| o < span.hi);
+                    let at_line_end = self.joined_lines.get(i).is_some_and(|&o| o < next);
+                    if at_line_end || matches!(self.nth(1), TokenKind::Eof | TokenKind::Punct(Punct::RBrace)) {
+                        d = d.with_fix("remove the `,`", span, "");
+                    }
+                }
+                let _: PResult<()> = self.fail_diag(d);
                 self.recover_to_stmt_end();
             }
         }

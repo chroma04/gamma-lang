@@ -1,6 +1,7 @@
 //! Lexing of numeric, character and string literals (spec §2.5).
 
 use super::Lexer;
+use crate::diag::Diagnostic;
 use crate::syntax::token::{FloatLit, FloatSuffix, IntLit, IntSuffix, Punct, StrKind, StrLit, Token, TokenKind};
 use num_bigint::{BigInt, BigUint};
 use num_rational::BigRational;
@@ -29,11 +30,14 @@ impl<'a> Lexer<'a> {
         }
         // The first problem found is reported at the end, against the whole literal.
         let mut err: Option<String> = None;
+        // The lowercase prefix, when an uppercase one is the problem reported.
+        let mut prefix_fix = None;
         let radix = match (self.bytes[lo], self.peek_at(1)) {
             (b'0', Some(c @ (b'x' | b'o' | b'b' | b'X' | b'O' | b'B'))) => {
                 if c.is_ascii_uppercase() {
                     let lower = c.to_ascii_lowercase() as char;
                     err = Some(format!("radix prefixes must be lowercase; write `0{}`", lower));
+                    prefix_fix = Some(format!("0{}", lower));
                 }
                 self.pos += 2;
                 match c.to_ascii_lowercase() {
@@ -110,7 +114,11 @@ impl<'a> Lexer<'a> {
         };
 
         if let Some(msg) = err {
-            self.error(lo, self.pos, msg);
+            let mut d = Diagnostic::error(self.span(lo, self.pos), msg);
+            if let Some(p) = prefix_fix {
+                d = d.with_fix(format!("write `{p}`"), self.span(lo, lo + 2), p);
+            }
+            self.diags.push(d);
         }
         let kind = if is_float {
             let value = self.float_value(radix, &int_part, frac_part.as_ref(), exp.unwrap_or(0));

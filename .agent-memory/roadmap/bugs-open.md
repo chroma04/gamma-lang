@@ -8,7 +8,9 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
    inline them: bigcopy-style bench gcc 1.13 → 0.33 s, clang 0.4 s). s22: array/slice/
    many-ptr elements passed in place too (in_place_root; run/big_value_index_args).
    Nested aggregates (`M(a: V(..), b: mk())`) are already built in place (checked s22).
-24. Interpreter (s21: perform 873 → 817 instr/op over a call's ~616): the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
+24. Interpreter (s21: perform 873 → 817 instr/op over a call's ~616; s24 re-profiled: vm_perform
+    ~450 instr inclusive, no allocation, spread over ~40 bookkeeping steps of 1–16 instr —
+    St reset, FrameExtra move, Ctx clone, call-site fields; no single fix, left alone): the bytecode VM (decisions/020) replaced most tree-walking cost; what is left
     is dispatch/call-bound (~15 ns/op), plus `new`/`destroy` spread over builtins. Follow-ups
     listed in decisions/020.
 48. C compilers superlinear in the size of ONE C function (9.4k-line main: ~20 s gcc -O1;
@@ -36,6 +38,10 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
+30. (s24 hunt) A custom `Out` handler sees more, partly empty, `write` chunks on C than on the
+    interpreter for `print("{}", "")`/padded empties (§21.6.1 allows any chunking).
+31. (s24 hunt) Huge-frame overflow: interp says "stack overflow: `main` needs a frame of N
+    bytes", C just "stack overflow"; interp recursion limit ~150–250k frames vs C ~600–800k.
 
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
 23. std generator; reflection. (Fiber channel done s20: std/fiber/channel; deque exists;

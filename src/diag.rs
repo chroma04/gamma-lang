@@ -28,6 +28,24 @@ pub struct Label {
     pub message: String,
 }
 
+/// A replacement of the source text at `span` (empty for an insertion) by `text`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    pub span: Span,
+    pub text: String,
+}
+
+/// A change to the source that resolves a diagnostic, for tools to apply: `gamma fix`
+/// applies the fix of a diagnostic that has exactly one, and the language server offers
+/// each as a quick fix.
+#[derive(Clone, Debug)]
+pub struct Fix {
+    /// What the fix does, such as "replace `&&` with `and`".
+    pub message: String,
+    /// Edits of non-overlapping spans.
+    pub edits: Vec<Edit>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -36,15 +54,33 @@ pub struct Diagnostic {
     pub span: Span,
     pub labels: Vec<Label>,
     pub notes: Vec<String>,
+    /// Alternative ways to resolve the diagnostic mechanically. The message says what to
+    /// write in words; human-oriented output does not show fixes.
+    pub fixes: Vec<Fix>,
 }
 
 impl Diagnostic {
     pub fn error(span: Span, message: impl Into<String>) -> Diagnostic {
-        Diagnostic { severity: Severity::Error, message: message.into(), span, labels: vec![], notes: vec![] }
+        Diagnostic::new(Severity::Error, span, message.into())
     }
 
     pub fn warning(span: Span, message: impl Into<String>) -> Diagnostic {
-        Diagnostic { severity: Severity::Warning, message: message.into(), span, labels: vec![], notes: vec![] }
+        Diagnostic::new(Severity::Warning, span, message.into())
+    }
+
+    fn new(severity: Severity, span: Span, message: String) -> Diagnostic {
+        Diagnostic { severity, message, span, labels: vec![], notes: vec![], fixes: vec![] }
+    }
+
+    /// Adds a fix that replaces the text at `span` with `text`.
+    pub fn with_fix(self, message: impl Into<String>, span: Span, text: impl Into<String>) -> Diagnostic {
+        self.with_fix_edits(message, vec![Edit { span, text: text.into() }])
+    }
+
+    /// Adds a fix made of several edits.
+    pub fn with_fix_edits(mut self, message: impl Into<String>, edits: Vec<Edit>) -> Diagnostic {
+        self.fixes.push(Fix { message: message.into(), edits });
+        self
     }
 
     pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Diagnostic {
@@ -173,6 +209,73 @@ pub enum DiagFormat {
     Human,
     /// One line per diagnostic: `path:line:col: severity: message`.
     Short,
+    /// One JSON object per line, with locations, notes and fixes (see [`to_json`]).
+    Json,
+}
+
+/// The location of `span` as JSON fields: the file, byte offsets and 1-based lines and
+/// columns (columns count characters). Nothing for a span without a location.
+fn json_location(sm: &SourceMap, span: Span, obj: &mut serde_json::Map<String, serde_json::Value>) {
+    if span == Span::DUMMY {
+        return;
+    }
+    let f = sm.file(span.file);
+    let (line, col) = f.line_col(span.lo);
+    let (end_line, end_col) = f.line_col(span.hi);
+    obj.insert("file".into(), f.path.display().to_string().into());
+    obj.insert("offset".into(), span.lo.into());
+    obj.insert("end_offset".into(), span.hi.into());
+    obj.insert("line".into(), line.into());
+    obj.insert("column".into(), col.into());
+    obj.insert("end_line".into(), end_line.into());
+    obj.insert("end_column".into(), end_col.into());
+}
+
+/// `d` as a JSON object:
+/// `{"severity", "message", <location>, "labels": [{"message", <location>}], "notes": [..],
+/// "fixes": [{"message", "edits": [{<location>, "text"}]}]}`, where a location is the
+/// fields `file`, `offset`, `end_offset` (bytes), `line`, `column`, `end_line` and
+/// `end_column` (1-based; columns count characters), absent for a diagnostic without one.
+pub fn to_json(sm: &SourceMap, d: &Diagnostic) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    let mut obj = Map::new();
+    obj.insert("severity".into(), d.severity.as_str().into());
+    obj.insert("message".into(), d.message.clone().into());
+    json_location(sm, d.span, &mut obj);
+    let labels = d
+        .labels
+        .iter()
+        .map(|l| {
+            let mut o = Map::new();
+            o.insert("message".into(), l.message.clone().into());
+            json_location(sm, l.span, &mut o);
+            Value::Object(o)
+        })
+        .collect();
+    obj.insert("labels".into(), Value::Array(labels));
+    obj.insert("notes".into(), d.notes.iter().map(|n| Value::from(n.clone())).collect());
+    let fixes = d
+        .fixes
+        .iter()
+        .map(|fx| {
+            let edits = fx
+                .edits
+                .iter()
+                .map(|e| {
+                    let mut o = Map::new();
+                    json_location(sm, e.span, &mut o);
+                    o.insert("text".into(), e.text.clone().into());
+                    Value::Object(o)
+                })
+                .collect();
+            let mut o = Map::new();
+            o.insert("message".into(), fx.message.clone().into());
+            o.insert("edits".into(), Value::Array(edits));
+            Value::Object(o)
+        })
+        .collect();
+    obj.insert("fixes".into(), Value::Array(fixes));
+    Value::Object(obj)
 }
 
 /// Renders one diagnostic in the given format.
@@ -191,6 +294,9 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
         Some((f, line, col))
     };
     match format {
+        DiagFormat::Json => {
+            let _ = writeln!(out, "{}", to_json(sm, d));
+        }
         DiagFormat::Short => {
             if let Some((f, line, col)) = loc {
                 let _ = write!(out, "{}:{}:{}: ", f.path.display(), line, col);

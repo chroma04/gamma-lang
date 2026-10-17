@@ -10,6 +10,7 @@ server is part of the `gamma` binary and needs no configuration.
 | Feature | What it does |
 | --- | --- |
 | Diagnostics | Errors and warnings of the compiler, as you type. Secondary locations are attached as related information. |
+| Quick fixes | Code actions for the diagnostics that suggest an edit: `&&` becomes `and`, an unused value gets `_ = `, `.V` becomes `.V(_)`, and so on. A diagnostic with one fix marks it preferred (editors apply it with "fix all" or a single key); `try x else d` offers both readings. These are the fixes `gamma fix` applies. |
 | Hover | The type of a name or expression. For a function: its signature with the effect set, for example `greet :: fn(n: i32) needs Out`. For a type: its declaration. The doc comment (`///`) follows. |
 | Go to definition | Locals and parameters, functions, types, constants, effects and their operations, struct fields, union variants, methods, module members (`util.double`) and imports. It works across files, into the standard library and into the core library (`List`, `list`, `HashMap`, …; see below). `print` and the other builtin functions are part of the language and have no source to open. |
 | Find references | Uses of a declaration in every module of the package (and of its path dependencies) that uses it, not only in the open module. |

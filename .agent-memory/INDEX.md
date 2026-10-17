@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-17) — PRs #1–#46 merged; s23 PR open (difftest fix, branch claude/difftest-shl)
+## State (2026-10-17) — PRs #1–#47 merged; s24 PR open (fix-its + VM variadic calls, branch claude/difftest-coverage)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -17,7 +17,8 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- Recent history: s23 C unwind check after calls passed a closure (sessions/s23-…);
+- Recent history: s24 `gamma fix`/json diagnostics/LSP quick fixes (decisions/028), VM runs
+  variadic C calls, difftest 2k seeds clean (sessions/s24-…); s23 C unwind check after calls passed a closure (sessions/s23-…);
   s22 elements passed in place, VM float ops + RotI (sessions/s22-…);
   s21 gcc inline small fns, field args in place, Emacs mode, perform
   trim, difftest coverage + CI (sessions/s21-…); s20 fiber channel + effect-param context inference + fuzz/difftest
@@ -26,7 +27,7 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive the s23 PR (claude/difftest-shl) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s24 PR (claude/difftest-coverage) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -58,6 +59,7 @@
                     params, named args/inferable params, universe w/o ops, named effect sets)
                   · 026 effect syntax `needs A + B`, `needs not` (foreign only), no `..E`
                   · 027 effect-set params inferred from the caller's Sched(E); fiber channel
+                  · 028 machine-applicable fixes (gamma fix, json diags, LSP quick fixes)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
@@ -65,7 +67,7 @@
                   · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
                   · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
                   · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
-                  · s23-2026-10-17-difftest-fix.md
+                  · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md
 - gotchas/        environment.md
 
 ## Conventions

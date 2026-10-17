@@ -212,4 +212,7 @@ pub struct LexOutput {
     /// Tokens, ending with exactly one [`TokenKind::Eof`].
     pub tokens: Vec<Token>,
     pub docs: Vec<DocComment>,
+    /// Offsets of the line terminators that are not `Newline` tokens because the token
+    /// before them continues the line (§2.8 rule 1), in order.
+    pub joined_lines: Vec<u32>,
 }

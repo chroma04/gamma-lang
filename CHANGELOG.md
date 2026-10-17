@@ -8,6 +8,15 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma fix` applies the fixes that the compiler's diagnostics suggest, where a
+  diagnostic has exactly one: `&&` and `||` become `and` and `or`, an unused value gets
+  `_ = `, `s.len()` on a slice loses its `()`, `else` as a match pattern becomes `_`, a
+  trailing comma after a match arm goes, a payload variant pattern `.V` becomes `.V(_)`,
+  `x := v` at top level becomes `x :: v`, and an uppercase radix prefix is lowercased.
+  It changes only the files of the input's package, and repeats until nothing is left
+  to apply. The language server offers the same fixes as quick fixes (code actions),
+  including both readings of the ambiguous `try x else d`, and `--diag-format=json`
+  prints diagnostics with their locations and fixes as one JSON object per line.
 - `editors/zed/`: a Zed extension for Gamma (highlighting, outline, indentation and the
   language server).
 - `examples/`: runnable programs, from command-line tools (`wordfreq`, `grep`,
@@ -38,6 +47,8 @@ Versions and what each kind of change means are described in
 - Faster `f32` and `f64` code on the interpreter: arithmetic, comparisons and branches
   on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster),
   and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
+- Functions that call variadic C functions (`printf` and its relatives) run on the
+  interpreter's bytecode VM instead of its slower tree-walker.
 - The C back end passes a large argument read from an element of an array, slice or
   many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its
@@ -72,6 +83,14 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A `#bits` struct with a field that has invalid bit patterns (an enum, say) could be
+  converted from an integer literal, `W(255)`, although only plain bit structs convert
+  from their integer (§5.10.5); the value then held an invalid tag. This is now an
+  error, as it already was for a conversion of a variable, and the message explains it.
+- C back end: the overflow trap of `pow` on integers of up to 128 bits now names the
+  operands (`integer overflow in `pow` (-5^31)`), as the interpreter's does.
+- Interpreter: `f16` NaNs kept neither their sign nor their payload when widened or
+  narrowed, so `(h / h).bits(u16)` differed from compiled code.
 - C back end: a call to a function that performs no effects itself but is passed a
   second-class function was not treated as a possible non-local exit. When the passed
   function performed an operation whose handler left its `with` (`break` after

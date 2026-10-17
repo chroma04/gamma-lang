@@ -58,6 +58,30 @@ fn dir_of(path: &Path) -> PathBuf {
     path.parent().map(Path::to_path_buf).unwrap_or_default()
 }
 
+/// The quick fixes for a `textDocument/codeAction` request: those of the diagnostics it
+/// names, which carry them as published (`Analysis::diagnostic`). A diagnostic with only
+/// one fix marks it preferred.
+fn code_actions(params: &Value) -> Value {
+    let only = params["context"]["only"].as_array();
+    if only.is_some_and(|kinds| !kinds.iter().any(|k| k.as_str().is_some_and(|k| "quickfix".starts_with(k)))) {
+        return json!([]);
+    }
+    let mut actions = Vec::new();
+    for d in params["context"]["diagnostics"].as_array().into_iter().flatten() {
+        let Some(fixes) = d["data"]["fixes"].as_array() else { continue };
+        for fx in fixes {
+            actions.push(json!({
+                "title": fx["title"],
+                "kind": "quickfix",
+                "diagnostics": [d],
+                "isPreferred": fixes.len() == 1,
+                "edit": {"changes": fx["changes"]},
+            }));
+        }
+    }
+    Value::Array(actions)
+}
+
 impl<W: Write> Server<W> {
     pub fn new(out: W) -> Server<W> {
         Server {
@@ -316,6 +340,7 @@ impl<W: Write> Server<W> {
                 self.shutdown = true;
                 self.respond(id, Value::Null)
             }
+            "textDocument/codeAction" => self.respond(id, code_actions(&params)),
             "textDocument/hover"
             | "textDocument/definition"
             | "textDocument/references"
@@ -347,6 +372,7 @@ impl<W: Write> Server<W> {
                 "renameProvider": {"prepareProvider": true},
                 "documentSymbolProvider": true,
                 "documentFormattingProvider": true,
+                "codeActionProvider": {"codeActionKinds": ["quickfix"]},
                 "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
             },

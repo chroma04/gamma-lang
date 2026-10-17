@@ -3,6 +3,7 @@
 use super::untyped::{self, Untyped};
 use super::{DeclId, DeclState, EffectInfo, FnSig, ModuleId, OpInfo, ParamInfo, PendingBody, Sema};
 use crate::diag::Diagnostic;
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind};
 use crate::tir::{self, AdtKind, FnId};
@@ -322,7 +323,16 @@ impl<'s> Sema<'s> {
     fn compute_binding(&mut self, id: DeclId, module: ModuleId, name: ast::Ident, item: &Rc<ast::Item>) -> DeclValue {
         let ItemKind::Binding(b) = &item.kind else { return DeclValue::Error };
         if b.kind == BindingKind::Var {
-            self.error(b.span, "top-level bindings are immutable; use `::` (mutable storage needs `#global`)");
+            let mut d = Diagnostic::error(
+                b.span,
+                "top-level bindings are immutable; use `::` (mutable storage needs `#global`)",
+            );
+            // `x := v` becomes `x :: v`.
+            let between = Span { lo: name.span.hi, hi: b.init.span.lo, ..b.span };
+            if b.ty.is_none() && self.sess.sources.text(between).trim() == ":=" {
+                d = d.with_fix("write `::`", between, " :: ");
+            }
+            self.emit(d);
             return DeclValue::Error;
         }
         let init = &*b.init;

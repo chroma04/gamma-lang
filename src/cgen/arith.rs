@@ -649,6 +649,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     let (min, max) = (self.int_lit(at, &ii.min()), self.int_lit(at, &ii.max()));
                     self.line(&format!("{o} = {o} || {r} < {min} || {r} > {max};"));
                 }
+                if fl == Flavor::Checked && self.checks() {
+                    // The message names the operands, as the interpreter's does.
+                    let b = self.tmp(at, &vals[0]);
+                    self.line(&format!(
+                        "if ({o}) gm_trap_pow((const uint8_t *)&{b}, {}, {}, (uint32_t){}, {loc});",
+                        ii.bits, ii.signed, vals[1]
+                    ));
+                }
                 let sat = format!("({} > 0 || ({} & 1) == 0)", vals[0], vals[1]);
                 self.finish_int(fl, ii, at, t, &r, &o, &sat, &loc, "pow")
             }
