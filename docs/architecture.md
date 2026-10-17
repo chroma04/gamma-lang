@@ -234,6 +234,7 @@ lowers each function body to TIR.
 | `call.rs`, `methods.rs`, `construct.rs` | calls, method calls and builtin methods, construction |
 | `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
+| `vector.rs` | vector types `#simd [N]T`: their lane-wise operators, conversions and methods (§5.6.2) |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
 | `fnlit.rs` | function literals, captures and second-class rules |
 | `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations (generic ones are templates instantiated by `handlers_for`), `with`, `for` over iterators |
@@ -531,6 +532,7 @@ both use it. The files:
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
 | `arith.rs`, `elementwise.rs`, `wide.rs` | checked scalar operators, elementwise array arithmetic (§7.4.6), integers wider than 128 bits |
+| `vector.rs` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.rs` | per-type equality, ordering and hashing |
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.rs`, `constarg.rs` | parameters read in place; static storage for constant arguments |

@@ -200,7 +200,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 {
                     let t = self.resolve_type(&without_call(e));
                     return match t.kind() {
-                        TyKind::Array { elem, index: Some(index), .. } => {
+                        TyKind::Array { elem, kind: crate::types::ArrayKind::Enum(index), .. } => {
                             self.construct_enum_array(t, *index, *elem, args, span)
                         }
                         _ => error_expr(span),
@@ -218,7 +218,21 @@ impl<'a, 's> FnCx<'a, 's> {
                     },
                     None => None,
                 };
-                self.construct_array(len, elem_ty, args, span)
+                self.construct_array(None, len, elem_ty, args, span)
+            }
+            // `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+            ExprKind::Attributed { attrs, inner }
+                if matches!(inner.kind, ExprKind::ArrayType { .. }) && construction_call(inner).is_some() =>
+            {
+                let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
+                    unreachable!()
+                };
+                let module = self.module;
+                let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
+                match t.vector_parts() {
+                    Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
+                    None => error_expr(span),
+                }
             }
             ExprKind::OptionalType(inner) if construction_call(inner).is_some() => {
                 let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
@@ -539,6 +553,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                     _ => {}
                 }
+                if self.infer.resolve(v.ty).is_vector() {
+                    return self.vector_unary(op, v, span);
+                }
                 self.obligations.push(Obligation::Numeric {
                     ty: v.ty,
                     span,
@@ -551,6 +568,9 @@ impl<'a, 's> FnCx<'a, 's> {
             ast::UnOp::BitNot => {
                 let v = self.expr(operand, expect);
                 let st = self.infer.resolve(v.ty);
+                if st.is_vector() {
+                    return self.vector_unary(op, v, span);
+                }
                 if let Some(u) = self.bits_operand(st, "~", span) {
                     let x = self.bits_convert(v, u);
                     let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
@@ -576,6 +596,9 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ast::UnOp::Not => {
                 let v = self.expr(operand, Some(Ty::bool()));
+                if self.infer.resolve(v.ty).is_vector() {
+                    return self.vector_unary(op, v, span);
+                }
                 let v = self.expect_bool(v);
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
@@ -711,6 +734,9 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Checks `lhs op rhs` given the already-checked left operand.
     pub fn binary_op(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
         use ast::BinOp as B;
+        if self.infer.resolve(lhs.ty).is_vector() {
+            return self.vector_binary(op, lhs, rhs, span);
+        }
         match op {
             B::And | B::Or => {
                 let l = self.expect_bool(lhs);
@@ -2469,6 +2495,12 @@ pub fn base_coercion(src: Ty, target: Ty) -> Option<Coercion> {
     }
 }
 
+/// True if a pointer to `t` may become a pointer to its first element or a slice of it:
+/// `t` is not an array (or an array reached by position, §5.6.1, §5.6.2).
+fn src_array_ok(t: Ty) -> bool {
+    !t.is_array() || t.is_positional_array()
+}
+
 /// The pointer coercions of §5.5 (a sequence of them counts as one).
 fn pointer_coercion(src: Ty, target: Ty) -> bool {
     use TyKind::*;
@@ -2494,10 +2526,12 @@ fn pointer_coercion(src: Ty, target: Ty) -> bool {
         (0, 0) | (1, 1) | (2, 2) => se == te,
         // ^T → [^]T, and ^[N]T → [^]T
         (0, 1) => {
-            se == te || matches!(se.kind(), Array { elem, index: None, .. } | ParamArray { elem, .. } if *elem == te)
+            se == te
+                || (src_array_ok(se)
+                    && matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te))
         }
         // ^[N]T → []T
-        (0, 2) => matches!(se.kind(), Array { elem, index: None, .. } | ParamArray { elem, .. } if *elem == te),
+        (0, 2) => src_array_ok(se) && matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te),
         _ => false,
     }
 }

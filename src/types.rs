@@ -251,6 +251,17 @@ pub struct FnTy {
     pub callconv: CallConv,
 }
 
+/// What kind of array a [`TyKind::Array`] is (§5.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayKind {
+    /// `[N]T`, indexed by position.
+    Plain,
+    /// `[E]T`, indexed by the enum `E`, one element per variant in declaration order.
+    Enum(Ty),
+    /// `#simd [N]T`: a vector, whose operators act lane by lane (§5.6.2).
+    Simd,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TyKind {
     Int(IntTy),
@@ -279,12 +290,11 @@ pub enum TyKind {
         is_const: bool,
         elem: Ty,
     },
-    /// `[N]T`, or `[E]T` indexed by the enum `E` (`index`), whose `len` is the number of
-    /// variants of `E` and whose elements are in the order of `@variants(E)` (§5.6).
+    /// `[N]T`, `[E]T` or `#simd [N]T`, as `kind` says (§5.6).
     Array {
         len: u64,
         elem: Ty,
-        index: Option<Ty>,
+        kind: ArrayKind,
     },
     /// `(T1, T2)` or `(a: T1, b: T2)`; `()` is the unit type.
     Tuple {
@@ -499,11 +509,15 @@ impl Ty {
         Ty::intern(TyKind::ManyPtr { is_const, elem })
     }
     pub fn array(len: u64, elem: Ty) -> Ty {
-        Ty::intern(TyKind::Array { len, elem, index: None })
+        Ty::intern(TyKind::Array { len, elem, kind: ArrayKind::Plain })
     }
     /// `[E]T`: an array of `len` (the number of `E`'s variants) elements indexed by `E`.
     pub fn enum_array(index: Ty, len: u64, elem: Ty) -> Ty {
-        Ty::intern(TyKind::Array { len, elem, index: Some(index) })
+        Ty::intern(TyKind::Array { len, elem, kind: ArrayKind::Enum(index) })
+    }
+    /// `#simd [N]T`: a vector of `len` lanes (§5.6.2).
+    pub fn vector(len: u64, elem: Ty) -> Ty {
+        Ty::intern(TyKind::Array { len, elem, kind: ArrayKind::Simd })
     }
     pub fn optional(inner: Ty) -> Ty {
         Ty::intern(TyKind::Optional(inner))
@@ -566,9 +580,31 @@ impl Ty {
     /// The enum indexing an array type `[E]T` (§5.6), if `self` is one.
     pub fn enum_index(self) -> Option<Ty> {
         match self.kind() {
-            TyKind::Array { index, .. } => *index,
+            TyKind::Array { kind: ArrayKind::Enum(e), .. } => Some(*e),
             _ => None,
         }
+    }
+
+    /// True for a vector type `#simd [N]T` (§5.6.2).
+    pub fn is_vector(self) -> bool {
+        matches!(self.kind(), TyKind::Array { kind: ArrayKind::Simd, .. })
+    }
+
+    /// The lane count and lane type of a vector type.
+    pub fn vector_parts(self) -> Option<(u64, Ty)> {
+        match self.kind() {
+            TyKind::Array { len, elem, kind: ArrayKind::Simd } => Some((*len, *elem)),
+            _ => None,
+        }
+    }
+
+    /// True for an array whose elements are reached by position: `[N]T` or a vector, not
+    /// `[E]T`.
+    pub fn is_positional_array(self) -> bool {
+        matches!(
+            self.kind(),
+            TyKind::Array { kind: ArrayKind::Plain | ArrayKind::Simd, .. } | TyKind::ParamArray { .. }
+        )
     }
 
     pub fn is_infer(self) -> bool {
@@ -641,14 +677,18 @@ impl Ty {
             TyKind::Ptr { is_const, pointee } => TyKind::Ptr { is_const: *is_const, pointee: pointee.map(f) },
             TyKind::ManyPtr { is_const, elem } => TyKind::ManyPtr { is_const: *is_const, elem: elem.map(f) },
             TyKind::Slice { is_const, elem } => TyKind::Slice { is_const: *is_const, elem: elem.map(f) },
-            TyKind::Array { len, elem, index } => {
-                TyKind::Array { len: *len, elem: elem.map(f), index: index.map(|t| t.map(f)) }
+            TyKind::Array { len, elem, kind } => {
+                let kind = match kind {
+                    ArrayKind::Enum(e) => ArrayKind::Enum(e.map(f)),
+                    k => *k,
+                };
+                TyKind::Array { len: *len, elem: elem.map(f), kind }
             }
             TyKind::ParamArray { len, elem } => {
                 let (len, elem) = (len.map(f), elem.map(f));
                 match len.kind() {
                     TyKind::Value(k) => match k.as_u64() {
-                        Some(n) => TyKind::Array { len: n, elem, index: None },
+                        Some(n) => TyKind::Array { len: n, elem, kind: ArrayKind::Plain },
                         None => TyKind::Error,
                     },
                     TyKind::Error => TyKind::Error,
@@ -831,8 +871,9 @@ impl fmt::Display for Ty {
                     write!(f, "[]{}{}", if *is_const { "const " } else { "" }, elem)
                 }
             }
-            TyKind::Array { index: Some(e), elem, .. } => write!(f, "[{}]{}", e, elem),
-            TyKind::Array { len, elem, index: None } => write!(f, "[{}]{}", len, elem),
+            TyKind::Array { kind: ArrayKind::Enum(e), elem, .. } => write!(f, "[{}]{}", e, elem),
+            TyKind::Array { len, elem, kind: ArrayKind::Simd } => write!(f, "#simd [{}]{}", len, elem),
+            TyKind::Array { len, elem, kind: ArrayKind::Plain } => write!(f, "[{}]{}", len, elem),
             TyKind::Tuple { elems, names } => {
                 f.write_str("(")?;
                 for (i, t) in elems.iter().enumerate() {

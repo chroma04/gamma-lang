@@ -332,6 +332,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let cx = self.cx.clone();
                 Ok(self.tmp(t, &format!("((gm_hval){{(void *)&F.h, {}}})", cx)))
             }
+            ExprKind::Unary { op, operand } if operand.ty.is_vector() => self.vector_unary(e, *op, operand),
+            ExprKind::Binary { op, lhs, rhs } if lhs.ty.is_vector() => self.vector_binary(e, *op, lhs, rhs),
             ExprKind::Unary { op, operand } if matches!(operand.ty.kind(), TyKind::Array { .. }) => {
                 self.elementwise(e, Err(*op), None, operand)
             }

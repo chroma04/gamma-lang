@@ -316,7 +316,9 @@ impl<'s> Sema<'s> {
                     && sig.params.iter().all(|p| self.is_c_compatible(*p, false))
                     && (sig.ret.is_unit() || self.is_c_compatible(sig.ret, false))
             }
-            TyKind::Array { elem, .. } => in_struct && self.is_c_compatible(*elem, true),
+            TyKind::Array { elem, kind, .. } => {
+                in_struct && *kind != crate::types::ArrayKind::Simd && self.is_c_compatible(*elem, true)
+            }
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(AdtKind::Struct { bits: Some(_), .. }) => true,
                 Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {

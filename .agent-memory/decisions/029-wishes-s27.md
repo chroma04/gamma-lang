@@ -17,13 +17,18 @@ Sources: todo.md "Nice", bugs-open #23 + dogfood papercuts, spec C.9.
 - `std/fiber/generator`: pull-style generators (§13.4 anticipated `Generator(T)`); consumer
   runs inside `pull(stack, body)`'s `with … on`, producers are `@fiber`s from `^fn(arg)` (+arg).
 
+- SIMD `#simd [N]T` (user asked to reconsider; first rejected, then ADMITTED): an array
+  kind (TyKind::Array kind: ArrayKind::Simd), so storage/index/print reuse arrays. Layout
+  N·size, align = size (fixed, P1 ok); not C-compatible. Every operator lane-wise (`is`
+  and `<` give `#simd [N]bool` masks; vectors are not Eq/Ord); no int `/ %` (no SIMD
+  instruction, P2); methods reduce_sum/min/max, all/any/count, select, min/max/abs,
+  shuffle, store; `V.load(slice)`. Not a second way: arrays can't express masks/select/
+  shuffles. C: vector extensions for unchecked ops, lane loops for checked ones.
+
 ## Rejected (spec C.8 rows added)
 - `@fields(T)` reflection: without field types it drives no code; with them it needs
   type-valued loops = a compile-time sublanguage (§17 has none). Jobs covered structurally
   (is/@hash/@write) or by explicit code.
-- SIMD vector types: `[N]T` + elementwise arithmetic (§7.4.6) is the portable vector; vector
-  types add target-dependent ABI/alignment (P1) and a second way; target intrinsics via
-  foreign C / @asm.
 - Packed enum bit sets: `[E]bool`, `#bits` structs and std/collections/bitset cover the jobs.
 - `Send`-like rule for migrating fibers: values own nothing (P1), so no type rule can tell
   whether memory a fiber reaches is shared; a fiber's handlers live on its thread. Threads

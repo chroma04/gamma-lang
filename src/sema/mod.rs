@@ -36,6 +36,7 @@ mod stack_size;
 mod tests_decl;
 mod ty_expr;
 mod untyped;
+mod vector;
 
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::driver::Session;

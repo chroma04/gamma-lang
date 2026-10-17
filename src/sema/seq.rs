@@ -43,8 +43,7 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn array_arg_as_slice(&mut self, v: Expr, param: Ty) -> Expr {
         let param = self.infer.resolve(param);
         let vt = self.infer.resolve(v.ty);
-        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !vt.is_array() || vt.enum_index().is_some()
-        {
+        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !vt.is_positional_array() {
             return v;
         }
         let span = v.span;

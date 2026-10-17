@@ -46,6 +46,7 @@ mod stmt;
 mod sys;
 mod threads;
 mod value;
+mod vector;
 mod vm;
 
 #[cfg(test)]

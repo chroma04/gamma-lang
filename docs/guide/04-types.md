@@ -30,6 +30,25 @@ third :: fn(a: [4]i32) -> i32 => a.get(2) else 0
 
 Unlike C, an array never decays to a pointer. Passing an array to a function that wants a slice is explicit: take a slice of it (`a[..]`) or a pointer to it (`&a`).
 
+### Vectors
+
+`#simd [N]T` is a vector: an array of `N` lanes whose operators work lane by lane and compile to the processor's vector instructions. Lanes are fixed-width integers, `f32`, `f64` or `bool`; `N` is a power of two and a vector holds at most 64 bytes. Give the type a name and construct it like an array:
+
+```gamma
+F4 :: #simd [4]f32
+
+vectors_demo :: fn() needs Out {
+    a := F4(1, 2, 3, 4)
+    b := F4(fill: 2.5)
+    print("{}\n", a * b)                          // [2.5, 5, 7.5, 10]
+    big := a > b                                   // a mask: [false, false, true, true]
+    print("{} {}\n", big.count(), big.select(a, b))   // 2 [2.5, 2.5, 3, 4]
+    print("{}\n", (a * a).reduce_sum())           // 30
+}
+```
+
+Comparisons, `is` included, give a mask `#simd [N]bool`, so a vector is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+
 ## Slices
 
 `[]T` is a pointer and a length. It is what you use in C when you pass `(T *p, size_t n)`, packaged so the two cannot get separated. The fields `.ptr` and `.len` can be read but not assigned. `[]const T` is a read-only view.

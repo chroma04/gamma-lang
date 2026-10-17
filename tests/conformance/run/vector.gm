@@ -1,0 +1,48 @@
+// Vectors `#simd [N]T` (§5.6.2): lane-wise arithmetic and comparisons, masks, reductions,
+// shuffles, conversions, and loading from and storing to slices.
+F4 :: #simd [4]f32
+I4 :: #simd [4]i32
+B16 :: #simd [16]u8
+
+dot :: fn(a, b: F4) -> f32 => (a * b).reduce_sum()
+
+count_byte :: fn(s: []const u8, c: u8) -> usize {
+    n: usize = 0
+    i: usize = 0
+    needle := B16(fill: c)
+    while i + 16 <= s.len {
+        n += (B16.load(s[i..]) is needle).count()
+        i += 16
+    }
+    while i < s.len {
+        if s[i] is c { n += 1 }
+        i += 1
+    }
+    return n
+}
+
+main :: fn() needs Out {
+    a := F4(1, 2, 3, 4)
+    b := F4(fill: 0.5)
+    print("{} {} {}\n", a + b, a * b - b, dot(a, a))
+    m := a > F4(fill: 2.5)
+    print("{} {} {} {}\n", m, m.any(), m.all(), m.count())
+    print("{}\n", m.select(a, b))
+    x := I4(1, -2, 3, -4)
+    print("{} {} {} {}\n", x.abs(), x.min(I4(fill: 0)), x << 2, ~x)
+    print("{} {}\n", x.reduce_max(), x.reduce_min())
+    print("{}\n", x.shuffle(3, 2, 1, 0))
+    print("{}\n", x.to(f32))
+    w := #simd [4]i64(x)
+    print("{} {}\n", w, [4]i32(x))
+    arr := [4]f32(9, 8, 7, 6)
+    y := F4(arr)
+    y[1] = 100
+    print("{} {} {}\n", y, y[1], @align_of(F4))
+    text := "the quick brown fox jumps over the lazy dog, then the fox sleeps"
+    print("{}\n", count_byte(text, u8('o')))
+    out := [6]f32(fill: 0)
+    a.store(out[1..])
+    print("{}\n", out)
+    print("{}\n", (I4(1, 2, 3, 4) +% I4(fill: 2147483647)))
+}

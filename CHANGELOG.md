@@ -8,6 +8,12 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
+  `bool`) whose operators work lane by lane and compile to vector instructions. Lane-wise
+  comparisons give masks (`#simd [N]bool`) with `all`, `any`, `count` and `select`;
+  vectors have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`,
+  `shuffle`, `load` from and `store` to slices, and convert to and from the array of
+  their lanes. Integer lanes keep the checks of the scalar operators.
 - The `Proc` ambient effect and `std/process`: start programs (`Proc.spawn`) with each
   standard stream inherited, discarded or piped, a working directory and an environment;
   write to a child's input, read its output and error streams together without deadlock

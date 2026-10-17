@@ -327,8 +327,11 @@ impl<'s> Sema<'s> {
             ExprKind::Attributed { attrs, inner } if matches!(&inner.kind, ExprKind::PtrType { inner: f, .. } if matches!(f.kind, ExprKind::FnType(_))) => {
                 self.callconv_fn_ptr(module, attrs, inner, e.span)
             }
+            ExprKind::Attributed { attrs, inner } if matches!(inner.kind, ExprKind::ArrayType { .. }) => {
+                self.vector_type(module, attrs, inner, e.span)
+            }
             ExprKind::Attributed { inner, .. } if !matches!(inner.kind, ExprKind::Struct(_) | ExprKind::Union(_)) => {
-                self.error(e.span, "attributes here must precede a `struct`, a `union` or a `^fn` type");
+                self.error(e.span, "attributes here must precede a `struct`, a `union`, an array type or a `^fn` type");
                 Ty::error()
             }
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } => {

@@ -612,6 +612,36 @@ for d in @variants(Dir) { print("{}: {}\n", NAMES[d], counts[d]) }
 - **Indexing.** `a[e]` takes an `e` of type `E` exactly (an integer is a compile error) and needs no check (§7.9). It is a place when `a` is (§7.2); a pointer to an enum-indexed array indexes it too.
 - **Positions only on request.** `a[..]` is a slice of the elements in the order of `@variants(E)`; it is the only slicing form, and an enum-indexed array has no methods (§21.3) and is not adapted to a slice or many-pointer implicitly (§5.5, §7.2), since each of those would address elements by position. Everything else is as for arrays: copying, `is`, `@hash`, elementwise arithmetic (§7.4.6), `for x in a` (elements in variant order), formatting as an array (§21.6.1) and compile-time evaluation.
 
+#### 5.6.2 Vectors
+
+`#simd [N]T` is a **vector**: an array of `N` **lanes** of type `T` whose operators work lane by lane, for the single-instruction-multiple-data units of processors. It is how a program asks for vector instructions rather than hoping a compiler finds them: an operation on vectors that performs no check is one vector instruction on targets that have it (*Implementation note:* the C back end uses the GCC/Clang vector extensions).
+
+```
+F4  :: #simd [4]f32
+B16 :: #simd [16]u8
+
+dot :: fn(a, b: F4) -> f32 => (a * b).reduce_sum()
+
+count_byte :: fn(s: []const u8, c: u8) -> usize {
+    n: usize = 0
+    i: usize = 0
+    needle := B16(fill: c)
+    while i + 16 <= s.len {
+        n += (B16.load(s[i..]) is needle).count()   // a mask of the matching bytes
+        i += 16
+    }
+    for x in s[i..] { if x is c { n += 1 } }
+    return n
+}
+```
+
+- **Shape.** `T` is `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64` or `bool`, and a concrete type; `N` is a constant power of two, at least 2, and the vector has at most 64 bytes. Types whose size depends on the target (`usize`, `isize`) and narrow types are not lanes, so a vector's layout is the same on every target.
+- **Layout.** That of `[N]T` (`bool` lanes are a byte each), aligned to its size. A vector is not C-compatible (§19.1): C passes vectors by target-specific conventions.
+- **Values.** A vector is constructed like an array, with exactly `N` lanes or `fill:`: `F4(1, 2, 3, 4)`, `F4(fill: 0)`, or `---` for plain lanes. Lanes are indexed and assigned like elements (`v[i]`, checked), a vector can be sliced and iterated like an array, and `V.load(xs)` makes a vector of the first `N` elements of a slice (checked: `xs.len >= N`), which `v.store(dst)` writes back.
+- **Operators** (§7.4.7) apply to each pair of lanes and give a vector; comparisons, `is` included, give a **mask** `#simd [N]bool`. So vectors are not `Eq` or `Ord` (§16.3), and a mask is tested with `.all()`, `.any()` or `.count()`, not as a condition.
+- **Conversions.** `V(a)` and `[N]T(v)` convert between a vector and the array of its lanes, `W(v)` between vectors of the same lane count where each lane converts losslessly (§6.5), and `v.to(F)` gives the nearest `f32` or `f64` lanes. `.bits(U)` reinterprets as for any plain data (§6.6).
+- **Methods** (§21.3): `reduce_sum()`, `reduce_min()`, `reduce_max()`, `min(w)`, `max(w)`, `abs()`, `shuffle(i0, i1, …)` (the lanes at the constant indices, as a vector of as many lanes), `store(dst)`; on masks `all()`, `any()`, `count()` and `select(a, b)` (each lane from `a` where the mask is set, else from `b`).
+
 ### 5.7 Slices
 
 `[]T` and `[]const T` are a pair `(ptr: [^]T, len: usize)` (`[^]const T` for the `const` form), laid out as a struct with those two fields in that order. The fields can be read but not assigned; build a slice by slicing (§7.9).
@@ -979,6 +1009,20 @@ Float division follows IEEE 754 (division by zero gives ±∞ or NaN; it does no
 
 If `a` and `b` are arrays `[N]T` of a numeric `T`, `a op b` for `op` in `+ - * /` (and the overflow flavors) applies `op` to each pair of elements and gives `[N]T`; `-a` negates each element. The `?` flavors are not available on arrays. There is no implicit broadcasting of scalars; use `[N]T(fill: x)`.
 
+
+#### 7.4.7 Vector operators
+
+On vectors (§5.6.2) every operator applies lane by lane, with the rules and checks of the scalar operator for each lane; the two operands have the same vector type (a scalar is never spread over the lanes: use `V(fill: x)`), except that a shift takes one scalar amount for every lane.
+
+| Operators | Lanes | Result |
+| --- | --- | --- |
+| `+ - *` and their `%` and `\|` flavors, unary `-` | numeric (the flavors and `%`, `\|`: integer; unary `-`: signed or float) | the vector type |
+| `/` | float | the vector type |
+| `& \| ~`, unary `~`; `<< >>` (and `<<%`) by a scalar amount | integer; `& \| ~` also `bool` | the vector type |
+| `is`, `is not` | any | the mask `#simd [N]bool` |
+| `< <= > >=` | numeric | the mask `#simd [N]bool` |
+
+`/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`.
 ### 7.5 Comparison
 
 `< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
@@ -2513,6 +2557,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#align(n)` | struct literal, field, `#global` | raise alignment to `n` | 5.10.4 |
 | `#bits(U)` | struct literal | bit-packed into `U` | 5.10.5 |
 | `#c_union` | union literal | untagged C union | 5.11.1 |
+| `#simd` | array type `[N]T` | a vector of `N` lanes | 5.6.2 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
 | `#callconv(.X)` | top-level function, foreign member, `^fn` type | calling convention: `.C` (default), `.SysV`, `.Win64` (x86-64 only); part of a `^fn` type; plain functions only, never second-class | 19.2 |
@@ -2607,6 +2652,8 @@ Builtin methods are resolved by §7.10 rule 2. `T` is a type argument.
 **`usize`:** `to_ptr(P)`.
 
 **Arrays and slices** (`a` of element type `T`): `len` (field-like, no parentheses), `ptr` (slices), `get(i) -> ?T`, `get_ptr(i) -> ?^T`, `first() -> ?T`, `last() -> ?T`, `cursor()`, `copy_from(src: []const T)` (lengths must be equal: checked; overlap allowed), `fill(x: T)`, `starts_with(p)`, `ends_with(p)`, `index_of(x) -> ?usize` (`Eq`), `swap(i, j)`, `sort()` (`Ord` elements), `sort_by(less: fn(a, b: ^const T) -> bool)`, `sort_by_key(key: fn(x: ^const T) -> K)` (`Ord(K)`), `min()`, `max()` (`Ord`; `?T`), `binary_search(x) -> (found: bool, at: usize)` (`Ord`). `stable_sort()`, `stable_sort_by(less)` and `stable_sort_by_key(key)` are the stable variants. All sorts are in place and allocate nothing. If `<` (or `less`) is not a strict weak ordering on the elements — for example, floats including NaN — the result is an unspecified permutation of the input: never a trap or undefined behavior. `min`, `max` and `binary_search` likewise give an unspecified element or index in that case.
+
+**Vectors** (§5.6.2) have none of the array methods; they have `reduce_sum()`, `reduce_min()`, `reduce_max()` (in lane order, with the scalar `+`, `min` and `max`), `min(w)`, `max(w)`, `abs()` (lane by lane, as the scalar methods), `to(F)`, `shuffle(i0, …)`, `store(dst: []T)` (checked: long enough), and on the type `load(xs: []const T)` (checked). Masks have `all()`, `any()`, `count() -> usize` and `select(a, b)`.
 
 **Strings** additionally: `cstr_len()` on `cstring`, `utf8_valid()`.
 
@@ -2963,6 +3010,7 @@ prefix_type   = '?' prefix_type
               | '[' ']' [ 'const' ] prefix_type
               | '[' '^' ']' [ 'const' ] prefix_type
               | '[' expr ']' prefix_type                        // [N]T; [E]T when expr names an enum type (§5.6.1)
+              | '#simd' '[' expr ']' prefix_type                // a vector (§5.6.2)
               | '[' '_' ']' prefix_type                         // only in array constructors
               | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
@@ -3200,6 +3248,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 
 - **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
 - **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
+- **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array; what makes them a type of their own is that comparisons give masks, which arrays, compared as wholes, cannot. Elementwise arithmetic on ordinary arrays (§7.4.6) stays for arrays of any length, and is a loop.
 - **Arbitrary-width integers** (`u1` … `u65535`, as C23's `_BitInt`) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
 - **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
 - **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
@@ -3295,7 +3344,8 @@ The first four already exist, each with its cost and its code visible where it i
 | Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
 | Effect operations in the universe scope | P3 | a bare `now()` hides that it reaches into the context |
 | Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
-| SIMD vector types | P1, one feature per job | arrays with elementwise arithmetic (§7.4.6) are the portable vector, which C compilers vectorize; a vector type would add a second array with a target-dependent layout and calling convention. Target-specific instructions are reached through foreign C or `@asm` (§19) |
+| Target-specific SIMD types and intrinsics | P1, P5 | their layouts and meanings differ by target; `#simd [N]T` has one layout and one meaning everywhere (§5.6.2), and anything beyond it is reached through foreign C or `@asm` (§19) |
+| Integer division of vector lanes | P2 | no target has the instruction, so `/` would hide a loop |
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 

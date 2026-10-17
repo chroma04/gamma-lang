@@ -358,8 +358,16 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
     }
 
-    /// `[N]T(e1, …)`, `[_]T(…)` and `[N]T(fill: x)` (§7.11).
-    pub fn construct_array(&mut self, len: Option<u64>, elem: Ty, args: &[ast::Arg], span: Span) -> Expr {
+    /// `[N]T(e1, …)`, `[_]T(…)` and `[N]T(fill: x)` (§7.11), and the same for a vector
+    /// type `ty` (§5.6.2); `ty` is `None` for a plain array.
+    pub fn construct_array(
+        &mut self,
+        ty: Option<Ty>,
+        len: Option<u64>,
+        elem: Ty,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Expr {
         if let [ast::Arg { kind: ArgKind::Named(n, e), .. }] = args
             && n.name.as_str() == "fill"
         {
@@ -368,7 +376,26 @@ impl<'a, 's> FnCx<'a, 's> {
                 return error_expr(span);
             };
             let v = self.field_value(e, elem);
-            return mk(Ty::array(len, elem), tir::ExprKind::ArrayFill(Box::new(v)), span);
+            return mk(ty.unwrap_or(Ty::array(len, elem)), tir::ExprKind::ArrayFill(Box::new(v)), span);
+        }
+        // `[N]T(v)` and `V(a)` with one argument that is itself an array or a vector:
+        // a conversion between a vector and an array or another vector (§6.5, §5.6.2).
+        if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
+            && let Some(n) = len
+            && !matches!(e.kind, ast::ExprKind::Uninit)
+        {
+            let v = self.expr(e, Some(elem));
+            let vt = self.infer.resolve(v.ty);
+            let target = ty.unwrap_or(Ty::array(n, elem));
+            if vt.is_array() && vt != elem && (vt.is_vector() || target.is_vector()) {
+                return self.vector_conversion(target, v, span).expect("a vector conversion");
+            }
+            let v = self.coerce(v, elem);
+            if n != 1 {
+                self.error(span, format!("`{}` needs exactly {} elements, but 1 is given", target, n));
+                return error_expr(span);
+            }
+            return mk(target, tir::ExprKind::Array(vec![v]), span);
         }
         let mut values = vec![];
         // `[N]T(..t)` spreads a tuple's elements (§11.4); with spreads, every value goes
@@ -397,10 +424,11 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(n) = len
             && n != values.len() as u64
         {
-            self.error(span, format!("`[{}]{}` needs exactly {} elements, but {} are given", n, elem, n, values.len()));
+            let t = ty.unwrap_or(Ty::array(n, elem));
+            self.error(span, format!("`{}` needs exactly {} elements, but {} are given", t, n, values.len()));
             return error_expr(span);
         }
-        let t = Ty::array(values.len() as u64, elem);
+        let t = ty.unwrap_or(Ty::array(values.len() as u64, elem));
         let arr = mk(t, tir::ExprKind::Array(values), span);
         if stmts.is_empty() {
             return arr;

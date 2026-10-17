@@ -1001,7 +1001,12 @@ impl<'a> Machine<'a> {
                 }
             }
             Builtin::Fence => Ok(Value::unit()),
-            _ => Ok(Value::Bytes(self.builtin(span, op, res_ty, tys, v)?)),
+            _ => {
+                if let Some(r) = self.vector_builtin(span, op, res_ty, tys, v) {
+                    return Ok(Value::Bytes(r?));
+                }
+                Ok(Value::Bytes(self.builtin(span, op, res_ty, tys, v)?))
+            }
         }
     }
 

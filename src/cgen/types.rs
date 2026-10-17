@@ -46,6 +46,8 @@ pub struct Types<'a> {
     pub debug_names: bool,
     /// The Gamma names given to members so far.
     member_names: BTreeSet<String>,
+    /// The vector types declared so far (see `vector_typedef`).
+    vector_names: BTreeSet<String>,
     /// `-g`: the debugger views built so far (see `super::views`).
     pub(super) views: super::views::Views,
 }
@@ -97,6 +99,7 @@ impl<'a> Types<'a> {
             mirror_defs: String::new(),
             debug_names: false,
             member_names: BTreeSet::new(),
+            vector_names: BTreeSet::new(),
             views: Default::default(),
         }
     }
@@ -291,6 +294,16 @@ impl<'a> Types<'a> {
         }
         let _ = writeln!(self.typed_defs, ", {});", assert_message(&format!("layout of `{}`", t)));
         self.typed_by_shape.insert(shape, name.clone());
+        name
+    }
+
+    /// The name of a GCC/Clang vector type of `n` lanes of the C type `lane` (`tag` names
+    /// it, as `u8` or `f32`), each `bytes` wide, declared once.
+    pub fn vector_typedef(&mut self, lane: &str, tag: &str, n: u64, bytes: u64) -> String {
+        let name = format!("gm_v{}{}", n, tag);
+        if self.vector_names.insert(name.clone()) {
+            let _ = writeln!(self.typed_defs, "typedef {} {} __attribute__((vector_size({})));", lane, name, n * bytes);
+        }
         name
     }
 

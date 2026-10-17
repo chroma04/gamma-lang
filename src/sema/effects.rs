@@ -52,7 +52,10 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
             match_params(*a, *b, binds);
         }
         // `[N]T` against `[4]u8` gives `N = 4` (as a `u64`, converted by the caller).
-        (TyKind::ParamArray { len, elem: a }, TyKind::Array { len: n, elem: b, index: None }) => {
+        (
+            TyKind::ParamArray { len, elem: a },
+            TyKind::Array { len: n, elem: b, kind: crate::types::ArrayKind::Plain },
+        ) => {
             if let TyKind::Param(p) = len.kind() {
                 let key = crate::types::ConstKey::int(Ty::int(false, 64), &(*n).into(), 8);
                 binds.entry(*p).or_insert(Ty::intern(TyKind::Value(key)));

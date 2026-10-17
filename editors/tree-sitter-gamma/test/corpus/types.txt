@@ -693,3 +693,33 @@ i :: fn(it: fn() needs Yield(T) + E) needs E
               (identifier)))))
       (effect_set
         (identifier)))))
+
+================================================================================
+Vector types and enum-indexed arrays
+================================================================================
+
+F4 :: #simd [4]f32
+NAMES :: [Dir]string(N: "n")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (attributed_type
+      (attribute
+        (attribute_name))
+      (array_type
+        (integer_literal)
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (array_type
+      (identifier)
+      (generic_type
+        (identifier)
+        (arguments
+          (named_argument
+            (identifier)
+            (string_literal
+              (string_content))))))))

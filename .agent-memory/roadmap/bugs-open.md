@@ -40,11 +40,5 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
  run/float_print_ties covers it. #30 empty Out chunks and #31 huge-frame message fixed in s26: C skips empty formatted
  pieces, spec says pieces are non-empty; C emits a trap-only body when tir::frame_cost > MAX_FRAME.)
 
-## Wishes (unscheduled; each must clear §22 if it is a library addition)
-23. std generator; reflection. (Fiber channel done s20: std/fiber/channel; deque exists;
-    lstat on symlinks is tested by run/std_fs_symlinks.)
-
 ## Dogfood papercuts (s18 examples; unscheduled)
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).
-- std wish: sleep-aware fiber scheduler (Clock.sleep blocks the thread; a scheduler op
-  `sleep` would need Clock in the handler's set — design open). Channel done in s20.

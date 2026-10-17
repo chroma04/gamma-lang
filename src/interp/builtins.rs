@@ -383,6 +383,26 @@ impl<'a> Machine<'a> {
             | Builtin::VolatileLoad
             | Builtin::VolatileStore => self.trap(span, "internal error: builtin needs special evaluation"),
             Builtin::Asm { .. } => self.trap(span, "inline assembly (`@asm`) runs only in compiled code"),
+            Builtin::LaneEq
+            | Builtin::LaneNe
+            | Builtin::LaneLt
+            | Builtin::LaneLe
+            | Builtin::LaneGt
+            | Builtin::LaneGe
+            | Builtin::ReduceSum
+            | Builtin::ReduceMin
+            | Builtin::ReduceMax
+            | Builtin::MaskAll
+            | Builtin::MaskAny
+            | Builtin::MaskCount
+            | Builtin::Select
+            | Builtin::LaneMin
+            | Builtin::LaneMax
+            | Builtin::LaneAbs
+            | Builtin::LaneConvert
+            | Builtin::Shuffle
+            | Builtin::VecLoad
+            | Builtin::VecStore => self.trap(span, "internal error: a vector builtin needs the machine"),
         }
     }
 

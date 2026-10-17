@@ -339,6 +339,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     pub fn builtin(&mut self, e: &'a Expr, op: Builtin, args: &'a [Expr]) -> CResult<String> {
+        if let Some(r) = self.vector_builtin(e, op, args) {
+            return r;
+        }
         let t = e.ty;
         let loc = self.loc(e);
         match op {

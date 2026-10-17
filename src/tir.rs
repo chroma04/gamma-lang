@@ -1330,6 +1330,38 @@ pub enum Builtin {
     /// `r.len()` of a range: the number of values it contains (0 if empty).
     RangeLen,
 
+    /// Lane-wise comparisons of two vectors (§5.6.2), giving a mask `#simd [N]bool`.
+    LaneEq,
+    LaneNe,
+    LaneLt,
+    LaneLe,
+    LaneGt,
+    LaneGe,
+    /// `v.reduce_sum()`: the lanes added in lane order, with the checks of `+`.
+    ReduceSum,
+    /// `v.reduce_min()` / `v.reduce_max()`: as the scalar `min` / `max` over the lanes.
+    ReduceMin,
+    ReduceMax,
+    /// `m.all()`, `m.any()` → `bool`; `m.count()` → `usize` (the true lanes).
+    MaskAll,
+    MaskAny,
+    MaskCount,
+    /// `m.select(a, b)`: each lane from `a` where `m` is true, else from `b`.
+    Select,
+    /// `a.min(b)`, `a.max(b)`, `v.abs()`: the scalar methods, lane by lane.
+    LaneMin,
+    LaneMax,
+    LaneAbs,
+    /// A vector of the same number of lanes of another type: the lossless conversion
+    /// `T(x)` or `.to(F)`, lane by lane (the result type says which).
+    LaneConvert,
+    /// `v.shuffle(i0, …)`: the arguments after the vector are `usize` constants.
+    Shuffle,
+    /// `V.load(xs)`: a vector of the first lanes of a slice (checked: long enough).
+    VecLoad,
+    /// `v.store(dst)`: the lanes into the start of a slice (checked: long enough).
+    VecStore,
+
     /// `s.cstr_len()`.
     CstrLen,
     /// `assert(cond, msg, loc)`: checked (removed in Fast builds).

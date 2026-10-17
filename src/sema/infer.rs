@@ -216,9 +216,7 @@ impl InferTable {
             {
                 self.unify(*e1, *e2)
             }
-            (Array { len: l1, elem: e1, index: i1 }, Array { len: l2, elem: e2, index: i2 })
-                if l1 == l2 && i1 == i2 =>
-            {
+            (Array { len: l1, elem: e1, kind: i1 }, Array { len: l2, elem: e2, kind: i2 }) if l1 == l2 && i1 == i2 => {
                 self.unify(*e1, *e2)
             }
             (ParamArray { len: l1, elem: e1 }, ParamArray { len: l2, elem: e2 }) if l1 == l2 => self.unify(*e1, *e2),
