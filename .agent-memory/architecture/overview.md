@@ -5,7 +5,8 @@ src/main.rs        CLI: lex|parse|check|run|build|test|bench|fmt|doc|new|init|fe
 src/lib.rs         module list
 src/source.rs      SourceMap, FileId, Span{file,lo,hi}; source::canonicalize (never
                    Path::canonicalize: Windows \\?\ paths)
-src/diag.rs        Diagnostic{severity,message,span,labels,notes}, render(Human|Short);
+src/diag.rs        Diagnostic{severity,message,span,labels,notes,fixes}, render(Human|Short|Json), to_json;
+src/fix.rs         gamma fix: plan(diags, editable) → non-overlapping edits per file; apply;
                    LONG_LINE/WINDOW show long source lines as a window
 src/symbol.rs      Symbol interner (global Mutex, leaked strs)
 src/driver.rs      Session{sources,diags,ids,mode,debug_info,target,packages,overlays}; load/lex/parse

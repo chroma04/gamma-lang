@@ -12,8 +12,8 @@ fn gamma(args: &[&str]) -> (bool, String) {
 #[test]
 fn every_command_takes_help() {
     let commands = [
-        "lex", "parse", "check", "run", "test", "bench", "build", "repl", "fmt", "doc", "lsp", "new", "init", "add",
-        "remove", "fetch", "update", "cache",
+        "lex", "parse", "check", "fix", "run", "test", "bench", "build", "repl", "fmt", "doc", "lsp", "new", "init",
+        "add", "remove", "fetch", "update", "cache",
     ];
     for cmd in commands {
         for flag in ["--help", "-h"] {

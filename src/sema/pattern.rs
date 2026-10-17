@@ -3,6 +3,7 @@
 use super::DeclValue;
 use super::func::{FnCx, LocalBinding};
 use super::untyped::Untyped;
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind, PatternKind};
@@ -507,10 +508,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             (Some(_), None) => {
                 if ctx != PatCtx::IsTest {
-                    self.error(
-                        span,
-                        format!("variant `{}` has a payload; write `.{}(_)` to ignore it", vname.name, vname.name),
-                    );
+                    let msg =
+                        format!("variant `{}` has a payload; write `.{}(_)` to ignore it", vname.name, vname.name);
+                    let end = Span { lo: span.hi, ..span };
+                    self.sema.emit(Diagnostic::error(span, msg).with_fix("match any payload with `(_)`", end, "(_)"));
                 }
                 None
             }

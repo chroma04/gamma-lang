@@ -308,6 +308,50 @@ fn diagnostics_carry_related_locations() {
 }
 
 #[test]
+fn fixes_are_offered_as_quick_fixes() {
+    let dir = TempDir::new();
+    let text = "f :: fn() -> i32 => 1\n\nmain :: fn() {\n    f()\n}\n";
+    let path = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    let init = lsp.initialize();
+    assert_eq!(init["capabilities"]["codeActionProvider"]["codeActionKinds"][0], "quickfix");
+    lsp.open(&path, text);
+    let d = lsp.diagnostics(&path, 1);
+    let unused = d.iter().find(|d| d["message"].as_str().unwrap().contains("unused")).expect("the unused value");
+    let params = |diags: Vec<Value>| {
+        json!({
+            "textDocument": {"uri": uri(&path)},
+            "range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 0}},
+            "context": {"diagnostics": diags},
+        })
+    };
+    let actions = lsp.result("textDocument/codeAction", params(vec![unused.clone()]));
+    assert_eq!(actions.as_array().unwrap().len(), 1, "{actions}");
+    let a = &actions[0];
+    assert_eq!(a["kind"], "quickfix");
+    assert_eq!(a["isPreferred"], true);
+    assert_eq!(a["diagnostics"][0]["message"], unused["message"]);
+    // An insertion before `f()`: an empty range, not widened as diagnostics are.
+    let edit = &a["edit"]["changes"][uri(&path)][0];
+    assert_eq!(edit["newText"], "_ = ");
+    assert_eq!(edit["range"]["start"], json!({"line": 3, "character": 4}));
+    assert_eq!(edit["range"]["end"], json!({"line": 3, "character": 4}));
+    // A diagnostic with two fixes offers both, neither preferred.
+    lsp.change(&path, 2, "g :: fn() -> ?i32 => 1\n\nh :: fn() -> ?i32 {\n    x := try g() else 0\n    return x\n}\n");
+    let d = lsp.diagnostics(&path, 2);
+    let amb = d.iter().find(|d| d["message"].as_str().unwrap().contains("ambiguous")).expect("`try x else d`");
+    let actions = lsp.result("textDocument/codeAction", params(vec![amb.clone()]));
+    let titles: Vec<&str> = actions.as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["write `try (x else d)`", "write `(try x) else d`"]);
+    assert!(actions.as_array().unwrap().iter().all(|a| a["isPreferred"] == false));
+    // Only quick fixes are offered.
+    let mut p = params(vec![amb.clone()]);
+    p["context"]["only"] = json!(["refactor"]);
+    assert_eq!(lsp.result("textDocument/codeAction", p), json!([]));
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
 fn syntax_errors_are_reported() {
     let dir = TempDir::new();
     let text = "main :: fn() {\n    x := (1 +\n}\n";

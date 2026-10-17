@@ -8,6 +8,7 @@ pub mod coverage;
 pub mod diag;
 pub mod doc;
 pub mod driver;
+pub mod fix;
 pub mod float;
 pub mod fmt;
 pub mod ice;

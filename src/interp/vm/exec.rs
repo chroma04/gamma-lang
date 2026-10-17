@@ -1214,11 +1214,14 @@ impl<'a> Machine<'a> {
                         }
                         None => {
                             let vals = st.values(list);
-                            let cx = st.cx.clone();
-                            let r = self
-                                .call_function(span, f, vals, None, cx, None, false)
-                                .and_then(|v| write_value(st, out, v, span));
-                            tri!(at!(), r);
+                            let variadic = &code.arg_tys[args as usize];
+                            let r = if variadic.is_empty() {
+                                let cx = st.cx.clone();
+                                self.call_function(span, f, vals, None, cx, None, false)
+                            } else {
+                                self.call_foreign(span, f, vals, variadic)
+                            };
+                            tri!(at!(), r.and_then(|v| write_value(st, out, v, span)));
                         }
                     }
                 }

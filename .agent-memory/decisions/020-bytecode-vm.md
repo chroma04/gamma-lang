@@ -47,7 +47,9 @@
   try in a clause, conversions). CI runs conformance with GAMMA_INTERP=tree too.
 - Follow-ups: superinstructions (cmp+branch, load+op), shrink Op (40 B), avoid the Rc Frame
   per activation when no Frame locals, cheaper Value boundary for builtins/calls to tree code.
-- No run conformance test falls back to the tree-walker for a whole function.
+- No run conformance test falls back to the tree-walker for a whole function (s24: variadic
+  foreign calls compile to Op::Call with the variadic arg types in code.arg_tys[args];
+  exec's no-code branch calls call_foreign with them). Only huge_local (1e12 array) falls back.
 
 ## s10 VM speedups (perf follow-ups done)
 - i64 kernels with cold overflow path; raw-ip dispatch reading hot registers unchecked, guarded

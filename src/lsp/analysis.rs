@@ -2,7 +2,7 @@
 //! LSP diagnostics.
 
 use super::position::{Encoding, LineIndex};
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::{Diagnostic, Fix, Severity};
 use crate::driver::Session;
 use crate::ide::IdeIndex;
 use crate::source::{FileId, Span};
@@ -247,7 +247,31 @@ impl Analysis {
         if !related.is_empty() {
             v["relatedInformation"] = Value::Array(related);
         }
+        // The fixes travel with the diagnostic, as LSP edits, and come back in the
+        // `textDocument/codeAction` requests that offer them (see `server::code_actions`).
+        let fixes: Vec<Value> = d.fixes.iter().filter_map(|fx| self.fix_json(fx, enc, uri_of)).collect();
+        if !fixes.is_empty() {
+            v["data"] = json!({"fixes": fixes});
+        }
         v
+    }
+
+    /// A fix as `{"title", "changes": {uri: [TextEdit]}}`, unless it edits a file that is
+    /// not on disk.
+    fn fix_json(&self, fx: &Fix, enc: Encoding, uri_of: &dyn Fn(&Path) -> String) -> Option<Value> {
+        let mut changes = serde_json::Map::new();
+        for e in &fx.edits {
+            let path = self.real_path(e.span.file)?;
+            // The exact range, not widened as for showing a diagnostic.
+            let range =
+                range_json(&LineIndex::new(self.text(e.span.file)), e.span.lo as usize, e.span.hi as usize, enc);
+            let edit = json!({"range": range, "newText": e.text});
+            match changes.entry(uri_of(&path)).or_insert_with(|| Value::Array(vec![])) {
+                Value::Array(a) => a.push(edit),
+                _ => unreachable!(),
+            }
+        }
+        Some(json!({"title": fx.message, "changes": changes}))
     }
 }
 

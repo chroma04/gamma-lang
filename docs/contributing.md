@@ -396,5 +396,9 @@ examples), rather than letting the implementation silently diverge.
 - Follow the existing structure described in [`architecture.md`](architecture.md).
 - Public items get doc comments; other comments explain *why*, not *what*.
 - Diagnostics are lowercase, name the construct involved, and suggest a fix when
-  there is an obvious one.
+  there is an obvious one. When the fix is a mechanical edit that is right whenever
+  the diagnostic is, attach it too (`Diagnostic::with_fix`), so that `gamma fix` and
+  the language server can apply it; when there are several reasonable edits, attach
+  each (`gamma fix` then leaves the choice to the programmer). Test it in
+  `tests/fix.rs`.
 - No `unwrap()` on user-controlled input: report a diagnostic instead.

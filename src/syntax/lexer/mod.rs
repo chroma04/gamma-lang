@@ -97,6 +97,8 @@ struct Lexer<'a> {
     /// The span of the first line terminator seen since the last token. Whether
     /// it becomes a `Newline` token is decided when the next token is known.
     pending_newline: Option<Span>,
+    /// See [`LexOutput::joined_lines`].
+    joined_lines: Vec<u32>,
     /// Close open brackets where a declaration starts in the first column.
     recover: bool,
 }
@@ -114,6 +116,7 @@ impl<'a> Lexer<'a> {
             brackets: Vec::new(),
             pending_matches: Vec::new(),
             pending_newline: None,
+            joined_lines: Vec::new(),
             recover: false,
         }
     }
@@ -139,7 +142,7 @@ impl<'a> Lexer<'a> {
         }
         let eof = self.span(end, end);
         self.tokens.push(Token { kind: TokenKind::Eof, span: eof });
-        LexOutput { tokens: self.tokens, docs: self.docs }
+        LexOutput { tokens: self.tokens, docs: self.docs, joined_lines: self.joined_lines }
     }
 
     // ----- helpers -----
@@ -638,6 +641,7 @@ impl<'a> Lexer<'a> {
         }
         let Some(last) = self.tokens.last() else { return };
         if suppresses_newline_after(&last.kind) {
+            self.joined_lines.push(span.lo);
             return;
         }
         if innermost != Some(BracketKind::MatchBrace) {

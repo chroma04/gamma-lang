@@ -1907,11 +1907,14 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     fn call(&mut self, e: &'a Expr, callee: &'a Callee, args: &'a [Expr], want: Option<Arg>) -> C<Arg> {
         let span = e.span;
-        // A variadic foreign call needs the types of its arguments, which the tree-walker has.
-        if let Callee::Fn(f) = callee
-            && matches!(self.m.prog.fns[f.index()].kind, FnKind::Foreign { variadic: true, .. })
-        {
-            return Err(unsupported!());
+        // A variadic foreign call passes its variadic arguments by their types, which go
+        // with the argument list.
+        let mut variadic = Vec::new();
+        if let Callee::Fn(f) = callee {
+            let def = &self.m.prog.fns[f.index()];
+            if matches!(def.kind, FnKind::Foreign { variadic: true, .. }) {
+                variadic = args[def.params.len()..].iter().map(|x| x.ty).collect();
+            }
         }
         let refs: Vec<&'a Expr> = args.iter().collect();
         let cv = match callee {
@@ -1922,7 +1925,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             _ => None,
         };
         let list = self.operands(&refs, span)?;
-        let a = self.arg_list(list, Vec::new());
+        let a = self.arg_list(list, variadic);
         let out = self.dst(e, want);
         match callee {
             Callee::Fn(f) => {
