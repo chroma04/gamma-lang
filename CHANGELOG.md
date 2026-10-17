@@ -44,6 +44,10 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- A large Debug build compiles its C as several files in parallel (one per 96 KiB of
+  generated functions, up to one per processor): the 16k-line C of `examples/calc`
+  builds in 0.6–0.9 s instead of 1.4 s on four cores. The extra files sit next to
+  `prog.c` as `prog.1.c`, `prog.2.c`…
 - Faster `f32` and `f64` code on the interpreter: arithmetic, comparisons and branches
   on floats run as native bytecode instructions (a Mandelbrot loop runs about 8x faster),
   and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
