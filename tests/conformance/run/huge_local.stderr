@@ -1,0 +1,1 @@
+trap: stack overflow: `main` needs a frame of 1000000000256 bytes

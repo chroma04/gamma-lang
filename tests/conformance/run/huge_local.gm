@@ -1,5 +1,5 @@
-//! safe: skip Fil-C allocates large locals off the stack, so nothing overflows
 //! exit: 134
+//! stderr
 // A local too large for any stack is a stack overflow trap, not a crash.
 main :: fn() needs Out {
     x: [1000000000000]u8 = ---

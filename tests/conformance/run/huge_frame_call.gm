@@ -1,0 +1,15 @@
+//! exit: 134
+//! stderr
+// A function whose frame no stack could hold traps at the call with the frame's size, on
+// both back ends, before any of its body runs.
+big :: fn(n: i32) -> u8 needs Out {
+    print("not reached\n")
+    x: [1000000000000]u8 = ---
+    x[5] = 1
+    return x[5] + n.trunc(u8)
+}
+
+main :: fn() needs Out {
+    print("start\n")
+    print("hi {}\n", big(3))
+}

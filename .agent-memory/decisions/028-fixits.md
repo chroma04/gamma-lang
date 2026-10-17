@@ -26,5 +26,8 @@
   an existing alias), bare effect op → `Fs.op`, `a < b < c` → `a < b and b < c` (mid a
   name, not under `not`, 2 ops), `==`/`!=` → `is`/`is not`, `if x = v {` → `is`, `try x`
   in a test → `ok(x)` (results only; gamma fix never compiles tests: LSP/json only).
-- Rejected: lone `{` (maybe a placeholder), missing `needs X` (signature edit varies),
+- s26: undeclared effect → ` needs X` / ` + X` at FnSig.span.hi (FnCx.needs_at, top-level fns
+  only; bare name must resolve to the same EffectRef in the module; not `needs not`; `main`
+  only ambient). Named non-capturing nested literals report their own (no fix).
+- Rejected: lone `{` (maybe a placeholder),
   keyword as name, block-value (two fixes), `len(s)`, `.round` → `.to(T)` (semantics).

@@ -2,6 +2,7 @@
 //! statements, blocks and control flow (§4, §8). Expressions are in `expr.rs`,
 //! calls in `call.rs`, and the final literal-type pass in `finalize.rs`.
 
+use super::DeclValue;
 use super::infer::{Fallback, InferTable, VarKind};
 use super::untyped::Untyped;
 use super::{ModuleId, Sema};
@@ -136,6 +137,10 @@ pub struct FnCx<'a, 's> {
     /// Performs that escaped a `with` handling another instantiation of their effect
     /// (`Sched` inside a `with` handling `Sched(Out)`), for the undeclared-effect message.
     pub near_misses: Vec<(Span, EffectRef)>,
+    /// For a top-level function: the (empty) span at the end of its signature, where a fix
+    /// adds an effect it performs but does not declare, and whether the signature already
+    /// has a `needs` clause (the fix then adds ` + E`, else ` needs E`).
+    pub needs_at: Option<(Span, bool)>,
     /// The `break`s to each label, keyed by the frame depth and the label, with the
     /// type and span of the value given (`()` for loops). Taken out when the labeled
     /// construct is finished: a `with` checks the values.
@@ -237,6 +242,11 @@ impl<'s> Sema<'s> {
         let own_name = self.nested_generic.get(&fn_id).copied();
         let mut cx = FnCx::new(self, module, sig.ret, sig.effects.clone());
         cx.fn_id = Some(fn_id);
+        // `needs not` (foreign functions only) takes no fix.
+        if lit.sig.effects.as_ref().is_none_or(|e| !e.is_empty()) {
+            let hi = lit.sig.span.hi;
+            cx.needs_at = Some((Span { lo: hi, hi, ..lit.sig.span }, lit.sig.effects.is_some()));
+        }
         // A generic nested function can call itself by name (§11.8).
         if let Some(n) = own_name {
             cx.declare(n.name, LocalBinding::NestedFn(fn_id), n.span);
@@ -340,6 +350,7 @@ impl<'a, 's> FnCx<'a, 's> {
             clause: None,
             handled: vec![],
             near_misses: vec![],
+            needs_at: None,
             label_breaks: Default::default(),
         }
     }
@@ -542,7 +553,12 @@ impl<'a, 's> FnCx<'a, 's> {
         for (e, span) in performed {
             if !self.declared.contains(&e) && !reported.contains(&e) {
                 let declared = self.declared.clone();
-                self.undeclared_effect(&e, span, &declared);
+                let (msg, plain) = self.undeclared_effect_message(&e, span, &declared);
+                let mut d = Diagnostic::error(span, msg);
+                if plain && let Some(fix) = self.needs_fix(&e) {
+                    d = d.with_fix(format!("add `{}` to the function's effects", e), fix.0, fix.1);
+                }
+                self.sema.emit(d);
                 reported.push(e);
             }
         }
@@ -625,10 +641,29 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// The edit that adds effect `e` to the signature of the function being checked, if it
+    /// is a top-level function and `e` is written as its bare name there.
+    fn needs_fix(&mut self, e: &EffectRef) -> Option<(Span, String)> {
+        let (at, has_needs) = self.needs_at?;
+        let name = e.effect.name();
+        let d = self.sema.lookup_module_name(self.module, name)?;
+        let DeclValue::Effect(eff) = self.sema.resolve_decl(d) else { return None };
+        if self.sema.bare_effect_ref(eff) != *e {
+            return None;
+        }
+        // `main` performs only ambient effects; the others must be handled inside it.
+        let is_main = self.fn_id.is_some_and(|f| self.sema.prog.fns[f.index()].name.as_str() == "main");
+        if is_main && !self.sema.is_ambient(e) {
+            return None;
+        }
+        Some((at, if has_needs { format!(" + {}", name) } else { format!(" needs {}", name) }))
+    }
+
     /// The message for an effect performed at `span` that the function, which declares
-    /// `declared`, does not declare. A call of an iterator from a function with no `Yield` of
-    /// its own was most likely meant as the source of a `for` loop.
-    pub fn undeclared_effect_message(&self, e: &EffectRef, span: Span, declared: &EffectSet) -> String {
+    /// `declared`, does not declare, and whether it is the plain message, which only says to
+    /// add the effect. A call of an iterator from a function with no `Yield` of its own was
+    /// most likely meant as the source of a `for` loop.
+    pub fn undeclared_effect_message(&self, e: &EffectRef, span: Span, declared: &EffectSet) -> (String, bool) {
         let name = e.to_string();
         let yield_eff = self.sema.yield_effect;
         if Some(e.effect) == yield_eff
@@ -639,8 +674,11 @@ impl<'a, 's> FnCx<'a, 's> {
             let text = self.sema.sess.sources.text(span);
             let callee = text.split('(').next().unwrap_or(text);
             let callee = callee.rsplit('.').next().unwrap_or(callee).trim();
-            return format!(
-                "`{callee}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {callee}(…)`) or pass it to a function that runs it, such as `collect({callee}(…))` (§13.5)"
+            return (
+                format!(
+                    "`{callee}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {callee}(…)`) or pass it to a function that runs it, such as `collect({callee}(…))` (§13.5)"
+                ),
+                false,
             );
         }
         // Another instantiation of the same effect is declared or handled around the
@@ -655,14 +693,20 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         if !others.is_empty() {
-            return format!(
-                "this performs the effect `{}`, but {} {}: instantiations with different arguments are different effects (§12.3)",
-                name,
-                what,
-                others.join(" and ")
+            return (
+                format!(
+                    "this performs the effect `{}`, but {} {}: instantiations with different arguments are different effects (§12.3)",
+                    name,
+                    what,
+                    others.join(" and ")
+                ),
+                false,
             );
         }
-        format!("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)
+        (
+            format!("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name),
+            true,
+        )
     }
 
     /// An iterator call passed for a parameter that is not an iterator parameter
@@ -698,7 +742,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Reports an effect performed at `span` that the function, which declares `declared`,
     /// does not declare.
     pub fn undeclared_effect(&mut self, e: &EffectRef, span: Span, declared: &EffectSet) {
-        let msg = self.undeclared_effect_message(e, span, declared);
+        let (msg, _) = self.undeclared_effect_message(e, span, declared);
         self.error(span, msg);
     }
 

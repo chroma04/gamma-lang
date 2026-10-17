@@ -3965,6 +3965,14 @@ GM_API _Noreturn void gm_stack_overflow(void) {
     gm_trap(msg, NULL, 0, 0);
 }
 
+GM_API _Noreturn void gm_frame_overflow(const char *name, uint64_t bytes) {
+    char m[256];
+    snprintf(m, sizeof m, "stack overflow: `%s` needs a frame of %llu bytes", name, (unsigned long long)bytes);
+    gm_bt *b = gm_bt_top;
+    if (b != NULL && b->file != NULL) gm_trap(m, b->file, b->line, b->col);
+    gm_trap(m, NULL, 0, 0);
+}
+
 /* The space kept below a thread's limit for reporting the overflow. */
 #define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
 

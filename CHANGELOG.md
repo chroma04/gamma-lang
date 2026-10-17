@@ -23,6 +23,10 @@ Versions and what each kind of change means are described in
   standard-library type used without its import (`File`, `Socket`, …) gets the import
   and its module prefix, a core effect operation used bare (`make_dir(…)`) gets its
   effect (`Fs.make_dir(…)`), and `try x` in a test becomes `ok(x)`.
+- A function that performs an effect it does not declare gets the fix of adding it to its
+  signature (` needs Out`, or ` + Out` after its other effects); `gamma fix` repeats it
+  for the callers in the next round. `main` is given only the ambient effects, since it
+  must handle the others itself.
 - `editors/zed/`: a Zed extension for Gamma (highlighting, outline, indentation and the
   language server).
 - `examples/`: runnable programs, from command-line tools (`wordfreq`, `grep`,
@@ -93,6 +97,13 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- C back end: `print` and `@write` no longer pass empty pieces to their sink when a
+  value formats to nothing (`print("{}", "")`), so a custom `Out` handler sees the same
+  calls as on the interpreter. The spec now says that pieces are never empty.
+- C back end: calling a function whose frame no stack could hold (a local array of a
+  terabyte, say) reports ``stack overflow: `f` needs a frame of N bytes`` at the call, as
+  the interpreter does, instead of a bare `stack overflow`. Safe builds trap there too,
+  where Fil-C used to allocate such a local off the stack.
 - A `#bits` struct with a field that has invalid bit patterns (an enum, say) could be
   converted from an integer literal, `W(255)`, although only plain bit structs convert
   from their integer (§5.10.5); the value then held an invalid tag. This is now an

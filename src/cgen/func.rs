@@ -226,6 +226,14 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         params.join(", ")
     );
     let _ = writeln!(g.protos, "{};", sig);
+    // A frame that no stack can hold makes every call a stack overflow: the body is only
+    // the trap, which names the function and its frame as the interpreter's does.
+    let cost = crate::tir::frame_cost(def, &mut |t| g.ty.size(t));
+    if cost > crate::tir::MAX_FRAME {
+        let name = super::c_string(def.name.as_str().as_bytes());
+        let _ = writeln!(g.bodies, "{sig} {{\n    gm_frame_overflow({name}, {cost}ull);\n}}");
+        return Ok(());
+    }
     let tag = match spec {
         Some(s) => format!("{}_s{}", f.0, s.0),
         None => f.0.to_string(),

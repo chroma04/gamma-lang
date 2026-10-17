@@ -729,9 +729,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                                     let c = spec_literal(sp);
                                     self.line(&format!("gm_buf {} = {{0}};", b));
                                     self.line(&format!("gm_format_spec(&{}, {}, {}, &{});", b, d, vals[i], c));
-                                    let sl = self.make_slice(string, &format!("{}.data", b), &format!("{}.len", b));
-                                    self.emit_to(sink, &sink_v, &sl, e)?;
-                                    self.line(&format!("gm_buf_free(&{});", b));
+                                    self.emit_buf(sink, &sink_v, &b, e)?;
                                 }
                                 _ => {
                                     self.unwind_call(&format!("{}({}, {}, {}, {})", pf, cx, d, vals[i], loc));
@@ -758,9 +756,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                             }
                             _ => self.line(&format!("gm_format(&{}, {}, {}, true);", b, d, vals[i])),
                         }
-                        let sl = self.make_slice(string, &format!("{}.data", b), &format!("{}.len", b));
-                        self.emit_to(sink, &sink_v, &sl, e)?;
-                        self.line(&format!("gm_buf_free(&{});", b));
+                        self.emit_buf(sink, &sink_v, &b, e)?;
                     }
                 }
                 Ok(self.unit())
@@ -772,6 +768,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
             | ExprKind::UntypedFloat(_)
             | ExprKind::ValueParam(_) => unsupported(e.span, "an expression left over from generic checking"),
         }
+    }
+
+    /// Sends the formatted argument in `gm_buf` variable `b` to an `@write` sink unless it
+    /// is empty (the interpreter writes no empty chunks either), then frees it.
+    fn emit_buf(&mut self, sink: &WriteSink, sv: &Option<(String, Ty)>, b: &str, e: &Expr) -> CResult<()> {
+        self.line(&format!("if ({}.len != 0) {{", b));
+        self.indent += 1;
+        let sl = self.make_slice(Ty::string(), &format!("{}.data", b), &format!("{}.len", b));
+        self.emit_to(sink, sv, &sl, e)?;
+        self.indent -= 1;
+        self.line("}");
+        self.line(&format!("gm_buf_free(&{});", b));
+        Ok(())
     }
 
     /// Sends a `[]const u8` value to an `@write` sink.
@@ -1555,20 +1564,22 @@ impl<'g, 'a> FnGen<'g, 'a> {
             format!("static bool {f}(gm_node *cx, const gm_type *d, const void *v, {loc})")
         };
         let _ = writeln!(self.g.helpers.protos, "GM_NOINLINE {body};");
-        let (pre, data, len, post) = if kind == 's' {
-            (String::new(), "d".to_string(), "n".to_string(), String::new())
+        // A formatted value that comes out empty is not written (as by the interpreter).
+        let (pre, data, len, call, post) = if kind == 's' {
+            (String::new(), "d", "n", "", String::new())
         } else {
             (
                 "    gm_buf b = {0};\n    gm_format(&b, d, v, true);\n".to_string(),
-                "b.data".to_string(),
-                "b.len".to_string(),
+                "b.data",
+                "b.len",
+                "if (b.len != 0) ",
                 "    gm_buf_free(&b);\n".to_string(),
             )
         };
         let _ = write!(
             self.g.helpers.bodies,
             "GM_NOINLINE {body} {{\n{pre}    {pt} a;\n    GM_ST(void *, (uint8_t *)&a, (void *)({data}));\n    \
-             GM_ST(uintptr_t, (uint8_t *)&a + {p}, (uintptr_t)({len}));\n    {core}(cx, a, file, line, col);\n{post}    return gm_unw.kind != 0;\n}}\n"
+             GM_ST(uintptr_t, (uint8_t *)&a + {p}, (uintptr_t)({len}));\n    {call}{core}(cx, a, file, line, col);\n{post}    return gm_unw.kind != 0;\n}}\n"
         );
         f
     }

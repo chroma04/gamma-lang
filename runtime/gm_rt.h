@@ -643,6 +643,8 @@ GM_API_VAR _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own
 /* Records the stack limit of the calling thread (at the start of `main` or of a thread). */
 GM_API void gm_thread_stack(void);
 GM_API _Noreturn void gm_stack_overflow(void);
+/* The trap of a call of function `name`, whose frame of `bytes` no stack can hold. */
+GM_API _Noreturn void gm_frame_overflow(const char *name, uint64_t bytes);
 /* Driver: switches to `fb` until something happens on `w` (an event). */
 GM_API void gm_with_go(gm_with *w, gm_fiber *fb);
 /* Driver: calls the clause for the pending perform of w->event_fiber. */
