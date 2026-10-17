@@ -11,8 +11,8 @@ use std::rc::Rc;
 const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
 
 /// Public declarations of the core prelude that the universe scope leaves out, besides the
-/// effect operations (§21.1): the types of `Fs` and `Net`, which `std/fs` and `std/net`
-/// export, and the methods of `Instant` and `Duration`.
+/// effect operations (§21.1): the types of `Fs`, `Net` and `Proc`, which `std/fs`,
+/// `std/net` and `std/process` export, and the methods of `Instant` and `Duration`.
 const UNIVERSE_HIDDEN: &[&str] = &[
     "File",
     "Dir",
@@ -24,6 +24,12 @@ const UNIVERSE_HIDDEN: &[&str] = &[
     "Socket",
     "Listener",
     "Shutdown",
+    "Child",
+    "Stdio",
+    "Stream",
+    "SpawnOptions",
+    "Chunk",
+    "ExitStatus",
     "since",
     "after",
     "plus",
@@ -82,6 +88,7 @@ impl<'s> Sema<'s> {
             ("Fs", 8),
             ("Net", 9),
             ("Test", 10),
+            ("Proc", 11),
         ] {
             if let Some(&d) = self.modules[id.0 as usize].scope.get(&Symbol::intern(name))
                 && let super::DeclValue::Effect(e) = self.resolve_decl(d)
@@ -98,6 +105,7 @@ impl<'s> Sema<'s> {
                     7 => &mut a.rand,
                     8 => &mut a.fs,
                     9 => &mut a.net,
+                    11 => &mut a.proc,
                     _ => &mut a.test,
                 } = Some(e);
             }
@@ -295,8 +303,8 @@ impl<'s> Sema<'s> {
 
     /// Whether the core library's public declaration `d` is left out of the universe
     /// scope (§21.1): an effect operation other than `yield`, reached through its effect
-    /// (`Clock.now()`); a type of the `Fs` or `Net` effects, reached through `std/fs` and
-    /// `std/net`; or a function reached as a method.
+    /// (`Clock.now()`); a type of the `Fs`, `Net` or `Proc` effects, reached through `std/fs`,
+    /// `std/net` and `std/process`; or a function reached as a method.
     pub fn universe_hidden(&self, d: DeclId) -> bool {
         let decl = &self.decls[d.0 as usize];
         if decl.op_of.is_some() {
@@ -555,6 +563,7 @@ fn std_home(name: Symbol) -> Option<&'static str> {
     match name.as_str() {
         "Socket" | "Listener" | "Shutdown" => Some("std/net"),
         "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => Some("std/fs"),
+        "Child" | "Stdio" | "Stream" | "SpawnOptions" | "Chunk" | "ExitStatus" => Some("std/process"),
         _ => None,
     }
 }

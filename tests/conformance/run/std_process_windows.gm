@@ -1,0 +1,25 @@
+// std/process on Windows: collected output and an exit code, through `cmd`.
+//! os: windows
+process :: import "std/process"
+
+main :: fn() needs Out + Proc + Alloc {
+    o := process.output([_]string("cmd", "/c", "echo hello")) else e => {
+        print("output failed: {}\n", e)
+        return
+    }
+    print("status {}\n", o.status)
+    print("out {} bytes: {}\n", o.out.items.len, string(o.out.items[0..5]))
+    print("err {} bytes\n", o.err.items.len)
+    o.deinit()
+
+    s := process.status([_]string("cmd", "/c", "exit", "3")) else e => {
+        print("status failed: {}\n", e)
+        return
+    }
+    print("exit 3: {}\n", s)
+
+    _: process.ExitStatus = process.status([_]string("no-such-program-for-gamma-tests")) else e => {
+        print("missing program: {}\n", e)
+        process.ExitStatus.Exited(0)
+    }
+}

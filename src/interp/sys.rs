@@ -19,11 +19,12 @@ pub struct SysState {
     // Shared, so a blocking call can use one while other threads run (§19.6).
     streams: HashMap<i64, std::sync::Arc<std::net::TcpStream>>,
     listeners: HashMap<i64, std::sync::Arc<std::net::TcpListener>>,
+    pub(super) procs: HashMap<i64, std::sync::Arc<super::proc::ProcEntry>>,
     last: i64,
 }
 
 impl SysState {
-    fn handle(&mut self) -> i64 {
+    pub(super) fn handle(&mut self) -> i64 {
         self.last += 1;
         self.last + 2
     }
@@ -214,6 +215,15 @@ impl<'a> Machine<'a> {
                 let n = self.net_op(e, op, args, &vals)?;
                 Ok(int(self, e.ty, n as i128))
             }
+            SysOp::ProcSpawn
+            | SysOp::ProcWriteIn
+            | SysOp::ProcCloseIn
+            | SysOp::ProcReadOut
+            | SysOp::ProcWait
+            | SysOp::ProcKill => {
+                let n = self.proc_op(e, op, args, &vals)?;
+                Ok(int(self, e.ty, n as i128))
+            }
             SysOp::ThreadSpawn => {
                 let f = self.ptr_of(&vals[0]);
                 let h = self.spawn_thread(e.span, f, Value::Bytes(vals[1].clone()))?;
@@ -317,7 +327,7 @@ impl<'a> Machine<'a> {
         Ok(path_of(self.read_str(e.span, v)?))
     }
 
-    fn int_arg(&self, x: &Expr, v: &[u8]) -> i64 {
+    pub(super) fn int_arg(&self, x: &Expr, v: &[u8]) -> i64 {
         self.int_of(x.ty, v).to_big().try_into().unwrap_or(-1)
     }
 

@@ -46,7 +46,7 @@ A spec that does not fit the argument (`{:x}` on a float) is a compile error.
 
 ### Returning a status
 
-`main` has three permitted shapes (§3.7 of the [specification][s3]). The effect set may be anything drawn from the ambient effects (`Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`):
+`main` has three permitted shapes (§3.7 of the [specification][s3]). The effect set may be anything drawn from the ambient effects (`Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`):
 
 ```gamma
 // 1. no result: exit status 0
