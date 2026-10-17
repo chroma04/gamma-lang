@@ -33,15 +33,12 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
   each under Fil-C; `&key` in std maps escapes).
 
 ## Behaviour differences (allowed, documented)
-12. Float printing at exact ties picks the larger candidate (…945.3 vs Ryu …945.2); allowed by
-    §21.6.1 (shortest round-trip) but differs from Ryu/Python.
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.
 29. Stack-overflow backtrace depth differs between back ends (frame sizes) — stderr goldens
     for fiber overflow can't be shared.
-30. (s24 hunt) A custom `Out` handler sees more, partly empty, `write` chunks on C than on the
-    interpreter for `print("{}", "")`/padded empties (§21.6.1 allows any chunking).
-31. (s24 hunt) Huge-frame overflow: interp says "stack overflow: `main` needs a frame of N
-    bytes", C just "stack overflow"; interp recursion limit ~150–250k frames vs C ~600–800k.
+(#12 was stale: f16 checked exhaustively vs an exact nearest/ties-even reference in s26,
+ run/float_print_ties covers it. #30 empty Out chunks and #31 huge-frame message fixed in s26: C skips empty formatted
+ pieces, spec says pieces are non-empty; C emits a trap-only body when tir::frame_cost > MAX_FRAME.)
 
 ## Wishes (unscheduled; each must clear §22 if it is a library addition)
 23. std generator; reflection. (Fiber channel done s20: std/fiber/channel; deque exists;

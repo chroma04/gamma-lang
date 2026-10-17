@@ -253,3 +253,31 @@ fn fix_qualifies_effect_operations() {
         "main :: fn() needs Fs {\n    Fs.make_dir(\"target/gamma-fix-ops\") else ()\n}\n",
     );
 }
+
+#[test]
+fn fix_adds_undeclared_effects_to_signatures() {
+    // Each round adds what the functions perform; the callers get theirs in the next.
+    // `main` gets only ambient effects: it must handle the others itself.
+    let d = dir("needs");
+    let broken = "Log :: effect {\n    log: fn(msg: string)\n}\n\ngreet :: fn(name: string) {\n    print(\"hi {}\\n\", name)\n}\n\nwarn :: fn() -> i32 needs Out {\n    eprint(\"careful\\n\")\n    Log.log(\"tick\")\n    return 2\n}\n\nmain :: fn() {\n    greet(\"a\")\n    _ = warn()\n}\n";
+    let fixed = "Log :: effect {\n    log: fn(msg: string)\n}\n\ngreet :: fn(name: string) needs Out {\n    print(\"hi {}\\n\", name)\n}\n\nwarn :: fn() -> i32 needs Out + Err + Log {\n    eprint(\"careful\\n\")\n    Log.log(\"tick\")\n    return 2\n}\n\nmain :: fn() needs Out + Err {\n    greet(\"a\")\n    _ = warn()\n}\n";
+    std::fs::write(d.join("main.gm"), broken).unwrap();
+    let (ok, err) = gamma(&["fix", "main.gm"], &d);
+    assert!(!ok);
+    assert_eq!(std::fs::read_to_string(d.join("main.gm")).unwrap(), fixed);
+    assert!(err.contains("performs the effect `Log`, which the function does not declare"), "{err}");
+    assert_eq!(err.matches("error:").count(), 1, "{err}");
+}
+
+#[test]
+fn effects_not_named_as_written_get_no_needs_fix() {
+    // An effect of another module is written with its module's name, which the fix does
+    // not guess.
+    let d = dir("needs_qualified");
+    std::fs::create_dir_all(d.join("lg")).unwrap();
+    std::fs::write(d.join("lg/lg.gm"), "pub Log :: effect {\n    log: fn(msg: string)\n}\n").unwrap();
+    std::fs::write(d.join("main.gm"), "lg :: import \"./lg\"\n\nmain :: fn() {\n    lg.Log.log(\"x\")\n}\n").unwrap();
+    let (ok, out) = gamma(&["check", "--diag-format=json", "main.gm"], &d);
+    assert!(!ok);
+    assert!(out.contains("does not declare") && out.contains("\"fixes\":[]"), "{out}");
+}

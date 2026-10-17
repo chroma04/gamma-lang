@@ -1,0 +1,33 @@
+// A formatted argument that comes out empty is not passed to the `Out` handler: every
+// `write_out` chunk has at least one byte, on both back ends.
+
+Recorder :: struct {
+    lens: [16]usize,
+    n: usize,
+}
+
+handler Out for ^Recorder {
+    write_out(self, bytes) => {
+        if self.n < 16 {
+            self.lens[self.n] = bytes.len
+        }
+        self.n += 1
+    }
+}
+
+main :: fn() needs Out {
+    r := Recorder(lens: [16]usize(fill: 0), n: 0)
+    empty := ""
+    with &r {
+        print("a{}b", empty)
+        print("{}", empty)
+        print("{:<}|{:5}", empty, empty)
+        print("")
+        print("{}{}", 7, empty)
+    }
+    print("{} chunks:", r.n)
+    for i in 0..r.n {
+        print(" {}", r.lens[i])
+    }
+    print("\n")
+}

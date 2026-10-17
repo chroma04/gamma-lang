@@ -9,8 +9,7 @@ use crate::tir::*;
 use crate::types::*;
 use std::rc::Rc;
 
-/// The largest frame the interpreter runs: far above any real thread's stack.
-pub(super) const MAX_FRAME: u64 = 1 << 30;
+pub(super) use crate::tir::MAX_FRAME;
 
 impl<'a> Machine<'a> {
     pub fn eval_args(&mut self, a: Act, args: &[Expr]) -> R<Vec<Value>> {

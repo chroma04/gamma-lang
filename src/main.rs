@@ -810,6 +810,9 @@ fn build(opts: &Options) -> ExitCode {
     };
     let built =
         native_link(&sess, &toolchain, &extras).and_then(|link| compile_native(&sess, &prog, &toolchain, &link, &exe));
+    // A build with debug information comes with the lldb data formatters.
+    let built =
+        built.and_then(|()| if sess.debug_info { gamma::cgen::debug::write_lldb_formatters(&exe) } else { Ok(()) });
     match built {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {

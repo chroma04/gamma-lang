@@ -325,6 +325,10 @@ pub const STACK_RESERVE: u64 = 8192;
 /// perform, which saves the fiber's state on its stack before switching away.
 pub const STACK_BASE: u64 = 1024;
 
+/// The largest [`frame_cost`] a function may have: far above any real thread's stack.
+/// A call of a function whose frame is larger is a stack overflow trap on both back ends.
+pub const MAX_FRAME: u64 = 1 << 30;
+
 /// The stack bytes charged for one call of `def`, the cost model shared by
 /// `@stack_size` (§14.8) and the interpreter's fiber stacks. It bounds a compiled
 /// frame generously: a fixed overhead for the return address, saved registers and

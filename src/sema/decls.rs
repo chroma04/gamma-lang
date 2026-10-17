@@ -806,7 +806,7 @@ impl<'s> Sema<'s> {
 
     /// An effect named without arguments. An effect whose parameters are all effect
     /// sets gets empty ones (`Sched` is `Sched` of the empty set); otherwise `args` stay empty.
-    fn bare_effect_ref(&self, eff: crate::types::EffectId) -> EffectRef {
+    pub(super) fn bare_effect_ref(&self, eff: crate::types::EffectId) -> EffectRef {
         let params = self.effects.get(&eff).map(|i| i.params.clone()).unwrap_or_default();
         if params.is_empty() || !params.iter().all(|p| self.effect_params.contains(p)) {
             return EffectRef { effect: eff, args: Box::new([]) };

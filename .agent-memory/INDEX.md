@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-17) — PRs #1–#48 merged; s25 PR open (parallel C units + 7 fix-its, branch claude/s25)
+## State (2026-10-17) — PRs #1–#49 merged; s26 PR open (branch claude/open-bugs-todos-q7rxpj)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -17,18 +17,13 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- Recent history: s25 Debug C split into parallel units (cgen/units.rs, GAMMA_C_UNITS), fix-its
-  batch 2 (sessions/s25-…); s24 `gamma fix`/json diagnostics/LSP quick fixes (decisions/028), VM runs
-  variadic C calls, difftest 2k seeds clean (sessions/s24-…); s23 C unwind check after calls passed a closure (sessions/s23-…);
-  s22 elements passed in place, VM float ops + RotI (sessions/s22-…);
-  s21 gcc inline small fns, field args in place, Emacs mode, perform
-  trim, difftest coverage + CI (sessions/s21-…); s20 fiber channel + effect-param context inference + fuzz/difftest
-  (sessions/s20-…); s19 papercuts + tree-sitter/MSRV/SECURITY (branch claude/fervent-bohr-wot1ar);
-  s18 examples (PR #41); s13 bug sweep (PR #36; locals not named like types, decisions/024);
-  s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
+- Recent history (details in sessions/): s26 bugs #30/#31 (C matches interp), needs fix-it,
+  LLDB formatters; s25 parallel Debug C units + fix-its 2; s24 `gamma fix`/json diags/LSP quick
+  fixes (decisions/028); s23 C unwind after closure calls; s22 in-place elements, VM float ops;
+  s21 gcc inline, Emacs, difftest CI; s20 fiber channel, fuzz/difftest; s19 papercuts.
 
 ## Next steps
-1. Drive the s25 PR (claude/s25) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s26 PR to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -69,6 +64,7 @@
                   · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
                   · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
                   · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md · s25-2026-10-17-units.md
+                  · s26-2026-10-17-bugs-lldb.md
 - gotchas/        environment.md
 
 ## Conventions
