@@ -1,0 +1,247 @@
+//! Pull-style generators: advance iterators by hand, in lockstep.
+//!
+//! An iterator is a function that performs `Yield(T)` (§13). `for` drives it from the
+//! consumer's side, so two iterators cannot be advanced alternately. A `Generator` runs an
+//! iterator on a fiber of its own and hands out its values one at a time with `next()`:
+//!
+//!     gen :: import "std/fiber/generator"
+//!
+//!     count_to :: fn(limit: ^u32) needs Yield(u32) {
+//!         for i in 1..=limit^ { yield(i) }
+//!     }
+//!
+//!     dot :: fn(a, b: ^gen.Generator(u32)) -> u32 needs gen.Pull(u32) {
+//!         total: u32 = 0
+//!         while x := a.next() {               // null once the iterator has returned
+//!             y := b.next() else break
+//!             total += x * y
+//!         }
+//!         return total
+//!     }
+//!
+//!     n := u32(5)
+//!     m := u32(7)
+//!     ga := gen.generator(count_to, &n, stack_a)      // nothing runs yet
+//!     gb := gen.generator(count_to, &m, stack_b)
+//!     total := gen.pull(main_stack, fn() => dot(&ga, &gb))
+//!
+//! # Shape
+//!
+//! Fibers are structured (§14), so the code that calls `next` runs inside a `with … on`
+//! that the library installs: `pull` runs its `body` argument, the consumer, on the stack
+//! it is given, with a handler for the effect `Pull(T, E)`. `next(g)` performs `Pull`, which
+//! starts the generator's producer on its own fiber the first time and resumes it later;
+//! the producer's `yield`s become values returned by `next`. Any number of generators of
+//! the same `T` and `E` may be used in one `pull`: that is how iterators are advanced in
+//! lockstep.
+//!
+//! `T` is the item type and `E` the other effects the producers perform (`Out`, `Alloc`, …),
+//! which the code around `pull` must handle: `pull` itself `needs E`. A producer is a
+//! function pointer `^fn(arg: ^A) needs Yield(T) + E` with its argument `arg: ^A`, not a
+//! closure, because a fiber may outlive the frame that creates it (§14.6).
+//!
+//! # Stacks
+//!
+//! Nothing allocates: `pull` takes the consumer's stack and each generator the stack of its
+//! producer, all of which must outlive the `pull` and be at least `@min_stack` bytes (a producer
+//! that does real work needs tens of kilobytes; `@stack_size(f)` gives a bound for a producer
+//! `f`). A generator's stack is used from its first `next` until its producer has returned
+//! or the `pull` ends.
+//!
+//! # Ending a `pull`
+//!
+//! A producer that has not returned when the body finishes is cancelled: its `defer`s run
+//! (§14.5), so a generator may be abandoned early, for example when two trees differ at
+//! their first leaf. An exit that leaves the body (an `esc` operation handled outside, or
+//! `return`/`break` when the scope is written with `driver` and `with`, below) cancels them
+//! too (§14.4).
+//!
+//! A generator belongs to the `pull` that first called its `next`. Using it in another one
+//! while the first is running, or after the first has ended, if its producer had not
+//! returned by then, traps. A generator that has not been started, or whose producer has
+//! returned, can be used anywhere: it starts afresh, or gives `null`.
+//!
+//! # Writing the scope yourself
+//!
+//! `pull` is `driver` and `with` combined. To `return` or `break` out of the consumer's code,
+//! install the driver yourself and call `finish()` at the end of the body:
+//!
+//!     d := gen.driver(u32, Out)
+//!     defer d.close()
+//!     with &d on main_stack {
+//!         if x := ga.next() { return x }          // cancels the generators still suspended
+//!         gen.finish()
+//!     }
+
+/// The state of a generator's producer.
+GenState :: union {
+    NotStarted
+    Suspended: cont(())
+    Finished
+    Closed
+}
+
+/// A producer of `T`s that the consumer pulls values from with `next`. `E` is what the producer
+/// may perform besides `Yield(T)`. Create one with `generator`.
+pub Generator :: struct(T: type, E: effects) {
+    // The producer's function and its argument, with the argument's type erased.
+    f: ^fn(arg: rawptr) needs Yield(T) + E
+    arg: rawptr
+    stack: []u8
+    state: GenState
+    // The scope that started the producer, and the list of the started, unfinished
+    // generators of that scope.
+    owner: ?^Driver(T, E)
+    prev: ?^Generator(T, E)
+    succ: ?^Generator(T, E)
+}
+
+/// The scope of a `pull`: the handler of `Pull(T, E)`. Use `pull`, or `driver` with `with`.
+pub Driver :: struct(T: type, E: effects) {
+    // The consumer, suspended while a producer runs.
+    consumer: ?cont(?T)
+    // The started generators whose producers have not returned, newest first.
+    head: ?^Generator(T, E)
+}
+
+/// What generators ask of their scope. The operations are internal: `next` and `finish` are
+/// the ones to call.
+pub Pull :: effect(T: type, E: effects) {
+    /// The consumer wants the next value of `g`: starts or resumes its producer.
+    next_raw: ctl(g: ^Generator(T, E)) -> ?T
+    /// The producer of `g` yields `x`.
+    give: ctl(g: ^Generator(T, E), x: T)
+    /// The producer of `g` has returned.
+    done: ctl(g: ^Generator(T, E)) -> never
+    /// Cancels every producer still suspended in this scope.
+    finish: ctl()
+}
+
+/// A generator that runs `f(arg)` as its producer on `stack`. Nothing starts until the first
+/// `next`. `T` and `E` come from the effects of `f`.
+pub generator :: fn(T: type, A: type, E: effects, f: ^fn(arg: ^A) needs Yield(T) + E, arg: ^A, stack: []u8) -> Generator(T, E) {
+    return Generator(T, E)(
+        f: f.cast(^fn(arg: rawptr) needs Yield(T) + E),
+        arg: arg.cast(rawptr),
+        stack: stack,
+        state: .NotStarted,
+        owner: null,
+        prev: null,
+        succ: null)
+}
+
+/// The next value of `g`, running its producer until it yields, or `null` once the producer has
+/// returned (and on every call after that). Traps if `g` belongs to another scope (see the
+/// module header).
+pub next :: fn(T: type, E: effects, g: ^Generator(T, E)) -> ?T needs Pull(T, E) {
+    return Pull(T, E).next_raw(g)
+}
+
+/// A scope with no generators yet, for use as `with &d on stack { … }` (see the module
+/// header). Call `d.close()` after the `with`, and `finish()` at the end of its body.
+pub driver :: fn(T: type, E: effects) -> Driver(T, E) {
+    return Driver(T, E)(consumer: null, head: null)
+}
+
+/// Marks the generators of the scope whose producers have not returned as closed: using one
+/// later traps. Call it after the `with` that installed `d` (`pull` does).
+pub close :: fn(T: type, E: effects, d: ^Driver(T, E)) {
+    while g := d.head {
+        unlink(d, g)
+        g.state = .Closed
+        g.owner = null
+    }
+}
+
+/// Runs `body`, the consumer, on `stack` with a scope for generators of `T`: inside it,
+/// `next` can be called on any generator. When `body` returns, the producers still
+/// suspended are cancelled. Returns the value of `body`.
+pub pull :: fn(T: type, E: effects, R: type, stack: []u8, body: fn() -> R needs Pull(T, E)) -> R needs E {
+    d := driver(T, E)
+    defer d.close()
+    return with &d on stack {
+        r := body()
+        finish()
+        r
+    }
+}
+
+// Adds `g` to the front of the scope's list.
+link :: fn(T: type, E: effects, d: ^Driver(T, E), g: ^Generator(T, E)) {
+    g.owner = d
+    g.prev = null
+    g.succ = d.head
+    if h := d.head { h.prev = g }
+    d.head = g
+}
+
+// Takes `g` out of the scope's list.
+unlink :: fn(T: type, E: effects, d: ^Driver(T, E), g: ^Generator(T, E)) {
+    if p := g.prev {
+        p.succ = g.succ
+    } else {
+        d.head = g.succ
+    }
+    if s := g.succ { s.prev = g.prev }
+    g.prev = null
+    g.succ = null
+}
+
+// What a producer's fiber runs: the iterator, then the end of the stream.
+entry :: fn(T: type, E: effects, g: ^Generator(T, E)) -> never needs Pull(T, E) + E {
+    for x in g.f(g.arg) { give(g, x) }
+    done(g)
+}
+
+handler(T: type, E: effects) Pull(T, E) for ^Driver(T, E) needs E {
+    next_raw(self, g, k) => {
+        match g.state {
+            .Closed => trap("a generator is used after the pull scope that started it has ended")
+            _ => {}
+        }
+        if o := g.owner {
+            if not (o is self) { trap("a generator is used in a different pull scope than the one that started it") }
+        }
+        match g.state {
+            .Closed => trap("a generator is used after the pull scope that started it has ended")
+            .Finished => resume k(null)
+            .Suspended(pk) => {
+                self.consumer = k
+                resume pk()
+            }
+            .NotStarted => {
+                link(self, g)
+                pk := @fiber(entry(T: T, E: E), g, g.stack)
+                self.consumer = k
+                resume pk()
+            }
+        }
+    }
+    give(self, g, x, pk) => {
+        g.state = .Suspended(pk)
+        c := self.consumer else trap("a producer yielded with no consumer waiting")
+        self.consumer = null
+        resume c(x)
+    }
+    done(self, g, k) => {
+        cancel k
+        unlink(self, g)
+        g.state = .Finished
+        c := self.consumer else trap("a producer returned with no consumer waiting")
+        self.consumer = null
+        resume c(null)
+    }
+    finish(self, k) => {
+        while g := self.head {
+            unlink(self, g)
+            suspended := g.state
+            g.state = .Closed
+            g.owner = null
+            match suspended {
+                .Suspended(pk) => { cancel pk }
+                _ => {}
+            }
+        }
+        resume k()
+    }
+}

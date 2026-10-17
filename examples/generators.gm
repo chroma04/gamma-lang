@@ -4,7 +4,8 @@
 //! (`taking`, `filtered`, `mapped`) that take iterators as arguments, an in-order walk
 //! of a binary tree built with `new`, `break` unwinding an iterator so its `defer`
 //! runs, and a producer coroutine on a fiber (a `ctl` operation) that the consumer
-//! stops early, either by asking it to stop or with `cancel`.
+//! stops early, either by asking it to stop or with `cancel`. Finally, `std/fiber/generator`
+//! turns two tree walks into pull-style generators and merges them in lockstep.
 //!
 //! Run from the examples directory: `gamma run generators.gm` and `gamma test generators.gm`.
 
@@ -103,6 +104,51 @@ countdown :: fn(from: u32) needs Yield(u32) + Out {
     }
 }
 
+// ---- lockstep: two iterators advanced alternately with pull-style generators ---------------
+
+gen :: import "std/fiber/generator"
+
+walk :: fn(root: ^?^Node) needs Yield(i32) {
+    in_order(root^)
+}
+
+// Merges the keys of two trees in order: each walk runs on a fiber of its own and the
+// consumer pulls one key at a time from whichever has the smaller one.
+merge_walks :: fn(a, b: ^?^Node) needs Out {
+    stack_a: [32768]u8 = ---
+    stack_b: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    ga := gen.generator(walk, a, stack_a[..])
+    gb := gen.generator(walk, b, stack_b[..])
+    gen.pull(main_stack[..], fn() {
+        x := ga.next()
+        y := gb.next()
+        print("merged:")
+        while true {
+            if xv := x {
+                if yv := y {
+                    if xv <= yv {
+                        print(" {}", xv)
+                        x = ga.next()
+                    } else {
+                        print(" {}", yv)
+                        y = gb.next()
+                    }
+                } else {
+                    print(" {}", xv)
+                    x = ga.next()
+                }
+            } else if yv := y {
+                print(" {}", yv)
+                y = gb.next()
+            } else {
+                break
+            }
+        }
+        print("\n")
+    })
+}
+
 // ---- a coroutine: the producer suspends at each `emit` until the consumer answers ---------
 
 Feed :: effect {
@@ -171,6 +217,11 @@ main :: fn() -> AllocError!() needs Out + Alloc {
         }
     }
     print("first key above 45: {}\n", first)
+
+    other: ?^Node = null
+    defer free_tree(other)
+    for k in [_]i32(10, 45, 62, 90) { try insert(&other, k) }
+    merge_walks(&root, &other)
 
     for n in countdown(10) {
         if n < 8 { break }

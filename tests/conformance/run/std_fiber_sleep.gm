@@ -1,0 +1,68 @@
+// std/fiber sleeping with the real clock: tasks that sleep 100, 20 and 60 ms wake in the order of
+// their deadlines, and the three sleeps overlap, so the whole run takes less than their sum.
+// Only deterministic facts are printed.
+fiber :: import "std/fiber"
+
+Nap :: struct {
+    name: string
+    for_ms: u64
+}
+
+nap :: fn(j: ^Nap) needs fiber.Sched(Out + Clock) + Out + Clock {
+    print("{} falls asleep\n", j.name)
+    fiber.sleep(ms(j.for_ms))
+    print("{} wakes\n", j.name)
+}
+
+// Never sleeps and never blocks: yields until the napper is up, so the scheduler has a ready
+// task to run while the napper waits for its deadline.
+Shared :: struct {
+    napper_up: bool
+    rounds: u64
+}
+
+spin :: fn(s: ^Shared) needs fiber.Sched(Out + Clock) + Out + Clock {
+    while not s.napper_up {
+        s.rounds += 1
+        fiber.yield_now()
+    }
+    print("spinner done\n")
+}
+
+napper :: fn(s: ^Shared) needs fiber.Sched(Out + Clock) + Out + Clock {
+    print("napper falls asleep\n")
+    fiber.sleep(ms(20))
+    s.napper_up = true
+    print("napper wakes\n")
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc + Clock {
+    s := fiber.scheduler(Out + Clock)
+    defer s.deinit()
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    sc: [32768]u8 = ---
+    a := Nap(name: "slow", for_ms: 100)
+    b := Nap(name: "quick", for_ms: 20)
+    c := Nap(name: "middle", for_ms: 60)
+    t0 := Clock.now()
+    with &s on main_stack[..] {
+        fiber.spawn(nap, &a, sa[..])
+        fiber.spawn(nap, &b, sb[..])
+        fiber.spawn(nap, &c, sc[..])
+        fiber.join()
+    }
+    elapsed := Clock.now().since(t0).to_ms()
+    print("at least the longest sleep: {}\n", elapsed >= 100)
+    print("less than the sleeps one after the other: {}\n", elapsed < 180)
+
+    // The same with a task that never sleeps and keeps the scheduler busy meanwhile.
+    shared := Shared(napper_up: false, rounds: 0)
+    with &s on main_stack[..] {
+        fiber.spawn(spin, &shared, sa[..])
+        fiber.spawn(napper, &shared, sb[..])
+        fiber.join()
+    }
+    print("the spinner ran while the napper slept: {}\n", shared.rounds > 0)
+}

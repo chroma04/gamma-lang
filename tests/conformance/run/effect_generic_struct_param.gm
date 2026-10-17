@@ -1,0 +1,45 @@
+// An operation of a generic effect may take and return instantiations of generic types that
+// mention the effect's parameters, and generic code performs it with its own parameters.
+Box :: struct(T: type) {
+    value: T
+}
+
+Pair :: struct(T: type, E: effects) {
+    f: ^fn(x: T) -> T needs E
+    value: T
+}
+
+Store :: effect(T: type, E: effects) {
+    put: fn(b: ^Box(T), p: ^Pair(T, E)) -> Box(T)
+    swap: ctl(b: ^Box(T))
+}
+
+Holder :: struct(T: type, E: effects) {
+    last: ?T
+}
+
+handler(T: type, E: effects) Store(T, E) for ^Holder(T, E) {
+    put(self, b, p) => {
+        self.last = b.value
+        return Box(T)(value: p.value)
+    }
+    swap(self, b, k) => {
+        self.last = b.value
+        resume k()
+    }
+}
+
+use_it :: fn(T: type, E: effects, b: ^Box(T), p: ^Pair(T, E)) -> T needs Store(T, E) {
+    Store(T, E).swap(b)
+    r := Store(T, E).put(b, p)
+    return r.value
+}
+
+main :: fn() needs Out {
+    h := Holder(i32, Out)(last: null)
+    stack: [32768]u8 = ---
+    b := Box(i32)(value: 7)
+    p := Pair(i32, Out)(f: fn(x: i32) -> i32 => x, value: 9)
+    r := with &h on stack[..] { use_it(&b, &p) }
+    print("{} {}\n", r, h.last)
+}

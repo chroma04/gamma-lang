@@ -30,14 +30,43 @@
 //! a task is a `fn(arg: ^T) needs Sched(Out + Clock) + Out + Clock` (or uses fewer of them), and
 //! the `with &s` needs `Out` and `Clock` itself.
 //!
-//! `Scheduler` keeps the allocator it was created with for its queue of ready tasks and
-//! performs no `Alloc` afterwards.
+//! `Scheduler` keeps the allocator it was created with for its queue of ready tasks and its
+//! heap of sleeping tasks, and performs no `Alloc` afterwards.
 //!
 //! A task can wait for another without polling: `park(&w)` suspends it in a `Waiters`
 //! queue, and it does not run again until a task calls `wake(&w)`, which makes it ready.
 //! `std/fiber/channel` builds a bounded channel between tasks on them.
+//!
+//! # Sleeping
+//!
+//! `Clock.sleep` blocks the whole thread. `sleep` and `sleep_until` suspend only the calling
+//! task, so the others keep running meanwhile:
+//!
+//!     napper :: fn(arg: ^Job) needs fiber.Sched(Clock) + Clock + Out {
+//!         fiber.sleep(ms(10))                 // `E` comes from the caller's `Sched(Clock)`
+//!         print("awake\n")
+//!     }
+//!
+//!     s := fiber.scheduler(Clock)             // tasks that sleep need `Clock` in `E`
+//!     defer s.deinit()
+//!
+//! Only the sleeping tasks perform `Clock`: the scheduler never reads the clock itself, so a
+//! program whose tasks never sleep pays nothing for it. Sleeping tasks wait in a heap ordered
+//! by deadline, ties in the order they went to sleep. The scheduler wakes a sleeper in two
+//! cases:
+//!
+//! - **Idle.** No task is ready, so the earliest sleeper is told to block until its
+//!   deadline (it calls `Clock.sleep` itself).
+//! - **Check.** Tasks are ready, so the earliest sleeper is asked to look at the clock and
+//!   see whether it is due. A check happens once per round: after as many dispatches as
+//!   there were ready tasks at the previous check (or when a task went to sleep), so every
+//!   ready task runs once between two checks and busy tasks cannot starve the sleepers. A
+//!   check costs one clock read and two task switches per round, and wakes the earliest
+//!   sleeper only; if several are due, they wake in deadline order, one per round. A
+//!   sleeper that is not yet due goes back to its place in the heap.
 
 queue :: import "std/collections/deque"
+hp :: import "std/collections/heap"
 
 /// What a task can ask of its scheduler. `spawn`, which takes a typed task function, is the
 /// way to start a task; `spawn_raw` is the operation underneath.
@@ -49,6 +78,10 @@ pub Sched :: effect(E: effects) {
     join: ctl()
     /// Suspends the current task at the back of `w` until `wake` takes it out.
     park: ctl(w: ^Waiters)
+    /// The operation underneath `sleep_until`: suspends the task until the scheduler picks it
+    /// again. The answer says why: `true` if no other task could run (the task should block
+    /// until `deadline`), `false` if it should check whether `deadline` has passed.
+    sleep_raw: ctl(deadline: Instant) -> bool
 }
 
 // `Waiters` is declared in its own module because methods resolve in the module that
@@ -67,28 +100,104 @@ pub waiters :: waiters_module.waiters
 /// if no task waits there. It needs no effect, so a `defer` may wake tasks.
 pub wake :: waiters_module.wake
 
-/// A round-robin scheduler: the ready tasks in a queue, in the order they will run. Its tasks
-/// may perform the effects `E`.
+// A sleeping task: it wakes at `deadline`; `seq` orders equal deadlines by arrival.
+Sleeper :: struct {
+    deadline: Instant
+    seq: u64
+    k: cont(bool)
+}
+
+sleeper_before :: fn(a, b: ^const Sleeper) -> bool {
+    if a.deadline.ns is b.deadline.ns { return a.seq < b.seq }
+    return a.deadline.ns < b.deadline.ns
+}
+
+// A sleeper that is woken, and what it is told.
+WakeUp :: struct {
+    k: cont(bool)
+    idle: bool
+}
+
+// What the scheduler runs next.
+Pick :: union {
+    Task: cont(())
+    Wake: WakeUp
+}
+
+/// A round-robin scheduler: the ready tasks in a queue, in the order they will run, and the
+/// sleeping tasks in a heap by deadline (see `sleep`). Its tasks may perform the effects `E`.
 pub Scheduler :: struct(E: effects) {
     ready: queue.Deque(cont(()))
+    sleepers: hp.Heap(Sleeper)
+    // Dispatches left before the earliest sleeper is next asked to check its deadline.
+    credit: usize
+    // The next arrival number for `Sleeper.seq`.
+    seq: u64
+    // The sleeper that was just woken, as (deadline, seq): if it goes back to sleep for the
+    // same deadline it keeps its place among equal deadlines.
+    woken: ?(u64, u64)
     joiner: ?cont(())
     live: usize
 }
 
-/// A scheduler with no tasks, using the current allocator for its queue. Its tasks may
+/// A scheduler with no tasks, using the current allocator for its queues. Its tasks may
 /// perform the effects `E` (none if left out).
 pub scheduler :: fn(E: effects) -> Scheduler(E) needs Alloc {
-    return Scheduler(E)(ready: queue.deque(cont(())), joiner: null, live: 0)
+    return Scheduler(E)(
+        ready: queue.deque(cont(())),
+        sleepers: hp.heap_by(sleeper_before),
+        credit: 0,
+        seq: 0,
+        woken: null,
+        joiner: null,
+        live: 0)
 }
 
-/// Frees the scheduler's queue. All tasks must have ended.
+/// Frees the scheduler's queues. All tasks must have ended.
 pub deinit :: fn(E: effects, s: ^Scheduler(E)) {
     s.ready.deinit()
+    s.sleepers.deinit()
 }
 
-// The next ready task, which the scheduler resumes when the current one gives way.
-next :: fn(E: effects, s: ^Scheduler(E)) -> cont(()) {
-    return s.ready.pop_front() else trap("deadlock: no task is ready to run")
+// Takes the earliest sleeper out of the heap to wake it.
+wake_sleeper :: fn(E: effects, s: ^Scheduler(E), idle: bool) -> Pick {
+    sl := s.sleepers.pop() else trap("deadlock: no task is ready to run")
+    s.woken = (sl.deadline.ns, sl.seq)
+    return .Wake(WakeUp(k: sl.k, idle: idle))
+}
+
+// What the scheduler runs when the current task gives way: the next ready task; but the
+// earliest sleeper if no task is ready (told to block until its deadline), or once the
+// round is over (told to check the clock).
+next :: fn(E: effects, s: ^Scheduler(E)) -> Pick {
+    s.woken = null
+    if s.ready.is_empty() {
+        s.credit = 0
+        return wake_sleeper(s, true)
+    }
+    if s.credit is 0 and not s.sleepers.is_empty() {
+        s.credit = s.ready.len()
+        return wake_sleeper(s, false)
+    }
+    if s.credit > 0 { s.credit -= 1 }
+    return .Task(s.ready.pop_front() else trap("deadlock: no task is ready to run"))
+}
+
+// Adds a sleeping task. A sleeper that was just woken and sleeps again for the same deadline
+// keeps its arrival number. A new sleeper starts a round.
+sleep_in :: fn(E: effects, s: ^Scheduler(E), deadline: Instant, k: cont(bool)) {
+    seq := s.seq
+    fresh := true
+    if w := s.woken {
+        if w.0 is deadline.ns {
+            seq = w.1
+            fresh = false
+        }
+    }
+    if fresh { s.seq += 1 }
+    s.woken = null
+    s.sleepers.push(Sleeper(deadline: deadline, seq: seq, k: k)) else trap("out of memory in the scheduler")
+    if s.credit is 0 { s.credit = s.ready.len() }
 }
 
 // Queues a task to run later.
@@ -99,8 +208,10 @@ push :: fn(E: effects, s: ^Scheduler(E), k: cont(())) {
 handler(E: effects) Sched(E) for ^Scheduler(E) needs E {
     yield_now(self, k) => {
         push(self, k)
-        r := next(self)
-        resume r()
+        match next(self) {
+            .Task(r) => resume r()
+            .Wake(w) => resume w.k(w.idle)
+        }
     }
     spawn_raw(self, entry, arg, stack, k) => {
         push(self, @fiber(entry, arg, stack))
@@ -116,19 +227,32 @@ handler(E: effects) Sched(E) for ^Scheduler(E) needs E {
                 resume j()
             }
         }
-        r := next(self)
-        resume r()
+        match next(self) {
+            .Task(r) => resume r()
+            .Wake(w) => resume w.k(w.idle)
+        }
     }
     join(self, k) => {
         if self.live is 0 { resume k() }
         self.joiner = k
-        r := next(self)
-        resume r()
+        match next(self) {
+            .Task(r) => resume r()
+            .Wake(w) => resume w.k(w.idle)
+        }
     }
     park(self, w, k) => {
         w.add(k, &self.ready)
-        r := next(self)
-        resume r()
+        match next(self) {
+            .Task(r) => resume r()
+            .Wake(u) => resume u.k(u.idle)
+        }
+    }
+    sleep_raw(self, deadline, k) => {
+        sleep_in(self, deadline, k)
+        match next(self) {
+            .Task(r) => resume r()
+            .Wake(w) => resume w.k(w.idle)
+        }
     }
 }
 
@@ -154,4 +278,27 @@ pub spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) needs Sched(E) + E, arg: ^T
     start := stack[off..off + 32].ptr.cast(^Start(E))
     start^ = Start(E)(f: f.cast(^fn(arg: rawptr) needs Sched(E) + E), arg: arg.cast(rawptr))
     spawn_raw(entry(E: E), start.cast(rawptr), stack[off + 32..stack.len])
+}
+
+/// Suspends the current task until `deadline`, letting the other tasks run meanwhile. It
+/// returns at once if `deadline` has passed. The scheduler's effects must include `Clock`
+/// (`fiber.scheduler(Clock)`), because the task reads the clock itself; `E` is taken from the
+/// caller's `Sched(E)`.
+pub sleep_until :: fn(E: effects, deadline: Instant) needs Sched(E) + Clock {
+    while true {
+        idle := sleep_raw(deadline)
+        now := Clock.now()
+        if now.ns >= deadline.ns { return }
+        if idle {
+            // Nothing else can run: wait out the rest here.
+            Clock.sleep(deadline.since(now))
+            if Clock.now().ns >= deadline.ns { return }
+        }
+    }
+}
+
+/// Suspends the current task for at least `d`, letting the other tasks run meanwhile. See
+/// `sleep_until`.
+pub sleep :: fn(E: effects, d: Duration) needs Sched(E) + Clock {
+    sleep_until(Clock.now().after(d))
 }

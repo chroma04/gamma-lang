@@ -15,18 +15,23 @@ fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
     Expr { ty, kind, span }
 }
 
-/// Replaces the effect's type parameters in `t` by the instantiation's arguments.
-pub fn subst(t: Ty, params: &[ParamId], args: &[GenericArg]) -> Ty {
-    if params.is_empty() {
-        return t;
+impl<'s> super::Sema<'s> {
+    /// Like `subst`, but re-instantiates generic types (`Node(T)`) in `t`, so the result is the
+    /// canonical type for the arguments.
+    pub fn subst_effect_args(&mut self, t: Ty, params: &[ParamId], args: &[GenericArg]) -> Ty {
+        if params.is_empty() {
+            return t;
+        }
+        let map: Vec<(ParamId, Ty)> = params
+            .iter()
+            .zip(args.iter())
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(a) => Some((*p, *a)),
+                _ => None,
+            })
+            .collect();
+        self.subst(t, &map)
     }
-    t.map(&mut |x| match x.kind() {
-        TyKind::Param(p) => params.iter().position(|q| q == p).and_then(|i| match &args[i] {
-            GenericArg::Type(a) => Some(*a),
-            _ => None,
-        }),
-        _ => None,
-    })
 }
 
 /// Binds type parameters by matching a parameter type against an argument type.
@@ -153,9 +158,12 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("`{}` needs {} type argument(s)", eref.effect.name(), params.len()));
             return error_expr(span);
         }
-        let ps: Vec<ParamInfo> =
-            op_info.params.iter().map(|p| ParamInfo { ty: subst(p.ty, &params, &eref.args), ..p.clone() }).collect();
-        let ret = subst(op_info.ret, &params, &eref.args);
+        let ps: Vec<ParamInfo> = op_info
+            .params
+            .iter()
+            .map(|p| ParamInfo { ty: self.sema.subst_effect_args(p.ty, &params, &eref.args), ..p.clone() })
+            .collect();
+        let ret = self.sema.subst_effect_args(op_info.ret, &params, &eref.args);
         let (vals, pre) = self.bind_args(&ps, module, args, span, "operation");
         self.performed.push((eref.clone(), span));
         if op_info.kind == ast::OpKind::Fn {
@@ -191,7 +199,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let mut probe = vec![];
             for (i, e) in positional.iter().enumerate() {
                 let expect = match (&only, op_info.params.get(i)) {
-                    (Some(one), Some(p)) => Some(subst(p.ty, &params, &one.args)),
+                    (Some(one), Some(p)) => Some(self.sema.subst_effect_args(p.ty, &params, &one.args)),
                     _ => None,
                 };
                 let v = self.expr(e, expect);
@@ -244,7 +252,7 @@ impl<'a, 's> FnCx<'a, 's> {
             for (i, v) in probe.into_iter().enumerate() {
                 match op_info.params.get(i) {
                     Some(p) => {
-                        let t = subst(p.ty, &params, &eref.args);
+                        let t = self.sema.subst_effect_args(p.ty, &params, &eref.args);
                         vals.push(self.coerce(v, t));
                     }
                     None => self.error(v.span, "too many arguments"),
@@ -253,7 +261,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if vals.len() < op_info.params.len() || positional.len() != args.len() {
                 self.error(span, format!("`{}` takes {} positional argument(s)", op_info.name, op_info.params.len()));
             }
-            let ret = subst(op_info.ret, &params, &eref.args);
+            let ret = self.sema.subst_effect_args(op_info.ret, &params, &eref.args);
             self.performed.push((eref.clone(), span));
             if self.sema.effects[&eref.effect].ops[op as usize].kind == ast::OpKind::Fn {
                 self.fn_performs.push(span);
@@ -279,7 +287,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// The parameter and result types of a clause for operation `op` of an instantiated effect.
-    pub fn op_signature(&self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
+    pub fn op_signature(&mut self, eref: &EffectRef, op: usize) -> (Vec<ParamInfo>, Ty, ast::OpKind) {
         self.sema.clause_signature(eref, op)
     }
 

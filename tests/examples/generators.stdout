@@ -4,6 +4,7 @@ squares of primes: 4 9 25 49 121
 25 primes below 100
 tree: 20 30 35 40 50 60 65 70 80
 first key above 45: 50
+merged: 10 20 30 35 40 45 50 60 62 65 70 80 90
 n = 10
 n = 9
 n = 8
