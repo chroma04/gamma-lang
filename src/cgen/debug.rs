@@ -58,6 +58,22 @@ pub fn resolve_lines(code: &str, c_file: &str) -> String {
 /// The gdb pretty printers for debugger views (`super::views`).
 const GDB_PRINTERS: &str = include_str!("gdb_printers.py");
 
+/// The lldb data formatters for debugger views (`super::views`), a Python module.
+const LLDB_FORMATTERS: &str = include_str!("lldb_formatters.py");
+
+/// The name under which the lldb formatters are written next to an executable built with
+/// debug information.
+pub const LLDB_FORMATTERS_FILE: &str = "gamma_lldb.py";
+
+/// Writes the lldb data formatters to `gamma_lldb.py` in the directory of `exe`, replacing
+/// any earlier copy (every program gets the same file, so executables in one directory
+/// share it). Load it in lldb with `command script import`.
+pub fn write_lldb_formatters(exe: &std::path::Path) -> Result<(), String> {
+    let dir = exe.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let path = dir.join(LLDB_FORMATTERS_FILE);
+    std::fs::write(&path, LLDB_FORMATTERS).map_err(|e| format!("cannot write {}: {}", path.display(), e))
+}
+
 /// A top-level `asm` statement that embeds the gdb pretty printers in the executable's
 /// `.debug_gdb_scripts` section (an inline Python script), which gdb loads with the
 /// executable where its auto-load safe path allows. ELF targets only.

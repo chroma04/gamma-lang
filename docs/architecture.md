@@ -537,7 +537,7 @@ both use it. The files:
 | `rtcache.rs` | the cached runtime object of Debug and Safe builds |
 | `units.rs` | splitting a Debug build into translation units compiled in parallel |
 | `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
-| `debug.rs`, `views.rs`, `gdb_printers.py` | debug information for `-g` |
+| `debug.rs`, `views.rs`, `gdb_printers.py`, `lldb_formatters.py` | debug information for `-g` |
 
 The generated code follows the interpreter exactly, and the conformance
 runner checks this: every `run` test also runs natively and must print the same
@@ -827,7 +827,11 @@ recursive types work. On ELF targets the executable also carries gdb pretty
 printers (`src/cgen/gdb_printers.py`) in its `.debug_gdb_scripts` section; they
 recognize views by the suffix of their struct tag (`gm_dv3_union`, `_slice`,
 `_string`, `_optional`, `_result`) and show the active variant only, slice
-elements, string text, `null` and `!error`. The generated code never refers to these names, but
+elements, string text, `null` and `!error`. For lldb, `gamma build -g` writes the
+same conventions as a Python module (`src/cgen/lldb_formatters.py`, embedded in the
+compiler) to `gamma_lldb.py` next to the executable; it registers summaries and
+synthetic children providers for the view tags in a `gamma` category, looking through
+the anonymous union of tagged unions, and is loaded with `command script import`. The generated code never refers to these names, but
 they may be macros of system headers (`linux`, `st_mtime`), so the declarations
 that contain them suspend such macros with `#pragma push_macro`. Locals that
 share a name, and names that are C keywords or reserved, keep only their `lN`

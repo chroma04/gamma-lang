@@ -295,3 +295,50 @@ fn lldb_shows_views() {
         assert!(text.contains(e), "lldb did not print `{}`:\n{}", e.trim_end(), text);
     }
 }
+
+#[test]
+fn lldb_shows_gamma_values() {
+    let lldb_works = Command::new("lldb").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !c_compiler_available() || !lldb_works {
+        eprintln!("note: skipping: needs a C compiler and lldb");
+        return;
+    }
+    let exe = build_program("views-lldb-formatters", "views", VIEWS, &["-g"]);
+    let formatters = exe.with_file_name("gamma_lldb.py");
+    assert!(formatters.is_file(), "no gamma_lldb.py next to the executable");
+    // Without `-g` there are no views, so no formatters.
+    let plain = build_program("views-lldb-plain", "views", VIEWS, &[]);
+    assert!(!plain.with_file_name("gamma_lldb.py").exists());
+    let mut cmd = Command::new("lldb");
+    cmd.args(["--batch", "--no-lldbinit", "-o"]).arg(format!("command script import {}", formatters.display()));
+    cmd.args(["-o", "breakpoint set --file views.gm --line 33", "-o", "run"]);
+    let shown =
+        ["F.rect", "F.circle", "F.dir", "F.slice", "F.word", "F.some", "F.none", "F.ok", "F.bad", "*F.first.next"];
+    for e in shown {
+        cmd.args(["-o", &format!("frame variable {}", e)]);
+    }
+    let out = cmd.arg(&exe).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !text.contains("stop reason = breakpoint") {
+        eprintln!("note: skipping: lldb cannot run the program here:\n{}", text);
+        return;
+    }
+    for e in [
+        "F.rect = Shape_Rect {",
+        "w = 2",
+        "h = 3",
+        "F.circle = Shape_Circle(1.5)",
+        "F.dir = Dir_S\n",
+        "F.slice = length 3 {",
+        "[0] = 10",
+        "[2] = 30",
+        "F.word = \"hello\"",
+        "F.some = 5\n",
+        "F.none = null\n",
+        "F.ok = 8\n",
+        "F.bad = !Error_Bad(-1)",
+        "tags = \"b\"",
+    ] {
+        assert!(text.contains(e), "lldb did not print `{}`:\n{}", e.trim_end(), text);
+    }
+}

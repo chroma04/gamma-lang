@@ -8,6 +8,10 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma build -g` writes `gamma_lldb.py` next to the executable: lldb data formatters
+  that show slices as their elements, strings as text, optionals as their value or
+  `null`, results as their value or `!error` and tagged unions as their variant, as the
+  gdb pretty printers do. Load it with `command script import gamma_lldb.py`.
 - `gamma fix` applies the fixes that the compiler's diagnostics suggest, where a
   diagnostic has exactly one: `&&` and `||` become `and` and `or`, an unused value gets
   `_ = `, `s.len()` on a slice loses its `()`, `else` as a match pattern becomes `_`, a
