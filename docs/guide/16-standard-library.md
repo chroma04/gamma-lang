@@ -467,6 +467,29 @@ main :: fn() -> time.ParseError!() needs Out + Clock {
 }
 ```
 
+`std/time/zone` converts between UTC and local civil time. A `Zone` is read from TZif data (the files of the IANA time zone database, or any RFC 8536 file) or built from a POSIX `TZ` rule, and owns its tables from the allocator that was current when it was made. A local time can be ambiguous or not exist when the clocks change, so `from_local` says which instead of guessing:
+
+```gamma
+time :: import "std/time"
+zone :: import "std/time/zone"
+
+main :: fn() -> zone.ZoneError!() needs Out + Alloc + Fs + Env {
+    paris := try zone.load("Europe/Paris")              // $TZDIR/Europe/Paris, or /usr/share/zoneinfo
+    defer zone.deinit(&paris)
+    t := time.parse_rfc3339("2024-10-27T00:30:00Z") else trap("bad time")
+    local := zone.to_local(&paris, t)
+    buf: [zone.RFC3339_LOCAL_LEN]u8 = ---
+    print("{}\n", zone.format_rfc3339_local(local, buf[..]))      // 2024-10-27T02:30:00+02:00
+    match zone.from_local(&paris, local.time) {                  // the clocks went back at 03:00
+        .Unique(secs) => print("once: {}\n", secs)
+        .Ambiguous(a) => print("twice: {} and {}\n", a.earlier, a.later)
+        .Missing(m) => print("never: {} {}\n", m.before, m.after)
+    }
+}
+```
+
+`zone.local()` follows `$TZ` and `/etc/localtime`, and `zone.utc()`, `zone.fixed(seconds)` and `zone.from_tz_string("CET-1CEST,M3.5.0,M10.5.0/3")` need no file. Instants are Unix seconds, so the whole range of dates works.
+
 Randomness is the `Rand` effect, filled from the operating system by default and from a fixed seed in tests. `std/random` builds the usual draws on it without modulo bias, and has a seedable generator that is itself a `Rand` handler, for reproducible runs:
 
 ```gamma
