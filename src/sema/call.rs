@@ -810,10 +810,20 @@ impl<'a, 's> FnCx<'a, 's> {
         rest: &[ast::Arg],
         span: Span,
     ) -> Option<TemplateArgs> {
-        let (pieces, specs) = match parse_template(template) {
+        let (pieces, specs) = match parse_template_at(template) {
             Ok(t) => t,
-            Err(msg) => {
-                self.error(template_span, format!("invalid template: {}", msg));
+            Err((msg, stray)) => {
+                let mut d = crate::sema::Diagnostic::error(template_span, format!("invalid template: {}", msg));
+                // A lone `}` in a string literal: found in the literal's source text.
+                if let Some(at) = stray {
+                    let text = self.sema.sess.sources.text(template_span);
+                    if let Some(off) = source_offset_of(text, at) {
+                        let lo = template_span.lo + off as u32;
+                        let brace = Span { lo, hi: lo + 1, ..template_span };
+                        d = d.with_fix("write `}}` for a literal `}`", brace, "}}");
+                    }
+                }
+                self.sema.emit(d);
                 return None;
             }
         };
@@ -942,6 +952,32 @@ impl<'a, 's> FnCx<'a, 's> {
 /// must run before them.
 type TemplateArgs = (Vec<Rc<[u8]>>, Vec<tir::FmtSpec>, Vec<Expr>, Vec<Stmt>);
 
+/// The offset in the source text `lit` of a `"…"` string literal of the byte `at` of its
+/// value, when that byte is written as itself and the escapes before it are one-byte ones
+/// (`\n`, `\"` and the like).
+fn source_offset_of(lit: &str, at: usize) -> Option<usize> {
+    let b = lit.as_bytes();
+    if b.len() < 2 || b[0] != b'"' || lit.starts_with("\"\"\"") || b[b.len() - 1] != b'"' {
+        return None;
+    }
+    let (mut i, mut n) = (1, 0);
+    while i < b.len() - 1 {
+        if n == at {
+            return (b[i] != b'\\').then_some(i);
+        }
+        if b[i] == b'\\' {
+            if !matches!(b.get(i + 1), Some(b'n' | b't' | b'r' | b'0' | b'\\' | b'"' | b'\'')) {
+                return None;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+        n += 1;
+    }
+    None
+}
+
 /// A parsed `@write` template: the literal pieces around the placeholders and each
 /// placeholder's format spec (`pieces.len() == specs.len() + 1`).
 pub type Template = (Vec<Rc<[u8]>>, Vec<tir::FmtSpec>);
@@ -949,6 +985,12 @@ pub type Template = (Vec<Rc<[u8]>>, Vec<tir::FmtSpec>);
 /// Splits a `@write` template into the literal pieces around its placeholders and their
 /// format specs (§21.6.1), or explains what is wrong with it.
 pub fn parse_template(t: &[u8]) -> Result<Template, String> {
+    parse_template_at(t).map_err(|(msg, _)| msg)
+}
+
+/// Like [`parse_template`]; an error also carries the byte offset of a lone `}` that
+/// should be written `}}`, when that is the mistake.
+fn parse_template_at(t: &[u8]) -> Result<Template, (String, Option<usize>)> {
     let mut pieces = vec![];
     let mut specs = vec![];
     let mut cur = vec![];
@@ -966,17 +1008,17 @@ pub fn parse_template(t: &[u8]) -> Result<Template, String> {
             }
             (b'{', Some(b':')) => {
                 let Some(len) = t[i + 2..].iter().position(|&c| c == b'}') else {
-                    return Err("a `{:` placeholder has no closing `}`".into());
+                    return Err(("a `{:` placeholder has no closing `}`".into(), None));
                 };
-                let spec = parse_spec(&t[i + 2..i + 2 + len])?;
+                let spec = parse_spec(&t[i + 2..i + 2 + len]).map_err(|m| (m, None))?;
                 pieces.push(Rc::from(std::mem::take(&mut cur)));
                 specs.push(spec);
                 i += len + 3;
             }
             (b'{', _) => {
-                return Err("use `{}` or `{:spec}` for an argument and `{{` for a literal brace".into());
+                return Err(("use `{}` or `{:spec}` for an argument and `{{` for a literal brace".into(), None));
             }
-            (b'}', _) => return Err("use `}}` for a literal `}`".into()),
+            (b'}', _) => return Err(("use `}}` for a literal `}`".into(), Some(i))),
             (c, _) => {
                 cur.push(c);
                 i += 1;

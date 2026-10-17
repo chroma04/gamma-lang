@@ -68,6 +68,17 @@ fn can_begin_type(kind: &TokenKind) -> bool {
     }
 }
 
+/// The text of an ordering operator (`<`, `<=`, `>`, `>=`).
+fn relational(kind: &TokenKind) -> Option<&'static str> {
+    match kind {
+        TokenKind::Punct(Punct::Lt) => Some("<"),
+        TokenKind::Punct(Punct::Le) => Some("<="),
+        TokenKind::Punct(Punct::Gt) => Some(">"),
+        TokenKind::Punct(Punct::Ge) => Some(">="),
+        _ => None,
+    }
+}
+
 fn cmp_op(kind: &TokenKind) -> Option<BinOp> {
     Some(match kind {
         TokenKind::Keyword(Keyword::Is) => BinOp::Is,
@@ -262,18 +273,37 @@ impl Parser<'_> {
     // ------------------------------------------------------------------
 
     fn parse_cmp(&mut self) -> PResult<Expr> {
+        let start_pos = self.pos;
         let lhs = self.parse_range()?;
         let Some(op) = cmp_op(self.kind()) else { return Ok(lhs) };
+        let first_rel = relational(self.kind()).is_some();
         self.bump();
         let rhs = self.parse_range()?;
         let e = self.binary(op, lhs, rhs);
         if cmp_op(self.kind()).is_some() {
             let span = self.span();
-            self.report(span, "comparison operators cannot be chained; use `and`");
+            let mut d = Diagnostic::error(span, "comparison operators cannot be chained; use `and`");
+            // `a < b < c` is `a < b and b < c` when `b` is a name (so evaluating it twice is
+            // harmless), both operators are orderings, and the chain is not the operand of a
+            // `not` (which would then apply to the first comparison only).
+            let ExprKind::Binary { rhs: mid, .. } = &e.kind else { unreachable!() };
+            let negated = start_pos > 0 && self.toks[start_pos - 1].kind.is_keyword(Keyword::Not);
+            let fix = match (&mid.kind, relational(self.kind())) {
+                (ExprKind::Ident(mid), Some(second)) if first_rel && !negated => {
+                    Some(format!("and {} {}", mid.name.as_str(), second))
+                }
+                _ => None,
+            };
+            let mut count = 0;
             while cmp_op(self.kind()).is_some() {
                 self.bump();
                 self.parse_range()?;
+                count += 1;
             }
+            if let (Some(text), 1) = (fix, count) {
+                d = d.with_fix("write `a < b and b < c`", span, text);
+            }
+            self.report_diag(d);
         }
         Ok(e)
     }

@@ -1,6 +1,6 @@
 //! Blocks, statements, bindings and control flow (Appendix A.4, spec §4 and §8).
 
-use super::{Abort, PResult, Parser, Restr};
+use super::{Abort, Diagnostic, PResult, Parser, Restr};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Keyword, Punct, TokenKind};
 
@@ -45,7 +45,10 @@ impl Parser<'_> {
         if self.at(Punct::Assign) {
             // Most likely `if x = 1 {`.
             let span = self.span();
-            return self.fail(span, "expected `{` to begin a block, found `=`; to compare values, use `is` (§7.6)");
+            let d =
+                Diagnostic::error(span, "expected `{` to begin a block, found `=`; to compare values, use `is` (§7.6)")
+                    .with_fix("write `is`", span, "is");
+            return self.fail_diag(d);
         }
         self.expect(Punct::LBrace, "to begin a block")?;
         let stmts = self.unrestricted(|p| p.nest(|p| Ok(p.parse_block_body())))?;

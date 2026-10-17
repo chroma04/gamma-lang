@@ -329,6 +329,82 @@ impl<'s> Sema<'s> {
         })
     }
 
+    /// For an unknown name that is an operation of a core effect: the effect's name, to
+    /// write in front of it (`Out.print`).
+    pub fn op_effect(&mut self, name: Symbol) -> Option<Symbol> {
+        let prelude = self.prelude?;
+        let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
+        if !self.universe_hidden(d) {
+            return None;
+        }
+        let (e, _) = self.decls[d.0 as usize].op_of?;
+        Some(self.decls[e.0 as usize].name.name)
+    }
+
+    /// A fix for an unknown name that [`Sema::universe_hint`] attributes to a standard
+    /// module: write `m.Name`, after adding `m :: import "std/m"` unless the module has
+    /// it already. `span` is the name at its use in the file of `module`.
+    pub fn import_fix(&mut self, module: ModuleId, name: Symbol, span: Span) -> Option<Vec<crate::diag::Edit>> {
+        use crate::diag::Edit;
+        let path = match name.as_str() {
+            "Socket" | "Listener" | "Shutdown" => "std/net",
+            "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => "std/fs",
+            _ => return None,
+        };
+        let m = &self.modules[module.0 as usize];
+        if m.is_prelude || m.is_std {
+            return None;
+        }
+        let alias = Symbol::intern(&path[4..]);
+        let import_path = |it: &ast::Item| match &it.kind {
+            ItemKind::Binding(b) if b.ty.is_none() && b.names.len() == 1 => match &b.init.kind {
+                ast::ExprKind::Import(p) => Some(p.bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut edits = vec![];
+        let mut existing = None;
+        let mut last_import_end = None;
+        for &d in m.scope.values() {
+            let decl = &self.decls[d.0 as usize];
+            if decl.item.span.file != span.file {
+                continue;
+            }
+            if let Some(p) = import_path(&decl.item) {
+                if p == path.as_bytes() {
+                    existing = Some(decl.name.name);
+                }
+                if let ItemKind::Binding(b) = &decl.item.kind {
+                    let hi = b.init.span.hi;
+                    last_import_end = last_import_end.max(Some(hi));
+                }
+            }
+        }
+        let text = &self.sess.sources.file(span.file).src;
+        let name_text = match existing {
+            Some(a) => a,
+            None => {
+                if m.scope.contains_key(&alias) {
+                    return None;
+                }
+                let line = format!("{} :: import \"{}\"\n", alias, path);
+                let (at, line) = match last_import_end {
+                    Some(hi) => {
+                        // The start of the line after the last import.
+                        let nl = text[hi as usize..].find('\n')?;
+                        (hi + nl as u32 + 1, line)
+                    }
+                    None => (0, format!("{}\n", line)),
+                };
+                edits.push(Edit { span: Span { file: span.file, lo: at, hi: at }, text: line });
+                alias
+            }
+        };
+        edits.push(Edit { span, text: format!("{}.{}", name_text, name) });
+        Some(edits)
+    }
+
     /// The module that a module-binding name (`m` in `m.T`) denotes in `module`.
     /// Function `name` of core module `core/<module>`.
     pub fn core_fn(&mut self, module: &str, name: &str) -> Option<crate::tir::FnId> {
