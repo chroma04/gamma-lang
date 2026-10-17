@@ -1,0 +1,183 @@
+v1 1969-01-01T00:00:00Z: 0 dst=false [AAA]
+v1 2000-02-29T23:59:59Z: 0 dst=false [AAA]
+v1 2000-03-01T00:00:00Z: 3600 dst=false [BBB]
+v1 2000-05-31T23:59:59Z: 3600 dst=false [BBB]
+v1 2000-06-01T00:00:00Z: 7200 dst=true [CCC]
+v1 2000-08-31T23:59:59Z: 7200 dst=true [CCC]
+v1 2000-09-01T00:00:00Z: 3600 dst=false [BBB]
+v1 2100-01-01T00:00:00Z: 3600 dst=false [BBB]
+no_footer 1969-01-01T00:00:00Z: 0 dst=false [AAA]
+no_footer 2000-06-01T00:00:00Z: 7200 dst=true [CCC]
+no_footer 2100-01-01T00:00:00Z: 3600 dst=false [BBB]
+0 3600
+extended 1999-12-31T00:00:00Z: 0 dst=false [AAA]
+extended 2000-03-01T00:00:00Z: 3600 dst=false [BBB]
+extended 2000-04-02T23:59:59Z: 3600 dst=false [BBB]
+extended 2000-04-03T00:00:00Z: 7200 dst=true [CCC]
+extended 2000-10-28T20:59:59Z: 7200 dst=true [CCC]
+extended 2000-10-28T21:00:00Z: 3600 dst=false [BBB]
+extended 2001-04-01T23:59:59Z: 3600 dst=false [BBB]
+extended 2001-04-02T00:00:00Z: 7200 dst=true [CCC]
+no_transitions 1900-01-01T00:00:00Z: 10800 dst=false [+03]
+no_transitions 2100-01-01T00:00:00Z: 10800 dst=false [+03]
+10800
+AAA BBB
+big_bang 1999-12-31T23:59:59Z: 3600 dst=false [BBB]
+big_bang 2000-01-01T00:00:00Z: 7200 dst=true [XDT]
+big_bang 2024-01-01T00:00:00Z: 7200 dst=true [XDT]
+big_bang 2024-04-07T00:59:59Z: 7200 dst=true [XDT]
+big_bang 2024-04-07T01:00:00Z: 3600 dst=false [XST]
+big_bang 2024-07-01T00:00:00Z: 3600 dst=false [XST]
+big_bang 2024-10-06T00:59:59Z: 3600 dst=false [XST]
+big_bang 2024-10-06T01:00:00Z: 7200 dst=true [XDT]
+us 2024-03-10T06:59:59Z: -18000 dst=false [EST]
+us 2024-03-10T07:00:00Z: -14400 dst=true [EDT]
+us 2024-11-03T05:59:59Z: -14400 dst=true [EDT]
+us 2024-11-03T06:00:00Z: -18000 dst=false [EST]
+us_default 2024-03-10T06:59:59Z: -18000 dst=false [EST]
+us_default 2024-03-10T07:00:00Z: -14400 dst=true [EDT]
+us_default 2024-11-03T05:59:59Z: -14400 dst=true [EDT]
+us_default 2024-11-03T06:00:00Z: -18000 dst=false [EST]
+us_times 2024-03-10T06:59:59Z: -18000 dst=false [EST]
+us_times 2024-03-10T07:00:00Z: -14400 dst=true [EDT]
+us_times 2024-11-03T05:59:59Z: -14400 dst=true [EDT]
+us_times 2024-11-03T06:00:00Z: -18000 dst=false [EST]
+eu 2024-03-31T00:59:59Z: 3600 dst=false [CET]
+eu 2024-03-31T01:00:00Z: 7200 dst=true [CEST]
+eu 2024-10-27T00:59:59Z: 7200 dst=true [CEST]
+eu 2024-10-27T01:00:00Z: 3600 dst=false [CET]
+eu 2100-07-01T00:00:00Z: 7200 dst=true [CEST]
+quoted 1900-01-01T00:00:00Z: 10800 dst=false [+03]
+quoted 2100-01-01T00:00:00Z: 10800 dst=false [+03]
+quoted_dst 2024-03-31T00:59:59Z: -10800 dst=false [-03]
+quoted_dst 2024-03-31T01:00:00Z: -7200 dst=true [-02]
+quoted_dst 2024-10-27T00:59:59Z: -7200 dst=true [-02]
+quoted_dst 2024-10-27T01:00:00Z: -10800 dst=false [-03]
+half 2024-01-01T00:00:00Z: -12600 dst=false [-0330]
+seconds 2024-01-01T00:00:00Z: 1172 dst=false [LMT]
+julian 2023-03-01T01:59:59Z: 0 dst=false [AAA]
+julian 2023-03-01T02:00:00Z: 3600 dst=true [BBB]
+julian 2024-03-01T01:59:59Z: 0 dst=false [AAA]
+julian 2024-03-01T02:00:00Z: 3600 dst=true [BBB]
+julian 2024-02-29T12:00:00Z: 0 dst=false [AAA]
+julian 2024-10-27T00:59:59Z: 3600 dst=true [BBB]
+julian 2024-10-27T01:00:00Z: 0 dst=false [AAA]
+zero_based 2023-02-28T23:59:59Z: 0 dst=false [AAA]
+zero_based 2023-03-01T00:00:00Z: 3600 dst=true [BBB]
+zero_based 2024-02-28T23:59:59Z: 0 dst=false [AAA]
+zero_based 2024-02-29T00:00:00Z: 3600 dst=true [BBB]
+zero_based 2024-10-26T22:59:59Z: 3600 dst=true [BBB]
+zero_based 2024-10-26T23:00:00Z: 0 dst=false [AAA]
+julian_365 2024-12-30T23:59:59Z: 0 dst=false [AAA]
+julian_365 2024-12-31T01:00:00Z: 3600 dst=true [BBB]
+julian_365 2025-01-01T00:59:59Z: 3600 dst=true [BBB]
+julian_365 2025-01-01T01:00:00Z: 0 dst=false [AAA]
+day_365 2023-12-31T23:59:59Z: 0 dst=false [AAA]
+day_365 2024-12-30T23:59:59Z: 0 dst=false [AAA]
+day_365 2024-12-31T00:00:00Z: 3600 dst=true [BBB]
+day_365 2025-01-01T00:00:00Z: 3600 dst=true [BBB]
+day_365 2025-01-01T01:59:59Z: 0 dst=false [AAA]
+day_365 2025-01-01T02:00:00Z: 0 dst=false [AAA]
+long_times 2024-01-07T23:59:59Z: 0 dst=false [AAA]
+long_times 2024-01-08T00:00:00Z: 3600 dst=true [BBB]
+long_times 2024-01-22T00:59:59Z: 3600 dst=true [BBB]
+long_times 2024-01-22T01:00:00Z: 0 dst=false [AAA]
+max_hours 2024-01-01T00:00:00Z: 3600 dst=true [BBB]
+au 2024-01-15T00:00:00Z: 39600 dst=true [AEDT]
+au 2024-04-06T15:59:59Z: 39600 dst=true [AEDT]
+au 2024-04-06T16:00:00Z: 36000 dst=false [AEST]
+au 2024-07-01T00:00:00Z: 36000 dst=false [AEST]
+au 2024-10-05T15:59:59Z: 36000 dst=false [AEST]
+au 2024-10-05T16:00:00Z: 39600 dst=true [AEDT]
+au 2024-12-31T23:59:59Z: 39600 dst=true [AEDT]
+au 2025-01-01T00:00:00Z: 39600 dst=true [AEDT]
+dublin 2024-07-01T00:00:00Z: 3600 dst=false [IST]
+dublin 2024-10-27T00:59:59Z: 3600 dst=false [IST]
+dublin 2024-10-27T01:00:00Z: 0 dst=true [GMT]
+dublin 2025-01-01T00:00:00Z: 0 dst=true [GMT]
+dublin 2025-03-30T00:59:59Z: 0 dst=true [GMT]
+dublin 2025-03-30T01:00:00Z: 3600 dst=false [IST]
+last_week 2024-02-24T23:59:59Z: 0 dst=false [AAA]
+last_week 2024-02-25T01:59:59Z: 0 dst=false [AAA]
+last_week 2024-02-25T02:00:00Z: 3600 dst=true [BBB]
+last_week 2023-02-26T01:59:59Z: 0 dst=false [AAA]
+last_week 2023-02-26T02:00:00Z: 3600 dst=true [BBB]
+week1 2024-09-01T00:00:00Z: 0 dst=false [AAA]
+week1 2024-09-01T02:00:00Z: 3600 dst=true [BBB]
+week1 2025-09-07T01:59:59Z: 0 dst=false [AAA]
+week1 2025-09-07T02:00:00Z: 3600 dst=true [BBB]
+"": .Invalid(0)
+"ES": .Invalid(0)
+"EST": .Invalid(3)
+"EST25": .Invalid(3)
+"EST5:60": .Invalid(5)
+"EST5EDT,M3.2.0": .Invalid(14)
+"EST5EDT,M13.1.0,M11.1.0": .Invalid(9)
+"EST5EDT,M0.1.0,M11.1.0": .Invalid(9)
+"EST5EDT,M3.6.0,M11.1.0": .Invalid(11)
+"EST5EDT,M3.0.0,M11.1.0": .Invalid(11)
+"EST5EDT,M3.2.7,M11.1.0": .Invalid(13)
+"EST5EDT,M3.2.0,M11.1.0x": .Invalid(22)
+"EST5EDT,J0,J5": .Invalid(9)
+"EST5EDT,J366,J5": .Invalid(9)
+"EST5EDT,M3.2.0/168,M11.1.0": .Invalid(15)
+"EST5EDT,M3.2.0/,M11.1.0": .Invalid(15)
+"EST5EDT,M3.2,M11.1.0": .Invalid(12)
+"<+03": .Invalid(4)
+"<+0>3": .Invalid(0)
+"<+0 3>3": .Invalid(3)
+"5": .Invalid(0)
+"EST5ED": .Invalid(4)
+"EST5EDT,": .Invalid(8)
+"EST5EDT,,": .Invalid(8)
+"EST5EDT,M3.2.0,": .Invalid(15)
+empty: .Invalid(0)
+short header: .Invalid(43)
+truncated in the v1 block: .Invalid(100)
+truncated in the v2 block: .Invalid(400)
+truncated footer: .Invalid(1199)
+no final newline: .Invalid(1203)
+bad magic: .Invalid(0)
+bad version: .Invalid(4)
+version 1 digit: .Invalid(4)
+no types: .Invalid(87)
+no abbreviation bytes: .Invalid(91)
+indicator count: .Invalid(71)
+transitions out of order: .Invalid(103)
+type index out of range: .Invalid(119)
+dst flag: .Invalid(126)
+abbreviation index out of range: .Invalid(127)
+abbreviation without end: .Invalid(148)
+footer missing newline: .Invalid(105)
+footer not a rule: .Invalid(106)
+footer rule trailing: .Invalid(112)
+0 false [UTC]
+-18000 false []
+2025-01-01T01:30:00.250+05:30
+.Unique(1735675200)
+19800
+0: 2024-05-17T09:30:00+00:00
+7200: 2024-05-17T11:30:00+02:00
+-18000: 2024-05-17T04:30:00-05:00
+19800: 2024-05-17T15:00:00+05:30
+45900: 2024-05-17T22:15:00+12:45
+-12600: 2024-05-17T06:00:00-03:30
+30: 2024-05-17T09:30:30+00:01
+-30: 2024-05-17T09:29:30-00:01
+29: 2024-05-17T09:30:29+00:00
+-29: 2024-05-17T09:29:31+00:00
+90: 2024-05-17T09:31:30+00:02
+-90: 2024-05-17T09:28:30-00:02
+561: 2024-05-17T09:39:21+00:09
+86399: 2024-05-18T09:29:59+24:00
+-86399: 2024-05-16T09:30:01-24:00
+0000-01-01T01:00:00.000001+01:00
+35 35
+0: 1970-01-01 0 true
+-1: 1969-12-31 235959 true
+86399: 1970-01-01 235959 true
+86400: 1970-01-02 0 true
+1700000000: 2023-11-14 221320 true
+-2000000000: 1906-08-16 202640 true
+253402300799: 9999-12-31 235959 true
+-62167219200: 0000-01-01 0 true

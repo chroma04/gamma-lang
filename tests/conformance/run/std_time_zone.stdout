@@ -1,0 +1,67 @@
+paris 1711846799: +01:00 dst=false CET
+paris 1711846800: +02:00 dst=true CEST
+paris 1711846801: +02:00 dst=true CEST
+paris 1729990799: +02:00 dst=true CEST
+paris 1729990800: +01:00 dst=false CET
+paris 1729990801: +01:00 dst=false CET
+paris 4109878799: +01:00 dst=false CET
+paris 4109878800: +02:00 dst=true CEST
+paris 4128627599: +02:00 dst=true CEST
+paris 4128627600: +01:00 dst=false CET
+paris -2840140800: +00:09 dst=false LMT
+paris -1855958961: +00:00 dst=false WET
+paris 0: +01:00 dst=false CET
+paris 946684800: +01:00 dst=false CET
+paris 1711846799 -> 2024-03-31T01:59:59+01:00 -> .Unique(1711846799)
+paris 1711846800 -> 2024-03-31T03:00:00+02:00 -> .Unique(1711846800)
+paris 1729990799 -> 2024-10-27T02:59:59+02:00 -> .Ambiguous(earlier: 1729990799, later: 1729994399)
+paris 1729990800 -> 2024-10-27T02:00:00+01:00 -> .Ambiguous(earlier: 1729987200, later: 1729990800)
+paris 1700000000 -> 2023-11-14T23:13:20+01:00 -> .Unique(1700000000)
+paris 2024-03-31T02:30:00Z -> .Missing(before: 1711848600, after: 1711845000)
+paris 2024-03-31T01:59:59Z -> .Unique(1711846799)
+paris 2024-03-31T03:00:00Z -> .Unique(1711846800)
+paris 2024-10-27T02:30:00Z -> .Ambiguous(earlier: 1729989000, later: 1729992600)
+paris 2024-10-27T03:00:00Z -> .Unique(1729994400)
+paris 2100-03-28T02:00:00Z -> .Missing(before: 4109878800, after: 4109875200)
+paris 2100-10-31T02:59:59Z -> .Ambiguous(earlier: 4128627599, later: 4128631199)
+ny 1710053999: -05:00 dst=false EST
+ny 1710054000: -04:00 dst=true EDT
+ny 1730613599: -04:00 dst=true EDT
+ny 1730613600: -05:00 dst=false EST
+ny 4108690799: -05:00 dst=false EST
+ny 4108690800: -04:00 dst=true EDT
+ny 4129250399: -04:00 dst=true EDT
+ny 4129250400: -05:00 dst=false EST
+ny 2024-03-10T02:30:00Z -> .Missing(before: 1710055800, after: 1710052200)
+ny 2024-11-03T01:30:00Z -> .Ambiguous(earlier: 1730611800, later: 1730615400)
+lord_howe 1712415599: +11:00 dst=true +11
+lord_howe 1712415600: +10:30 dst=false +1030
+lord_howe 1728142199: +10:30 dst=false +1030
+lord_howe 1728142200: +11:00 dst=true +11
+lord_howe 4110447599: +11:00 dst=true +11
+lord_howe 4110447600: +10:30 dst=false +1030
+lord_howe 4126174199: +10:30 dst=false +1030
+lord_howe 4126174200: +11:00 dst=true +11
+lord_howe 2024-04-07T01:45:00Z -> .Ambiguous(earlier: 1712414700, later: 1712416500)
+lord_howe 2024-10-06T02:15:00Z -> .Missing(before: 1728143100, after: 1728141300)
+lord_howe 2024-10-06T02:30:00Z -> .Unique(1728142200)
+kolkata -3000000000: +05:21 dst=false MMT
+kolkata 0: +05:30 dst=false IST
+kolkata 1700000000: +05:30 dst=false IST
+kolkata 4102444800: +05:30 dst=false IST
+apia 1325239199: -10:00 dst=true -10
+apia 1325239200: +14:00 dst=true +14
+apia 1609459200: +14:00 dst=true +14
+apia 2011-12-29T23:59:59Z -> .Unique(1325239199)
+apia 2011-12-30T00:00:00Z -> .Missing(before: 1325239200, after: 1325152800)
+apia 2011-12-30T12:00:00Z -> .Missing(before: 1325282400, after: 1325196000)
+apia 2011-12-30T23:59:59Z -> .Missing(before: 1325325599, after: 1325239199)
+apia 2011-12-31T00:00:00Z -> .Unique(1325239200)
+sao_paulo 1541300399: -03:00 dst=false -03
+sao_paulo 1541300400: -02:00 dst=true -02
+sao_paulo 1550368799: -02:00 dst=true -02
+sao_paulo 1550368800: -03:00 dst=false -03
+sao_paulo 1700000000: -03:00 dst=false -03
+sao_paulo 4102444800: -03:00 dst=false -03
+sao_paulo 2018-11-04T00:30:00Z -> .Missing(before: 1541302200, after: 1541298600)
+1880-01-01T00:09:21+00:09 LMT

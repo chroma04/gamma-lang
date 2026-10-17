@@ -1,0 +1,199 @@
+// std/time/zone with synthetic TZif files and POSIX TZ strings: the three local time types
+// AAA (+0), BBB (+1 hour) and CCC (+2 hours, DST), transitions at known instants, a
+// version 1 file with leap second records, files without a footer, extended-hour and
+// southern-hemisphere rules, malformed data, fixed and UTC zones, and RFC 3339 text.
+// The fixtures come from tools/gen_tzif_fixtures.py.
+zone :: import "std/time/zone"
+time :: import "std/time"
+hex :: import "std/encoding/hex"
+
+PARIS :: "545a69663300000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000545a6966330000000000000000000000000000000000000000000000000000000000006c0000000d0000001fffffffff6bc99bcfffffffff9160504fffffffff9b4778f0ffffffff9bd72c70ffffffff9cbc9170ffffffff9dc048f0ffffffff9e89fe70ffffffff9fa02af0ffffffffa060a5f0ffffffffa1800cf0ffffffffa22e12f0ffffffffa37a4cf0ffffffffa43581f0ffffffffa55e2370ffffffffa62535f0ffffffffa7279bf0ffffffffa8582670ffffffffa9077df0ffffffffa9ee3470ffffffffaae75ff0ffffffffabd750f0ffffffffacc741f0ffffffffadc9a7f0ffffffffaea723f0ffffffffafa04f70ffffffffb08705f0ffffffffb1896bf0ffffffffb2702270ffffffffb3728870ffffffffb4500470ffffffffb5492ff0ffffffffb62fe670ffffffffb7324c70ffffffffb80fc870ffffffffb8ffb970ffffffffb9efaa70ffffffffbad660f0ffffffffbbd8c6f0ffffffffbcc8b7f0ffffffffbdb8a8f0ffffffffbe9f5f70ffffffffbf988af0ffffffffc09af0f0ffffffffc1786cf0ffffffffc2685df0ffffffffc3584ef0ffffffffc43f0570ffffffffc53830f0ffffffffc63a96f0ffffffffc758ac70ffffffffc7da09a0ffffffffc86c27e0ffffffffcce74b10ffffffffcda91790ffffffffcea24310ffffffffcf923410ffffffffd04fe1e0ffffffffd089f1f0ffffffffd1721610ffffffffd24e4090000000000bbb3900000000000cab1bf0000000000da46390000000000e8b1a10000000000f84459000000000107436900000000011642790000000001254189000000000134d4410000000001433fa90000000001523eb90000000001613dc90000000001703cd900000000017f3be900000000018e3af900000000019d3a090000000001ac39190000000001bbcbd10000000001cacae10000000001d9c9f10000000001e8c9010000000001f7c811000000000206c721000000000215c631000000000224c541000000000233c451000000000242c361000000000251c271000000000260c181000000000270543900000000027f534900000000028e525900000000029d51690000000002ac50790000000002bb4f890000000002ca4e990000000002d94da90000000002e84cb90000000002f74bc90000000003064ad9000000000315dd910000000003272b41000000000333dbb10000000003452961000000000351d9d1000000000363278100000000036fd7f1000000000381b949001050203020302030203020302030203020302030203020302030203020302030203020302030203020302030203020302030408060706070904090a080a0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c0b0c00000231000000000231000400000e10010800000000000d00000e10010800000000000d00000e10001100001c20011500001c20011500001c20011a00000e10001100001c20011500000e1000114c4d5400504d540057455354005745540043455400434553540057454d54000a4345542d31434553542c4d332e352e302c4d31302e352e302f330a"
+V1_ONLY :: "545a69660000000000000000000000000000000000000003000000030000000200000003000000030000000c38bc5d803935a78039aef18001020100000000000000000e10000400001c20010841414100424242004343430004b258000000000105a4ec0100000002000100010001"
+NO_FOOTER :: "545a69663200000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000545a69663200000000000000000000000000000000000003000000030000000100000003000000030000000c0000000038bc5d80000000003935a7800000000039aef18001020100000000000000000e10000400001c2001084141410042424200434343000000000004b25800000000010001000100010a0a"
+EXTENDED :: "545a69663300000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000545a69663300000000000000000000000000000000000000000000000000000000000001000000030000000c0000000038bc5d800100000000000000000e10000400001c2001084141410042424200434343000a4242422d314343432c4d342e312e302f32352c4d31302e352e302f2d310a"
+NO_TRANSITIONS :: "545a69663200000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000545a69663200000000000000000000000000000000000000000000000000000000000000000000010000000400002a3000002b3033000a3c2b30333e2d330a"
+BIG_BANG :: "545a69663400000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000545a69663400000000000000000000000000000000000000000000000000000000000002000000030000000cf80000000000000000000000386d4380010200000000000000000e10000400001c2001084141410042424200434343000a5853542d315844542c4d31302e312e302c4d342e312e302f330a"
+
+decode :: fn(text: string, raw: []u8) -> []u8 {
+    return hex.decode(text, raw) else trap("bad hex")
+}
+
+load :: fn(text: string) -> zone.Zone needs Alloc {
+    raw: [512]u8 = ---
+    return zone.parse(decode(text, raw[..])) else trap("fixture does not parse")
+}
+
+// Unix seconds of an RFC 3339 time in UTC.
+at :: fn(text: string) -> i64 {
+    t := time.parse_rfc3339(text) else trap("bad time")
+    return zone.secs_from_datetime(t)
+}
+
+show :: fn(label: string, z: ^const zone.Zone, text: string) needs Out {
+    o := zone.offset_at(z, at(text))
+    print("{} {}: {} dst={} [{}]\n", label, text, o.seconds, o.is_dst, o.abbreviation)
+}
+
+tz :: fn(label: string, rule: string, times: []const string) needs Out + Alloc {
+    z := zone.from_tz_string(rule) else e => {
+        print("{} {}: error {}\n", label, rule, e)
+        return
+    }
+    defer zone.deinit(&z)
+    for t in times { show(label, &z, t) }
+}
+
+bad_rule :: fn(rule: string) needs Out + Alloc {
+    z := zone.from_tz_string(rule) else e => {
+        print("\"{}\": {}\n", rule, e)
+        return
+    }
+    print("\"{}\": accepted\n", rule)
+    zone.deinit(&z)
+}
+
+bad_data :: fn(label: string, data: []const u8) needs Out + Alloc {
+    z := zone.parse(data) else e => {
+        print("{}: {}\n", label, e)
+        return
+    }
+    print("{}: accepted\n", label)
+    zone.deinit(&z)
+}
+
+// Decodes the fixture, sets `data[at] = value`, and parses it.
+patched :: fn(label: string, text: string, pos: usize, value: u8) needs Out + Alloc {
+    raw: [512]u8 = ---
+    data := decode(text, raw[..])
+    data[pos] = value
+    bad_data(label, data)
+}
+
+main :: fn() needs Out + Alloc {
+    // A version 1 file: 32-bit times, leap second records and indicators that are skipped.
+    // AAA until 2000-03-01, BBB until 06-01, CCC (DST) until 09-01, then BBB for good.
+    v1 := load(V1_ONLY)
+    defer zone.deinit(&v1)
+    for t in [_]string("1969-01-01T00:00:00Z", "2000-02-29T23:59:59Z", "2000-03-01T00:00:00Z", "2000-05-31T23:59:59Z", "2000-06-01T00:00:00Z", "2000-08-31T23:59:59Z", "2000-09-01T00:00:00Z", "2100-01-01T00:00:00Z") {
+        show("v1", &v1, t)
+    }
+    nf := load(NO_FOOTER)
+    defer zone.deinit(&nf)
+    for t in [_]string("1969-01-01T00:00:00Z", "2000-06-01T00:00:00Z", "2100-01-01T00:00:00Z") { show("no_footer", &nf, t) }
+    // Extreme instants.
+    print("{} {}\n", zone.offset_at(&nf, @min_value(i64)).seconds, zone.offset_at(&nf, @max_value(i64)).seconds)
+
+    // Extended hours: BBB-1CCC,M4.1.0/25,M10.5.0/-1 after the transition of 2000-03-01.
+    ext := load(EXTENDED)
+    defer zone.deinit(&ext)
+    for t in [_]string("1999-12-31T00:00:00Z", "2000-03-01T00:00:00Z", "2000-04-02T23:59:59Z", "2000-04-03T00:00:00Z", "2000-10-28T20:59:59Z", "2000-10-28T21:00:00Z", "2001-04-01T23:59:59Z", "2001-04-02T00:00:00Z") {
+        show("extended", &ext, t)
+    }
+
+    // A single type and no transitions, with a quoted abbreviation.
+    nt := load(NO_TRANSITIONS)
+    defer zone.deinit(&nt)
+    show("no_transitions", &nt, "1900-01-01T00:00:00Z")
+    show("no_transitions", &nt, "2100-01-01T00:00:00Z")
+    print("{}\n", zone.offset_at(&nt, @max_value(i64)).seconds)
+
+    // Version 4: a first transition at -2^59, and a southern hemisphere footer.
+    bb := load(BIG_BANG)
+    defer zone.deinit(&bb)
+    print("{} {}\n", zone.offset_at(&bb, -(1 << 59) - 1).abbreviation, zone.offset_at(&bb, -(1 << 59)).abbreviation)
+    for t in [_]string("1999-12-31T23:59:59Z", "2000-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "2024-04-07T00:59:59Z", "2024-04-07T01:00:00Z", "2024-07-01T00:00:00Z", "2024-10-06T00:59:59Z", "2024-10-06T01:00:00Z") {
+        show("big_bang", &bb, t)
+    }
+
+    // POSIX TZ strings.
+    us := [_]string("2024-03-10T06:59:59Z", "2024-03-10T07:00:00Z", "2024-11-03T05:59:59Z", "2024-11-03T06:00:00Z")
+    tz("us", "EST5EDT,M3.2.0,M11.1.0", us[..])
+    tz("us_default", "EST5EDT", us[..])
+    tz("us_times", "EST5EDT,M3.2.0/2,M11.1.0/2:00:00", us[..])
+    tz("eu", "CET-1CEST,M3.5.0,M10.5.0/3", [_]string("2024-03-31T00:59:59Z", "2024-03-31T01:00:00Z", "2024-10-27T00:59:59Z", "2024-10-27T01:00:00Z", "2100-07-01T00:00:00Z"))
+    tz("quoted", "<+03>-3", [_]string("1900-01-01T00:00:00Z", "2100-01-01T00:00:00Z"))
+    tz("quoted_dst", "<-03>3<-02>,M3.5.0/-2,M10.5.0/-1", [_]string("2024-03-31T00:59:59Z", "2024-03-31T01:00:00Z", "2024-10-27T00:59:59Z", "2024-10-27T01:00:00Z"))
+    tz("half", "<-0330>3:30", [_]string("2024-01-01T00:00:00Z"))
+    tz("seconds", "LMT-0:19:32", [_]string("2024-01-01T00:00:00Z"))
+    // Jn counts no February 29, n counts it (zero based).
+    tz("julian", "AAA0BBB,J60,J300", [_]string("2023-03-01T01:59:59Z", "2023-03-01T02:00:00Z", "2024-03-01T01:59:59Z", "2024-03-01T02:00:00Z", "2024-02-29T12:00:00Z", "2024-10-27T00:59:59Z", "2024-10-27T01:00:00Z"))
+    tz("zero_based", "AAA0BBB,59/0,300/0", [_]string("2023-02-28T23:59:59Z", "2023-03-01T00:00:00Z", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00Z", "2024-10-26T22:59:59Z", "2024-10-26T23:00:00Z"))
+    tz("julian_365", "AAA0BBB,J365/1,J1", [_]string("2024-12-30T23:59:59Z", "2024-12-31T01:00:00Z", "2025-01-01T00:59:59Z", "2025-01-01T01:00:00Z"))
+    tz("day_365", "AAA0BBB,365/0,0/2", [_]string("2023-12-31T23:59:59Z", "2024-12-30T23:59:59Z", "2024-12-31T00:00:00Z", "2025-01-01T00:00:00Z", "2025-01-01T01:59:59Z", "2025-01-01T02:00:00Z"))
+    // Hours beyond a day and before the day.
+    tz("long_times", "AAA0BBB,J10/-48,J20/50", [_]string("2024-01-07T23:59:59Z", "2024-01-08T00:00:00Z", "2024-01-22T00:59:59Z", "2024-01-22T01:00:00Z"))
+    tz("max_hours", "AAA0BBB,J10/167,J20/-167", [_]string("2024-01-01T00:00:00Z"))
+    // Southern hemisphere: DST starts after it ends within the calendar year.
+    au := [_]string("2024-01-15T00:00:00Z", "2024-04-06T15:59:59Z", "2024-04-06T16:00:00Z", "2024-07-01T00:00:00Z", "2024-10-05T15:59:59Z", "2024-10-05T16:00:00Z", "2024-12-31T23:59:59Z", "2025-01-01T00:00:00Z")
+    tz("au", "AEST-10AEDT,M10.1.0,M4.1.0/3", au[..])
+    // Daylight saving with the smaller offset (Irish "negative DST").
+    tz("dublin", "IST-1GMT0,M10.5.0,M3.5.0/1", [_]string("2024-07-01T00:00:00Z", "2024-10-27T00:59:59Z", "2024-10-27T01:00:00Z", "2025-01-01T00:00:00Z", "2025-03-30T00:59:59Z", "2025-03-30T01:00:00Z"))
+    // The last week is the fifth when the month has one, the fourth otherwise.
+    tz("last_week", "AAA0BBB,M2.5.0,M3.5.0", [_]string("2024-02-24T23:59:59Z", "2024-02-25T01:59:59Z", "2024-02-25T02:00:00Z", "2023-02-26T01:59:59Z", "2023-02-26T02:00:00Z"))
+    // Week 1 is the first such weekday of the month, also when it is the 1st.
+    tz("week1", "AAA0BBB,M9.1.0,M10.1.0", [_]string("2024-09-01T00:00:00Z", "2024-09-01T02:00:00Z", "2025-09-07T01:59:59Z", "2025-09-07T02:00:00Z"))
+
+    // Malformed rules: the byte index of the first thing that does not fit.
+    for r in [_]string("", "ES", "EST", "EST25", "EST5:60", "EST5EDT,M3.2.0", "EST5EDT,M13.1.0,M11.1.0", "EST5EDT,M0.1.0,M11.1.0", "EST5EDT,M3.6.0,M11.1.0", "EST5EDT,M3.0.0,M11.1.0", "EST5EDT,M3.2.7,M11.1.0", "EST5EDT,M3.2.0,M11.1.0x", "EST5EDT,J0,J5", "EST5EDT,J366,J5", "EST5EDT,M3.2.0/168,M11.1.0", "EST5EDT,M3.2.0/,M11.1.0", "EST5EDT,M3.2,M11.1.0", "<+03", "<+0>3", "<+0 3>3", "5", "EST5ED", "EST5EDT,", "EST5EDT,,", "EST5EDT,M3.2.0,") {
+        bad_rule(r)
+    }
+
+    // Malformed TZif data. NO_FOOTER: second header at 51, its body at 95 with the times at
+    // 95, the type indices at 119, the types at 122 and the abbreviations at 140.
+    raw: [2048]u8 = ---
+    full := decode(PARIS, raw[..])
+    bad_data("empty", empty_slice(u8))
+    bad_data("short header", full[0..43])
+    bad_data("truncated in the v1 block", full[0..100])
+    bad_data("truncated in the v2 block", full[0..400])
+    bad_data("truncated footer", full[0..full.len - 5])
+    bad_data("no final newline", full[0..full.len - 1])
+    patched("bad magic", NO_FOOTER, 0, 'X')
+    patched("bad version", NO_FOOTER, 4, '5')
+    patched("version 1 digit", NO_FOOTER, 4, '1')
+    patched("no types", NO_FOOTER, 90, 0)
+    patched("no abbreviation bytes", NO_FOOTER, 94, 0)
+    patched("indicator count", NO_FOOTER, 71, 1)
+    patched("transitions out of order", NO_FOOTER, 103, 255)
+    patched("type index out of range", NO_FOOTER, 119, 9)
+    patched("dst flag", NO_FOOTER, 126, 2)
+    patched("abbreviation index out of range", NO_FOOTER, 127, 200)
+    patched("abbreviation without end", NO_FOOTER, 151, 'x')
+    patched("footer missing newline", NO_TRANSITIONS, 105, 'x')
+    patched("footer not a rule", NO_TRANSITIONS, 106, '#')
+    patched("footer rule trailing", NO_TRANSITIONS, 112, 'x')
+
+    // Fixed offsets and UTC need no allocation, and releasing them does nothing.
+    u := zone.utc()
+    f := zone.fixed(-18000)
+    for z in [_]^const zone.Zone(&u, &f) {
+        o := zone.offset_at(z, 1_000_000_000)
+        print("{} {} [{}]\n", o.seconds, o.is_dst, o.abbreviation)
+    }
+    zone.deinit(&u)
+    zone.deinit(&f)
+    f2 := zone.fixed(19800)
+    l := zone.to_local(&f2, time.parse_rfc3339("2024-12-31T20:00:00.25Z") else trap("t"))
+    buf: [zone.RFC3339_LOCAL_LEN]u8 = ---
+    print("{}\n", zone.format_rfc3339_local(l, buf[..]))
+    print("{}\n", zone.from_local(&f2, l.time))
+    print("{}\n", zone.offset_at(&f2, @max_value(i64)).seconds)
+
+    // Text: the sign, the offset rounded to whole minutes, fractions, and the extremes.
+    t0 := time.parse_rfc3339("2024-05-17T09:30:00Z") else trap("t")
+    for secs in [_]i32(0, 7200, -18000, 19800, 45900, -12600, 30, -30, 29, -29, 90, -90, 561, 86399, -86399) {
+        z := zone.fixed(secs)
+        local := zone.to_local(&z, t0)
+        print("{}: {}\n", secs, zone.format_rfc3339_local(local, buf[..]))
+    }
+    z0 := zone.fixed(3600)
+    ln := zone.to_local(&z0, time.parse_rfc3339("0000-01-01T00:00:00.000001Z") else trap("t"))
+    print("{}\n", zone.format_rfc3339_local(ln, buf[..]))
+    print("{} {}\n", buf.len, zone.RFC3339_LOCAL_LEN)
+
+    // Conversions between DateTime and Unix seconds.
+    for s in [_]i64(0, -1, 86399, 86400, 1_700_000_000, -2_000_000_000, 253402300799, -62167219200) {
+        d := zone.datetime_from_secs(s, 7)
+        print("{}: {} {} {}\n", s, time.format_date(d.date, buf[..]), i32(d.hour) * 10000 + i32(d.minute) * 100 + i32(d.second), zone.secs_from_datetime(d) is s)
+    }
+}
