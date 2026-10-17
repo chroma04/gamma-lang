@@ -465,9 +465,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let o = format!("o{}", self.fresh());
                 self.line(&format!("bool {o} = gm_wpow((uint8_t *)&{r}, {p0}, {n}, {args});"));
                 if fl == Flavor::Checked && self.g.opts.checks {
-                    self.line(&format!(
-                        "if ({o}) {{ gm_buf m = {{0}}; gm_buf_push(&m, \"integer overflow in `pow` (\", sizeof(\"integer overflow in `pow` (\") - 1); gm_wfmt(&m, {p0}, {args}); char s[16]; int k = snprintf(s, sizeof s, \"^%u)\", (unsigned){n}); gm_buf_push(&m, s, (size_t)k); gm_trap_bytes(m.data, m.len, {loc}); }}"
-                    ));
+                    self.line(&format!("if ({o}) gm_trap_pow({p0}, {args}, {n}, {loc});"));
                     return Ok(r);
                 }
                 let up = format!("!(gm_wsign({p0}, {args}) < 0 && ({n} & 1))");

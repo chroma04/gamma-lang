@@ -100,7 +100,12 @@ impl<'a, 's> FnCx<'a, 's> {
                         (true, false) => &["trunc", "round", "checked", "sat"],
                         _ => &["to"],
                     };
-                    let hint = if methods.is_empty() {
+                    let hint = if self.sema.bits_struct_ty(to) == Some(from) {
+                        format!(
+                            ": not every `{}` is a valid `{}`, since a field has a type with invalid bit patterns; build it with `{}(field: …)` (§5.10.5)",
+                            from, to, to
+                        )
+                    } else if methods.is_empty() {
                         " (§6.5)".to_string()
                     } else {
                         let list: Vec<String> = methods.iter().map(|m| format!("`x.{}({})`", m, to)).collect();

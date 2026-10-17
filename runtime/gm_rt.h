@@ -307,6 +307,10 @@ GM_API uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits);
 /* Traps: "shift amount <amt> too large for <ty>". */
 GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
                                     uint32_t line, uint32_t col);
+/* Traps: "integer overflow in `pow` (<base>^<n>)", for an integer `base` of `bits` bits
+ * (of the size of the integer type for up to 128 bits, and in words above). */
+GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, uint32_t n, const char *file,
+                                  uint32_t line, uint32_t col);
 GM_API int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);  /* -1, 0 or 1 */
 GM_API int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn);                   /* -1, 0 or 1 */
 GM_API void gm_wmin(uint8_t *r, uint32_t bits, bool sgn);

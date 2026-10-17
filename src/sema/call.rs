@@ -559,11 +559,11 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         // `Mode(u)`: the integer is of the underlying type, so a literal takes it.
         if let Some(u) = self.sema.bits_struct_ty(t) {
-            let v = self.expr(x, Some(u));
+            let mut v = self.expr(x, Some(u));
             if self.infer.var_kind(v.ty).is_some() {
-                let v = self.coerce(v, u);
-                return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
+                v = self.coerce(v, u);
             }
+            // Only a plain bit struct converts from its integer, a literal included.
             self.obligations.push(Obligation::Conversion { from: v.ty, to: t, span });
             return mk(t, tir::ExprKind::Builtin { op: tir::Builtin::Convert, args: vec![v] }, span);
         }

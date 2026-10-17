@@ -486,6 +486,23 @@ GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const ch
     gm_trap_bytes(m.data, m.len, file, line, col);
 }
 
+GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, uint32_t n, const char *file,
+                                  uint32_t line, uint32_t col) {
+    gm_buf m = {0};
+    gm_buf_push(&m, "integer overflow in `pow` (", 27);
+    if (bits <= 128) {
+        gm_type t = {0};
+        t.kind = GM_K_INT, t.bits = (uint16_t)bits, t.is_signed = sgn, t.size = (uint32_t)gm_isize(bits);
+        gm_fmt_int(&m, &t, base);
+    } else {
+        gm_wfmt(&m, base, bits, sgn);
+    }
+    char s[16];
+    int k = snprintf(s, sizeof s, "^%u)", (unsigned)n);
+    gm_buf_push(&m, s, (size_t)k);
+    gm_trap_bytes(m.data, m.len, file, line, col);
+}
+
 GM_API int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn) {
     size_t n = GM_WORDS(bits);
     for (size_t i = n; i > 0; i--) {

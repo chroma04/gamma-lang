@@ -384,7 +384,8 @@ pub fn f16_to_f64(h: u16) -> f64 {
             if man == 0.0 {
                 sign * f64::INFINITY
             } else {
-                f64::NAN
+                // As the hardware widens a NaN: sign and payload kept, quiet.
+                f64::from_bits(((h & 0x8000) as u64) << 48 | 0x7ff8_0000_0000_0000 | ((h & 0x3ff) as u64) << 42)
             }
         }
         _ => sign * (1.0 + man / 1024.0) * 2f64.powi(exp - 15),
@@ -398,7 +399,8 @@ pub fn f64_to_f16(x: f64) -> u16 {
     let exp = ((bits >> 52) & 0x7ff) as i32;
     let man = bits & ((1u64 << 52) - 1);
     if exp == 0x7ff {
-        return if man == 0 { sign | 0x7c00 } else { sign | 0x7e00 };
+        // A NaN keeps its sign and the top of its payload, and is quiet.
+        return if man == 0 { sign | 0x7c00 } else { sign | 0x7e00 | (man >> 42) as u16 };
     }
     if exp == 0 {
         return sign;
@@ -826,6 +828,10 @@ mod tests {
         assert_eq!(f64_to_f16(2f64.powi(-25)), 0);
         assert_eq!(f64_to_f16(2f64.powi(-25) * 1.5), 1);
         assert_eq!(f64_to_f16(-0.0), 0x8000);
+        // NaNs keep their sign and payload both ways.
+        assert_eq!(f64_to_f16(-f64::NAN), 0xfe00);
+        assert_eq!(f64_to_f16(f16_to_f64(0xfe01)), 0xfe01);
+        assert_eq!(f16_to_f64(0x7e00).to_bits(), 0x7ff8_0000_0000_0000);
         // 1 + 2^-11 is a tie between 1.0 and 1 + 2^-10: rounds to even (1.0)
         assert_eq!(f64_to_f16(1.0 + 2f64.powi(-11)), 0x3c00);
         assert_eq!(f64_to_f16(1.0 + 3.0 * 2f64.powi(-11)), 0x3c02);

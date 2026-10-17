@@ -83,6 +83,14 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A `#bits` struct with a field that has invalid bit patterns (an enum, say) could be
+  converted from an integer literal, `W(255)`, although only plain bit structs convert
+  from their integer (§5.10.5); the value then held an invalid tag. This is now an
+  error, as it already was for a conversion of a variable, and the message explains it.
+- C back end: the overflow trap of `pow` on integers of up to 128 bits now names the
+  operands (`integer overflow in `pow` (-5^31)`), as the interpreter's does.
+- Interpreter: `f16` NaNs kept neither their sign nor their payload when widened or
+  narrowed, so `(h / h).bits(u16)` differed from compiled code.
 - C back end: a call to a function that performs no effects itself but is passed a
   second-class function was not treated as a possible non-local exit. When the passed
   function performed an operation whose handler left its `with` (`break` after
