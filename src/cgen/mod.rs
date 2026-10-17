@@ -740,13 +740,17 @@ impl<'a> Gen<'a> {
         may
     }
 
-    /// True if calls to `f` can leave by a non-local exit (Appendix D.2).
+    /// True if calls to `f` can leave by a non-local exit (Appendix D.2). A function
+    /// that performs nothing itself can still leave that way through a second-class
+    /// function it is passed, which may perform the caller's effects (§11.6).
     pub fn may_unwind(&self, f: FnId) -> bool {
         let def = &self.prog.fns[f.index()];
         match def.kind {
             FnKind::Foreign { .. } => false,
             FnKind::Clause | FnKind::Literal => true,
-            FnKind::Named => !self.within_sys(&def.effects),
+            FnKind::Named => {
+                !self.within_sys(&def.effects) || takes_fn(def.params.iter().map(|p| def.locals[p.index()].ty))
+            }
         }
     }
 
@@ -844,6 +848,12 @@ impl<'a> Gen<'a> {
             },
         }
     }
+}
+
+/// True if one of `params` is a second-class function (§11.6), through which a callee
+/// that performs nothing itself may still leave by a non-local exit.
+pub fn takes_fn(params: impl IntoIterator<Item = Ty>) -> bool {
+    params.into_iter().any(|t| matches!(t.kind(), TyKind::Fn(_)))
 }
 
 /// The C attribute (with a trailing space) selecting calling convention `cc`; the
