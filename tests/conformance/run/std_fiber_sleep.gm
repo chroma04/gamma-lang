@@ -1,16 +1,17 @@
-// std/fiber sleeping with the real clock: tasks that sleep 100, 20 and 60 ms wake in the order of
-// their deadlines, and the three sleeps overlap, so the whole run takes less than their sum.
-// Only deterministic facts are printed.
+// std/fiber sleeping with the real clock: tasks that sleep until 100, 20 and 60 ms after a
+// common start wake in the order of their deadlines, and the sleeps overlap: the quick task
+// falls asleep after the slow one and wakes before it. Only deterministic facts are printed.
 fiber :: import "std/fiber"
 
 Nap :: struct {
     name: string
+    start: Instant
     for_ms: u64
 }
 
 nap :: fn(j: ^Nap) needs fiber.Sched(Out + Clock) + Out + Clock {
     print("{} falls asleep\n", j.name)
-    fiber.sleep(ms(j.for_ms))
+    fiber.sleep_until(j.start.after(ms(j.for_ms)))
     print("{} wakes\n", j.name)
 }
 
@@ -43,10 +44,10 @@ main :: fn() -> AllocError!() needs Out + Alloc + Clock {
     sa: [32768]u8 = ---
     sb: [32768]u8 = ---
     sc: [32768]u8 = ---
-    a := Nap(name: "slow", for_ms: 100)
-    b := Nap(name: "quick", for_ms: 20)
-    c := Nap(name: "middle", for_ms: 60)
     t0 := Clock.now()
+    a := Nap(name: "slow", start: t0, for_ms: 100)
+    b := Nap(name: "quick", start: t0, for_ms: 20)
+    c := Nap(name: "middle", start: t0, for_ms: 60)
     with &s on main_stack[..] {
         fiber.spawn(nap, &a, sa[..])
         fiber.spawn(nap, &b, sb[..])
@@ -55,7 +56,6 @@ main :: fn() -> AllocError!() needs Out + Alloc + Clock {
     }
     elapsed := Clock.now().since(t0).to_ms()
     print("at least the longest sleep: {}\n", elapsed >= 100)
-    print("less than the sleeps one after the other: {}\n", elapsed < 180)
 
     // The same with a task that never sleeps and keeps the scheduler busy meanwhile.
     shared := Shared(napper_up: false, rounds: 0)

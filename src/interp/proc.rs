@@ -126,8 +126,10 @@ fn spawn(argv: &[Vec<u8>], env: &[Vec<u8>], dir: &[u8], flags: u32) -> Result<Pr
     #[cfg(target_vendor = "apple")]
     if let Some(pipe) = &stdin {
         use std::os::fd::AsRawFd;
+        // `F_SETNOSIGPIPE` from Apple's <sys/fcntl.h>, which the `libc` crate does not export.
+        const F_SETNOSIGPIPE: libc::c_int = 73;
         // SAFETY: a valid descriptor; writes to it then fail with `EPIPE` instead of raising `SIGPIPE`.
-        unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETNOSIGPIPE, 1) };
+        unsafe { libc::fcntl(pipe.as_raw_fd(), F_SETNOSIGPIPE, 1) };
     }
     let outs = Outs { stdout: child.stdout.take(), stderr: child.stderr.take() };
     #[cfg(windows)]
