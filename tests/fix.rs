@@ -225,6 +225,12 @@ fn fix_adds_the_import_and_the_module_prefix_of_std_names() {
         "main :: fn() needs Fs {\n    f: ?File = null\n    _ = f\n}\n",
         "fs :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?fs.File = null\n    _ = f\n}\n",
     );
+    // Below the comments that document the file.
+    fixes_to(
+        "import_doc",
+        "//! A tool.\n//! It opens files.\n\nmain :: fn() needs Fs {\n    f: ?File = null\n    _ = f\n}\n",
+        "//! A tool.\n//! It opens files.\n\nfs :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?fs.File = null\n    _ = f\n}\n",
+    );
     // After the last import; several uses share the one import.
     fixes_to(
         "import_after",
