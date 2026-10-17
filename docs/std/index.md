@@ -15,6 +15,7 @@
 | [`std/encoding/hex`](encoding/hex.md) | Base16 as in RFC 4648 section 8, two hexadecimal digits per byte. |
 | [`std/fiber`](fiber.md) | A cooperative round-robin scheduler for fibers (§14). |
 | [`std/fiber/channel`](fiber/channel.md) | A bounded channel between the tasks of a `std/fiber` scheduler. |
+| [`std/fiber/generator`](fiber/generator.md) | Pull-style generators: advance iterators by hand, in lockstep. |
 | [`std/fiber/waiters`](fiber/waiters.md) | The queue of waiting tasks of std/fiber, which re-exports it. |
 | [`std/fixed_buffer`](fixed_buffer.md) | An allocator over a buffer the caller owns (§15.2). |
 | [`std/fmt`](fmt.md) | Number formatting into caller-provided buffers. |
@@ -28,9 +29,11 @@
 | [`std/math`](math.md) | Elementary functions on `f64`, written entirely in Gamma. |
 | [`std/net`](net.md) | Helpers over the `Net` effect (§21.7) for TCP connections. |
 | [`std/path`](path.md) | POSIX path strings, with `/` as the separator. |
+| [`std/process`](process.md) | Running other programs over the `Proc` effect (§21.7). |
 | [`std/random`](random.md) | A fast seedable generator, and helpers that draw from `Rand`. |
 | [`std/str`](str.md) | Byte-oriented string utilities. |
 | [`std/text`](text.md) | Unicode text segmentation and UTF-8 encoding of scalar values. |
 | [`std/thread`](thread.md) | Threads and the synchronization built on futexes (§19.6). |
 | [`std/thread/wait_group`](thread/wait_group.md) | The wait group of std/thread, which re-exports it. |
 | [`std/time`](time.md) | Calendar dates and times, RFC 3339 text, and durations as text. |
+| [`std/time/zone`](time/zone.md) | Time zones: converting between UTC and local civil time with TZif data. |

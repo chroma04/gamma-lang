@@ -1796,7 +1796,7 @@ while x := ca.next() {
 }
 ```
 
-A general iterator can be turned into a pull-style generator by running it on a fiber (§14); a library type such as `Generator(T)` can package this (it is not part of the core library).
+A general iterator can be turned into a pull-style generator by running it on a fiber (§14); the standard module `std/fiber/generator` packages this (it is not part of the core library).
 
 ### 13.5 Iterators as arguments
 
@@ -2892,7 +2892,7 @@ Reasons:
 1. **Common need.** Programs in several unrelated domains need it, and each would otherwise write the same code. The evidence is real programs: the same helper written independently in at least two programs from different domains (command-line tools, data processing, systems and network code, applications), not a guess about what might be useful.
 2. **Hard to get right.** A short, natural implementation is subtly wrong: correctly rounded float parsing, unbiased random ranges, calendar arithmetic, UTF-8 and Unicode segmentation, endian codecs, path joining. One tested implementation beats many plausible ones.
 3. **Shared vocabulary.** Independent libraries must agree on the type to interoperate: `Duration`, a date, an error type, a byte reader. Only the type and the operations needed to use it are admitted on this ground.
-4. **The platform boundary.** It reaches the operating system (files, sockets, threads, time, the environment). Such code goes through the ambient effects (§12.9), so programs stay portable and testable with the test handlers; only modules whose purpose is to cross the boundary (`std/thread`, `std/c`) may require `Sys`.
+4. **The platform boundary.** It reaches the operating system (files, sockets, processes, threads, time, the environment). Such code goes through the ambient effects (§12.9), so programs stay portable and testable with the test handlers; only modules whose purpose is to cross the boundary (`std/thread`, `std/c`) may require `Sys`.
 
 Requirements:
 

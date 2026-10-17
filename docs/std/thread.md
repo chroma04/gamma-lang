@@ -140,7 +140,7 @@ The number of processors available to the program (at least 1).
 ### `defaults`
 
 ```gamma
-defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net) needs Sys
+defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net + Proc) needs Sys
 ```
 
 Runs `body` under the default handlers of the ambient effects: the system heap,

@@ -8,6 +8,20 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- The `Proc` ambient effect and `std/process`: start programs (`Proc.spawn`) with each
+  standard stream inherited, discarded or piped, a working directory and an environment;
+  write to a child's input, read its output and error streams together without deadlock
+  (`read_out`), wait for its exit status or kill it. `process.output` collects a
+  command's output, `process.status` runs one and `process.success` tests the result.
+  Tests get a handler that refuses to start processes.
+- `std/time/zone`: time zones from TZif data (RFC 8536) and POSIX `TZ` rules. Load a zone
+  from the system's zoneinfo (`zone.load("Europe/Paris")`, `zone.local()`) or from bytes,
+  find the offset in force at an instant, convert UTC to local time, and resolve a local
+  time, reporting times that are ambiguous or skipped at a transition.
+- `std/fiber`: `fiber.sleep(d)` and `fiber.sleep_until(t)` suspend a task while the others
+  run; the scheduler itself does not need `Clock`. `std/fiber/generator` turns any
+  iterator into a generator pulled with `next()`, so iterators can be advanced in
+  lockstep.
 - Arrays indexed by an enum: `[E]T` has one element per variant of the enum `E` and is
   indexed by `E` values (`names[.E]`), with no bounds check. It is built by naming every
   variant (`[Dir]string(N: "north", E: "east", S: "south", W: "west")`) or with `fill:`,
