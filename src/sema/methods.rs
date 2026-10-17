@@ -358,6 +358,17 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn collection_method(&mut self, recv: &mut Expr, rty: Ty, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
         // Methods of arrays and slices; a pointer to an array also works.
+        let arr = match rty.kind() {
+            TyKind::Ptr { pointee, .. } => *pointee,
+            _ => rty,
+        };
+        if arr.enum_index().is_some() {
+            self.error(
+                span,
+                format!("`{}` has no methods; `a[..]` is a slice of its elements, which has `.{}`", arr, n),
+            );
+            return Some(error_expr(span));
+        }
         let (base, elem, is_const) = match rty.kind() {
             TyKind::Slice { elem, is_const } => (take_expr(recv), *elem, *is_const),
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => {

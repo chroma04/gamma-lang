@@ -1,0 +1,27 @@
+//! stage: check
+// Misuse of enum-indexed arrays `[E]T` (§5.6).
+Dir :: union { N, E, S, W }
+Shape :: union { Circle: f32, Empty }
+Flagged :: union { fill, other }
+take :: fn(xs: []const u8) -> usize => xs.len
+gen :: fn(T: type, x: [T]u8) {} //~ ERROR needs a concrete enum type, not the type parameter `T`
+
+main :: fn() {
+    a := [Dir]u8(N: 1, E: 2, S: 3) //~ ERROR missing `W`
+    b := [Dir]u8(1, 2, 3, 4) //~ ERROR is constructed by naming each variant of `Dir`
+    c := [Dir]u8(N: 1, E: 2, S: 3, W: 4, N: 5) //~ ERROR the element for `N` is given twice
+    d := [Dir]u8(fill: 0)
+    _ = d[0] //~ ERROR is indexed by `Dir` values, not
+    _ = d[1..2] //~ ERROR it is sliced only whole
+    _ = d.get(.N) //~ ERROR has no methods
+    _ = take(d) //~ ERROR found `[Dir]u8`
+    x: [4]u8 = d //~ ERROR expected `[4]u8`, found `[Dir]u8`
+    e: [Shape]u8 = --- //~ ERROR `Shape` has a variant with a payload
+    f: [u8]u8 = --- //~ ERROR `u8` is not an enum
+    g := [Flagged]u8(fill: 1) //~ ERROR missing `other`
+    p: ^[Dir]u8 = &d
+    s: []u8 = p //~ ERROR found `^[Dir]u8`
+    _ = take(d[..])
+    _ = d[.Q] //~ ERROR has no variant `Q`
+    h := [Dir]u8(N: 1, E: 2, S: 3, W: 4, fill: 0) //~ ERROR has no variant `fill` (`fill:` must be the only argument)
+}

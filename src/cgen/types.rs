@@ -186,7 +186,7 @@ impl<'a> Types<'a> {
         // The members: C type, size, alignment, explicit alignment and offset.
         let mut items: Vec<(String, u64, u64, Option<u64>, u64)> = vec![];
         match t.kind() {
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 if *len == 0 || self.size(*elem) == 0 {
                     return None;
                 }
@@ -378,7 +378,7 @@ impl<'a> Types<'a> {
             Repr::Blob => {}
         }
         match t.kind() {
-            TyKind::Array { len, elem } if *len > 0 => {
+            TyKind::Array { len, elem, .. } if *len > 0 => {
                 let (ty, dims) = self.field_cty(*elem)?;
                 Some((ty, format!("[{}]{}", len, dims)))
             }
@@ -476,7 +476,7 @@ impl<'a> Types<'a> {
                 f.push("kind = GM_K_SLICE".into());
                 f.push(format!("elem = {}", e));
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let e = self.desc(*elem);
                 f.push("kind = GM_K_ARRAY".into());
                 f.push(format!("elem = {}", e));

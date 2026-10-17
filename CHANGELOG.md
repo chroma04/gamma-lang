@@ -8,6 +8,11 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Arrays indexed by an enum: `[E]T` has one element per variant of the enum `E` and is
+  indexed by `E` values (`names[.E]`), with no bounds check. It is built by naming every
+  variant (`[Dir]string(N: "north", E: "east", S: "south", W: "west")`) or with `fill:`,
+  so a table can neither miss an entry nor list one against the wrong variant. `a[..]`
+  gives the elements, in declaration order, as a slice.
 - `gamma build -g` writes `gamma_lldb.py` next to the executable: lldb data formatters
   that show slices as their elements, strings as text, optionals as their value or
   `null`, results as their value or `!error` and tagged unions as their variant, as the

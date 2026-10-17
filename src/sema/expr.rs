@@ -195,6 +195,17 @@ impl<'a, 's> FnCx<'a, 's> {
                     unreachable!()
                 };
                 // `[2][3]i32(…)`: the element type is everything after the outer prefix.
+                if let Some(l) = len
+                    && self.sema.length_is_type(self.module, l)
+                {
+                    let t = self.resolve_type(&without_call(e));
+                    return match t.kind() {
+                        TyKind::Array { elem, index: Some(index), .. } => {
+                            self.construct_enum_array(t, *index, *elem, args, span)
+                        }
+                        _ => error_expr(span),
+                    };
+                }
                 let elem_ty = self.resolve_type(&without_call(elem));
                 let len = match len {
                     Some(l) => match self.sema.array_len(self.module, l) {
@@ -1020,6 +1031,9 @@ impl<'a, 's> FnCx<'a, 's> {
     fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Expr {
         let b = self.expr(base, None);
         let b = self.auto_deref_array(b);
+        if let Some(e) = self.infer.resolve(b.ty).enum_index() {
+            return self.enum_array_index(b, e, index, span);
+        }
         let i = self.expr(index, None);
         // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
         let it = self.infer.resolve(i.ty);
@@ -1049,6 +1063,51 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         };
         mk(elem, tir::ExprKind::Index { base: Box::new(b), index: Box::new(i), checked }, span)
+    }
+
+    /// `a[e]` on an enum-indexed array `[E]T`: `e` is an `E`, and the element is the one at
+    /// the position of `e`'s variant among `@variants(E)` (§5.6). It needs no check.
+    fn enum_array_index(&mut self, b: Expr, e: Ty, index: &ast::Expr, span: Span) -> Expr {
+        let elem = match self.infer.resolve(b.ty).kind() {
+            TyKind::Array { elem, .. } => *elem,
+            _ => unreachable!(),
+        };
+        let i = self.expr(index, Some(e));
+        let it = self.infer.resolve(i.ty);
+        if it.is_error() {
+            return error_expr(span);
+        }
+        if it != e {
+            let bt = self.infer.resolve(b.ty);
+            let hint = if it.is_infer() || it.is_integer() || self.sema.range_of(it).is_some() {
+                "; its elements in the order of the variants are the slice `a[..]`"
+            } else {
+                ""
+            };
+            self.error(i.span, format!("`{}` is indexed by `{}` values, not `{}`{}", bt, e, it, hint));
+            return error_expr(span);
+        }
+        let pos = self.variant_position(i, e, span);
+        mk(elem, tir::ExprKind::Index { base: Box::new(b), index: Box::new(pos), checked: false }, span)
+    }
+
+    /// The position (`usize`) of the variant of the enum value `v` among `@variants(e)`:
+    /// its tag when the tags count up from 0 in declaration order, otherwise a `match`.
+    fn variant_position(&mut self, v: Expr, e: Ty, span: Span) -> Expr {
+        let Some((variants, tag)) = self.sema.union_variants(e) else { return error_expr(span) };
+        let counts_up = variants.iter().enumerate().all(|(i, var)| var.tag == BigInt::from(i));
+        if counts_up && matches!(tag.kind(), TyKind::Int(t) if !t.signed && t.bits <= 32) {
+            let t = mk(tag, tir::ExprKind::Builtin { op: tir::Builtin::Tag, args: vec![v] }, span);
+            return self.coerce(t, Ty::usize());
+        }
+        let arms = (0..variants.len())
+            .map(|i| tir::Arm {
+                pat: tir::Pat { ty: e, kind: tir::PatKind::Variant { variant: i as u32, payload: None }, span },
+                guard: None,
+                body: mk(Ty::usize(), tir::ExprKind::Int(i.into()), span),
+            })
+            .collect();
+        mk(Ty::usize(), tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span)
     }
 
     /// `p[i]` on a pointer to an array indexes the array (§7.9).
@@ -2434,9 +2493,11 @@ fn pointer_coercion(src: Ty, target: Ty) -> bool {
     match (sk, tk) {
         (0, 0) | (1, 1) | (2, 2) => se == te,
         // ^T → [^]T, and ^[N]T → [^]T
-        (0, 1) => se == te || matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te),
+        (0, 1) => {
+            se == te || matches!(se.kind(), Array { elem, index: None, .. } | ParamArray { elem, .. } if *elem == te)
+        }
         // ^[N]T → []T
-        (0, 2) => matches!(se.kind(), Array { elem, .. } | ParamArray { elem, .. } if *elem == te),
+        (0, 2) => matches!(se.kind(), Array { elem, index: None, .. } | ParamArray { elem, .. } if *elem == te),
         _ => false,
     }
 }

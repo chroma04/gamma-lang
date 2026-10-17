@@ -108,7 +108,7 @@ impl<'a> Machine<'a> {
                     None => self.trap(span, "constant contains an invalid function pointer"),
                 }
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 for i in 0..*len as usize {
                     self.scan_ptrs(span, *elem, b, off + i * esz, bytes, relocs)?;

@@ -279,10 +279,12 @@ pub enum TyKind {
         is_const: bool,
         elem: Ty,
     },
-    /// `[N]T`
+    /// `[N]T`, or `[E]T` indexed by the enum `E` (`index`), whose `len` is the number of
+    /// variants of `E` and whose elements are in the order of `@variants(E)` (§5.6).
     Array {
         len: u64,
         elem: Ty,
+        index: Option<Ty>,
     },
     /// `(T1, T2)` or `(a: T1, b: T2)`; `()` is the unit type.
     Tuple {
@@ -497,7 +499,11 @@ impl Ty {
         Ty::intern(TyKind::ManyPtr { is_const, elem })
     }
     pub fn array(len: u64, elem: Ty) -> Ty {
-        Ty::intern(TyKind::Array { len, elem })
+        Ty::intern(TyKind::Array { len, elem, index: None })
+    }
+    /// `[E]T`: an array of `len` (the number of `E`'s variants) elements indexed by `E`.
+    pub fn enum_array(index: Ty, len: u64, elem: Ty) -> Ty {
+        Ty::intern(TyKind::Array { len, elem, index: Some(index) })
     }
     pub fn optional(inner: Ty) -> Ty {
         Ty::intern(TyKind::Optional(inner))
@@ -557,6 +563,14 @@ impl Ty {
     pub fn is_float(self) -> bool {
         matches!(self.kind(), TyKind::Float(_))
     }
+    /// The enum indexing an array type `[E]T` (§5.6), if `self` is one.
+    pub fn enum_index(self) -> Option<Ty> {
+        match self.kind() {
+            TyKind::Array { index, .. } => *index,
+            _ => None,
+        }
+    }
+
     pub fn is_infer(self) -> bool {
         matches!(self.kind(), TyKind::Infer(_))
     }
@@ -627,12 +641,14 @@ impl Ty {
             TyKind::Ptr { is_const, pointee } => TyKind::Ptr { is_const: *is_const, pointee: pointee.map(f) },
             TyKind::ManyPtr { is_const, elem } => TyKind::ManyPtr { is_const: *is_const, elem: elem.map(f) },
             TyKind::Slice { is_const, elem } => TyKind::Slice { is_const: *is_const, elem: elem.map(f) },
-            TyKind::Array { len, elem } => TyKind::Array { len: *len, elem: elem.map(f) },
+            TyKind::Array { len, elem, index } => {
+                TyKind::Array { len: *len, elem: elem.map(f), index: index.map(|t| t.map(f)) }
+            }
             TyKind::ParamArray { len, elem } => {
                 let (len, elem) = (len.map(f), elem.map(f));
                 match len.kind() {
                     TyKind::Value(k) => match k.as_u64() {
-                        Some(n) => TyKind::Array { len: n, elem },
+                        Some(n) => TyKind::Array { len: n, elem, index: None },
                         None => TyKind::Error,
                     },
                     TyKind::Error => TyKind::Error,
@@ -815,7 +831,8 @@ impl fmt::Display for Ty {
                     write!(f, "[]{}{}", if *is_const { "const " } else { "" }, elem)
                 }
             }
-            TyKind::Array { len, elem } => write!(f, "[{}]{}", len, elem),
+            TyKind::Array { index: Some(e), elem, .. } => write!(f, "[{}]{}", e, elem),
+            TyKind::Array { len, elem, index: None } => write!(f, "[{}]{}", len, elem),
             TyKind::Tuple { elems, names } => {
                 f.write_str("(")?;
                 for (i, t) in elems.iter().enumerate() {

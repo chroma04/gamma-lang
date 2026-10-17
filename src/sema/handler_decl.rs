@@ -461,7 +461,9 @@ fn may_unify(a: Ty, b: Ty) -> bool {
         (TyKind::ParamArray { elem: x, .. }, TyKind::ParamArray { elem: y, .. })
         | (TyKind::ParamArray { elem: x, .. }, TyKind::Array { elem: y, .. })
         | (TyKind::Array { elem: x, .. }, TyKind::ParamArray { elem: y, .. }) => may_unify(*x, *y),
-        (TyKind::Array { len: m, elem: x }, TyKind::Array { len: n, elem: y }) => m == n && may_unify(*x, *y),
+        (TyKind::Array { len: m, elem: x, index: i }, TyKind::Array { len: n, elem: y, index: j }) => {
+            m == n && i == j && may_unify(*x, *y)
+        }
         (TyKind::Ptr { is_const: c, pointee: x }, TyKind::Ptr { is_const: d, pointee: y })
         | (TyKind::Slice { is_const: c, elem: x }, TyKind::Slice { is_const: d, elem: y })
         | (TyKind::ManyPtr { is_const: c, elem: x }, TyKind::ManyPtr { is_const: d, elem: y }) => {

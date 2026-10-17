@@ -552,7 +552,7 @@ impl<'a> Machine<'a> {
                             return None;
                         }
                         match f.ty.kind() {
-                            Array { len, elem } => {
+                            Array { len, elem, .. } => {
                                 let t = self.ctype(*elem)?;
                                 for _ in 0..*len {
                                     elems.push(t.clone());
@@ -630,7 +630,7 @@ impl<'a> Machine<'a> {
         use TyKind::*;
         match ty.kind() {
             Float(_) => out.push((base, self.size_of(ty), true)),
-            Array { len, elem } => {
+            Array { len, elem, .. } => {
                 let es = self.size_of(*elem);
                 for i in 0..*len as usize {
                     self.leaves(*elem, base + i * es, out)?;
@@ -724,7 +724,7 @@ impl<'a> Machine<'a> {
             Rawptr => out.push(Slot { off: base, kind: SlotKind::Data(None) }),
             FnPtr(_) => out.push(Slot { off: base, kind: SlotKind::Func }),
             Optional(t) if is_ptr_like(*t) => self.walk_slots(*t, base, out),
-            Array { len, elem } => {
+            Array { len, elem, .. } => {
                 let es = self.size_of(*elem);
                 if es > 0 {
                     for i in 0..*len as usize {

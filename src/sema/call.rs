@@ -548,7 +548,10 @@ impl<'a, 's> FnCx<'a, 's> {
         }
         match t.kind() {
             TyKind::Tuple { elems, names } => return self.construct_tuple(t, elems, names.as_deref(), args, span),
-            TyKind::Array { len, elem } => return self.construct_array(Some(*len), *elem, args, span),
+            TyKind::Array { elem, index: Some(index), .. } => {
+                return self.construct_enum_array(t, *index, *elem, args, span);
+            }
+            TyKind::Array { len, elem, index: None } => return self.construct_array(Some(*len), *elem, args, span),
             TyKind::ParamArray { elem, .. } => return self.construct_param_array(t, *elem, args, span),
             TyKind::Optional(inner) => return self.construct_optional(t, *inner, args, span),
             _ => {}

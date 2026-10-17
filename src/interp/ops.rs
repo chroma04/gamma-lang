@@ -55,7 +55,7 @@ impl<'a> Machine<'a> {
                 };
                 Ok(self.float_bytes(*f, num::round_float(v, *f)))
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 let mut out = Bytes::zeroed(esz * *len as usize);
                 for i in 0..*len as usize {
@@ -173,7 +173,7 @@ impl<'a> Machine<'a> {
             UnOp::Not => Ok(self.bool_bytes(b[0] == 0)),
             UnOp::Neg => match ty.kind() {
                 TyKind::Float(f) => Ok(self.float_bytes(*f, -self.float_of(*f, b))),
-                TyKind::Array { len, elem } => {
+                TyKind::Array { len, elem, .. } => {
                     let esz = self.size_of(*elem);
                     let mut out = Bytes::zeroed(esz * *len as usize);
                     for i in 0..*len as usize {
@@ -315,7 +315,7 @@ impl<'a> Machine<'a> {
                 }
                 Ok(true)
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 for i in 0..*len as usize {
                     if !self.eq(*elem, &a[i * esz..(i + 1) * esz], &b[i * esz..(i + 1) * esz])? {
@@ -432,7 +432,7 @@ impl<'a> Machine<'a> {
                     self.hash_val(fty, &fb, h)?;
                 }
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 for i in 0..*len as usize {
                     self.hash_val(*elem, &b[i * esz..(i + 1) * esz], h)?;

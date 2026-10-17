@@ -383,7 +383,7 @@ The predeclared module `target` (no import needed) provides compile-time constan
 
 ### 3.7 The entry point
 
-The root module of an executable declares `main` with one of these signatures, with any effect set drawn from the **ambient effects** `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys` (§12.9):
+The root module of an executable declares `main` with one of these signatures, with any effect set drawn from the **ambient effects** `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys` (§12.9):
 
 ```
 main :: fn() needs …
@@ -575,7 +575,7 @@ All pointer kinds are one machine address in size and alignment. No pointer type
 **Implicit coercions** (also listed in §6.4):
 
 - `^T` → `^const T`; `[^]T` → `[^]const T`; `[]T` → `[]const T`.
-- `^[N]T` → `[]T` and `^const [N]T` → `[]const T` (the slice covers the whole array).
+- `^[N]T` → `[]T` and `^const [N]T` → `[]const T` (the slice covers the whole array). This and the next coercion do not apply to enum-indexed arrays (§5.6.1).
 - `^[N]T` → `[^]T`, and `^T` → `[^]T` (a pointer to one element is a pointer to the first of one).
 - Any pointer kind → `rawptr`.
 - Each of the above also applies inside `?`: `?^T` → `?^const T`, and so on.
@@ -590,6 +590,27 @@ Converting back from `rawptr`, from `[^]T` to `^T`, from `const` to non-`const`,
 Layout: `N` elements at consecutive multiples of `stride(T)` (= `@size_of(T)`, which is always a multiple of `@align_of(T)`). Alignment is `@align_of(T)`.
 
 `a.len` is the constant `N`.
+
+#### 5.6.1 Enum-indexed arrays
+
+`[E]T`, where `E` is an enum (a tagged union without payloads, §5.11), is an array with one element of type `T` per variant of `E`, indexed by values of `E` rather than by integers. It replaces C's table indexed by an enumeration constant (`names[COLOR_COUNT]`), with the two mistakes such tables invite ruled out: an element cannot be missing or listed against the wrong constant, and an index cannot be out of range.
+
+```
+Dir :: union { N, E, S, W }
+
+NAMES    :: [Dir]string(N: "north", E: "east", S: "south", W: "west")
+OPPOSITE :: [Dir]Dir(N: .S, E: .W, S: .N, W: .E)
+
+counts := [Dir]u32(fill: 0)
+counts[.E] += 1                                   // `.E` takes its type from the index
+for d in @variants(Dir) { print("{}: {}\n", NAMES[d], counts[d]) }
+```
+
+- **Type.** `E` must be a concrete enum type (not a type parameter); writing the name of any other type as an array length is a compile error. `[E]T` is a type of its own: it is not `[N]T` for the number `N` of `E`'s variants, and neither converts to the other. Two enum-indexed arrays are the same type when their enums and element types are the same.
+- **Layout.** That of `[N]T` with `N` the number of variants: the element of each variant is at the position of the variant in `@variants(E)`, which is declaration order, whatever the tag values (§5.11). `a.len` is `N`.
+- **Construction** names every variant exactly once, in any order (values are evaluated in the order written, §7.1), or repeats one value: `[E]T(V1: x1, …)`, `[E]T(fill: x)`. Positional elements are not allowed, for the reason struct construction is by name (§7.11). If `E` has a variant named `fill`, `fill:` names that variant. `---` is allowed for plain-data `T` (§4.4).
+- **Indexing.** `a[e]` takes an `e` of type `E` exactly (an integer is a compile error) and needs no check (§7.9). It is a place when `a` is (§7.2); a pointer to an enum-indexed array indexes it too.
+- **Positions only on request.** `a[..]` is a slice of the elements in the order of `@variants(E)`; it is the only slicing form, and an enum-indexed array has no methods (§21.3) and is not adapted to a slice or many-pointer implicitly (§5.5, §7.2), since each of those would address elements by position. Everything else is as for arrays: copying, `is`, `@hash`, elementwise arithmetic (§7.4.6), `for x in a` (elements in variant order), formatting as an array (§21.6.1) and compile-time evaluation.
 
 ### 5.7 Slices
 
@@ -881,7 +902,7 @@ Operands, arguments, constructor fields, array elements and tuple elements are e
 
 A **place** is an expression that denotes a storage location: a variable or parameter name, `p^`, `e.f` where `e` is a place or a pointer (auto-deref), `a[i]` where `a` is a place of array type or any slice or many-pointer, and a parenthesized place.
 
-A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call.
+A place is **mutable** if it is rooted in a mutable variable (through fields and array elements), or is reached through a non-`const` pointer, slice or many-pointer (`p^`, `p.f`, `s[i]`, `m[i]`). Assignment, compound assignment and `&` producing a non-`const` pointer require a mutable place. `&` of an immutable place gives a `const` pointer; `&` of a non-place expression is a compile error (no implicit temporaries are materialized), with one exception: when `&e` is itself an argument of a call whose parameter has type `^const T`, a non-place `e` is held in a temporary for the duration of the call, as for a method receiver (§7.10): `trace(&transpose(&m))`. This holds in every argument position of a call whose parameter has that type: positional, named (in any order, so `trace(opts: o, m: &transpose(&m))` too), generic, method, indirect and operation calls. The pointer is valid only during the call; storing it (`p := &f()`, a tuple or struct field) or passing it for a `^T` (mutable) parameter is still an error. Likewise an array, written as an argument for a `[]const T` parameter, is passed as a slice of the whole array, and a temporary array (or a slice `a[…]` of one) lives for the call: `total(scores)`, `total([_]i64(1, 2, 3))`. A `[]T` parameter still needs an explicit `a[..]`, so that passing an array for mutation is visible at the call. An enum-indexed array (§5.6.1) always needs `a[..]`.
 
 These rules follow one principle: **mutation of an argument is visible at the call.** An argument passed for read-only access (`^const T`, `[]const T`) may be a temporary or an array, which the compiler adapts, since nothing can change through it; an argument passed for mutation must be a mutable place, written explicitly (`&x`, `a[..]`). The one exception is the receiver of a method call (§7.10), which is the subject of the call: `names.push(x)` visibly acts on `names`.
 
@@ -1008,6 +1029,7 @@ The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`.
 ### 7.9 Indexing and slicing
 
 - `a[i]` where `a` is an array, a pointer to an array, or a slice: `i` must have an unsigned integer type. The access is **checked**: `i < len`.
+- `a[e]` where `a` is an enum-indexed array `[E]T` or a pointer to one: `e` must have type `E`. The access needs no check, since every value of `E` has an element (§5.6.1).
 - `p[i]` where `p` is a many-pointer: unchecked.
 - `a[lo..hi]`, `a[lo..=hi]`, `a[lo..]`, `a[..hi]`, `a[..]` give a slice. Open-ended ranges are allowed only here. `a` must be a place of array type, a pointer to an array, a slice, or a many-pointer (for which both bounds are required). Checked: `lo <= hi <= len`. The result is `[]const T` if `a` is an immutable place or `const` view, `[]T` otherwise.
 - `a.get(i)` on arrays and slices gives `?T` (the element value) without a check failure; `a.get_ptr(i)` gives `?^T` (or `?^const T`).
@@ -1034,7 +1056,7 @@ Methods cannot be added to types declared in other modules; write a free functio
 
 - A struct type: construction (§5.10.1). Struct construction takes **named** arguments and spreads only; positional arguments are not allowed, so reordering fields can never silently change meaning, and `S(x)` with one positional argument is always a conversion.
 - A union variant `.V(args)` / `U.V(args)`: construction with the payload.
-- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements.
+- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements. An enum-indexed array `[E]T(V: x, …)` names every variant of `E`, or is `[E]T(fill: x)` (§5.6.1).
 - A tuple type: construction from positional/named arguments and spreads, one value per element; each value coerces to its element's type (§6.4). It is never a conversion, even with one argument (§6.5).
 - An optional type `?T(x)`: an optional holding `x` (coerced to `T`), or with `null`, the absent value of `?T`. This is how inner levels of nested optionals are written: `??i32` holds `?i32(null)`.
 - Any other type with exactly one argument: conversion (§6.5).
@@ -1657,6 +1679,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Rand` | `fill: fn(buf: []u8)` | OS-seeded generator | fixed seed |
 | `Fs` | file-system operations (§21.7) | real file system | in-memory file system |
 | `Net` | socket operations (§21.7) | real sockets | loopback fake |
+| `Proc` | child processes (§21.7) | real processes | none: starting one fails with `PermissionDenied` |
 | `Env` | `args: fn() -> []const string`, `var: fn(name: string) -> ?string`, `exit: esc(code: u8) -> never` | process arguments and environment | no arguments and no variables; `exit` ends the test, which passes only with code 0 |
 | `Sys` | none (§12.10) | — | not replaceable |
 
@@ -2541,13 +2564,13 @@ The core library is the part of the standard library that the language definitio
 
 These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names.
 
-The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation of a predeclared effect is reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write_out(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are also called as methods (`f.read_from(buf)`, §21.7). The universe also leaves out the types of `Fs` and `Net`, which the standard modules `std/fs` and `std/net` export (`fs.File`, `net.Socket`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
+The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation of a predeclared effect is reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write_out(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are also called as methods (`f.read_from(buf)`, §21.7). The universe also leaves out the types of `Fs`, `Net` and `Proc`, which the standard modules `std/fs`, `std/net` and `std/process` export (`fs.File`, `net.Socket`, `process.Child`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
 
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
-| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Env`, `Sys`, `Test` |
+| effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
 | functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
@@ -2770,7 +2793,7 @@ Env   :: effect {
 }
 ```
 
-`Clock.wall` gives Unix time in nanoseconds. `Fs` and `Net` are declared by the core library with operations for files, directories and sockets whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
+`Clock.wall` gives Unix time in nanoseconds. `Fs`, `Net` and `Proc` are declared by the core library with operations for files, directories, sockets and child processes whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
 
 ```
 File, Dir :: struct { … }                       // handles
@@ -2818,7 +2841,32 @@ Net :: effect {
 }
 ```
 
-Operations whose first parameter is a `File`, `Dir`, `Socket` or `Listener` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+and its `Proc` (child processes) is:
+
+```
+Child :: struct { … }                           // a started child process
+Stdio :: union { Inherit, Null, Pipe }          // what a child's standard stream is connected to
+Stream :: union { Stdout, Stderr }
+SpawnOptions :: struct {
+    pub stdin, stdout, stderr: Stdio = .Inherit
+    pub dir: ?string = null                     // the child's working directory; null: ours
+    pub env: ?[]const string = null             // "NAME=value" entries replacing the environment; null: ours
+}
+Chunk :: struct { pub from: Stream; pub len: usize }
+ExitStatus :: union { Exited: u32, Signaled: i32 }   // its exit code, or the signal that ended it
+Proc :: effect {
+    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // argv[0] without a separator is looked up in PATH
+    write_in: fn(c: Child, bytes: []const u8) -> IoError!usize  // to a piped stdin; may write fewer bytes
+    close_in: fn(c: Child)                                       // the child sees the end of its input
+    read_out: fn(c: Child, buf: []u8) -> IoError!?Chunk          // from whichever piped output has data; null once all have ended
+    wait: fn(c: Child) -> IoError!ExitStatus                     // closes our ends of its pipes, waits, releases the child
+    kill: fn(c: Child) -> IoError!()                             // ends it at once; it must still be waited for
+}
+```
+
+`read_out` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
+
+Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
 
 ---
 
@@ -2914,7 +2962,7 @@ prefix_type   = '?' prefix_type
               | '^' [ 'const' ] prefix_type
               | '[' ']' [ 'const' ] prefix_type
               | '[' '^' ']' [ 'const' ] prefix_type
-              | '[' expr ']' prefix_type
+              | '[' expr ']' prefix_type                        // [N]T; [E]T when expr names an enum type (§5.6.1)
               | '[' '_' ']' prefix_type                         // only in array constructors
               | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
@@ -3186,7 +3234,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 - **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. Words describe logic (`and`, `or`, `not`, `is`, `in`), sigils describe shapes: `?` maybe absent, `!` may have failed, `^` a pointer, each telling one story across types, operators and unwrapping (§B.2). Freeing `!` from "not" lets it mean "failed" everywhere.
 - **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses; comparisons do not chain (§7.3). These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Binary `~` is exclusive-or, since `^` is the pointer sigil and pointers are far more common than XOR.
 - **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other and wrap implicitly, so success paths read like plain code (§10).
-- **Unions are tagged and matches exhaustive** (§8.6). Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range.
+- **Unions are tagged and matches exhaustive** (§8.6). Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range. A table indexed by an enum is `[E]T`, built by naming every variant, so it cannot miss an entry or list one against the wrong variant, and indexing it cannot go out of range (§5.6.1).
 - **Arithmetic is never undefined.** Overflow without a check gives an unspecified value, so an optimizer cannot use overflow to delete a program's own safety checks; undefined behavior is confined to a closed list of memory and concurrency errors that cannot be checked cheaply (§18.4). The overflow flavors are spelled by the sigil story: `+%` wraps, `+|` saturates, `+?` gives an optional; their method forms follow the conversions, where a method that gives an optional is named `checked` (`x.checked(T)`, `x.pow_checked(n)`).
 - **Literals are typed by inference, not defaults.** `count := 0` takes its type from how `count` is used, and a literal that does not fit its type is an error, not a wrap (§6.1). Only a literal that nothing constrains falls back: to `usize` if it counts or positions something (a range bound, a length, an index, a shift amount), otherwise `i32` or `f64`.
 - **`usize` is not `u64`.** Code correct on a 64-bit target must not silently break on a 32-bit one (§5.1).
@@ -3246,12 +3294,14 @@ The first four already exist, each with its cost and its code visible where it i
 | Implicit allocation for closures | P2 | second-class closures need none |
 | Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
 | Effect operations in the universe scope | P3 | a bare `now()` hides that it reaches into the context |
+| Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
+| SIMD vector types | P1, one feature per job | arrays with elementwise arithmetic (§7.4.6) are the portable vector, which C compilers vectorize; a vector type would add a second array with a target-dependent layout and calling convention. Target-specific instructions are reached through foreign C or `@asm` (§19) |
+| Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
+| A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
 ### C.9 Future directions
 
-- A `Send`-like rule that would let fibers migrate between threads.
 - Stored function values polymorphic in their effects at run time (existential handlers), if a representation can be found that keeps P2.
-- SIMD vector types with guaranteed code generation.
 - If experience shows heavy dictionary-passing boilerplate for user-defined numeric types, a compile-time parameter defaulting to a constant found by name in the type's own module — which would still involve no global resolution.
 
 ---

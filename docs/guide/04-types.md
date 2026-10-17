@@ -251,6 +251,23 @@ errno_name :: fn(code: i32) -> string {
 }
 ```
 
+### Arrays indexed by an enum
+
+Where C keeps a table indexed by an enumeration constant (`names[COLOR_COUNT]`), Gamma has `[E]T`: one element per variant of the enum `E`, indexed by `E` values. It is built by naming every variant, so an entry cannot be forgotten or listed against the wrong variant, and indexing it needs no bounds check:
+
+```gamma
+NAMES :: [Dir]string(N: "north", E: "east", S: "south", W: "west")
+
+compass_demo :: fn() needs Out {
+    visits := [Dir]u32(fill: 0)
+    visits[.E] += 1                                // `.E` is a `Dir`, from the index
+    visits[turn_right(.E)] += 2
+    for d in @variants(Dir) { print("{}: {}\n", NAMES[d], visits[d]) }
+}
+```
+
+An integer index is a compile error. The elements sit in declaration order (the order of `@variants`), and `a[..]` gives them as a slice when you do want positions, for example to call a slice method; there is no other slicing, no array method and no implicit conversion to a slice. `[Dir]bool` doubles as a set of directions.
+
 (Untagged C-style unions exist for interop and are described in [chapter 14](14-interop.md).)
 
 ## Pointers
@@ -395,6 +412,7 @@ Only `struct`, `union` and `effect` literals create new types, and they are decl
 
 - Arrays are values, slices are `(ptr, len)`, strings are `[]const u8`, and none of them converts implicitly to a pointer.
 - Structs are constructed by name; `using` gives embedding; unions are tagged and matched exhaustively.
+- `[E]T` is an array indexed by an enum, built by naming every variant.
 - Pointers are never null unless spelled `?`; `[^]T` is for C-style arithmetic.
 - `T(x)` is lossless, and everything lossy is a named method.
 

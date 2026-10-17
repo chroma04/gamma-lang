@@ -222,7 +222,7 @@ impl<'a> Layouts<'a> {
             | TyKind::Infer(_) => Layout { size: 0, align: 1, offsets: vec![] },
             TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::FnPtr(_) => Layout::scalar(p),
             TyKind::Slice { .. } => Layout { size: 2 * p, align: p, offsets: vec![0, p] },
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let e = self.layout(*elem);
                 Layout { size: e.size * len, align: e.align, offsets: vec![] }
             }
