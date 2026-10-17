@@ -307,6 +307,15 @@ impl<'a, 's> FnCx<'a, 's> {
             let mut d = crate::diag::Diagnostic::error(span, format!("unknown name `{}`", name));
             if let Some(hint) = self.sema.universe_hint(name) {
                 d = d.with_note(hint);
+                if let Some(effect) = self.sema.op_effect(name) {
+                    d = d.with_fix(
+                        format!("write `{effect}.{name}`"),
+                        Span { hi: span.lo, ..span },
+                        format!("{effect}."),
+                    );
+                } else if let Some(edits) = self.sema.import_fix(module, name, span) {
+                    d = d.with_fix_edits(format!("write `{}`", edits.last().unwrap().text), edits);
+                }
             }
             self.sema.emit(d);
         }
@@ -1777,10 +1786,20 @@ impl<'a, 's> FnCx<'a, 's> {
             (TyKind::Optional(_) | TyKind::Result { .. }, _)
                 if self.sema.in_test && levels as usize == self.outer.len() =>
             {
-                self.error(
+                let mut d = crate::diag::Diagnostic::error(
                     span,
                     "a test returns no value, so `try` cannot propagate from it; write `ok(x)` to fail the test on an error (§3.8)",
                 );
+                // `try x` becomes `ok(x)` (only `ok` of a result is defined).
+                if matches!(vt.kind(), TyKind::Result { .. }) {
+                    let edit =
+                        |lo, hi, text: &str| crate::diag::Edit { span: Span { lo, hi, ..span }, text: text.into() };
+                    d = d.with_fix_edits(
+                        "write `ok(x)`",
+                        vec![edit(span.lo, operand.span.lo, "ok("), edit(operand.span.hi, operand.span.hi, ")")],
+                    );
+                }
+                self.sema.emit(d);
                 error_expr(span)
             }
             (TyKind::Optional(_) | TyKind::Result { .. }, _) => {

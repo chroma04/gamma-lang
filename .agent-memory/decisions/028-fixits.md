@@ -20,5 +20,11 @@
   → `_`, line-final comma at a terminator, `try x else d` (two fixes), unused value `_ = `
   (stmt position only: Obligation::UnitStatement), slice `.len()`/`.ptr()` (only if text ends
   with `()`), payload variant `.V` → `.V(_)`, top-level `x := v` → `x :: v` (untyped only).
-- Candidates not done: `{`→`{{` in format strings, chained comparisons, missing import
-  (`std/…` member), `.round` → `.to(T)` (semantics differ: not mechanical).
+- s25 added: lone `}` in a template → `}}` (call.rs source_offset_of maps value offset to
+  source; only one-byte escapes), std type without import (modules.rs import_fix/std_home:
+  inserts `fs :: import "std/fs"` after last import or below leading `//` comments, reuses
+  an existing alias), bare effect op → `Fs.op`, `a < b < c` → `a < b and b < c` (mid a
+  name, not under `not`, 2 ops), `==`/`!=` → `is`/`is not`, `if x = v {` → `is`, `try x`
+  in a test → `ok(x)` (results only; gamma fix never compiles tests: LSP/json only).
+- Rejected: lone `{` (maybe a placeholder), missing `needs X` (signature edit varies),
+  keyword as name, block-value (two fixes), `len(s)`, `.round` → `.to(T)` (semantics).

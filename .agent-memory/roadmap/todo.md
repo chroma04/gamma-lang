@@ -41,10 +41,10 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Compiler: retire the tree-walker (s24: no run test falls back for a whole function except
   huge_local's 1e12-element array; left: statements with values > REG_VALUE_MAX run as
   TreeStmt, coverage builtin, const eval), smaller Debug C (overflow-trap and
-  backtrace-site code ~8% each of gcc time), several C translation units in parallel, a native
+  backtrace-site code ~8% each of gcc time; s25 split Debug C into parallel units, units.rs), a native
   back end (LLVM/Cranelift).
 - Platforms: wasm32-wasi (no fibers/threads), FreeBSD, freestanding/embedded profile.
-- Tools: more fix-its (s24 did the machinery + 8 diagnostics, decisions/028), `gamma lint`,
+- Tools: more fix-its (s24 machinery + 8, s25 +7; candidates left in decisions/028), `gamma lint`,
   LLDB formatters, profiler docs (perf/Instruments on `-g` builds).
 - Packages: several versions of one repository in a dependency graph.
 - Library (each through §22): time zones, `std/process`, TLS via `std/c`, compression.
