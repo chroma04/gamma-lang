@@ -237,6 +237,8 @@ fn native_long_function_is_marked_for_clang() {
         .arg("-o")
         .arg(&exe)
         .env("GAMMA_CACHE_DIR", dir.join("cache"))
+        // One C file, whatever the environment asks.
+        .env("GAMMA_C_UNITS", "1")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

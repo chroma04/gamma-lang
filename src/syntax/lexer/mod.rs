@@ -348,7 +348,20 @@ impl<'a> Lexer<'a> {
                     ("is not", TokenKind::Punct(Punct::IsNot))
                 };
                 let written = if eq { "==" } else { "!=" };
-                self.error(lo, self.pos, format!("`{}` is not an operator; compare with `{}` (§7.6)", written, op));
+                // The word needs a space on each side (`a==b` becomes `a is b`).
+                let gap = |at: Option<&u8>| if at.is_some_and(|c| !c.is_ascii_whitespace()) { " " } else { "" };
+                let before = gap(lo.checked_sub(1).and_then(|i| self.bytes.get(i)));
+                let after = gap(self.bytes.get(self.pos));
+                let d = Diagnostic::error(
+                    self.span(lo, self.pos),
+                    format!("`{}` is not an operator; compare with `{}` (§7.6)", written, op),
+                )
+                .with_fix(
+                    format!("write `{op}`"),
+                    self.span(lo, self.pos),
+                    format!("{before}{op}{after}"),
+                );
+                self.diags.push(d);
                 self.emit(kind, lo, self.pos);
             }
             _ => match self.scan_punct() {

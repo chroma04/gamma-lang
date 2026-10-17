@@ -535,6 +535,7 @@ both use it. The files:
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.rs`, `constarg.rs` | parameters read in place; static storage for constant arguments |
 | `rtcache.rs` | the cached runtime object of Debug and Safe builds |
+| `units.rs` | splitting a Debug build into translation units compiled in parallel |
 | `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
 | `debug.rs`, `views.rs`, `gdb_printers.py` | debug information for `-g` |
 
@@ -591,6 +592,23 @@ How the runtime is linked depends on the build mode:
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
   build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
   into Cargo's target directory.
+- A large Debug build is split into several translation units, compiled in
+  parallel and then linked (`src/cgen/units.rs`): one per 96 KiB of function
+  text, at most one per processor and 8. The generator writes everything with
+  internal linkage, as one unit needs, and keeps it by role (`units::Parts`):
+  support code, types and frames; function declarations; static data, one item
+  per line; function definitions; the entry code. A split shares a header of the
+  first two plus an `extern` declaration of each data item and each function,
+  gives the functions and data external linkage (their names all start with
+  `gm_`, so they cannot clash with C code), defines the data and the entry code
+  in unit 0 and deals the function definitions out by size. Unit `i` > 0 is
+  written next to unit 0's `prog.c` as `prog.i.c`. Units are compiled with
+  `-Werror=implicit-function-declaration`, so a function left undeclared fails
+  the build instead of being called with C's implicit `int` signature. Code of
+  a shape the splitter does not recognize is compiled as one unit, unless
+  `GAMMA_C_UNITS=<n>` forces a split into `n` units (tests use it on small
+  programs), which then fails. calc (16k lines of C) builds in 0.6–0.9 s
+  instead of 1.4 s on 4 cores.
 - Safe builds are compiled at `-O2` like Checked builds but link the cached
   runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
   compiles slowly, and the runtime code a program reaches was half the time of

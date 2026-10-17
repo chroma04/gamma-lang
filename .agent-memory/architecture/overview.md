@@ -35,6 +35,7 @@ src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, ele
                    types (typed C structs, blobs), helpers, fiber (with-on outlining, ctl
                    thunks), borrow (pure-fn params read in place, 016), constarg (static
                    gm_kN args), rtcache (cached runtime object + cached programs, 014),
+                   units (Debug split into parallel C units: Generated.parts, s25),
                    debug + views + gdb_printers.py (`-g`, 013), csrc (C sources from gamma.toml)
 src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
                    build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli

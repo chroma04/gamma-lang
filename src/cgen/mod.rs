@@ -21,6 +21,7 @@ mod helpers;
 mod rtcache;
 pub use rtcache::{cache_dir, cached_program};
 mod types;
+mod units;
 mod views;
 mod wide;
 
@@ -66,6 +67,8 @@ pub struct Options {
 pub struct Generated {
     /// The generated C code, which follows the runtime (see [`compile`]).
     pub code: String,
+    /// The same code by role, for a build split into several units (see [`units`]).
+    parts: units::Parts,
     /// Libraries to link (from `foreign` blocks), beyond the C library.
     pub libs: Vec<String>,
     /// The options it was generated with.
@@ -139,33 +142,41 @@ fn generate_entries(
         g.queue(*f);
     }
     g.drain()?;
-    let consts = g.gen_consts()?;
+    let (const_decls, const_init) = g.gen_consts()?;
     let exports = g.gen_exports()?;
     let main = g.gen_main(entries, select)?;
-    let mut out = String::from("/* ---- generated ---- */\n");
-    let _ = writeln!(out, "GM_API int gm_checks = {};", opts.checks as u8);
-    out.push_str(helpers::SUPPORT);
-    out.push_str(&g.ty.blob_typedefs());
+    let mut parts = units::Parts::default();
+    let checks = format!("GM_API int gm_checks = {};\n", opts.checks as u8);
+    parts.head.push_str(helpers::SUPPORT);
+    parts.head.push_str(&g.ty.blob_typedefs());
     // The Gamma names of frame fields and mirror fields (with `-g`) are declared with any
     // macro of the same name suspended.
     let names = g.ty.member_names();
-    out.push_str(&debug::guard(&names, g.ty.mirror_defs()));
-    out.push_str(&debug::guard(&names, g.ty.view_defs()));
+    parts.head.push_str(&debug::guard(&names, g.ty.mirror_defs()));
+    parts.head.push_str(&debug::guard(&names, g.ty.view_defs()));
     // Fil-C compiles no top-level assembly, so its executables go without the printers.
     if opts.debug_info && matches!(prog.target.os, "Linux" | "FreeBSD") && !prog.target.filc {
-        out.push_str(&debug::gdb_script_section());
+        parts.once.push_str(&debug::gdb_script_section());
     }
-    out.push_str(&g.ty.descriptors());
+    let mut data = g.ty.descriptors();
     for &id in g.loc_files.borrow().iter() {
         let path = g.sources.file(crate::source::FileId(id)).path.display().to_string();
-        let _ = writeln!(out, "static const char gm_src{}[] = {};", id, c_string(path.as_bytes()));
+        let _ = writeln!(data, "static const char gm_src{}[] = {};", id, c_string(path.as_bytes()));
     }
-    out.push_str(&g.static_defs);
-    out.push_str(&debug::guard(&names, &g.frames));
-    out.push_str(&g.protos);
-    out.push_str(&g.helpers.protos);
+    data.push_str(&g.static_defs);
+    let frames = debug::guard(&names, &g.frames);
+    let protos = format!("{}{}", g.protos, g.helpers.protos);
+    // One unit has the parts in this order.
+    let mut out = String::from("/* ---- generated ---- */\n");
+    out.push_str(&checks);
+    out.push_str(&parts.head);
+    out.push_str(&parts.once);
+    out.push_str(&data);
+    out.push_str(&frames);
+    out.push_str(&protos);
     out.push_str(&g.handler_tables);
-    out.push_str(&consts);
+    out.push_str(&const_decls);
+    out.push_str(&const_init);
     out.push_str(&g.helpers.bodies);
     out.push_str(&g.bodies);
     if !has_f16 && out.contains("_Float16") {
@@ -192,7 +203,19 @@ fn generate_entries(
     }
     out.push_str(&exports);
     out.push_str(&main);
-    Ok(Generated { code: out, libs: g.libs.into_iter().collect(), opts: opts.clone(), target: prog.target.clone() })
+    parts.once.insert_str(0, &checks);
+    parts.head.push_str(&frames);
+    parts.protos = protos;
+    parts.data = format!("{}{}{}", data, g.handler_tables, const_decls);
+    parts.funcs = format!("{}{}", g.helpers.bodies, g.bodies);
+    parts.tail = format!("{}{}{}", const_init, exports, main);
+    Ok(Generated {
+        code: out,
+        parts,
+        libs: g.libs.into_iter().collect(),
+        opts: opts.clone(),
+        target: prog.target.clone(),
+    })
 }
 
 pub struct Gen<'a> {
@@ -449,7 +472,7 @@ impl<'a> Gen<'a> {
 
     /// Top-level constants: storage initialized at startup from their compile-time
     /// values, with pointers patched in.
-    fn gen_consts(&mut self) -> CResult<String> {
+    fn gen_consts(&mut self) -> CResult<(String, String)> {
         let mut decls = String::new();
         let mut init = String::from("static void gm_init_consts(void) {\n");
         let mut values = vec![];
@@ -535,7 +558,7 @@ impl<'a> Gen<'a> {
         // Constants may refer to functions not otherwise reached.
         self.drain()?;
         init.push_str("}\n");
-        Ok(format!("{}{}", decls, init))
+        Ok((decls, init))
     }
 
     /// Exported functions (§19.4): external C-ABI wrappers under their symbols.
@@ -867,7 +890,10 @@ pub fn conv_attr(cc: CallConv) -> &'static str {
 
 /// Where the C compiler and its output go.
 pub struct Build {
+    /// The C file of the program (of its first unit when it was split).
     pub c_file: PathBuf,
+    /// The C files of all its units.
+    pub c_files: Vec<PathBuf>,
     pub exe: PathBuf,
 }
 
@@ -904,6 +930,8 @@ fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
 /// there in the debugger) and linked with a runtime object compiled once and cached (see
 /// [`rtcache`]); without a usable cache they fall back to one translation unit. Safe builds
 /// (Fil-C, which compiles slowly) are compiled at `-O2` but link the cached runtime too.
+/// A large Debug build is split into several units compiled in
+/// parallel (see [`units`]); unit `i` > 0 is written to `exe` with the extension `.i.c`.
 pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &Path) -> Result<Build, String> {
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
@@ -914,48 +942,93 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     };
     let separate = opts.debug || generated.target.filc;
     let runtime = if separate { rtcache::runtime_object(toolchain, &rt_flags(opts, &generated.target)) } else { None };
-    let mut code = String::new();
+    let mut sources = vec![];
     if runtime.is_some() {
-        code.push_str("#define GM_RT_SEPARATE 1\n");
-        code.push_str(RT_H);
+        let prelude = format!("#define GM_RT_SEPARATE 1\n{}\n", RT_H);
+        // Safe builds are optimized, and keep every function in reach of inlining.
+        let n = if opts.debug { units::count(&generated.parts) } else { 1 };
+        match units::split(&generated.parts, n).filter(|_| n > 1) {
+            Some(units) => sources.extend(units.into_iter().map(|u| format!("{prelude}{u}"))),
+            None if n > 1 && units::forced().is_some() => {
+                return Err("the generated C cannot be split into units".into());
+            }
+            None => sources.push(format!("{prelude}{}", generated.code)),
+        }
     } else {
-        code.push_str(RT_H);
-        code.push('\n');
-        code.push_str(RT_C);
+        sources.push(format!("{}\n{}\n{}", RT_H, RT_C, generated.code));
     }
-    code.push('\n');
-    code.push_str(&generated.code);
-    if opts.debug_info {
-        // The debugger finds the C file by this name, so it is absolute when possible.
-        let dir = c_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let abs =
-            crate::source::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
-        code = debug::resolve_lines(&code, &abs.display().to_string());
+    let c_files: Vec<PathBuf> = (0..sources.len()).map(|i| units::unit_path(exe, i)).collect();
+    for (code, path) in sources.iter_mut().zip(&c_files) {
+        if opts.debug_info {
+            // The debugger finds the C file by this name, so it is absolute when possible.
+            let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let abs =
+                crate::source::canonicalize(dir).map_or(path.clone(), |d| d.join(path.file_name().unwrap_or_default()));
+            *code = debug::resolve_lines(code, &abs.display().to_string());
+        }
+        std::fs::write(path, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
     }
-    std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
     // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come
     // after the source and the runtime object, before the libraries, as for `make`.
     let mut flags = base_cflags(&generated.target);
     flags.push(opt);
     flags.extend(opts.debug_info.then_some("-g"));
     flags.extend(f16c_flag(&generated.target));
-    let out = toolchain
+    let run = |cmd: &mut std::process::Command| {
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))
+    };
+    let failed = |out: std::process::Output| {
+        (!out.status.success()).then(|| format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)))
+    };
+    // Several units are compiled to objects in parallel, then linked.
+    let inputs = if c_files.len() > 1 {
+        let objects: Vec<PathBuf> = (0..c_files.len()).map(|i| exe.with_extension(format!("{i}.o"))).collect();
+        let mut unit_flags = flags.clone();
+        // A call to a function without a declaration would compile, wrongly, under C's
+        // old rules: make it an error.
+        unit_flags.push("-Werror=implicit-function-declaration");
+        let mut children = vec![];
+        for (c, o) in c_files.iter().zip(&objects) {
+            children.push(run(toolchain.command(&unit_flags).arg("-c").arg("-o").arg(o).arg(c)));
+        }
+        let mut error = None;
+        for child in children {
+            let out = child.and_then(|c| c.wait_with_output().map_err(|e| format!("the C compiler failed: {}", e)));
+            error = error.or(match out {
+                Ok(out) => failed(out),
+                Err(e) => Some(e),
+            });
+        }
+        if let Some(e) = error {
+            objects.iter().for_each(|o| drop(std::fs::remove_file(o)));
+            return Err(e);
+        }
+        objects
+    } else {
+        c_files.clone()
+    };
+    let out = run(toolchain
         .command(&flags)
         .arg("-o")
         .arg(exe)
-        .arg(&c_file)
+        .args(&inputs)
         .args(&runtime)
         .args(&link.objects)
         .args(&toolchain.ldflags)
         .args(link.library_args(&generated.libs))
         .arg("-lm")
-        .args(windows_libs(&generated.target))
-        .output()
-        .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
-    if !out.status.success() {
-        return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+        .args(windows_libs(&generated.target)))
+    .and_then(|c| c.wait_with_output().map_err(|e| format!("the C compiler failed: {}", e)));
+    if inputs != c_files {
+        inputs.iter().for_each(|o| drop(std::fs::remove_file(o)));
     }
-    Ok(Build { c_file, exe: exe.to_path_buf() })
+    if let Some(e) = failed(out?) {
+        return Err(e);
+    }
+    Ok(Build { c_file, c_files, exe: exe.to_path_buf() })
 }
 
 /// The libraries (and linking mode) a program for Windows needs: Winsock, the synchronization

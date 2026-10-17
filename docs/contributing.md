@@ -167,6 +167,15 @@ When the two disagree, these help:
   with `GAMMA_VM_PAIRS=1` as well it lists the most frequent pairs of consecutive
   opcodes, which is where to look for instructions worth fusing.
 
+Large Debug builds are split into several C files compiled in parallel (see
+`docs/architecture.md`). Test programs are too small to be split, so CI runs the
+conformance tests with `GAMMA_C_UNITS=3` as well, which splits every Debug build
+into three units (and fails a build that cannot be split):
+
+```sh
+GAMMA_C_UNITS=3 cargo test --test conformance --test examples
+```
+
 **Safe lane.** Tests marked `//! mode: safe` (in `tests/conformance/safe/`) build
 with Fil-C and run when it is found. To install it, download a release from
 <https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball),

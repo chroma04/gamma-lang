@@ -318,15 +318,90 @@ impl<'s> Sema<'s> {
             let effect = self.decls[e.0 as usize].name.name;
             return Some(format!("`{name}` is an operation of `{effect}`: write `{effect}.{name}(…)` (§21.1)"));
         }
-        let module = match name.as_str() {
-            "Socket" | "Listener" | "Shutdown" => Some("std/net"),
-            "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => Some("std/fs"),
-            _ => None,
-        };
-        Some(match module {
+        Some(match std_home(name) {
             Some(m) => format!("`{name}` is declared by `{m}`: import it and write `{}.{name}`", &m[4..]),
             None => format!("`{name}` is a method of `Instant` or `Duration`: write `x.{name}(…)`"),
         })
+    }
+
+    /// For an unknown name that is an operation of a core effect: the effect's name, to
+    /// write in front of it (`Out.print`).
+    pub fn op_effect(&mut self, name: Symbol) -> Option<Symbol> {
+        let prelude = self.prelude?;
+        let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
+        if !self.universe_hidden(d) {
+            return None;
+        }
+        let (e, _) = self.decls[d.0 as usize].op_of?;
+        Some(self.decls[e.0 as usize].name.name)
+    }
+
+    /// A fix for an unknown name that [`Sema::universe_hint`] attributes to a standard
+    /// module: write `m.Name`, after adding `m :: import "std/m"` unless the module has
+    /// it already. `span` is the name at its use in the file of `module`.
+    pub fn import_fix(&mut self, module: ModuleId, name: Symbol, span: Span) -> Option<Vec<crate::diag::Edit>> {
+        use crate::diag::Edit;
+        let path = std_home(name)?;
+        let m = &self.modules[module.0 as usize];
+        if m.is_prelude || m.is_std {
+            return None;
+        }
+        let alias = Symbol::intern(&path[4..]);
+        let import_path = |it: &ast::Item| match &it.kind {
+            ItemKind::Binding(b) if b.ty.is_none() && b.names.len() == 1 => match &b.init.kind {
+                ast::ExprKind::Import(p) => Some(p.bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut edits = vec![];
+        let mut existing = None;
+        let mut last_import_end = None;
+        for &d in m.scope.values() {
+            let decl = &self.decls[d.0 as usize];
+            if decl.item.span.file != span.file {
+                continue;
+            }
+            if let Some(p) = import_path(&decl.item) {
+                if p == path.as_bytes() {
+                    existing = Some(decl.name.name);
+                }
+                if let ItemKind::Binding(b) = &decl.item.kind {
+                    let hi = b.init.span.hi;
+                    last_import_end = last_import_end.max(Some(hi));
+                }
+            }
+        }
+        let text = &self.sess.sources.file(span.file).src;
+        let name_text = match existing {
+            Some(a) => a,
+            None => {
+                if m.scope.contains_key(&alias) {
+                    return None;
+                }
+                let line = format!("{} :: import \"{}\"\n", alias, path);
+                let (at, line) = match last_import_end {
+                    Some(hi) => {
+                        // The start of the line after the last import.
+                        let nl = text[hi as usize..].find('\n')?;
+                        (hi + nl as u32 + 1, line)
+                    }
+                    // After the comments that open the file (its documentation).
+                    None => {
+                        let mut at = 0;
+                        while text[at..].starts_with("//") {
+                            at += text[at..].find('\n').map_or(text.len() - at, |i| i + 1);
+                        }
+                        let line = if at == 0 { format!("{line}\n") } else { format!("\n{line}") };
+                        (at as u32, line)
+                    }
+                };
+                edits.push(Edit { span: Span { file: span.file, lo: at, hi: at }, text: line });
+                alias
+            }
+        };
+        edits.push(Edit { span, text: format!("{}.{}", name_text, name) });
+        Some(edits)
     }
 
     /// The module that a module-binding name (`m` in `m.T`) denotes in `module`.
@@ -471,5 +546,15 @@ impl<'s> Sema<'s> {
             op_of: None,
         });
         self.modules[prelude.0 as usize].scope.insert(name.name, id);
+    }
+}
+
+/// The standard module that declares `name`, for the universe's names that are not in it
+/// but in a module that must be imported.
+fn std_home(name: Symbol) -> Option<&'static str> {
+    match name.as_str() {
+        "Socket" | "Listener" | "Shutdown" => Some("std/net"),
+        "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => Some("std/fs"),
+        _ => None,
     }
 }

@@ -122,7 +122,9 @@ pub fn cached_program(
     }
     let tmp = private_name(&dir, &stem, "exe");
     let built = super::compile(generated, toolchain, link, &tmp);
-    let _ = std::fs::remove_file(tmp.with_extension("c"));
+    for i in 0..super::units::MAX_UNITS {
+        let _ = std::fs::remove_file(super::units::unit_path(&tmp, i));
+    }
     built?;
     if rename_or_remove(&tmp, &exe).is_none() {
         return Ok(None);

@@ -188,6 +188,9 @@ impl<'s> Sema<'s> {
                 let mut d = crate::diag::Diagnostic::error(e.span, format!("unknown type `{}`", id.name));
                 if let Some(hint) = self.universe_hint(id.name) {
                     d = d.with_note(hint);
+                    if let Some(edits) = self.import_fix(module, id.name, e.span) {
+                        d = d.with_fix_edits(format!("write `{}`", edits.last().unwrap().text), edits);
+                    }
                 }
                 self.emit(d);
                 Ty::error()

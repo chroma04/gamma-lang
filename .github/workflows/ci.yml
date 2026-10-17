@@ -35,6 +35,11 @@ jobs:
           GAMMA_INTERP: tree
           GAMMA_TEST_C: "0"
         run: cargo test --test conformance --test examples
+      - name: Conformance tests and examples with Debug builds split into C units
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GAMMA_C_UNITS: "3"
+        run: cargo test --test conformance --test examples
 
   msrv:
     # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
