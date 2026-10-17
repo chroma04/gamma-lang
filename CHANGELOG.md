@@ -72,6 +72,12 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- C back end: a call to a function that performs no effects itself but is passed a
+  second-class function was not treated as a possible non-local exit. When the passed
+  function performed an operation whose handler left its `with` (`break` after
+  `cancel`), the caller went on running with an undefined result, and could print
+  output the interpreter does not, before the exit took effect. Calls through function
+  pointers with such parameters had the same problem.
 - On macOS, a program run with `gamma run --backend=c` could be killed when another
   `gamma` process started the same cached executable at the same time: marking a
   cached file as used no longer opens it for writing outside Windows.

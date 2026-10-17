@@ -1137,7 +1137,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         let effectful = !self.g.within_sys(&sig.effects);
                         let cx = self.cx.clone();
                         let r = self.call_indirect(&cv, "NULL", &cx, &vals, &tys, e.ty, effectful, sig.callconv);
-                        if effectful {
+                        // A second-class argument may leave the callee by a non-local exit.
+                        if effectful || super::takes_fn(tys.iter().copied()) {
                             self.check_unwind();
                         }
                         Ok(r)

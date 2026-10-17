@@ -1,0 +1,59 @@
+// A function that performs no effects itself can still be left by a non-local exit: the
+// second-class function it is passed may perform the caller's effects, and the handler
+// may `break` out of its `with` (§11.6, §12). Nothing after such a call may run, in
+// the callee's caller either: not the rest of the expression, not the next statement.
+Co :: effect { ask: ctl(q: i64) -> i64 }
+
+twice :: fn(x: i64, f: fn(i64) -> i64) -> i64 { return f(f(x)) }
+twice_g :: fn(T: type, x: T, f: fn(T) -> T) -> T { return f(f(x)) }
+// Passes its function on without calling it.
+relay :: fn(x: i64, f: fn(i64) -> i64) -> i64 => twice(x, f)
+
+direct :: fn() -> i64 needs Out + Co {
+    print("{} {}\n", true, twice(1, fn(v) => v + Co.ask(3)))
+    print("not reached\n")
+    return 0
+}
+
+statement :: fn() -> i64 needs Out + Co {
+    y := twice_g(T: i64, 1, fn(v) => v + Co.ask(3))
+    print("not reached: {}\n", y)
+    return 0
+}
+
+relayed :: fn() -> i64 needs Out + Co {
+    y := relay(1, fn(v) => v + Co.ask(3))
+    print("not reached: {}\n", y)
+    return 0
+}
+
+pointer :: fn() -> i64 needs Out + Co {
+    p: ^fn(x: i64, f: fn(i64) -> i64) -> i64 = twice
+    y := p(1, fn(v) => v + Co.ask(3))
+    print("not reached: {}\n", y)
+    return 0
+}
+
+// The first `ask` is answered; the second leaves the `with` with 7 + the run's number.
+run :: fn(i: i64, body: fn() -> i64 needs Out + Co) -> i64 needs Out {
+    stk: [65536]u8 = ---
+    n := 0
+    h :: handler Co {
+        ask(q, k) => {
+            n += 1
+            if n > 1 {
+                cancel k
+                break 7 + i
+            }
+            resume k(q)
+        }
+    }
+    return with h on stk[..] { body() }
+}
+
+main :: fn() needs Out {
+    print("{}\n", run(0, direct))
+    print("{}\n", run(1, statement))
+    print("{}\n", run(2, relayed))
+    print("{}\n", run(3, pointer))
+}

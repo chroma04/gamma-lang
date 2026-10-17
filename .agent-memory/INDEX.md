@@ -1,6 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-16) — PRs #1–#45 merged; s22 PR open (bugs-open + P2, branch claude/bugs-p2-s22)
+## State (2026-10-17) — PRs #1–#46 merged; s23 PR open (difftest fix, branch claude/difftest-shl)
 - s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
   architecture/contributing, CLI help, source comments and this memory
   (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
@@ -17,7 +17,8 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- Recent history: s22 elements passed in place, VM float ops + RotI (sessions/s22-…);
+- Recent history: s23 C unwind check after calls passed a closure (sessions/s23-…);
+  s22 elements passed in place, VM float ops + RotI (sessions/s22-…);
   s21 gcc inline small fns, field args in place, Emacs mode, perform
   trim, difftest coverage + CI (sessions/s21-…); s20 fiber channel + effect-param context inference + fuzz/difftest
   (sessions/s20-…); s19 papercuts + tree-sitter/MSRV/SECURITY (branch claude/fervent-bohr-wot1ar);
@@ -25,7 +26,7 @@
   s12 to-do P2 (PR #35); s11 tooling (PR #34). Older: sessions/.
 
 ## Next steps
-1. Drive the s22 PR (claude/bugs-p2-s22) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s23 PR (claude/difftest-shl) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -64,6 +65,7 @@
                   · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
                   · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
                   · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
+                  · s23-2026-10-17-difftest-fix.md
 - gotchas/        environment.md
 
 ## Conventions
