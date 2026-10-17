@@ -1,0 +1,299 @@
+//! stage: test
+// std/fiber sleeping: `sleep` suspends only the calling task. The test handler's Clock is a
+// fake whose `sleep` advances it, so every order and elapsed time here is deterministic.
+fiber :: import "std/fiber"
+chan :: import "std/fiber/channel"
+
+Log :: struct {
+    events: [64]u32
+    n: usize
+}
+
+rec :: fn(l: ^Log, x: u32) {
+    l.events[l.n] = x
+    l.n += 1
+}
+
+same :: fn(l: ^Log, want: []const u32) needs Test {
+    expect_eq(l.n, want.len)
+    for i in 0..want.len {
+        if i < l.n { expect_eq(l.events[i], want[i]) }
+    }
+}
+
+Nap :: struct {
+    log: ^Log
+    id: u32
+    for_ms: u64
+}
+
+nap :: fn(j: ^Nap) needs fiber.Sched(Clock) + Clock {
+    fiber.sleep(ms(j.for_ms))
+    rec(j.log, j.id)
+}
+
+test "sleepers wake in deadline order" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    sc: [32768]u8 = ---
+    a := Nap(log: &log, id: 30, for_ms: 30)
+    b := Nap(log: &log, id: 10, for_ms: 10)
+    c := Nap(log: &log, id: 20, for_ms: 20)
+    t0 := Clock.now()
+    with &s on main_stack[..] {
+        fiber.spawn(nap, &a, sa[..])
+        fiber.spawn(nap, &b, sb[..])
+        fiber.spawn(nap, &c, sc[..])
+        fiber.join()
+    }
+    same(&log, [_]u32(10, 20, 30)[..])
+    // The sleeps overlap: 30 ms in all, not 60.
+    expect_eq(Clock.now().since(t0).to_ms(), 30)
+}
+
+test "equal deadlines wake in the order the tasks went to sleep" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    stacks: [4][32768]u8 = ---
+    jobs := [4]Nap(fill: Nap(log: &log, id: 0, for_ms: 10))
+    for i in 0..4 { jobs[i] = Nap(log: &log, id: u32(i) + 1, for_ms: 10) }
+    with &s on main_stack[..] {
+        for i in 0..4 { fiber.spawn(nap, &jobs[i], stacks[i][..]) }
+        fiber.join()
+    }
+    same(&log, [_]u32(1, 2, 3, 4)[..])
+}
+
+// A task that sleeps, wakes, and sleeps again for the same time: tasks with equal
+// deadlines keep their order across a check that finds them not yet due.
+Twice :: struct {
+    log: ^Log
+    id: u32
+}
+
+twice :: fn(j: ^Twice) needs fiber.Sched(Clock) + Clock {
+    fiber.sleep(ms(5))
+    rec(j.log, j.id)
+    fiber.sleep(ms(5))
+    rec(j.log, j.id + 10)
+}
+
+test "a task that sleeps again keeps its place" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    a := Twice(log: &log, id: 1)
+    b := Twice(log: &log, id: 2)
+    with &s on main_stack[..] {
+        fiber.spawn(twice, &a, sa[..])
+        fiber.spawn(twice, &b, sb[..])
+        fiber.join()
+    }
+    same(&log, [_]u32(1, 2, 11, 12)[..])
+}
+
+// A task that never sleeps and keeps yielding: each round it lets 1 ms pass on the clock.
+Busy :: struct {
+    log: ^Log
+    rounds: u32
+    round: u32
+}
+
+busy :: fn(b: ^Busy) needs fiber.Sched(Clock) + Clock {
+    for i in 0..b.rounds {
+        b.round = i + 1
+        Clock.sleep(ms(1))
+        fiber.yield_now()
+    }
+    rec(b.log, 1000)
+}
+
+Sleepy :: struct {
+    busy: ^Busy
+    log: ^Log
+    woke_in_round: u32
+}
+
+sleepy :: fn(z: ^Sleepy) needs fiber.Sched(Clock) + Clock {
+    fiber.sleep(ms(5))
+    z.woke_in_round = z.busy.round
+    rec(z.log, 500)
+}
+
+test "a busy task does not starve a sleeper" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    b := Busy(log: &log, rounds: 20, round: 0)
+    z := Sleepy(busy: &b, log: &log, woke_in_round: 0)
+    with &s on main_stack[..] {
+        fiber.spawn(sleepy, &z, sb[..])
+        fiber.spawn(busy, &b, sa[..])
+        fiber.join()
+    }
+    // The sleeper wakes before the busy task finishes, within a couple of rounds of
+    // becoming due (it is due once the busy task has let 5 ms pass).
+    same(&log, [_]u32(500, 1000)[..])
+    expect(z.woke_in_round >= 5, "not before its deadline")
+    expect(z.woke_in_round <= 8, "within a few rounds")
+}
+
+Zero :: struct {
+    log: ^Log
+}
+
+zero_a :: fn(z: ^Zero) needs fiber.Sched(Clock) + Clock {
+    rec(z.log, 1)
+    fiber.sleep(ms(0))
+    rec(z.log, 3)
+}
+
+zero_b :: fn(z: ^Zero) needs fiber.Sched(Clock) + Clock {
+    rec(z.log, 2)
+}
+
+test "sleep(0) lets the other tasks run first" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    z := Zero(log: &log)
+    t0 := Clock.now()
+    with &s on main_stack[..] {
+        fiber.spawn(zero_a, &z, sa[..])
+        fiber.spawn(zero_b, &z, sb[..])
+        fiber.join()
+    }
+    same(&log, [_]u32(1, 2, 3)[..])
+    expect_eq(Clock.now().since(t0).to_ms(), 0)
+}
+
+test "the code under the with can sleep and join" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    a := Nap(log: &log, id: 1, for_ms: 40)
+    b := Nap(log: &log, id: 2, for_ms: 10)
+    t0 := Clock.now()
+    with &s on main_stack[..] {
+        fiber.spawn(nap, &a, sa[..])
+        fiber.spawn(nap, &b, sb[..])
+        fiber.sleep(ms(20))
+        rec(&log, 99)
+        // Both tasks are still alive (one sleeping): join waits for them.
+        fiber.join()
+        rec(&log, 100)
+    }
+    same(&log, [_]u32(2, 99, 1, 100)[..])
+    expect_eq(Clock.now().since(t0).to_ms(), 40)
+}
+
+test "join returns at once with no tasks, and sleepers count as tasks" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    log := Log(events: ---, n: 0)
+    a := Nap(log: &log, id: 1, for_ms: 7)
+    with &s on main_stack[..] {
+        fiber.join()
+        fiber.spawn(nap, &a, sa[..])
+        expect_eq(log.n, 0)
+        fiber.join()
+        expect_eq(log.n, 1)
+    }
+}
+
+// A producer that sleeps between sends, and a consumer that waits for them on a channel.
+Chat :: struct {
+    c: chan.Channel(u32)
+    log: ^Log
+    t0: Instant
+}
+
+sender :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
+    for i in 1..4 {
+        fiber.sleep(ms(10))
+        _ = h.c.send(i)
+    }
+    h.c.close()
+}
+
+receiver :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
+    while x := h.c.recv() {
+        rec(h.log, x)
+        rec(h.log, Clock.now().since(h.t0).to_ms().trunc(u32))
+    }
+    rec(h.log, 0)
+}
+
+ticker :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
+    // Sleeps on a different rhythm, between the sends.
+    for i in 0..3 {
+        fiber.sleep(ms(15))
+        rec(h.log, 100 + Clock.now().since(h.t0).to_ms().trunc(u32))
+    }
+}
+
+test "channels and sleeping tasks work together" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    sc: [32768]u8 = ---
+    h := Chat(c: ok(chan.channel(u32, 1)), log: &log, t0: Clock.now())
+    defer h.c.deinit()
+    with &s on main_stack[..] {
+        fiber.spawn(receiver, &h, sa[..])
+        fiber.spawn(sender, &h, sb[..])
+        fiber.spawn(ticker, &h, sc[..])
+        fiber.join()
+    }
+    // Sends at 10, 20, 30 ms; ticks at 15, 30, 45 ms. At 30 the sleeper that went to sleep
+    // first (the ticker, at 15) wakes before the sender (at 20).
+    same(&log, [_]u32(1, 10, 115, 2, 20, 130, 3, 30, 0, 145)[..])
+}
+
+test "sleepers keep their order across checks that find them not yet due" {
+    s := fiber.scheduler(Clock)
+    defer s.deinit()
+    log := Log(events: ---, n: 0)
+    main_stack: [32768]u8 = ---
+    sa: [32768]u8 = ---
+    sb: [32768]u8 = ---
+    sc: [32768]u8 = ---
+    sd: [32768]u8 = ---
+    a := Twice(log: &log, id: 1)
+    b := Twice(log: &log, id: 2)
+    c := Twice(log: &log, id: 3)
+    busy_state := Busy(log: &log, rounds: 40, round: 0)
+    with &s on main_stack[..] {
+        fiber.spawn(busy, &busy_state, sc[..])
+        fiber.spawn(twice, &a, sa[..])
+        fiber.spawn(twice, &b, sb[..])
+        fiber.spawn(twice, &c, sd[..])
+        fiber.join()
+    }
+    // The busy task lets 1 ms pass per round, so the sleepers are checked many times
+    // before they are due; they still wake in the order they went to sleep.
+    same(&log, [_]u32(1, 2, 3, 11, 12, 13, 1000)[..])
+}

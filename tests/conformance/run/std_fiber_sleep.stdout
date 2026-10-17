@@ -1,0 +1,12 @@
+slow falls asleep
+quick falls asleep
+middle falls asleep
+quick wakes
+middle wakes
+slow wakes
+at least the longest sleep: true
+less than the sleeps one after the other: true
+napper falls asleep
+napper wakes
+spinner done
+the spinner ran while the napper slept: true

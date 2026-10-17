@@ -1,0 +1,20 @@
+//! exit: 134
+// A generator whose producer is still suspended when its `pull` ends is closed: using it in
+// another `pull` traps instead of resuming a cancelled fiber.
+gen :: import "std/fiber/generator"
+
+count :: fn(n: ^u32) needs Yield(u32) + Out {
+    defer print("[producer closed]\n")
+    for i in 0..n^ { yield(i) }
+}
+
+main :: fn() needs Out {
+    n := u32(5)
+    st: [32768]u8 = ---
+    main_stack: [32768]u8 = ---
+    g := gen.generator(count, &n, st[..])
+    gen.pull(main_stack[..], fn() => print("first: {}\n", g.next()))
+    print("the first pull is over\n")
+    gen.pull(main_stack[..], fn() => print("second: {}\n", g.next()))
+    print("never printed\n")
+}
