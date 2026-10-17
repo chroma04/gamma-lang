@@ -248,7 +248,7 @@ lowers each function body to TIR.
 
 The core library is ordinary Gamma source in `lib/core/`, compiled into the
 tool. The prelude (`prelude.gm`) is visible in every module: it declares the
-ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, and
+ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, and
 `Sys`), the standard iterators and allocation (`Allocator`, `new`, `make`, `free`, …). The
 containers live in their own core modules, `list.gm` and `map.gm`, and the builtin methods
 of arrays and slices that are written in Gamma (the sorts, …) in `slice.gm`; only their types and
@@ -269,7 +269,7 @@ is checked on every compilation, so mistakes in it surface immediately.
 The program's entry is a synthesized function that calls `main` inside the
 prelude's default handlers for the ambient effects it performs:
 `with heap_allocator(), system_io() { main() }` (only the providers for the effects
-`main` performs), where `system_io()` handles `In`, `Clock`, `Rand`, `Fs` and `Net`
+`main` performs), where `system_io()` handles `In`, `Clock`, `Rand`, `Fs`, `Net` and `Proc`
 through the intrinsics above. The ambient effects with
 host-provided handlers (`Out`, `Err`, `Env`) are installed by the runtime
 itself. Tests run under the prelude's test handlers instead (`run_test`): a

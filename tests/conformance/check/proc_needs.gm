@@ -1,0 +1,16 @@
+//! stage: check
+// Starting a process is an effect: it must be declared (§12.9).
+process :: import "std/process"
+
+launch :: fn() {
+    _ = Proc.spawn([_]string("true"), process.SpawnOptions())   //~ ERROR does not declare
+}
+
+declared :: fn() needs Proc {
+    _ = Proc.spawn([_]string("true"), process.SpawnOptions())
+}
+
+main :: fn() needs Proc {
+    launch()
+    declared()
+}

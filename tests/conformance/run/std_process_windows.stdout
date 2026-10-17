@@ -1,0 +1,5 @@
+status .Exited(0)
+out 7 bytes: hello
+err 0 bytes
+exit 3: .Exited(3)
+missing program: .NotFound

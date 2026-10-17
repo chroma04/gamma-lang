@@ -440,6 +440,30 @@ main :: fn() needs Out {
 
 `io.describe(e)` turns an `IoError` into a short message for `error: ...` lines.
 
+### Running programs: `std/process`
+
+Child processes are the `Proc` effect, like files are `Fs`. `process.output` runs a command to completion (no shell: the first element is the program, found in `PATH` unless it has a path separator) and collects what it writes; `process.status` only waits for it. Options choose what the child's standard streams are connected to (`Inherit`, `Null` or `Pipe`), its working directory and its environment:
+
+```gamma
+process :: import "std/process"
+
+main :: fn() -> process.RunError!() needs Out + Proc + Alloc {
+    out := try process.output([_]string("sh", "-c", "echo hello; echo oops >&2; exit 3"))
+    defer out.deinit()
+    print("{} {} [{}] [{}]\n", out.status, process.success(out.status),
+          string(out.out.items), string(out.err.items))
+
+    // The same program, in another directory and with its own environment.
+    env := [_]string("GREETING=hi")
+    opts := process.SpawnOptions(dir: "/", env: env[..])
+    out2 := try process.output([_]string("sh", "-c", "echo $GREETING from $(pwd)"), opts)
+    defer out2.deinit()
+    print("{}", string(out2.out.items))
+}
+```
+
+For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `write_in` and ended with `close_in`; `read_out` waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `kill` ends it forcibly. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write_in` and `read_out`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
+
 ## Time and randomness
 
 Durations and instants are core; `Clock` is the effect that supplies them (a test handler gives a fake clock, so `sleep` costs nothing). `std/time` adds the calendar, in UTC, with RFC 3339 text:
@@ -811,6 +835,7 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
 | `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
 | `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
+| `std/process` | running other programs: `output`, `status` and `success` over the `Proc` effect (above); tests cannot start processes |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
 | `std/c` | C's platform-dependent types (`c_int`, `c_long`, ...) for [foreign declarations](14-interop.md) |
 

@@ -1,0 +1,14 @@
+//! stage: test
+// Tests start no processes: `Proc.spawn` is refused.
+process :: import "std/process"
+
+test "spawn is refused in tests" {
+    r := Proc.spawn([_]string("echo", "hi"), process.SpawnOptions())
+    expect(r is !.PermissionDenied)
+}
+
+test "the conveniences report the refusal" {
+    expect(process.status([_]string("true")) is !.PermissionDenied)
+    r := process.output([_]string("true"))
+    expect(r is !.Io(.PermissionDenied))
+}

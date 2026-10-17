@@ -1,0 +1,104 @@
+//! Running other programs over the `Proc` effect (§21.7).
+//!
+//!     process :: import "std/process"
+//!     out := try process.output([_]string("git", "rev-parse", "HEAD"))
+//!     defer out.deinit()
+//!     if process.success(out.status) { print("{}", string(out.out.items)) }
+//!
+//! `Proc.spawn` starts a program without a shell: the first element of `argv` is the program
+//! (a name without a path separator is searched for in `PATH`), the others are its arguments.
+//! A piped stream is used through `write_in`, `close_in` and `read_out`, and every started
+//! child must be ended with `wait`. Tests cannot start processes: `spawn` fails with
+//! `PermissionDenied`.
+
+/// A started child process (§21.7).
+pub Child :: core.Child
+
+/// What a child's standard stream is connected to: `Inherit`, `Null` or `Pipe`.
+pub Stdio :: core.Stdio
+
+/// One of a child's output streams: `Stdout` or `Stderr`.
+pub Stream :: core.Stream
+
+/// How `Proc.spawn` starts a process: the three streams, the working directory and the
+/// environment.
+pub SpawnOptions :: core.SpawnOptions
+
+/// What `Proc.read_out` reports: the stream the bytes are from, and how many it stored.
+pub Chunk :: core.Chunk
+
+/// How a child ended: `Exited(code)` or `Signaled(signal)`.
+pub ExitStatus :: core.ExitStatus
+
+/// Why running a program to completion failed.
+pub RunError :: union {
+    Io: IoError
+    Alloc: AllocError
+}
+
+/// A finished program: its status and everything it wrote to its standard output and error.
+pub Output :: struct {
+    pub status: ExitStatus
+    pub out: List(u8)
+    pub err: List(u8)
+}
+
+/// Frees the output.
+pub deinit :: fn(o: ^Output) {
+    o.out.deinit()
+    o.err.deinit()
+}
+
+/// True if the program ended with exit code 0.
+pub success :: fn(s: ExitStatus) -> bool {
+    return match s {
+        .Exited(code) => code is 0
+        .Signaled(_) => false
+    }
+}
+
+/// Reads both output streams of `c` to their ends into `out` and `err`.
+drain :: fn(c: Child, out, err: ^List(u8)) -> RunError!() needs Proc + Alloc {
+    buf: [4096]u8 = ---
+    while true {
+        chunk := (try c.read_out(buf[..])) else break
+        dst := match chunk.from {
+            .Stdout => out
+            .Stderr => err
+        }
+        try dst.extend(buf[0..chunk.len])
+    }
+    return ()
+}
+
+/// Runs the program to completion and collects what it writes to its standard output and
+/// error (`opts.stdout` and `opts.stderr` are replaced by pipes; `opts.stdin` is used as
+/// given). Release the result with `deinit`. If collecting fails, the child is killed and
+/// waited for.
+pub output :: fn(argv: []const string, opts: SpawnOptions = SpawnOptions()) -> RunError!Output needs Proc + Alloc {
+    o := opts
+    o.stdout = .Pipe
+    o.stderr = .Pipe
+    c := try Proc.spawn(argv, o)
+    out := list(u8)
+    err := list(u8)
+    drain(c, &out, &err) else e => {
+        _ = c.kill()
+        _ = c.wait()
+        out.deinit()
+        err.deinit()
+        return !e
+    }
+    status := c.wait() else e => {
+        out.deinit()
+        err.deinit()
+        return !.Io(e)
+    }
+    return Output(status: status, out: out, err: err)
+}
+
+/// Runs the program to completion, with `opts` as given, and returns how it ended.
+pub status :: fn(argv: []const string, opts: SpawnOptions = SpawnOptions()) -> IoError!ExitStatus needs Proc {
+    c := try Proc.spawn(argv, opts)
+    return c.wait()
+}

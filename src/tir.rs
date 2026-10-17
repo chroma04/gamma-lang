@@ -134,6 +134,29 @@ pub enum SysOp {
     /// `@net_peer(h: i64, buf: []u8) -> i64`: stores the peer's `host:port` in `buf` and
     /// returns its length; `InvalidInput` if it does not fit.
     NetPeer,
+    /// `@proc_spawn(argv: []const string, env: []const string, dir: string, flags: u32) -> i64`:
+    /// a child process's handle. The flags hold two bits per standard stream (stdin from bit
+    /// 0, stdout from bit 2, stderr from bit 4: 0 inherit, 1 the null device, 2 a pipe) and
+    /// [`PROC_ENV`] if `env` (`NAME=value` entries) replaces the environment. An empty `dir`
+    /// is the working directory of the parent. A program name without a path separator is
+    /// searched for in the parent's `PATH`; our ends of the pipes are not inherited.
+    ProcSpawn,
+    /// `@proc_write_in(h: i64, bytes: []const u8) -> i64`: writes to the child's piped
+    /// stdin; `InvalidInput` if it is not piped or already closed, `BrokenPipe` if the
+    /// child no longer reads.
+    ProcWriteIn,
+    /// `@proc_close_in(h: i64) -> i64`: closes the stdin pipe; 0 even if there is none.
+    ProcCloseIn,
+    /// `@proc_read_out(h: i64, buf: []u8) -> i64`: waits until a piped output stream has
+    /// data or ends, and reads from it into `buf`. The result is the length (at least 1)
+    /// plus 2^32 if the bytes are from stderr; a stream that ended is closed and skipped.
+    /// 0 once every piped output stream has ended.
+    ProcReadOut,
+    /// `@proc_wait(h: i64) -> i64`: closes the pipes still open, waits for the child and
+    /// releases the handle. The result is the exit code, or the signal number plus 2^32.
+    ProcWait,
+    /// `@proc_kill(h: i64) -> i64`: SIGKILL (POSIX) or `TerminateProcess` (Windows).
+    ProcKill,
     /// `@thread_spawn(f: ^fn(arg: rawptr) needs Sys, arg: rawptr) -> i64`: a new thread
     /// running `f(arg)` with no handlers installed (§19.6); its handle.
     ThreadSpawn,
@@ -156,6 +179,9 @@ pub enum SysOp {
     /// `@sys_write(fd: i32, bytes: []const u8)`: standard output (1) or error (2).
     SysWrite,
 }
+
+/// Flag of [`SysOp::ProcSpawn`]: the given environment replaces the parent's.
+pub const PROC_ENV: u32 = 64;
 
 /// Flags of [`SysOp::FsOpen`].
 pub const FS_READ: u32 = 1;
@@ -211,6 +237,15 @@ impl SysOp {
             SysOp::NetShutdown => ("net_shutdown", vec![i64, Ty::int(false, 32)], i64),
             SysOp::NetSetTimeouts => ("net_set_timeouts", vec![i64, Ty::int(false, 64), Ty::int(false, 64)], i64),
             SysOp::NetPeer => ("net_peer", vec![i64, buf], i64),
+            SysOp::ProcSpawn => {
+                let strs = Ty::intern(crate::types::TyKind::Slice { elem: Ty::string(), is_const: true });
+                ("proc_spawn", vec![strs, strs, Ty::string(), Ty::int(false, 32)], i64)
+            }
+            SysOp::ProcWriteIn => ("proc_write_in", vec![i64, Ty::string()], i64),
+            SysOp::ProcCloseIn => ("proc_close_in", vec![i64], i64),
+            SysOp::ProcReadOut => ("proc_read_out", vec![i64, buf], i64),
+            SysOp::ProcWait => ("proc_wait", vec![i64], i64),
+            SysOp::ProcKill => ("proc_kill", vec![i64], i64),
             // The function's type is checked separately: any `^fn(arg: rawptr) needs Sys`.
             SysOp::ThreadSpawn => ("thread_spawn", vec![Ty::intern(crate::types::TyKind::Rawptr); 2], i64),
             SysOp::ThreadJoin => ("thread_join", vec![i64], i64),
@@ -223,7 +258,7 @@ impl SysOp {
         }
     }
 
-    pub const ALL: [SysOp; 40] = [
+    pub const ALL: [SysOp; 46] = [
         SysOp::Read,
         SysOp::ClockNow,
         SysOp::ClockWall,
@@ -256,6 +291,12 @@ impl SysOp {
         SysOp::NetShutdown,
         SysOp::NetSetTimeouts,
         SysOp::NetPeer,
+        SysOp::ProcSpawn,
+        SysOp::ProcWriteIn,
+        SysOp::ProcCloseIn,
+        SysOp::ProcReadOut,
+        SysOp::ProcWait,
+        SysOp::ProcKill,
         SysOp::ThreadSpawn,
         SysOp::ThreadJoin,
         SysOp::ThreadDetach,
@@ -491,6 +532,8 @@ pub struct Ambient {
     pub net: Option<EffectId>,
     /// `Test { note, fail }` (§3.8)
     pub test: Option<EffectId>,
+    /// `Proc { spawn, … }`
+    pub proc: Option<EffectId>,
 }
 
 impl Program {
