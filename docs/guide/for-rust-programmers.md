@@ -1157,7 +1157,7 @@ when target.os is .Windows {
 }
 
 main :: fn() needs Out {
-    print("{} {}\n", SQUARES[7], SEP is '/')
+    print("{} {}\n", SQUARES[7], SEP is '/' or SEP is '\\')
 }
 ```
 
