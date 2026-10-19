@@ -57,6 +57,11 @@
 //! `gamma test --backend=c`. Both must give the same output and exit status as
 //! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
 //!
+//! The Cranelift lane runs the same tests through `--backend=cranelift` on the hosts that
+//! back end supports (64-bit Linux and macOS on x86-64 and AArch64), unless
+//! `GAMMA_TEST_CRANELIFT=0` is set, with the same expectations; `//! cranelift: skip
+//! <reason>` leaves a test out of the lane.
+//!
 //! Safe builds need Fil-C (found as for `gamma build --mode=safe`). Where it is
 //! found, the `mode: safe` tests run. `GAMMA_TEST_SAFE=1` requires it and adds
 //! the Safe lane: every `run` and `test` test in the default or Checked mode
@@ -108,6 +113,8 @@ struct Expectations {
     needs_f16: bool,
     /// Run the test only through the C back end.
     native: bool,
+    /// Leave the test out of the Cranelift lane.
+    cranelift_skip: bool,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -126,6 +133,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         safe_skip: false,
         needs_f16: false,
         native: false,
+        cranelift_skip: false,
         diags: vec![],
     };
     for path in files {
@@ -176,6 +184,11 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
                 }
                 e.safe_skip = true;
+            } else if let Some(c) = directive.strip_prefix("cranelift:") {
+                if !c.trim().starts_with("skip ") {
+                    return Err(format!("{}:{}: expected `cranelift: skip <reason>`", path.display(), i + 1));
+                }
+                e.cranelift_skip = true;
             } else if directive.starts_with("native:") {
                 e.native = true;
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -385,8 +398,33 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs a `run` or `test` test (`command`) through the C back end in build mode
-/// `mode` and compares it with the expectations.
+/// Whether the Cranelift lane runs: `GAMMA_TEST_CRANELIFT` is not 0, the C toolchain targets
+/// what the Cranelift back end supports, and its programs run here (built for the host, or
+/// through `GAMMA_RUNNER`).
+fn cranelift_lane() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0") || !c_backend_available() {
+            return false;
+        }
+        gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| {
+            gamma::clif::check_target(&t).is_ok()
+                && (t.arch == host_arch_name() || std::env::var_os("GAMMA_RUNNER").is_some())
+        })
+    })
+}
+
+/// The host's architecture as targets name it.
+fn host_arch_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "X86_64",
+        "aarch64" => "Aarch64",
+        other => other,
+    }
+}
+
+/// Runs a `run` or `test` test (`command`) through a native back end (`c` or `cranelift`)
+/// in build mode `mode` and compares it with the expectations.
 fn run_c(
     command: &str,
     target: &Path,
@@ -395,11 +433,27 @@ fn run_c(
     mode: Option<&str>,
     stderr_golden: Option<&Path>,
 ) -> Result<(), String> {
+    run_native(command, "c", target, golden, exp, mode, stderr_golden)
+}
+
+fn run_native(
+    command: &str,
+    backend: &str,
+    target: &Path,
+    golden: &Path,
+    exp: &Expectations,
+    mode: Option<&str>,
+    stderr_golden: Option<&Path>,
+) -> Result<(), String> {
     let exit = exp.exit;
-    let lane = if mode == Some("safe") { "[C back end, Safe build]" } else { "[C back end]" };
+    let lane = match (backend, mode) {
+        ("cranelift", _) => "[Cranelift back end]",
+        (_, Some("safe")) => "[C back end, Safe build]",
+        _ => "[C back end]",
+    };
     let mut cmd = gamma();
-    cmd.args([command, "--backend=c", "--diag-format=short"]);
-    if std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
+    cmd.args([command, &format!("--backend={backend}"), "--diag-format=short"]);
+    if backend == "c" && std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
         cmd.arg("-g");
     }
     if let Some(m) = mode {
@@ -592,6 +646,16 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         && !exp.native
         && c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
+    {
+        problems.push(p);
+    }
+    if compiled
+        && problems.is_empty()
+        && !exp.native
+        && !exp.cranelift_skip
+        && exp.mode.as_deref() != Some("safe")
+        && cranelift_lane()
+        && let Err(p) = run_native(command, "cranelift", &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {
         problems.push(p);
     }

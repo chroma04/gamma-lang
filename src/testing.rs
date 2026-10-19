@@ -393,7 +393,7 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
         }
         if native {
             eprintln!(
-                "gamma: `--coverage` needs the interpreter, but these tests run natively (`--backend=c`, or code that calls C)"
+                "gamma: `--coverage` needs the interpreter, but these tests run natively (`--backend=c` or `--backend=cranelift`, or code that calls C)"
             );
             return ExitCode::from(2);
         }
@@ -417,7 +417,7 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
     // Benchmarks time themselves, so they take turns.
     let jobs = if kind == Kind::Bench { 1 } else { opts.jobs.max(1) };
     let code = if native {
-        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, &mut report)
+        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, opts.cranelift, &mut report)
     } else {
         let scope = cover.as_ref().map(|(s, _)| s);
         pool(
@@ -439,6 +439,7 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
 
 /// Compiles the chosen tests into one executable, which runs the test whose position among
 /// them it is given, and runs it once per test.
+#[allow(clippy::too_many_arguments)]
 fn run_native(
     me: &Interp,
     kind: Kind,
@@ -446,18 +447,27 @@ fn run_native(
     toolchain: &Result<gamma::toolchain::Toolchain, String>,
     extras: &gamma::cgen::Extras,
     jobs: usize,
+    cranelift: bool,
     report: &mut Report,
 ) -> ExitCode {
     let cases = me.cases(kind);
     let entries: Vec<_> = chosen.iter().map(|&i| cases[i].entry).collect();
-    let generated = gamma::cgen::generate_tests(&me.prog, &me.sess.sources, &entries, &c_options(&me.sess));
     let Some(dir) = native_dir(if kind == Kind::Test { "test" } else { "bench" }) else { return ExitCode::FAILURE };
     let exe = dir.join(native_exe_name("tests", toolchain));
-    let built = generated.map_err(|u| cgen_error(&me.sess, u)).and_then(|out| {
+    let opts = c_options(&me.sess);
+    let built = (|| {
         let link = native_link(&me.sess, toolchain, extras)?;
         let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
-        gamma::cgen::compile(&out, toolchain, &link, &exe).map(|_| ())
-    });
+        if cranelift {
+            let out = gamma::clif::generate(&me.prog, &me.sess.sources, &entries, true, &opts)
+                .map_err(|u| cgen_error(&me.sess, u))?;
+            gamma::clif::compile(&out, toolchain, &link, &exe)
+        } else {
+            let out = gamma::cgen::generate_tests(&me.prog, &me.sess.sources, &entries, &opts)
+                .map_err(|u| cgen_error(&me.sess, u))?;
+            gamma::cgen::compile(&out, toolchain, &link, &exe).map(|_| ())
+        }
+    })();
     let code = match built {
         Ok(()) => {
             pool(

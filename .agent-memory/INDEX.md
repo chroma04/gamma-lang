@@ -1,14 +1,17 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-19) — PRs #1–#55 merged; s29 PR open: tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
+- s30 (branch claude/project-thread-3wi9el, PR open): Cranelift back end `--backend=cranelift`
+  (src/clif/, runtime/gm_clif.c), all conformance passes in its lane (decisions/033).
 - s29: huge functions split into helper C functions (decisions/031, bugs-open #48 done).
 - s29 (branch claude/perf-safe-effects-16om52, PR open): Safe new/destroy −42% instr, VM
   iterators −27% (decisions/032).
 - s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
   vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
   all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
-- The whole spec is implemented in both back ends (interpreter = bytecode VM only since s29,
-  decisions/020; C back end, gcc and clang). Every run test runs on both and must match.
+- The whole spec is implemented in all back ends (interpreter = bytecode VM only since s29,
+  decisions/020; C back end, gcc and clang; Cranelift, 64-bit Linux/macOS only, no -g).
+  Every run test runs on each and must match.
   Milestones: roadmap/milestones.md (all done; per-area gaps). Decisions: decisions/.
 - MSRV 1.95 (Cargo rust-version, CI job msrv). Tooling: packages (git/path/archive deps, lock, profiles), `gamma lsp`, editors/, release
   pipeline + install.sh/.ps1, gamma doc/repl/fmt/test/bench/coverage, Windows (MinGW) port.
@@ -16,7 +19,7 @@
 - Build modes: `--mode=debug|checked|safe|fast` (Safe needs Fil-C in /opt/fil). Core modules
   (is_prelude) may use @heap_*, prelude privates, `is`/@hash on params.
 - CI = fmt + clippy -D warnings + test (ubuntu, macos, windows) + Safe + s390x cross +
-  editors + benchmarks. Verify locally (fmt, clippy -D warnings, cargo test, CC=clang
+  aarch64 qemu (C + Cranelift) + editors + benchmarks. Verify locally (fmt, clippy -D warnings, cargo test, CC=clang
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
@@ -65,6 +68,7 @@
                   · 030 s28 coherence review: applied + open questions for the user
                   · 031 statement-run outlining (huge functions → helpers sharing F)
                   · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
+                  · 033 Cranelift back end (ABI, C ABI classes, trampolines, @asm, perf)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
@@ -74,6 +78,7 @@
                   · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
                   · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md · s25-2026-10-17-units.md
                   · s26-2026-10-17-bugs-lldb.md · s27-2026-10-17-wishes.md (s28: see decisions/030)
+                  · s30-2026-10-19-cranelift.md
 - gotchas/        environment.md
 
 ## Conventions

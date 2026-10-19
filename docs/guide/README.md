@@ -4,7 +4,7 @@ Gamma is a systems programming language meant to replace C, built on one idea: *
 
 This guide is for experienced programmers, especially C programmers, who want to learn how to *use* Gamma. Each chapter introduces one area with short, realistic examples and a sentence or two on why the design is the way it is. It is a tutorial, not a reference: when you need the exact rule, the guide points to the numbered section of the [language specification](../../gamma-spec.md), which is the normative definition.
 
-> **Status of the implementation.** The reference implementation in this repository implements the whole specification. The `gamma` tool type-checks programs, runs them with an interpreter (`gamma run file.gm`), and compiles them natively through C (`gamma build file.gm`, or `gamma run --backend=c file.gm`); both give the same results. The interpreter calls foreign C functions itself; for inline assembly, and the few foreign calls it cannot make ([chapter 14](14-interop.md)), `gamma run` compiles the program instead. [Chapter 1](01-getting-started.md) has the details.
+> **Status of the implementation.** The reference implementation in this repository implements the whole specification. The `gamma` tool type-checks programs, runs them with an interpreter (`gamma run file.gm`), and compiles them natively through C (`gamma build file.gm`, or `gamma run --backend=c file.gm`) or with Cranelift (`--backend=cranelift`, see [the Cranelift back end](native-backend.md)); all give the same results. The interpreter calls foreign C functions itself; for inline assembly, and the few foreign calls it cannot make ([chapter 14](14-interop.md)), `gamma run` compiles the program instead. [Chapter 1](01-getting-started.md) has the details.
 
 ## Contents
 
@@ -26,6 +26,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access, freestanding programs |
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 | [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
+| [The Cranelift back end](native-backend.md) | `--backend=cranelift`: when to use it, where it runs, C interoperability, what it does not do yet |
 
 ## Conventions used in this guide
 

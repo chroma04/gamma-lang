@@ -19,7 +19,7 @@ mod func;
 mod helpers;
 mod outline;
 mod rtcache;
-pub use rtcache::{cache_dir, cached_program};
+pub use rtcache::{cache_dir, cached_program, runtime_object_from};
 mod types;
 mod units;
 mod vector;
@@ -33,7 +33,8 @@ use crate::types::{AdtId, CallConv, EffectRef, Ty, TyKind};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use types::{Types, c_string};
+use types::Types;
+pub(crate) use types::c_string;
 
 const RT_H: &str = include_str!("../../runtime/gm_rt.h");
 const RT_C: &str = include_str!("../../runtime/gm_rt.c");
@@ -994,7 +995,7 @@ const BASE_CFLAGS: [&str; 6] =
 
 /// The flags every build uses on `target`: [`BASE_CFLAGS`], and `-pthread` except on Windows,
 /// where the runtime uses the Win32 API and programs need no thread library.
-fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
+pub(crate) fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
     let mut flags = BASE_CFLAGS.to_vec();
     if target.os != "Windows" {
         flags.push("-pthread");
@@ -1175,7 +1176,7 @@ pub fn windows_libs(target: &crate::layout::Target) -> Vec<&'static str> {
 
 /// The flags the separately compiled runtime object of a build with `opts` is compiled
 /// with. It is optimized whatever the build's optimization: it is compiled only once.
-fn rt_flags(opts: &Options, target: &crate::layout::Target) -> Vec<String> {
+pub(crate) fn rt_flags(opts: &Options, target: &crate::layout::Target) -> Vec<String> {
     let mut flags: Vec<String> = base_cflags(target).iter().map(|f| f.to_string()).collect();
     flags.push("-O2".into());
     flags.extend(f16c_flag(target).map(String::from));
@@ -1193,13 +1194,13 @@ fn f16c_flag(target: &crate::layout::Target) -> Option<&'static str> {
 }
 
 /// The source of the runtime compiled on its own (`GM_RT_SEPARATE`).
-fn separate_runtime_source() -> String {
+pub(crate) fn separate_runtime_source() -> String {
     format!("#define GM_RT_SEPARATE 1\n{}\n{}", RT_H, RT_C)
 }
 
 /// The identifiers of C source `code`, outside comments and string and character
 /// literals.
-fn c_identifiers(code: &str) -> std::collections::HashSet<&str> {
+pub(crate) fn c_identifiers(code: &str) -> std::collections::HashSet<&str> {
     let b = code.as_bytes();
     let mut out = std::collections::HashSet::new();
     let mut i = 0;

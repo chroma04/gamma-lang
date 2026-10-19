@@ -41,12 +41,18 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// cache. `None` if there is no cache or the object cannot be made; the caller then
 /// compiles the runtime with the program.
 pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf> {
+    runtime_object_from(toolchain, flags, &super::separate_runtime_source(), "gm_rt")
+}
+
+/// The object of the C file `source` compiled with `toolchain` and `flags`, kept in the
+/// cache under a name starting with `prefix`; compiled now if it is not there. `None` if
+/// there is no cache or the object cannot be made.
+pub fn runtime_object_from(toolchain: &Toolchain, flags: &[String], source: &str, prefix: &str) -> Option<PathBuf> {
     let dir = cache_dir()?;
     let version = toolchain.base_command().arg("--version").output().ok().filter(|o| o.status.success())?;
-    let source = super::separate_runtime_source();
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (env!("CARGO_PKG_VERSION"), &source, &toolchain.cc, &toolchain.cflags, flags, &version.stdout).hash(&mut h);
-    let stem = format!("gm_rt-{:016x}", h.finish());
+    (env!("CARGO_PKG_VERSION"), source, &toolchain.cc, &toolchain.cflags, flags, &version.stdout).hash(&mut h);
+    let stem = format!("{prefix}-{:016x}", h.finish());
     let obj = dir.join(format!("{stem}.o"));
     if obj.is_file() {
         // Mark it as recently used, so the cache cleaner keeps it.
@@ -59,7 +65,7 @@ pub fn runtime_object(toolchain: &Toolchain, flags: &[String]) -> Option<PathBuf
     let c_file = dir.join(format!("{stem}.c"));
     if !c_file.is_file() {
         let tmp = private_name(&dir, &stem, "c");
-        std::fs::write(&tmp, &source).ok()?;
+        std::fs::write(&tmp, source).ok()?;
         rename_or_remove(&tmp, &c_file)?;
     }
     let tmp = private_name(&dir, &stem, "o");

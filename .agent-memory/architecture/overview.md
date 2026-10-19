@@ -38,6 +38,9 @@ src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, ele
                    units (Debug split into parallel C units: Generated.parts, s25),
                    outline (long statement runs → gm_cN_K helpers sharing F, decisions/031),
                    debug + views + gdb_printers.py + lldb_formatters.py (`-g`, 013; build writes gamma_lldb.py), csrc (C sources from gamma.toml)
+src/clif/          Cranelift back end (decisions/033): mod (Gen, reps, sigs, exports, link), func
+                   (frames, ladder, thunks), expr, ops (operators, builtins, @asm), cabi (C ABI
+                   classes), data; runtime/gm_clif.c glue linked with gm_rt.c.
 src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
                    build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli
 src/lsp/           `gamma lsp`: transport, position, workspace, analysis, features, refs,
