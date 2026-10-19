@@ -8,7 +8,7 @@ Flags 4 WithBits 8 4
 Tup 12 4 Named 16 8
 Big true true Mixed true true offs true
 8 8 16 16
-1 4 32
+1 4 16
 8 8 8
 20
 1 4

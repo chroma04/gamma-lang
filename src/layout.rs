@@ -37,17 +37,10 @@ pub struct Target {
 }
 
 /// Converts the bytes of an integer between the target's byte order and little-endian
-/// (the conversion is its own inverse). An integer of up to 128 bits is stored as one
-/// number in the target's byte order; a wider one as 64-bit words, least significant
-/// first, each in the target's byte order (§5.1).
+/// (the conversion is its own inverse). An integer is stored as one number in the
+/// target's byte order (§5.1).
 pub fn int_bytes_swap_order(bytes: &[u8], little: bool) -> Vec<u8> {
-    if little {
-        bytes.to_vec()
-    } else if bytes.len() <= 16 {
-        bytes.iter().rev().copied().collect()
-    } else {
-        bytes.chunks(8).flat_map(|w| w.iter().rev().copied().collect::<Vec<u8>>()).collect()
-    }
+    if little { bytes.to_vec() } else { bytes.iter().rev().copied().collect() }
 }
 
 impl Default for Target {
@@ -120,8 +113,7 @@ pub fn int_storage_bytes(bits: u32) -> u64 {
         9..=16 => 2,
         17..=32 => 4,
         33..=64 => 8,
-        65..=128 => 16,
-        _ => (bits as u64).div_ceil(64) * 8,
+        _ => 16,
     }
 }
 
@@ -197,11 +189,7 @@ impl<'a> Layouts<'a> {
         match ty.kind() {
             TyKind::Int(IntTy { bits, .. }) => {
                 let size = int_storage_bytes(*bits as u32);
-                let align = match size {
-                    16 => self.target.int128_align,
-                    s if s > 16 => 8,
-                    s => s,
-                };
+                let align = if size == 16 { self.target.int128_align } else { size };
                 Layout { size, align, offsets: vec![] }
             }
             TyKind::Usize | TyKind::Isize => Layout::scalar(p),
@@ -305,8 +293,8 @@ mod tests {
         assert_eq!(l.size_of(Ty::int(true, 24)), 4);
         assert_eq!(l.size_of(Ty::int(false, 65)), 16);
         assert_eq!(l.align_of(Ty::int(false, 65)), 16);
-        assert_eq!(l.size_of(Ty::int(false, 129)), 24);
-        assert_eq!(l.align_of(Ty::int(false, 129)), 8);
+        assert_eq!(l.size_of(Ty::int(false, 128)), 16);
+        assert_eq!(l.align_of(Ty::int(true, 100)), 16);
     }
 
     #[test]

@@ -60,8 +60,8 @@ fn display_scalars() {
     assert_eq!(show(|_| i32e(-42)), "-42");
     assert_eq!(show(|_| u8e(200)), "200");
     assert_eq!(
-        show(|_| bigint(num_bigint::BigInt::from(1) << 199usize, Ty::int(false, 200))),
-        (num_bigint::BigInt::from(1) << 199usize).to_string()
+        show(|_| bigint(num_bigint::BigInt::from(1) << 99usize, Ty::int(false, 100))),
+        (num_bigint::BigInt::from(1) << 99usize).to_string()
     );
     assert_eq!(show(|_| boolean(true)), "true");
     assert_eq!(show(|_| boolean(false)), "false");

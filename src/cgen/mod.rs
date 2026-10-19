@@ -24,7 +24,6 @@ mod types;
 mod units;
 mod vector;
 mod views;
-mod wide;
 
 use crate::layout::Layouts;
 use crate::source::{SourceMap, Span};

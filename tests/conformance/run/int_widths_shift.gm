@@ -1,8 +1,8 @@
 //! exit: 134
-// A shift by at least the width of a wide integer traps.
+// A shift by at least the width of a 100-bit integer traps.
 main :: fn() needs Out {
-    x: u200 = 1
-    n: u16 = 199
+    x: u100 = 1
+    n: u16 = 99
     print("{}\n", x << n)
     n += 1
     print("{}\n", x << n)

@@ -6,7 +6,7 @@
 
 use super::bytes::Bytes;
 use crate::types::FloatTy;
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::{BigInt, BigUint};
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::sync::OnceLock;
@@ -296,38 +296,27 @@ pub fn decode_int(bytes: &[u8], signed: bool, bits: u32, little: bool) -> Int {
             Int::S(v as i128)
         };
     }
-    if n <= 16 {
-        let mut buf = [0u8; 16];
-        if little {
-            buf[..n].copy_from_slice(bytes);
-        } else {
-            for i in 0..n {
-                buf[i] = bytes[n - 1 - i];
-            }
-        }
-        let mut v = u128::from_le_bytes(buf);
-        if bits < 128 {
-            v &= (1u128 << bits) - 1;
-        }
-        if signed {
-            if bits == 128 {
-                return Int::S(v as i128);
-            }
-            let s = v as i128;
-            if s >= (1i128 << (bits - 1)) { Int::S(s - (1i128 << bits)) } else { Int::S(s) }
-        } else {
-            Int::from_u128(v)
-        }
+    debug_assert!(n <= 16, "integers are at most 128 bits wide");
+    let mut buf = [0u8; 16];
+    if little {
+        buf[..n].copy_from_slice(bytes);
     } else {
-        let le = crate::layout::int_bytes_swap_order(bytes, little);
-        let mut u = BigUint::from_bytes_le(&le);
-        let mask = (BigUint::one() << bits as usize) - BigUint::one();
-        u &= mask;
-        let mut b = BigInt::from_biguint(Sign::Plus, u);
-        if signed && b >= (BigInt::one() << (bits - 1) as usize) {
-            b -= BigInt::one() << bits as usize;
+        for i in 0..n {
+            buf[i] = bytes[n - 1 - i];
         }
-        Int::from_big(b)
+    }
+    let mut v = u128::from_le_bytes(buf);
+    if bits < 128 {
+        v &= (1u128 << bits) - 1;
+    }
+    if signed {
+        if bits == 128 {
+            return Int::S(v as i128);
+        }
+        let s = v as i128;
+        if s >= (1i128 << (bits - 1)) { Int::S(s.wrapping_sub(1i128 << bits)) } else { Int::S(s) }
+    } else {
+        Int::from_u128(v)
     }
 }
 
@@ -336,20 +325,8 @@ pub fn encode_int(v: &Int, size: usize, little: bool) -> Bytes {
     let mut out = Bytes::zeroed(size);
     let neg = v.is_neg();
     match v {
-        Int::S(a) if size <= 16 => {
-            out.copy_from_slice(&a.to_le_bytes()[..size]);
-        }
         Int::S(a) => {
-            let le = a.to_le_bytes();
-            for i in 0..size {
-                out[i] = if i < 16 {
-                    le[i]
-                } else if neg {
-                    0xff
-                } else {
-                    0
-                };
-            }
+            out.copy_from_slice(&a.to_le_bytes()[..size]);
         }
         Int::B(b) => {
             let le = b.to_signed_bytes_le();
@@ -806,12 +783,6 @@ mod tests {
                 assert_eq!(decode_int(&e, signed, bits, little), Int::S(v));
             }
         }
-        let big = Int::from_big((BigInt::one() << 199usize) + BigInt::from(7));
-        let e = encode_int(&big, 32, true);
-        assert_eq!(decode_int(&e, false, 200, true), big);
-        let neg = Int::from_big(-(BigInt::one() << 190usize));
-        let e = encode_int(&neg, 32, false);
-        assert_eq!(decode_int(&e, true, 200, false), neg);
         // u128 max
         let m = Int::from_u128(u128::MAX);
         let e = encode_int(&m, 16, true);

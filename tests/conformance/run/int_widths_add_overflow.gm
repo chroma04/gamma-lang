@@ -1,0 +1,7 @@
+//! exit: 134
+// Overflow of a checked addition on a 100-bit integer traps.
+main :: fn() needs Out {
+    x: u100 = (1 << 99) - 1 + (1 << 99)
+    print("{}\n", x - 1 + 1)
+    print("{}\n", x + 1)
+}

@@ -112,31 +112,31 @@ fn i128_arithmetic() {
 }
 
 #[test]
-fn u200_arithmetic() {
-    let t = Ty::int(false, 200);
-    let two199 = BigInt::one() << 199usize;
-    let max = (BigInt::one() << 200usize) - BigInt::one();
+fn u100_arithmetic() {
+    let t = Ty::int(false, 100);
+    let two99 = BigInt::one() << 99usize;
+    let max = (BigInt::one() << 100usize) - BigInt::one();
     let e = |op, a: &BigInt, b: &BigInt| Tb::new().eval(&bin(op, bigint(a.clone(), t), bigint(b.clone(), t)));
-    assert_eq!(big_of(&e(ADD, &two199, &(&two199 - 1)).unwrap()), max);
-    assert!(trap_msg(e(ADD, &two199, &two199)).contains("overflow"));
+    assert_eq!(big_of(&e(ADD, &two99, &(&two99 - 1)).unwrap()), max);
+    assert!(trap_msg(e(ADD, &two99, &two99)).contains("overflow"));
     assert_eq!(big_of(&e(ADDW, &max, &BigInt::one()).unwrap()), BigInt::from(0));
     assert_eq!(big_of(&e(ADDS, &max, &BigInt::one()).unwrap()), max);
-    assert_eq!(big_of(&e(BinOp::Mul(Flavor::Checked), &two199, &BigInt::from(1)).unwrap()), two199);
-    assert!(trap_msg(e(BinOp::Mul(Flavor::Checked), &two199, &BigInt::from(2))).contains("overflow"));
+    assert_eq!(big_of(&e(BinOp::Mul(Flavor::Checked), &two99, &BigInt::from(1)).unwrap()), two99);
+    assert!(trap_msg(e(BinOp::Mul(Flavor::Checked), &two99, &BigInt::from(2))).contains("overflow"));
     assert_eq!(big_of(&e(BinOp::Div, &max, &BigInt::from(3)).unwrap()), &max / 3);
-    // bitwise / shifts on wide values
-    let sh = Tb::new().eval(&bin(BinOp::Shl(Flavor::Checked), bigint(BigInt::one(), t), int(199, Ty::u32()))).unwrap();
-    assert_eq!(big_of(&sh), two199);
+    // shifts on values wider than 64 bits
+    let sh = Tb::new().eval(&bin(BinOp::Shl(Flavor::Checked), bigint(BigInt::one(), t), int(99, Ty::u32()))).unwrap();
+    assert_eq!(big_of(&sh), two99);
     assert!(
-        trap_msg(Tb::new().eval(&bin(BinOp::Shl(Flavor::Checked), bigint(BigInt::one(), t), int(200, Ty::u32()))))
-            .contains("shift amount 200 too large for u200")
+        trap_msg(Tb::new().eval(&bin(BinOp::Shl(Flavor::Checked), bigint(BigInt::one(), t), int(100, Ty::u32()))))
+            .contains("shift amount 100 too large for u100")
     );
 }
 
 #[test]
-fn signed_wide() {
-    let t = Ty::int(true, 200);
-    let min = -(BigInt::one() << 199usize);
+fn signed_100() {
+    let t = Ty::int(true, 100);
+    let min = -(BigInt::one() << 99usize);
     let r = Tb::new()
         .eval(&bin(BinOp::Sub(Flavor::Checked), bigint(min.clone(), t), bigint(BigInt::one(), t)))
         .map(|v| big_of(&v));
@@ -259,9 +259,9 @@ fn bitwise_ops() {
     assert_eq!(eval_int(&un(UnOp::BitNot, int(5, s))), -6);
     assert_eq!(bin_i(BinOp::BitAnd, -1, 0x7f, s), 0x7f);
     assert_eq!(bin_i(BinOp::BitXor, -1, -1, s), 0);
-    let w = Ty::int(false, 130);
+    let w = Ty::int(false, 100);
     let v = Tb::new().eval(&un(UnOp::BitNot, bigint(BigInt::from(0), w))).unwrap();
-    assert_eq!(big_of(&v), (BigInt::one() << 130usize) - 1);
+    assert_eq!(big_of(&v), (BigInt::one() << 100usize) - 1);
 }
 
 #[test]

@@ -1,0 +1,6 @@
+//! exit: 134
+// Converting a float beyond the range of a 128-bit integer traps.
+main :: fn() needs Out {
+    f: f64 = 1.5e60
+    print("{}\n", f.trunc(i128))
+}

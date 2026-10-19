@@ -80,7 +80,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 };
                 Ok(self.tmp(t, &format!("({} {} {})", a, sym, b)))
             }
-            _ => self.int_binary(&at, op, t, t, &a, b),
+            _ => self.int_binary(&at, op, t, &a, b),
         }
     }
 }

@@ -1,0 +1,123 @@
+// Integers of 65 to 128 bits (§5.1): literals, arithmetic and its flavors, shifts, comparisons,
+// conversions, formatting, and such integers inside aggregates, optionals and patterns.
+BIG: u128 : 18446744073709551616 * 12345678901
+NEG: i127 : -(1 << 100)
+
+Wide :: struct { id: u8, a: u100, b: i127 }
+
+classify :: fn(x: u100) -> u8 => match x {
+    0     => 0
+    1..4  => 1
+    4..=1000 => 2
+    100000000000000000000000000000..633825300114114700748351602687 => 3
+    633825300114114700748351602687 => 5
+    _     => 4
+}
+
+arithmetic :: fn() needs Out {
+    x: u100 = 123456789012345678901234567890
+    y: u100 = 3
+    print("{} {} {} {}\n", x + y, x - y, x * y, x / y)
+    print("{} {}\n", x % 1000, x % y)
+    n: i127 = -5
+    m: i127 = 7
+    print("{} {} {} {} {}\n", n + m, n - m, n * m, n / m, n % m)
+    print("{} {}\n", m / n, m % n)
+    print("{} {}\n", BIG, NEG)
+    a65: u65 = 1 << 64
+    print("{} {}\n", a65, a65 - 1)
+    w: i65 = ---
+    w = -1
+    print("{}\n", w)
+}
+
+flavors :: fn() needs Out {
+    mx: u100 = (1 << 99) - 1 + (1 << 99)
+    print("{}\n", mx)
+    print("{} {} {}\n", mx +% 1, mx +| 1, mx +? 1)
+    print("{} {}\n", mx -% mx, 0 -| mx)
+    print("{} {} {}\n", u100(0) -? 1, u100(5) -? 3, mx *? 2)
+    print("{} {} {}\n", mx *% 3, mx *| 3, (mx / 2) *? 2)
+    lo: i127 = -(1 << 125) * 2
+    hi: i127 = ((1 << 125) - 1) * 2 + 1
+    print("{}\n{}\n", lo, hi)
+    print("{} {} {}\n", hi +% 1 is lo, hi +| 1 is hi, lo -| 1 is lo)
+    print("{} {}\n", hi +? 1, lo -? 1)
+    print("{} {}\n", hi *| 2 is hi, lo *| 2 is lo)
+    print("{} {}\n", lo *| -1 is hi, hi *| -1)
+    print("{} {}\n", lo *% -1 is lo, lo *? -1)
+    print("{} {}\n", i127(1) <<? 126, i127(1) <<? 125)
+    s: u100 = 3
+    print("{} {} {}\n", s <<% 99, s <<| 99 is mx, s <<? 99)
+    print("{} {}\n", s <<? 98 is not null, s << 60)
+    print("{} {}\n", hi.abs(), (lo + 1).abs())
+}
+
+bitwise :: fn() needs Out {
+    a: u128 = 0xF0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0
+    b: u128 = 0x00FF00FF00FF00FF00FF00FF00FF00FF
+    print("{}\n{}\n{}\n{}\n", a & b, a | b, a ~ b, ~a)
+    print("{} {}\n", a >> 70, a >> 127)
+    print("{} {}\n", a << 0, b <<% 100)
+    s: i127 = -(1 << 100) - 12345
+    print("{}\n{}\n{}\n", s >> 3, s >> 100, s >> 126)
+    print("{} {}\n", ~s, ~i127(0))
+    k: u32 = 70
+    amount: u100 = 90
+    print("{} {}\n", a >> k, a >> amount)
+    print("{} {} {}\n", u100(1).bits(i100), i100(-1).bits(u100), @popcount(a))
+    zero: u128 = 0
+    print("{} {} {}\n", @clz(u100(1) << 50), @ctz(u100(1) << 50), @clz(zero))
+    print("{}\n", @bswap(a) is 0xF0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0)
+    print("{}\n", @bitreverse(u100(1)))
+    print("{} {}\n", @rotl(u100(1) << 99, 1), @rotr(u100(1), 1))
+}
+
+comparisons :: fn() needs Out {
+    a: i100 = -(1 << 90)
+    b: i100 = (1 << 90)
+    c: u100 = 1 << 90
+    d: u100 = (1 << 90) + 1
+    print("{} {} {} {}\n", a < b, a > b, a <= a, b >= b)
+    print("{} {} {} {}\n", c < d, c > d, c <= d, d >= c)
+    print("{} {} {}\n", a is a, a is b, a is not b)
+    print("{} {} {} {}\n", a.min(b) is a, a.max(b) is b, b.clamp(a, a) is a, d.clamp(c, d) is d)
+    print("{} {}\n", a.abs_diff(b), c.abs_diff(d))
+    print("{} {} {}\n", c in c..d, d in c..d, d in c..=d)
+}
+
+conversions :: fn() needs Out {
+    x: u100 = 123456789012345678901234567890
+    print("{} {} {}\n", x.trunc(u8), x.trunc(u64), x.trunc(i128))
+    print("{} {} {}\n", x.checked(u64), x.checked(u128), x.checked(i100))
+    print("{} {} {}\n", x.sat(u64), x.sat(i128), x.sat(u128))
+    print("{} {}\n", x.sat(i100), (u100(3) << 98).sat(i100))
+    n: i100 = -77
+    print("{} {} {}\n", n.trunc(u8), n.sat(u8), n.checked(u128))
+    print("{} {} {}\n", n.trunc(u100), n.sat(u100), n.checked(i16))
+    print("{} {}\n", i127(n), i128(x))
+    print("{} {} {}\n", u100(7u8), u128(1234567890123456789u64), i100(-5i64))
+    print("{} {}\n", u100(u64(1) << 63), i127(i64(-1) << 63))
+    f: f64 = 1.0e25
+    print("{} {}\n", f.trunc(u100), x.to(f64))
+}
+
+aggregates :: fn() needs Out {
+    w := Wide(id: 7, a: 1 << 80, b: -(1 << 90))
+    ws := [2]Wide(w, Wide(id: 8, a: 5, b: 6))
+    print("{} {} {}\n", ws[0].a, ws[1].b, ws[0].b)
+    o: ?u100 = 1 << 70
+    print("{} {}\n", o?, o is not null)
+    r: u100 = 5
+    print("{} {} {} {}\n", classify(0), classify(2), classify(r), classify(1 << 99))
+    print("{} {} {}\n", classify(1 << 98), classify((1 << 99) + 1), classify(633825300114114700748351602687))
+}
+
+main :: fn() needs Out {
+    arithmetic()
+    flavors()
+    bitwise()
+    comparisons()
+    conversions()
+    aggregates()
+}
