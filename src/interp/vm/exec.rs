@@ -48,7 +48,7 @@ struct FrameExtra {
 /// How running code stops.
 pub enum Exit {
     Ret(Arg),
-    /// A `return` that arrived as a flow from a call (or the tree-walker).
+    /// A `return` that arrived as a flow from a call.
     Value(Value),
     /// The end of a deferred statement's code.
     Seg,
@@ -218,7 +218,7 @@ fn iput<const LE: bool>(k: IntK, v: i128) -> u64 {
 }
 
 /// An index operand: negative values are 0 (and out of bounds of anything but an empty
-/// many-pointer access, as in the tree-walker).
+/// many-pointer access).
 #[inline(always)]
 fn index<const LE: bool>(k: IntK, w: u64) -> u64 {
     let v = ival::<LE>(k, w);
@@ -529,9 +529,60 @@ impl<'a> Machine<'a> {
         fr
     }
 
+    /// Runs `code`, the body of a `with … on` or a closed expression, in the existing frame
+    /// `fr` (whose locals the code shares) with the handler context `cx`.
+    pub fn vm_run_in(&mut self, fr: &Rc<Frame>, cx: Ctx, code: *const Code<'a>) -> R {
+        self.check_budget(Span::DUMMY)?;
+        let func = fr.func.unwrap_or(FnId(0));
+        let mut st = self.vm_state(code, func, None, cx);
+        // The activation is the frame's: flows to the frame land in its scopes.
+        st.id = fr.id;
+        st.fr = Some(fr.clone());
+        self.depth += 1;
+        let mark = self.temps.len();
+        let r = self.vm_run_from(&mut st, 0);
+        self.depth -= 1;
+        self.kill_temps(mark);
+        let out = match r {
+            Ok(Exit::Ret(a)) => Ok(match a {
+                Arg::Val(r) => std::mem::replace(&mut st.vals[r as usize], Value::unit()),
+                a => st.value_of(a),
+            }),
+            Ok(Exit::Value(v)) => Ok(v),
+            Ok(Exit::Seg) => self.trap(Span::DUMMY, "internal error: a deferred statement's code ended its code"),
+            Err(f) => Err(f),
+        };
+        // The frame belongs to its function's activation.
+        st.fr = None;
+        self.vm_finish(st);
+        out
+    }
+
+    /// Evaluates closed expression `e` (compile-time evaluation, the initializer of a
+    /// constant or global) in a frame of its own.
+    pub fn eval_closed(&mut self, e: &'a Expr) -> R<Bytes> {
+        let code = match super::compile_expr(self, e) {
+            Ok(c) => c,
+            Err(u) => super::compile::trap_code(self, None, &u),
+        };
+        let fr = self.new_frame(e.ty, None, None, 0, None, false);
+        let mark = self.temps.len();
+        let r = self.vm_run_in(&fr, Ctx::empty(), &code);
+        self.kill_temps(mark);
+        self.kill_frame(&fr);
+        match r? {
+            Value::Bytes(b) => Ok(b),
+            _ => self.trap(e.span, "internal error: a closed expression with a second-class value"),
+        }
+    }
+
     /// Takes back a finished activation, and its frame, for reuse.
     #[inline(always)]
     fn vm_finish(&mut self, mut st: Box<St<'a>>) {
+        // Keep the buffers of ordinary activations only.
+        if st.regs.capacity() > 1 << 14 {
+            st.regs = Vec::new();
+        }
         st.regs.clear();
         if let Some(fr) = st.fr.take() {
             self.recycle_frame(fr);
@@ -585,7 +636,8 @@ impl<'a> Machine<'a> {
         flow
     }
 
-    /// Calls compiled function `fid` with argument values (from the tree-walker or the runtime).
+    /// Calls compiled function `fid` with argument values (from a builtin, a clause run by
+    /// a fiber's driver, a thread or a callback from C).
     #[allow(clippy::too_many_arguments)]
     pub fn vm_call_values(
         &mut self,
@@ -835,6 +887,7 @@ impl<'a> Machine<'a> {
         }
         if let Flow::Return { frame, .. } = &*flow
             && *frame == st.id
+            && !code.sub
         {
             let Flow::Return { value, .. } = *flow else { unreachable!() };
             return Ok(Land::Exit(Exit::Value(value)));
@@ -1049,6 +1102,15 @@ impl<'a> Machine<'a> {
                         regs[dst as usize] = b.wrapping_add(i * esz as u64);
                     } else {
                         tri!(at!(), Err(self.oob(code, at!(), i, len as u64)));
+                    }
+                }
+                Op::IndexAddrW { dst, base, idx, ik, esz, len } => {
+                    let i = index::<LE>(ik, regs[idx as usize]);
+                    let n = regs[len as usize];
+                    if i < n {
+                        regs[dst as usize] = regs[base as usize].wrapping_add(i.wrapping_mul(esz as u64));
+                    } else {
+                        tri!(at!(), Err(self.oob(code, at!(), i, n)));
                     }
                 }
                 Op::SliceIndexAddr { dst, slice, idx, ik, esz } => {
@@ -1594,14 +1656,12 @@ impl<'a> Machine<'a> {
                 }
             }
             Op::LoadBits { dst, addr, bits } => {
-                let p = Place::Bits { addr: st.regs[addr as usize], whole: bits.whole, off: bits.off, fty: bits.fty };
-                let b = self.read_place(span, p, bits.fty)?;
+                let b = self.read_bits(span, st.regs[addr as usize], bits.whole, bits.off, bits.fty)?;
                 put_bytes(&mut st.regs, dst, self.ti(bits.fty).size as u32, &b);
             }
             Op::StoreBits { addr, src, bits } => {
-                let p = Place::Bits { addr: st.regs[addr as usize], whole: bits.whole, off: bits.off, fty: bits.fty };
                 let b = get_bytes(&st.regs, src, self.ti(bits.fty).size as u32);
-                self.write_place(span, p, bits.fty, &b)?;
+                self.write_bits(span, st.regs[addr as usize], bits.whole, bits.off, bits.fty, &b)?;
             }
             Op::PtrToAddr { dst, src } => {
                 let b = get_bytes(&st.regs, src, ps);
@@ -1861,17 +1921,43 @@ impl<'a> Machine<'a> {
                 let cx = st.cx.clone();
                 self.write_pieces(&cx, span, ws, sv.as_ref(), pieces, specs, aexprs, &vals)?;
             }
-            Op::EvalTree { expr, out } => {
-                let e = code.trees[expr as usize];
+            Op::WithOn { info } => {
+                let w = &code.withs[info as usize];
+                let Arg::Data { reg, size } = w.stack else {
+                    return self.trap(span, "internal error: a fiber stack that is not data");
+                };
+                let stack = get_bytes(&st.regs, reg, size);
                 let fr = self.vm_frame(st);
                 let cx = st.cx.clone();
-                let v = self.eval(Act { fr: &fr, cx: &cx }, e)?;
-                write_value(st, out, v, span)?;
+                let v = self.with_on(&fr, span, w.label, cx, &stack, &*w.code)?;
+                write_value(st, w.out, v, span)?;
             }
-            Op::TreeStmt { stmt } => {
+            Op::Resume { args } => {
+                let list = &code.args[args as usize];
+                let (k, v) = (st.value_of(list[0]), st.value_of(list[1]));
+                let Value::Bytes(k) = k else {
+                    return self.trap(span, "internal error: a continuation that is not data");
+                };
                 let fr = self.vm_frame(st);
-                let cx = st.cx.clone();
-                self.exec_stmt(Act { fr: &fr, cx: &cx }, code.stmts[stmt as usize])?;
+                self.resume(span, &fr, &k, v)?;
+            }
+            Op::Cancel { k } => {
+                let Value::Bytes(k) = st.value_of(k) else {
+                    return self.trap(span, "internal error: a continuation that is not data");
+                };
+                let fr = self.vm_frame(st);
+                self.cancel_cont(span, &fr, &k)?;
+            }
+            Op::Fiber { args, out } => {
+                let list = &code.args[args as usize];
+                let fty = code.arg_tys[args as usize][0];
+                let (f, arg) = (st.value_of(list[0]), st.value_of(list[1]));
+                let Value::Bytes(stack) = st.value_of(list[2]) else {
+                    return self.trap(span, "internal error: a fiber stack that is not data");
+                };
+                let fr = self.vm_frame(st);
+                let v = self.new_fiber_op(span, &fr, f, fty, arg, &stack)?;
+                write_value(st, out, v, span)?;
             }
             Op::ThrowBreak { levels, label, v } => {
                 let fr = self.vm_frame(st);

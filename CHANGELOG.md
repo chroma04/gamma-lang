@@ -129,6 +129,11 @@ Versions and what each kind of change means are described in
   shapes", the rules that best show the principles at work, and three questions every
   new feature must answer. Its grammar now writes effect sets after `needs`, and it
   explains why there are two allocation models and three ways to iterate.
+- Functions with thousands of statements compile through C in time that grows linearly
+  with their length: runs of statements go into helper C functions that share the frame.
+  A `main` of 10,000 statements builds with gcc in 4 s instead of 87 s (Debug) and in
+  11 s instead of 44 s (Fast), and with clang in 5 s instead of 87 s and 9 s instead of
+  83 s.
 - A large Debug build compiles its C as several files in parallel (one per 96 KiB of
   generated functions, up to one per processor): the 16k-line C of `examples/calc`
   builds in 0.6–0.9 s instead of 1.4 s on four cores. The extra files sit next to
@@ -138,6 +143,11 @@ Versions and what each kind of change means are described in
   and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
 - Functions that call variadic C functions (`printf` and its relatives) run on the
   interpreter's bytecode VM instead of its slower tree-walker.
+- The interpreter runs everything on its bytecode VM; the tree-walking evaluator is
+  gone, and with it `GAMMA_INTERP=tree`. The bodies of `with … on`, `resume`, `cancel`,
+  `@fiber`, system calls, coverage counters, statements with values over 64 KiB and the
+  initializers of constants and globals, which used to fall back to the tree-walker, are
+  compiled too (code in a generator's body runs about twice as fast).
 - The C back end passes a large argument read from an element of an array, slice or
   many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its

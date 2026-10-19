@@ -12,38 +12,6 @@ use std::rc::Rc;
 pub(super) use crate::tir::MAX_FRAME;
 
 impl<'a> Machine<'a> {
-    pub fn eval_args(&mut self, a: Act, args: &[Expr]) -> R<Vec<Value>> {
-        let mut vals = self.arg_pool.pop().unwrap_or_default();
-        for x in args {
-            vals.push(self.eval(a, x)?);
-        }
-        Ok(vals)
-    }
-
-    pub fn eval_call(&mut self, a: Act, e: &Expr, callee: &Callee, args: &[Expr]) -> R {
-        match callee {
-            Callee::Fn(f) => {
-                let vals = self.eval_args(a, args)?;
-                let def = &self.prog.fns[f.index()];
-                if let FnKind::Foreign { variadic: true, .. } = def.kind {
-                    // The types of the variadic arguments decide how they are passed.
-                    let extra: Vec<Ty> = args[def.params.len()..].iter().map(|x| x.ty).collect();
-                    return self.call_foreign(e.span, *f, vals, &extra);
-                }
-                self.call_function(e.span, *f, vals, None, a.cx.clone(), None, false)
-            }
-            Callee::Indirect(c) => {
-                let cv = self.eval(a, c)?;
-                let vals = self.eval_args(a, args)?;
-                self.call_value(a.cx, e.span, cv, c.ty, vals)
-            }
-            Callee::Perform { effect, op } => {
-                let vals = self.eval_args(a, args)?;
-                self.perform(a.cx, e.span, effect, *op, vals)
-            }
-        }
-    }
-
     /// Calls a function value (second-class closure or function pointer) from the context `cx`.
     pub fn call_value(&mut self, cx: &Ctx, span: Span, callee: Value, callee_ty: Ty, args: Vec<Value>) -> R {
         match callee {
@@ -79,88 +47,15 @@ impl<'a> Machine<'a> {
         &mut self,
         span: Span,
         fid: FnId,
-        mut args: Vec<Value>,
+        args: Vec<Value>,
         env: Option<Rc<Frame>>,
         ctx: Ctx,
         installing: Option<(u64, LabelId)>,
         is_clause_lit: bool,
     ) -> R {
-        let prog = self.prog;
-        let f = &prog.fns[fid.index()];
-        let Some(body) = &f.body else {
-            return self.call_foreign(span, fid, args, &[]);
-        };
-        if let Some(code) = self.code_of(fid) {
-            return self.vm_call_values(span, fid, code, args, env, ctx, installing, is_clause_lit);
-        }
-        if self.depth >= MAX_DEPTH {
-            return self.trap(span, "stack overflow");
-        }
-        let marker = 0u8;
-        if (&marker as *const u8 as usize) < self.stack_floor {
-            return self.trap(span, "stack overflow");
-        }
-        self.tick()?;
-        if args.len() != f.params.len() {
-            return self.trap(
-                span,
-                format!(
-                    "internal error: `{}` called with {} arguments, expected {}",
-                    f.name,
-                    args.len(),
-                    f.params.len()
-                ),
-            );
-        }
-        // Running out of a fiber's stack is checked (§14.1). A frame that no stack could
-        // hold is an overflow on a thread's stack too.
-        let cost = self.frame_cost(fid);
-        if cost > MAX_FRAME {
-            return self.trap(span, format!("stack overflow: `{}` needs a frame of {} bytes", f.name, cost));
-        }
-        let cost = if self.fiber_stack == u64::MAX { 0 } else { cost };
-        if cost > self.fiber_stack && !self.fast() {
-            return self.trap(span, "stack overflow on a fiber stack");
-        }
-        self.fiber_stack = self.fiber_stack.saturating_sub(cost);
-        let frame = self.new_frame(f.ret, Some(fid), env, f.locals.len(), installing, is_clause_lit);
-        for (p, v) in f.params.iter().zip(args.drain(..)) {
-            let ty = f.locals[p.index()].ty;
-            self.bind_local(span, &frame, *p, Some(ty), v)?;
-        }
-        if self.arg_pool.len() < 64 {
-            self.arg_pool.push(args);
-        }
-        self.depth += 1;
-        let mark = self.temps.len();
-        let r = self.eval(Act { fr: &frame, cx: &ctx }, body);
-        self.depth -= 1;
-        if self.fiber_stack != u64::MAX {
-            self.fiber_stack += cost;
-        }
-        self.kill_temps(mark);
-        self.kill_frame(&frame);
-        let frame_id = frame.id;
-        self.recycle_frame(frame);
-        match r {
-            Ok(v) => Ok(v),
-            Err(flow) => {
-                if let Flow::Return { frame: id, .. } = &*flow
-                    && *id == frame_id
-                {
-                    let Flow::Return { value, .. } = *flow else { unreachable!() };
-                    return Ok(value);
-                }
-                let mut flow = flow;
-                // Debug builds and compile-time evaluation report the calls a trap left
-                // (§18.3, §17.1).
-                if let Flow::Trap(t) = &mut *flow
-                    && (self.mode == super::Mode::Debug || self.const_mode)
-                {
-                    t.trace.push((fid, span));
-                }
-                Err(flow)
-            }
+        match self.code_of(fid) {
+            Some(code) => self.vm_call_values(span, fid, code, args, env, ctx, installing, is_clause_lit),
+            None => self.call_foreign(span, fid, args, &[]),
         }
     }
 
@@ -191,52 +86,6 @@ impl<'a> Machine<'a> {
                 self.call_function(span, clause, args, None, outer.clone(), installing, false)
             }
             Installed::Native(kind) => self.perform_native(span, *kind, op, args),
-        }
-    }
-
-    #[inline(never)]
-    pub fn eval_with(
-        &mut self,
-        a: Act,
-        e: &Expr,
-        label: LabelId,
-        handlers: &[HandlerValue],
-        on: Option<&Expr>,
-        body: &Expr,
-    ) -> R {
-        let prog = self.prog;
-        let mut cx = a.cx.clone();
-        for h in handlers {
-            match h {
-                HandlerValue::Literal(x) => {
-                    let v = self.eval(Act { fr: a.fr, cx: &cx }, x)?;
-                    let Value::Handler(hv) = v else {
-                        return self.trap(x.span, "internal error: `with` of a non-handler value");
-                    };
-                    let eff = prog.handlers[hv.id.index()].effect.clone();
-                    cx = cx.push(eff, Installed::Lit(hv), a.fr.id, label);
-                }
-                HandlerValue::Decl { decls, value } => {
-                    let b = self.eval_bytes(Act { fr: a.fr, cx: &cx }, value)?;
-                    let outer = cx.clone();
-                    for d in decls {
-                        let eff = prog.handler_decls[d.index()].effect.clone();
-                        let inst = Installed::Decl { decl: *d, value: b.clone(), outer: outer.clone() };
-                        cx = cx.push(eff, inst, a.fr.id, label);
-                    }
-                }
-            }
-        }
-        if let Some(stack) = on {
-            let sb = self.eval_bytes(Act { fr: a.fr, cx: a.cx }, stack)?;
-            return self.eval_with_on(a, e.span, label, cx, &sb, body);
-        }
-        match self.eval(Act { fr: a.fr, cx: &cx }, body) {
-            Err(f) => match *f {
-                Flow::Break { frame, label: l, value } if frame == a.fr.id && l == label => Ok(value),
-                other => Err(Box::new(other)),
-            },
-            ok => ok,
         }
     }
 
@@ -302,28 +151,6 @@ impl<'a> Machine<'a> {
     }
 
     // --- @write --------------------------------------------------------------------------------------------
-
-    #[inline(never)]
-    pub fn eval_write(
-        &mut self,
-        a: Act,
-        e: &Expr,
-        sink: &WriteSink,
-        pieces: &[Rc<[u8]>],
-        specs: &[FmtSpec],
-        args: &[Expr],
-    ) -> R {
-        let sink_val = match sink {
-            WriteSink::Fn(x) => Some((self.eval(a, x)?, x.ty)),
-            WriteSink::Perform { .. } => None,
-        };
-        let mut vals = Vec::with_capacity(args.len());
-        for x in args {
-            vals.push(self.eval_bytes(a, x)?);
-        }
-        self.write_pieces(a.cx, e.span, sink, sink_val.as_ref(), pieces, specs, args, &vals)?;
-        Ok(Value::unit())
-    }
 
     /// `@write` once the sink and the arguments are evaluated: passes the pieces of the
     /// template and the formatted arguments `vals` (of the types of `args`) to the sink.

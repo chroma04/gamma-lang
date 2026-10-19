@@ -1,0 +1,14 @@
+//! exit: 134
+//! stderr
+// Indexing through a pointer to an array of 2^32 or more elements checks the index
+// against the full length.
+Huge :: [1 << 33]u8
+
+main :: fn() needs Out {
+    buf: [16]u8 = ---
+    for i in 0..16 { buf[i] = i.trunc(u8) * 2 }
+    p := (&buf).cast(^Huge)
+    print("{} {}\n", p[3], p[15])
+    i: usize = 1 << 33
+    print("{}\n", p[i])
+}

@@ -282,7 +282,12 @@ fn write_to_a_user_handler_sink() {
         let calls = f.local("calls", n);
         let total = f.local("total", n);
         let wr = write_to(WriteSink::Perform { effect: w.clone(), op: 0 }, &["ab", "", "c"], vec![i32e(12), i32e(-3)]);
-        let w = with_(0, vec![HandlerValue::Literal(ex(Ty::unit(), ExprKind::HandlerRef(h)))], wr, Ty::unit());
+        let w = with_(
+            0,
+            vec![HandlerValue::Literal(ex(Ty::intern(TyKind::Handler(h.0)), ExprKind::HandlerRef(h)))],
+            wr,
+            Ty::unit(),
+        );
         blk(
             vec![let_(calls, usz(0)), let_(total, usz(0)), stmt(w)],
             Some(add(mul(local(calls, n), usz(100)), local(total, n))),

@@ -6,7 +6,8 @@ use super::R;
 use super::machine::*;
 use super::sys::error_code;
 use crate::source::Span;
-use crate::tir::{Expr, PROC_ENV, SysOp};
+use crate::tir::{PROC_ENV, SysOp};
+use crate::types::Ty;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -368,14 +369,14 @@ impl<'a> Machine<'a> {
     }
 
     /// A child-process service: its result, or an error code.
-    pub(super) fn proc_op(&mut self, e: &Expr, op: SysOp, args: &[Expr], vals: &[super::bytes::Bytes]) -> R<i64> {
+    pub(super) fn proc_op(&mut self, span: Span, op: SysOp, tys: &[Ty], vals: &[super::bytes::Bytes]) -> R<i64> {
         let bad = || errno_code(9); // EBADF
         Ok(match op {
             SysOp::ProcSpawn => {
-                let argv = self.string_list(e.span, &vals[0])?;
-                let env = self.string_list(e.span, &vals[1])?;
-                let dir = self.read_str(e.span, &vals[2])?;
-                let flags = self.int_of(args[3].ty, &vals[3]).to_u64_sat() as u32;
+                let argv = self.string_list(span, &vals[0])?;
+                let env = self.string_list(span, &vals[1])?;
+                let dir = self.read_str(span, &vals[2])?;
+                let flags = self.int_of(tys[3], &vals[3]).to_u64_sat() as u32;
                 if argv.is_empty() {
                     return Ok(invalid());
                 }
@@ -392,15 +393,15 @@ impl<'a> Machine<'a> {
                 }
             }
             SysOp::ProcWriteIn => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let data = self.read_str(e.span, &vals[1])?;
+                let h = self.int_arg(tys[0], &vals[0]);
+                let data = self.read_str(span, &vals[1])?;
                 match self.proc_entry(h) {
                     Some(p) => self.without_gil(|| p.write_in(&data)),
                     None => bad(),
                 }
             }
             SysOp::ProcCloseIn => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 match self.proc_entry(h) {
                     Some(p) => {
                         p.close_in();
@@ -410,26 +411,26 @@ impl<'a> Machine<'a> {
                 }
             }
             SysOp::ProcReadOut => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
                 let mut buf = vec![0u8; len as usize];
                 let Some(p) = self.proc_entry(h) else { return Ok(bad()) };
                 let n = self.without_gil(|| p.read_out(&mut buf));
                 if n > 0 {
                     let got = (n & 0xffff_ffff) as usize;
-                    self.store(e.span, ptr, &buf[..got], 1)?;
+                    self.store(span, ptr, &buf[..got], 1)?;
                 }
                 n
             }
             SysOp::ProcWait => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let Some(p) = self.proc_entry(h) else { return Ok(bad()) };
                 let n = self.without_gil(|| p.wait());
                 self.sys.procs.remove(&h);
                 n
             }
             SysOp::ProcKill => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 match self.proc_entry(h) {
                     Some(p) => p.kill(),
                     None => bad(),

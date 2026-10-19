@@ -25,8 +25,8 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   tools/difftest covers generics/strings/effects/fibers since s21, CI runs 300 seeds/run.
   s24: 1500 debug seeds (300000..301500) + checked-mode batch (400000..), 0 disagreements.
   Left: tree-sitter as a second parser.
-- bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
-- Perf (s29, decisions/031): Safe new/destroy 1731 → ~1000 instr/iter (Checked ~400; rest
+- bugs-open #48 done (s29: statement-run outlining, decisions/031). Left: by-ref chains.
+- Perf (s29, decisions/032): Safe new/destroy 1731 → ~1000 instr/iter (Checked ~400; rest
   is Fil-C malloc/free + indirect clause calls). VM iterator −27%; decl `perform` only −2.5%
   (cost spread thin over vm_enter/vm_state; next: transitive handler specialization in C,
   per-site perform cache or a leaner activation in the VM).
@@ -39,9 +39,7 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 ## Nice — after 0.1.0
 - Language: done/decided in s27 (decisions/029). Vector follow-ups if asked: lane `sqrt`,
   two-input shuffles, lane `trunc`/`round` to integers.
-- Compiler: retire the tree-walker (s24: no run test falls back for a whole function except
-  huge_local's 1e12-element array; left: statements with values > REG_VALUE_MAX run as
-  TreeStmt, coverage builtin, const eval), smaller Debug C (overflow-trap and
+- Compiler: smaller Debug C (overflow-trap and
   backtrace-site code ~8% each of gcc time; s25 split Debug C into parallel units, units.rs), a native
   back end (LLVM/Cranelift).
 - Platforms: wasm32-wasi (no fibers/threads), FreeBSD, freestanding/embedded profile.

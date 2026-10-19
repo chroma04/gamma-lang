@@ -513,3 +513,46 @@ pub fn fmt_int(i: &Int) -> String {
         Int::B(b) => b.to_string(),
     }
 }
+
+impl<'a> Machine<'a> {
+    // --- membership ---------------------------------------------------------------------------
+
+    pub fn contains(&self, elem_ty: Ty, x: &[u8], cty: Ty, c: &[u8]) -> Res<bool> {
+        match cty.kind() {
+            TyKind::Array { .. } | TyKind::Slice { .. } => {
+                let (et, esz, data) = self.seq_elems(cty, c)?;
+                let n = data.len().checked_div(esz).unwrap_or(0);
+                for i in 0..n {
+                    if self.eq(et, &data[i * esz..(i + 1) * esz], x)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            TyKind::Tuple { elems, .. } => {
+                for i in 0..elems.len() {
+                    let (ft, fb) = self.field_bytes(cty, c, i)?;
+                    if self.eq(ft, &fb, x)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            TyKind::Adt(..) => {
+                let def = self.adt(cty).ok_or("unknown container type")?;
+                let incl = match def.name.as_str() {
+                    "Range" => false,
+                    "RangeIncl" => true,
+                    other => return Err(format!("`in` is not defined for {}", other)),
+                };
+                let (lt, lo) = self.field_bytes(cty, c, 0)?;
+                let (_, hi) = self.field_bytes(cty, c, 1)?;
+                let ge_lo = !self.less(lt, x, &lo)?;
+                let below = if incl { !self.less(lt, &hi, x)? } else { self.less(lt, x, &hi)? };
+                let _ = elem_ty;
+                Ok(ge_lo && below)
+            }
+            _ => Err(format!("`in` is not defined for {}", cty)),
+        }
+    }
+}

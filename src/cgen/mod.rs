@@ -17,6 +17,7 @@ mod expr;
 mod fiber;
 mod func;
 mod helpers;
+mod outline;
 mod rtcache;
 pub use rtcache::{cache_dir, cached_program};
 mod types;

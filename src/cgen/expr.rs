@@ -612,7 +612,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let ct = self.g.ty.cty(value.ty);
                 if *levels == 0 && !self.outlined && self.no_defers() && self.g.ty.by_ref(self.def.ret) {
                     self.expr_into(value, &format!("(*({} *)gm_out)", ct), Observed::Out)?;
-                    self.line("goto gm_fdone;");
+                    self.jump("gm_fdone", None);
                     return Ok(self.zero(t));
                 }
                 let slot = self.frame_field(*levels, "ret");
@@ -639,7 +639,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             {
                 let addr = self.place_addr(value)?;
                 self.line(&format!("memmove(gm_out, {}, {});", addr, self.g.ty.size(value.ty)));
-                self.line("goto gm_fdone;");
+                self.jump("gm_fdone", None);
                 Ok(self.zero(t))
             }
             ExprKind::Return { levels, value } => {

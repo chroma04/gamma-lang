@@ -33,10 +33,7 @@ impl<'a> Machine<'a> {
             None => {
                 let saved = self.const_mode;
                 self.const_mode = true;
-                let r = self.with_root_frame(def.ty, |m, act| {
-                    let b = m.eval_bytes(act, &def.init)?;
-                    m.to_const_value(def.init.span, def.ty, &b)
-                });
+                let r = self.eval_closed(&def.init).and_then(|b| self.to_const_value(def.init.span, def.ty, &b));
                 self.const_mode = saved;
                 r?
             }

@@ -81,7 +81,7 @@ There are two kinds of tests.
 information (`debug_info.rs`), the C toolchain variables and cross compilation
 (`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
 installed release (`install_layout.rs`), very long expressions
-(`long_expressions.rs`) and the programs in `examples/` (`examples.rs`, below). The
+(`long_expressions.rs`), functions with thousands of statements (`long_functions.rs`) and the programs in `examples/` (`examples.rs`, below). The
 header comment of each file says what it needs and when it skips itself.
 
 **Conformance tests** are Gamma source files under `tests/conformance/`,
@@ -150,18 +150,10 @@ needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
 
-The interpreter has two engines (see `docs/architecture.md`), and the tests use
-the bytecode VM. CI also runs the conformance tests on the tree-walker; to do that
-locally, set `GAMMA_INTERP=tree`:
-
-```sh
-GAMMA_INTERP=tree GAMMA_TEST_C=0 cargo test --test conformance
-```
-
-When the two disagree, these help:
+To debug the interpreter's bytecode VM (see `docs/architecture.md`):
 
 - `GAMMA_VM_DUMP=name` (or `*`) prints the bytecode of each function of that name
-  as it is compiled, or why it runs on the tree-walker instead.
+  as it is compiled, or the line of the compiler that could not translate it.
 - `cargo build --release --features vm-profile` builds a `gamma` that, with
   `GAMMA_VM_PROFILE=1`, prints how often each opcode ran when `gamma run` exits;
   with `GAMMA_VM_PAIRS=1` as well it lists the most frequent pairs of consecutive

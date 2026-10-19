@@ -1,6 +1,5 @@
-//! The interpreter: a tree-walking evaluator over the typed IR, and a bytecode
-//! VM ([`vm`]) that compiles functions to register code on first call and falls
-//! back to the tree-walker for what it does not compile.
+//! The interpreter: a bytecode VM ([`vm`]) that compiles each function of the typed
+//! IR to register code on first call, and the machine it runs on.
 //!
 //! It serves both compile-time evaluation ([`eval_const`], spec §17) and
 //! running programs ([`run_main`]).
@@ -18,11 +17,11 @@
 //! - **Values** ([`value`]): first-class data is [`value::Value::Bytes`];
 //!   second-class function and handler values are structured so they can
 //!   capture frames and handler contexts.
-//! - **Control flow**: evaluation returns `Result<Value, Box<Flow>>`. `break`,
-//!   `continue`, `return`, effect exits and traps are `Flow`s that propagate
-//!   up the Rust stack; blocks run `defer`/`errdefer` statements as flows
-//!   pass through them (spec §8.8), loops, `with` and function boundaries
-//!   consume the flows aimed at them.
+//! - **Control flow**: within a function, `break`, `continue` and `return` are
+//!   jumps. What crosses functions (effect exits, a closure's `return` from its
+//!   parent, traps) is a `Flow` returned as `Err` from the call; each activation
+//!   runs the `defer`/`errdefer` statements it passes through (spec §8.8), and
+//!   loops, `with` and function boundaries consume the flows aimed at them.
 //! - **Effects**: the handler context is a persistent linked list captured by
 //!   closures and handler literals (spec §11.6, §12.7).
 
@@ -32,7 +31,6 @@ mod calls;
 mod consts;
 mod coverage;
 pub mod display;
-mod eval;
 mod fast;
 mod ffi;
 mod fiber;
@@ -42,7 +40,6 @@ pub mod memory;
 pub mod num;
 mod ops;
 mod proc;
-mod stmt;
 mod sys;
 mod threads;
 mod value;
@@ -53,8 +50,6 @@ mod vm;
 mod testkit;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_fast;
 #[cfg(test)]
 mod tests_flow;
 #[cfg(test)]
@@ -280,20 +275,11 @@ pub fn eval_const(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<ConstV
     })
 }
 
-fn eval_const_inner(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<ConstValue, Trap> {
+fn eval_const_inner<'a>(prog: &'a Program, cfg: &RunConfig, expr: &'a Expr) -> Result<ConstValue, Trap> {
     let lookup = |id: AdtId| prog.adts.get(&id);
     let mut m = Machine::new(prog, cfg, &lookup, stack_floor(STACK_SIZE, STACK_MARGIN));
     m.const_mode = true;
-    let r = m.with_root_frame(expr.ty, |m, act| {
-        let b = match m.eval_bytes(act, expr) {
-            Ok(b) => b,
-            Err(f) => match *f {
-                Flow::Return { frame, value: Value::Bytes(b), .. } if frame == act.fr.id => b,
-                other => return Err(Box::new(other)),
-            },
-        };
-        m.to_const_value(expr.span, expr.ty, &b)
-    });
+    let r = m.eval_closed(expr).and_then(|b| m.to_const_value(expr.span, expr.ty, &b));
     match r {
         Ok(v) => Ok(v),
         Err(f) => match *f {

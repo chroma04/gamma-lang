@@ -29,12 +29,6 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
-      - name: Conformance tests and examples on the tree-walking interpreter
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          GAMMA_INTERP: tree
-          GAMMA_TEST_C: "0"
-        run: cargo test --test conformance --test examples
       - name: Conformance tests and examples with Debug builds split into C units
         if: matrix.os == 'ubuntu-latest'
         env:

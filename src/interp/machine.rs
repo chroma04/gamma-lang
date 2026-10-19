@@ -44,7 +44,6 @@ pub struct SmallInt {
     pub bits: u32,
     /// Size in bytes (at most 8).
     pub size: usize,
-    pub align: u64,
 }
 
 /// The per-type facts, filled in on first use. Entries are never replaced or
@@ -95,29 +94,6 @@ impl Drop for TyTable<'_> {
 
 pub struct ConstEntry {
     pub addr: u64,
-}
-
-/// A storage location.
-#[derive(Clone, Copy, Debug)]
-pub enum Place {
-    Mem(u64),
-    /// Memory inside a field of a `#packed` struct: accessed with alignment 1.
-    Packed(u64),
-    /// A field of type `fty` at bit `off` of the `#bits` struct of type `whole` stored
-    /// at `addr` (a field of a nested `#bits` field adds the offsets).
-    Bits {
-        addr: u64,
-        whole: Ty,
-        off: u32,
-        fty: Ty,
-    },
-}
-
-/// The pair of frame and handler context an expression is evaluated in.
-#[derive(Clone, Copy)]
-pub struct Act<'f> {
-    pub fr: &'f Rc<Frame>,
-    pub cx: &'f Ctx,
 }
 
 pub type Res<T> = Result<T, String>;
@@ -264,7 +240,7 @@ impl<'a> Machine<'a> {
         let int = layout::int_bits(ty, &self.target);
         let size = l.size as usize;
         let small = match int {
-            Some((signed, bits)) if bits <= 64 && size <= 8 => Some(SmallInt { signed, bits, size, align: l.align }),
+            Some((signed, bits)) if bits <= 64 && size <= 8 => Some(SmallInt { signed, bits, size }),
             _ => None,
         };
         let prog = self.prog;
@@ -937,5 +913,112 @@ trait ToI128Checked {
 impl ToI128Checked for BigInt {
     fn to_i128_checked(&self) -> Option<i128> {
         num_traits::ToPrimitive::to_i128(self)
+    }
+}
+
+impl<'a> Machine<'a> {
+    pub fn is_err_return(&self, target: &Frame, v: &Value) -> bool {
+        match (target.ret_ty.kind(), v) {
+            (TyKind::Result { .. }, Value::Bytes(b)) => self.res_is_err(target.ret_ty, b),
+            _ => false,
+        }
+    }
+
+    pub fn read_local(&self, span: Span, fr: &Rc<Frame>, id: LocalId, ty: Ty) -> R {
+        let locals = fr.locals.borrow();
+        match locals.get(id.index()) {
+            Some(Slot::Mem(addr)) => {
+                let addr = *addr;
+                drop(locals);
+                Ok(Value::Bytes(self.load_ty(span, addr, ty)?))
+            }
+            Some(Slot::Reg(r)) => Ok(Value::Bytes(Bytes::from_slice(&r[..self.ti(ty).size]))),
+            Some(Slot::Val(v)) => Ok((**v).clone()),
+            _ => self.local_uninit(span),
+        }
+    }
+
+    /// Reads the field of type `fty` at bit `off` of the `#bits` struct of type `whole` at
+    /// `addr` (a field of a nested `#bits` field adds the offsets).
+    pub fn read_bits(&self, span: Span, addr: u64, whole: Ty, off: u32, fty: Ty) -> R<Bytes> {
+        let u = self.bits_struct_ty(whole).unwrap_or(whole);
+        let b = self.load_ty(span, addr, whole)?;
+        let raw = num::wrap(&self.int_of_unsigned(u, &b).shr(off as u64), false, self.bit_width(fty));
+        Ok(self.bits_from_raw(fty, &raw))
+    }
+
+    /// Writes `data` to the field that [`Self::read_bits`] reads.
+    pub fn write_bits(&mut self, span: Span, addr: u64, sty: Ty, off: u32, fty: Ty, data: &[u8]) -> R<()> {
+        let u = self.bits_struct_ty(sty).unwrap_or(sty);
+        let whole = self.load_ty(span, addr, sty)?;
+        let cur = self.int_of_unsigned(u, &whole);
+        let w = self.bit_width(fty);
+        let raw = self.bits_raw(fty, data);
+        let mask = Int::S(1).shl(w as u64).sub(&Int::S(1)).shl(off as u64);
+        let new = cur.and(&mask.not()).or(&raw.shl(off as u64));
+        let ui = self.ti(u);
+        let enc = num::encode_int(&new, ui.size, self.little());
+        self.store(span, addr, &enc, ui.align)
+    }
+
+    pub fn global_addr(&mut self, span: Span, g: GlobalId) -> R<u64> {
+        if self.const_mode {
+            return self.trap(span, "a #global cannot be accessed at compile time");
+        }
+        let prog = self.prog;
+        let def = &prog.globals[g.index()];
+        let key = (g, if def.thread_local { self.thread_id } else { 0 });
+        if let Some(a) = self.globals.get(&key) {
+            return Ok(*a);
+        }
+        let Some(init) = &def.init else {
+            let name = def.link_name.map_or_else(|| def.name.as_str().to_string(), |n| n.as_str().to_string());
+            let addr = self.foreign_global_addr(span, &name)?;
+            self.globals.insert(key, addr);
+            return Ok(addr);
+        };
+        let bytes = self.eval_closed(init)?;
+        let ti = self.ti(def.ty);
+        let align = ti.align.max(def.align.unwrap_or(1));
+        let addr = self.alloc_mem(span, ti.size, align, AllocKind::Global(g.0), true)?;
+        let r = self.mem.init(addr, &bytes);
+        self.mem_err(span, r)?;
+        self.globals.insert(key, addr);
+        Ok(addr)
+    }
+
+    /// Whether `target` is the function that lexically contains the code running in `fr`.
+    pub(super) fn lexically_same(&self, fr: &Frame, target: u64) -> bool {
+        let mut cur = fr;
+        loop {
+            if cur.id == target {
+                return true;
+            }
+            if cur.is_clause_lit {
+                match &cur.parent_env {
+                    Some(p) => cur = p,
+                    None => return false,
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /// Decides whether `errdefer` statements run when `flow` leaves a block of frame `fr` (§8.8).
+    pub(super) fn errdefers_run(&self, fr: &Frame, flow: &Flow) -> bool {
+        match flow {
+            Flow::Trap(_) => false,
+            Flow::Return { frame, is_err, .. } => {
+                if self.lexically_same(fr, *frame) {
+                    *is_err
+                } else {
+                    true
+                }
+            }
+            Flow::Break { frame, .. } | Flow::Continue { frame, .. } => !self.lexically_same(fr, *frame),
+            Flow::Exit(_) | Flow::Cancel => true,
+            Flow::Resume { .. } => false,
+        }
     }
 }

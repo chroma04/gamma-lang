@@ -26,8 +26,8 @@ src/sema/          checking (architecture/sema-notes.md). One file per area, eac
                    stack_size, cont_check (§14.2), escape, foreign, tests_decl, adt, builtins;
                    ide/ builds the editor index after checking (decisions/023)
 src/interp/        interpreter: vm/ (bytecode: mod, compile, compile_flow, exec, heap) is the
-                   default engine, tree-walker (eval, stmt, calls, ops, …) is the fallback
-                   (GAMMA_INTERP=tree forces it; decisions/020); memory.rs byte memory +
+                   only engine (tree-walker removed s29, decisions/020); calls/ops/builtins/
+                   fast(small ints)/sys/proc hold the value-level helpers; memory.rs byte memory +
                    provenance; fiber.rs (thread per fiber); threads.rs (GIL); ffi.rs (libffi,
                    decisions/009); sys.rs (SysOps); coverage.rs; consts.rs (constants →
                    ConstValue; eval_const in mod.rs); vm/heap.rs fast new/destroy
@@ -36,6 +36,7 @@ src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, ele
                    thunks), borrow (pure-fn params read in place, 016), constarg (static
                    gm_kN args), rtcache (cached runtime object + cached programs, 014),
                    units (Debug split into parallel C units: Generated.parts, s25),
+                   outline (long statement runs → gm_cN_K helpers sharing F, decisions/031),
                    debug + views + gdb_printers.py + lldb_formatters.py (`-g`, 013; build writes gamma_lldb.py), csrc (C sources from gamma.toml)
 src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
                    build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli
