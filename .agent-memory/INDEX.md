@@ -1,11 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#57 merged; s29 PR open: tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
-- s30 (branch claude/project-thread-3twojx, PR open): `gamma lint`, 18 rules, levels, --fix
-  (decisions/033). Other threads concurrently: wasm32-wasi, native back end, C/Rust docs.
-- s29: huge functions split into helper C functions (decisions/031, bugs-open #48 done).
-- s29 (branch claude/perf-safe-effects-16om52, PR open): Safe new/destroy −42% instr, VM
-  iterators −27% (decisions/032).
+## State (2026-10-19) — PRs #1–#58 merged (s29 PRs done)
+- s30 (branch claude/project-thread-3twojx, PR #59 open): `gamma lint`, 18 rules, levels,
+  --fix (decisions/033).
+- s30 (PR #58 merged): docs/guide/for-c-programmers.md and for-rust-programmers.md; their
+  code blocks are checked by tests/doc_examples.rs (info strings `gamma` run+fmt (+ `output`
+  block), `gamma test`, `gamma error` with `// error:` lines, `gamma fragment` unchecked; add a
+  doc to CHECKED_DOCS to opt it in). Mention wasm32-wasi, `gamma lint`, a native back end in
+  the guides once merged.
+- s29: huge functions → helper C functions (decisions/031); Safe/VM perf (decisions/032).
 - s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
   vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
   all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
@@ -26,7 +29,7 @@
   parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
 
 ## Next steps
-1. Drive the s29 PRs to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s30 PRs to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);

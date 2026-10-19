@@ -43,6 +43,8 @@ early exit, coroutines, testing.
 
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
+  Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
+  or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
