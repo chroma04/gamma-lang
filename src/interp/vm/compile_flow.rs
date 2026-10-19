@@ -96,20 +96,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         lo,
                     });
                 }
-                _ if self.tree_stmts.contains(&(s as *const Stmt)) => {
-                    self.code.stmts.push(s);
-                    let stmt = self.code.stmts.len() as u32 - 1;
-                    self.emit(Op::TreeStmt { stmt }, stmt_span(s, b.span));
-                }
-                _ => {
-                    let was = self.too_big;
-                    let r = self.with_temps(stmt_span(s, b.span), |c| c.stmt(s));
-                    if self.too_big && !was && self.retry.is_none() {
-                        self.retry = Some(s as *const Stmt);
-                        return Err(unsupported!());
-                    }
-                    r?;
-                }
+                _ => self.with_temps(stmt_span(s, b.span), |c| c.stmt(s))?,
             }
         }
         if let Some(t) = &b.tail {
@@ -210,6 +197,12 @@ impl<'m, 'a> Compiler<'m, 'a> {
             self.trap_const(g, DEFER_ESCAPE);
             return Ok(());
         }
+        if self.sub {
+            // A flow to the function's frame, which unwinding takes through the deferred
+            // statements of the body.
+            self.emit(Op::ThrowReturn { levels: 0, v }, span);
+            return Ok(());
+        }
         if self.defers.is_empty() {
             self.emit(Op::Ret { src: v }, span);
             return Ok(());
@@ -223,7 +216,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             }
             _ => v,
         };
-        let ret = self.f.ret;
+        let ret = self.ret_ty;
         let flag = match ret.kind() {
             TyKind::Result { .. } => Some(self.m.ti(ret).offsets[0] as u32),
             _ => None,
@@ -264,7 +257,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 self.expr(e)?;
             }
             Stmt::Let { local, init } => {
-                let lt = self.f.locals[local.index()].ty;
+                let lt = self.decls[local.index()].ty;
                 match (init, self.locals[local.index()]) {
                     (Some(e), LocalLoc::Reg { reg, size }) if self.size(e.ty) == size => {
                         self.expr_to(e, Arg::Data { reg, size })?;
@@ -275,11 +268,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     }
                     (None, LocalLoc::Reg { reg, size }) => {
                         if size > 0 {
-                            self.emit(Op::Zero { dst: reg, words: words(size) }, self.f.span);
+                            self.emit(Op::Zero { dst: reg, words: words(size) }, self.fspan);
                         }
                     }
                     (None, LocalLoc::Frame) => {
-                        self.emit(Op::InitLocal { local: *local, ty: lt }, self.f.span);
+                        self.emit(Op::InitLocal { local: *local, ty: lt }, self.fspan);
                     }
                     (None, LocalLoc::Val) => {}
                 }
@@ -367,7 +360,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     /// Stores the value in `v` in local `id`.
     pub fn write_local(&mut self, id: LocalId, v: Arg, span: Span) -> C {
-        let ty = self.f.locals[id.index()].ty;
+        let ty = self.decls[id.index()].ty;
         match (self.locals[id.index()], v) {
             (LocalLoc::Reg { reg, size }, Arg::Data { reg: src, size: vs }) => {
                 if vs == size || words(vs) == words(size) && vs > size {
@@ -749,7 +742,10 @@ impl<'m, 'a> Compiler<'m, 'a> {
 
     /// The return type of the function `levels` up the chain of enclosing functions.
     fn ret_ty_up(&self, levels: u32) -> C<Ty> {
-        let mut f = self.f;
+        if levels == 0 {
+            return Ok(self.ret_ty);
+        }
+        let mut f = self.owner.ok_or(unsupported!())?;
         for _ in 0..levels {
             f = &self.prog.fns[f.parent.ok_or(unsupported!())?.index()];
         }
@@ -892,26 +888,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let outside = self.depth;
         self.emit(Op::PushCtx, span);
         self.depth += 1;
-        for h in handlers {
-            let mark = self.next;
-            let vmark = self.vnext;
-            match h {
-                HandlerValue::Literal(x) => {
-                    let v = self.expr(x)?;
-                    let Arg::Val(v) = v else { return Err(unsupported!()) };
-                    self.emit(Op::InstallLit { v, label }, x.span);
-                }
-                HandlerValue::Decl { decls, value } => {
-                    let v = self.expr(value)?;
-                    let Arg::Data { reg, size } = v else { return Err(unsupported!()) };
-                    self.code.decls.push(decls.clone().into());
-                    let info = self.code.decls.len() as u32 - 1;
-                    self.emit(Op::InstallDecl { info, src: reg, size, label }, value.span);
-                }
-            }
-            self.next = mark;
-            self.vnext = vmark;
-        }
+        self.install(label, handlers)?;
         let brk = self.label();
         self.labels.push(LabelCx {
             label,
@@ -939,6 +916,72 @@ impl<'m, 'a> Compiler<'m, 'a> {
         Ok(dst)
     }
 
+    /// `with h on stack { body }`: the body is code of its own, run on a fiber (§14.1).
+    pub fn with_on(
+        &mut self,
+        e: &'a Expr,
+        label: LabelId,
+        handlers: &'a [HandlerValue],
+        stack: &'a Expr,
+        body: &'a Expr,
+        want: Option<Arg>,
+    ) -> C<Arg> {
+        let span = e.span;
+        let dst = self.dst(e, want);
+        // The stack is evaluated outside the `with`, before the handler values.
+        let later: Vec<&Expr> = handlers
+            .iter()
+            .map(|h| match h {
+                HandlerValue::Literal(x) => x,
+                HandlerValue::Decl { value, .. } => value,
+            })
+            .collect();
+        let sv = self.expr(stack)?;
+        let sv = self.stable(sv, &later, span);
+        let outside = self.depth;
+        self.emit(Op::PushCtx, span);
+        self.depth += 1;
+        self.install(label, handlers)?;
+        let code = Box::new(compile_sub(self.m, self.owner, self.ret_ty, body)?);
+        self.code.withs.push(WithOn { code, label, stack: sv, out: dst });
+        let info = self.code.withs.len() as u32 - 1;
+        self.emit(Op::WithOn { info }, span);
+        self.temp_made();
+        self.emit(Op::PopCtx, span);
+        self.depth = outside;
+        Ok(dst)
+    }
+
+    /// Installs the handlers of a `with` labeled `label`.
+    fn install(&mut self, label: LabelId, handlers: &'a [HandlerValue]) -> C {
+        for h in handlers {
+            let mark = self.next;
+            let vmark = self.vnext;
+            match h {
+                HandlerValue::Literal(x) => {
+                    let v = self.expr(x)?;
+                    let Arg::Val(v) = v else { return Err(unsupported!()) };
+                    self.emit(Op::InstallLit { v, label }, x.span);
+                }
+                HandlerValue::Decl { decls, value } => {
+                    let v = self.expr(value)?;
+                    let Arg::Data { reg, size } = v else { return Err(unsupported!()) };
+                    self.code.decls.push(decls.clone().into());
+                    let info = self.code.decls.len() as u32 - 1;
+                    self.emit(Op::InstallDecl { info, src: reg, size, label }, value.span);
+                }
+            }
+            self.next = mark;
+            self.vnext = vmark;
+        }
+        Ok(())
+    }
+
+    /// True if `label` is outside the code of a `with … on` body (in its function).
+    fn outside(&self, label: LabelId) -> bool {
+        self.sub && !self.labels.iter().any(|l| l.label == label)
+    }
+
     /// The label of this function's loop or `with` `label`, if a jump can reach it.
     fn find_label(&self, label: LabelId) -> C<usize> {
         self.labels.iter().rposition(|l| l.label == label).ok_or(unsupported!())
@@ -954,7 +997,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 };
                 self.emit(Op::ThrowBreakInst { v }, span);
             }
-            Target::Label { levels, label } if levels > 0 => {
+            Target::Label { levels, label } if levels > 0 || self.outside(label) => {
                 let v = match value {
                     Some(x) => self.expr(x)?,
                     None => Arg::UNIT,
@@ -987,7 +1030,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let span = e.span;
         match target {
             Target::InstallingWith => self.ret(Arg::UNIT, ErrTest::No, span)?,
-            Target::Label { levels, label } if levels > 0 => {
+            Target::Label { levels, label } if levels > 0 || self.outside(label) => {
                 self.emit(Op::ThrowContinue { levels, label }, span);
             }
             Target::Label { label, .. } => {

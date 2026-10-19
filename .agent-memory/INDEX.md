@@ -1,11 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#53 merged; s28 third PR (rest of review) open (branch claude/coherence-review-wyd199)
+## State (2026-10-19) — PRs #1–#54 merged; s29 PRs open: #55 split huge C functions
+  (other thread), tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
 - s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
   vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
   all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
-- The whole spec is implemented in both back ends (interpreter = bytecode VM + tree-walker
-  fallback; C back end, gcc and clang). Every run test runs on both and must match.
+- The whole spec is implemented in both back ends (interpreter = bytecode VM only since s29,
+  decisions/020; C back end, gcc and clang). Every run test runs on both and must match.
   Milestones: roadmap/milestones.md (all done; per-area gaps). Decisions: decisions/.
 - MSRV 1.95 (Cargo rust-version, CI job msrv). Tooling: packages (git/path/archive deps, lock, profiles), `gamma lsp`, editors/, release
   pipeline + install.sh/.ps1, gamma doc/repl/fmt/test/bench/coverage, Windows (MinGW) port.
@@ -25,7 +26,7 @@
   s21 gcc inline, Emacs, difftest CI; s20 fiber channel, fuzz/difftest; s19 papercuts.
 
 ## Next steps
-1. Drive the s28 third PR to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s29 PRs to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);

@@ -26,8 +26,8 @@ src/sema/          checking (architecture/sema-notes.md). One file per area, eac
                    stack_size, cont_check (§14.2), escape, foreign, tests_decl, adt, builtins;
                    ide/ builds the editor index after checking (decisions/023)
 src/interp/        interpreter: vm/ (bytecode: mod, compile, compile_flow, exec, heap) is the
-                   default engine, tree-walker (eval, stmt, calls, ops, …) is the fallback
-                   (GAMMA_INTERP=tree forces it; decisions/020); memory.rs byte memory +
+                   only engine (tree-walker removed s29, decisions/020); calls/ops/builtins/
+                   fast(small ints)/sys/proc hold the value-level helpers; memory.rs byte memory +
                    provenance; fiber.rs (thread per fiber); threads.rs (GIL); ffi.rs (libffi,
                    decisions/009); sys.rs (SysOps); coverage.rs; consts.rs (constants →
                    ConstValue; eval_const in mod.rs); vm/heap.rs fast new/destroy

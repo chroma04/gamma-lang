@@ -129,6 +129,11 @@ Versions and what each kind of change means are described in
   and so do `@rotl` and `@rotr` on integers of up to 64 bits (SHA-256 about 1.9x faster).
 - Functions that call variadic C functions (`printf` and its relatives) run on the
   interpreter's bytecode VM instead of its slower tree-walker.
+- The interpreter runs everything on its bytecode VM; the tree-walking evaluator is
+  gone, and with it `GAMMA_INTERP=tree`. The bodies of `with … on`, `resume`, `cancel`,
+  `@fiber`, system calls, coverage counters, statements with values over 64 KiB and the
+  initializers of constants and globals, which used to fall back to the tree-walker, are
+  compiled too (code in a generator's body runs about twice as fast).
 - The C back end passes a large argument read from an element of an array, slice or
   many-pointer by address instead of copying it first, as it already did for fields.
 - Diagnostics: a literal that does not fit the type a conversion `T(x)` gave its

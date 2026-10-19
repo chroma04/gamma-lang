@@ -3,12 +3,11 @@
 //! Statements, blocks, patterns and control flow are in `compile_flow.rs`.
 
 use super::*;
-use crate::interp::eval::is_place_expr;
 use crate::layout;
 use std::collections::HashSet;
 
-/// The compiler met something it does not translate (at this line of the compiler);
-/// the function runs on the tree-walker.
+/// The compiler met something it does not translate (at this line of the compiler): a
+/// bug, or a value too large for the interpreter. The function's code then only traps.
 #[derive(Debug)]
 pub struct Unsupported(pub &'static str, pub u32);
 
@@ -19,14 +18,16 @@ macro_rules! unsupported {
 }
 pub(crate) use unsupported;
 
+/// The file of the [`Unsupported`] that says a value is too large for registers.
+const TOO_BIG: &str = "<too big>";
+
 pub type C<T = ()> = Result<T, Unsupported>;
 
 /// The largest local, in bytes, kept in registers.
 const REG_LOCAL_MAX: usize = 64;
 
-/// The largest value compiled code holds in registers; a function with larger
-/// temporaries runs on the tree-walker.
-const REG_VALUE_MAX: u32 = 1 << 16;
+/// The largest value compiled code holds in registers: no frame can hold a larger one.
+const REG_VALUE_MAX: u32 = crate::tir::MAX_FRAME as u32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalLoc {
@@ -94,7 +95,16 @@ pub enum ErrTest {
 pub struct Compiler<'m, 'a> {
     pub m: &'m Machine<'a>,
     pub prog: &'a Program,
-    pub f: &'a FnDef,
+    /// The function the code belongs to (`None` for a constant expression), its locals and
+    /// its return type.
+    pub owner: Option<&'a FnDef>,
+    pub decls: &'a [LocalDecl],
+    pub ret_ty: Ty,
+    pub fspan: Span,
+    /// The code is the body of a `with … on`, run on a fiber in the frame of `owner`: a
+    /// `return`, and a `break` or `continue` to a label outside the body, leave the
+    /// function as flows.
+    pub sub: bool,
     pub code: Code<'a>,
     /// The next free word register and the highest used.
     pub next: Reg,
@@ -131,34 +141,73 @@ pub struct Compiler<'m, 'a> {
     pub consts_end: Reg,
     /// The registers holding constant words, set up when an activation starts.
     pub consts: std::collections::HashMap<u64, Reg>,
-    /// The statements run by the tree-walker, and one to add to them.
-    pub tree_stmts: HashSet<*const Stmt>,
-    pub retry: Option<*const Stmt>,
 }
 
-/// Compiles function `f`; `Err` if it should run on the tree-walker.
+/// Compiles function `f`, which has a body.
 pub fn compile<'a>(m: &Machine<'a>, f: FnId) -> Result<Code<'a>, Unsupported> {
-    let prog = m.prog;
-    let def = &prog.fns[f.index()];
+    let def = &m.prog.fns[f.index()];
     let body = def.body.as_ref().ok_or(unsupported!())?;
-    // A statement with a value too large for registers is left to the tree-walker:
-    // compile again with it on the list until none is left.
-    let mut tree_stmts = HashSet::new();
-    loop {
-        let mut c = Compiler::new(m, f);
-        c.tree_stmts = tree_stmts;
-        c.classify(body);
-        let r = c.function(body);
-        match (r, c.retry) {
-            (Err(_), Some(s)) if c.tree_stmts.len() < 64 => {
-                tree_stmts = c.tree_stmts;
-                tree_stmts.insert(s);
-            }
-            (Err(u), _) => return Err(u),
-            (Ok(()), _) if c.too_big => return Err(unsupported!()),
-            (Ok(()), _) => return c.finish(),
+    let mut c = Compiler::new(m, Some(def), def.ret);
+    c.classify(body, &[]);
+    c.function(body)?;
+    c.done()
+}
+
+/// Compiles the body of a `with … on` of function `f` (`None` in a closed expression),
+/// which runs on a fiber in the frame of the activation that contains it. The locals it
+/// mentions live in that frame.
+pub fn compile_sub<'a>(
+    m: &Machine<'a>,
+    f: Option<&'a FnDef>,
+    ret: Ty,
+    body: &'a Expr,
+) -> Result<Code<'a>, Unsupported> {
+    let mut c = Compiler::new(m, f, ret);
+    c.sub = true;
+    let mut pinned = vec![false; c.decls.len()];
+    mentioned_locals(body, &mut |l| {
+        if let Some(p) = pinned.get_mut(l.index()) {
+            *p = true;
+        }
+    });
+    c.classify(body, &pinned);
+    c.body(body)?;
+    c.done()
+}
+
+/// Compiles a closed expression (a constant's initializer, a compile-time evaluation): code
+/// without parameters or locals, run in a frame of its own.
+pub fn compile_expr<'a>(m: &Machine<'a>, e: &'a Expr) -> Result<Code<'a>, Unsupported> {
+    let mut c = Compiler::new(m, None, e.ty);
+    c.classify(e, &[]);
+    c.body(e)?;
+    c.done()
+}
+
+/// Code that traps when it runs, for a function the compiler cannot translate (`u` says
+/// where it gave up): its parameters live in the frame, so binding them works as usual.
+pub fn trap_code<'a>(m: &Machine<'a>, f: Option<&'a FnDef>, u: &Unsupported) -> Code<'a> {
+    let mut c = Compiler::new(m, f, f.map_or(Ty::unit(), |f| f.ret));
+    let span = f.map_or(Span::DUMMY, |f| f.span);
+    if let Some(f) = f {
+        for l in &f.locals {
+            c.locals.push(if second_class(l.ty) { LocalLoc::Val } else { LocalLoc::Frame });
+        }
+        for p in &f.params {
+            let loc = match c.locals[p.index()] {
+                LocalLoc::Val => ParamLoc::Val { local: *p },
+                _ => ParamLoc::Frame { local: *p, ty: f.locals[p.index()].ty },
+            };
+            c.code.params.push(loc);
         }
     }
+    let msg = if u.0 == TOO_BIG {
+        "a value is too large for the interpreter".to_string()
+    } else {
+        format!("internal error: the interpreter cannot run this function ({}:{})", u.0, u.1)
+    };
+    c.trap_const(span, msg);
+    c.finish().unwrap_or_else(|_| unreachable!("trap code is valid"))
 }
 
 /// True if the parts `(offset, size)` are whole words that follow one another from byte 0 to byte `size`.
@@ -177,12 +226,6 @@ fn tiles(parts: &mut [(u32, u32)], size: u32) -> bool {
     at == size
 }
 
-/// An array length as an instruction field; arrays too long for it are left to the tree-walker.
-fn len32(len: u64) -> C<u32> {
-    if len < NO_LEN as u64 { Ok(len as u32) } else { Err(unsupported!()) }
-}
-
-/// True if `ty` is a second-class type, whose values are not bytes.
 /// The kind of a float type that has native instructions.
 pub fn float_kind(ty: Ty) -> Option<FloatK> {
     match ty.kind() {
@@ -197,26 +240,28 @@ pub fn float_eq(lhs: &Expr, rhs: &Expr) -> Option<FloatK> {
     if lhs.ty == rhs.ty { float_kind(lhs.ty) } else { None }
 }
 
+/// True if `ty` is a second-class type, whose values are not bytes.
 pub fn second_class(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Fn(_) | TyKind::Handler(_))
 }
 
-/// True for expressions compiled code leaves to the tree-walker.
-pub fn tree_only(e: &Expr) -> bool {
+/// True for a `get`, `first` or `last` of an array value (not a place), which the builtin
+/// instruction does on the value's bytes.
+pub fn get_of_value(op: Builtin, args: &[Expr]) -> bool {
+    matches!(op, Builtin::Get | Builtin::First | Builtin::Last)
+        && matches!(args[0].ty.kind(), TyKind::Array { .. })
+        && !is_place_expr(&args[0])
+}
+
+/// True if `e` denotes a place (storage that can be addressed), not just a value.
+pub fn is_place_expr(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::With { on: Some(_), .. } | ExprKind::Resume { .. } | ExprKind::Cancel(_) => true,
-        ExprKind::Builtin { op: Builtin::Fiber | Builtin::Sys(_) | Builtin::Cover(_), .. } => true,
-        ExprKind::Builtin { op: Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last, args } => {
-            let base = &args[0];
-            match base.ty.kind() {
-                TyKind::Slice { .. } => false,
-                TyKind::Array { .. } => {
-                    !(matches!(&e.kind, ExprKind::Builtin { op: Builtin::GetPtr, .. }) || is_place_expr(base))
-                }
-                TyKind::Ptr { pointee, .. } => !matches!(pointee.kind(), TyKind::Array { .. }),
-                _ => true,
-            }
-        }
+        ExprKind::Local(_) | ExprKind::Upvar { .. } | ExprKind::Global(_) | ExprKind::Deref(_) => true,
+        ExprKind::Field { base, .. } | ExprKind::VariantPayload { base, .. } => is_place_expr(base),
+        ExprKind::Index { base, .. } => match base.ty.kind() {
+            TyKind::Array { .. } => is_place_expr(base),
+            _ => true,
+        },
         _ => false,
     }
 }
@@ -278,30 +323,6 @@ fn mentioned_locals(e: &Expr, f: &mut dyn FnMut(LocalId)) {
     e.for_each_child(&mut |c| mentioned_locals(c, f));
 }
 
-/// Calls `f` on every local statement `s` mentions.
-fn stmt_locals(s: &Stmt, f: &mut dyn FnMut(LocalId)) {
-    match s {
-        Stmt::Let { local, .. } => f(*local),
-        Stmt::LetTuple { locals, .. } => locals.iter().flatten().for_each(|l| f(*l)),
-        _ => {}
-    }
-    match s {
-        Stmt::Let { init: Some(e), .. }
-        | Stmt::LetTuple { init: e, .. }
-        | Stmt::Expr(e)
-        | Stmt::Defer { body: e, .. } => mentioned_locals(e, f),
-        Stmt::Assign { place, value } => {
-            mentioned_locals(place, f);
-            mentioned_locals(value, f);
-        }
-        Stmt::AssignTuple { places, value } => {
-            places.iter().flatten().for_each(|p| mentioned_locals(p, f));
-            mentioned_locals(value, f);
-        }
-        Stmt::Let { init: None, .. } => {}
-    }
-}
-
 /// True if evaluating `e` may assign a local of the function (so that a value read from
 /// a local before it is not still in the local's register).
 pub fn writes_locals(e: &Expr) -> bool {
@@ -321,15 +342,18 @@ pub fn writes_locals(e: &Expr) -> bool {
 }
 
 impl<'m, 'a> Compiler<'m, 'a> {
-    fn new(m: &'m Machine<'a>, fid: FnId) -> Self {
+    fn new(m: &'m Machine<'a>, owner: Option<&'a FnDef>, ret_ty: Ty) -> Self {
         let prog = m.prog;
-        let f = &prog.fns[fid.index()];
         let little = m.target.little_endian;
         let ptr_size = m.target.ptr_bytes as u32;
         Compiler {
             m,
             prog,
-            f,
+            owner,
+            decls: owner.map_or(&[][..], |f| &f.locals[..]),
+            ret_ty,
+            fspan: owner.map_or(Span::DUMMY, |f| f.span),
+            sub: false,
             code: Code {
                 ops: Vec::new(),
                 spans: Vec::new(),
@@ -355,9 +379,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 effects: Vec::new(),
                 effect_ctl: Vec::new(),
                 decls: Vec::new(),
-                trees: Vec::new(),
-                stmts: Vec::new(),
                 writes: Vec::new(),
+                withs: Vec::new(),
+                sub: false,
             },
             next: 0,
             high: 0,
@@ -380,22 +404,21 @@ impl<'m, 'a> Compiler<'m, 'a> {
             temp_count: 0,
             consts_end: 0,
             consts: Default::default(),
-            tree_stmts: HashSet::new(),
-            retry: None,
         }
     }
 
     // --- where locals live ---------------------------------------------------------------
 
-    /// Decides for each local whether it lives in registers or in the frame.
-    fn classify(&mut self, body: &'a Expr) {
-        let n = self.f.locals.len();
+    /// Decides for each local whether it lives in registers or in the frame (where the
+    /// locals `pinned` marks always live).
+    fn classify(&mut self, body: &'a Expr, pinned: &[bool]) {
+        let n = self.decls.len();
         let mut frame = vec![false; n];
         let mut val = vec![false; n];
-        for (i, l) in self.f.locals.iter().enumerate() {
+        for (i, l) in self.decls.iter().enumerate() {
             if second_class(l.ty) {
                 val[i] = true;
-            } else if self.m.size_of(l.ty) > REG_LOCAL_MAX {
+            } else if self.m.size_of(l.ty) > REG_LOCAL_MAX || pinned.get(i).copied().unwrap_or(false) {
                 frame[i] = true;
             }
         }
@@ -415,7 +438,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
             } else if frame[i] {
                 LocalLoc::Frame
             } else {
-                let size = self.m.size_of(self.f.locals[i].ty) as u32;
+                let size = self.m.size_of(self.decls[i].ty) as u32;
                 let r = reg;
                 reg += words(size);
                 LocalLoc::Reg { reg: r, size }
@@ -486,11 +509,9 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 frame[l.index()] = true;
             }
         };
-        if tree_only(e) {
-            mentioned_locals(e, &mut |l| pin(Some(l), frame));
-            return;
-        }
         match &e.kind {
+            // The body runs in other code, which finds them in the frame.
+            ExprKind::With { on: Some(_), body, .. } => mentioned_locals(body, &mut |l| pin(Some(l), frame)),
             ExprKind::AddrOf(inner) => pin(place_root(inner), frame),
             ExprKind::Slice { base, .. } if matches!(base.ty.kind(), TyKind::Array { .. }) => {
                 pin(place_root(base), frame)
@@ -498,8 +519,8 @@ impl<'m, 'a> Compiler<'m, 'a> {
             ExprKind::Index { base, .. } if matches!(base.ty.kind(), TyKind::Array { .. }) && is_place_expr(base) => {
                 pin(place_root(base), frame)
             }
-            ExprKind::Builtin { op: Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last, args }
-                if matches!(args[0].ty.kind(), TyKind::Array { .. }) =>
+            ExprKind::Builtin { op: op @ (Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last), args }
+                if matches!(args[0].ty.kind(), TyKind::Array { .. }) && !get_of_value(*op, args) =>
             {
                 pin(place_root(&args[0]), frame)
             }
@@ -507,10 +528,6 @@ impl<'m, 'a> Compiler<'m, 'a> {
         }
         if let Some(b) = block_of(e) {
             for s in &b.stmts {
-                if self.tree_stmts.contains(&(s as *const Stmt)) {
-                    stmt_locals(s, &mut |l| pin(Some(l), frame));
-                    continue;
-                }
                 match s {
                     Stmt::Assign { place, .. } if !matches!(place.kind, ExprKind::Local(_)) => {
                         pin(place_root(place), frame)
@@ -696,10 +713,11 @@ impl<'m, 'a> Compiler<'m, 'a> {
     // --- the function ----------------------------------------------------------------------------
 
     fn function(&mut self, body: &'a Expr) -> C {
-        for p in &self.f.params {
+        let f = self.owner.ok_or(unsupported!())?;
+        for p in &f.params {
             let loc = match self.locals[p.index()] {
                 LocalLoc::Reg { reg, size } => ParamLoc::Reg { reg, size },
-                LocalLoc::Frame => ParamLoc::Frame { local: *p, ty: self.f.locals[p.index()].ty },
+                LocalLoc::Frame => ParamLoc::Frame { local: *p, ty: f.locals[p.index()].ty },
                 LocalLoc::Val => ParamLoc::Val { local: *p },
             };
             self.code.params.push(loc);
@@ -707,6 +725,22 @@ impl<'m, 'a> Compiler<'m, 'a> {
         let v = self.expr(body)?;
         self.ret(v, ErrTest::Dynamic, body.span)?;
         self.segments()
+    }
+
+    /// The code of an expression that is not a function's body: its value ends the code.
+    fn body(&mut self, body: &'a Expr) -> C {
+        self.code.sub = self.sub;
+        let v = self.expr(body)?;
+        self.emit(Op::Ret { src: v }, body.span);
+        self.segments()
+    }
+
+    /// Finishes the code, unless a value was too large for registers.
+    fn done(self) -> C<Code<'a>> {
+        if self.too_big {
+            return Err(Unsupported(TOO_BIG, 0));
+        }
+        self.finish()
     }
 
     // --- expressions -------------------------------------------------------------------------------
@@ -754,9 +788,6 @@ impl<'m, 'a> Compiler<'m, 'a> {
     }
 
     fn expr_inner(&mut self, e: &'a Expr, want: Option<Arg>) -> C<Arg> {
-        if tree_only(e) {
-            return self.eval_tree(e, want);
-        }
         let span = e.span;
         match &e.kind {
             ExprKind::Int(_)
@@ -860,8 +891,14 @@ impl<'m, 'a> Compiler<'m, 'a> {
                     let (Arg::Data { reg: src, .. }, Arg::Data { reg, size }) = (b, dst) else {
                         return Err(unsupported!());
                     };
-                    let len = len32(*len)?;
-                    self.emit(Op::IndexVal { dst: reg, src, idx, ik, esz: size, len }, span);
+                    if *len >= NO_LEN as u64 {
+                        // The elements of an array value this long take no bytes: only the
+                        // check is left.
+                        let t = self.alloc(8);
+                        self.index_addr(t, t, idx, ik, 0, *len, span);
+                        return Ok(dst);
+                    }
+                    self.emit(Op::IndexVal { dst: reg, src, idx, ik, esz: size, len: *len as u32 }, span);
                     return Ok(dst);
                 }
                 self.place_value(e, want)
@@ -1062,6 +1099,21 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 Ok(self.dst(e, want))
             }
             ExprKind::With { label, handlers, on: None, body } => self.with(e, *label, handlers, body, want),
+            ExprKind::With { label, handlers, on: Some(stack), body } => {
+                self.with_on(e, *label, handlers, stack, body, want)
+            }
+            ExprKind::Resume { cont, value } => {
+                let list = self.operands(&[cont, value], span)?;
+                let args = self.arg_list(list, Vec::new());
+                self.emit(Op::Resume { args }, span);
+                Ok(self.dst(e, want))
+            }
+            ExprKind::Cancel(k) => {
+                let k = self.expr(k)?;
+                self.emit(Op::Cancel { k }, span);
+                self.temp_made();
+                Ok(self.dst(e, want))
+            }
             ExprKind::Trap { message } => {
                 let v = self.expr(message)?;
                 let Arg::Data { reg, .. } = v else { return Err(unsupported!()) };
@@ -1118,15 +1170,6 @@ impl<'m, 'a> Compiler<'m, 'a> {
             }
             _ => unreachable!(),
         })
-    }
-
-    fn eval_tree(&mut self, e: &'a Expr, want: Option<Arg>) -> C<Arg> {
-        let dst = self.dst(e, want);
-        self.code.trees.push(e);
-        let expr = self.code.trees.len() as u32 - 1;
-        self.emit(Op::EvalTree { expr, out: dst }, e.span);
-        self.temp_made();
-        Ok(dst)
     }
 
     /// A copy of `v` in a temporary if it is a local's register that evaluating `later` may
@@ -1313,8 +1356,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         };
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
-                        let len = len32(*len)?;
-                        self.emit(Op::IndexAddr { dst, base: addr, idx, ik, esz, len }, span);
+                        self.index_addr(dst, addr, idx, ik, esz, *len, span);
                         Ok(PlaceC::Mem { addr: dst, packed })
                     }
                     TyKind::Slice { .. } => {
@@ -1342,8 +1384,7 @@ impl<'m, 'a> Compiler<'m, 'a> {
                         let p = self.addr_of_arg(pv, span);
                         let (idx, ik) = self.index_operand(index)?;
                         let dst = self.alloc(8);
-                        let len = len32(*len)?;
-                        self.emit(Op::IndexAddr { dst, base: p, idx, ik, esz, len }, span);
+                        self.index_addr(dst, p, idx, ik, esz, *len, span);
                         Ok(PlaceC::Mem { addr: dst, packed: false })
                     }
                     _ => Err(unsupported!()),
@@ -1359,6 +1400,18 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 let addr = self.addr_of_arg(Arg::Data { reg: dst, size: self.ptr_size }, span);
                 Ok(PlaceC::Mem { addr, packed: false })
             }
+        }
+    }
+
+    /// `dst = base + idx * esz` after checking `idx < len`.
+    #[allow(clippy::too_many_arguments)]
+    fn index_addr(&mut self, dst: Reg, base: Reg, idx: Reg, ik: IntK, esz: u32, len: u64, span: Span) {
+        if len < NO_LEN as u64 {
+            self.emit(Op::IndexAddr { dst, base, idx, ik, esz, len: len as u32 }, span);
+        } else {
+            let l = self.alloc(8);
+            self.emit(Op::Imm { dst: l, w: len }, span);
+            self.emit(Op::IndexAddrW { dst, base, idx, ik, esz, len: l }, span);
         }
     }
 
@@ -1809,7 +1862,16 @@ impl<'m, 'a> Compiler<'m, 'a> {
                 self.bind(ok);
                 Ok(self.dst(e, want))
             }
-            Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last => {
+            Builtin::Fiber => {
+                let refs: Vec<&'a Expr> = args.iter().collect();
+                let list = self.operands(&refs, span)?;
+                let a = self.arg_list(list, args.iter().map(|x| x.ty).collect());
+                let dst = self.dst(e, want);
+                self.emit(Op::Fiber { args: a, out: dst }, span);
+                self.temp_made();
+                Ok(dst)
+            }
+            Builtin::Get | Builtin::GetPtr | Builtin::First | Builtin::Last if !get_of_value(op, args) => {
                 let base = &args[0];
                 let res = e.ty;
                 let (esz, align) = match res.kind() {

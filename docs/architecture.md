@@ -323,9 +323,9 @@ error message.
 The interpreter (`src/interp/`) runs programs for `gamma run` and evaluates
 constants at compile time, so it implements the language exactly as the target
 would: target integer sizes, layouts and float semantics, with every checked
-operation checked. It has two engines over the same machine (memory, frames,
-handler contexts): a tree-walker that evaluates TIR directly, and a bytecode VM
-(`src/interp/vm/`) that runs most functions. Both are described below.
+operation checked. A machine (memory, frames, handler contexts) runs register
+bytecode compiled from TIR by the VM in `src/interp/vm/`, described below; every
+function, constant initializer and compile-time evaluation runs that way.
 
 **Memory.** The interpreter models a flat address space. Every allocation (a
 local variable, a temporary whose address is taken, a string literal, a
@@ -357,8 +357,9 @@ operation looks up the innermost handler and runs the clause as a function
 whose environment is the frame where the handler literal was written. Second-class
 function values capture the context where they were created, as §11.6 requires.
 
-**Fibers.** The evaluator is recursive, so a fiber suspended in the middle of an
-expression needs a Rust stack of its own: each fiber runs on an OS thread
+**Fibers.** The interpreter nests Rust calls (a clause run by a driver, a call from a
+builtin or from C), so a fiber suspended in the middle of its code needs a Rust stack
+of its own: each fiber runs on an OS thread
 (`src/interp/fiber.rs`). The threads share the machine and pass control to each
 other over channels, so exactly one runs at a time; the per-thread parts of the
 machine (temporaries, call depth, stack limits) are saved and restored at each
@@ -430,23 +431,26 @@ other than C, a pointer to a union that holds pointers, a symbol `dlsym` does no
 find, or a target other than the host's send the program to the C back end
 instead. Compile-time evaluation traps on a foreign call.
 
-**The bytecode VM.** Walking the tree costs a Rust call, a match and a boxed
-value per node, so a function is compiled to register bytecode the first time it
+**The bytecode VM.** A function is compiled to register bytecode the first time it
 is called (`code_of` in `src/interp/vm/mod.rs`) and run by a dispatch loop
 (`src/interp/vm/exec.rs`). Calls from compiled code to compiled code pass
-registers directly; calls to and from tree-walked code go through `Value`s.
+registers directly; calls from the runtime (a builtin, a clause run by a fiber's
+driver, a thread's start, a callback from C) go through `Value`s. A closed
+expression, such as a constant's initializer, compiles to code of its own without
+parameters (`compile_expr`), run in a fresh frame.
 
 - *Registers* are 64-bit words holding values in target layout: an `n`-byte value
   takes `⌈n/8⌉` words, its last word zero-padded, and pointers are addresses. A
   local of up to 64 bytes lives in registers unless something needs its address
   (a closure capturing it, `&x`, an assignment through a place the VM cannot
-  resolve), in which case it lives in the frame as in the tree-walker. Small
+  resolve, or the body of a `with … on` mentioning it), in which case it lives in
+  its frame's slots. A local larger than 64 bytes always does. Small
   literal constants get registers that are filled when the activation starts.
 - *Instructions* have fast forms for the common types: small integers (up to 64
   bits; `AddI`, `CmpI`, `BrI` compare-and-branch, `RotI`…), `f32`/`f64` (`BinF`, `CmpF`,
   `BrF`, `NegF`) and pointer words. Anything else (big integers, `f16`, arrays,
   `#bits` structs) goes through generic instructions that decode the operands'
-  bytes as the tree-walker does. A branch on a negated float comparison jumps over
+  bytes with the general arithmetic of `src/interp/ops.rs` and `num.rs`. A branch on a negated float comparison jumps over
   an unconditional jump instead of inverting the comparison, which a NaN would break.
 - *Control flow* that stays in a function (`break`, `continue`, `return`, `try`,
   a clause's `break` to a `with` in the same function) compiles to jumps, with the
@@ -455,12 +459,20 @@ registers directly; calls to and from tree-walked code go through `Value`s.
   values and are matched against a table of scopes, innermost first: a deferred
   statement's code, a loop or `with` landing, or a guard that turns a flow
   escaping a deferred statement into a trap.
-- *Fallbacks.* A few constructs run on the tree-walker from inside compiled
-  code: `with … on`, `resume`, `cancel`, `@fiber`, system calls, and a
-  statement whose value is too large for registers (over 64 KiB). Locals they
-  mention live in the frame, where both engines see them. A function the
-  compiler cannot handle at all (one with an array of 2^32 or more elements)
-  runs on the tree-walker as a whole.
+- *`with … on`.* Its body runs on a fiber, on another thread, so it is compiled to
+  code of its own (`compile_sub`) that runs in the frame of the activation that
+  contains it: the locals the body mentions live in that frame. A `return` in the
+  body, and a `break` or `continue` to a loop outside it, are flows to that frame,
+  which unwind the fiber and land in the function's own scopes. `resume`,
+  `cancel` and `@fiber` are instructions of their own; system calls and coverage
+  counters go through the generic builtin instruction.
+- *Large values* live in registers too (an array value of a megabyte takes
+  128 Ki words); only a value larger than any frame (1 GiB) cannot be compiled.
+  Indexing an array of 2^32 or more elements checks the index against a length
+  in a register (`IndexAddrW`). A function the compiler cannot translate gets
+  code that only traps with an internal error naming the line of the compiler
+  that gave up (`trap_code`); its parameters are bound as usual, so the checks of
+  the call (such as the size of its frame) come first.
 
 Calls between compiled functions do not nest Rust calls: the dispatch loop makes the
 callee the running activation, with the caller, the place for the result and where to go
@@ -498,8 +510,7 @@ between compiled functions, effect clauses and function pointers copy arguments
 register to register. `--features vm-profile` counts opcodes and adjacent pairs
 (`GAMMA_VM_PROFILE=1`, `GAMMA_VM_PAIRS=1`), which is how fused instructions are
 chosen.
-`GAMMA_INTERP=tree` turns the VM off; see `docs/contributing.md` for the
-debugging switches.
+See `docs/contributing.md` for the debugging switches.
 
 **Constants.** Evaluating a constant produces its bytes plus *relocations* for
 any pointers into static data (string literals, other constants, functions), so
@@ -973,7 +984,7 @@ nothing, and gcc 13 at `-O2` was seen to drop such writes under it.
 
 `src/testing.rs` selects the cases (`--filter`), runs them and prints the results in order. `pool` runs the jobs on `--jobs` threads and hands the results over in job order. The interpreter's state is not shared between threads, so each thread analyzes the program again (the analysis is deterministic, so test number `i` is the same everywhere); native runs only start processes. `--all` makes `analyze_package_tests` load every directory of the package (`Sema::load_package_modules`).
 
-Coverage (`--coverage`) is a rewrite of the checked program (`src/coverage.rs`): before each statement, and before the value of each block, of the functions of the package that are not tests, it inserts `Builtin::Cover(n)`, where `n` numbers a source line. The tree-walker counts executions in process-wide atomic counters (`interp/coverage.rs`), and the bytecode VM leaves expressions with the builtin to the tree-walker. Nothing is inserted, and nothing slows down, without the option; the C back end does not support the builtin, so coverage needs the interpreter.
+Coverage (`--coverage`) is a rewrite of the checked program (`src/coverage.rs`): before each statement, and before the value of each block, of the functions of the package that are not tests, it inserts `Builtin::Cover(n)`, where `n` numbers a source line. The interpreter counts executions in process-wide atomic counters (`interp/coverage.rs`). Nothing is inserted, and nothing slows down, without the option; the C back end does not support the builtin, so coverage needs the interpreter.
 
 ## API documentation
 

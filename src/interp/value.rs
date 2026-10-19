@@ -52,10 +52,6 @@ impl Value {
     pub fn unit() -> Value {
         Value::Bytes(Bytes::empty())
     }
-
-    pub fn from_slice(s: &[u8]) -> Value {
-        Value::Bytes(Bytes::from_slice(s))
-    }
 }
 
 /// Where the storage of a local variable lives.

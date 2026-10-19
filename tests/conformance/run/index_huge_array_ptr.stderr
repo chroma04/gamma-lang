@@ -1,0 +1,2 @@
+trap: index 8589934592 out of bounds for length 8589934592
+  at tests/conformance/run/index_huge_array_ptr.gm:13:19 in main

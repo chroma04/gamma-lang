@@ -1,7 +1,7 @@
-// Programs that mix what the interpreter runs as compiled code with what it
-// hands to the tree-walker, and control flow that leaves through defers from
-// far away: an effect clause's `break` unwinding several calls, `try` inside a
-// clause, a value too large for registers, integer conversions at every width.
+// Edge cases of the interpreter's compiled code: control flow that leaves
+// through defers from far away (an effect clause's `break` unwinding several
+// calls, `try` inside a clause), a local of 800 KB, locals both captured and
+// addressed, integer conversions at every width.
 E :: union { Bad: i32 }
 Stop :: effect { stop: esc(code: i32) -> never }
 
