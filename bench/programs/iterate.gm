@@ -1,0 +1,14 @@
+// 200000 elements of an iterator: one perform of `yield` per element.
+count :: fn(n: i64) needs Yield(i64) {
+    for i in 0..n {
+        yield(i)
+    }
+}
+
+main :: fn() needs Out {
+    s: i64 = 0
+    for x in count(200000) {
+        s += x
+    }
+    print("{}\n", s)
+}

@@ -1,0 +1,50 @@
+// A large parameter is a copy of its argument (§11.2), however the argument is passed:
+// as a constant, from a local nothing writes, from a local that a closure, a pointer or
+// a later assignment writes while or after the callee runs, and handed down again.
+Loc :: struct { name: string, line, column: u32, tags: [4]i64 }
+
+Note :: effect { note: fn(s: string) }
+
+show :: fn(l: Loc) needs Note + Out {
+    Note.note(l.name)
+    print("{} {}:{} {}\n", l.name, l.line, l.column, l.tags[0] + l.tags[3])
+}
+
+relay :: fn(l: Loc, depth: i64) needs Note + Out {
+    if depth > 0 { relay(l, depth - 1) } else { show(l) }
+}
+
+// Runs `f` between two looks at `l`: `f` may write the caller's value.
+around :: fn(l: Loc, f: fn()) needs Note + Out {
+    before := l.tags[0]
+    f()
+    print("around: {} then {}\n", before, l.tags[0])
+}
+
+poke :: fn(l: Loc, p: ^Loc) needs Note + Out {
+    p.tags[0] = 99
+    print("poke: {} {}\n", l.tags[0], p.tags[0])
+}
+
+main :: fn() needs Out {
+    notes: i64 = 0
+    with (handler Note { note(s) => { notes += 1 } }) {
+        show(Loc(name: "const", line: 1, column: 2, tags: [4]i64(fill: 5)))
+        steady := Loc(name: "steady", line: 3, column: 4, tags: [4]i64(1, 2, 3, 4))
+        show(steady)
+        relay(steady, 3)
+
+        shared := Loc(name: "shared", line: 5, column: 6, tags: [4]i64(7, 0, 0, 0))
+        around(shared, fn() { shared.tags[0] = 8 })
+        print("shared: {}\n", shared.tags[0])
+
+        pointed := Loc(name: "pointed", line: 7, column: 8, tags: [4]i64(1, 0, 0, 0))
+        poke(pointed, &pointed)
+
+        later := Loc(name: "later", line: 9, column: 10, tags: [4]i64(2, 0, 0, 0))
+        show(later)
+        later.tags[0] = 20
+        show(later)
+    }
+    print("notes: {}\n", notes)
+}

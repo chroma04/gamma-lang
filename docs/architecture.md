@@ -735,9 +735,17 @@ parts of a value are scalars (gcc's scalar replacement of aggregates gives up on
 byte arrays), and types with the same shape share one definition. Every other
 type (`#packed` and `#bits` structs, zero-size types)
 is a *blob*, a struct holding its bytes with the layout's size and alignment.
-Typed structs are not used under Fil-C, where a value is a blob so that copying
-it keeps the capabilities of the pointers inside, nor on 32-bit targets, where
-C and Gamma align 64-bit members differently.
+Typed structs are not used on 32-bit targets, where C and Gamma align 64-bit
+members differently, nor under Fil-C, where a blob of pointer-sized words is
+made of members the copy moves one by one (`types::BlobKind`): words when the
+value holds no pointer; words typed as pointers or numbers when its pointers are
+always at the same offsets (a struct of pointers and numbers), so that the copy
+keeps their capabilities; and otherwise, as for a union whose variants hold a
+pointer and a number in the same word, a C union of the bytes with
+pointer-sized lanes. A struct of pointers would not do there: where the same
+word is also read as a number, the optimizer turns the pointer into a number and
+back, which drops its capability. Copying a byte array would be a call into the
+Fil-C runtime.
 
 **Byte order.** The C back end and the runtime work on little- and big-endian
 targets. An integer (at most 128 bits wide)
@@ -989,7 +997,14 @@ A large parameter is read in place, without the copy, when no difference can be
 observed (Appendix D.5; `src/cgen/borrow.rs`): the function never stores into
 it, takes its address or slices it, and is *pure*: it has no effects, stores only
 into its own locals, and calls only pure functions, so nothing that could change
-the caller's value runs during the call.
+the caller's value runs during the call. It is also read in place when every
+call passes a value that nothing writes while the callee runs: a constant from
+static storage (`constarg.rs`), a temporary, or a local of the caller that is
+never assigned, addressed or captured after its initialization. That needs every
+call to be in sight, so the function must be a named one whose address is never
+taken, nor exported; and its parameter must not be captured by a function
+literal. The typical case is the `SourceLocation` that `@caller_location()` gives
+`new` and `destroy`, and that they pass on.
 
 Generated code is compiled with `-fno-strict-aliasing`. Values are byte blobs
 written and read piecewise with `memcpy`, so type-based alias analysis gains

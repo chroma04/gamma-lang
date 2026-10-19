@@ -3956,7 +3956,7 @@ GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
 
 /* ---- handler contexts and non-local exits ---------------------------------------------- */
 
-GM_API gm_node *gm_find(gm_node *cx, uint32_t eff) {
+GM_API gm_node *gm_find_outer(gm_node *cx, uint32_t eff) {
     for (; cx; cx = cx->next) {
         if (cx->eff == eff) return cx;
     }

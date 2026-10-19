@@ -180,6 +180,73 @@ impl<'a> Layouts<'a> {
         self.layout(ty).size
     }
 
+    /// Whether a value of `ty` may hold a pointer (conservatively: true for anything
+    /// that is not built from numbers, booleans and pointer-free aggregates of them).
+    pub fn may_hold_pointers(&self, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) | TyKind::Bool | TyKind::Never => false,
+            TyKind::Array { elem, .. } => self.may_hold_pointers(*elem),
+            TyKind::Tuple { elems, .. } => elems.iter().any(|t| self.may_hold_pointers(*t)),
+            TyKind::Optional(inner) => self.may_hold_pointers(*inner),
+            TyKind::Result { err, ok } => self.may_hold_pointers(*err) || self.may_hold_pointers(*ok),
+            TyKind::Adt(id, _) => match (self.adts)(*id).map(|d| &d.kind) {
+                Some(AdtKind::Struct { fields, bits: None, .. }) | Some(AdtKind::CUnion { fields }) => {
+                    fields.iter().any(|f| self.may_hold_pointers(f.ty))
+                }
+                Some(AdtKind::Struct { bits: Some(_), .. }) => false,
+                Some(AdtKind::Union { variants, .. }) => {
+                    variants.iter().filter_map(|v| v.payload).any(|t| self.may_hold_pointers(t))
+                }
+                None => true,
+            },
+            _ => true,
+        }
+    }
+
+    /// For a value of `ty` whose pointers are always at the same places (no union,
+    /// optional or result holds one), which of its pointer-sized words hold a pointer;
+    /// `None` when that depends on the value, or a pointer is not aligned to its size.
+    pub fn pointer_words(&self, ty: Ty) -> Option<Vec<bool>> {
+        let p = self.target.ptr_bytes;
+        let mut words = vec![false; self.size_of(ty).div_ceil(p) as usize];
+        self.mark_pointer_words(ty, 0, &mut words).then_some(words)
+    }
+
+    fn mark_pointer_words(&self, ty: Ty, off: u64, words: &mut [bool]) -> bool {
+        let p = self.target.ptr_bytes;
+        let mut ptr_at = |o: u64| {
+            if !o.is_multiple_of(p) {
+                return false;
+            }
+            words[(o / p) as usize] = true;
+            true
+        };
+        match ty.kind() {
+            TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::FnPtr(_) => ptr_at(off),
+            TyKind::Optional(inner) if is_nullable_pointer(*inner) => ptr_at(off),
+            TyKind::Slice { .. } => ptr_at(off),
+            // A closure's code, environment and context; a handler value's frame and context.
+            TyKind::Fn(_) => ptr_at(off) && ptr_at(off + p) && ptr_at(off + 2 * p),
+            TyKind::Handler(_) => ptr_at(off) && ptr_at(off + p),
+            TyKind::Array { len, elem, .. } => {
+                let esz = self.size_of(*elem);
+                (0..*len).all(|i| self.mark_pointer_words(*elem, off + i * esz, words))
+            }
+            TyKind::Tuple { elems, .. } => {
+                let offs = self.layout(ty).offsets;
+                elems.iter().zip(offs).all(|(t, o)| self.mark_pointer_words(*t, off + o, words))
+            }
+            TyKind::Adt(id, _) => match (self.adts)(*id).map(|d| &d.kind) {
+                Some(AdtKind::Struct { fields, bits: None, .. }) => {
+                    let offs = self.layout(ty).offsets;
+                    fields.iter().zip(offs).all(|(f, o)| self.mark_pointer_words(f.ty, off + o, words))
+                }
+                _ => !self.may_hold_pointers(ty),
+            },
+            _ => !self.may_hold_pointers(ty),
+        }
+    }
+
     pub fn align_of(&self, ty: Ty) -> u64 {
         self.layout(ty).align
     }

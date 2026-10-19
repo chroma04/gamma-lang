@@ -26,9 +26,10 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   s24: 1500 debug seeds (300000..301500) + checked-mode batch (400000..), 0 disagreements.
   Left: tree-sitter as a second parser.
 - bugs-open #48 done (s29: statement-run outlining, decisions/031). Left: by-ref chains.
-- Perf: Safe new/destroy ~3.6x Checked (s21: memset → gap stores; rest is Fil-C cost of
-  by-ref param copies and blob loads with pointers, see sessions/s21); interpreter `perform`
-  (s21 trimmed it ~6%; vm_perform still ~200 instr self).
+- Perf (s29, decisions/032): Safe new/destroy 1731 → ~1000 instr/iter (Checked ~400; rest
+  is Fil-C malloc/free + indirect clause calls). VM iterator −27%; decl `perform` only −2.5%
+  (cost spread thin over vm_enter/vm_state; next: transitive handler specialization in C,
+  per-site perform cache or a leaner activation in the VM).
   s22: VM float ops + RotI; examples show no other generic-op hotspot.
 - Windows follow-ups: Safe, `gamma debug`, gdb printers (Linux-only); ARM64 Windows.
 - Editors: Zed extension (editors/zed, s19) untried in real Zed — publish to zed-industries/extensions
