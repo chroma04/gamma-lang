@@ -7,8 +7,12 @@
  */
 
 /* Definitions of the variables declared in gm_rt.h (gm_checks is the generated code's). */
-GM_API _Thread_local gm_bt *gm_bt_top;
-#ifdef _WIN32
+GM_API GM_TLS gm_bt *gm_bt_top;
+#ifdef GM_FREESTANDING
+/* One thread of execution: nothing to lock. */
+GM_API void gm_rt_acquire(void) {}
+GM_API void gm_rt_release(void) {}
+#elif defined(_WIN32)
 static SRWLOCK gm_rt_lock = SRWLOCK_INIT;
 GM_API void gm_rt_acquire(void) { AcquireSRWLockExclusive(&gm_rt_lock); }
 GM_API void gm_rt_release(void) { ReleaseSRWLockExclusive(&gm_rt_lock); }
@@ -19,13 +23,274 @@ GM_API void gm_rt_release(void) { pthread_mutex_unlock(&gm_rt_lock); }
 #endif
 GM_API int gm_debug = 1;
 GM_API void *(*volatile gm_poison)(void *, int, size_t) = memset;
-GM_API _Thread_local gm_unwind gm_unw;
-GM_API _Thread_local gm_fiber *gm_cur_fiber;
-GM_API _Thread_local uintptr_t gm_stack_limit;
-GM_API _Thread_local uintptr_t gm_thread_stack_limit;
+GM_API GM_TLS gm_unwind gm_unw;
+GM_API GM_TLS gm_fiber *gm_cur_fiber;
+GM_API GM_TLS uintptr_t gm_stack_limit;
+GM_API GM_TLS uintptr_t gm_thread_stack_limit;
 
 /* ---- traps ---------------------------------------------------------------- */
 
+/* Set while a stack overflow is reported: the report then ends the process without the
+ * C library's exit processing, which needs stack the overflowed thread may not have. */
+static GM_TLS int gm_overflowing;
+
+/* ---- freestanding support (GM_FREESTANDING) ------------------------------------------------
+ *
+ * Without a C library the runtime formats numbers itself (gm_snprintf, which understands only
+ * the conversions the runtime and the generated code use) and takes the memory of its
+ * temporary buffers from a small static arena: formatting needs scratch space, and a
+ * freestanding program owns no allocator. The arena is emptied whenever no buffer is live. */
+#ifdef GM_FREESTANDING
+
+#ifndef GM_SCRATCH_SIZE
+#define GM_SCRATCH_SIZE 16384
+#endif
+static uint8_t gm_scratch[GM_SCRATCH_SIZE] __attribute__((aligned(16)));
+static size_t gm_scratch_top, gm_scratch_live;
+
+/* A buffer of `cap` bytes holding the `oldcap` bytes at `old` (NULL: none). */
+static uint8_t *gm_scratch_grow(uint8_t *old, size_t oldcap, size_t cap) {
+    size_t base;
+    if (old != NULL && old + oldcap == gm_scratch + gm_scratch_top) {
+        base = (size_t)(old - gm_scratch); /* the newest buffer grows in place */
+    } else {
+        base = (gm_scratch_top + 15) & ~(size_t)15;
+    }
+    if (base > GM_SCRATCH_SIZE || cap > GM_SCRATCH_SIZE - base) {
+        gm_trap("out of memory (formatting buffer)", NULL, 0, 0);
+    }
+    if (old == NULL) gm_scratch_live++;
+    gm_scratch_top = base + cap;
+    if (old != NULL && gm_scratch + base != old) memcpy(gm_scratch + base, old, oldcap);
+    return gm_scratch + base;
+}
+
+static void gm_scratch_release(uint8_t *p, size_t cap) {
+    if (p == NULL) return;
+    if (p + cap == gm_scratch + gm_scratch_top) gm_scratch_top = (size_t)(p - gm_scratch);
+    if (--gm_scratch_live == 0) gm_scratch_top = 0;
+}
+
+typedef struct { char *dst; size_t cap, len; } gm_sink;
+
+static void gm_sink_put(gm_sink *s, char c) {
+    if (s->len + 1 < s->cap) s->dst[s->len] = c;
+    s->len++;
+}
+
+static void gm_sink_unsigned(gm_sink *s, unsigned long long v, unsigned base, int min_digits) {
+    char tmp[24];
+    int n = 0;
+    while (v != 0 || n < min_digits) {
+        unsigned d = (unsigned)(v % base);
+        tmp[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+        v /= base;
+    }
+    while (n > 0) gm_sink_put(s, tmp[--n]);
+}
+
+/* The decimal digits of the finite number a >= 0, exactly: *pt is the decimal point's place, so
+ * that a is 0.D * 10^pt for the returned digit string D (no leading zeros; empty for 0). The
+ * number is m * 2^e2: m * 2^e2 when e2 >= 0, else m * 5^-e2 / 10^-e2. */
+#define GM_BIG_LIMBS 90
+#define GM_DIGITS_MAX (GM_BIG_LIMBS * 9)
+static size_t gm_exact_digits(double a, char *digits, int *pt) {
+    uint64_t bits;
+    memcpy(&bits, &a, 8);
+    int ex = (int)((bits >> 52) & 0x7ff);
+    uint64_t m = bits & (((uint64_t)1 << 52) - 1);
+    int e2;
+    if (ex == 0) {
+        e2 = -1074;
+    } else {
+        m |= (uint64_t)1 << 52;
+        e2 = ex - 1075;
+    }
+    if (m == 0) {
+        *pt = 0;
+        return 0;
+    }
+    uint32_t limb[GM_BIG_LIMBS]; /* base 10^9, least significant first */
+    size_t n = 0;
+    for (uint64_t v = m; v != 0; v /= 1000000000u) limb[n++] = (uint32_t)(v % 1000000000u);
+    unsigned factor = e2 >= 0 ? 2 : 5;
+    int times = e2 >= 0 ? e2 : -e2;
+    for (int i = 0; i < times; i++) {
+        uint64_t carry = 0;
+        for (size_t k = 0; k < n; k++) {
+            uint64_t v = (uint64_t)limb[k] * factor + carry;
+            limb[k] = (uint32_t)(v % 1000000000u);
+            carry = v / 1000000000u;
+        }
+        if (carry != 0) limb[n++] = (uint32_t)carry;
+    }
+    size_t len = 0;
+    for (size_t k = n; k > 0; k--) {
+        uint32_t v = limb[k - 1];
+        char tmp[9];
+        for (int j = 8; j >= 0; j--) {
+            tmp[j] = (char)('0' + v % 10);
+            v /= 10;
+        }
+        for (int j = 0; j < 9; j++) {
+            if (len == 0 && tmp[j] == '0') continue;
+            digits[len++] = tmp[j];
+        }
+    }
+    *pt = (int)len - (e2 >= 0 ? 0 : -e2);
+    return len;
+}
+
+/* Rounds the digit string d[0..len) to its first `keep` digits (half to even, on the exact
+ * value); *nd is the number of digits left. Returns whether the rounding carried out of the
+ * first digit (the digits are then all zeros, and the result is 1 followed by them). */
+static bool gm_round_digits(char *d, size_t len, long keep, size_t *nd) {
+    if ((size_t)keep >= len) {
+        *nd = len;
+        return false;
+    }
+    *nd = (size_t)keep;
+    bool up = false;
+    if (d[keep] > '5') {
+        up = true;
+    } else if (d[keep] == '5') {
+        bool rest = false;
+        for (size_t i = (size_t)keep + 1; i < len; i++) rest |= d[i] != '0';
+        up = rest || (keep > 0 && ((d[keep - 1] - '0') & 1));
+    }
+    if (!up) return false;
+    long i = keep - 1;
+    while (i >= 0 && d[i] == '9') d[i--] = '0';
+    if (i >= 0) {
+        d[i]++;
+        return false;
+    }
+    return true;
+}
+
+/* printf's %.*f and %.*e (kind 'f' or 'e') of a >= 0. */
+static void gm_sink_float(gm_sink *s, char kind, int prec, double a) {
+    static char d[GM_DIGITS_MAX + 4];
+    int pt;
+    size_t nd, len = gm_exact_digits(a, d, &pt);
+    if (prec < 0) prec = 6;
+    if (kind == 'f') {
+        long keep = (long)pt + prec;
+        if (keep < 0) {
+            nd = 0;
+            pt = 0;
+        } else if (gm_round_digits(d, len, keep, &nd)) {
+            d[nd] = '0';
+            d[0] = '1';
+            nd++;
+            pt++;
+        }
+        if (pt <= 0) gm_sink_put(s, '0');
+        for (long i = 0; i < pt; i++) gm_sink_put(s, (size_t)i < nd ? d[i] : '0');
+        if (prec > 0) {
+            gm_sink_put(s, '.');
+            for (long i = 0; i < prec; i++) {
+                long q = (long)pt + i;
+                gm_sink_put(s, q >= 0 && (size_t)q < nd ? d[q] : '0');
+            }
+        }
+        return;
+    }
+    long keep = (long)prec + 1;
+    int x = len == 0 ? 0 : pt - 1;
+    nd = len;
+    if (len != 0 && gm_round_digits(d, len, keep, &nd)) {
+        d[nd] = '0';
+        d[0] = '1';
+        nd++;
+        x++;
+    }
+    if (len == 0) nd = 0;
+    gm_sink_put(s, nd > 0 ? d[0] : '0');
+    if (prec > 0) {
+        gm_sink_put(s, '.');
+        for (long i = 1; i < keep; i++) gm_sink_put(s, (size_t)i < nd ? d[i] : '0');
+    }
+    gm_sink_put(s, 'e');
+    gm_sink_put(s, x < 0 ? '-' : '+');
+    gm_sink_unsigned(s, (unsigned long long)(x < 0 ? -x : x), 10, 2);
+}
+
+static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    gm_sink s = {dst, cap, 0};
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') {
+            gm_sink_put(&s, *fmt);
+            continue;
+        }
+        fmt++;
+        int prec = -1, ll = 0;
+        if (fmt[0] == '.' && fmt[1] == '*') {
+            prec = va_arg(ap, int);
+            fmt += 2;
+        }
+        while (*fmt == 'l') {
+            ll++;
+            fmt++;
+        }
+        switch (*fmt) {
+        case 's': {
+            const char *p = va_arg(ap, const char *);
+            while (*p) gm_sink_put(&s, *p++);
+            break;
+        }
+        case 'u':
+        case 'x': {
+            unsigned long long v = ll ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned);
+            gm_sink_unsigned(&s, v, *fmt == 'u' ? 10 : 16, 1);
+            break;
+        }
+        case 'd': {
+            long long v = ll ? va_arg(ap, long long) : va_arg(ap, int);
+            if (v < 0) gm_sink_put(&s, '-');
+            gm_sink_unsigned(&s, v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v, 10, 1);
+            break;
+        }
+        case 'e':
+        case 'f': gm_sink_float(&s, *fmt, prec, va_arg(ap, double)); break;
+        case '%': gm_sink_put(&s, '%'); break;
+        default: break;
+        }
+    }
+    va_end(ap);
+    if (cap > 0) dst[s.len < cap ? s.len : cap - 1] = 0;
+    return (int)s.len;
+}
+
+static int gm_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return (unsigned char)*a - (unsigned char)*b;
+}
+#define strcmp gm_strcmp
+#endif /* GM_FREESTANDING */
+
+#ifdef GM_FREESTANDING
+/* A trap calls the program's `#trap_hook` (spec 3.7.1) with the reason and location, or
+ * executes the target's trap instruction when there is none. */
+#ifdef GM_TRAP_HOOK
+static _Noreturn void gm_trap_hook_call(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
+#endif
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
+#ifdef GM_TRAP_HOOK
+    /* A trap inside the hook cannot call it again. */
+    static int in_hook;
+    if (!in_hook) {
+        in_hook = 1;
+        gm_trap_hook_call(msg, len, file, line, col);
+    }
+#else
+    (void)msg; (void)len; (void)file; (void)line; (void)col;
+#endif
+    __builtin_trap();
+}
+#else
 /* Prints the callers in the backtrace chain; past GM_BT_MAX of them, only the first and
  * last GM_BT_MAX / 2, with a line that does not count the calls in between (the depth that
  * a stack overflow reaches differs between back ends). */
@@ -46,10 +311,6 @@ static void gm_backtrace(void) {
     }
 }
 
-/* Set while a stack overflow is reported: the report then ends the process without the
- * C library's exit processing, which needs stack the overflowed thread may not have. */
-static _Thread_local int gm_overflowing;
-
 GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
     gm_flush();
     fputs("trap: ", stderr);
@@ -68,6 +329,7 @@ GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *
 #endif
     exit(134);
 }
+#endif /* GM_FREESTANDING */
 
 GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col) {
     gm_trap_bytes((const uint8_t *)msg, strlen(msg), file, line, col);
@@ -95,8 +357,12 @@ GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {
             }
             cap *= 2;
         }
+#ifdef GM_FREESTANDING
+        uint8_t *p = gm_scratch_grow(b->data, b->cap, cap);
+#else
         uint8_t *p = (uint8_t *)realloc(b->data, cap);
         if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+#endif
         b->data = p;
         b->cap = cap;
     }
@@ -105,7 +371,11 @@ GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {
 }
 
 GM_API void gm_buf_free(gm_buf *b) {
+#ifdef GM_FREESTANDING
+    gm_scratch_release(b->data, b->cap);
+#else
     free(b->data);
+#endif
     b->data = NULL;
     b->len = b->cap = 0;
 }
@@ -1219,8 +1489,7 @@ static void gm_spec_pad(gm_buf *out, const char *head, size_t hn, const uint8_t 
  * negative. */
 static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsigned shift, bool upper) {
     size_t n = t->size;
-    uint8_t *m = (uint8_t *)malloc(n ? n : 1);
-    if (m == NULL) gm_trap("out of memory", NULL, 0, 0);
+    uint8_t mbuf[16], *m = mbuf; /* integers have at most 128 bits */
     /* Work on the little-endian bytes of the value. */
     for (size_t i = 0; i < n; i++) m[i] = *gm_ibp(p, n, i);
     unsigned bits = t->bits;
@@ -1258,18 +1527,29 @@ static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsi
         if (started) gm_fmt_ch(body, dig[v]);
     }
     if (!started) gm_fmt_ch(body, '0');
-    free(m);
     return neg;
 }
 
-/* Rewrites printf's exponent ("e+05", "e-07") in the display style ("e5", "e-7"). */
-static void gm_spec_exp(gm_buf *body, const char *s) {
-    const char *e = strchr(s, 'e');
-    gm_buf_push(body, s, (size_t)(e - s));
-    int x = atoi(e + 1);
+/* Rewrites printf's exponent ("e+05", "e-07") at the end of body, after its offset `from`,
+ * in the display style ("e5", "e-7"). */
+static void gm_spec_exp(gm_buf *body, size_t from) {
+    size_t e = from;
+    while (body->data[e] != 'e') e++;
+    int x = 0;
+    for (size_t i = e + 2; i < body->len; i++) x = x * 10 + (body->data[i] - '0');
+    if (body->data[e + 1] == '-') x = -x;
+    body->len = e;
     char tmp[16];
     int k = snprintf(tmp, sizeof tmp, "e%d", x);
     gm_buf_push(body, tmp, (size_t)k);
+}
+
+/* Appends n bytes of unspecified content to b; returns the first. */
+static char *gm_buf_extend(gm_buf *b, size_t n) {
+    size_t at = b->len;
+    gm_buf_push(b, NULL, 0);
+    for (size_t i = 0; i < n; i++) gm_fmt_ch(b, 0);
+    return (char *)b->data + at;
 }
 
 GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const gm_spec *s) {
@@ -1310,11 +1590,10 @@ GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const 
             gm_fmt_str(&body, "inf");
         } else if (s->kind == 5 && s->precision >= 0) {
             int k = snprintf(NULL, 0, "%.*e", s->precision, a);
-            char *tmp = (char *)malloc((size_t)k + 1);
-            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
-            snprintf(tmp, (size_t)k + 1, "%.*e", s->precision, a);
-            gm_spec_exp(&body, tmp);
-            free(tmp);
+            size_t from = body.len;
+            snprintf(gm_buf_extend(&body, (size_t)k + 1), (size_t)k + 1, "%.*e", s->precision, a);
+            body.len--;
+            gm_spec_exp(&body, from);
         } else if (s->kind == 5) {
             if (a == 0) {
                 gm_fmt_str(&body, "0e0");
@@ -1332,11 +1611,8 @@ GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const 
             }
         } else if (s->precision >= 0) {
             int k = snprintf(NULL, 0, "%.*f", s->precision, a);
-            char *tmp = (char *)malloc((size_t)k + 1);
-            if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
-            snprintf(tmp, (size_t)k + 1, "%.*f", s->precision, a);
-            gm_buf_push(&body, tmp, (size_t)k);
-            free(tmp);
+            snprintf(gm_buf_extend(&body, (size_t)k + 1), (size_t)k + 1, "%.*f", s->precision, a);
+            body.len--;
         } else {
             uint8_t pos[8];
             if (t->bits == 16) {
@@ -1377,6 +1653,19 @@ GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const 
 }
 
 /* ---- ambient effects ---------------------------------------------------------- */
+
+#ifdef GM_FREESTANDING
+/* No ambient handlers exist on a freestanding target (spec 3.7.1), so the generated code's
+ * branches for them never run; these keep it compilable. */
+GM_API void gm_write_out(const uint8_t *p, size_t len) { (void)p; (void)len; __builtin_trap(); }
+GM_API void gm_write_err(const uint8_t *p, size_t len) { (void)p; (void)len; __builtin_trap(); }
+GM_API void gm_flush(void) {}
+GM_API const void *gm_args(size_t *count) { *count = 0; return NULL; }
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+    (void)name; (void)len; (void)value; (void)value_len;
+    return false;
+}
+#else
 
 GM_API void gm_write_out(const uint8_t *p, size_t len) {
     if (len > 0) fwrite(p, 1, len, stdout);
@@ -3100,7 +3389,26 @@ GM_API int64_t gm_proc_kill(int64_t h) {
 }
 #endif
 
+#endif /* GM_FREESTANDING */
+
 /* ---- heap ------------------------------------------------------------------------ */
+
+#ifdef GM_FREESTANDING
+/* The program supplies its own allocators; the system heap does not exist. The Debug-build
+ * records of which allocator owns a block are not kept. */
+GM_API void *gm_heap_alloc(size_t size, size_t align) { (void)size; (void)align; return NULL; }
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
+    (void)p; (void)size; (void)align; (void)file; (void)line; (void)col;
+}
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    (void)p; (void)owner; (void)vt; (void)file; (void)flen; (void)line; (void)col;
+}
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol) {
+    (void)p; (void)owner; (void)vt; (void)file; (void)flen; (void)line; (void)col;
+    (void)tfile; (void)tline; (void)tcol;
+}
+#else
 
 /* Blocks are over-allocated and aligned by hand so that any power-of-two alignment works on
  * every libc; the address of the underlying allocation is stored just before the block. */
@@ -3302,6 +3610,9 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
     gm_heap_release(p);
 }
 
+#endif /* GM_FREESTANDING */
+
+#ifndef GM_FREESTANDING
 #ifndef _WIN32
 /* ---- threads ---------------------------------------------------------------------------- */
 
@@ -3641,6 +3952,8 @@ GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     else gm_write_out((const uint8_t *)p, n);
 }
 
+#endif /* GM_FREESTANDING */
+
 /* ---- handler contexts and non-local exits ---------------------------------------------- */
 
 GM_API gm_node *gm_find(gm_node *cx, uint32_t eff) {
@@ -3688,9 +4001,9 @@ static void gm_fiber_entry(gm_fiber *fb);
  * execution keeps one context object, `gm_filc_running` while it runs. */
 #include <ucontext.h>
 typedef struct { ucontext_t uc; gm_fiber *fb; } gm_filc_ctx;
-static _Thread_local gm_fiber *gm_filc_starting;
+static GM_TLS gm_fiber *gm_filc_starting;
 /* The context running now; NULL on the thread's own stack before its first switch. */
-static _Thread_local gm_filc_ctx *gm_filc_running;
+static GM_TLS gm_filc_ctx *gm_filc_running;
 
 static void gm_filc_entry(void) { gm_fiber_entry(gm_filc_starting); }
 
@@ -3732,7 +4045,7 @@ extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
 __asm__(
     ".text\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
     GM_SYM("gm_rt_switch") ":\n"
     "    pushq %rbp\n"
     "    pushq %rbx\n"
@@ -3789,7 +4102,7 @@ __asm__(
     "    movq %r8, %rax\n"
     "    ret\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
     GM_SYM("gm_rt_fiber_tramp") ":\n"
     "    movq %r12, %rcx\n"
     "    subq $32, %rsp\n"
@@ -3815,7 +4128,7 @@ extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
 __asm__(
     ".text\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
     GM_SYM("gm_rt_switch") ":\n"
     "    pushq %rbp\n"
     "    pushq %rbx\n"
@@ -3834,7 +4147,7 @@ __asm__(
     "    movq %rdx, %rax\n"
     "    ret\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
     GM_SYM("gm_rt_fiber_tramp") ":\n"
     "    movq %r12, %rdi\n"
     "    callq *%r13\n"
@@ -3859,7 +4172,7 @@ extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
 __asm__(
     ".text\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
     GM_SYM("gm_rt_switch") ":\n"
     "    sub sp, sp, #160\n"
     "    stp x19, x20, [sp, #0]\n"
@@ -3889,7 +4202,7 @@ __asm__(
     "    mov x0, x2\n"
     "    ret\n"
     ".p2align 4\n"
-    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
     GM_SYM("gm_rt_fiber_tramp") ":\n"
     "    mov x0, x19\n"
     "    blr x20\n"
@@ -3911,7 +4224,7 @@ extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
 __asm__(
     ".text\n"
     ".align 8\n"
-    ".globl " GM_SYM("gm_rt_switch") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
     GM_SYM("gm_rt_switch") ":\n"
     "    aghi %r15, -144\n"
     "    stmg %r6, %r14, 0(%r15)\n"
@@ -3938,7 +4251,7 @@ __asm__(
     "    lgr %r2, %r4\n"
     "    br %r14\n"
     ".align 8\n"
-    ".globl " GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
     GM_SYM("gm_rt_fiber_tramp") ":\n"
     "    lgr %r2, %r6\n"
     "    basr %r14, %r7\n"
@@ -3968,7 +4281,14 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
 
 /* ---- fibers ---------------------------------------------------------------------------- */
 
-static _Thread_local gm_fiber *gm_fiber_pool;
+static GM_TLS gm_fiber *gm_fiber_pool;
+#ifdef GM_FREESTANDING
+#ifndef GM_MAX_FIBERS
+#define GM_MAX_FIBERS 32
+#endif
+static gm_fiber gm_fiber_slab[GM_MAX_FIBERS];
+static size_t gm_fiber_slab_used;
+#endif
 
 GM_API _Noreturn void gm_stack_overflow(void) {
     gm_overflowing = 1;
@@ -4089,7 +4409,9 @@ static void gm_overflow_handler(void) {
 GM_API void gm_thread_stack(void) {
     uintptr_t low = 0;
     size_t size = 0;
-#if defined(__APPLE__)
+#if defined(GM_FREESTANDING)
+    /* The program's stack is its own; no limit is known. */
+#elif defined(__APPLE__)
     pthread_t me = pthread_self();
     size = pthread_get_stacksize_np(me);
     low = (uintptr_t)pthread_get_stackaddr_np(me) - size;
@@ -4137,7 +4459,12 @@ GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*sta
     if (fb != NULL) {
         gm_fiber_pool = fb->pool_next;
     } else {
+#ifdef GM_FREESTANDING
+        /* The fibers' records come from a static slab; their stacks are the program's. */
+        if (gm_fiber_slab_used < GM_MAX_FIBERS) fb = &gm_fiber_slab[gm_fiber_slab_used++];
+#else
         fb = (gm_fiber *)calloc(1, sizeof *fb);
+#endif
         if (fb == NULL) gm_trap("out of memory creating a fiber", file, line, col);
     }
     uintptr_t epoch = fb->epoch + 1;
@@ -4230,7 +4557,7 @@ GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb) {
     w->event = GM_EV_DONE;
     w->event_fiber = fb;
     gm_rt_switch(&fb->sp, w->driver_sp, NULL);
-    abort();
+    __builtin_trap();
 }
 
 /* Checks continuation *k for consumption by a clause of `w` and takes it off w's list. */

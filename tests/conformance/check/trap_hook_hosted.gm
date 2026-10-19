@@ -1,0 +1,8 @@
+//! stage: check
+// `#trap_hook` belongs to freestanding programs (§3.7.1); a hosted program traps through the runtime.
+#trap_hook //~ ERROR `#trap_hook` applies only on a freestanding target
+hook :: fn(msg: string, loc: SourceLocation) -> never needs Sys {
+    while true {}
+}
+
+main :: fn() {}

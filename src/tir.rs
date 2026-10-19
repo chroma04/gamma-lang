@@ -485,6 +485,8 @@ pub struct Program {
     pub benches: Vec<TestCase>,
     /// Functions exported to C under a symbol (§19.4).
     pub exports: Vec<(Symbol, FnId)>,
+    /// The `#trap_hook` function that a trap calls on a freestanding target (§3.7.1).
+    pub trap_hook: Option<FnId>,
     /// The predeclared effects whose default handlers the runtime provides (§12.9).
     pub ambient: Ambient,
     /// The `ctl` operations (§14), by effect and operation index: performing one
