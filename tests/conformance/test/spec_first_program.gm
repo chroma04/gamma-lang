@@ -1,0 +1,33 @@
+//! stage: test
+// The first program of the specification (§1).
+fs    :: import "std/fs"
+arena :: import "std/arena"
+
+// An iterator: yields the lines of a text, without their line breaks.
+lines :: fn(text: string) needs Yield(string) {
+    start: usize = 0
+    for i, b in enumerate(text) {
+        if b is '\n' { yield(text[start..i]); start = i + 1 }
+    }
+    if start < text.len { yield(text[start..]) }
+}
+
+// The signature says everything the function touches: a file system and an allocator.
+count_todos :: fn(path: string) -> fs.ReadError!usize needs Fs + Alloc {
+    text := try fs.read_all(path)            // from whatever allocator is current
+    defer free(text)
+    n: usize = 0
+    for line in lines(text) { if line.starts_with("TODO") { n += 1 } }
+    return n
+}
+
+main :: fn() -> fs.ReadError!() needs Fs + Alloc + Out {
+    scratch := arena.new()                   // the caller chooses where memory comes from
+    defer scratch.deinit()
+    with scratch.allocator() { print("{} to do\n", try count_todos("plan.txt")) }
+}
+
+test "counts TODO lines" {                   // tests run on an in-memory file system
+    ok(fs.write_all("plan.txt", "TODO: parse\ndone: lex\nTODO: check\n"))
+    expect_eq(ok(count_todos("plan.txt")), 2)
+}

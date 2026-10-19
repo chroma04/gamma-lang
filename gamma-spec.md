@@ -6,7 +6,7 @@ This specification is self-contained. Chapters 1–22 and Appendices A–B are n
 
 | § | Chapter |
 | --- | --- |
-| 1 | [Introduction](#1-introduction): the idea and the principles, notation, terms, build modes |
+| 1 | [Introduction](#1-introduction): the idea, the principles and a first program; notation, terms, build modes |
 | 2 | [Lexical structure](#2-lexical-structure) |
 | 3 | [Programs, modules and top-level declarations](#3-programs-modules-and-top-level-declarations) |
 | 4 | [Bindings, scopes and mutability](#4-bindings-scopes-and-mutability) |
@@ -46,12 +46,59 @@ C programs reach their context through globals, `errno`, callbacks with a `void 
 | | Principle | What it means |
 | --- | --- | --- |
 | **P1** | **Data is bytes you can lay out.** (*C*) | Values have C layout, copy bitwise, own nothing and run no code when copied or dropped (§5, §15). |
-| **P2** | **Cost is visible where it is paid.** (*C*) | No construct allocates, calls user code, converts, suspends or checks unless its syntax or its signature says so. Nothing costs more than the equivalent C unless the program asks for a check, and every check can be removed by a build mode (§15.3, §18). |
+| **P2** | **Cost is visible where it is paid.** (*C*) | No construct allocates, calls user code, converts or suspends unless its syntax or its signature says so. Run-time checks are the one cost Gamma inserts by default: every one is listed in §18.2 and removed by Fast builds (§18.1). Apart from them, nothing costs more than the equivalent C (§15.3, §18). |
 | **P3** | **Context is an effect.** (*algebraic effects*) | Anything a function uses that it is not passed is in its effect set and is supplied by a handler; `Sys` marks the edge of the model (§12). |
 | **P4** | **Mistakes are rejected, not interpreted.** (*modern*) | Ambiguous text is a compile error, invalid states are not representable (no null, tagged unions, exhaustive `match`), a failed run-time check traps, and arithmetic is never undefined. C's footguns — implicit conversions, octal literals, `x & 1 == 0`, fallthrough, null by default, undefined overflow — are gone. |
 | **P5** | **Every rule is local.** (*modern*) | Legality never depends on global resolution or on how clever the compiler's analysis is. Generics are checked once where they are written, and a reader can tell from a call which code runs. |
 
 One rule breaks ties: **when two features could do one job, one is removed.** "Fast" and "simple" are consequences rather than goals of their own: abstractions (generics, effects, iteration) compile away when their implementation is known statically (P2), and the language stays small because every feature must earn its place against the others.
+
+One rule of style runs through the syntax: **words for logic, sigils for shapes.** `and`, `or`, `not`, `is` and `in` are words and always give `bool`; a sigil tells one story about a value's shape across types, operators and unwrapping: `?` may be absent, `!` may have failed, `^` is a pointer (§B.2).
+
+Four rules show how the principles combine, and are the best place to start reading:
+
+- **An operation's kind is its cost** (§12.2). An effect operation is declared `fn` (it always returns: a call), `esc` (it may exit: a flag test after the call) or `ctl` (it may suspend: a stack switch). The effect system that carries the context (P3) also says what using it costs (P2).
+- **Compile-time evaluable means an empty effect set** (§17.1). There is no `constexpr` and no compile-time sublanguage: a function that needs nothing has no hidden state, because `Sys`, the edge of the model, cannot be handled (§12.10). The same fact makes test handlers sound.
+- **`for` is a `with`** (§13.2). A loop installs a handler for `Yield`, so iterators are ordinary functions, `break` unwinds them, and an iterator can be written as a loop over another.
+- **Results or `esc`** (Appendix C.1). If the nearest caller should decide about a failure, it is a result; if whoever installed the context should, it is an `esc` operation. There are no exceptions.
+
+**Admitting a feature.** A feature belongs in Gamma when it answers three questions in a sentence each: *Which word does it come from* — *C* (layout or cost), *algebraic effects* (context) or *modern* (rejecting mistakes, local rules)? *What does it replace* — which feature does it make redundant, or why does none overlap it (the tie-breaker)? *Where is its cost written* — in its syntax, in a signature, or in §18.2? Appendix C.8 lists features that failed.
+
+A short program shows most of this at once:
+
+```
+fs    :: import "std/fs"
+arena :: import "std/arena"
+
+// An iterator: yields the lines of a text, without their line breaks.
+lines :: fn(text: string) needs Yield(string) {
+    start: usize = 0
+    for i, b in enumerate(text) {
+        if b is '\n' { yield(text[start..i]); start = i + 1 }
+    }
+    if start < text.len { yield(text[start..]) }
+}
+
+// The signature says everything the function touches: a file system and an allocator.
+count_todos :: fn(path: string) -> fs.ReadError!usize needs Fs + Alloc {
+    text := try fs.read_all(path)            // from whatever allocator is current
+    defer free(text)
+    n: usize = 0
+    for line in lines(text) { if line.starts_with("TODO") { n += 1 } }
+    return n
+}
+
+main :: fn() -> fs.ReadError!() needs Fs + Alloc + Out {
+    scratch := arena.new()                   // the caller chooses where memory comes from
+    defer scratch.deinit()
+    with scratch.allocator() { print("{} to do\n", try count_todos("plan.txt")) }
+}
+
+test "counts TODO lines" {                   // tests run on an in-memory file system
+    ok(fs.write_all("plan.txt", "TODO: parse\ndone: lex\nTODO: check\n"))
+    expect_eq(ok(count_todos("plan.txt")), 2)
+}
+```
 
 ### 1.1 Status of this document
 
@@ -98,36 +145,6 @@ A conforming implementation provides three build modes, Debug, Checked and Fast,
 Safe builds follow every rule this specification states for Checked builds; where it says "Debug and Checked builds", Safe builds are included.
 
 How a mode and a target are chosen is implementation-defined; the reference implementation takes `--mode=debug|checked|safe|fast` (default `debug`; `safe` compiles with Fil-C through the C back end) and `--target=<triple>`, and `target.mode` (§3.6) reports the mode.
-
-### 1.5 Organization
-
-| § | Topic |
-| --- | --- |
-| 2 | Lexical structure |
-| 3 | Programs, modules, and top-level declarations |
-| 4 | Bindings, scopes and mutability |
-| 5 | Types |
-| 6 | Literals, constants and conversions |
-| 7 | Expressions |
-| 8 | Statements and control flow |
-| 9 | Patterns |
-| 10 | Optionals and results |
-| 11 | Functions |
-| 12 | Effects and handlers |
-| 13 | Iteration |
-| 14 | Fibers and continuations |
-| 15 | Memory and allocation |
-| 16 | Generics |
-| 17 | Compile-time evaluation |
-| 18 | Safety, checks and undefined behavior |
-| 19 | Interoperability and low-level facilities |
-| 20 | Attributes and intrinsics |
-| 21 | The core library |
-| 22 | The standard library: scope and admission |
-| A | Grammar |
-| B | Reference tables |
-| C | Design rationale |
-| D | Implementation notes |
 
 ---
 
@@ -196,7 +213,7 @@ hex_lit    = '0x' hexdigit { [ '_' ] hexdigit }
 oct_lit    = '0o' octdigit { [ '_' ] octdigit }
 bin_lit    = '0b' bindigit { [ '_' ] bindigit }
 int_suffix = ( 'u' | 'i' ) width | 'usize' | 'isize'
-width      = nzdigit { digit }                   // 1 … 65535, no leading 0
+width      = nzdigit { digit }                   // 1 … 128, no leading 0
 ```
 
 `digit` is `0`–`9`, `nzdigit` is `1`–`9`, `hexdigit` is `0`–`9`, `a`–`f`, `A`–`F`, `octdigit` is `0`–`7` and `bindigit` is `0` or `1`. The prefixes `0x`, `0o`, `0b` are lowercase. A literal immediately followed by an identifier character that does not form a valid suffix (`12abc`, `0x1g`) is ill-formed.
@@ -255,7 +272,7 @@ In a string literal `\xHH` inserts one raw byte, so a string literal may hold in
 =    +=   -=   *=   /=   %=   <<=  >>=  &=   |=   ~=
 +%=  -%=  *%=  <<%= +|=  -|=  *|=  <<|=
 <    <=   >    >=
-?    !    ^    @    #    \
+?    !    ^    @    #
 ..   ..=  ...  ---  ::   :=   :    ,    .    ;
 =>   ->
 (    )    [    ]    {    }
@@ -270,6 +287,7 @@ Exceptions to maximal munch:
 - A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
 - The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
 - `==` and `!=` are not tokens; the character pairs are ill-formed (equality is written `is` and `is not`, §7.6). Implementations should say so and may read them as `is` and `is not` to continue.
+- `\` outside a literal or comment is ill-formed. (Effect sets are written after `needs`, §11.1.)
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -528,7 +546,7 @@ Types are compile-time values of type `type`. A type expression may appear where
 
 | Name | Kind |
 | --- | --- |
-| `u1` … `u65535`, `i1` … `i65535` | fixed-width integers (§5.2) |
+| `u1` … `u128`, `i1` … `i128` | fixed-width integers (§5.2) |
 | `usize`, `isize` | pointer-sized integers |
 | `f16`, `f32`, `f64` | IEEE 754 binary floating point |
 | `bool` | `true` or `false` |
@@ -544,9 +562,11 @@ Types are compile-time values of type `type`. A type expression may appear where
 
 ### 5.2 Integer types
 
-`uN` holds the integers 0 … 2ᴺ−1, `iN` holds −2ᴺ⁻¹ … 2ᴺ⁻¹−1, for 1 ≤ N ≤ 65535. Signed integers are two's complement. `usize` and `isize` have the target's pointer width.
+`uN` holds the integers 0 … 2ᴺ−1, `iN` holds −2ᴺ⁻¹ … 2ᴺ⁻¹−1, for 1 ≤ N ≤ 128. Signed integers are two's complement. `usize` and `isize` have the target's pointer width.
 
-**Storage.** An integer of width N occupies the smallest of 1, 2, 4, 8, 16 bytes that holds N bits; above 128 bits it occupies ⌈N/64⌉ × 8 bytes. Alignment equals the size up to 8 bytes; 16-byte integers have the alignment the target C ABI gives `__int128` (or 16 if none); wider integers have alignment 8. Byte order is the target's: an integer of up to 128 bits is stored as one number in that order, and a wider one as a sequence of 64-bit words, least significant word first, each word in that order. The bits above N in the storage are **padding**: they have unspecified content, and loads ignore them. There is no implicit bit-packing of integers in arrays or ordinary structs; use `#bits` structs (§5.10.5) for that.
+**Storage.** An integer of width N occupies the smallest of 1, 2, 4, 8, 16 bytes that holds N bits. Alignment equals the size up to 8 bytes; 16-byte integers have the alignment the target C ABI gives `__int128` (or 16 if none). Byte order is the target's. The bits above N in the storage are **padding**: they have unspecified content, and loads ignore them. There is no implicit bit-packing of integers in arrays or ordinary structs; use `#bits` structs (§5.10.5) for that.
+
+*Rationale:* widths stop at 128 because arithmetic on wider integers is a loop over machine words, which an operator would hide (P2). A program that needs it uses a library type whose calls show it.
 
 ### 5.3 Floating-point types
 
@@ -610,7 +630,7 @@ for d in @variants(Dir) { print("{}: {}\n", NAMES[d], counts[d]) }
 - **Layout.** That of `[N]T` with `N` the number of variants: the element of each variant is at the position of the variant in `@variants(E)`, which is declaration order, whatever the tag values (§5.11). `a.len` is `N`.
 - **Construction** names every variant exactly once, in any order (values are evaluated in the order written, §7.1), or repeats one value: `[E]T(V1: x1, …)`, `[E]T(fill: x)`. Positional elements are not allowed, for the reason struct construction is by name (§7.11). If `E` has a variant named `fill`, `fill:` names that variant. `---` is allowed for plain-data `T` (§4.4).
 - **Indexing.** `a[e]` takes an `e` of type `E` exactly (an integer is a compile error) and needs no check (§7.9). It is a place when `a` is (§7.2); a pointer to an enum-indexed array indexes it too.
-- **Positions only on request.** `a[..]` is a slice of the elements in the order of `@variants(E)`; it is the only slicing form, and an enum-indexed array has no methods (§21.3) and is not adapted to a slice or many-pointer implicitly (§5.5, §7.2), since each of those would address elements by position. Everything else is as for arrays: copying, `is`, `@hash`, elementwise arithmetic (§7.4.6), `for x in a` (elements in variant order), formatting as an array (§21.6.1) and compile-time evaluation.
+- **Positions only on request.** `a[..]` is a slice of the elements in the order of `@variants(E)`; it is the only slicing form, and an enum-indexed array has no methods (§21.3) and is not adapted to a slice or many-pointer implicitly (§5.5, §7.2), since each of those would address elements by position. Everything else is as for arrays: copying, `is`, `@hash`, `for x in a` (elements in variant order), formatting as an array (§21.6.1) and compile-time evaluation.
 
 #### 5.6.2 Vectors
 
@@ -627,7 +647,7 @@ count_byte :: fn(s: []const u8, c: u8) -> usize {
     i: usize = 0
     needle := B16(fill: c)
     while i + 16 <= s.len {
-        n += (B16.load(s[i..]) is needle).count()   // a mask of the matching bytes
+        n += B16.load(s[i..]).lanes_eq(needle).count()   // a mask of the matching bytes
         i += 16
     }
     for x in s[i..] { if x is c { n += 1 } }
@@ -638,9 +658,9 @@ count_byte :: fn(s: []const u8, c: u8) -> usize {
 - **Shape.** `T` is `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64` or `bool`, and a concrete type; `N` is a constant power of two, at least 2, and the vector has at most 64 bytes. Types whose size depends on the target (`usize`, `isize`) and narrow types are not lanes, so a vector's layout is the same on every target.
 - **Layout.** That of `[N]T` (`bool` lanes are a byte each), aligned to its size. A vector is not C-compatible (§19.1): C passes vectors by target-specific conventions.
 - **Values.** A vector is constructed like an array, with exactly `N` lanes or `fill:`: `F4(1, 2, 3, 4)`, `F4(fill: 0)`, or `---` for plain lanes. Lanes are indexed and assigned like elements (`v[i]`, checked), a vector can be sliced and iterated like an array, and `V.load(xs)` makes a vector of the first `N` elements of a slice (checked: `xs.len >= N`), which `v.store(dst)` writes back.
-- **Operators** (§7.4.7) apply to each pair of lanes and give a vector; comparisons, `is` included, give a **mask** `#simd [N]bool`. So vectors are not `Eq` or `Ord` (§16.3), and a mask is tested with `.all()`, `.any()` or `.count()`, not as a condition.
+- **Operators** (§7.4.6) apply to each pair of lanes and give a vector. `is` and `is not` compare whole vectors and give `bool`, as for arrays, so vectors are `Eq` (§16.3); they are not ordered, so `< <= > >=` do not apply to them. Lanes are compared by methods that give a **mask** `#simd [N]bool`: `v.lanes_eq(w)` and `v.lanes_ne(w)`, and for numeric lanes `lanes_lt`, `lanes_le`, `lanes_gt` and `lanes_ge`. A mask is tested with `.all()`, `.any()` or `.count()`, not as a condition.
 - **Conversions.** `V(a)` and `[N]T(v)` convert between a vector and the array of its lanes, `W(v)` between vectors of the same lane count where each lane converts losslessly (§6.5), and `v.to(F)` gives the nearest `f32` or `f64` lanes. `.bits(U)` reinterprets as for any plain data (§6.6).
-- **Methods** (§21.3): `reduce_sum()`, `reduce_min()`, `reduce_max()`, `min(w)`, `max(w)`, `abs()`, `shuffle(i0, i1, …)` (the lanes at the constant indices, as a vector of as many lanes), `store(dst)`; on masks `all()`, `any()`, `count()` and `select(a, b)` (each lane from `a` where the mask is set, else from `b`).
+- **Methods** (§21.3): the lane comparisons above, `reduce_sum()`, `reduce_min()`, `reduce_max()`, `min(w)`, `max(w)`, `abs()`, `shuffle(i0, i1, …)` (the lanes at the constant indices, as a vector of as many lanes), `store(dst)`; on masks `all()`, `any()`, `count()` and `select(a, b)` (each lane from `a` where the mask is set, else from `b`).
 
 ### 5.7 Slices
 
@@ -1005,12 +1025,9 @@ A shift may not be an operand of `*`, `/`, `%`, `+`, `-` or another shift withou
 
 Float division follows IEEE 754 (division by zero gives ±∞ or NaN; it does not trap).
 
-#### 7.4.6 Elementwise array arithmetic
+#### 7.4.6 Vector operators
 
-If `a` and `b` are arrays `[N]T` of a numeric `T`, `a op b` for `op` in `+ - * /` (and the overflow flavors) applies `op` to each pair of elements and gives `[N]T`; `-a` negates each element. The `?` flavors are not available on arrays. There is no implicit broadcasting of scalars; use `[N]T(fill: x)`.
-
-
-#### 7.4.7 Vector operators
+Arithmetic and bitwise operators do not apply to arrays: on an array of any length they would be a hidden loop (P2). They apply to vectors, whose operations are single instructions.
 
 On vectors (§5.6.2) every operator applies lane by lane, with the rules and checks of the scalar operator for each lane; the two operands have the same vector type (a scalar is never spread over the lanes: use `V(fill: x)`), except that a shift takes one scalar amount for every lane.
 
@@ -1019,10 +1036,8 @@ On vectors (§5.6.2) every operator applies lane by lane, with the rules and che
 | `+ - *` and their `%` and `\|` flavors, unary `-` | numeric (the flavors and `%`, `\|`: integer; unary `-`: signed or float) | the vector type |
 | `/` | float | the vector type |
 | `& \| ~`, unary `~`; `<< >>` (and `<<%`) by a scalar amount | integer; `& \| ~` also `bool` | the vector type |
-| `is`, `is not` | any | the mask `#simd [N]bool` |
-| `< <= > >=` | numeric | the mask `#simd [N]bool` |
 
-`/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`.
+`/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`. `is` and `is not` compare whole vectors (§7.6); lanes are compared by the `lanes_*` methods (§5.6.2), so that a word always gives `bool` (§1).
 ### 7.5 Comparison
 
 `< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
@@ -1040,12 +1055,14 @@ Comparisons do not chain: `a < b < c` is a compile error.
 | integers, `bool` | same value |
 | floats | IEEE equality: `nan is nan` is false, `0.0 is -0.0` is true |
 | pointers of every kind, function pointers | same address |
-| arrays, tuples, structs | every element/field pair is `is`-equal (padding is ignored) |
+| arrays, vectors, tuples, structs | every element/lane/field pair is `is`-equal (padding is ignored) |
 | slices (including `string`) | same length and every element pair is `is`-equal: **content**, not address |
 | tagged unions | same tag, and payloads are `is`-equal |
 | `?T` | both `null`, or both present and the values are `is`-equal |
 | `E!T` | both errors with `is`-equal error values, or both successes with `is`-equal values |
 | `type` (compile time) | same type |
+
+Comparing slices by content is the one place where `is` looks through a value to memory it points to. It is a deliberate exception to P1's view of a slice as a `(ptr, len)` pair, so that `name is "admin"` means what it says; to compare the pairs, compare the fields (`a.ptr is b.ptr and a.len is b.len`).
 
 `is` is not defined for second-class function values, handlers, continuations, `#c_union`s, or any type containing one. Comparing a struct with private fields is allowed everywhere.
 
@@ -1842,9 +1859,11 @@ while x := ca.next() {
 
 A general iterator can be turned into a pull-style generator by running it on a fiber (§14); the standard module `std/fiber/generator` packages this (it is not part of the core library).
 
+**Why three forms.** Continuations are one-shot and live on stacks the program provides, and nothing allocates implicitly (§14, §15.3), so an iterator cannot be paused between values for free. Each form keeps the iteration state where it is cheapest for its job: an iterator (`Yield`) keeps it on the ordinary stack and runs to completion under its consumer; a cursor keeps it in a small value the program holds, which works where the state is known (containers, slices); a generator keeps it on a fiber stack the program provides, which works for any iterator.
+
 ### 13.5 Iterators as arguments
 
-A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() needs Yield(T)` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) is passed as the function literal `fn() => f(a1, …, an)`: the callee calls it to run the iterator, and the call and its arguments are evaluated each time it does. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
+A call of an iterator is not a value (§13.2), but an iterator can be passed to a function that runs it. An **iterator parameter** is a parameter of a second-class function type with no parameters whose effect set contains `Yield(T)`: `it: fn() needs Yield(T)` (§11.6). For such a parameter, an argument written as a call (`f(a1, …, an)`, a method call included) passes the iterator instead of running it. The callee `f` and the arguments `a1 … an` (and a method call's receiver) are evaluated once, left to right, before the call that receives the iterator and in the context outside it, as for the source of a `for` (§13.2). The function receives the function literal `fn() => f(v1, …, vn)` over those values and calls it to run the iterator, as many times as it chooses; only the call of `f` is repeated. `T` and the other type parameters in the parameter's type are inferred from the effects the call performs, as for any function literal argument (§16.2).
 
 ```
 words := try collect(str.fields(line))       // a List(string)
@@ -2054,7 +2073,7 @@ Alloc :: effect { current: fn() -> Allocator }
 AllocError :: union { OutOfMemory }
 ```
 
-An **`Allocator`** is a first-class handle. The **`Alloc`** effect supplies the *current* allocator.
+An **`Allocator`** is a first-class handle. The **`Alloc`** effect supplies the *current* allocator. They serve different memory: **the effect for scoped memory, a value for owned memory.** Memory that dies inside the `with` that supplied the allocator comes from `Alloc`; a structure that outlives it captures an `Allocator` and frees through it, which is why `names.push(x)` does not need `Alloc`.
 
 - **`Allocator` is itself a handler for `Alloc`**: the core library declares `handler Alloc for Allocator { current(self) => self }` (legal because both are declared in the same core module, §12.6), so `with arena.allocator() { … }` makes an arena current.
 - The core functions `new`, `make` and `free` (§21.2) perform `Alloc` and use `current()`. They are for memory that dies inside the `with` that provided the allocator.
@@ -2186,7 +2205,7 @@ print  :: fn(A: type, template :: string, args: ..A) needs Out
 - Its argument must be a constant expression (§7.15). Each distinct argument value produces a separate instantiation, as for type parameters, so inside the body the parameter is a constant: it may size arrays and be passed to other compile-time parameters.
 - The body is still checked once, treating the parameter as an unknown constant of its type. `when` conditions may not depend on it (§16.7).
 - Its type must be one whose values can be compared with `is` at compile time: a plain-data type without pointers (§5.19), `string` (compared by contents), or a function pointer type `^fn(…)` or `?^fn(…)` (compared by declaration, §16.4). Two arguments give the same instantiation iff they are `is`-equal.
-- Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ^` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression up to folding constant subexpressions and the order of the operands of `+ * & | ^` (`[A + B]T` and `[B + A]T` are one type, `[2 * N]T` and `[N + N]T` are not). Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
+- Inside the body (and in the fields of a generic type, §16.4), an array length may depend on compile-time `usize` parameters: it is either such a parameter (`[N]T`) or a **computed length**, an expression over them, integer constants and the plain operators `+ - * / % << >> & | ~` (`[N + 1]T`, `[R * C]T`, `[N / 2]T`). The body is checked once, so array types are compared symbolically: two computed lengths are the same when they are the same expression after folding constant subexpressions, and otherwise different (`[A + B]T` and `[B + A]T` are different types, as are `[2 * N]T` and `[N + N]T`). Lengths that must agree are written the same way. Each instantiation evaluates the computed lengths it uses; one that overflows or divides by zero for the arguments given is a compile error at the instantiation. A length computed from a type (`[@size_of(T)]u8` for a type parameter `T`), with another operator or from a parameter of a type other than `usize`, is a compile error. An array whose length depends on a parameter is constructed with `[N]T(fill: x)` or `---` (positional elements cannot be counted against an unknown length), and `a.len` is its length.
 - A compile-time value parameter that appears in the type of another parameter, other than inside a computed length, is inferable (`N` above, from `a: [N]T`; not `N` from `a: [N + 1]T`) and is omitted or supplied together with the type parameters (§16.2). Any other compile-time value parameter (such as `template`) is bound like an ordinary parameter.
 - A type parameter used only by an omitted defaulted parameter takes the default's type: with `f :: fn(A: type, x: A = ())`, `f()` has `A = ()`.
 
@@ -2613,7 +2632,7 @@ The universe holds the **effects** but not their **operations**, with one except
 
 | Category | Names |
 | --- | --- |
-| reserved type names | `u1`…`u65535`, `i1`…`i65535`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
+| reserved type names | `u1`…`u128`, `i1`…`i128`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
@@ -2709,7 +2728,7 @@ write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError
 HashMap  :: struct(K, V: type,
                    hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
                    eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
-map      :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K)
+hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K)
 hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc
 put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
@@ -3044,13 +3063,13 @@ In the parameter lists of `struct`, `union` and `effect` literals and of generic
 ### A.3 Functions and handlers
 
 ```
-fn_lit        = 'fn' '(' [ param_list ] ')' [ '->' type ] [ '\' effect_set ] [ where_clause ] fn_body
+fn_lit        = 'fn' '(' [ param_list ] ')' [ '->' type ] [ needs ] [ where_clause ] fn_body
 fn_body       = block | '=>' expr
 param_list    = param % ','
 param         = IDENT { ',' IDENT } [ ( ':' [ '..' ] | '::' ) type ] [ '=' expr ]  // '::' compile-time (§16.5); ': ..' rest (§11.2)
 
 handler_lit   = 'handler' effect_ref '{' { NL } { clause NL { NL } } '}'
-handler_decl  = 'handler' [ '(' param_list ')' ] effect_ref 'for' type [ '\' effect_set ] '{' { NL } { clause NL { NL } } '}'
+handler_decl  = 'handler' [ '(' param_list ')' ] effect_ref 'for' type [ 'needs' effect_set ] '{' { NL } { clause NL { NL } } '}'
 clause        = IDENT '(' [ IDENT % ',' ] ')' '=>' ( expr | block )
 
 foreign_block = 'foreign' STRING '{' { NL } { foreign_member NL { NL } } '}'
@@ -3124,7 +3143,6 @@ primary       = literal | IDENT | '_' | '---' | 'null' | 'true' | 'false'
               | '.' IDENT                                         // variant, type from context
               | type_only                                          // ?T, ^T, []T, [N]T, fn types, struct/union/effect literals
               | fn_lit | handler_lit | import_expr | foreign_block
-              | '\' effect_set                                   // an effect-set argument (§16.6)
               | if_expr | match_expr | with_expr | [ label ] for_stmt   // for is an expression, §13.2
               | intrinsic_call
               | jump_expr
@@ -3248,8 +3266,8 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 
 - **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
 - **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
-- **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array; what makes them a type of their own is that comparisons give masks, which arrays, compared as wholes, cannot. Elementwise arithmetic on ordinary arrays (§7.4.6) stays for arrays of any length, and is a loop.
-- **Arbitrary-width integers** (`u1` … `u65535`, as C23's `_BitInt`) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
+- **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array. They are the one way to apply an operator to many values at once, and it costs one instruction; ordinary arrays have no arithmetic, since `+` on an array of any length would be a loop (P2). Lane comparisons are methods that give masks, so `is` keeps its one meaning (C.5).
+- **Arbitrary-width integers** (`u1` … `u128`, as C23's `_BitInt` up to the widths machines compute with) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
 - **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
 - **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
 - **Threads follow the C11 memory model**, with atomics as intrinsics (§19.6). Existing knowledge and tools apply unchanged.
@@ -3257,13 +3275,13 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 ### C.3 P2 — Cost is visible where it is paid
 
 - **No hidden allocation.** No construct allocates (§15.3). The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is freed through the allocator that produced it (§15.2).
-- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` is the one operator whose cost grows with the data it compares — slices compare by content, so that `name is "admin"` means what it says (§7.6) — and it is still a loop over the values, never user code.
+- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` and `in` are the operators whose cost grows with the data: `is` compares slices by content, so that `name is "admin"` means what it says (§7.6), and `x in xs` scans an array or slice (§7.7). Both are loops over values, never user code, and both are words, which mark logic rather than a machine operation (C.5). No sigil operator hides a loop: arithmetic applies to scalars and to vectors, never to arrays (§7.4.6).
 - **The kind of an effect operation is its cost** (§12.2): `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use, and `with … on stack` makes the program provide the stack a suspension needs (§14.1).
 - **No hidden conversions.** Lossless widening happens only at coercion sites and on the right of a compound assignment; `T(x)` converts only when lossless for every value of the source *type*; lossy conversions are named methods (`trunc`, `round`, `checked`, `sat`, `bits`, §6). The one implicit conversion between two distinct nominal types is error lifting (§10.6): a `try` or `return` wraps an error in the one variant of the function's error union that carries it. It is allowed because it is decided at the site, by one unambiguous variant, and is a compile error when ambiguous.
 - **Second-class closures.** `fn(…)` values capture by reference, cost no allocation, and can be passed down but never stored or returned; `^fn(…)` is a plain code pointer, first-class and C-compatible (§11.6, §11.7). Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
 - **Mutation of an argument is visible at the call** (§7.2). A read-only argument may be a temporary, or an array passed for a `[]const T` — the compiler adapts it, since nothing can change — but a mutable one must be a named mutable place written explicitly (`a[..]`, `&x`). The one exception is the receiver of a method call, which is the subject of the call: `names.push(x)` visibly acts on `names`.
 - **Rest parameters, not varargs** (§11.2). `print("{} of {}", n, total)` takes a typed, counted tuple; nothing is allocated and nothing is unchecked. The same `..` that spreads a tuple into arguments collects arguments into one.
-- **One rule for checks.** Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway (§18.1).
+- **One rule for checks.** Checks are the one cost Gamma inserts by default, and all of them are listed in §18.2. Every run-time check traps in Debug, Checked and Safe builds and is removed in Fast builds; nothing in the source opts out. Integer division by zero always traps, since hardware does anyway (§18.1).
 
 ### C.4 P3 — Context is an effect
 
@@ -3280,7 +3298,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 
 ### C.5 P4 — Mistakes are rejected, not interpreted
 
-- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. Words describe logic (`and`, `or`, `not`, `is`, `in`), sigils describe shapes: `?` maybe absent, `!` may have failed, `^` a pointer, each telling one story across types, operators and unwrapping (§B.2). Freeing `!` from "not" lets it mean "failed" everywhere.
+- **Equality is the word `is`.** `=` is only assignment, so `if x = 0` cannot be written. Words describe logic (`and`, `or`, `not`, `is`, `in`), sigils describe shapes: `?` maybe absent, `!` may have failed, `^` a pointer, each telling one story across types, operators and unwrapping (§B.2). Freeing `!` from "not" lets it mean "failed" everywhere. A word always gives `bool`, so vectors compare lanes with methods (`v.lanes_eq(w)`) and `is` on vectors compares them whole (§5.6.2).
 - **Precedence errors instead of precedence rules.** Mixing `and` with `or`, different bitwise operators, or shifts with arithmetic requires parentheses; comparisons do not chain (§7.3). These are the precedences programmers most often misremember; Gamma rejects the ambiguous text rather than choosing a meaning for it. Binary `~` is exclusive-or, since `^` is the pointer sigil and pointers are far more common than XOR.
 - **No null by default.** Every pointer kind is non-null; `?^T` is nullable and costs nothing extra. Optionals and results mirror each other and wrap implicitly, so success paths read like plain code (§10).
 - **Unions are tagged and matches exhaustive** (§8.6). Integers become enums only through `from_tag`, which checks, because values arriving from C or the network may be out of range. A table indexed by an enum is `[E]T`, built by naming every variant, so it cannot miss an entry or list one against the wrong variant, and indexing it cannot go out of range (§5.6.1).
@@ -3346,6 +3364,10 @@ The first four already exist, each with its cost and its code visible where it i
 | Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
 | Target-specific SIMD types and intrinsics | P1, P5 | their layouts and meanings differ by target; `#simd [N]T` has one layout and one meaning everywhere (§5.6.2), and anything beyond it is reached through foreign C or `@asm` (§19) |
 | Integer division of vector lanes | P2 | no target has the instruction, so `/` would hide a loop |
+| Elementwise arithmetic on arrays | P2, one feature per job | `+` would hide a loop of any length; vectors do the job in one instruction (§5.6.2), loops do the rest |
+| `is` on vectors giving a mask | P4 | a word would mean two things depending on the type; lane comparisons are named methods |
+| Integers wider than 128 bits | P2 | arithmetic on them is a loop over words behind an operator; a library type makes those calls visible |
+| Re-evaluating an iterator argument's arguments on each run | P2 | they would run an unknown number of times with nothing at the call to say so; they are evaluated once, as for `for` (§13.5) |
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
