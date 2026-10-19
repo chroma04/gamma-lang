@@ -132,15 +132,23 @@ fn target_follows_the_compiler() {
         eprintln!("note: skipping: needs clang");
         return;
     }
-    let (_, src) = setup("target");
+    let (dir, src) = setup("target");
     let src = src.to_str().unwrap();
     let out = gamma(&["run", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "aarch64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
     let out = gamma(&["run", src], &[("CC", "clang"), ("CFLAGS", "--target=x86_64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "x86_64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
-    // A 4-byte-pointer target with `__int128` (wasm32 in clang).
-    let out = gamma(&["run", src], &[("CC", "clang --target=wasm32-wasi")]);
-    assert_eq!(text(&out.stdout), "other\nlittle\n32 12 8\n", "{}", text(&out.stderr));
+    // A 4-byte-pointer target with `__int128` (wasm32 in clang). A compiler that defines no
+    // operating system makes a freestanding program (§3.7.1), which has no `main` to run, so
+    // its layouts are checked at compile time.
+    let wasm = dir.join("wasm_layout.gm");
+    std::fs::write(
+        &wasm,
+        "S :: struct { a: u8, p: rawptr, c: u16 }\n@static_assert(target.ptr_bits is 32)\n@static_assert(@size_of(S) is 12)\n@static_assert(@offset_of(S, c) is 8)\n",
+    )
+    .unwrap();
+    let out = gamma(&["check", wasm.to_str().unwrap()], &[("CC", "clang --target=wasm32-wasi")]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
     let out = gamma(&["run", src], &[("CC", "clang --target=s390x-linux-gnu")]);
     assert_eq!(text(&out.stdout), "s390x\nbig\n64 24 16\n", "{}", text(&out.stderr));
 }

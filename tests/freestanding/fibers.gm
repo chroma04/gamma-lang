@@ -1,0 +1,35 @@
+// Fibers need nothing from an operating system: the stack is the program's own memory.
+hw :: foreign "c" {
+    put :: fn(x: i32)
+}
+
+Ask :: effect {
+    ask: ctl(question: u32) -> u32
+}
+
+quiz :: fn() -> u32 needs Ask {
+    a := Ask.ask(1)
+    b := Ask.ask(2)
+    return a + b
+}
+
+STACK_SIZE :: 16384
+@static_assert(STACK_SIZE >= @min_stack, "fiber stack too small")
+
+#export("run_fibers")
+run_fibers :: fn() -> i32 needs Sys {
+    stack: [STACK_SIZE]u8 = ---
+    n := 0u32
+    answerer :: handler Ask {
+        ask(question, k) => {
+            n += 1
+            hw.put(n.trunc(i32))
+            resume k(question + 0)
+        }
+    }
+    total := with answerer on stack[..] {
+        quiz()
+    }
+    hw.put(total.trunc(i32))
+    return total.trunc(i32) * 2
+}
