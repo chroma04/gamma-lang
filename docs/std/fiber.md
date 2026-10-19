@@ -47,7 +47,7 @@ queue, and it does not run again until a task calls `wake(&w)`, which makes it r
 task, so the others keep running meanwhile:
 
     napper :: fn(arg: ^Job) needs fiber.Sched(Clock) + Clock + Out {
-        fiber.sleep(ms(10))                 // `E` comes from the caller's `Sched(Clock)`
+        fiber.sleep(time.ms(10))            // `E` comes from the caller's `Sched(Clock)`
         print("awake\n")
     }
 

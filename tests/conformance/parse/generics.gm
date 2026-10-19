@@ -36,7 +36,7 @@ max_i32 :: fn(xs: []const i32) -> ?i32 => max(xs)
 
 sort_by :: fn(T: type, xs: []T, less: fn(a, b: ^const T) -> bool) { }
 
-constrained_all :: fn(T: type, a: T) where Eq(T), Ord(T), Num(T), Int(T), Signed(T), Float(T), Plain(T) { }
+constrained_all :: fn(T: type, a: T) where Eq(T), Ord(T), Num(T), Int(T), Neg(T), Float(T), Plain(T) { }
 
 map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
                eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc { }

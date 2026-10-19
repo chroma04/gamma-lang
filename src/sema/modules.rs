@@ -12,7 +12,8 @@ const PRELUDE_SRC: &str = include_str!("../../lib/core/prelude.gm");
 
 /// Public declarations of the core prelude that the universe scope leaves out, besides the
 /// effect operations (§21.1): the types of `Fs`, `Net` and `Proc`, which `std/fs`,
-/// `std/net` and `std/process` export, and the methods of `Instant` and `Duration`.
+/// `std/net` and `std/process` export, the duration constructors, which `std/time` exports,
+/// and the methods of `Instant` and `Duration`.
 const UNIVERSE_HIDDEN: &[&str] = &[
     "File",
     "Dir",
@@ -35,6 +36,10 @@ const UNIVERSE_HIDDEN: &[&str] = &[
     "plus",
     "minus",
     "to_ms",
+    "ns",
+    "us",
+    "ms",
+    "secs",
 ];
 
 /// The other core modules (§21.5): name, source, and the names re-exported to
@@ -580,6 +585,7 @@ fn std_home(name: Symbol) -> Option<&'static str> {
         "Socket" | "Listener" | "Shutdown" => Some("std/net"),
         "File" | "Dir" | "OpenOptions" | "FileKind" | "FileInfo" | "DirEntry" | "SeekFrom" => Some("std/fs"),
         "Child" | "Stdio" | "Stream" | "SpawnOptions" | "Chunk" | "ExitStatus" => Some("std/process"),
+        "ns" | "us" | "ms" | "secs" => Some("std/time"),
         _ => None,
     }
 }

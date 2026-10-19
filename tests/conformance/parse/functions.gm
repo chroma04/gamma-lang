@@ -12,7 +12,7 @@ caller :: fn(msg: string = "trap", loc: SourceLocation = @caller_location()) -> 
     @unreachable()
 }
 generic :: fn(T: type, xs: []const T) -> ?T where Ord(T) => xs.first()
-constrained :: fn(T: type, a, b: T) -> T where Int(T), Signed(T) { return a }
+constrained :: fn(T: type, a, b: T) -> T where Int(T), Neg(T) { return a }
 compile_time :: fn(N :: usize, T: type, a: [N]T, by: usize) -> [N]T { return a }
 print_it :: fn(A: type, template :: string, args: ..A) needs Out { }
 effectful :: fn(x: i32) -> E!i32 needs Alloc + Yield(i32) where Eq(E) => x

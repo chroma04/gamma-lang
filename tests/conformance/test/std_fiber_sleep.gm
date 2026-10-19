@@ -1,6 +1,7 @@
 //! stage: test
 // std/fiber sleeping: `sleep` suspends only the calling task. The test handler's Clock is a
 // fake whose `sleep` advances it, so every order and elapsed time here is deterministic.
+time :: import "std/time"
 fiber :: import "std/fiber"
 chan :: import "std/fiber/channel"
 
@@ -28,7 +29,7 @@ Nap :: struct {
 }
 
 nap :: fn(j: ^Nap) needs fiber.Sched(Clock) + Clock {
-    fiber.sleep(ms(j.for_ms))
+    fiber.sleep(time.ms(j.for_ms))
     rec(j.log, j.id)
 }
 
@@ -78,9 +79,9 @@ Twice :: struct {
 }
 
 twice :: fn(j: ^Twice) needs fiber.Sched(Clock) + Clock {
-    fiber.sleep(ms(5))
+    fiber.sleep(time.ms(5))
     rec(j.log, j.id)
-    fiber.sleep(ms(5))
+    fiber.sleep(time.ms(5))
     rec(j.log, j.id + 10)
 }
 
@@ -111,7 +112,7 @@ Busy :: struct {
 busy :: fn(b: ^Busy) needs fiber.Sched(Clock) + Clock {
     for i in 0..b.rounds {
         b.round = i + 1
-        Clock.sleep(ms(1))
+        Clock.sleep(time.ms(1))
         fiber.Sched.yield_now()
     }
     rec(b.log, 1000)
@@ -124,7 +125,7 @@ Sleepy :: struct {
 }
 
 sleepy :: fn(z: ^Sleepy) needs fiber.Sched(Clock) + Clock {
-    fiber.sleep(ms(5))
+    fiber.sleep(time.ms(5))
     z.woke_in_round = z.busy.round
     rec(z.log, 500)
 }
@@ -156,7 +157,7 @@ Zero :: struct {
 
 zero_a :: fn(z: ^Zero) needs fiber.Sched(Clock) + Clock {
     rec(z.log, 1)
-    fiber.sleep(ms(0))
+    fiber.sleep(time.ms(0))
     rec(z.log, 3)
 }
 
@@ -195,7 +196,7 @@ test "the code under the with can sleep and join" {
     with &s on main_stack[..] {
         fiber.spawn(nap, &a, sa[..])
         fiber.spawn(nap, &b, sb[..])
-        fiber.sleep(ms(20))
+        fiber.sleep(time.ms(20))
         rec(&log, 99)
         // Both tasks are still alive (one sleeping): join waits for them.
         fiber.Sched.join()
@@ -230,7 +231,7 @@ Chat :: struct {
 
 sender :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
     for i in 1..4 {
-        fiber.sleep(ms(10))
+        fiber.sleep(time.ms(10))
         _ = h.c.send(i)
     }
     h.c.close()
@@ -247,7 +248,7 @@ receiver :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
 ticker :: fn(h: ^Chat) needs fiber.Sched(Clock) + Clock {
     // Sleeps on a different rhythm, between the sends.
     for i in 0..3 {
-        fiber.sleep(ms(15))
+        fiber.sleep(time.ms(15))
         rec(h.log, 100 + Clock.now().since(h.t0).to_ms().trunc(u32))
     }
 }

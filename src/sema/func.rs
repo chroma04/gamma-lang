@@ -1469,7 +1469,11 @@ impl<'a, 's> FnCx<'a, 's> {
         let lo = self.expr(lhs, None);
         let hi = self.expr(rhs, None);
         let elem = self.unify_operands(lo.ty, hi.ty, f.iter.span, "range bounds");
-        self.infer.set_fallback(elem, Fallback::Usize);
+        let conflict =
+            [elem, lo.ty, hi.ty].into_iter().filter_map(|t| self.infer.set_fallback(t, Fallback::Usize)).next();
+        if let Some((t, at)) = conflict {
+            self.sema.emit(early_fallback_error(f.iter.span, t, at));
+        }
         self.obligations.push(Obligation::Numeric {
             ty: elem,
             span: f.iter.span,
@@ -1667,7 +1671,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.expr(x, None);
             self.performed.truncate(performed);
             // The type is needed now, so an untyped literal takes its fallback (§6.1).
-            return self.settle(v.ty);
+            return self.settle(v.ty, e.span);
         }
         let module = self.module;
         self.sema.resolve_type(module, e)
@@ -1859,4 +1863,16 @@ fn discard(b: Expr) -> Expr {
     }
     let span = b.span;
     Expr { ty: Ty::unit(), kind: tir::ExprKind::Block(Box::new(discard_block(b, span))), span }
+}
+
+/// A later use that would have raised an untyped literal's fallback to `usize` after the
+/// literal was already given `ty` early (§6.1).
+pub fn early_fallback_error(span: Span, ty: Ty, settled_at: Span) -> crate::diag::Diagnostic {
+    crate::diag::Diagnostic::error(
+        span,
+        format!(
+            "the type of this value was already fixed as `{ty}` at an earlier use (§6.1); annotate it, e.g. `n: usize = 0`"
+        ),
+    )
+    .with_label(settled_at, format!("this use fixed the type as `{ty}`"))
 }

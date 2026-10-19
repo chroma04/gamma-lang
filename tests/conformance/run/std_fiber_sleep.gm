@@ -1,6 +1,7 @@
 // std/fiber sleeping with the real clock: tasks that sleep until 100, 20 and 60 ms after a
 // common start wake in the order of their deadlines, and the sleeps overlap: the quick task
 // falls asleep after the slow one and wakes before it. Only deterministic facts are printed.
+time :: import "std/time"
 fiber :: import "std/fiber"
 
 Nap :: struct {
@@ -11,7 +12,7 @@ Nap :: struct {
 
 nap :: fn(j: ^Nap) needs fiber.Sched(Out + Clock) + Out + Clock {
     print("{} falls asleep\n", j.name)
-    fiber.sleep_until(j.start.after(ms(j.for_ms)))
+    fiber.sleep_until(j.start.after(time.ms(j.for_ms)))
     print("{} wakes\n", j.name)
 }
 
@@ -32,7 +33,7 @@ spin :: fn(s: ^Shared) needs fiber.Sched(Out + Clock) + Out + Clock {
 
 napper :: fn(s: ^Shared) needs fiber.Sched(Out + Clock) + Out + Clock {
     print("napper falls asleep\n")
-    fiber.sleep(ms(20))
+    fiber.sleep(time.ms(20))
     s.napper_up = true
     print("napper wakes\n")
 }

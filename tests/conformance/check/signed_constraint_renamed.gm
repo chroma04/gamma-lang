@@ -1,0 +1,5 @@
+//! stage: check
+// The constraint that grants unary `-` is `Neg` (§16.3); the old name is rejected.
+sg :: fn(T: type, a: T) -> T where Signed(T) => a //~ ERROR `Signed` is now `Neg`
+
+main :: fn() {}

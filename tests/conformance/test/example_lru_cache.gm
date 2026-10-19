@@ -2,6 +2,7 @@
 // A bounded LRU cache with expiry (using the Clock effect) and a note log persisted
 // through the Fs effect. The tests run against the fake clock, the in-memory file system
 // and a leak-checking heap, so they are deterministic and clean up after themselves.
+time :: import "std/time"
 fs :: import "std/fs"
 
 Slot :: struct {
@@ -123,11 +124,11 @@ put_num :: fn(x: u64, out: []u8) -> usize {
 test "hits, misses and LRU eviction" {
     c := lru(3) else return
     defer c.drop()
-    c.put(1, 10, ms(0))
-    c.put(2, 20, ms(0))
-    c.put(3, 30, ms(0))
+    c.put(1, 10, time.ms(0))
+    c.put(2, 20, time.ms(0))
+    c.put(3, 30, time.ms(0))
     expect(c.get(1) is 10)                 // 1 becomes most recent; 2 is now the oldest
-    c.put(4, 40, ms(0))                    // evicts 2
+    c.put(4, 40, time.ms(0))                    // evicts 2
     expect(c.get(2) is null)
     expect(c.get(3) is 30)
     expect(c.get(4) is 40)
@@ -137,9 +138,9 @@ test "hits, misses and LRU eviction" {
 test "updating a key does not evict" {
     c := lru(2) else return
     defer c.drop()
-    c.put(7, 1, ms(0))
-    c.put(8, 2, ms(0))
-    c.put(7, 100, ms(0))
+    c.put(7, 1, time.ms(0))
+    c.put(8, 2, time.ms(0))
+    c.put(7, 100, time.ms(0))
     expect(c.evictions is 0)
     expect(c.get(7) is 100)
 }
@@ -147,16 +148,16 @@ test "updating a key does not evict" {
 test "entries expire on the fake clock" {
     c := lru(4) else return
     defer c.drop()
-    c.put(1, 11, ms(50))
-    c.put(2, 22, secs(10))
-    c.put(3, 33, ms(0))
-    Clock.sleep(ms(49))
+    c.put(1, 11, time.ms(50))
+    c.put(2, 22, time.secs(10))
+    c.put(3, 33, time.ms(0))
+    Clock.sleep(time.ms(49))
     expect(c.get(1) is 11)
-    Clock.sleep(ms(1))
+    Clock.sleep(time.ms(1))
     expect(c.get(1) is null)               // exactly at the deadline: expired
-    Clock.sleep(secs(5))
+    Clock.sleep(time.secs(5))
     expect(c.get(2) is 22)
-    Clock.sleep(secs(5))
+    Clock.sleep(time.secs(5))
     expect(c.get(2) is null)
     expect(c.get(3) is 33)                 // no ttl: lives forever
 }
@@ -164,9 +165,9 @@ test "entries expire on the fake clock" {
 test "saved cache round-trips through the in-memory file system" {
     c := lru(4) else return
     defer c.drop()
-    c.put(5, -50, ms(0))
-    c.put(6, 60, ms(0))
-    c.put(1234567, 9007199254740993, ms(0))
+    c.put(5, -50, time.ms(0))
+    c.put(6, 60, time.ms(0))
+    c.put(1234567, 9007199254740993, time.ms(0))
     save(&c, "cache.txt") else return
     data := fs.read_all("cache.txt") else return
     defer free(data)

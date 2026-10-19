@@ -1,4 +1,5 @@
 // std/thread: Mutex, Condvar, WaitGroup and Channel (§19.6), with several threads.
+time :: import "std/time"
 thread :: import "std/thread"
 
 Counter :: struct {
@@ -120,7 +121,7 @@ main :: fn() -> Fail!() needs Out + Sys + Alloc + Clock {
     cv := thread.condvar()
     m.lock()
     started := Clock.now()
-    got := cv.wait_timeout(&m, ms(30))
+    got := cv.wait_timeout(&m, time.ms(30))
     waited := Clock.now().since(started)
     m.unlock()
     print("wait_timeout: {} (waited at least 25ms: {})\n", got, waited.to_ms() >= 25)

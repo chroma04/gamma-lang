@@ -2650,7 +2650,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let p = self.expr(exprs[0], None);
             // The operation depends on the pointee type, so an untyped literal's type is
             // settled here (`x := 0; @atomic_add(&x, 1, .SeqCst)`, §6.1).
-            let pt = self.settle(p.ty);
+            let pt = self.settle(p.ty, p.span);
             match pt.kind() {
                 TyKind::Ptr { is_const, pointee } => {
                     if writes && *is_const {

@@ -1,5 +1,6 @@
 //! stage: test
 // A tracing framework as an effect: structured fields, spans timed with the fake Clock, middleware handlers (filter, context, counter) stacked in front of a text sink or a ring buffer, output checked through std/io Capture.
+time :: import "std/time"
 io :: import "std/io"
 
 Level :: union { Debug, Info, Warn, Error }
@@ -175,7 +176,7 @@ handler Trace for ^Counter needs Trace {
 fetch_user :: fn(id: i64) needs Trace + Clock {
     f := [_]Field(fi("id", id))
     debug("cache miss", f[..])
-    Clock.sleep(ms(12))
+    Clock.sleep(time.ms(12))
     info("loaded user", f[..])
 }
 
@@ -183,7 +184,7 @@ handle_request :: fn(path: string, user: i64) needs Trace + Clock {
     f := [_]Field(fs("path", path), fb("auth", user > 0))
     info("request", f[..])
     span("auth", fn() {
-        Clock.sleep(ms(2))
+        Clock.sleep(time.ms(2))
         if user <= 0 {
             warn("anonymous caller", NONE[..])
         }
@@ -191,7 +192,7 @@ handle_request :: fn(path: string, user: i64) needs Trace + Clock {
     if user > 0 {
         span("db", fn() {
             fetch_user(user)
-            Clock.sleep(ms(3))
+            Clock.sleep(time.ms(3))
         })
     } else {
         error("denied", f[..])
@@ -285,7 +286,7 @@ test "context and filter and counter stack in order" {
                         f := [_]Field(fs("path", "/profile"), fb("auth", true))
                         info("request", f[..])
                         debug("never shown", NONE[..])
-                        Clock.sleep(ms(2))
+                        Clock.sleep(time.ms(2))
                         g := [_]Field(fi("id", 7))
                         info("loaded user", g[..])
                     }
