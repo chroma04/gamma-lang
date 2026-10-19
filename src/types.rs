@@ -17,7 +17,7 @@ use std::sync::{OnceLock, RwLock};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ty(u32);
 
-/// A fixed-width integer type `uN` / `iN` (1 ≤ N ≤ 65535).
+/// A fixed-width integer type `uN` / `iN` (1 ≤ N ≤ 128).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IntTy {
     pub signed: bool,

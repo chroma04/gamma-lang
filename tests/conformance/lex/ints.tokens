@@ -31,10 +31,10 @@
 10:25 int 5 u64
 10:30 int 6 i128
 10:36 int 7 u1
-10:40 int 8 i65535
-10:48 int 9 usize
-10:55 int 10 isize
-10:62 newline
+10:40 int 8 i128
+10:46 int 9 usize
+10:53 int 10 isize
+10:60 newline
 11:1 int 255 u8
 11:8 int 15 i16
 11:16 int 5 u3

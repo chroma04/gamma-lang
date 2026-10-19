@@ -27,7 +27,7 @@ main :: fn() needs Out {
     print("{:x} {:b}\n", 0u64, 0)
     print("{:x}\n", 18446744073709551615u64)
     print("{:x}\n", -170141183460469231731687303715884105728i128)
-    print("{:x} {:b}\n", u256(1) << 200, i8(-128))
+    print("{:x} {:b}\n", u128(1) << 100, i8(-128))
     print("{} {:x}\n", u7(127), u7(127))
     // Float precision: correctly rounded, ties to even on the exact value.
     print("{:.2} {:.2} {:.0} {:.0} {:.0} {:.3}\n", 3.14159, 0.125, 0.5, 1.5, 2.5, 2.0)

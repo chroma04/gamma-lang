@@ -103,7 +103,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return self.lane_loop(t, n, |cx, i| {
                 let y = cx.lane_at(lane, bytes, &pv, i);
                 let at = Expr { ty: lane, kind: ExprKind::Uninit, span: e.span };
-                cx.int_binary(&at, BinOp::Sub(Flavor::Checked), lane, lane, "0", &y)
+                cx.int_binary(&at, BinOp::Sub(Flavor::Checked), lane, "0", &y)
             });
         }
         let a = self.load_vec(t, &v);
@@ -138,11 +138,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let a = self.expr(l)?;
                 let b = self.expr(r)?;
                 let pa = self.addr_of(t, &a);
-                let rt = r.ty;
                 return self.lane_loop(t, n, |cx, i| {
                     let x = cx.lane_at(lane, bytes, &pa, i);
                     let at = Expr { ty: lane, kind: ExprKind::Uninit, span: e.span };
-                    cx.int_binary(&at, op, lane, rt, &x, &b)
+                    cx.int_binary(&at, op, lane, &x, &b)
                 });
             }
             let a = self.expr(l)?;
@@ -152,7 +151,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let x = cx.lane_at(lane, bytes, &pa, i);
                 let y = cx.lane_at(lane, bytes, &pb, i);
                 let at = Expr { ty: lane, kind: ExprKind::Uninit, span: e.span };
-                cx.int_binary(&at, op, lane, lane, &x, &y)
+                cx.int_binary(&at, op, lane, &x, &y)
             });
         }
         let a = self.expr(l)?;
@@ -265,7 +264,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let at = Expr { ty: lane, kind: ExprKind::Uninit, span: e.span };
         let r = match op {
             Builtin::ReduceSum if lane.is_float() => self.tmp(lane, &format!("({acc} + {y})")),
-            Builtin::ReduceSum => self.int_binary(&at, BinOp::Add(Flavor::Checked), lane, lane, &acc, &y)?,
+            Builtin::ReduceSum => self.int_binary(&at, BinOp::Add(Flavor::Checked), lane, &acc, &y)?,
             _ if lane.is_float() => {
                 let f = if op == Builtin::ReduceMin { "gm_fmin" } else { "gm_fmax" };
                 let r = self.float_from(lane, &format!("{f}((double){acc}, (double){y})"));

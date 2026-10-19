@@ -1,4 +1,4 @@
-// Integers of many widths: u1 to u256, wrapping and saturating at odd widths, bit intrinsics, byte swaps, a compile-time CRC table and checksums.
+// Integers of many widths: u1 to u128, wrapping and saturating at odd widths, bit intrinsics, byte swaps, a compile-time CRC table and checksums.
 fmt :: import "std/fmt"
 
 crc_table :: fn(poly: u32) -> [256]u32 {
@@ -51,9 +51,9 @@ mix32 :: fn(x: u32) -> u32 {
     return @rotl(h, 5)
 }
 
-factorial256 :: fn(n: u32) -> u256 {
-    f: u256 = 1
-    for i in 2..=n { f *= u256(i) }
+factorial34 :: fn(n: u32) -> u128 {
+    f: u128 = 1
+    for i in 2..=n { f *= u128(i) }
     return f
 }
 
@@ -73,7 +73,7 @@ main :: fn() needs Out {
     print("i24: {} - 1 wraps to {}\n", e, e -% 1)
     one: u1 = 1
     print("u1: {} +% 1 = {}, +? 1 = {}\n", one, one +% 1, one +? 1)
-    print("sizes: {} {} {} {} {}\n", @size_of(u7), @size_of(u17), @size_of(u33), @size_of(u100), @size_of(u200))
+    print("sizes: {} {} {} {} {}\n", @size_of(u7), @size_of(u17), @size_of(u33), @size_of(u100), @size_of(u128))
 
     // Conversions between widths.
     wide: u32 = 0x1234_5678
@@ -88,15 +88,15 @@ main :: fn() needs Out {
     print("popcount {} clz {} ctz {}\n", @popcount(x), @clz(x), @ctz(x))
     print("bswap {} rotl {} rotr {}\n", fmt.prefixed(@bswap(u32(0x11223344)), 16, buf[..]), @rotl(u8(0b1000_0001), 1), @rotr(u8(0b1000_0001), 1))
     print("bitreverse(u8 1) = {}\n", @bitreverse(u8(1)))
-    print("popcount of u200: {}\n", @popcount((u200(1) << 199) | u200(0xFF)))
-    print("clz of u200: {}, ctz: {}\n", @clz(u200(1) << 150), @ctz(u200(1) << 150))
+    print("popcount of u100: {}\n", @popcount((u100(1) << 99) | u100(0xFF)))
+    print("clz of u100: {}, ctz: {}\n", @clz(u100(1) << 50), @ctz(u100(1) << 50))
 
-    // Wide arithmetic.
-    f57 := factorial256(57)
-    print("57! = {}\n", fmt.dec(f57, buf[..]))
-    print("57! hex = {}\n", fmt.prefixed(f57, 16, wb[..]))
-    big: u256 = (u256(1) << 255) + 12345
-    print("2^255 + 12345 = {}\n", fmt.dec(big, wb[..]))
+    // 128-bit arithmetic.
+    f34 := factorial34(34)
+    print("34! = {}\n", fmt.dec(f34, buf[..]))
+    print("34! hex = {}\n", fmt.prefixed(f34, 16, wb[..]))
+    big: u128 = (u128(1) << 127) + 12345
+    print("2^127 + 12345 = {}\n", fmt.dec(big, wb[..]))
     print("  mod 1000003 = {}, / 10^30 = {}\n", big % 1000003, fmt.dec(big / 1_000_000_000_000_000_000_000_000_000_000, buf[..]))
     s: i128 = -170141183460469231731687303715884105728
     print("i128 min = {}, abs_diff with max = {}\n", s, s.abs_diff(170141183460469231731687303715884105727))

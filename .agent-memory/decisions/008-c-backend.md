@@ -5,7 +5,7 @@ include_str!, concatenated into ONE translation unit with the generated code). B
 (statement exprs, zero-size arrays, __int128, __builtin_*_overflow). Targets: decisions/015.
 
 ## Values
-- Scalars native: ints by storage (u8..u64, __int128 for 65..128; >128 via runtime gm_w*),
+- Scalars native: ints by storage (u8..u64, __int128 for 65..128; widths >128 removed in s28, decisions/030),
   usize/isize = uintptr_t/intptr_t, f32/f64 (f16 = _Float16), bool = uint8_t, all data pointers
   and fn pointers = `void*` (cast at use).
 - Everything else (slices, arrays, tuples, optionals, results, structs, unions, unit) is a blob

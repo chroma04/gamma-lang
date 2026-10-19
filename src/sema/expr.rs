@@ -2543,8 +2543,8 @@ fn is_literal(e: &ast::Expr) -> bool {
 pub fn suffix_type(s: crate::syntax::token::IntSuffix) -> Ty {
     use crate::syntax::token::IntSuffix;
     match s {
-        IntSuffix::U(n) => Ty::int(false, n.min(65535) as u16),
-        IntSuffix::I(n) => Ty::int(true, n.min(65535) as u16),
+        IntSuffix::U(n) => Ty::int(false, n.min(128) as u16),
+        IntSuffix::I(n) => Ty::int(true, n.min(128) as u16),
         IntSuffix::Usize => Ty::usize(),
         IntSuffix::Isize => Ty::isize(),
     }

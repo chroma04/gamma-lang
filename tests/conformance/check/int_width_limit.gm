@@ -1,0 +1,20 @@
+//! stage: check
+// Fixed-width integer types are at most 128 bits wide (§5.2); wider names are not types.
+Wide :: struct { a: u256 } //~ ERROR integer types are at most 128 bits wide
+
+ok :: fn() {
+    a: u128 = 0
+    b: i128 = 0
+    c: u1 = 0
+    d: i65 = 0
+    _ = (a, b, c, d)
+}
+
+main :: fn() {
+    x: u129 = 0 //~ ERROR integer types are at most 128 bits wide
+    z: i65535 = 0 //~ ERROR unknown type `i65535`
+    // Names that are not types any more may be used for locals.
+    u129 := 1
+    i4096 := u129 + 1
+    _ = i4096
+}

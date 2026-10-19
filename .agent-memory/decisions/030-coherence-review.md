@@ -1,7 +1,7 @@
 # 030 Coherence review (s28, 2026-10-19): what was applied, what waits on the user
 
 Source: an outside design review of the spec against the thesis + P1–P5 (user: "act on it").
-Applied in PR on branch claude/coherence-review-wyd199:
+Applied in PR on branch claude/coherence-review-wyd199 (impl via 3 sonnet worktree agents):
 - Spec fixes: P2 reworded (checks are the one inserted cost, all in §18.2); C.3 says `is`
   AND `in` grow with data; grammar uses `needs` (no `'\' effect_set`; `\` dropped from §2.6,
   lexer still lexes it only to give the migration error); §16.5 XOR is `~`; §21.5
@@ -27,3 +27,8 @@ Left for the user (listed in the PR body), NOT done:
   defaults, trap hook).
 - Taste: `Signed` → name for negation; ns/us/ms/secs out of the universe; A.7 rule 3
   (`x!(a)` parse depends on name resolution, P5).
+Impl notes: iterator-arg hoisting = sema/call.rs hoist_iterator_call/hoist_iter_value + FnCx::iter_pre,
+placed by bind_args (place_iter_pre) and generics.rs generic_call_packed; constants/globals/untyped
+literals stay in the literal (heuristic `iter_stable`); places stay places. cgen elementwise.rs and
+wide.rs deleted; runtime gm_w* gone; vector.rs has its own lane_loop. `is_oversized_int_name` gives
+"integer types are at most 128 bits wide". Length exprs: types.rs len_expr no operand sorting.

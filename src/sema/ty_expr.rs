@@ -185,7 +185,12 @@ impl<'s> Sema<'s> {
                 if let Some(t) = builtin_type(id.name.as_str()) {
                     return t;
                 }
-                let mut d = crate::diag::Diagnostic::error(e.span, format!("unknown type `{}`", id.name));
+                let msg = if super::builtins::is_oversized_int_name(id.name.as_str()) {
+                    format!("unknown type `{}`: integer types are at most 128 bits wide (§5.2)", id.name)
+                } else {
+                    format!("unknown type `{}`", id.name)
+                };
+                let mut d = crate::diag::Diagnostic::error(e.span, msg);
                 if let Some(hint) = self.universe_hint(id.name) {
                     d = d.with_note(hint);
                     if let Some(edits) = self.import_fix(module, id.name, e.span) {

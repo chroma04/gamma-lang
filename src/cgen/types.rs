@@ -6,7 +6,7 @@
 //! structs*: members of the field types at the Gamma offsets, with explicit padding
 //! members, so values have exactly the bytes the interpreter gives them and the C
 //! compiler can see the scalars inside. Every other first-class type (`#packed` and
-//! `#bits` structs, zero-size types, integers wider than 128 bits, and everything
+//! `#bits` structs, zero-size types, and everything
 //! under Fil-C) is a *blob*: a struct holding its bytes with the size and alignment
 //! of the Gamma layout. Fields of either are read and written with `memcpy` at the
 //! layout's offsets.
@@ -50,15 +50,6 @@ pub struct Types<'a> {
     vector_names: BTreeSet<String>,
     /// `-g`: the debugger views built so far (see `super::views`).
     pub(super) views: super::views::Views,
-}
-
-/// An integer wider than 128 bits: `bits` bits, little-endian two's complement in
-/// `size` bytes (a multiple of 8). The runtime's `gm_w*` routines operate on these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WideInfo {
-    pub signed: bool,
-    pub bits: u32,
-    pub size: u64,
 }
 
 /// How a type is represented in C.
@@ -118,7 +109,7 @@ impl<'a> Types<'a> {
 
     pub fn repr(&self, t: Ty) -> Repr {
         match t.kind() {
-            TyKind::Int(IntTy { signed, bits }) if *bits <= 128 => {
+            TyKind::Int(IntTy { signed, bits }) => {
                 Repr::Int { signed: *signed, bits: *bits as u32, storage: self.size(t) }
             }
             TyKind::Usize | TyKind::Isize => Repr::Int {
@@ -133,16 +124,6 @@ impl<'a> Types<'a> {
             TyKind::Fn(_) => Repr::Closure,
             TyKind::Handler(_) => Repr::Handler,
             _ => Repr::Blob,
-        }
-    }
-
-    /// Facts about `t` if it is an integer wider than 128 bits, which is held as a blob.
-    pub fn wide(&self, t: Ty) -> Option<WideInfo> {
-        match t.kind() {
-            TyKind::Int(IntTy { signed, bits }) if *bits > 128 => {
-                Some(WideInfo { signed: *signed, bits: *bits as u32, size: self.size(t) })
-            }
-            _ => None,
         }
     }
 

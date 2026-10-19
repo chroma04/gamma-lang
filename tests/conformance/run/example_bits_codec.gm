@@ -1,6 +1,6 @@
 // Bit-level work: a packet codec with #bits flags and big-endian fields, the Internet
 // checksum, LEB128 varints, base64, FNV-1a with wrapping arithmetic, a bitset using
-// @popcount, and wide integers.
+// @popcount, and 128-bit integers.
 Flags :: #bits(u8) struct {
     syn, ack, fin, rst: bool
     prio: u3
@@ -186,10 +186,10 @@ main :: fn() needs Out {
     for i in idx { set_bit(&bits, i) }
     print("bits set: {}, has 100: {}, has 101: {}\n", count_bits(&bits), has_bit(&bits, 100), has_bit(&bits, 101))
 
-    // wide integers
-    big: u256 = 1
-    for _ in 0..100 { big *= 3 }
-    print("3^100 = {}\n", big)
+    // 128-bit integers
+    big: u128 = 1
+    for _ in 0..80 { big *= 3 }
+    print("3^80 = {}\n", big)
     print("clz {} ctz {} popcount {}\n", @clz(u32(1)), @ctz(u32(0x80)), @popcount(u64(0xF0F0)))
     x: i24 = -8_000_000
     print("{} {} {}\n", x, x +% x, x.trunc(i8))

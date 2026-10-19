@@ -3,7 +3,7 @@
 
 use crate::types::{FloatTy, Ty, TyKind};
 
-/// Parses `u1`…`u65535` / `i1`…`i65535`.
+/// Parses `u1`…`u128` / `i1`…`i128`.
 fn int_type_name(name: &str) -> Option<(bool, u16)> {
     let (signed, digits) = match name.as_bytes().first()? {
         b'u' => (false, &name[1..]),
@@ -14,7 +14,19 @@ fn int_type_name(name: &str) -> Option<(bool, u16)> {
         return None;
     }
     let bits: u32 = digits.parse().ok()?;
-    if (1..=65535).contains(&bits) { Some((signed, bits as u16)) } else { None }
+    if (1..=128).contains(&bits) { Some((signed, bits as u16)) } else { None }
+}
+
+/// Whether `name` looks like an integer type but is wider than 128 bits (`u256`).
+pub fn is_oversized_int_name(name: &str) -> bool {
+    let digits = match name.as_bytes().first() {
+        Some(b'u' | b'i') => &name[1..],
+        _ => return false,
+    };
+    !digits.is_empty()
+        && !digits.starts_with('0')
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits.len() > 3 || digits.parse::<u32>().is_ok_and(|n| n > 128))
 }
 
 /// The reserved type names, which may not be redeclared anywhere.
@@ -73,9 +85,15 @@ mod tests {
     #[test]
     fn int_names() {
         assert_eq!(int_type_name("u8"), Some((false, 8)));
-        assert_eq!(int_type_name("i65535"), Some((true, 65535)));
+        assert_eq!(int_type_name("i128"), Some((true, 128)));
         assert_eq!(int_type_name("u0"), None);
-        assert_eq!(int_type_name("u65536"), None);
+        assert_eq!(int_type_name("u129"), None);
+        assert_eq!(int_type_name("u65535"), None);
+        assert!(is_oversized_int_name("u129"));
+        assert!(is_oversized_int_name("i65536"));
+        assert!(!is_oversized_int_name("u128"));
+        assert!(!is_oversized_int_name("u08"));
+        assert!(!is_oversized_int_name("used"));
         assert_eq!(int_type_name("u08"), None);
         assert_eq!(int_type_name("used"), None);
         assert!(is_reserved_type_name("cont"));

@@ -37,7 +37,7 @@ semantics that the native back end is tested against.
 Generating C keeps the implementation portable and lets the system C compiler do
 register allocation and optimization. The features that C cannot express
 directly are provided by a small runtime library: stack switching for fibers
-(spec §14), arithmetic on integers wider than 128 bits, and trap reporting. The
+(spec §14), value formatting, and trap reporting. The
 effect system compiles to *evidence passing* and *exit flags* (spec Appendix D),
 which are plain C.
 
@@ -531,7 +531,7 @@ both use it. The files:
 | `func.rs` | functions: frames, blocks, statements, the exit ladders, handler specialization |
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
-| `arith.rs`, `wide.rs` | checked scalar operators, integers wider than 128 bits |
+| `arith.rs` | checked scalar operators |
 | `vector.rs` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.rs` | per-type equality, ordering and hashing |
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
@@ -673,32 +673,17 @@ has zero padding. A `_Static_assert` on each checks size, alignment and member
 offsets against the Gamma layout. Typed structs let the C compiler see which
 parts of a value are scalars (gcc's scalar replacement of aggregates gives up on
 byte arrays), and types with the same shape share one definition. Every other
-type (`#packed` and `#bits` structs, zero-size types, integers over 128 bits)
+type (`#packed` and `#bits` structs, zero-size types)
 is a *blob*, a struct holding its bytes with the layout's size and alignment.
 Typed structs are not used under Fil-C, where a value is a blob so that copying
 it keeps the capabilities of the pointers inside, nor on 32-bit targets, where
 C and Gamma align 64-bit members differently.
 
-**Wide integers.** An integer wider than 128 bits is a blob holding its
-two's-complement value in `⌈bits/64⌉` 64-bit words, least significant first, each
-word in the target's byte order (`src/cgen/wide.rs`).
-Every operation (arithmetic and its overflow flavors, shifts, comparison,
-conversion to and from other integers and floats, `min`, `abs`, `pow`, bit
-counting, hashing and decimal display) calls a `gm_w*` routine of the runtime
-with the operands' addresses, the width and the signedness. The routines
-return the overflow flag that the operator's flavor needs, so the checks and
-trap messages are those of narrow integers. They read the padding bits above
-the width as the sign (or zero) extension and always write them that way, so a
-value is the same whichever way it was made, and they use schoolbook
-multiplication and shift-and-subtract division. `runtime/rt_test.c` checks them
-against `__int128` and against exact big-integer vectors.
-
 **Byte order.** The C back end and the runtime work on little- and big-endian
-targets. An integer of up to 128 bits is one number in the target's byte order
-(C's own layout, read with `GM_LD`/`GM_ST`); a wider one is the word sequence above, so
-the `gm_w*` routines see native 64-bit words whatever the order. Code that must
-address the bytes of an integer goes through `gm_ibp` (the i-th least significant
-byte; `gm_wbp` for the wide layout) instead of indexing, and `gm_load_u128` /
+targets. An integer (at most 128 bits wide)
+is one number in the target's byte order (C's own layout, read with `GM_LD`/`GM_ST`).
+Code that must address the bytes of an integer goes through `gm_ibp` (the i-th least
+significant byte) instead of indexing, and `gm_load_u128` /
 `gm_store_u128` read and write a whole integer of any storage size. Bytes of
 compile-time values are laid out for the target (`int_bytes_swap_order` in
 `src/layout.rs`; a `ConstKey` keeps an integer's bytes little-endian, whatever the

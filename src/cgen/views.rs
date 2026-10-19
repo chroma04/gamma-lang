@@ -116,7 +116,7 @@ impl Types<'_> {
                     self.define_view(t);
                     v
                 }
-                // Integers wider than 128 bits, closures, handlers, continuations.
+                // Closures, handlers, continuations.
                 _ => View::scalar(self.cty(t)),
             },
             _ => View::scalar(self.cty(t)),

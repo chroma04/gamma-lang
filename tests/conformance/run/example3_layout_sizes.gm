@@ -1,4 +1,4 @@
-// Layout guarantees: sizes, alignments and offsets of nested, packed, aligned, empty and wide-integer types, tuples, optionals and bit structs.
+// Layout guarantees: sizes, alignments and offsets of nested, packed, aligned, empty and odd-width integer types, tuples, optionals and bit structs.
 Inner :: struct { a: u8, b: u16 }
 Outer :: struct { x: u8, in_: Inner, y: u64, z: [3]u16 }
 PInner :: #packed struct { a: u8, b: u16 }
@@ -13,7 +13,7 @@ WithBits :: struct { f: Flags, g: u8 }
 Tup :: (u8, u32, u8)
 NamedTup :: (a: u8, b: u64)
 Big :: struct { x: u128, y: u8 }
-Mixed :: struct { a: u8, b: i128, c: u256 }
+Mixed :: struct { a: u8, b: i128, c: u100 }
 
 main :: fn() needs Out {
     print("Outer {} {} offsets {} {} {} {}\n", @size_of(Outer), @align_of(Outer), @offset_of(Outer, x), @offset_of(Outer, in_), @offset_of(Outer, y), @offset_of(Outer, z))
@@ -27,9 +27,9 @@ main :: fn() needs Out {
     // The alignment of 128-bit integers is the target's (16 on x86-64 and AArch64, 8 on s390x).
     a := @align_of(u128)
     round :: fn(n: usize, m: usize) -> usize => (n + m - 1) / m * m
-    print("Big {} {} Mixed {} {} offs {}\n", @size_of(Big) is round(17, a), @align_of(Big) is a, @size_of(Mixed) is round(a + 48, a), @align_of(Mixed) is a, @offset_of(Mixed, c) is a + 16)
+    print("Big {} {} Mixed {} {} offs {}\n", @size_of(Big) is round(17, a), @align_of(Big) is a, @size_of(Mixed) is round(a + 32, a), @align_of(Mixed) is a, @offset_of(Mixed, c) is a + 16)
     print("{} {} {} {}\n", @size_of(?u32), @size_of(?^u8), @size_of(string), @size_of([]u8))
-    print("{} {} {}\n", @size_of(u3), @size_of(u24), @size_of(u200))
+    print("{} {} {}\n", @size_of(u3), @size_of(u24), @size_of(u100))
     print("{} {} {}\n", @size_of(rawptr), @size_of(cstring), @size_of([^]u8))
     print("{}\n", @size_of([5]Inner))
     print("{} {}\n", @size_of(bool), @size_of(f32))
