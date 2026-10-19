@@ -36,8 +36,8 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   committed parser is ABI 15, Ubuntu's Emacs needs `generate --abi 14` — CI step regenerates).
 
 ## Nice — after 0.1.0
-- Language: `@fields(T)` reflection (§22 deferred), SIMD types (C.10), enum-indexed arrays
-  `[Enum]T` and bit sets, a `Send`-like rule for migrating fibers.
+- Language: done/decided in s27 (decisions/029). Vector follow-ups if asked: lane `sqrt`,
+  two-input shuffles, lane `trunc`/`round` to integers.
 - Compiler: retire the tree-walker (s24: no run test falls back for a whole function except
   huge_local's 1e12-element array; left: statements with values > REG_VALUE_MAX run as
   TreeStmt, coverage builtin, const eval), smaller Debug C (overflow-trap and
@@ -47,5 +47,5 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Tools: more fix-its (s24 machinery + 8, s25 +7, s26 needs; rejected list in decisions/028), `gamma lint`,
   profiler docs (perf/Instruments on `-g` builds). LLDB formatters done (s26).
 - Packages: several versions of one repository in a dependency graph.
-- Library (each through §22): time zones, `std/process`, TLS via `std/c`, compression.
+- Library: time zones and std/process done (s27); TLS, compression rejected (§22.4).
 - Docs/project: Rosetta-style examples, "Gamma for C/Zig/Rust programmers", self-hosting.

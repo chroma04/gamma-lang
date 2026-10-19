@@ -42,7 +42,8 @@ impl<'a, 's> FnCx<'a, 's> {
     /// array; a temporary array lives for the call, like `&e` for a `^const T` one (§7.2).
     pub fn array_arg_as_slice(&mut self, v: Expr, param: Ty) -> Expr {
         let param = self.infer.resolve(param);
-        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !self.infer.resolve(v.ty).is_array() {
+        let vt = self.infer.resolve(v.ty);
+        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !vt.is_positional_array() {
             return v;
         }
         let span = v.span;
@@ -74,6 +75,10 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => b,
         };
         let bt = self.infer.resolve(b.ty);
+        if bt.enum_index().is_some() && (lo.is_some() || hi.is_some()) {
+            self.error(span, format!("`{}` is indexed by its enum, so it is sliced only whole: `a[..]`", bt));
+            return error_expr(span);
+        }
         let (elem, is_const) = match bt.kind() {
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => match self.place_mutability(&b) {
                 Some(m) => (*elem, !m),

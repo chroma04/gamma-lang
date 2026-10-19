@@ -1,0 +1,3 @@
+test "spawn is refused in tests" ... ok
+test "the conveniences report the refusal" ... ok
+2 passed, 0 failed

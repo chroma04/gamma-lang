@@ -440,6 +440,30 @@ main :: fn() needs Out {
 
 `io.describe(e)` turns an `IoError` into a short message for `error: ...` lines.
 
+### Running programs: `std/process`
+
+Child processes are the `Proc` effect, like files are `Fs`. `process.output` runs a command to completion (no shell: the first element is the program, found in `PATH` unless it has a path separator) and collects what it writes; `process.status` only waits for it. Options choose what the child's standard streams are connected to (`Inherit`, `Null` or `Pipe`), its working directory and its environment:
+
+```gamma
+process :: import "std/process"
+
+main :: fn() -> process.RunError!() needs Out + Proc + Alloc {
+    out := try process.output([_]string("sh", "-c", "echo hello; echo oops >&2; exit 3"))
+    defer out.deinit()
+    print("{} {} [{}] [{}]\n", out.status, process.success(out.status),
+          string(out.out.items), string(out.err.items))
+
+    // The same program, in another directory and with its own environment.
+    env := [_]string("GREETING=hi")
+    opts := process.SpawnOptions(dir: "/", env: env[..])
+    out2 := try process.output([_]string("sh", "-c", "echo $GREETING from $(pwd)"), opts)
+    defer out2.deinit()
+    print("{}", string(out2.out.items))
+}
+```
+
+For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `write_in` and ended with `close_in`; `read_out` waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `kill` ends it forcibly. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write_in` and `read_out`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
+
 ## Time and randomness
 
 Durations and instants are core; `Clock` is the effect that supplies them (a test handler gives a fake clock, so `sleep` costs nothing). `std/time` adds the calendar, in UTC, with RFC 3339 text:
@@ -466,6 +490,29 @@ main :: fn() -> time.ParseError!() needs Out + Clock {
     print("{}\n", time.format_rfc3339(r, buf[..]))
 }
 ```
+
+`std/time/zone` converts between UTC and local civil time. A `Zone` is read from TZif data (the files of the IANA time zone database, or any RFC 8536 file) or built from a POSIX `TZ` rule, and owns its tables from the allocator that was current when it was made. A local time can be ambiguous or not exist when the clocks change, so `from_local` says which instead of guessing:
+
+```gamma
+time :: import "std/time"
+zone :: import "std/time/zone"
+
+main :: fn() -> zone.ZoneError!() needs Out + Alloc + Fs + Env {
+    paris := try zone.load("Europe/Paris")              // $TZDIR/Europe/Paris, or /usr/share/zoneinfo
+    defer zone.deinit(&paris)
+    t := time.parse_rfc3339("2024-10-27T00:30:00Z") else trap("bad time")
+    local := zone.to_local(&paris, t)
+    buf: [zone.RFC3339_LOCAL_LEN]u8 = ---
+    print("{}\n", zone.format_rfc3339_local(local, buf[..]))      // 2024-10-27T02:30:00+02:00
+    match zone.from_local(&paris, local.time) {                  // the clocks went back at 03:00
+        .Unique(secs) => print("once: {}\n", secs)
+        .Ambiguous(a) => print("twice: {} and {}\n", a.earlier, a.later)
+        .Missing(m) => print("never: {} {}\n", m.before, m.after)
+    }
+}
+```
+
+`zone.local()` follows `$TZ` and `/etc/localtime`, and `zone.utc()`, `zone.fixed(seconds)` and `zone.from_tz_string("CET-1CEST,M3.5.0,M10.5.0/3")` need no file. Instants are Unix seconds, so the whole range of dates works.
 
 Randomness is the `Rand` effect, filled from the operating system by default and from a fixed seed in tests. `std/random` builds the usual draws on it without modulo bias, and has a seedable generator that is itself a `Rand` handler, for reproducible runs:
 
@@ -811,6 +858,7 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
 | `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
 | `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
+| `std/process` | running other programs: `output`, `status` and `success` over the `Proc` effect (above); tests cannot start processes |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
 | `std/c` | C's platform-dependent types (`c_int`, `c_long`, ...) for [foreign declarations](14-interop.md) |
 

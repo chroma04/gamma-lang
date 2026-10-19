@@ -245,6 +245,10 @@ impl<'s> Sema<'s> {
                     self.error(e.span, "`[_]` is allowed only in array constructors");
                     return Ty::error();
                 };
+                if self.length_is_type(module, len) {
+                    let index = self.component_type(module, len);
+                    return self.enum_array_type(index, elem, len.span);
+                }
                 match self.array_len(module, len) {
                     Some(ArrayLen::Known(n)) => Ty::array(n, elem),
                     Some(ArrayLen::Param(len)) => Ty::intern(TyKind::ParamArray { len, elem }),
@@ -323,8 +327,11 @@ impl<'s> Sema<'s> {
             ExprKind::Attributed { attrs, inner } if matches!(&inner.kind, ExprKind::PtrType { inner: f, .. } if matches!(f.kind, ExprKind::FnType(_))) => {
                 self.callconv_fn_ptr(module, attrs, inner, e.span)
             }
+            ExprKind::Attributed { attrs, inner } if matches!(inner.kind, ExprKind::ArrayType { .. }) => {
+                self.vector_type(module, attrs, inner, e.span)
+            }
             ExprKind::Attributed { inner, .. } if !matches!(inner.kind, ExprKind::Struct(_) | ExprKind::Union(_)) => {
-                self.error(e.span, "attributes here must precede a `struct`, a `union` or a `^fn` type");
+                self.error(e.span, "attributes here must precede a `struct`, a `union`, an array type or a `^fn` type");
                 Ty::error()
             }
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Attributed { .. } => {
@@ -405,6 +412,51 @@ impl<'s> Sema<'s> {
             Some(d) => matches!(self.resolve_decl(d), super::DeclValue::Error),
             None => false,
         }
+    }
+
+    /// True if the length of an array type `[len]T` names a type, making it an
+    /// enum-indexed array `[E]T` (§5.6). A compile-time value parameter is a length.
+    pub fn length_is_type(&mut self, module: ModuleId, len: &ast::Expr) -> bool {
+        match &len.kind {
+            ExprKind::Ident(id) => {
+                !self.value_scope.iter().any(|(n, _)| *n == id.name) && self.names_type(module, id.name)
+            }
+            ExprKind::Field { .. } => self.syntax_is_type(module, len, 0),
+            _ => false,
+        }
+    }
+
+    /// `[E]T` for the type `index` written as the length (§5.6): `E` must be an enum.
+    fn enum_array_type(&mut self, index: Ty, elem: Ty, span: Span) -> Ty {
+        if index.is_error() || elem.is_error() {
+            return Ty::error();
+        }
+        if matches!(index.kind(), TyKind::Param(_)) {
+            self.error(
+                span,
+                format!("an array indexed by a type needs a concrete enum type, not the type parameter `{}`", index),
+            );
+            return Ty::error();
+        }
+        let Some((variants, _)) = self.union_variants(index) else {
+            self.error(
+                span,
+                format!(
+                    "an array length is a constant `usize` or an enum type (`[E]T`), and `{}` is not an enum",
+                    index
+                ),
+            );
+            return Ty::error();
+        };
+        if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+            let msg = format!(
+                "an array can be indexed only by an enum, and `{}` has a variant with a payload (`{}`)",
+                index, v.name
+            );
+            self.error(span, msg);
+            return Ty::error();
+        }
+        Ty::enum_array(index, variants.len() as u64, elem)
     }
 
     /// Evaluates the length of an array type `[len]T`.

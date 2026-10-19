@@ -222,6 +222,43 @@ A `join` at the end means the `with` completes only after both tasks have exited
 
 In this sketch a task can perform only `Sched`, because the type of `spawn`'s entry function names its effects. `std/fiber` lifts that limit with an effect-set parameter (see [generics](10-generics.md)): its `Sched(E)` lets tasks perform the effects `E` as well, and its handler requires `E` where the scheduler is installed, so a task can `print` when the scheduler is made with `fiber.scheduler(Out)` and the task is declared `needs fiber.Sched(Out) + Out`. The code that installs the scheduler (`with &sched on stack { ... }`) must then be able to perform `Out` itself, and `fiber.scheduler()` takes its queue from the current allocator, so it performs `Alloc`.
 
+## Sleeping tasks
+
+`Clock.sleep` blocks the whole thread, scheduler included. `fiber.sleep(d)` and `fiber.sleep_until(deadline)` suspend only the calling task, so the others keep running:
+
+```gamma
+nap :: fn(j: ^Job) needs fiber.Sched(Clock) + Clock + Out {
+    fiber.sleep(ms(j.millis))       // `E` is taken from the caller's Sched(Clock)
+    print("{} is up\n", j.name)
+}
+
+s := fiber.scheduler(Out + Clock)   // sleeping tasks need Clock in the scheduler's set
+```
+
+Tasks that sleep list `Clock` among the effects of their scheduler (`Sched(Clock)`), because the sleeping task reads the clock itself. The scheduler never does, so a program whose tasks never sleep needs no `Clock` anywhere. Sleepers wake in the order of their deadlines, ties in the order they went to sleep. While other tasks are ready, the scheduler wakes the earliest sleeper once per round so that it can look at the clock; when nothing else can run, the earliest sleeper simply waits out the rest of its time. `join` waits for sleeping tasks too, and a task that waits on something that never happens while no one sleeps is still a deadlock, which traps.
+
+## Pull-style generators
+
+An iterator (a function that performs `Yield(T)`) pushes its values at a `for` loop, so two iterators cannot be advanced alternately with it. `std/fiber/generator` runs an iterator on a fiber of its own and lets you *pull* values with `next()`:
+
+```gamma
+gen :: import "std/fiber/generator"
+
+merge :: fn(a, b: ^gen.Generator(u32, Out)) needs gen.Pull(u32, Out) + Out {
+    x := a.next()                   // ?u32: null once the iterator has returned
+    y := b.next()
+    // ... print the smaller one and advance that generator, until both are null
+}
+
+a := gen.generator(evens, &limit_a, stack_a)    // nothing runs yet
+b := gen.generator(odds, &limit_b, stack_b)
+gen.pull(main_stack, fn() => merge(&a, &b))
+```
+
+The consumer's code runs inside a scope that `gen.pull` installs on `main_stack`; each producer runs on the stack given to its generator. A producer is a function pointer taking one pointer argument (`^fn(arg: ^A) needs Yield(T) + E`) plus that argument, because a fiber is not a closure (see `@fiber` above). `E` is whatever else the producers perform, such as `Out`, which the code around `pull` must handle too. When the consumer is done, the producers that have not returned are cancelled and their `defer`s run, so it is fine to stop early, for example when two trees differ at their first leaf. A generator belongs to the `pull` that started it; using it after that `pull` ended, or in a nested one, traps.
+
+To `return` or `break` out of the consumer's code, write the scope yourself with `gen.driver`: `d := gen.driver(T, E)`, `defer d.close()`, then `with &d on stack { ...; gen.finish() }`. An exit that leaves the `with` cancels the producers.
+
 ## Sizing stacks and other notes
 
 - A fiber stack is just a slice you supply: a static array, a slice of a larger array, or memory from an allocator. `@min_stack` is the smallest stack the implementation supports.
@@ -237,7 +274,7 @@ In this sketch a task can perform only `Sched`, because the type of `spawn`'s en
 - `defer` statements cannot perform `ctl` operations, so cancellation can never suspend.
 - Debug and Checked builds check each call against the fiber's stack, so running out of it traps instead of overwriting other memory. The reference implementation keeps the lowest 8 KiB of a fiber stack in reserve for reporting the overflow, so `@min_stack` (16 KiB) leaves room for only a few calls; give fibers that do real work tens of kilobytes or more.
 - Safe builds run fibers on stacks that Fil-C allocates (the `stack` given to `with … on` only supplies the size), and running out of stack traps there too. Fil-C's frames are bigger, so a fiber that fits in a Checked build may need a larger stack in a Safe one.
-- A pull-style generator over any iterator can be built from a fiber, but the core library does not provide one.
+- A pull-style generator over any iterator is `std/fiber/generator` (above); the core library does not provide one.
 
 > **Common mistakes.**
 >

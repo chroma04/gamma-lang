@@ -683,17 +683,8 @@
       ]
     },
     "_value": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "SYMBOL",
-          "name": "_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "attributed_type"
-        }
-      ]
+      "type": "SYMBOL",
+      "name": "_expression"
     },
     "block": {
       "type": "SEQ",
@@ -1358,6 +1349,10 @@
         {
           "type": "SYMBOL",
           "name": "_type_forms"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "attributed_type"
         },
         {
           "type": "SYMBOL",
@@ -4786,17 +4781,21 @@
       ]
     },
     "attributed_type": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "SYMBOL",
-          "name": "_attributes"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_type_forms"
-        }
-      ]
+      "type": "PREC",
+      "value": 1,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "SYMBOL",
+            "name": "_attributes"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "_type_forms"
+          }
+        ]
+      }
     },
     "struct_type": {
       "type": "SEQ",

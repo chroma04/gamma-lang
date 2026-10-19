@@ -8,6 +8,31 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
+  `bool`) whose operators work lane by lane and compile to vector instructions. Lane-wise
+  comparisons give masks (`#simd [N]bool`) with `all`, `any`, `count` and `select`;
+  vectors have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`,
+  `shuffle`, `load` from and `store` to slices, and convert to and from the array of
+  their lanes. Integer lanes keep the checks of the scalar operators.
+- The `Proc` ambient effect and `std/process`: start programs (`Proc.spawn`) with each
+  standard stream inherited, discarded or piped, a working directory and an environment;
+  write to a child's input, read its output and error streams together without deadlock
+  (`read_out`), wait for its exit status or kill it. `process.output` collects a
+  command's output, `process.status` runs one and `process.success` tests the result.
+  Tests get a handler that refuses to start processes.
+- `std/time/zone`: time zones from TZif data (RFC 8536) and POSIX `TZ` rules. Load a zone
+  from the system's zoneinfo (`zone.load("Europe/Paris")`, `zone.local()`) or from bytes,
+  find the offset in force at an instant, convert UTC to local time, and resolve a local
+  time, reporting times that are ambiguous or skipped at a transition.
+- `std/fiber`: `fiber.sleep(d)` and `fiber.sleep_until(t)` suspend a task while the others
+  run; the scheduler itself does not need `Clock`. `std/fiber/generator` turns any
+  iterator into a generator pulled with `next()`, so iterators can be advanced in
+  lockstep.
+- Arrays indexed by an enum: `[E]T` has one element per variant of the enum `E` and is
+  indexed by `E` values (`names[.E]`), with no bounds check. It is built by naming every
+  variant (`[Dir]string(N: "north", E: "east", S: "south", W: "west")`) or with `fill:`,
+  so a table can neither miss an entry nor list one against the wrong variant. `a[..]`
+  gives the elements, in declaration order, as a slice.
 - `gamma build -g` writes `gamma_lldb.py` next to the executable: lldb data formatters
   that show slices as their elements, strings as text, optionals as their value or
   `null`, results as their value or `!error` and tagged unions as their variant, as the

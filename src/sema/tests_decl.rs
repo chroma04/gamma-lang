@@ -84,7 +84,7 @@ impl<'s> Sema<'s> {
     /// The effects a benchmark's entry may perform: the ambient effects (§12.9).
     fn ambient_effects(&self) -> EffectSet {
         let a = &self.prog.ambient;
-        let ids = [a.out, a.err, a.env, a.sys, a.alloc, a.input, a.clock, a.rand, a.fs, a.net];
+        let ids = [a.out, a.err, a.env, a.sys, a.alloc, a.input, a.clock, a.rand, a.fs, a.net, a.proc];
         EffectSet::new(ids.into_iter().flatten().map(|e| EffectRef { effect: e, args: Box::new([]) }).collect())
     }
 

@@ -222,9 +222,11 @@ impl<'a> Layouts<'a> {
             | TyKind::Infer(_) => Layout { size: 0, align: 1, offsets: vec![] },
             TyKind::Rawptr | TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::FnPtr(_) => Layout::scalar(p),
             TyKind::Slice { .. } => Layout { size: 2 * p, align: p, offsets: vec![0, p] },
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, kind } => {
                 let e = self.layout(*elem);
-                Layout { size: e.size * len, align: e.align, offsets: vec![] }
+                // A vector is aligned to its size, a power of two (§5.6.2).
+                let align = if *kind == crate::types::ArrayKind::Simd { e.size * len } else { e.align };
+                Layout { size: e.size * len, align, offsets: vec![] }
             }
             TyKind::Tuple { elems, .. } => {
                 let fields: Vec<_> = elems.iter().map(|t| (self.layout(*t), None)).collect();

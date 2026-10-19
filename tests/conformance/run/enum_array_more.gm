@@ -1,0 +1,32 @@
+// Enum-indexed arrays at compile time, nested, in generic structs, as parameters and results,
+// uninitialized, compared with `is`, and iterated with `for`.
+Dir :: union { N, E, S, W }
+Color :: union { Red, Green }
+NAMES :: [Dir]string(N: "north", E: "east", S: "south", W: "west")
+name_of :: fn(d: Dir) -> string => NAMES[d]
+EAST :: name_of(Dir.E)
+LEN :: count_long()
+count_long :: fn() -> usize {
+    n: usize = 0
+    for d in @variants(Dir) { if NAMES[d].len > 4 { n += 1 } }
+    return n
+}
+Table :: struct(T: type) { cells: [Dir][Color]T }
+rot :: fn(t: [Dir]u8) -> [Dir]u8 => [Dir]u8(N: t[.W], E: t[.N], S: t[.E], W: t[.S])
+
+main :: fn() needs Out {
+    print("{} {} {}\n", EAST, LEN, @size_of([Dir]u32))
+    t := Table(u16)(cells: [Dir][Color]u16(fill: [Color]u16(fill: 1)))
+    t.cells[.S][.Green] = 9
+    print("{}\n", t.cells)
+    r := rot([Dir]u8(N: 1, E: 2, S: 3, W: 4))
+    sum: u32 = 0
+    for x in r { sum += x }
+    print("{} {}\n", r, sum)
+    u: [Dir]u8 = ---
+    for d in @variants(Dir) { u[d] = d.tag() * 10 }
+    print("{} {}\n", u, u is [Dir]u8(N: 0, E: 10, S: 20, W: 30))
+    grid := [2][Dir]bool(fill: [Dir]bool(fill: false))
+    grid[1][.W] = true
+    print("{}\n", grid)
+}

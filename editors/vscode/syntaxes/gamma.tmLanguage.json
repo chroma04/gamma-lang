@@ -327,7 +327,7 @@
         },
         {
           "name": "support.type.effect.gamma",
-          "match": "\\b(?:Yield|Alloc|Out|Err|In|Clock|Rand|Fs|Net|Env|Sys)\\b"
+          "match": "\\b(?:Yield|Alloc|Out|Err|In|Clock|Rand|Fs|Net|Proc|Env|Sys)\\b"
         },
         {
           "name": "entity.name.type.gamma",

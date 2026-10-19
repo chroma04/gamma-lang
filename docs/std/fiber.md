@@ -34,12 +34,40 @@ the scheduler's effect-set parameter (§16.6): with `s := fiber.scheduler(Out + 
 a task is a `fn(arg: ^T) needs Sched(Out + Clock) + Out + Clock` (or uses fewer of them), and
 the `with &s` needs `Out` and `Clock` itself.
 
-`Scheduler` keeps the allocator it was created with for its queue of ready tasks and
-performs no `Alloc` afterwards.
+`Scheduler` keeps the allocator it was created with for its queue of ready tasks and its
+heap of sleeping tasks, and performs no `Alloc` afterwards.
 
 A task can wait for another without polling: `park(&w)` suspends it in a `Waiters`
 queue, and it does not run again until a task calls `wake(&w)`, which makes it ready.
 `std/fiber/channel` builds a bounded channel between tasks on them.
+
+#### Sleeping
+
+`Clock.sleep` blocks the whole thread. `sleep` and `sleep_until` suspend only the calling
+task, so the others keep running meanwhile:
+
+    napper :: fn(arg: ^Job) needs fiber.Sched(Clock) + Clock + Out {
+        fiber.sleep(ms(10))                 // `E` comes from the caller's `Sched(Clock)`
+        print("awake\n")
+    }
+
+    s := fiber.scheduler(Clock)             // tasks that sleep need `Clock` in `E`
+    defer s.deinit()
+
+Only the sleeping tasks perform `Clock`: the scheduler never reads the clock itself, so a
+program whose tasks never sleep pays nothing for it. Sleeping tasks wait in a heap ordered
+by deadline, ties in the order they went to sleep. The scheduler wakes a sleeper in two
+cases:
+
+- **Idle.** No task is ready, so the earliest sleeper is told to block until its
+  deadline (it calls `Clock.sleep` itself).
+- **Check.** Tasks are ready, so the earliest sleeper is asked to look at the clock and
+  see whether it is due. A check happens once per round: after as many dispatches as
+  there were ready tasks at the previous check (or when a task went to sleep), so every
+  ready task runs once between two checks and busy tasks cannot starve the sleepers. A
+  check costs one clock read and two task switches per round, and wakes the earliest
+  sleeper only; if several are due, they wake in deadline order, one per round. A
+  sleeper that is not yet due goes back to its place in the heap.
 
 ## Structs
 
@@ -51,8 +79,8 @@ Scheduler :: struct(E: effects) {
 }
 ```
 
-A round-robin scheduler: the ready tasks in a queue, in the order they will run. Its tasks
-may perform the effects `E`.
+A round-robin scheduler: the ready tasks in a queue, in the order they will run, and the
+sleeping tasks in a heap by deadline (see `sleep`). Its tasks may perform the effects `E`.
 
 ## Type aliases
 
@@ -76,6 +104,7 @@ Sched :: effect(E: effects) {
     exit: ctl() -> never
     join: ctl()
     park: ctl(w: ^Waiters)
+    sleep_raw: ctl(deadline: Instant) -> bool
 }
 ```
 
@@ -86,6 +115,9 @@ way to start a task; `spawn_raw` is the operation underneath.
 Operations:
 
 - `park`: Suspends the current task at the back of `w` until `wake` takes it out.
+- `sleep_raw`: The operation underneath `sleep_until`: suspends the task until the scheduler picks it
+  again. The answer says why: `true` if no other task could run (the task should block
+  until `deadline`), `false` if it should check whether `deadline` has passed.
 
 ## Handlers
 
@@ -122,7 +154,7 @@ if no task waits there. It needs no effect, so a `defer` may wake tasks.
 scheduler :: fn(E: effects) -> Scheduler(E) needs Alloc
 ```
 
-A scheduler with no tasks, using the current allocator for its queue. Its tasks may
+A scheduler with no tasks, using the current allocator for its queues. Its tasks may
 perform the effects `E` (none if left out).
 
 ### `deinit`
@@ -131,7 +163,7 @@ perform the effects `E` (none if left out).
 deinit :: fn(E: effects, s: ^Scheduler(E))
 ```
 
-Frees the scheduler's queue. All tasks must have ended.
+Frees the scheduler's queues. All tasks must have ended.
 
 ### `spawn`
 
@@ -142,3 +174,23 @@ spawn :: fn(T: type, E: effects, f: ^fn(arg: ^T) needs Sched(E) + E, arg: ^T, st
 Starts a task calling `f(arg)` on `stack`, to run once the current task gives way. The
 task ends when `f` returns. A little of `stack` (up to 48 bytes) holds the task's
 start-up data, so the stack should be a bit larger than the task needs.
+
+### `sleep_until`
+
+```gamma
+sleep_until :: fn(E: effects, deadline: Instant) needs Sched(E) + Clock
+```
+
+Suspends the current task until `deadline`, letting the other tasks run meanwhile. It
+returns at once if `deadline` has passed. The scheduler's effects must include `Clock`
+(`fiber.scheduler(Clock)`), because the task reads the clock itself; `E` is taken from the
+caller's `Sched(E)`.
+
+### `sleep`
+
+```gamma
+sleep :: fn(E: effects, d: Duration) needs Sched(E) + Clock
+```
+
+Suspends the current task for at least `d`, letting the other tasks run meanwhile. See
+`sleep_until`.

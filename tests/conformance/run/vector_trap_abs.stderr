@@ -1,0 +1,2 @@
+trap: integer overflow in `abs`
+  at tests/conformance/run/vector_trap_abs.gm:8:19 in main

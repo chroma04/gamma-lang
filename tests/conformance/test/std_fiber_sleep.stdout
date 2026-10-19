@@ -1,0 +1,10 @@
+test "sleepers wake in deadline order" ... ok
+test "equal deadlines wake in the order the tasks went to sleep" ... ok
+test "a task that sleeps again keeps its place" ... ok
+test "a busy task does not starve a sleeper" ... ok
+test "sleep(0) lets the other tasks run first" ... ok
+test "the code under the with can sleep and join" ... ok
+test "join returns at once with no tasks, and sleepers count as tasks" ... ok
+test "channels and sleeping tasks work together" ... ok
+test "sleepers keep their order across checks that find them not yet due" ... ok
+9 passed, 0 failed

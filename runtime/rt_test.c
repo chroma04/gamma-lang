@@ -1094,6 +1094,36 @@ static void test_byte_order(void) {
     check_int(&ty_u32, bytes32, "305419896");
 }
 
+/* The Windows command line made from an argument vector, with the C runtime's quoting rules. */
+static void check_cmdline(const char *const *args, size_t n, const char *expect) {
+    gm_rt_str v[8];
+    for (size_t i = 0; i < n; i++) {
+        v[i].ptr = (const uint8_t *)args[i];
+        v[i].len = strlen(args[i]);
+    }
+    size_t len;
+    char *s = gm_win_cmdline(v, n, &len);
+    if (len != strlen(expect) || strcmp(s, expect) != 0) FAIL("command line: expected [%s], got [%s]", expect, s);
+    free(s);
+}
+
+static void test_cmdline(void) {
+    const char *plain[] = {"prog", "-x", "a.txt"};
+    check_cmdline(plain, 3, "prog -x a.txt");
+    const char *spaces[] = {"my prog", "two words", "tab\there"};
+    check_cmdline(spaces, 3, "\"my prog\" \"two words\" \"tab\there\"");
+    const char *empty[] = {"p", "", "q"};
+    check_cmdline(empty, 3, "p \"\" q");
+    const char *quotes[] = {"say \"hi\"", "a\"b"};
+    check_cmdline(quotes, 2, "\"say \\\"hi\\\"\" \"a\\\"b\"");
+    /* Backslashes are literal unless they precede a quote (or the closing quote). */
+    const char *slashes[] = {"C:\\dir\\file", "C:\\my dir\\", "a\\\\\"b", "x\\"};
+    check_cmdline(slashes, 4, "C:\\dir\\file \"C:\\my dir\\\\\" \"a\\\\\\\\\\\"b\" x\\");
+    const char *one[] = {"a"};
+    check_cmdline(one, 0, "");
+    check_cmdline(one, 1, "a");
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     _setmode(1, _O_BINARY);   /* as gm_run_main does: no newline translation */
@@ -1116,6 +1146,7 @@ int main(int argc, char **argv) {
     test_buf();
     test_heap();
     test_env_args();
+    test_cmdline();
     gm_flush();
     if (failures != 0) {
         fprintf(stderr, "%d runtime check(s) failed\n", failures);

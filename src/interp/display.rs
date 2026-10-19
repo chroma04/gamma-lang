@@ -67,7 +67,7 @@ impl<'a> Machine<'a> {
                     self.format_seq(out, *elem, esz, &data, n)?;
                 }
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 self.format_seq(out, *elem, esz, b, *len as usize)?;
             }

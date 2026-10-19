@@ -55,19 +55,26 @@ impl<'a> Machine<'a> {
                 };
                 Ok(self.float_bytes(*f, num::round_float(v, *f)))
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 let mut out = Bytes::zeroed(esz * *len as usize);
+                // A vector shifts every lane by one scalar amount (§5.6.2).
+                let scalar_r = !rty.is_array();
+                let ety = if scalar_r { rty } else { *elem };
                 for i in 0..*len as usize {
-                    let v = self.binop(
-                        span,
-                        op,
-                        *elem,
-                        *elem,
-                        *elem,
-                        &l[i * esz..(i + 1) * esz],
-                        &r[i * esz..(i + 1) * esz],
-                    )?;
+                    let x = &l[i * esz..(i + 1) * esz];
+                    let y = if scalar_r { r } else { &r[i * esz..(i + 1) * esz] };
+                    let v = if elem.is_bool() {
+                        // The bitwise operators on the lanes of a mask.
+                        let b = match op {
+                            BinOp::BitAnd => x[0] & y[0],
+                            BinOp::BitOr => x[0] | y[0],
+                            _ => x[0] ^ y[0],
+                        };
+                        Bytes::from_slice(&[b])
+                    } else {
+                        self.binop(span, op, *elem, ety, *elem, x, y)?
+                    };
                     out[i * esz..(i + 1) * esz].copy_from_slice(&v);
                 }
                 Ok(out)
@@ -173,7 +180,7 @@ impl<'a> Machine<'a> {
             UnOp::Not => Ok(self.bool_bytes(b[0] == 0)),
             UnOp::Neg => match ty.kind() {
                 TyKind::Float(f) => Ok(self.float_bytes(*f, -self.float_of(*f, b))),
-                TyKind::Array { len, elem } => {
+                TyKind::Array { len, elem, .. } => {
                     let esz = self.size_of(*elem);
                     let mut out = Bytes::zeroed(esz * *len as usize);
                     for i in 0..*len as usize {
@@ -197,6 +204,18 @@ impl<'a> Machine<'a> {
                     Ok(num::encode_int(&v, ti.size, self.little()))
                 }
             },
+            UnOp::BitNot if ty.is_array() => {
+                let TyKind::Array { len, elem, .. } = ty.kind() else { unreachable!() };
+                let esz = self.size_of(*elem);
+                let mut out = Bytes::zeroed(esz * *len as usize);
+                for i in 0..*len as usize {
+                    let lane = &b[i * esz..(i + 1) * esz];
+                    let v =
+                        if elem.is_bool() { self.bool_bytes(lane[0] == 0) } else { self.unop(span, op, *elem, lane)? };
+                    out[i * esz..(i + 1) * esz].copy_from_slice(&v);
+                }
+                Ok(out)
+            }
             UnOp::BitNot => {
                 let ty = self.bits_struct_ty(ty).unwrap_or(ty);
                 let ti = self.ti(ty);
@@ -315,7 +334,7 @@ impl<'a> Machine<'a> {
                 }
                 Ok(true)
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 for i in 0..*len as usize {
                     if !self.eq(*elem, &a[i * esz..(i + 1) * esz], &b[i * esz..(i + 1) * esz])? {
@@ -432,7 +451,7 @@ impl<'a> Machine<'a> {
                     self.hash_val(fty, &fb, h)?;
                 }
             }
-            TyKind::Array { len, elem } => {
+            TyKind::Array { len, elem, .. } => {
                 let esz = self.size_of(*elem);
                 for i in 0..*len as usize {
                     self.hash_val(*elem, &b[i * esz..(i + 1) * esz], h)?;

@@ -1,0 +1,15 @@
+//! mode: fast
+// Fast builds compute vector operations without checks, with the C back end's vector
+// instructions (§5.6.2); in range, the results are those of the checked lanes.
+I4 :: #simd [4]i32
+U16 :: #simd [8]u16
+
+main :: fn() needs Out {
+    a := I4(1, -2, 3, -4)
+    b := I4(10, 20, 30, 40)
+    print("{} {} {}\n", a + b, a - b, a * b)
+    print("{} {} {}\n", -a, a.abs(), b >> 2)
+    print("{} {}\n", b << 3, (a + b).reduce_sum())
+    u := U16(1, 2, 3, 4, 5, 6, 7, 8)
+    print("{} {}\n", u * u, (u << 12) >> 12)
+}

@@ -1439,7 +1439,12 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn expect_bool(&mut self, e: Expr) -> Expr {
         if !e.ty.is_bool() && !e.ty.is_never() && !e.ty.is_error() {
             let t = self.infer.resolve(e.ty);
-            self.error(e.span, format!("expected `bool`, found `{}` (there are no truthy values)", t));
+            let hint = if t.vector_parts().is_some_and(|(_, l)| l.is_bool()) {
+                "; a mask is tested with `.all()` or `.any()`"
+            } else {
+                " (there are no truthy values)"
+            };
+            self.error(e.span, format!("expected `bool`, found `{}`{}", t, hint));
         }
         e
     }

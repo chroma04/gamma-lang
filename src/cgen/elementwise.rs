@@ -32,7 +32,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         a: Option<&str>,
         b: &str,
     ) -> CResult<String> {
-        let TyKind::Array { len, elem } = t.kind() else {
+        let TyKind::Array { len, elem, .. } = t.kind() else {
             return self.scalar(e, op, t, a, b);
         };
         let (len, elem) = (*len, *elem);

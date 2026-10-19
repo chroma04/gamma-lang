@@ -1,0 +1,40 @@
+//! stage: check
+// Misuse of vectors `#simd [N]T` (§5.6.2).
+F4 :: #simd [4]f32
+I4 :: #simd [4]i32
+M4 :: #simd [4]bool
+Three :: #simd [3]f32 //~ ERROR a power of two lanes
+Huge :: #simd [32]f32 //~ ERROR at most 64 bytes
+Sizes :: #simd [4]usize //~ ERROR not `usize`
+Halves :: #simd [4]f16 //~ ERROR not `f16`
+Gen :: struct(T: type) { v: #simd [4]T } //~ ERROR a concrete lane type
+Bad :: #packed [4]u8 //~ ERROR only `#simd` can
+same :: fn(T: type, a, b: T) -> bool where Eq(T) => a is b
+lib :: foreign "c" { f :: fn(v: F4) } //~ ERROR not a C-compatible parameter type
+
+main :: fn() {
+    a := F4(1, 2, 3, 4)
+    i := I4(fill: 1)
+    _ = i / i //~ ERROR targets have no instruction that divides
+    _ = i % i //~ ERROR `%` is not available on vectors
+    _ = a + 1.0 //~ ERROR a scalar is not spread over the lanes
+    _ = a and a //~ ERROR on the lanes of a mask use
+    _ = not (a < a) //~ ERROR complemented by `~m`
+    _ = a +? a //~ ERROR a lane cannot be `null`
+    _ = a & a //~ ERROR applies to integer and `bool` lanes
+    if a < a { } //~ ERROR a mask is tested with `.all()` or `.any()`
+    _ = same(a, a) //~ ERROR does not satisfy `Eq(T)`
+    _ = @hash(a, 0) //~ ERROR `@hash` is defined only
+    _ = i.shuffle(4) //~ ERROR lane 4 does not exist
+    k := @black_box(usize(1))
+    _ = i.shuffle(k) //~ ERROR must be a compile-time constant
+    _ = i.to(i64) //~ ERROR converts numeric lanes to `f32` or `f64`
+    _ = #simd [4]i8(i) //~ ERROR does not convert to `i8` losslessly
+    _ = (a < a).select(i, a) //~ ERROR expected `#simd [4]i32`, found `#simd [4]f32`
+    _ = a.sort() //~ ERROR vectors have no method `.sort`
+    _ = F4(1, 2) //~ ERROR needs exactly 4 elements, but 2
+    _ = (a < a).reduce_sum() //~ ERROR needs numeric lanes
+    _ = a.all() //~ ERROR needs a mask
+    _ = a << 1 //~ ERROR shifts integer lanes
+    _ = -(a < a) //~ ERROR does not apply to the lanes
+}

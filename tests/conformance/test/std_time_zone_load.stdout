@@ -1,0 +1,11 @@
+test "load_from reads a zone from a directory" ... ok
+test "load_from reports a missing zone and malformed data" ... ok
+test "load_from rejects names that leave the directory" ... ok
+test "load uses TZDIR" ... ok
+test "local without TZ reads /etc/localtime, or is UTC" ... ok
+test "local reads TZ as a file name or a rule" ... ok
+test "local reports a zone file that is malformed" ... ok
+test "a zone releases everything it allocated" ... ok
+test "the data may be freed after parsing" ... ok
+test "a full allocator is an error, not a trap" ... ok
+10 passed, 0 failed

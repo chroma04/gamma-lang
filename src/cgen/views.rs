@@ -107,7 +107,7 @@ impl Types<'_> {
                 v
             }
             Repr::Blob => match t.kind() {
-                TyKind::Array { len, elem } => match self.view(*elem) {
+                TyKind::Array { len, elem, .. } => match self.view(*elem) {
                     Some(e) => Some(View { cty: e.cty, dims: format!("[{}]{}", len, e.dims) }),
                     None => View::scalar(self.cty(t)),
                 },
