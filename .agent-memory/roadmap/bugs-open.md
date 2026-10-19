@@ -18,8 +18,8 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
     an accumulator with one block per link (cgen/chain.rs; fixed clang lifetime-marker blowup),
     GM_HUGE_FN (>20k temps: gcc no-tree-pta/no-thread-jumps), -Wno-free-nonheap-object in
     BASE_CFLAGS (stops gcc's waccess pass). 100k-term sum: gcc 187→25 s, clang >8 min→17 s.
-    Left: outline long statement runs into functions sharing the frame (defers, gm_unw exits,
-    backtrace, stack accounting); by-ref (struct) chains not flattened. (s20: trap sites
+    s29: statement runs outlined (cgen/outline.rs, decisions/031): 10k-stmt main gcc Debug
+    87→4 s, Fast 44→11 s, clang 87→5 / 83→9 s. Left: by-ref (struct) chains not flattened. (s20: trap sites
     name the file via one `static const char gm_srcN[]` per file: 100k terms 31→27 s gcc.) Clang ≥19 (Apple ≥17;
     macos-latest = macOS 26 image): EarlyCSE → simplifyInstruction(icmp) → isKnownNonEqual →
     computeKnownBits/adjustKnownBitsForSelectArm ~cubic in chain length (abs chain 10k links

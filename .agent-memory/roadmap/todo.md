@@ -25,7 +25,7 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   tools/difftest covers generics/strings/effects/fibers since s21, CI runs 300 seeds/run.
   s24: 1500 debug seeds (300000..301500) + checked-mode batch (400000..), 0 disagreements.
   Left: tree-sitter as a second parser.
-- bugs-open #48 (C compilers on huge functions; chains done in s19, statement runs left).
+- bugs-open #48 done (s29: statement-run outlining, decisions/031). Left: by-ref chains.
 - Perf: Safe new/destroy ~3.6x Checked (s21: memset → gap stores; rest is Fil-C cost of
   by-ref param copies and blob loads with pointers, see sessions/s21); interpreter `perform`
   (s21 trimmed it ~6%; vm_perform still ~200 instr self).

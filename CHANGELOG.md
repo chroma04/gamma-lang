@@ -120,6 +120,11 @@ Versions and what each kind of change means are described in
   shapes", the rules that best show the principles at work, and three questions every
   new feature must answer. Its grammar now writes effect sets after `needs`, and it
   explains why there are two allocation models and three ways to iterate.
+- Functions with thousands of statements compile through C in time that grows linearly
+  with their length: runs of statements go into helper C functions that share the frame.
+  A `main` of 10,000 statements builds with gcc in 4 s instead of 87 s (Debug) and in
+  11 s instead of 44 s (Fast), and with clang in 5 s instead of 87 s and 9 s instead of
+  83 s.
 - A large Debug build compiles its C as several files in parallel (one per 96 KiB of
   generated functions, up to one per processor): the 16k-line C of `examples/calc`
   builds in 0.6–0.9 s instead of 1.4 s on four cores. The extra files sit next to
