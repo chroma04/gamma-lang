@@ -1,0 +1,58 @@
+// The callee, the arguments and the receiver of an iterator argument are evaluated once,
+// left to right, at the call site (§13.5), however many times the callee runs the iterator.
+Counter :: struct { n: i32 }
+
+next :: fn(c: ^Counter) -> i32 needs Out {
+    c.n += 1
+    print("next {}\n", c.n)
+    return c.n
+}
+
+upto :: fn(n: i32) needs Yield(i32) {
+    for i in 0..n { yield(i) }
+}
+
+Bag :: struct { k: i32 }
+
+make_bag :: fn(c: ^Counter) -> Bag needs Out {
+    print("make_bag\n")
+    return Bag(k: next(c))
+}
+
+// Each run counts how often it was started, in the receiver.
+items :: fn(b: ^Bag) needs Yield(i32) {
+    b.k += 1
+    for i in 0..b.k { yield(i) }
+}
+
+doubled :: fn(src: fn() needs Yield(i32)) needs Yield(i32) {
+    for x in src() { yield(x * 2) }
+}
+
+twice :: fn(it: fn() needs Yield(i32)) -> i32 {
+    s: i32 = 0
+    for x in it() { s += x }
+    for x in it() { s += x }
+    return s
+}
+
+skip :: fn(it: fn() needs Yield(i32)) -> i32 => 7
+
+around :: fn(a: i32, it: fn() needs Yield(i32), b: i32) -> i32 => a * 100 + twice(it) * 10 + b
+
+main :: fn() needs Out {
+    c := Counter(n: 0)
+    // Evaluated once for two runs, and once for no run at all.
+    print("{}\n", twice(upto(next(&c))))
+    print("{}\n", skip(upto(next(&c))))
+    // The arguments around the iterator and inside it are evaluated left to right.
+    print("{}\n", around(next(&c), upto(next(&c)), next(&c)))
+    // A receiver that is a place stays that place: both runs act on `b`.
+    b := Bag(k: 1)
+    print("{}\n", twice(b.items()))
+    print("{}\n", b.k)
+    // A receiver that is a call is evaluated once.
+    print("{}\n", twice(make_bag(&c).items()))
+    // An iterator passed through an adapter: the inner call's arguments are evaluated once too.
+    print("{}\n", twice(doubled(upto(next(&c)))))
+}

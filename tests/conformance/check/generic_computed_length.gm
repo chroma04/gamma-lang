@@ -17,7 +17,14 @@ narrow :: fn(N :: u8) -> [N * 2]u8 { //~ ERROR this array length is not supporte
 // A computed length does not make its parameter inferable.
 grow :: fn(N :: usize, a: [N + 1]u8) -> usize => a.len
 
-doubled :: fn(N :: usize, a: [N + N]u8) -> [2 * N]u8 => a //~ ERROR expected `[N * 2]u8`, found `[N + N]u8`
+doubled :: fn(N :: usize, a: [N + N]u8) -> [2 * N]u8 => a //~ ERROR expected `[2 * N]u8`, found `[N + N]u8`
+
+// Lengths are compared as written after folding constants: no reordering of operands.
+swapped :: fn(A, B :: usize, a: [A + B]u8) -> [B + A]u8 => a //~ ERROR expected `[B + A]u8`, found `[A + B]u8`
+folded :: fn(N :: usize, a: [N + 2 * 3]u8) -> [N + 6]u8 => a
+
+// `~` is the XOR operator in a length.
+xored :: fn(N :: usize, a: [N ~ 5]u8) -> [N ~ 5]u8 => a
 
 drop1 :: fn(N :: usize) -> [N - 1]u8 { //~ ERROR the array length `N - 1` overflows or divides by zero with `N` = 0
     return [N - 1]u8(fill: 7) //~ ERROR the array length `N - 1` overflows or divides by zero with `N` = 0

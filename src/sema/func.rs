@@ -108,6 +108,9 @@ pub struct FnCx<'a, 's> {
     pub temp_ref_arg: bool,
     /// The spans of the function literals made for iterator arguments (§13.5).
     pub iterator_args: Vec<Span>,
+    /// Statements that evaluate the arguments of iterator arguments (§13.5), waiting to be
+    /// placed before the call that receives the iterators.
+    pub iter_pre: Vec<Stmt>,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
@@ -336,6 +339,7 @@ impl<'a, 's> FnCx<'a, 's> {
             fn_performs: vec![],
             temp_ref_arg: false,
             iterator_args: vec![],
+            iter_pre: vec![],
             defer_label_base: 0,
             failed_coercions: vec![],
             deferred_matches: vec![],

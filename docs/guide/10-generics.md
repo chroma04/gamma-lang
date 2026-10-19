@@ -178,7 +178,7 @@ stack_demo :: fn() needs Out {
 Observe three things.
 
 - `N :: usize` is a **compile-time value parameter**. It is declared with `::` instead of `:`, its argument must be a constant expression, and each distinct value produces its own instantiation. Inside the body it is a constant, so it can size arrays. When it appears in the type of another parameter (as `N` does in `s: ^Stack(T, N)`), it is inferable like a type parameter.
-- Because the body is checked once, without knowing `N`, an array length in it is either the parameter itself or plain `usize` arithmetic on such parameters and constants: `[N]T`, `[N + 1]T` and `[R * C]T` are fine, `[@size_of(T)]u8` is an error. Lengths are compared as written (`[A + B]T` and `[B + A]T` are the same type, `[N + N]T` and `[2 * N]T` are not), and each instantiation computes them, so `[N - 1]T` with `N = 0` is a compile error where it is instantiated. Such an array is built with `[N]T(fill: x)` or `---`, since a list of elements cannot be counted against an unknown length.
+- Because the body is checked once, without knowing `N`, an array length in it is either the parameter itself or plain `usize` arithmetic on such parameters and constants: `[N]T`, `[N + 1]T` and `[R * C]T` are fine, `[@size_of(T)]u8` is an error. Lengths are compared as written (`[A + B]T` and `[B + A]T` are different types, as are `[N + N]T` and `[2 * N]T`; only constant subexpressions are folded), and each instantiation computes them, so `[N - 1]T` with `N = 0` is a compile error where it is instantiated. Such an array is built with `[N]T(fill: x)` or `---`, since a list of elements cannot be counted against an unknown length.
 
 ```
 concat :: fn(A, B :: usize, x: [A]u8, y: [B]u8) -> [A + B]u8 {
