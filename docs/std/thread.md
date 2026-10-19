@@ -98,7 +98,8 @@ spawn :: fn(T: type, f: ^fn(arg: ^T) needs Sys, arg: ^T) -> IoError!Thread needs
 ```
 
 Starts a thread calling `f(arg)`; `arg` must stay valid until the thread is done with it.
-The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`.
+The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`,
+and `.Unsupported` on a system without threads (WASI).
 
 ### `join`
 
