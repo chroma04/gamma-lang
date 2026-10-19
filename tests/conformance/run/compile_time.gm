@@ -1,4 +1,5 @@
 //! safe: skip has a field only in Debug builds
+//! ptr_bits: 64
 // Compile-time evaluation (§17): tables built by ordinary functions, #fuel, when, static assertions.
 crc_table :: fn(poly: u32) -> [256]u32 {
     table: [256]u32 = ---

@@ -1,5 +1,6 @@
 //! exit: 134
 //! stderr
+//! ptr_bits: 64
 // Indexing through a pointer to an array of 2^32 or more elements checks the index
 // against the full length.
 Huge :: [1 << 33]u8

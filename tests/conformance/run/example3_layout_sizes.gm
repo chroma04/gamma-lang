@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // Layout guarantees: sizes, alignments and offsets of nested, packed, aligned, empty and odd-width integer types, tuples, optionals and bit structs.
 Inner :: struct { a: u8, b: u16 }
 Outer :: struct { x: u8, in_: Inner, y: u64, z: [3]u16 }

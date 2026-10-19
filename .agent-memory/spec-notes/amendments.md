@@ -87,3 +87,5 @@
 - s28 coherence review (decisions/030): §1 first program + style rule + litmus; P2 wording; §5.2 ints ≤128;
   §5.6.2/§7.4.6 vectors `is`→bool, lanes_* methods, no array arithmetic; §13.5 args once; §16.5 lengths
   syntactic, `~`; A.3/A.5 `needs` grammar; §21.5 hash_map; §13.4, §15.2, §7.6 explanations; C.8 rows.
+- s30 WASI (decisions/033): `Os` gains `.Wasi`; new §3.7.2 "Hosts without some services"
+  (no processes/sockets/threads → `IoError.Unsupported`; fibers work); `IoError.Unsupported`.

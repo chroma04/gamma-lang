@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // Custom allocators as effect handlers: a tracking allocator that wraps whatever
 // allocator is current, a bump allocator over a fixed buffer, and std/arena.
 arena :: import "std/arena"

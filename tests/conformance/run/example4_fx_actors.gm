@@ -1,3 +1,4 @@
+//! needs: threads
 // Actors on OS threads: generic bounded mailboxes guarded by a Mutex, a three-stage pipeline, fan-in from several producers, request/reply through atomics, and a per-thread Log handler writing into the actor's own buffer.
 thread :: import "std/thread"
 io :: import "std/io"

@@ -39,7 +39,17 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #define GM_ASM_GLOBL ".local "
 #else
 #define GM_ASM_GLOBL ".globl "
+#if defined(__wasi__)
+/* WASI (wasm32-wasi): a hosted target with files, clocks, arguments and the environment,
+ * but no threads, child processes, sockets or signals; the runtime's functions for those
+ * report IoError.Unsupported. There is one thread of execution, and fibers switch stacks
+ * through Binaryen's Asyncify transformation, which the compiler applies to the module
+ * (see "context switching" in gm_rt.c). */
+#define GM_WASI 1
+#define GM_TLS
+#else
 #define GM_TLS _Thread_local
+#endif
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* pthread_getattr_np */
@@ -65,7 +75,9 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
+#ifndef GM_WASI
 #include <signal.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 #if defined(_WIN32)
@@ -84,6 +96,9 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #include <direct.h>
 #include <process.h>
 #include <bcrypt.h>
+#elif defined(GM_WASI)
+#include <unistd.h>
+#include <dirent.h>
 #else
 #include <unistd.h>
 #include <dirent.h>
@@ -204,7 +219,10 @@ static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
  * it is computed as a pointer (an integer turned back into a pointer has none), so the
  * address is changed with zmkptr, which keeps the capability; elsewhere through
  * uintptr_t, whose arithmetic wraps. GM_PTR_ADD adds a byte offset (any value: a
- * negative offset wraps around); GM_PTR_TAG and GM_PTR_UNTAG set and clear bit 0. */
+ * negative offset wraps around). GM_PTR_TAG and GM_PTR_UNTAG set and clear a mark on a
+ * function's address, and GM_PTR_TAGGED tells whether it is set: bit 0, as the generated
+ * functions are aligned; on WebAssembly, where a function's "address" is its index in the
+ * function table and alignment means nothing, the top bit, as no table is that large. */
 #ifdef __FILC__
 #include <stdfil.h>
 #define GM_PTR_ADD(p, n) zmkptr((void *)(p), (unsigned long)(p) + (unsigned long)(n))
@@ -218,8 +236,18 @@ static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
 #else
 #define GM_INT_TO_PTR(n) ((void *)(uintptr_t)(n))
 #define GM_PTR_ADD(p, n) ((void *)((uintptr_t)(p) + (uintptr_t)(n)))
-#define GM_PTR_TAG(p) ((void *)((uintptr_t)(p) | 1))
-#define GM_PTR_UNTAG(p) ((void *)((uintptr_t)(p) & ~(uintptr_t)1))
+#ifdef __wasm__
+#define GM_PTR_TAG_BIT ((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1))
+#else
+#define GM_PTR_TAG_BIT ((uintptr_t)1)
+#endif
+#define GM_PTR_TAG(p) ((void *)((uintptr_t)(p) | GM_PTR_TAG_BIT))
+#define GM_PTR_UNTAG(p) ((void *)((uintptr_t)(p) & ~GM_PTR_TAG_BIT))
+#endif
+#ifdef __FILC__
+#define GM_PTR_TAGGED(p) (((uintptr_t)(p) & 1) != 0)
+#else
+#define GM_PTR_TAGGED(p) (((uintptr_t)(p) & GM_PTR_TAG_BIT) != 0)
 #endif
 /* Rounds a double to the nearest binary16 (ties to even); returns its bits. */
 static inline uint16_t gm_f64_to_f16(double x) {
@@ -527,6 +555,9 @@ GM_API_VAR GM_TLS gm_unwind gm_unw;
 /* Runs entry `f` of the program under context `cx` on a thread with a large stack and
  * returns its exit status. */
 GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
+/* The same for a program that switches fibers: on WASI, that takes the fiber driver at the
+ * bottom of the stack (which brings in the code of the switch, see gm_rt.c). */
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx);
 
 /* The innermost handler of effect `eff` in context `cx`, or NULL. The innermost node, most
  * often the one, is looked at inline: a call is dear, under Fil-C especially. */
@@ -623,9 +654,9 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_NO_FRAME_PROBES 1
 #define GM_STACK_CHECK(p, n) ((void)(p))
 #else
-#ifdef GM_FREESTANDING
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
 /* No signal handler or exception port to report an overflow: the probes in each function
-   (against a fiber's limit; the bare machine's own stack has none) are all there is. */
+   (against a fiber's limit, and on WASI the module's own stack) are all there is. */
 #define GM_NO_FRAME_PROBES 1
 #endif
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */

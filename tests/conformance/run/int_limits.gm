@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // @min_value(T) and @max_value(T) give the range of an integer type (§20.3), also for a
 // type parameter with Int(T), where each instantiation decides them.
 span_of :: fn(T: type) -> (T, T) where Int(T) => (@min_value(T), @max_value(T))

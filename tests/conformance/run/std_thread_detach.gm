@@ -1,3 +1,4 @@
+//! needs: threads
 // A detached thread is never joined. Its work is observed through shared state, and one
 // that is still running when `main` returns is stopped with the process.
 thread :: import "std/thread"

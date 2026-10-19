@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-19) — PRs #1–#55 merged; s29 PR open: tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
+- s30 (branch claude/project-thread-34q66w, PR open): wasm32-wasi target via C back end +
+  Asyncify fibers (decisions/033); CI job `wasi`.
 - s29: huge functions split into helper C functions (decisions/031, bugs-open #48 done).
 - s29 (branch claude/perf-safe-effects-16om52, PR open): Safe new/destroy −42% instr, VM
   iterators −27% (decisions/032).
@@ -65,6 +67,7 @@
                   · 030 s28 coherence review: applied + open questions for the user
                   · 031 statement-run outlining (huge functions → helpers sharing F)
                   · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
+                  · 033 wasm32-wasi target (runtime GM_WASI, Asyncify fibers, perf)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md

@@ -61,3 +61,9 @@
   one example share the cached `prog-<hash>`; rtcache::touch opened it for WRITE (Windows-only
   need) while another case ran it. Now read-only handle outside Windows. Never open a cached
   executable for writing.
+- WASI toolchain (s30): `apt-get install clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen`;
+  wasmtime from the GitHub release tarball (v25.0.1 x86_64-linux). `CC="clang --target=wasm32-wasi"
+  cargo test --release --test conformance --test wasi` (CI job `wasi`). Clang runs wasm-opt itself
+  on an optimized wasm link: gamma links WASI unoptimized. wasmtime needs `--dir=.` and
+  `-W max-wasm-stack=268435456`; multiple preopens incl. "/" misbehaved, so the harness uses a
+  relative TMPDIR (target/tmp/wasi-tmp).

@@ -10,5 +10,6 @@
 .NoSpace -> error: no space left
 .ConnectionRefused -> error: connection refused
 .TimedOut -> error: timed out
+.Unsupported -> error: not supported on this system
 .Other(0) -> error: operating-system error
 .Other(13) -> error: operating-system error

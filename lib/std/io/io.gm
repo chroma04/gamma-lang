@@ -300,6 +300,7 @@ pub describe :: fn(e: IoError) -> string {
         .NoSpace => "no space left"
         .ConnectionRefused => "connection refused"
         .TimedOut => "timed out"
+        .Unsupported => "not supported on this system"
         .Other(_) => "operating-system error"
     }
 }

@@ -1,3 +1,4 @@
+//! needs: threads
 // std/thread: Channel edge cases, blocking hand-offs and Condvar.wait_timeout.
 time :: import "std/time"
 thread :: import "std/thread"

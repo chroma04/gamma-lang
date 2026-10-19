@@ -1,3 +1,4 @@
+//! needs: threads
 // Per-thread effect stacks: each thread installs its own arena allocator and a Log handler around a Yield-based computation.
 thread :: import "std/thread"
 arena :: import "std/arena"

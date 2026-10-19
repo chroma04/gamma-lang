@@ -68,13 +68,15 @@ options:
                               with CC set, CC (given --target if it is clang). A compiler that
                               targets no operating system (`x86_64-unknown-none-elf`) makes a
                               freestanding program (spec 3.7.1): check and build only, and
-                              build writes an object file of its `#export`ed functions
+                              build writes an object file of its `#export`ed functions;
+                              `wasm32-wasi` builds a WebAssembly module (<name>.wasm)
   --quiet                     (repl) no banner and prompts, even on a terminal
   --offline                   (check, run, build, test, bench) never use the network: git
                               dependencies must be locked and already fetched
   --locked                    (check, run, build, test, bench) fail if gamma.lock is missing or
                               would change
-  -o <file>                   (build) the executable to write (default: the input's name);
+  -o <file>                   (build) the executable to write (default: the input's name,
+                              with .exe for Windows and .wasm for WASI);
                               for a freestanding target the object file (default: <name>.o)
   --profile=<name>            (check, run, build, test, bench) use the `[profile.<name>]` table of
                               gamma.toml over its `[build]` table (mode, debug-info, cflags,
@@ -97,7 +99,13 @@ environment:
   LDFLAGS   extra linker options (likewise)
   GAMMA_RUNNER
             a command that runs the executables of `run --backend=c` and `test`
-            (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments
+            (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments;
+            WebAssembly modules (--target=wasm32-wasi) run by default with
+            `wasmtime run --dir=. -S inherit-env -W max-wasm-stack=268435456`
+  WASI_SDK_PATH
+            a wasi-sdk whose clang and sysroot --target=wasm32-wasi uses when CC is unset
+  WASM_OPT  Binaryen's wasm-opt, which WASI modules that switch fibers need (default:
+            wasm-opt from PATH)
 ";
 
 struct Options {
@@ -711,18 +719,23 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
 }
 
 /// The file name of an executable called `stem`: it has the extension `.exe` when the
-/// toolchain builds for Windows (which cannot run a program without it).
+/// toolchain builds for Windows (which cannot run a program without it), and `.wasm` when
+/// it builds a WebAssembly module for WASI (which says how to run it).
 fn native_exe_name(stem: &str, toolchain: &Result<Toolchain, String>) -> String {
-    let windows = toolchain.as_ref().ok().and_then(|t| t.target().ok()).is_some_and(|t| t.os == "Windows");
-    if windows { format!("{stem}.exe") } else { stem.to_string() }
+    match toolchain.as_ref().ok().and_then(|t| t.target().ok()).map(|t| t.os) {
+        Some("Windows") => format!("{stem}.exe"),
+        Some("Wasi") => format!("{stem}.wasm"),
+        _ => stem.to_string(),
+    }
 }
 
 /// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if
-/// that is set (a malformed value ends the process), and with `arg0` as the program's
-/// name if given and no runner is in the way.
+/// that is set (a malformed value ends the process), else behind a WebAssembly runtime for
+/// a `.wasm` module (see [`gamma::toolchain::runner_for`]), and with `arg0` as the
+/// program's name if given and no runner is in the way.
 #[cfg_attr(not(unix), allow(unused_variables, unused_mut))]
 fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std::process::Command {
-    let runner = gamma::toolchain::runner_from_env().unwrap_or_else(|e| {
+    let runner = gamma::toolchain::runner_for(exe).unwrap_or_else(|e| {
         eprintln!("gamma: {}", e);
         std::process::exit(2)
     });
@@ -746,6 +759,7 @@ fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std:
 /// The standard error of a failed native test as the interpreter reports it: a
 /// trap's message and location are in it, without the `trap: ` prefix.
 fn native_stderr(err: &str) -> String {
+    let err = gamma::toolchain::strip_wasm_trap_report(err);
     const PREFIX: &str = "trap: ";
     match err.rfind(PREFIX) {
         Some(i) if i == 0 || err.as_bytes()[i - 1] == b'\n' => {

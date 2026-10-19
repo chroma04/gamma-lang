@@ -1,3 +1,4 @@
+//! needs: threads
 // std/thread: Mutex, Condvar, WaitGroup and Channel (§19.6), with several threads.
 time :: import "std/time"
 thread :: import "std/thread"

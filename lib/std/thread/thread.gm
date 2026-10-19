@@ -23,9 +23,11 @@
 pub Thread :: struct { handle: i64 }
 
 /// Starts a thread calling `f(arg)`; `arg` must stay valid until the thread is done with it.
-/// The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`.
+/// The thread starts with no handlers (see `defaults`). A failure to start one is `.Other(0)`,
+/// and `.Unsupported` on a system without threads (WASI).
 pub spawn :: fn(T: type, f: ^fn(arg: ^T) needs Sys, arg: ^T) -> IoError!Thread needs Sys {
     h := @thread_spawn(f, arg.cast(rawptr))
+    if h is -13 { return !.Unsupported }
     if h < 0 { return !.Other(0) }
     return Thread(handle: h)
 }
