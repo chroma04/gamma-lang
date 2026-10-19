@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#55 merged; s29 PR open: tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
+## State (2026-10-19) — PRs #1–#57 merged; s29 PR open: tree-walker removal (branch claude/retire-tree-walker-n1cm3g)
+- s30 (branch claude/project-thread-3twojx, PR open): `gamma lint`, 18 rules, levels, --fix
+  (decisions/033). Other threads concurrently: wasm32-wasi, native back end, C/Rust docs.
 - s29: huge functions split into helper C functions (decisions/031, bugs-open #48 done).
 - s29 (branch claude/perf-safe-effects-16om52, PR open): Safe new/destroy −42% instr, VM
   iterators −27% (decisions/032).
@@ -20,12 +22,8 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- s27: leftover wishes (decisions/029): `[E]T`, `#simd [N]T` vectors, Proc + std/process,
-  std/time/zone, fiber sleep + std/fiber/generator; rejected @fields, Send rule, enum sets.
-- Recent history (details in sessions/): s26 bugs #30/#31 (C matches interp), needs fix-it,
-  LLDB formatters; s25 parallel Debug C units + fix-its 2; s24 `gamma fix`/json diags/LSP quick
-  fixes (decisions/028); s23 C unwind after closure calls; s22 in-place elements, VM float ops;
-  s21 gcc inline, Emacs, difftest CI; s20 fiber channel, fuzz/difftest; s19 papercuts.
+- Recent history (details in sessions/, decisions/): s27 wishes (029); s26 bugs + LLDB; s25
+  parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
 
 ## Next steps
 1. Drive the s29 PRs to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
@@ -65,6 +63,7 @@
                   · 030 s28 coherence review: applied + open questions for the user
                   · 031 statement-run outlining (huge functions → helpers sharing F)
                   · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
+                  · 033 gamma lint (rule sources, levels, --fix careful mode, follow-ups)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md

@@ -1,0 +1,15 @@
+// Assigning a place to itself.
+//! stage: lint
+
+P :: struct { x: u32 }
+
+main :: fn() needs Out {
+    x := 1
+    x = x //~ WARNING [self-assignment]
+    p := P(x: 2)
+    p.x = p.x //~ WARNING [self-assignment]
+    y := 3
+    y = x
+    x = y + 1
+    print("{} {}\n", x, p.x)
+}

@@ -401,7 +401,7 @@ impl<'s> Sema<'s> {
             match &a.kind {
                 ast::ExprKind::Str(s) => {
                     let name = String::from_utf8_lossy(&s.bytes);
-                    if crate::lint::rule(&name).is_none() {
+                    if name != "all" && crate::lint::rule(&name).is_none() {
                         let d = Diagnostic::error(a.span, format!("unknown lint rule `{}`", name))
                             .with_note("`gamma lint --rules` lists the rules");
                         self.emit(d);

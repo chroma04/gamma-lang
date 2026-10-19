@@ -330,5 +330,11 @@ fn whole_lines(sess: &Session, span: Span) -> Option<Span> {
     if !before.trim().is_empty() || !(after.trim().is_empty() || after.trim_start().starts_with("//")) {
         return None;
     }
+    // Removing the only line between a blank line (or the start of the file) and
+    // another blank line would leave two blank lines; take one with it.
+    let mut end = end;
+    if (start == 0 || src[..start].ends_with("\n\n")) && src[end..].starts_with('\n') {
+        end += 1;
+    }
     Some(Span::new(span.file, start as u32, end as u32))
 }

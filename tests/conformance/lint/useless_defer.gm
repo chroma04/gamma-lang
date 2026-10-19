@@ -1,0 +1,27 @@
+// A `defer` or `errdefer` as the last statement of a block does nothing useful.
+//! stage: lint
+
+cleanup :: fn() needs Out { print("cleanup\n") }
+
+f :: fn() needs Out {
+    print("start\n")
+    defer cleanup() //~ WARNING [useless-defer]
+}
+
+g :: fn(n: u32) -> u32!u32 needs Out {
+    if n is 0 {
+        errdefer print("failed\n") //~ WARNING [useless-defer]
+    }
+    return n
+}
+
+h :: fn() needs Out {
+    defer cleanup()
+    print("body\n")
+}
+
+main :: fn() needs Out {
+    f()
+    h()
+    _ := g(1)
+}

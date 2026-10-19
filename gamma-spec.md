@@ -2604,6 +2604,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#fast_math` | function | relaxed float semantics | 5.3 |
 | `#fuel(n)` | top-level declaration | compile-time step budget | 17.3 |
 | `#deprecated`, `#deprecated("msg")` | declaration | a warning at each use, quoting the message | — |
+| `#allow("rule", …)` | top-level declaration | no meaning for the program; tools that report on code (the `gamma` tool's `lint` command) report none of the named rules inside the declaration. The arguments are string literals naming rules the tool knows | — |
 
 ### 20.3 Intrinsics
 

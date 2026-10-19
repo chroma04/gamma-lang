@@ -118,6 +118,7 @@ gamma build file.gm -o prog  # compile to a native executable via the system C c
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
 gamma fix file.gm            # apply the fixes the compiler suggests (`&&` → `and`, `_ = f()`, …)
+gamma lint hello             # warn about unused code, suspicious comparisons and simpler forms (--fix applies fixes)
 gamma test --filter=parse file.gm  # only the tests whose name contains `parse`
 gamma test --all --jobs=4 --coverage hello  # every module's tests, 4 at a time, with a line coverage table
 gamma bench hello            # run the `bench` declarations and report the time per run

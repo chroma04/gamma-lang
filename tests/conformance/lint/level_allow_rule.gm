@@ -1,0 +1,9 @@
+// `--allow=naming` silences one rule and leaves the others on.
+//! stage: lint
+//! lint: --allow=naming
+
+main :: fn() needs Out {
+    myVar := 5
+    unused := 6 //~ WARNING [unused-variable]
+    print("{}\n", myVar)
+}

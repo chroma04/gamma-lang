@@ -8,6 +8,18 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma lint`: warnings, each naming its rule, about code that compiles but is probably
+  a mistake or has a simpler form: unused variables, parameters, imports, private
+  declarations and labels; comparisons of a value with itself; self-assignments;
+  constant `if` and `while` conditions; `defer` and `errdefer` that run at once or never;
+  identical and empty branches; comparisons with `true` and `false`; `if c { true } else
+  { false }`; `not not x`; `else { if … }`; unnecessary parentheses; and names not in the
+  usual case. `prefer-immutable`, off by default, finds `:=` variables that are never
+  assigned. `gamma lint --fix` applies the fixes the warnings carry, and undoes any after
+  which the program no longer compiles. Levels come from the `[lint]` table of
+  `gamma.toml`, from `--allow=`, `--warn=`, `--deny=` and `-D`, and from `#allow("rule")`
+  before a declaration (a new attribute). See `docs/lint.md`.
+
 - Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
   `bool`) whose operators work lane by lane and compile to vector instructions. `is`
   compares whole vectors and gives `bool`; the methods `lanes_eq`, `lanes_ne`, `lanes_lt`,
@@ -182,6 +194,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A `::` binding whose initializer calls a nested function with an inferred return type
+  (`zero :: fn() { return 0 }`, then `z :: zero()`) no longer crashes the compiler.
 - C back end: `print` and `@write` no longer pass empty pieces to their sink when a
   value formats to nothing (`print("{}", "")`), so a custom `Out` handler sees the same
   calls as on the interpreter. The spec now says that pieces are never empty.

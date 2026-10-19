@@ -1,0 +1,8 @@
+// A local `::` initialized by calling a function literal whose return type is inferred.
+main :: fn() needs Out {
+    zero :: fn() { return 0 }
+    z :: zero()
+    seven :: fn() => 3 + 4
+    s :: seven()
+    print("{} {}\n", z, s)
+}

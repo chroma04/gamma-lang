@@ -1,0 +1,19 @@
+// A loop label that no break or continue names is reported.
+//! stage: lint
+
+main :: fn() needs Out {
+    outer: for i in 0..3 { //~ WARNING [unused-label]
+        print("{}\n", i)
+    }
+    used: for i in 0..3 {
+        for j in 0..3 {
+            if j is 1 { continue used }
+            if i is 2 { break used }
+            print("{}\n", j)
+        }
+    }
+    n := 0
+    w: while n < 3 { //~ WARNING [unused-label]
+        n += 1
+    }
+}

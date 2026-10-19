@@ -1,0 +1,14 @@
+// `if` and `while` on a literal condition; `while true` is the loop idiom.
+//! stage: lint
+
+main :: fn() needs Out {
+    if true { print("a\n") } //~ WARNING [constant-condition]
+    if false { print("b\n") } //~ WARNING [constant-condition]
+    while false { print("c\n") } //~ WARNING [constant-condition]
+    n := 0
+    while true {
+        n += 1
+        if n > 3 { break }
+    }
+    if n > 0 { print("d\n") }
+}

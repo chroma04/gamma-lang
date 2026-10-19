@@ -1,0 +1,21 @@
+// `if c { true } else { false }` is just `c`.
+//! stage: lint
+
+a :: fn(c: bool) -> bool {
+    x := if c { true } else { false } //~ WARNING [needless-bool]
+    return x
+}
+
+b :: fn(c: bool) -> bool {
+    if c { return false } else { return true } //~ WARNING [needless-bool]
+}
+
+fine :: fn(c: bool, d: bool) -> bool {
+    x := if c { d } else { false }
+    y := if c { 1 } else { 2 }
+    return x and y > 1
+}
+
+main :: fn() needs Out {
+    print("{} {} {}\n", a(true), b(true), fine(true, false))
+}

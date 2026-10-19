@@ -43,7 +43,7 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   backtrace-site code ~8% each of gcc time; s25 split Debug C into parallel units, units.rs), a native
   back end (LLVM/Cranelift).
 - Platforms: wasm32-wasi (no fibers/threads), FreeBSD, freestanding/embedded profile.
-- Tools: more fix-its (s24 machinery + 8, s25 +7, s26 needs; rejected list in decisions/028), `gamma lint`,
+- Tools: more fix-its (s24 machinery + 8, s25 +7, s26 needs; rejected list in decisions/028), lint follow-ups (decisions/033),
   profiler docs (perf/Instruments on `-g` builds). LLDB formatters done (s26).
 - Packages: several versions of one repository in a dependency graph.
 - Library: time zones and std/process done (s27); TLS, compression rejected (§22.4).
