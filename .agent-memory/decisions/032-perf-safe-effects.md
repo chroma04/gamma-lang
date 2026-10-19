@@ -1,4 +1,4 @@
-# 031 Safe new/destroy + VM perform (s29, thread "Safe mode and effect perf", branch claude/perf-safe-effects-16om52)
+# 032 Safe new/destroy + VM perform (s29, thread "Safe mode and effect perf", branch claude/perf-safe-effects-16om52)
 
 ## Measured (callgrind, bench/programs; Fil-C 0.686 installed via optfil setup.sh -u)
 - safe_new_destroy (1M iters) Safe: 1731 → 997 instr/iter; wall 149 → ~86 ms (Checked ~32 ms,
