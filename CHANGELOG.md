@@ -8,6 +8,9 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- Guides for C and Rust programmers (`docs/guide/for-c-programmers.md`,
+  `docs/guide/for-rust-programmers.md`): how what you know maps onto Gamma, what changes
+  and why, with examples that the test suite compiles and runs on both back ends.
 - Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
   `bool`) whose operators work lane by lane and compile to vector instructions. `is`
   compares whole vectors and gives `bool`; the methods `lanes_eq`, `lanes_ne`, `lanes_lt`,

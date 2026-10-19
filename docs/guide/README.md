@@ -27,6 +27,13 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 | [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
 
+### Coming from another language
+
+| Guide | What it covers |
+| --- | --- |
+| [Gamma for C programmers](for-c-programmers.md) | C constructs and their Gamma counterparts, what changes and why, and the C habits that are compile errors |
+| [Gamma for Rust programmers](for-rust-programmers.md) | What carries over from Rust, memory without ownership, generics without traits, effects, and the Rust habits that do not carry over |
+
 ## Conventions used in this guide
 
 - Code blocks are tagged `gamma`. A line comment starting with `// error:` marks code that the specification says is a compile error; it is shown so you recognize the mistake.
