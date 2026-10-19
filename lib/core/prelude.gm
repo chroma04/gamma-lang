@@ -4,12 +4,12 @@
 
 /// Standard output (§12.9, §21.7).
 pub Out :: effect {
-    write_out: fn(bytes: []const u8)
+    write: fn(bytes: []const u8)
 }
 
 /// Standard error (§12.9, §21.7).
 pub Err :: effect {
-    write_err: fn(bytes: []const u8)
+    write: fn(bytes: []const u8)
 }
 
 /// Operations that escape Gamma's model: foreign calls, `#global` storage and
@@ -99,8 +99,8 @@ pub SeekFrom :: union { Start, Current, End }
 pub Fs :: effect {
     open: fn(path: string, opts: OpenOptions) -> IoError!File
     close: fn(f: File)
-    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
-    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    read: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
+    write: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
     seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
     stat: fn(path: string) -> IoError!FileInfo
     remove: fn(path: string) -> IoError!()
@@ -134,7 +134,7 @@ pub Net :: effect {
     accept: fn(l: Listener) -> IoError!Socket                     // waits for a connection
     send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
     recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
-    close_socket: fn(s: Socket)
+    close: fn(s: Socket)
     close_listener: fn(l: Listener)
     shutdown: fn(s: Socket, how: Shutdown) -> IoError!()
     set_timeouts: fn(s: Socket, recv, send: ?Duration) -> IoError!()   // null: wait forever
@@ -159,7 +159,7 @@ pub SpawnOptions :: struct {
     pub env: ?[]const string = null         // `NAME=value` entries that replace the environment; null: ours
 }
 
-/// What `read_out` reports: which stream the bytes it stored in the buffer came from, and
+/// What `Proc.read` reports: which stream the bytes it stored in the buffer came from, and
 /// how many there are.
 pub Chunk :: struct { pub from: Stream; pub len: usize }
 
@@ -170,9 +170,9 @@ pub ExitStatus :: union { Exited: u32, Signaled: i32 }
 /// for in the directories of our `PATH`.
 pub Proc :: effect {
     spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // empty argv: InvalidInput; no such program: NotFound
-    write_in: fn(c: Child, bytes: []const u8) -> IoError!usize   // to the piped stdin; may write fewer bytes
+    write: fn(c: Child, bytes: []const u8) -> IoError!usize   // to the piped stdin; may write fewer bytes
     close_in: fn(c: Child)                                        // the child sees the end of its input
-    read_out: fn(c: Child, buf: []u8) -> IoError!?Chunk           // waits for data on a piped output stream; null once all have ended
+    read: fn(c: Child, buf: []u8) -> IoError!?Chunk           // waits for data on a piped output stream; null once all have ended
     wait: fn(c: Child) -> IoError!ExitStatus                      // closes our ends of the pipes and waits; releases the child
     kill: fn(c: Child) -> IoError!()                              // forcibly ends the child, which must still be waited for
 }
@@ -271,8 +271,8 @@ handler Fs for SystemIo {
         return File(handle: h.trunc(i64))
     }
     close(self, f) => { _ = @fs_close(f.handle) }
-    read_from(self, f, buf) => io_result(@fs_read(f.handle, buf))
-    write_to(self, f, bytes) => io_result(@fs_write(f.handle, bytes))
+    read(self, f, buf) => io_result(@fs_read(f.handle, buf))
+    write(self, f, bytes) => io_result(@fs_write(f.handle, bytes))
     seek(self, f, offset, from) => {
         n := try io_result(@fs_seek(f.handle, offset, from.tag().trunc(u32)))
         return n.trunc(u64)
@@ -325,7 +325,7 @@ handler Net for SystemIo {
     }
     send(self, s, bytes) => io_result(@net_send(s.handle, bytes))
     recv(self, s, buf) => io_result(@net_recv(s.handle, buf))
-    close_socket(self, s) => { _ = @net_close(s.handle) }
+    close(self, s) => { _ = @net_close(s.handle) }
     close_listener(self, l) => { _ = @net_close(l.handle) }
     shutdown(self, s, how) => io_unit(@net_shutdown(s.handle, how.tag().trunc(u32)))
     set_timeouts(self, s, recv, send) => io_unit(@net_set_timeouts(s.handle, timeout_ns(recv), timeout_ns(send)))
@@ -349,9 +349,9 @@ handler Proc for SystemIo {
         h := try io_result(@proc_spawn(argv, env, dir, stdio_flags(o)))
         return Child(handle: h.trunc(i64))
     }
-    write_in(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))
+    write(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))
     close_in(self, c) => { _ = @proc_close_in(c.handle) }
-    read_out(self, c, buf) => {
+    read(self, c, buf) => {
         n := try io_result(@proc_read_out(c.handle, buf))
         if n is 0 { return null }
         from: Stream = if (n >> 32) is 0 { .Stdout } else { .Stderr }
@@ -372,11 +372,11 @@ pub system_io :: fn() -> SystemIo => SystemIo()
 SystemOutput :: struct {}
 
 handler Out for SystemOutput {
-    write_out(self, bytes) => @sys_write(1, bytes)
+    write(self, bytes) => @sys_write(1, bytes)
 }
 
 handler Err for SystemOutput {
-    write_err(self, bytes) => @sys_write(2, bytes)
+    write(self, bytes) => @sys_write(2, bytes)
 }
 
 /// The default handlers of `Out` and `Err`: standard output and standard error.
@@ -593,7 +593,7 @@ tag :: fn(raw: [^]u8, a: Allocator, site: SourceLocation) {
 
 /// A new object holding `init`.
 pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> AllocError!^T needs Alloc {
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T), @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
     p := raw.cast(^T)
@@ -605,7 +605,7 @@ pub new :: fn(T: type, init: T, site: SourceLocation = @caller_location()) -> Al
 pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc where Plain(T) {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
     return raw.cast([^]T)[0..n]
@@ -616,7 +616,7 @@ pub make :: fn(T: type, n: usize, site: SourceLocation = @caller_location()) -> 
 pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc where Plain(T) {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, align.max(@align_of(T))) else return !.OutOfMemory
     tag(raw, a, site)
     return raw.cast([^]T)[0..n]
@@ -626,7 +626,7 @@ pub make_aligned :: fn(T: type, n: usize, align: usize, site: SourceLocation = @
 pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc {
     if n is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and n > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * n, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
     s := raw.cast([^]T)[0..n]
@@ -638,7 +638,7 @@ pub make_fill :: fn(T: type, n: usize, x: T, site: SourceLocation = @caller_loca
 pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) -> AllocError![]T needs Alloc {
     if s.len is 0 { return empty_slice(T) }
     if @size_of(T) > 0 and s.len > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
-    a := current()
+    a := Alloc.current()
     raw := a.vt.alloc(a.data, @size_of(T) * s.len, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
     d := raw.cast([^]T)[0..s.len]
@@ -650,7 +650,7 @@ pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location())
 /// Memory from `make_aligned` is released with `free_aligned`.
 pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location()) needs Alloc {
     if s.len is 0 { return }
-    a := current()
+    a := Alloc.current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, @align_of(T))
 }
@@ -659,14 +659,14 @@ pub free :: fn(T: type, s: []const T, site: SourceLocation = @caller_location())
 /// allocator; `align` must be the alignment it was requested with.
 pub free_aligned :: fn(T: type, s: []const T, align: usize, site: SourceLocation = @caller_location()) needs Alloc {
     if s.len is 0 { return }
-    a := current()
+    a := Alloc.current()
     @alloc_check(s.ptr.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, s.ptr.cast([^]u8), @size_of(T) * s.len, align.max(@align_of(T)))
 }
 
 /// Releases an object obtained from `new` under the current allocator.
 pub destroy :: fn(T: type, p: ^const T, site: SourceLocation = @caller_location()) needs Alloc {
-    a := current()
+    a := Alloc.current()
     @alloc_check(p.cast([^]u8), a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
     a.vt.free(a.data, p.cast([^]u8), @size_of(T), @align_of(T))
 }
@@ -716,16 +716,16 @@ pub Test :: effect {
 /// called (§21.6).
 pub expect :: fn(cond: bool, msg: string = "expectation failed", loc: SourceLocation = @caller_location()) needs Test {
     if cond { return }
-    if msg is not "expectation failed" { note("expectation failed: ") }
-    fail(msg, loc)
+    if msg is not "expectation failed" { Test.note("expectation failed: ") }
+    Test.fail(msg, loc)
 }
 
 /// The success value of `x`. If `x` is an error, fails the current test, reporting the
 /// error and where `ok` was called (§21.6).
 pub ok :: fn(E, T: type, x: E!T, loc: SourceLocation = @caller_location()) -> T needs Test {
     return x else e => {
-        @write(fn(b) => note(b), "error: {}", e)
-        fail("", loc)
+        @write(fn(b) => Test.note(b), "error: {}", e)
+        Test.fail("", loc)
     }
 }
 
@@ -820,7 +820,7 @@ handler In for ^TestIo {
 handler Env for ^TestIo needs Env {
     args(self) => empty_slice(string)
     var(self, name) => null
-    exit(self, code) => exit(code)
+    exit(self, code) => Env.exit(code)
 }
 
 handler Clock for ^TestIo {
@@ -1296,8 +1296,8 @@ mem_close_dir :: fn(m: ^MemFs, d: Dir) {
 handler Fs for ^TestIo {
     open(self, path, o) => mem_open(&self.fs, path, o, test_wall(self))
     close(self, f) => { mem_close(&self.fs, f) }
-    read_from(self, f, buf) => mem_read(&self.fs, f, buf)
-    write_to(self, f, bytes) => mem_write(&self.fs, f, bytes, test_wall(self))
+    read(self, f, buf) => mem_read(&self.fs, f, buf)
+    write(self, f, bytes) => mem_write(&self.fs, f, bytes, test_wall(self))
     seek(self, f, offset, from) => mem_seek(&self.fs, f, offset, from)
     stat(self, path) => mem_stat(&self.fs, path)
     remove(self, path) => mem_remove(&self.fs, path, test_wall(self))
@@ -1564,7 +1564,7 @@ handler Net for ^TestIo {
     accept(self, l) => mem_accept(&self.net, l)
     send(self, s, bytes) => mem_send(&self.net, s, bytes)
     recv(self, s, buf) => mem_recv(&self.net, s, buf)
-    close_socket(self, s) => { mem_close_socket(&self.net, s) }
+    close(self, s) => { mem_close_socket(&self.net, s) }
     close_listener(self, l) => { mem_close_listener(&self.net, l) }
     shutdown(self, s, how) => mem_shutdown(&self.net, s, how)
     set_timeouts(self, s, recv, send) => mem_set_timeouts(&self.net, s)
@@ -1574,9 +1574,9 @@ handler Net for ^TestIo {
 // The test handler of `Proc` (§12.9): tests start no processes.
 handler Proc for ^TestIo {
     spawn(self, argv, o) => !.PermissionDenied
-    write_in(self, c, bytes) => !.InvalidInput
+    write(self, c, bytes) => !.InvalidInput
     close_in(self, c) => {}
-    read_out(self, c, buf) => !.InvalidInput
+    read(self, c, buf) => !.InvalidInput
     wait(self, c) => !.InvalidInput
     kill(self, c) => !.InvalidInput
 }
@@ -1594,7 +1594,7 @@ run_test :: fn(body: ^fn() needs Ambient + Test) -> u8 needs Out + Err + Env {
     t := test_tracker()
     io := TestIo(clock: 0, seed: 0, fs: mem_fs(), net: mem_net())
     checks :: handler Test {
-        note(bytes) => write_err(bytes)
+        note(bytes) => Err.write(bytes)
         fail(msg, loc) => {
             report_failure(msg, loc)
             break true
@@ -1635,7 +1635,7 @@ bench_next_iters :: fn(iters: u64, elapsed: u64) -> u64 {
 /// Runs a benchmark: 0 if it completed, 1 if it failed.
 run_bench :: fn(body: ^fn() needs Ambient + Test) -> u8 needs Ambient {
     checks :: handler Test {
-        note(bytes) => write_err(bytes)
+        note(bytes) => Err.write(bytes)
         fail(msg, loc) => {
             report_failure(msg, loc)
             break 1u8
@@ -1644,26 +1644,26 @@ run_bench :: fn(body: ^fn() needs Ambient + Test) -> u8 needs Ambient {
     return with checks {
         iters: u64 = 1
         while true {
-            t0 := now()
+            t0 := Clock.now()
             i: u64 = 0
             while i < iters {
                 body()
                 i += 1
             }
-            elapsed := since(now(), t0).ns
+            elapsed := since(Clock.now(), t0).ns
             if elapsed >= BENCH_SAMPLE_NS or iters >= 1 << 32 { break }
             iters = bench_next_iters(iters, elapsed)
         }
         print("gamma-bench: {}", iters)
         s: u64 = 0
         while s < BENCH_SAMPLES {
-            t0 := now()
+            t0 := Clock.now()
             i: u64 = 0
             while i < iters {
                 body()
                 i += 1
             }
-            print(" {}", since(now(), t0).ns)
+            print(" {}", since(Clock.now(), t0).ns)
             s += 1
         }
         print("\n")

@@ -21,14 +21,14 @@ main :: fn() -> IoError!() needs Out + Fs + Rand {
     f := try Fs.open(path, fs.OpenOptions(read: false, write: false, create: true))
     print("created: {}\n", (try Fs.stat(path)).size)
     buf: [8]u8 = ---
-    print("read: {}\n", try f.read_from(buf[..]))
+    print("read: {}\n", try f.read(buf[..]))
     Fs.close(f)
 
     w := try Fs.open(path, fs.OpenOptions(read: false, write: true, truncate: true))
-    _ = try w.write_to("data")
+    _ = try w.write("data")
     Fs.close(w)
     g := try Fs.open(path, fs.OpenOptions(read: false, write: false))
-    n := try g.read_from(buf[..])
+    n := try g.read(buf[..])
     print("read: {}\n", buf[0..n])
     Fs.close(g)
 

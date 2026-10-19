@@ -29,7 +29,7 @@ worker :: fn(j: ^Job) needs fiber.Sched {
     defer rec(j.log, j.name * 10 + 9)
     for i in 0..j.rounds {
         rec(j.log, j.name * 10 + i)
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
 }
 
@@ -39,9 +39,9 @@ parent :: fn(j: ^Job) needs fiber.Sched {
     child := Job(log: j.log, name: 9, rounds: 2)
     stack: [20000]u8 = ---
     fiber.spawn(worker, &child, stack[..])
-    fiber.yield_now()
+    fiber.Sched.yield_now()
     rec(j.log, 101)
-    for i in 0..3 { fiber.yield_now() }
+    for i in 0..3 { fiber.Sched.yield_now() }
     rec(j.log, 102)
 }
 
@@ -50,7 +50,7 @@ Total :: struct { sum: u32 }
 adder :: fn(t: ^Total) needs fiber.Sched {
     for i in 1..4 {
         t.sum += i
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
 }
 
@@ -70,7 +70,7 @@ interleave :: fn() needs Out + Alloc {
         fiber.spawn(worker, &b, sb[..])
         fiber.spawn(worker, &c, sc[..])
         rec(&log, 0)
-        fiber.join()
+        fiber.Sched.join()
         rec(&log, 1)
     }
     dump("interleaved", &log)
@@ -85,7 +85,7 @@ nested :: fn() needs Out + Alloc {
     j := Job(log: &log, name: 0, rounds: 0)
     with &s on main_stack[..] {
         fiber.spawn(parent, &j, st[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     dump("nested", &log)
 }
@@ -101,7 +101,7 @@ sums :: fn() needs Out + Alloc {
     with &s on main_stack[..] {
         fiber.spawn(adder, &t1, s1[..])
         fiber.spawn(adder, &t2, s2[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     print("sums {} {}\n", t1.sum, t2.sum)
 }
@@ -112,9 +112,9 @@ idle :: fn() needs Out + Alloc {
     defer s.deinit()
     main_stack: [24576]u8 = ---
     with &s on main_stack[..] {
-        fiber.join()
-        fiber.yield_now()
-        fiber.join()
+        fiber.Sched.join()
+        fiber.Sched.yield_now()
+        fiber.Sched.join()
     }
     print("idle ok\n")
 }

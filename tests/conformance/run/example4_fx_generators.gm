@@ -107,8 +107,8 @@ LockArg :: struct {
 }
 
 producer :: fn(a: ^LockArg) -> never needs Lock + Out {
-    for x in a.src() { head(a.side, x) }
-    finished(a.side)
+    for x in a.src() { Lock.head(a.side, x) }
+    Lock.finished(a.side)
 }
 
 Act :: union { ResumeLeft, ResumeRight, Stop }
@@ -208,7 +208,7 @@ lockstep :: fn(fa: ^fn() needs Yield(i64) + Out, fb: ^fn() needs Yield(i64) + Ou
             }
         }
     }) on stack_main[..] {
-        begin()
+        Lock.begin()
     }
 }
 

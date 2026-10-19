@@ -40,7 +40,7 @@ drain :: fn(E: effects, name: string, c: ^chan.Channel(u32)) -> u32 needs fiber.
     while x := c.recv() {
         print("{} got {}\n", name, x)
         n += 1
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
     return n
 }
@@ -75,7 +75,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
         fiber.spawn(consume, &p, s3[..])
         fiber.spawn(double, &p, s2[..])
         fiber.spawn(produce, &p, s1[..])
-        fiber.join()
+        fiber.Sched.join()
     }
 
     c := try chan.channel(u32, 2)
@@ -86,7 +86,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
         fiber.spawn(work, &x, s1[..])
         fiber.spawn(work, &y, s2[..])
         fiber.spawn(feed, &c, s3[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     print("x got {}, y got {}\n", x.got, y.got)
 

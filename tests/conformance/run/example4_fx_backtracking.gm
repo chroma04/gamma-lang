@@ -73,9 +73,9 @@ search_all :: fn(body: fn() needs Choose, found: fn() -> bool) -> u32 {
 
 queens :: fn(n: usize, cols: []usize) needs Choose {
     for row in 0..n {
-        c := choose(n)
+        c := Choose.choose(n)
         for r in 0..row {
-            if cols[r] is c or cols[r].abs_diff(c) is row - r { fail() }
+            if cols[r] is c or cols[r].abs_diff(c) is row - r { Choose.fail() }
         }
         cols[row] = c
     }
@@ -143,8 +143,8 @@ conflicts :: fn(grid: []const u8, i: usize, v: u8) -> bool {
 sudoku :: fn(grid: []u8) needs Choose {
     for i in 0..16 {
         if PUZZLE[i] is not 0 { continue }
-        v := (choose(4) + 1).trunc(u8)
-        if conflicts(grid, i, v) { fail() }
+        v := (Choose.choose(4) + 1).trunc(u8)
+        if conflicts(grid, i, v) { Choose.fail() }
         grid[i] = v
     }
 }
@@ -172,10 +172,10 @@ sudoku_demo :: fn() needs Out {
 subset_sum :: fn(items: []const i32, target: i32, taken: []bool) needs Choose {
     sum: i32 = 0
     for i in 0..items.len {
-        taken[i] = choose(2) is 1
+        taken[i] = Choose.choose(2) is 1
         if taken[i] { sum += items[i] }
     }
-    if sum is not target { fail() }
+    if sum is not target { Choose.fail() }
 }
 
 Region :: union { WA, NT, SA, Q, NSW, V, T }
@@ -184,9 +184,9 @@ BORDERS :: [_](Region, Region)(
 )
 
 colour_map :: fn(colours: usize, assigned: []usize) needs Choose {
-    for i in 0..7 { assigned[i] = choose(colours) }
+    for i in 0..7 { assigned[i] = Choose.choose(colours) }
     for b in BORDERS {
-        if assigned[b.0.tag()] is assigned[b.1.tag()] { fail() }
+        if assigned[b.0.tag()] is assigned[b.1.tag()] { Choose.fail() }
     }
 }
 

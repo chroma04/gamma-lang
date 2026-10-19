@@ -35,7 +35,7 @@ run :: fn(xs: []const u32) -> Err1!u32 needs Out {
         }
     }
     with h {
-        for x in xs { _ = visit(x) }
+        for x in xs { _ = Visit.visit(x) }
     }
     return total
 }

@@ -12,7 +12,7 @@ Log :: effect { note: fn(n: u32) }
 tally :: fn(T: type, xs: []const T) -> u32 {
     count: u32 = 0
     h :: handler Log { note(n) => { count += n } }
-    with h { for x in xs { note(1) } }
+    with h { for x in xs { Log.note(1) } }
     return count
 }
 main :: fn() needs Out {

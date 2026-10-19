@@ -287,8 +287,8 @@ A helper that tasks call, and that performs `Sched(E)` itself, takes `E` from it
 fiber :: import "std/fiber"
 
 pause_twice :: fn(E: effects) needs fiber.Sched(E) {
-    fiber.yield_now()
-    fiber.yield_now()
+    fiber.Sched.yield_now()
+    fiber.Sched.yield_now()
 }
 
 task :: fn(n: ^u32) needs fiber.Sched(Out) + Out {

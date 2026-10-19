@@ -10,7 +10,7 @@ pub List :: struct(T: type) {
 }
 
 /// An empty list using the current allocator.
-pub list :: fn(T: type) -> List(T) needs Alloc => List(T)(items: empty_slice(T), cap: 0, alloc: current())
+pub list :: fn(T: type) -> List(T) needs Alloc => List(T)(items: empty_slice(T), cap: 0, alloc: Alloc.current())
 
 /// Makes room for at least `extra` more elements without further allocation.
 pub reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!() {

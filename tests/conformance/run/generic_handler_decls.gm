@@ -34,6 +34,6 @@ main :: fn() needs Out {
     collect_into(&w, words)
     print("{} {}\n", w.items[2], w.len)
     t := Tally(i64)()
-    with &t { log(i64(5)); log(i64(7)) }
+    with &t { Log.log(i64(5)); Log.log(i64(7)) }
     print("{} {}\n", t.n, t.last)
 }

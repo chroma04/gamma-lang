@@ -45,18 +45,18 @@ Stack :: struct {
 }
 
 push :: fn(v: i32) needs State(Stack) + Fail {
-    s := get()
-    if s.top is s.items.len { fail(1, "stack overflow") }
+    s := State.get()
+    if s.top is s.items.len { Fail.fail(1, "stack overflow") }
     s.items[s.top] = v
     s.top += 1
-    put(s)
+    State.put(s)
 }
 
 pop :: fn() -> i32 needs State(Stack) + Fail {
-    s := get()
-    if s.top is 0 { fail(2, "stack underflow") }
+    s := State.get()
+    if s.top is 0 { Fail.fail(2, "stack underflow") }
     s.top -= 1
-    put(s)
+    State.put(s)
     return s.items[s.top]
 }
 
@@ -65,12 +65,12 @@ run_program :: fn(code: []const Instr) -> i32 needs State(Stack) + Fail + Reader
     steps: u32 = 0
     while pc < code.len {
         steps += 1
-        if steps > 100 { fail(3, "step limit exceeded") }
+        if steps > 100 { Fail.fail(3, "step limit exceeded") }
         instr := code[pc]
         pc += 1
-        if config().verbose { say("exec") }
+        if Reader.config().verbose { Trace.say("exec") }
         match instr {
-            .Push(v) => push(v * config().scale)
+            .Push(v) => push(v * Reader.config().scale)
             .Add => { b := pop(); a := pop(); push(a + b) }
             .Mul => { b := pop(); a := pop(); push(a * b) }
             .Neg => push(-pop())
@@ -80,7 +80,7 @@ run_program :: fn(code: []const Instr) -> i32 needs State(Stack) + Fail + Reader
             .Div => {
                 b := pop()
                 a := pop()
-                if b is 0 { fail(4, "division by zero") }
+                if b is 0 { Fail.fail(4, "division by zero") }
                 push(a / b)
             }
             .Jz(t) => { if pop() is 0 { pc = t } }
@@ -134,7 +134,7 @@ checked_sum :: fn(xs: []const i32, limit: i32) -> i32 needs Warn + Out {
     total: i32 = 0
     for x in xs {
         if x > limit {
-            if not warn("value over the limit") { return total }
+            if not Warn.warn("value over the limit") { return total }
             continue
         }
         total += x

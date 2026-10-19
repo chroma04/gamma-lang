@@ -10,21 +10,21 @@ Plain :: effect {
 
 needs_stack :: fn() {
     with (handler Gen { emit(x, k) => resume k() }) {   //~ ERROR needs a stack
-        emit(1)
+        Gen.emit(1)
     }
 }
 
 stack_without_ctl :: fn() {
     stack: [32768]u8 = ---
     with (handler Plain { note(x) => {} }) on stack[..] {   //~ ERROR none of these handlers handles a `ctl` operation
-        note(1)
+        Plain.note(1)
     }
 }
 
 missing_k :: fn() {
     stack: [32768]u8 = ---
     with (handler Gen { emit(x) => trap("x") }) on stack[..] {   //~ ERROR takes 2 parameter(s)
-        emit(1)
+        Gen.emit(1)
     }
 }
 
@@ -35,14 +35,14 @@ falls_off :: fn() {
             _ = x
         }
     }) on stack[..] {
-        emit(1)
+        Gen.emit(1)
     }
 }
 
 wrong_value :: fn() {
     stack: [32768]u8 = ---
     with (handler Gen { emit(x, k) => resume k(true) }) on stack[..] {   //~ ERROR expected `()`, found `bool`
-        emit(1)
+        Gen.emit(1)
     }
 }
 
@@ -62,7 +62,7 @@ not_a_cont :: fn() {
             resume k()
         }
     }) on stack[..] {
-        emit(1)
+        Gen.emit(1)
     }
 }
 
@@ -78,7 +78,7 @@ in_defer :: fn() {
             trap("x")
         }
     }) on stack[..] {
-        emit(1)
+        Gen.emit(1)
     }
 }
 

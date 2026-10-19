@@ -43,7 +43,7 @@ digest_stdin :: fn() -> IoError!sha256.Digest needs In => digest_of(fn(b) => In.
 digest_file :: fn(name: string) -> IoError!sha256.Digest needs Fs {
     f := try Fs.open(name, fs.OpenOptions())
     defer f.close()
-    return digest_of(fn(b) => f.read_from(b))
+    return digest_of(fn(b) => f.read(b))
 }
 
 digest_named :: fn(name: string) -> IoError!sha256.Digest needs Fs + In {

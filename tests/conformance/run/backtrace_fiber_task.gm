@@ -15,7 +15,7 @@ task :: fn(w: ^Work) needs fiber.Sched(Out) + Out {
     for i in 0..5 {
         w.n = i
         print("task {} -> {}\n", i, half(w))
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
 }
 
@@ -33,6 +33,6 @@ main :: fn() needs Out + Alloc {
         note("start")
         fiber.spawn(task, &w, task_stack[..])
         note("spawned")
-        fiber.join()
+        fiber.Sched.join()
     }
 }

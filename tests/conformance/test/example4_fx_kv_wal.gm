@@ -251,17 +251,17 @@ compact :: fn(db: ^DiskKv, crash: CrashPoint) -> KvError!bool needs Fs + Alloc {
 // ---- A workload that works with any Kv handler -----------------------------------
 
 workload :: fn() -> KvError!u32 needs Kv {
-    try put("apple", 3)
-    try put("pear", 10)
-    try put("fig", 7)
-    try put("apple", 4)
-    if try del("pear") { /* removed */ }
-    try put("kiwi", -2)
-    _ = try del("nothing")
+    try Kv.put("apple", 3)
+    try Kv.put("pear", 10)
+    try Kv.put("fig", 7)
+    try Kv.put("apple", 4)
+    if try Kv.del("pear") { /* removed */ }
+    try Kv.put("kiwi", -2)
+    _ = try Kv.del("nothing")
     sum: u32 = 0
-    if v := get("apple") { sum += v.trunc(u32) }
-    if v := get("fig") { sum += v.trunc(u32) }
-    return sum + size().trunc(u32)
+    if v := Kv.get("apple") { sum += v.trunc(u32) }
+    if v := Kv.get("fig") { sum += v.trunc(u32) }
+    return sum + Kv.size().trunc(u32)
 }
 
 fresh :: fn() -> DiskKv needs Alloc => DiskKv(mem: mem_new())
@@ -299,16 +299,16 @@ test "recovery replays the log after a crash" {
     expect(not rep.torn and not rep.bad)
     expect(describe(&db2.mem, buf[..]) is "apple=4 fig=7 kiwi=-2")
     // The recovered store keeps logging to the same file.
-    with &db2 { ok(put("plum", 1)) }
+    with &db2 { ok(Kv.put("plum", 1)) }
     expect(db2.records is 8)
 }
 
 test "a torn last record is dropped and the log repaired" {
     db := fresh()
     with &db {
-        ok(put("a", 1))
-        ok(put("b", 2))
-        ok(put("c", 3))
+        ok(Kv.put("a", 1))
+        ok(Kv.put("b", 2))
+        ok(Kv.put("c", 3))
     }
     db.mem.m.deinit()
     // Tear the last record in half, as a power cut would.
@@ -336,9 +336,9 @@ test "a torn last record is dropped and the log repaired" {
 test "a corrupt record stops the replay" {
     db := fresh()
     with &db {
-        ok(put("x", 10))
-        ok(put("y", 20))
-        ok(put("z", 30))
+        ok(Kv.put("x", 10))
+        ok(Kv.put("y", 20))
+        ok(Kv.put("z", 30))
     }
     db.mem.m.deinit()
     data := ok(read_whole(WAL))
@@ -363,9 +363,9 @@ test "compaction shrinks the log and survives crashes at every step" {
             kbuf: [8]u8 = ---
             b := str.builder(kbuf[..])
             b.write("k{}", i % 5)
-            ok(put(b.str(), i.trunc(i64)))
+            ok(Kv.put(b.str(), i.trunc(i64)))
         }
-        _ = ok(del("k3"))
+        _ = ok(Kv.del("k3"))
     }
     expect(db.records is 41)
     buf: [96]u8 = ---
@@ -399,7 +399,7 @@ test "compaction shrinks the log and survives crashes at every step" {
     defer r3.mem.m.deinit()
     expect(rep.applied is 4)
     expect(describe(&r3.mem, buf[..]) is want)
-    with &r3 { ok(put("k9", 99)) }
+    with &r3 { ok(Kv.put("k9", 99)) }
     expect(r3.records is 1)
     db.mem.m.deinit()
 }
@@ -407,7 +407,7 @@ test "compaction shrinks the log and survives crashes at every step" {
 test "keys longer than the limit are rejected before they are logged" {
     db := fresh()
     defer db.mem.m.deinit()
-    r := with &db { put("this key is much too long", 1) }
+    r := with &db { Kv.put("this key is much too long", 1) }
     expect(r is !.KeyTooLong)
     expect(not fs.exists(WAL))
     expect(db.records is 0)

@@ -110,7 +110,7 @@ handler Exec for Config {
 run_effect :: fn(start: Vm, code: []const Instr) -> Vm needs Exec {
     vm := start
     while not vm.halted {
-        vm = exec(vm, code[usize(vm.pc)])
+        vm = Exec.exec(vm, code[usize(vm.pc)])
     }
     return vm
 }
@@ -142,7 +142,7 @@ run_gen :: fn(start: Vm, code: []const Instr) -> Vm needs Gen {
     vm := start
     while not vm.halted {
         ins := code[usize(vm.pc)]
-        if ins is .Out(_) { give(vm.regs[usize(vm.pc % 16)]) }
+        if ins is .Out(_) { Gen.give(vm.regs[usize(vm.pc % 16)]) }
         vm = step(vm, ins)
     }
     return vm

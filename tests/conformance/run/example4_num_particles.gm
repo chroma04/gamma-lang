@@ -58,7 +58,7 @@ near_pairs :: fn(b: ^const Bodies, radius: f32) needs Yield((usize, usize)) + Co
             dy := b.y[i] - b.y[j]
             d2 := dx * dx + dy * dy
             if d2 < radius * radius {
-                collide(i, j, d2.sqrt())
+                Collide.collide(i, j, d2.sqrt())
                 yield((i, j))
             }
         }
@@ -100,7 +100,7 @@ merge :: fn(b: ^Bodies, i, j: usize) needs Log {
     b.y[i] = (b.mass[i] * b.y[i] + b.mass[j] * b.y[j]) / m
     b.mass[i] = m
     b.alive[j] = false
-    log(.Info, "merged")
+    Log.log(.Info, "merged")
 }
 
 main :: fn() needs Out {

@@ -48,7 +48,7 @@ pub read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc {
             data = bigger
             cap *= 2
         }
-        n := f.read_from(data[len..cap]) else e => {
+        n := f.read(data[len..cap]) else e => {
             free(data)
             return !.Io(e)
         }
@@ -71,7 +71,7 @@ pub read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc {
 pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() needs Fs {
     done: usize = 0
     while done < bytes.len {
-        n := try f.write_to(bytes[done..bytes.len])
+        n := try f.write(bytes[done..bytes.len])
         if n is 0 { return !.Other(0) }
         done += n
     }
@@ -110,7 +110,7 @@ pub copy :: fn(from, to: string) -> IoError!() needs Fs {
     buf: [4096]u8 = ---
     total: u64 = 0
     while true {
-        n := try src.read_from(buf[..])
+        n := try src.read(buf[..])
         if n is 0 { break }
         try write_all_to(dst, buf[0..n])
         total += u64(n)

@@ -44,9 +44,9 @@ pop :: fn(vm: ^Vm) -> i64 {
 
 run :: fn(vm: ^Vm, code: []const Op, max_steps: u32) needs Io + Trace {
     while true {
-        if vm.steps >= max_steps { fuel(vm.pc) }
+        if vm.steps >= max_steps { Io.fuel(vm.pc) }
         vm.steps += 1
-        step(vm.pc, vm.sp)
+        Trace.step(vm.pc, vm.sp)
         op := code[vm.pc.trunc(usize)]
         vm.pc += 1
         match op {
@@ -61,7 +61,7 @@ run :: fn(vm: ^Vm, code: []const Op, max_steps: u32) needs Io + Trace {
             .Store(r) => { vm.regs[usize(r)] = pop(vm) }
             .Jmp(t) => { vm.pc = t }
             .Jz(t) => { if pop(vm) is 0 { vm.pc = t } }
-            .Print => emit(pop(vm))
+            .Print => Io.emit(pop(vm))
             .Halt => return
         }
     }

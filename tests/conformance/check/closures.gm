@@ -19,7 +19,7 @@ caller :: fn(xs: []i32) needs Net {
     apply(xs, fn(x) => x + 1)
     apply(xs, double)
     apply(xs, fn(x) { total += x; return x })
-    _ = retry(3, fn() => send(7))          // Net is performed here, in `caller`
+    _ = retry(3, fn() => Net.send(7))          // Net is performed here, in `caller`
     counter :: fn(x: i32) -> i32 => x + total
     apply(xs, counter)
     fact :: fn(n: u64) -> u64 => if n is 0 { 1 } else { n * fact(n - 1) }
@@ -31,7 +31,7 @@ caller :: fn(xs: []i32) needs Net {
 }
 
 no_net :: fn() {
-    _ = retry(1, fn() => send(1))          //~ ERROR does not declare
+    _ = retry(1, fn() => Net.send(1))          //~ ERROR does not declare
 }
 
 Holder :: struct { f: fn() }               //~ ERROR cannot hold a second-class

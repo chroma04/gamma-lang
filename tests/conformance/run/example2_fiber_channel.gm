@@ -70,7 +70,7 @@ handler Sched for ^Runtime needs Out {
 
 // The channel lives in the (shared) heap of main's frame; tasks reach it through a global-ish pointer.
 send :: fn(c: ^Chan, x: u32) needs Sched {
-    while c.len is 3 { block() }
+    while c.len is 3 { Sched.block() }
     c.buf[(c.head + c.len) % 3] = x
     c.len += 1
 }
@@ -78,7 +78,7 @@ send :: fn(c: ^Chan, x: u32) needs Sched {
 recv :: fn(c: ^Chan) -> ?u32 needs Sched {
     while c.len is 0 {
         if c.closed { return null }
-        block()
+        Sched.block()
     }
     x := c.buf[c.head]
     c.head = (c.head + 1) % 3
@@ -93,7 +93,7 @@ producer :: fn(a: ^Args) -> never needs Sched + Out {
     for i in 0..4 {
         send(a.c, a.id * 100 + i)
     }
-    exit()
+    Sched.exit()
 }
 
 consumer :: fn(a: ^Args) -> never needs Sched + Out {
@@ -107,15 +107,15 @@ consumer :: fn(a: ^Args) -> never needs Sched + Out {
         if n is 5 { break }
     }
     print("  consumer {} total {} over {}\n", a.id, sum, n)
-    exit()
+    Sched.exit()
 }
 
 closer :: fn(a: ^Args) -> never needs Sched + Out {
     // Give the producers time to run, then close the channel.
-    for _ in 0..30 { yield_now() }
+    for _ in 0..30 { Sched.yield_now() }
     a.c.closed = true
     print("  channel closed\n")
-    exit()
+    Sched.exit()
 }
 
 main :: fn() needs Out {
@@ -127,12 +127,12 @@ main :: fn() needs Out {
     a4 := Args(c: &chan, id: 0)
     main_stack: [STACK]u8 = ---
     with &rt on main_stack[..] {
-        spawn(producer, &a1)
-        spawn(producer, &a2)
-        spawn(consumer, &a3)
-        spawn(closer, &a4)
+        Sched.spawn(producer, &a1)
+        Sched.spawn(producer, &a2)
+        Sched.spawn(consumer, &a3)
+        Sched.spawn(closer, &a4)
         print("main: spawned {}\n", rt.nspawned)
-        exit()
+        Sched.exit()
     }
     print("switches {}, left in channel {}\n", rt.switches, chan.len)
 }

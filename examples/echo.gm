@@ -28,7 +28,7 @@ echo_once :: fn(conn: net.Socket) -> IoError!usize needs Net {
 /// Accepts one client and echoes until it is done. Returns the total number of bytes.
 serve :: fn(listener: net.Listener) -> IoError!usize needs Net {
     conn := try listener.accept()
-    defer Net.close_socket(conn)
+    defer Net.close(conn)
     total: usize = 0
     while true {
         n := try echo_once(conn)
@@ -80,7 +80,7 @@ main :: fn() -> IoError!() needs Out + Net + Sys {
     }
     try sock.shutdown(.Write)                         // "no more requests": the server's loop ends
     t.join()
-    Net.close_socket(sock)
+    Net.close(sock)
 
     print("server echoed {} bytes, failed: {}\n", server.echoed, server.failed)
 }

@@ -161,30 +161,30 @@ handler Async for ^Runtime needs Out {
 send :: fn(c: ^Chan, x: i32) -> bool needs Async {
     while c.len is CAP {
         if c.closed { return false }
-        park(c.id)
+        Async.park(c.id)
     }
     if c.closed { return false }
     c.buf[(c.head + c.len) % CAP] = x
     c.len += 1
-    wake(c.id)
+    Async.wake(c.id)
     return true
 }
 
 recv :: fn(c: ^Chan) -> ?i32 needs Async {
     while c.len is 0 {
         if c.closed { return null }
-        park(c.id)
+        Async.park(c.id)
     }
     x := c.buf[c.head]
     c.head = (c.head + 1) % CAP
     c.len -= 1
-    wake(c.id)
+    Async.wake(c.id)
     return x
 }
 
 close :: fn(c: ^Chan) needs Async {
     c.closed = true
-    wake(c.id)
+    Async.wake(c.id)
 }
 
 producer :: fn(a: ^TaskArg) -> never needs Async + Out {
@@ -194,7 +194,7 @@ producer :: fn(a: ^TaskArg) -> never needs Async + Out {
         print("  [{}] sent {}\n", a.name, i * 10)
     }
     close(a.a)
-    exit()
+    Async.exit()
 }
 
 doubler :: fn(a: ^TaskArg) -> never needs Async + Out {
@@ -203,7 +203,7 @@ doubler :: fn(a: ^TaskArg) -> never needs Async + Out {
         _ = send(a.b, x * 2)
     }
     close(a.b)
-    exit()
+    Async.exit()
 }
 
 summer :: fn(a: ^TaskArg) -> never needs Async + Out {
@@ -213,7 +213,7 @@ summer :: fn(a: ^TaskArg) -> never needs Async + Out {
         total += x
         print("  [{}] got {}\n", a.name, x)
     }
-    exit()
+    Async.exit()
 }
 
 // A task that waits for a message nobody will ever send.
@@ -221,7 +221,7 @@ stuck :: fn(a: ^TaskArg) -> never needs Async + Out {
     defer print("  [{}] cancelled\n", a.name)
     v := recv(a.a)
     print("  [{}] unreachable {}\n", a.name, v)
-    exit()
+    Async.exit()
 }
 
 pipeline :: fn() needs Out {
@@ -233,10 +233,10 @@ pipeline :: fn() needs Out {
     s := TaskArg(name: "summer", a: &c2, b: &c2)
     main_stack: [STACK]u8 = ---
     with &rt on main_stack[..] {
-        spawn(summer, &s)
-        spawn(doubler, &d)
-        spawn(producer, &p)
-        join()
+        Async.spawn(summer, &s)
+        Async.spawn(doubler, &d)
+        Async.spawn(producer, &p)
+        Async.join()
     }
     print("pipeline: deadlock={} live={}\n", rt.deadlock, rt.live)
 }
@@ -249,9 +249,9 @@ deadlocked :: fn() needs Out {
     b := TaskArg(name: "waiter-b", a: &c2, b: &c2)
     main_stack: [STACK]u8 = ---
     with &rt on main_stack[..] {
-        spawn(stuck, &a)
-        spawn(stuck, &b)
-        join()
+        Async.spawn(stuck, &a)
+        Async.spawn(stuck, &b)
+        Async.join()
     }
     print("deadlocked: deadlock={} live={}\n", rt.deadlock, rt.live)
 }

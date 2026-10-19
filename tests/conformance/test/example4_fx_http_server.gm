@@ -86,7 +86,7 @@ send_all :: fn(s: net.Socket, bytes: string) -> IoError!() needs Net + Sched {
     done: usize = 0
     while done < bytes.len {
         match s.send(bytes[done..bytes.len]) {
-            !.WouldBlock => yield_now()
+            !.WouldBlock => Sched.yield_now()
             !e => return !e
             n => { done += n }
         }
@@ -98,7 +98,7 @@ read_message :: fn(s: net.Socket, buf: []u8) -> IoError!string needs Net + Sched
     have: usize = 0
     while have < buf.len {
         match s.recv(buf[have..]) {
-            !.WouldBlock => yield_now()
+            !.WouldBlock => Sched.yield_now()
             !e => return !e
             0 => break
             n => {
@@ -224,7 +224,7 @@ server :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     while ctx.served < ctx.limit {
         conn := match ctx.listener.accept() {
             !.WouldBlock => {
-                yield_now()
+                Sched.yield_now()
                 continue
             }
             !e => {
@@ -243,15 +243,15 @@ server :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
             print("server: malformed request\n")
             _ = respond(conn, 400, "malformed")
         }
-        conn.close_socket()
+        conn.close()
     }
-    exit()
+    Sched.exit()
 }
 
 // One request on a fresh connection; prints the status line and body.
 fetch :: fn(ctx: ^Ctx, request: string) -> IoError!() needs Net + Sched + Out {
     conn := try Net.connect("localhost", ctx.port)
-    defer conn.close_socket()
+    defer conn.close()
     try send_all(conn, request)
     buf: [512]u8 = ---
     raw := try read_message(conn, buf[..])
@@ -276,7 +276,7 @@ alice :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     _ = get(ctx, "/count")
     _ = get(ctx, "/sum?a=40&b=2")
     _ = fetch(ctx, "POST /echo HTTP/1.1\r\nContent-Length: 10\r\n\r\nshout this")
-    exit()
+    Sched.exit()
 }
 
 bob :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
@@ -285,7 +285,7 @@ bob :: fn(ctx: ^Ctx) -> never needs Sched + Net + Out {
     _ = fetch(ctx, "DELETE /hello HTTP/1.1\r\n\r\n")
     _ = get(ctx, "/sum?a=1")
     _ = fetch(ctx, "garbage\r\n\r\n")
-    exit()
+    Sched.exit()
 }
 
 TRANSCRIPT :: `
@@ -324,10 +324,10 @@ test "two clients talk to one server" {
     cap := io.Capture(buf: store[..])
     with &cap {
         with &rt on main_stack[..] {
-            spawn(server, &srv_ctx)
-            spawn(alice, &alice_ctx)
-            spawn(bob, &bob_ctx)
-            join()
+            Sched.spawn(server, &srv_ctx)
+            Sched.spawn(alice, &alice_ctx)
+            Sched.spawn(bob, &bob_ctx)
+            Sched.join()
         }
     }
     expect(cap.text() is TRANSCRIPT, cap.text())
@@ -345,6 +345,6 @@ test "a lone client sees a refused connection when nobody listens" {
     expect(c.recv(buf[..]) is !.WouldBlock)
     s := ok(l.accept())
     expect(s.recv(buf[..]) is !.WouldBlock)
-    c.close_socket()
+    c.close()
     expect(ok(s.recv(buf[..])) is 0)
 }

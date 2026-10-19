@@ -152,7 +152,7 @@ pub read_all :: fn() -> ReadError![]u8 needs In + Alloc {
 pub FileIn :: struct { pub f: fs.File }
 
 handler In for FileIn needs Fs {
-    read(self, buf) => self.f.read_from(buf)
+    read(self, buf) => self.f.read(buf)
 }
 
 /// A handler for `Out` (and `Err`) that writes to the file `f`, through a buffer of 4096
@@ -180,7 +180,7 @@ pub file_out :: fn(f: fs.File) -> FileOut => FileOut(f: f)
 write_through :: fn(o: ^FileOut, bytes: []const u8) needs Fs {
     done: usize = 0
     while done < bytes.len {
-        n := o.f.write_to(bytes[done..bytes.len]) else e => {
+        n := o.f.write(bytes[done..bytes.len]) else e => {
             o.err = e
             return
         }
@@ -222,11 +222,11 @@ write_file_out :: fn(o: ^FileOut, bytes: []const u8) needs Fs {
 }
 
 handler Out for ^FileOut needs Fs {
-    write_out(self, bytes) => write_file_out(self, bytes)
+    write(self, bytes) => write_file_out(self, bytes)
 }
 
 handler Err for ^FileOut needs Fs {
-    write_err(self, bytes) => write_file_out(self, bytes)
+    write(self, bytes) => write_file_out(self, bytes)
 }
 
 /// A handler for `In` that reads the string `data`.
@@ -252,7 +252,7 @@ pub Capture :: struct {
 }
 
 handler Out for ^Capture {
-    write_out(self, bytes) => {
+    write(self, bytes) => {
         n := (self.buf.len - self.len).min(bytes.len)
         self.buf[self.len..self.len + n].copy_from(bytes[0..n])
         self.len += n
@@ -278,11 +278,11 @@ write_list_out :: fn(o: ^ListOut, bytes: []const u8) {
 }
 
 handler Out for ^ListOut {
-    write_out(self, bytes) => write_list_out(self, bytes)
+    write(self, bytes) => write_list_out(self, bytes)
 }
 
 handler Err for ^ListOut {
-    write_err(self, bytes) => write_list_out(self, bytes)
+    write(self, bytes) => write_list_out(self, bytes)
 }
 
 /// A short, lower-case description of `e`, for messages such as `error: {}`.

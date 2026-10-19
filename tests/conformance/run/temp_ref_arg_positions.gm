@@ -22,7 +22,7 @@ main :: fn() needs Out {
     g := fn(p: ^const Pt) -> i32 => p.y
     print("{} {} {}\n", f(&mk()), g(&mk()), (rd)(&mk()))
     r := with (handler Log { note(p) => p.x + 10 }) {
-        note(&mk())
+        Log.note(&mk())
     }
     print("{}\n", r)
     // Inside a `for` body and in operands of one expression.

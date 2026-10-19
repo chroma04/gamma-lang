@@ -4,25 +4,25 @@ Fail :: effect { fail: esc(code: u32) -> never }
 
 indented :: fn(depth: u32) needs Log + Out {
     if depth is 0 {
-        log("bottom")
+        Log.log("bottom")
         return
     }
-    log("down")
+    Log.log("down")
     with (handler Log {
         log(m) => {
             print("{}:", depth)
-            log(m)           // forwards to the enclosing handler
+            Log.log(m)           // forwards to the enclosing handler
         }
     }) {
         indented(depth - 1)
     }
-    log("up")
+    Log.log("up")
 }
 
 apply :: fn(f: ^fn(x: u32) -> u32 needs Log, x: u32) -> u32 needs Log => f(f(x))
 
 noisy_double :: fn(x: u32) -> u32 needs Log {
-    log("double")
+    Log.log("double")
     return x * 2
 }
 
@@ -30,7 +30,7 @@ quiet :: fn(x: u32) -> u32 => x + 1
 
 risky :: fn(n: u32) -> u32 needs Fail + Out {
     defer print("[risky defer]\n")         // a deferred statement performs only `fn` operations (§8.8)
-    if n > 3 { fail(n) }
+    if n > 3 { Fail.fail(n) }
     return n
 }
 
@@ -38,7 +38,7 @@ try_all :: fn(limit: u32) -> u32 needs Out + Log {
     total: u32 = 0
     n: u32 = 0
     while n < limit {
-        r := with (handler Fail { fail(c) => { log("caught"); break c + 1000 } }) {
+        r := with (handler Fail { fail(c) => { Log.log("caught"); break c + 1000 } }) {
             risky(n)
         }
         total += r
@@ -51,7 +51,7 @@ early :: fn() -> u32 needs Out {
     for i in 0..10 {
         defer print("iter {} done\n", i)
         with (handler Log { log(m) => { if m is "stop" { return i * 100 } } }) {
-            if i is 2 { log("stop") }
+            if i is 2 { Log.log("stop") }
         }
     }
     return 0

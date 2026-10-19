@@ -78,6 +78,9 @@ pub struct Module {
     pub dir: Option<std::path::PathBuf>,
     /// The package the module belongs to (an index into `Sema::packages`).
     pub package: Option<usize>,
+    /// The operations of the effects declared here, by name: the effect's declaration and
+    /// the operation's own (§12.1).
+    pub effect_ops: HashMap<Symbol, Vec<(DeclId, DeclId)>>,
     /// Top-level `when`s not yet decided.
     pub pending_whens: Vec<ast::Item>,
 }
@@ -90,6 +93,14 @@ pub struct Decl {
     pub state: DeclState,
     /// For an effect operation (§12.1): the effect's declaration and the operation index.
     pub op_of: Option<(DeclId, u32)>,
+}
+
+/// A function or operation that is a method candidate of an `Adt` type.
+pub struct MethodCandidate {
+    pub adt: crate::types::AdtId,
+    pub name: Symbol,
+    pub span: Span,
+    pub is_op: bool,
 }
 
 pub enum DeclState {
@@ -206,6 +217,9 @@ pub struct Sema<'s> {
     pub effects: HashMap<EffectId, EffectInfo>,
     pub adts: HashMap<AdtId, AdtInfo>,
     pending_bodies: Vec<PendingBody>,
+    /// The functions and operations that take a type of their module as the first
+    /// run-time parameter: the type's method candidates (§7.10), checked for clashes.
+    method_candidates: Vec<MethodCandidate>,
     /// Stack of declarations being resolved, for cycle reports.
     resolving: Vec<DeclId>,
     /// Structural type aliases being resolved a second time (see `resolve_decl`).
@@ -369,6 +383,7 @@ impl<'s> Sema<'s> {
             effects: HashMap::new(),
             adts: HashMap::new(),
             pending_bodies: vec![],
+            method_candidates: vec![],
             checking: vec![],
             resolving: vec![],
             alias_reentry: Default::default(),
@@ -494,6 +509,7 @@ impl<'s> Sema<'s> {
                 self.resolve_decl(id);
             }
         }
+        self.check_method_candidates();
         self.check_import_cycles();
         self.check_pub_signatures();
         let _ = root;

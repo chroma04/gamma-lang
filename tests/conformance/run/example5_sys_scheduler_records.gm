@@ -25,14 +25,14 @@ mix :: fn(a: Rec, b: Rec, salt: i64) -> Rec {
 task :: fn(slot: ^Slot) -> never needs Sched {
     for round in 0..4 {
         slot.mine = mix(slot.mine, slot.mine, i64(slot.id))
-        yield_now()
-        got := swap(slot.mine)
+        Sched.yield_now()
+        got := Sched.swap(slot.mine)
         slot.history[round] = got.owner
         slot.mine = mix(got, slot.mine, 1)
         slot.mine.owner = slot.id
     }
     slot.done = true
-    exit()
+    Sched.exit()
 }
 
 TASK_STACK :: @stack_size(task)
@@ -105,8 +105,8 @@ main :: fn() needs Out {
     main_stack: [32768]u8 = ---
     print("task stack ok {}\n", TASK_STACK >= @min_stack)
     with &rt on main_stack[..] {
-        for i in 0..NTASKS { spawn(task, &slots[i]) }
-        exit()
+        for i in 0..NTASKS { Sched.spawn(task, &slots[i]) }
+        Sched.exit()
     }
     print("switches {} live {}\n", rt.switches, rt.live)
     for s in slots {

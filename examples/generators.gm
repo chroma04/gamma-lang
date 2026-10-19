@@ -160,7 +160,7 @@ producer :: fn() needs Feed + Out {
     lines := [_]string("alpha", "beta", "gamma", "delta", "epsilon")
     for l in lines {
         print("producer: sending {}\n", l)
-        if not emit(l) { return }
+        if not Feed.emit(l) { return }
     }
     print("producer: out of lines\n")
 }

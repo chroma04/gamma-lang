@@ -7,7 +7,7 @@ Gen :: effect {
 
 deep :: fn(n: i32) -> i32 needs Gen {
     if n is 0 {
-        emit(0)
+        Gen.emit(0)
         return 0
     }
     return deep(n - 1) + 1

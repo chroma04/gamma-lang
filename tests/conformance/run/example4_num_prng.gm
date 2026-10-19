@@ -51,8 +51,8 @@ handler Rng for ^XorShift {
 
 // ---- generic consumers of the Rng effect ----
 next_u64 :: fn() -> u64 needs Rng {
-    hi := u64(next_u32())
-    lo := u64(next_u32())
+    hi := u64(Rng.next_u32())
+    lo := u64(Rng.next_u32())
     return (hi << 32) | lo
 }
 
@@ -61,7 +61,7 @@ below :: fn(n: u32) -> u32 needs Rng {
     // 2^32 mod n, computed without a 64-bit division
     threshold := (0 -% n) % n
     while true {
-        r := next_u32()
+        r := Rng.next_u32()
         if r >= threshold { return r % n }
     }
 }

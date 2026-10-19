@@ -1,0 +1,1 @@
+pub Log :: effect { log: fn(msg: string) }

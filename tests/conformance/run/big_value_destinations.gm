@@ -37,7 +37,7 @@ deferred :: fn(p: ^const Big) -> Big needs Out {
 // Exits before returning: the destination keeps its value.
 maybe :: fn(k: i64) -> Big needs Stop {
     b := big(k)
-    if k > 50 { stop(k) }
+    if k > 50 { Stop.stop(k) }
     return b
 }
 
@@ -78,7 +78,7 @@ handler Make for Maker {
     make(self, k) => big(self.base + k)
 }
 
-build :: fn() -> Big needs Make => make(5)
+build :: fn() -> Big needs Make => Make.make(5)
 
 // A body whose final expression is its value.
 pair_of :: fn(k: i64) -> Pair {

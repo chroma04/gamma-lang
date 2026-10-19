@@ -48,7 +48,7 @@ test "sleepers wake in deadline order" {
         fiber.spawn(nap, &a, sa[..])
         fiber.spawn(nap, &b, sb[..])
         fiber.spawn(nap, &c, sc[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     same(&log, [_]u32(10, 20, 30)[..])
     // The sleeps overlap: 30 ms in all, not 60.
@@ -65,7 +65,7 @@ test "equal deadlines wake in the order the tasks went to sleep" {
     for i in 0..4 { jobs[i] = Nap(log: &log, id: u32(i) + 1, for_ms: 10) }
     with &s on main_stack[..] {
         for i in 0..4 { fiber.spawn(nap, &jobs[i], stacks[i][..]) }
-        fiber.join()
+        fiber.Sched.join()
     }
     same(&log, [_]u32(1, 2, 3, 4)[..])
 }
@@ -96,7 +96,7 @@ test "a task that sleeps again keeps its place" {
     with &s on main_stack[..] {
         fiber.spawn(twice, &a, sa[..])
         fiber.spawn(twice, &b, sb[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     same(&log, [_]u32(1, 2, 11, 12)[..])
 }
@@ -112,7 +112,7 @@ busy :: fn(b: ^Busy) needs fiber.Sched(Clock) + Clock {
     for i in 0..b.rounds {
         b.round = i + 1
         Clock.sleep(ms(1))
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
     rec(b.log, 1000)
 }
@@ -141,7 +141,7 @@ test "a busy task does not starve a sleeper" {
     with &s on main_stack[..] {
         fiber.spawn(sleepy, &z, sb[..])
         fiber.spawn(busy, &b, sa[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     // The sleeper wakes before the busy task finishes, within a couple of rounds of
     // becoming due (it is due once the busy task has let 5 ms pass).
@@ -176,7 +176,7 @@ test "sleep(0) lets the other tasks run first" {
     with &s on main_stack[..] {
         fiber.spawn(zero_a, &z, sa[..])
         fiber.spawn(zero_b, &z, sb[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     same(&log, [_]u32(1, 2, 3)[..])
     expect_eq(Clock.now().since(t0).to_ms(), 0)
@@ -198,7 +198,7 @@ test "the code under the with can sleep and join" {
         fiber.sleep(ms(20))
         rec(&log, 99)
         // Both tasks are still alive (one sleeping): join waits for them.
-        fiber.join()
+        fiber.Sched.join()
         rec(&log, 100)
     }
     same(&log, [_]u32(2, 99, 1, 100)[..])
@@ -213,10 +213,10 @@ test "join returns at once with no tasks, and sleepers count as tasks" {
     log := Log(events: ---, n: 0)
     a := Nap(log: &log, id: 1, for_ms: 7)
     with &s on main_stack[..] {
-        fiber.join()
+        fiber.Sched.join()
         fiber.spawn(nap, &a, sa[..])
         expect_eq(log.n, 0)
-        fiber.join()
+        fiber.Sched.join()
         expect_eq(log.n, 1)
     }
 }
@@ -266,7 +266,7 @@ test "channels and sleeping tasks work together" {
         fiber.spawn(receiver, &h, sa[..])
         fiber.spawn(sender, &h, sb[..])
         fiber.spawn(ticker, &h, sc[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     // Sends at 10, 20, 30 ms; ticks at 15, 30, 45 ms. At 30 the sleeper that went to sleep
     // first (the ticker, at 15) wakes before the sender (at 20).
@@ -291,7 +291,7 @@ test "sleepers keep their order across checks that find them not yet due" {
         fiber.spawn(twice, &a, sa[..])
         fiber.spawn(twice, &b, sb[..])
         fiber.spawn(twice, &c, sd[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     // The busy task lets 1 ms pass per round, so the sleepers are checked many times
     // before they are due; they still wake in the order they went to sleep.

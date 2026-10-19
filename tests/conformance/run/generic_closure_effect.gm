@@ -4,8 +4,8 @@ Sink :: effect {
 }
 
 emit :: fn(A: type, x: A) needs Sink {
-    if begin() {
-        @write(fn(b) => put(b), "abc {}", x)
+    if Sink.begin() {
+        @write(fn(b) => Sink.put(b), "abc {}", x)
     }
 }
 

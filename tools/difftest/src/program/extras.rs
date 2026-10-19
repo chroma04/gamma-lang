@@ -250,12 +250,12 @@ impl Gen {
         if use_co {
             let [q, r] = self.co_t;
             let a = self.int_expr(q, d.min(2));
-            let e = format!("co_ask({a})");
+            let e = format!("Co.co_ask({a})");
             self.conv(r, t, e)
         } else {
             let [a, b, _] = self.ev_t;
             let x = self.int_expr(a, d.min(2));
-            let e = format!("ev_get({x})");
+            let e = format!("Ev.ev_get({x})");
             self.conv(b, t, e)
         }
     }
@@ -370,14 +370,14 @@ impl Gen {
             0 => self.string_builder(out, level),
             1 => {
                 let e = self.int_expr(self.ev_t[0], 2);
-                out.push_str(&format!("{ind}ev_log({e})\n"));
+                out.push_str(&format!("{ind}Ev.ev_log({e})\n"));
             }
             2 => {
                 let c = self.bool_expr(2);
                 let e = self.int_expr(self.ev_t[2], 2);
-                out.push_str(&format!("{ind}if {c} {{ ev_fail({e}) }}\n"));
+                out.push_str(&format!("{ind}if {c} {{ Ev.ev_fail({e}) }}\n"));
             }
-            3 => out.push_str(&format!("{ind}co_tick()\n")),
+            3 => out.push_str(&format!("{ind}Co.co_tick()\n")),
             _ => self.with_stmt(out, level),
         }
         true
@@ -578,7 +578,7 @@ impl Gen {
                 text.push_str("        print(\"c{} got {}\\n\", j.id, x)\n");
             }
             if self.rng.chance(60) {
-                text.push_str("        fiber.yield_now()\n");
+                text.push_str("        fiber.Sched.yield_now()\n");
             }
             for _ in 0..self.rng.below(3) {
                 self.stmt(&mut text, 2);
@@ -627,11 +627,11 @@ impl Gen {
             for sp in spawns {
                 out.push_str(&format!("        {sp}\n"));
                 if self.rng.chance(30) {
-                    out.push_str("        fiber.yield_now()\n");
+                    out.push_str("        fiber.Sched.yield_now()\n");
                 }
             }
             let e = self.int_expr(self.fib_it, 2);
-            out.push_str(&format!("        print(\"main {{}}\\n\", {e})\n        fiber.join()\n    }}\n"));
+            out.push_str(&format!("        print(\"main {{}}\\n\", {e})\n        fiber.Sched.join()\n    }}\n"));
             let fmt = vec!["{}"; report.len()].join(" ");
             out.push_str(&format!("    print(\"fibers {fmt}\\n\", {})\n", report.join(", ")));
         }

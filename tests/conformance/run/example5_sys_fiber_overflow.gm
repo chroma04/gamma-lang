@@ -6,7 +6,7 @@ Gen :: effect { emit: ctl(x: u32) }
 Rec :: struct { words: [256]u64 }
 
 leaf :: fn(r: Rec, depth: u32) -> u32 needs Gen {
-    emit(depth)
+    Gen.emit(depth)
     return r.words[3].trunc(u32) + depth
 }
 

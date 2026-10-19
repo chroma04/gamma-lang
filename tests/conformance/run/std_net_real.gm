@@ -38,10 +38,10 @@ main :: fn() -> IoError!() needs Out + Net {
     print("reply: {}\n", three[..])
 
     // recv_exact when the peer closes early.
-    Net.close_socket(server)
+    Net.close(server)
     big: [8]u8 = ---
     if !e := net.recv_exact(client, big[..]) { print("recv_exact: {}\n", e) }
-    Net.close_socket(client)
+    Net.close(client)
 
     // Timeouts: nothing arrives, so recv gives up.
     c2 := try Net.connect("127.0.0.1", port)
@@ -52,9 +52,9 @@ main :: fn() -> IoError!() needs Out + Net {
     try net.send_all(c2, "late")
     print("received: {}\n", try s2.recv(buf[..]))
     try s2.set_timeouts(null, null)
-    Net.close_socket(c2)
+    Net.close(c2)
     print("closed: {}\n", try s2.recv(buf[..]))
-    Net.close_socket(s2)
+    Net.close(s2)
     Net.close_listener(l)
 
     if !e := client.shutdown(.Both) { print("shutdown of a closed socket: {}\n", e.tag() > 0) }

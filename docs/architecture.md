@@ -231,7 +231,7 @@ lowers each function body to TIR.
 | `untyped.rs` | exact arithmetic for untyped constants |
 | `func.rs` | the per-function context, scopes, statements, loops |
 | `expr.rs` | expressions, operators, coercions, optionals and results |
-| `call.rs`, `methods.rs`, `construct.rs` | calls, method calls and builtin methods, construction |
+| `call.rs`, `methods.rs`, `construct.rs` | calls (`E.op(…)` is recognized in `FnCx::call`, since an operation is not a name of its module), method calls (`module_method` looks at the module's function and at `Module::effect_ops` for operations that take the receiver first; `Sema::check_method_candidates` rejects a type with two candidates of one name) and builtin methods, construction |
 | `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
 | `vector.rs` | vector types `#simd [N]T`: their lane-wise operators, conversions and methods (§5.6.2) |

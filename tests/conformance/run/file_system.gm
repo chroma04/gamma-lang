@@ -23,10 +23,10 @@ main :: fn() -> IoError!() needs Out + Fs + Rand {
 
     // Write, then append.
     f := try Fs.open(path, fs.OpenOptions(read: false, write: true, create: true, truncate: true))
-    print("wrote {} bytes\n", try f.write_to("hello, "))
+    print("wrote {} bytes\n", try f.write("hello, "))
     Fs.close(f)
     g := try Fs.open(path, fs.OpenOptions(read: false, append: true))
-    _ = try g.write_to("file system\n")
+    _ = try g.write("file system\n")
     Fs.close(g)
     print("size {}\n", (try Fs.stat(path)).size)
 
@@ -35,13 +35,13 @@ main :: fn() -> IoError!() needs Out + Fs + Rand {
     buf: [5]u8 = ---
     print("read:")
     while true {
-        n := try h.read_from(buf[..])
+        n := try h.read(buf[..])
         if n is 0 { break }
         print(" [{}]", buf[0..n])
     }
     print("\n")
     print("seek to {}\n", try h.seek(-5, .End))
-    n := try h.read_from(buf[..])
+    n := try h.read(buf[..])
     print("tail: {}", buf[0..n])
     Fs.close(h)
 

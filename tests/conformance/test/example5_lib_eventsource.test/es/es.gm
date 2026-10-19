@@ -83,8 +83,8 @@ test "store keeps log and state in step" {
     st := store(0, add)
     defer st.deinit()
     with &st {
-        emit(3)
-        emit(4)
+        Events.emit(3)
+        Events.emit(4)
     }
     expect(st.len() is 2)
     expect(st.state is 7)

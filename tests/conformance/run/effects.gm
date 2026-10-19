@@ -12,10 +12,10 @@ Ask :: effect {
 }
 
 work :: fn(n: i32) -> i32 needs Log + Abort + Ask {
-    log("working")
-    defer log("cleanup")
-    if n < 0 { abort(-n) }
-    return n + ask()
+    Log.log("working")
+    defer Log.log("cleanup")
+    if n < 0 { Abort.abort(-n) }
+    return n + Ask.ask()
 }
 
 countdown :: fn(from: u32) needs Yield(u32) {

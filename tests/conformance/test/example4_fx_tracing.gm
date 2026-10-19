@@ -30,16 +30,16 @@ Trace :: effect {
     leave: fn(name: string, elapsed: Duration)
 }
 
-debug :: fn(msg: string, fields: []const Field) needs Trace { event(.Debug, msg, fields) }
-info :: fn(msg: string, fields: []const Field) needs Trace { event(.Info, msg, fields) }
-warn :: fn(msg: string, fields: []const Field) needs Trace { event(.Warn, msg, fields) }
-error :: fn(msg: string, fields: []const Field) needs Trace { event(.Error, msg, fields) }
+debug :: fn(msg: string, fields: []const Field) needs Trace { Trace.event(.Debug, msg, fields) }
+info :: fn(msg: string, fields: []const Field) needs Trace { Trace.event(.Info, msg, fields) }
+warn :: fn(msg: string, fields: []const Field) needs Trace { Trace.event(.Warn, msg, fields) }
+error :: fn(msg: string, fields: []const Field) needs Trace { Trace.event(.Error, msg, fields) }
 
 // Runs `body` inside a named span and reports how long it took on the Clock.
 span :: fn(name: string, body: fn() needs Trace) needs Trace + Clock {
-    enter(name)
+    Trace.enter(name)
     t0 := Clock.now()
-    defer leave(name, Clock.now().since(t0))
+    defer Trace.leave(name, Clock.now().since(t0))
     body()
 }
 
@@ -121,13 +121,13 @@ Filter :: struct {
 handler Trace for ^Filter needs Trace {
     event(self, level, msg, fields) => {
         if level >= self.min {
-            event(level, msg, fields)
+            Trace.event(level, msg, fields)
         } else {
             self.dropped += 1
         }
     }
-    enter(self, name) => enter(name)
-    leave(self, name, elapsed) => leave(name, elapsed)
+    enter(self, name) => Trace.enter(name)
+    leave(self, name, elapsed) => Trace.leave(name, elapsed)
 }
 
 // Adds fixed fields to every event.
@@ -147,10 +147,10 @@ handler Trace for ^Context needs Trace {
             all[n] = f
             n += 1
         }
-        event(level, msg, all[0..n])
+        Trace.event(level, msg, all[0..n])
     }
-    enter(self, name) => enter(name)
-    leave(self, name, elapsed) => leave(name, elapsed)
+    enter(self, name) => Trace.enter(name)
+    leave(self, name, elapsed) => Trace.leave(name, elapsed)
 }
 
 Counter :: struct {
@@ -161,13 +161,13 @@ Counter :: struct {
 handler Trace for ^Counter needs Trace {
     event(self, level, msg, fields) => {
         self.by_level[level.tag()] += 1
-        event(level, msg, fields)
+        Trace.event(level, msg, fields)
     }
     enter(self, name) => {
         self.spans += 1
-        enter(name)
+        Trace.enter(name)
     }
-    leave(self, name, elapsed) => leave(name, elapsed)
+    leave(self, name, elapsed) => Trace.leave(name, elapsed)
 }
 
 // ---- The instrumented application ------------------------------------------------

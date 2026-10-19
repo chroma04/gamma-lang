@@ -22,16 +22,16 @@ Log :: effect {
 }
 ```
 
-Declaring `Log` also declares `log` as a function. Calling it **performs** the operation, and its signature says `needs Log`. Any function that performs `log`, directly or through a call, must list `Log`:
+Each operation lives in its effect's namespace: `Log.log` is a function with the operation's parameters. Calling it **performs** the operation, and its signature says `needs Log`. Any function that performs `Log.log`, directly or through a call, must list `Log`. Because the call names the effect, it shows where it is written that it reaches into the context:
 
 ```gamma
 connect :: fn(host: string) -> bool needs Log {
-    log(.Info, "connecting")
+    Log.log(.Info, "connecting")
     if host.len is 0 {
-        log(.Error, "empty host name")
+        Log.log(.Error, "empty host name")
         return false
     }
-    log(.Debug, "connected")
+    Log.log(.Debug, "connected")
     return true
 }
 ```
@@ -48,7 +48,7 @@ This is what `needs Out` on `main` has meant all along: `print` performs the `Ou
 >
 > Add `needs Out` to `helper`, or install a handler for `Out` around the call.
 
-An effect declared `pub` in another module is named through the module, like its types and functions: `needs log.Log` in an effect set, `handler log.Log { ... }` for a handler, and `log.log(...)` to perform its operation.
+An effect declared `pub` in another module is named through the module, like its types and functions: `needs log.Log` in an effect set, `handler log.Log { ... }` for a handler, and `log.Log.log(...)` to perform its operation. Operations are not names of their module, so two effects of one module may both have a `write`, and an operation may share its name with a function of the module.
 
 ## Handling an effect
 
@@ -76,7 +76,7 @@ Things to notice:
 
 - Clause parameters are bare names; their types come from the operation.
 - `with h { B }` is an expression whose value is the value of `B` (here a `bool`).
-- Inside `B`, every perform of `log` goes to `printer`. Outside the `with`, it does not.
+- Inside `B`, every perform of `Log.log` goes to `printer`. Outside the `with`, it does not.
 - The clause itself performs `Out` (through `print`). Effects performed by a clause are handled by the handlers in scope **where the literal is written**, here `main`'s own `Out`. A clause never handles its own performs, which is what makes nested handlers for the same effect behave sensibly.
 
 A second handler for the same effect gives different behavior to the same code. Nothing in `connect` changed:
@@ -126,8 +126,8 @@ ids_demo :: fn() needs Out {
         }
     }
     with ids {
-        a := next_id()
-        b := next_id()
+        a := Ids.next_id()
+        b := Ids.next_id()
         print("{} {}\n", a, b)           // 101 102
     }
 }
@@ -145,7 +145,7 @@ Fail :: effect {
 }
 
 digit :: fn(c: u8) -> u32 needs Fail {
-    if c not in '0'..='9' { fail("not a digit") }
+    if c not in '0'..='9' { Fail.fail("not a digit") }
     return u32(c - '0')
 }
 
@@ -171,7 +171,7 @@ fail_demo :: fn() needs Out {
 }
 ```
 
-The operation `fail` is declared `-> never`, because a handler for it can only exit, so the code after a `fail(...)` call is unreachable. When the clause executes `break`, every frame between the perform and the `with` is **unwound**: innermost first, each frame's pending `defer` and `errdefer` statements run (the same way as for an early return), and control continues after the `with`. This is plain code running; there are no unwinding tables.
+The operation `fail` is declared `-> never`, because a handler for it can only exit, so the code after a `Fail.fail(...)` call is unreachable. When the clause executes `break`, every frame between the perform and the `with` is **unwound**: innermost first, each frame's pending `defer` and `errdefer` statements run (the same way as for an early return), and control continues after the `with`. This is plain code running; there are no unwinding tables.
 
 `esc` clauses can also return a value normally, in which case the perform returns it and the performer continues. What a clause may do is summarized here (§12.7.1 has the exact table):
 
@@ -206,9 +206,9 @@ handler Log for ^CountingLog {
 }
 
 work :: fn() needs Log {
-    log(.Info, "starting")
-    log(.Warn, "disk almost full")
-    log(.Error, "write failed")
+    Log.log(.Info, "starting")
+    Log.log(.Warn, "disk almost full")
+    Log.log(.Error, "write failed")
 }
 
 stats_demo :: fn() needs Out {
@@ -245,7 +245,7 @@ Some effects are predeclared, and the runtime installs a default handler for eac
 | Effect | Operations | Default handler | In tests |
 | --- | --- | --- | --- |
 | `Alloc` | `Alloc.current()` gives the current allocator | the system heap | leak-checking heap |
-| `Out`, `Err` | `Out.write_out(b)` / `Err.write_err(b)` write bytes | stdout, stderr | captured |
+| `Out`, `Err` | `Out.write(b)` / `Err.write(b)` write bytes | stdout, stderr | captured |
 | `In` | `In.read(buf)` reads into a buffer | stdin | empty input |
 | `Clock` | `Clock.now()`, `Clock.wall()`, `Clock.sleep(d)` | system clock | fake clock |
 | `Rand` | `Rand.fill(buf)` fills a buffer | OS-seeded generator | fixed seed |
@@ -256,7 +256,7 @@ Some effects are predeclared, and the runtime installs a default handler for eac
 
 `main` and `test` bodies can perform any of these without handling them. Everything else must either handle them or declare them. Another predeclared effect, `Test`, is different: only test and benchmark bodies get a handler for it, and it is how a test fails ([chapter 13](13-safety.md)).
 
-The universe scope holds these effects but not their operations (except `yield`, [chapter 8](08-iteration.md)): you call an operation through its effect, as `Clock.now()`, `Alloc.current()`, `Env.args()` or `Fs.open(path, opts)`, so every call that reaches into the context says so where it is written. The names `now`, `read`, `exit` and the rest stay free for your own functions. Operations on a file or socket are also methods: `f.read_from(buf)`. The types of the file system and the network (`File`, `OpenOptions`, `Socket`, …) come from `std/fs` and `std/net`. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
+The universe scope holds these effects but not their operations (except `yield`, [chapter 8](08-iteration.md)): you call an operation through its effect, as `Clock.now()`, `Alloc.current()`, `Env.args()` or `Fs.open(path, opts)`, so every call that reaches into the context says so where it is written. The names `now`, `read`, `exit` and the rest stay free for your own functions. Operations on a file or socket are also methods: `f.read(buf)`, `sock.close()`. The types of the file system and the network (`File`, `OpenOptions`, `Socket`, …) come from `std/fs` and `std/net`. Because they are ordinary effects, you can handle any of them yourself, and that is what makes code testable without mocks: the same function runs against the real file system in production and an in-memory one in a test.
 
 Here is a function that runs a callback and counts the bytes it would print, by installing its own handler for `Out` around the callback:
 
@@ -264,7 +264,7 @@ Here is a function that runs a callback and counts the bytes it would print, by 
 count_output :: fn(body: fn() needs Out) -> usize {
     total := 0
     counter :: handler Out {
-        write_out(chunk) => { total += chunk.len }
+        write(chunk) => { total += chunk.len }
     }
     with counter { body() }
     return total
@@ -327,6 +327,7 @@ Effects may be generic. `Yield(T)` in the next chapter is a generic effect, and 
 - **Putting a handler literal directly in a `with` head** without parentheses.
 - **Missing or extra clauses.** A handler must have exactly one clause for each operation of its effect.
 - **Expecting a clause to handle its own performs.** It does not; a clause runs in the context outside its handler.
+- **Calling an operation by its bare name.** `log(.Info, "x")` is an error; write `Log.log(.Info, "x")`. Only `yield` is also a bare name.
 - **Using statements as a clause body.** `log(l, m) => count += 1` is not valid, because assignment is not an expression; write `=> { count += 1 }`.
 
 ## Summary

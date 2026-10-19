@@ -84,6 +84,17 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Effect operations live in their effect's namespace and are always called through it:
+  `Log.log(.Warn, msg)` inside the module that declares `Log`, `log.Log.log(…)` outside
+  it (`yield` stays a bare name). Operations are no longer top-level names of their
+  module, so two effects may both have a `write` and an operation may share a name with
+  a function. A bare call reports the qualified form, and `gamma fix` applies it.
+- The core operations drop the suffixes that only avoided name clashes: `Out.write`,
+  `Err.write`, `Fs.read`, `Fs.write`, `Net.close`, `Proc.write` and `Proc.read` (were
+  `write_out`, `write_err`, `read_from`, `write_to`, `close_socket`, `write_in` and
+  `read_out`). On handles they are methods: `f.read(buf)`, `sock.close()`,
+  `child.write(bytes)`. An operation whose first parameter takes a type of its module is
+  a method of that type, and a type may not have two methods of one name.
 - Arithmetic no longer applies to arrays: `a + b` and `-a` on `[N]T` are compile errors.
   Use a `#simd [N]T` vector, whose operators are single instructions, or a loop.
 - Integer types are at most 128 bits wide (`u1` … `u128`, `i1` … `i128`); wider

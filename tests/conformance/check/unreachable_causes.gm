@@ -32,7 +32,7 @@ stop :: fn() {
 }
 
 op :: fn() needs Stop {
-    halt()                                //~ NOTE this operation never returns
+    Stop.halt()                                //~ NOTE this operation never returns
     _ = 5                                 //~ ERROR unreachable code
 }
 

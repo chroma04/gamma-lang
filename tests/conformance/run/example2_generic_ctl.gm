@@ -3,7 +3,7 @@ Gen :: effect(T: type) { next: ctl(x: T) }
 Ask :: effect(T: type) { ask: ctl(q: string) -> T }
 
 producer :: fn(T: type, items: []const T) needs Gen(T) {
-    for x in items { next(x) }
+    for x in items { Gen.next(x) }
 }
 
 collect_sum :: fn(T: type, items: []const T) -> T where Num(T) {
@@ -22,8 +22,8 @@ collect_sum :: fn(T: type, items: []const T) -> T where Num(T) {
 
 quiz :: fn() -> u32 needs Ask(u32) + Out {
     defer print("quiz over\n")
-    a := ask("a?")
-    b := ask("b?")
+    a := Ask.ask("a?")
+    b := Ask.ask("b?")
     print("a={} b={}\n", a, b)
     return a * b
 }
@@ -47,7 +47,7 @@ Tick :: effect { tick: ctl(n: u32) }
 
 inner_gen :: fn() needs Gen(u32) + Out {
     defer print("  inner gen cleanup\n")
-    for i in 0..5 { next(i) }
+    for i in 0..5 { Gen.next(i) }
 }
 
 outer_body :: fn() needs Tick + Out {
@@ -57,7 +57,7 @@ outer_body :: fn() needs Tick + Out {
     with (handler Gen(u32) {
         next(x, k) => {
             acc += x
-            tick(acc)       // performed in the outer fiber's context: suspends the whole outer fiber
+            Tick.tick(acc)       // performed in the outer fiber's context: suspends the whole outer fiber
             resume k()
         }
     }) on stack[..] {

@@ -31,8 +31,8 @@ tokens :: fn(src: string) needs Yield(Token) + Report {
         } else if is_digit(c) {
             n: i64 = 0
             while i < src.len and is_digit(src[i]) {
-                n = n *? 10 else fail("number too large", start)
-                n = n +? i64(src[i] - '0') else fail("number too large", start)
+                n = n *? 10 else Report.fail("number too large", start)
+                n = n +? i64(src[i] - '0') else Report.fail("number too large", start)
                 i += 1
             }
             yield(Token(kind: .Num, pos: start, num: n))
@@ -52,7 +52,7 @@ tokens :: fn(src: string) needs Yield(Token) + Report {
                 '^' => .Caret
                 '(' => .LParen
                 ')' => .RParen
-                _ => fail("unexpected character", start)
+                _ => Report.fail("unexpected character", start)
             }
             i += 1
             yield(Token(kind: kind, pos: start))
@@ -73,10 +73,10 @@ advance :: fn(p: ^Parser) {
 }
 
 power :: fn(base, exp: i64, pos: usize) -> i64 needs Report {
-    if exp < 0 { fail("negative exponent", pos) }
+    if exp < 0 { Report.fail("negative exponent", pos) }
     r: i64 = 1
     for _ in 0..exp {
-        r = r *? base else fail("overflow in power", pos)
+        r = r *? base else Report.fail("overflow in power", pos)
     }
     return r
 }
@@ -90,21 +90,21 @@ primary :: fn(p: ^Parser) -> i64 needs Vars + Report {
         }
         .Ident => {
             advance(p)
-            return lookup(t.text) else fail("undefined variable", t.pos)
+            return Vars.lookup(t.text) else Report.fail("undefined variable", t.pos)
         }
         .Minus => {
             advance(p)
             v := unary(p)
-            return 0 -? v else fail("overflow", t.pos)
+            return 0 -? v else Report.fail("overflow", t.pos)
         }
         .LParen => {
             advance(p)
             v := sum(p)
-            if cur(p).kind is not .RParen { fail("expected )", cur(p).pos) }
+            if cur(p).kind is not .RParen { Report.fail("expected )", cur(p).pos) }
             advance(p)
             return v
         }
-        _ => fail("expected a value", t.pos)
+        _ => Report.fail("expected a value", t.pos)
     }
 }
 
@@ -126,9 +126,9 @@ product :: fn(p: ^Parser) -> i64 needs Vars + Report {
         advance(p)
         rhs := unary(p)
         acc = match op.kind {
-            .Star => acc *? rhs else fail("overflow", op.pos)
-            .Slash => if rhs is 0 { fail("division by zero", op.pos) } else { acc / rhs }
-            _ => if rhs is 0 { fail("division by zero", op.pos) } else { acc % rhs }
+            .Star => acc *? rhs else Report.fail("overflow", op.pos)
+            .Slash => if rhs is 0 { Report.fail("division by zero", op.pos) } else { acc / rhs }
+            _ => if rhs is 0 { Report.fail("division by zero", op.pos) } else { acc % rhs }
         }
     }
     return acc
@@ -141,7 +141,7 @@ sum :: fn(p: ^Parser) -> i64 needs Vars + Report {
         if op.kind is not .Plus and op.kind is not .Minus { break }
         advance(p)
         rhs := product(p)
-        acc = if op.kind is .Plus { acc +? rhs else fail("overflow", op.pos) } else { acc -? rhs else fail("overflow", op.pos) }
+        acc = if op.kind is .Plus { acc +? rhs else Report.fail("overflow", op.pos) } else { acc -? rhs else Report.fail("overflow", op.pos) }
     }
     return acc
 }
@@ -150,12 +150,12 @@ statement :: fn(p: ^Parser) -> i64 needs Vars + Report {
     if cur(p).kind is .Let {
         advance(p)
         name := cur(p)
-        if name.kind is not .Ident { fail("expected a name after let", name.pos) }
+        if name.kind is not .Ident { Report.fail("expected a name after let", name.pos) }
         advance(p)
-        if cur(p).kind is not .Eq { fail("expected =", cur(p).pos) }
+        if cur(p).kind is not .Eq { Report.fail("expected =", cur(p).pos) }
         advance(p)
         v := sum(p)
-        define(name.text, v)
+        Vars.define(name.text, v)
         return v
     }
     return sum(p)
@@ -186,13 +186,13 @@ run_line :: fn(store: ^Store, src: string) -> ?i64 needs Alloc + Out {
             buf := [64]Token(fill: Token(kind: .End, pos: 0))
             n: usize = 0
             for t in tokens(src) {
-                if n >= buf.len { fail("too many tokens", t.pos) }
+                if n >= buf.len { Report.fail("too many tokens", t.pos) }
                 buf[n] = t
                 n += 1
             }
             p := Parser(toks: buf[0..n])
             v := statement(&p)
-            if cur(&p).kind is not .End { fail("unexpected trailing input", cur(&p).pos) }
+            if cur(&p).kind is not .End { Report.fail("unexpected trailing input", cur(&p).pos) }
             v
         }
     }

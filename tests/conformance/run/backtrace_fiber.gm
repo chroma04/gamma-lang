@@ -10,7 +10,7 @@ check :: fn(n: i32) -> i32 {
 }
 
 produce :: fn() needs Ask + Gen {
-    for i in 0..10 { emit(ask(i)) }
+    for i in 0..10 { Gen.emit(Ask.ask(i)) }
 }
 
 main :: fn() needs Out {

@@ -361,7 +361,7 @@ focused), and the generator keeps them well typed and terminating:
   where the effect is available or after `main` installs handlers; `with` blocks nest, so
   exits cross fibers and handlers perform `Ev` handled further out.
 - **Fibers**: producer and consumer tasks that talk through `std/fiber/channel` under the
-  cooperative scheduler of `std/fiber` (`fiber.spawn`, `fiber.yield_now`, `fiber.join`).
+  cooperative scheduler of `std/fiber` (`fiber.spawn`, `fiber.Sched.yield_now`, `fiber.Sched.join`).
   Scheduling is round-robin and uses no clock, so the output is deterministic.
 
 Each program runs with the interpreter (`gamma run`) and with the C back end

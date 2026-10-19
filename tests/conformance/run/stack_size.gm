@@ -33,7 +33,7 @@ sorted_sum :: fn() -> i32 {
 
 // A performed operation whose handler is installed here is a call to its clause.
 logged :: fn(n: i32) -> i32 needs Log {
-    log(n)
+    Log.log(n)
     return n
 }
 
@@ -48,9 +48,9 @@ with_log :: fn() -> i32 {
 
 // A fiber's work: it suspends with `ctl` performs, whose clauses run elsewhere.
 work :: fn() needs Gen {
-    emit(top(1))
-    emit(sorted_sum())
-    emit(with_log())
+    Gen.emit(top(1))
+    Gen.emit(sorted_sum())
+    Gen.emit(with_log())
 }
 
 // A fiber started by `@fiber` runs its entry function, which never returns.
@@ -61,9 +61,9 @@ Task :: effect {
 }
 
 entry :: fn(n: i32) -> never needs Task {
-    report(top(n.trunc(u8)))
-    report(sorted_sum())
-    stop()
+    Task.report(top(n.trunc(u8)))
+    Task.report(sorted_sum())
+    Task.stop()
 }
 
 @static_assert(@stack_size(leaf) >= @min_stack, "the result is at least @min_stack")
@@ -96,7 +96,7 @@ main :: fn() needs Out {
                 resume s()
             }
         }) on driver[..] {
-        start(2)
+        Task.start(2)
     }
     print("done\n")
 }

@@ -117,7 +117,7 @@ visit :: fn(graph: []const Task, state: []u8, i: usize) needs Yield(usize) + Cyc
     state[i] = 1
     for dep in graph[i].deps {
         j := find_task(graph, dep) else trap("unknown dependency")
-        if state[j] is 1 { found(graph[i].name, dep) }
+        if state[j] is 1 { Cycle.found(graph[i].name, dep) }
         if state[j] is 0 { visit(graph, state, j) }
     }
     state[i] = 2
@@ -163,7 +163,7 @@ say :: fn(depth: u32, verb: string, name: string) needs Log {
         buf[n] = c
         n += 1
     }
-    note(depth, buf[0..n])
+    Log.note(depth, buf[0..n])
 }
 
 build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() needs Exec + Files + Log + Alloc {
@@ -188,7 +188,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() needs
                 input = fnv(input, dep) ~ out
             }
             if t.cmd.len is 0 {
-                try b.outputs.put(t.name, fingerprint(t.name))
+                try b.outputs.put(t.name, Files.fingerprint(t.name))
                 continue
             }
             if hit := b.cache.get(t.name) {
@@ -199,7 +199,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() needs
                     continue
                 }
             }
-            if out := run(t.cmd, input) {
+            if out := Exec.run(t.cmd, input) {
                 try b.cache.put(t.name, CacheEntry(input: input, output: out))
                 try b.outputs.put(t.name, out)
                 b.stats.built += 1

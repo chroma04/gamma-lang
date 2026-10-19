@@ -52,16 +52,16 @@ handler Parse for ^Dec {
 main :: fn() needs Out {
     wrap := Wrapper()
     with &wrap {
-        say(4)
-        say(2)
+        Say.say(4)
+        Say.say(2)
     }
     print("lines {}\n", wrap.lines)
     s := S()
-    with &s { print("pick {}\n", pick(9) + pick(1) + pick(2)) }
+    with &s { print("pick {}\n", Pick.pick(9) + Pick.pick(1) + Pick.pick(2)) }
     d := Dec()
     with &d {
-        print("{} ", parse("472") else 0)
-        r := parse("4x2")
+        print("{} ", Parse.parse("472") else 0)
+        r := Parse.parse("4x2")
         if !e := r { print("error {} ", e) }
         print("calls {}\n", d.calls)
     }

@@ -148,6 +148,7 @@ impl<'s> Sema<'s> {
             is_std: false,
             dir: None,
             package: None,
+            effect_ops: HashMap::new(),
             pending_whens: vec![],
         });
         let mut scope: HashMap<Symbol, DeclId> = HashMap::new();
@@ -218,7 +219,9 @@ impl<'s> Sema<'s> {
                 let id = DeclId(self.decls.len() as u32);
                 self.decls.push(Decl { name, module, item: item.clone(), state: DeclState::Unresolved, op_of: None });
                 scope.insert(name.name, id);
-                // An effect's operations are also top-level functions of the module (§12.1).
+                // An effect's operations live in the effect's namespace (§12.1): they are
+                // declarations, but not names of the module's scope. The one exception is the
+                // core library's `yield`, which is in the universe scope (§21.1).
                 if let ast::ExprKind::Effect(lit) = &b.init.kind {
                     for (i, op) in lit.ops.iter().enumerate() {
                         let op_decl = Decl {
@@ -228,7 +231,12 @@ impl<'s> Sema<'s> {
                             state: DeclState::Unresolved,
                             op_of: Some((id, i as u32)),
                         };
-                        self.declare_name(scope, op_decl);
+                        let op_id = DeclId(self.decls.len() as u32);
+                        self.decls.push(op_decl);
+                        self.modules[module.0 as usize].effect_ops.entry(op.name.name).or_default().push((id, op_id));
+                        if self.modules[module.0 as usize].is_prelude && op.name.name.as_str() == "yield" {
+                            scope.insert(op.name.name, op_id);
+                        }
                     }
                 }
             }
@@ -268,15 +276,6 @@ impl<'s> Sema<'s> {
             .with_label(prev_span, "first declared here");
         self.emit(d);
         true
-    }
-
-    fn declare_name(&mut self, scope: &mut HashMap<Symbol, DeclId>, decl: Decl) {
-        if self.check_duplicate(scope, decl.name) {
-            return;
-        }
-        let id = DeclId(self.decls.len() as u32);
-        scope.insert(decl.name.name, id);
-        self.decls.push(decl);
     }
 
     /// Looks up a name at module level: the module's own declarations, then the
@@ -321,27 +320,34 @@ impl<'s> Sema<'s> {
         if !self.universe_hidden(d) {
             return None;
         }
-        let decl = &self.decls[d.0 as usize];
-        if let Some((e, _)) = decl.op_of {
-            let effect = self.decls[e.0 as usize].name.name;
-            return Some(format!("`{name}` is an operation of `{effect}`: write `{effect}.{name}(…)` (§21.1)"));
-        }
         Some(match std_home(name) {
             Some(m) => format!("`{name}` is declared by `{m}`: import it and write `{}.{name}`", &m[4..]),
             None => format!("`{name}` is a method of `Instant` or `Duration`: write `x.{name}(…)`"),
         })
     }
 
-    /// For an unknown name that is an operation of a core effect: the effect's name, to
-    /// write in front of it (`Out.print`).
-    pub fn op_effect(&mut self, name: Symbol) -> Option<Symbol> {
-        let prelude = self.prelude?;
-        let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
-        if !self.universe_hidden(d) {
-            return None;
-        }
-        let (e, _) = self.decls[d.0 as usize].op_of?;
+    /// For an unknown name that is an operation of an effect declared in `module` or in the
+    /// core library: the effect's name, to write in front of it (`Log.log`, `Clock.now`).
+    pub fn op_effect(&self, module: ModuleId, name: Symbol) -> Option<Symbol> {
+        let own = self.modules[module.0 as usize].effect_ops.get(&name).and_then(|v| v.first());
+        let core = self.prelude.and_then(|p| {
+            let (e, _) = *self.modules[p.0 as usize].effect_ops.get(&name)?.first()?;
+            self.decls[e.0 as usize].item.is_pub.then_some((e, ()))
+        });
+        let e = match (own, core) {
+            (Some(&(e, _)), _) => e,
+            (None, Some((e, _))) => e,
+            _ => return None,
+        };
         Some(self.decls[e.0 as usize].name.name)
+    }
+
+    /// The hint for a bare or module-qualified use of the operation `name`, which is not a
+    /// name of its module (§12.1): `effect` is the operation's effect, `qualifier` the
+    /// module prefix to write in front of it, if any.
+    pub fn op_hint(effect: Symbol, name: Symbol, qualifier: Option<Symbol>) -> String {
+        let q = qualifier.map(|m| format!("{m}.")).unwrap_or_default();
+        format!("`{name}` is an operation of `{effect}`; call it as `{q}{effect}.{name}(…)` (§12.1)")
     }
 
     /// A fix for an unknown name that [`Sema::universe_hint`] attributes to a standard
@@ -463,6 +469,16 @@ impl<'s> Sema<'s> {
                 None
             }
             None => {
+                let op_effect = self.modules[m.0 as usize]
+                    .effect_ops
+                    .get(&name.name)
+                    .and_then(|v| v.iter().map(|&(e, _)| &self.decls[e.0 as usize]).find(|e| e.item.is_pub))
+                    .map(|e| e.name.name);
+                if let Some(effect) = op_effect {
+                    let msg = Self::op_hint(effect, name.name, Some(module_name));
+                    self.error(name.span, msg);
+                    return None;
+                }
                 let mut d = crate::diag::Diagnostic::error(
                     name.span,
                     format!("the module `{}` has no declaration `{}`", module_name, name.name),

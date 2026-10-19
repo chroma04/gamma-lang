@@ -3,8 +3,8 @@
 Add :: effect { add: fn(n: i32) }
 handler Add for ^i32 { add(self, n) => { self^ += n } }
 bump :: fn() needs Add {
-    add(2)
-    add(3)
+    Add.add(2)
+    Add.add(3)
 }
 main :: fn() needs Out {
     x := 0

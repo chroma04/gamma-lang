@@ -8,7 +8,7 @@ WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
 put :: fn(path: string, text: string) -> IoError!() needs Fs {
     f := try Fs.open(path, WRITE)
     defer f.close()
-    n := try f.write_to(text)
+    n := try f.write(text)
     if n is not text.len { return !.NoSpace }
 }
 
@@ -18,7 +18,7 @@ slurp :: fn(path: string, buf: []u8) -> IoError!usize needs Fs {
     defer f.close()
     total: usize = 0
     while true {
-        n := try f.read_from(buf[total..])
+        n := try f.read(buf[total..])
         if n is 0 { break }
         total += n
     }
@@ -76,7 +76,7 @@ test "modified is the fake clock at the last write" {
     Clock.sleep(secs(2))
     expect((ok(Fs.stat("a"))).modified is t0)
     f := ok(Fs.open("a", fs.OpenOptions(read: false, write: true)))
-    _ = ok(f.write_to("y"))
+    _ = ok(f.write("y"))
     f.close()
     expect((ok(Fs.stat("a"))).modified is t0 + 2_000_000_000)
     expect((ok(Fs.stat("a"))).modified is Clock.wall())
@@ -106,7 +106,7 @@ test "opening a missing file" {
 
 test "create, exclusive and truncate" {
     f := ok(Fs.open("f", fs.OpenOptions(read: false, write: true, create: true)))
-    _ = ok(f.write_to("abcdef"))
+    _ = ok(f.write("abcdef"))
     f.close()
     // `create` on an existing file keeps its contents.
     g := ok(Fs.open("f", fs.OpenOptions(read: false, write: true, create: true)))
@@ -128,9 +128,9 @@ test "append writes go to the end" {
     f := ok(Fs.open("log", fs.OpenOptions(read: false, append: true)))
     defer f.close()
     _ = ok(f.seek(0, .Start))
-    _ = ok(f.write_to(",two"))
+    _ = ok(f.write(",two"))
     _ = ok(f.seek(0, .Start))
-    _ = ok(f.write_to(",three"))
+    _ = ok(f.write(",three"))
     expect(ok(holds("log", "one,two,three")))
 }
 
@@ -138,18 +138,18 @@ test "access modes are enforced" {
     ok(put("f", "data"))
     buf: [4]u8 = ---
     w := ok(Fs.open("f", fs.OpenOptions(read: false, write: true)))
-    expect(w.read_from(buf[..]) is !.Other(9))
+    expect(w.read(buf[..]) is !.Other(9))
     w.close()
     r := ok(Fs.open("f", fs.OpenOptions()))
-    expect(r.write_to("x") is !.Other(9))
-    expect(r.read_from(buf[..]) is 4)
+    expect(r.write("x") is !.Other(9))
+    expect(r.read(buf[..]) is 4)
     r.close()
     a := ok(Fs.open("f", fs.OpenOptions(read: false, append: true)))
-    expect(a.read_from(buf[..]) is !.Other(9))
+    expect(a.read(buf[..]) is !.Other(9))
     a.close()
     rw := ok(Fs.open("f", fs.OpenOptions(write: true)))
-    expect(rw.read_from(buf[..]) is 4)
-    expect(rw.write_to("x") is 1)
+    expect(rw.read(buf[..]) is 4)
+    expect(rw.write("x") is 1)
     rw.close()
     expect(ok(holds("f", "datax")))
 }
@@ -159,16 +159,16 @@ test "each handle has its own position" {
     a := ok(Fs.open("f", fs.OpenOptions()))
     b := ok(Fs.open("f", fs.OpenOptions()))
     buf: [4]u8 = ---
-    expect(a.read_from(buf[..]) is 4)
+    expect(a.read(buf[..]) is 4)
     expect(buf[0] is '0')
-    expect(a.read_from(buf[..]) is 4)
+    expect(a.read(buf[..]) is 4)
     expect(buf[0] is '4')
-    expect(b.read_from(buf[..]) is 4)
+    expect(b.read(buf[..]) is 4)
     expect(buf[0] is '0')
-    expect(a.read_from(buf[..]) is 2)
+    expect(a.read(buf[..]) is 2)
     expect(buf[1] is '9')
-    expect(a.read_from(buf[..]) is 0)
-    expect(b.read_from(buf[..]) is 4)
+    expect(a.read(buf[..]) is 0)
+    expect(b.read(buf[..]) is 4)
     expect(buf[0] is '4')
     a.close()
     b.close()
@@ -180,19 +180,19 @@ test "seek from the start, the current position and the end" {
     defer f.close()
     buf: [3]u8 = ---
     expect(f.seek(4, .Start) is 4)
-    expect(f.read_from(buf[..]) is 3)
+    expect(f.read(buf[..]) is 3)
     expect(buf[0] is '4')
     expect(f.seek(-2, .Current) is 5)
-    expect(f.read_from(buf[..]) is 3)
+    expect(f.read(buf[..]) is 3)
     expect(buf[0] is '5')
     expect(f.seek(0, .Current) is 8)
     expect(f.seek(-1, .End) is 9)
-    expect(f.read_from(buf[..]) is 1)
+    expect(f.read(buf[..]) is 1)
     expect(buf[0] is '9')
     expect(f.seek(0, .End) is 10)
-    expect(f.read_from(buf[..]) is 0)
+    expect(f.read(buf[..]) is 0)
     expect(f.seek(100, .Start) is 100)
-    expect(f.read_from(buf[..]) is 0)
+    expect(f.read(buf[..]) is 0)
     expect(f.seek(-1, .Start) is !.InvalidInput)
     expect(f.seek(-11, .End) is !.InvalidInput)
     expect(f.seek(-101, .Current) is !.InvalidInput)
@@ -204,7 +204,7 @@ test "writing past the end fills the gap with zeros" {
     ok(put("f", "ab"))
     f := ok(Fs.open("f", fs.OpenOptions(write: true)))
     _ = ok(f.seek(5, .Start))
-    _ = ok(f.write_to("cd"))
+    _ = ok(f.write("cd"))
     f.close()
     buf: [16]u8 = ---
     n := ok(slurp("f", buf[..]))
@@ -214,7 +214,7 @@ test "writing past the end fills the gap with zeros" {
     // Overwriting in the middle does not change the size.
     g := ok(Fs.open("f", fs.OpenOptions(write: true)))
     _ = ok(g.seek(1, .Start))
-    _ = ok(g.write_to("XY"))
+    _ = ok(g.write("XY"))
     g.close()
     n = ok(slurp("f", buf[..]))
     expect(buf[0..n] is "aXY\0\0cd")
@@ -240,7 +240,7 @@ test "making directories" {
     // It can be opened for reading, but not read.
     f := ok(Fs.open("d", fs.OpenOptions()))
     buf: [4]u8 = ---
-    expect(f.read_from(buf[..]) is !.Other(21))
+    expect(f.read(buf[..]) is !.Other(21))
     f.close()
 }
 
@@ -263,7 +263,7 @@ test "an open file survives its removal" {
     ok(Fs.remove("f"))
     expect(Fs.stat("f") is !.NotFound)
     buf: [16]u8 = ---
-    expect(f.read_from(buf[..]) is 10)
+    expect(f.read(buf[..]) is 10)
     f.close()
     // The name can be used again.
     ok(put("f", "new"))
@@ -396,14 +396,14 @@ test "closed and unknown handles" {
     buf: [4]u8 = ---
     f := ok(Fs.open("f", fs.OpenOptions(write: true)))
     f.close()
-    expect(f.read_from(buf[..]) is !.Other(9))
-    expect(f.write_to("y") is !.Other(9))
+    expect(f.read(buf[..]) is !.Other(9))
+    expect(f.write("y") is !.Other(9))
     expect(f.seek(0, .Start) is !.Other(9))
     f.close()
     // A new handle is a different one.
     g := ok(Fs.open("f", fs.OpenOptions()))
-    expect(f.read_from(buf[..]) is !.Other(9))
-    expect(g.read_from(buf[..]) is 1)
+    expect(f.read(buf[..]) is !.Other(9))
+    expect(g.read(buf[..]) is 1)
     g.close()
     d := ok(Fs.open_dir("/"))
     d.close_dir()
@@ -429,7 +429,7 @@ test "many files" {
     for i in 0..200 {
         s := format_name(name[..], i)
         f := ok(Fs.open(s, fs.OpenOptions(read: false, write: true, create: true, exclusive: true)))
-        _ = ok(f.write_to(s[5..]))
+        _ = ok(f.write(s[5..]))
         f.close()
     }
     expect((ok(list_dir("many", ""))).count is 200)
@@ -471,7 +471,7 @@ test "large writes and reads" {
     chunk: [100]u8 = ---
     chunk[..].fill('z')
     for i in 0..50 {
-        _ = ok(f.write_to(chunk[..]))
+        _ = ok(f.write(chunk[..]))
     }
     f.close()
     expect((ok(Fs.stat("big"))).size is 5000)
@@ -479,7 +479,7 @@ test "large writes and reads" {
     defer r.close()
     total: usize = 0
     while true {
-        n := ok(r.read_from(chunk[..]))
+        n := ok(r.read(chunk[..]))
         if n is 0 { break }
         total += n
     }

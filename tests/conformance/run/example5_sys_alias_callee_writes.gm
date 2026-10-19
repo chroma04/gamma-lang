@@ -35,7 +35,7 @@ setg :: fn() -> i64 needs Sys {
 
 Log :: effect { note: fn(b: Big) -> i64 }
 
-with_note :: fn(b: Big) -> i64 needs Log => note(b)
+with_note :: fn(b: Big) -> i64 needs Log => Log.note(b)
 
 PairBig :: struct { x: Big, y: Big }
 
@@ -79,7 +79,7 @@ main :: fn() needs Out + Sys {
             sum(b)
         }
     }) {
-        note(z)
+        Log.note(z)
     }
     print("B2 {} {}\n", r3, z.a[0])
     // D: global

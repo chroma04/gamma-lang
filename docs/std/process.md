@@ -11,7 +11,7 @@ Running other programs over the `Proc` effect (§21.7).
 
 `Proc.spawn` starts a program without a shell: the first element of `argv` is the program
 (a name without a path separator is searched for in `PATH`), the others are its arguments.
-A piped stream is used through `write_in`, `close_in` and `read_out`, and every started
+A piped stream is used through `write`, `close_in` and `read`, and every started
 child must be ended with `wait`. Tests cannot start processes: `spawn` fails with
 `PermissionDenied`.
 
@@ -83,7 +83,7 @@ environment.
 Chunk :: core.Chunk
 ```
 
-What `Proc.read_out` reports: the stream the bytes are from, and how many it stored.
+What `Proc.read` reports: the stream the bytes are from, and how many it stored.
 
 ### `ExitStatus`
 

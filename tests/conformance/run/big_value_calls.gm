@@ -26,7 +26,7 @@ both :: fn(x: Big, n: i64, y: Big) -> i64 => total(x) * 10000 + n + total(y)
 Log :: effect { note: fn(b: Big) -> Big }
 
 logged :: fn(b: Big) -> i64 needs Log {
-    c := note(b)
+    c := Log.note(b)
     return total(c)
 }
 
@@ -34,9 +34,9 @@ Pull :: effect { give: ctl(b: Big) -> i64 }
 
 producer :: fn() -> i64 needs Pull {
     x := make(2)
-    r := give(x)
+    r := Pull.give(x)
     x.a[1] = 50
-    return r + give(x)
+    return r + Pull.give(x)
 }
 
 Scaler :: struct { by: [6]i64 }
@@ -90,7 +90,7 @@ main :: fn() needs Out {
     print("ctl {} {}\n", got, q)
     s := Scaler(by: [6]i64(fill: 4))
     with s {
-        print("self {}\n", scale(5))
+        print("self {}\n", Scale.scale(5))
     }
     arr: [16]u32 = [16]u32(fill: 9)
     tup := (arr, b, 7)

@@ -27,7 +27,7 @@ in_clause :: fn(n: i32) -> E!i32 {
             r * 2
         }
     }) {
-        x := try check(n)
+        x := try Chk.check(n)
         return x + 1
     }
 }

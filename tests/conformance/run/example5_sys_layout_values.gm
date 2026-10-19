@@ -57,7 +57,7 @@ flags_roundtrip :: fn(f: Flags) -> Flags {
 
 fiber_line :: fn() -> u64 needs Gen {
     l := line(3)
-    m := give(l)
+    m := Gen.give(l)
     return m.data[0] + m.data[5] + align_of_param(m)
 }
 

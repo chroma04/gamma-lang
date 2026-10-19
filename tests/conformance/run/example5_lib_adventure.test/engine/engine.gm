@@ -66,7 +66,7 @@ sayf :: fn(A: type, template :: string, args: ..A) needs Narrate {
     buf: [256]u8 = ---
     b := str.builder(buf[..])
     b.write(template, ..args)
-    say(b.str())
+    Narrate.say(b.str())
 }
 
 /// Turns a line of text into a command.
@@ -108,7 +108,7 @@ pub parse :: fn(line: string) -> ParseError!Command {
 describe :: fn(g: ^w.World) needs Narrate {
     r := g.current()
     sayf("== {} ==", r.name)
-    say(r.desc)
+    Narrate.say(r.desc)
     buf: [160]u8 = ---
     b := str.builder(buf[..])
     for x in r.items.items {
@@ -180,7 +180,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + 
         .Look => describe(g)
         .Inventory => {
             if g.carried.items.len is 0 {
-                say("You carry nothing.")
+                Narrate.say("You carry nothing.")
             } else {
                 for x in g.carried.items { sayf("- {}: {}", g.item(x).name, g.item(x).desc) }
                 sayf("Load: {} of {}", w.load(g), w.MAX_WEIGHT)
@@ -199,7 +199,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + 
             g.here = dest
             g.moves += 1
             describe(g)
-            if roll(4) is 0 { say("A rat scurries past your feet.") }
+            if Dice.roll(4) is 0 { Narrate.say("A rat scurries past your feet.") }
         }
         .Take(name) => {
             id := g.things.find(name) else {
@@ -241,7 +241,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + 
                 return ()
             }
             if w.holds(g, id) or has_item(g.current().items.items, id) {
-                say(g.item(id).desc)
+                Narrate.say(g.item(id).desc)
             } else {
                 sayf("You see no {} here.", name)
             }
@@ -258,7 +258,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + 
             if u.item is "key" and u.target is "door" and g.here is g.rooms.find("Hall")? {
                 g.current().locked[w.slot(.E)] = false
                 g.score += 10
-                say("The lock clicks open.")
+                Narrate.say("The lock clicks open.")
             } else {
                 sayf("Using the {} on the {} does nothing.", u.item, u.target)
             }
@@ -285,7 +285,7 @@ pub step :: fn(g: ^w.World, c: Command) -> AllocError!() needs Narrate + Dice + 
         }
         .Quit => {
             sayf("Goodbye after {} moves with {} points.", g.moves, g.score)
-            halt()
+            Halt.halt()
         }
     }
     return ()

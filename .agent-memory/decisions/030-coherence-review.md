@@ -17,9 +17,13 @@ Applied in PR on branch claude/coherence-review-wyd199 (impl via 3 sonnet worktr
   ints capped at 128 bits (wide-int machinery deleted); iterator-argument calls evaluate
   their args once (§13.5, like for); computed lengths equal only syntactically after folding.
   C.8 rows added for each.
-Left for the user (listed in the PR body), NOT done:
-- Effect ops namespaced under the effect (`Out.write`, `f.read`, `sock.close()`), review's #1.
-  Huge surface change (all lib + programs). Also resolves C.4 vs user-effect bare ops.
+PR #52 merged. User chose "do it next" for effect ops → done in the follow-up PR (same branch):
+ops not module names (sema/modules.rs Module::effect_ops; only core `yield` in scope), E.op /
+m.E.op only; methods: sema/methods.rs op_method + decls.rs check_method_candidates (one
+candidate per name per type). Renames: Out/Err.write, Fs.read/write, Net.close, Proc.write/read
+(close_dir, close_listener, close_in kept: op names unique per effect). Awkward: fiber.Sched.
+yield_now()/join() long; a bare call of an op named like a core fn (make) silently resolves
+to the core fn. Still open for the user:
 - Literal early-fallback list (§6.1) → compile errors: ergonomic cost (`x := 5; print("{}", x)`).
 - Drop caller-context stage of effect-set inference (§16.6; decisions/027 added it for
   fiber channels: would bring back `send(Out + Clock, …)`).

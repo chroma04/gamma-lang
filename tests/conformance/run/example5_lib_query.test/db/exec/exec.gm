@@ -35,7 +35,7 @@ handler Trace for ^Tally {
 pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> AllocError!() needs Yield(T) + Alloc + Trace {
     all := t.all()
     lim := q.limit_of() else all.len
-    step("scan", all.len)
+    Trace.step("scan", all.len)
     emitted: usize = 0
     if less := q.ordering() {
         h := heap.heap_by(less)
@@ -43,7 +43,7 @@ pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> A
         for i in 0..all.len {
             if q.accepts(&all[i]) { try h.push(all[i]) }
         }
-        step("sort", h.len())
+        Trace.step("sort", h.len())
         while emitted < lim {
             x := h.pop() else break
             yield(x)
@@ -58,7 +58,7 @@ pub rows :: fn(T: type, t: ^const table.Table(T), q: ^const query.Query(T)) -> A
             }
         }
     }
-    step("emit", emitted)
+    Trace.step("emit", emitted)
     return ()
 }
 
@@ -93,7 +93,7 @@ pub group_by :: fn(T: type, K: type, t: ^const table.Table(T), q: ^const query.Q
         g.n += 1
         g.total += val(&copy)
     }
-    step("groups", groups.len())
+    Trace.step("groups", groups.len())
     return groups
 }
 
@@ -104,7 +104,7 @@ pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const 
     defer build.deinit()
     right := tb.all()
     for i in 0..right.len { try build.put(kb(&right[i]), i) }
-    step("build", build.len())
+    Trace.step("build", build.len())
     left := ta.all()
     matched: usize = 0
     for i in 0..left.len {
@@ -113,7 +113,7 @@ pub join :: fn(A: type, B: type, K: type, ta: ^const table.Table(A), tb: ^const 
             matched += 1
         }
     }
-    step("join matched", matched)
+    Trace.step("join matched", matched)
     return ()
 }
 

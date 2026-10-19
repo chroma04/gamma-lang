@@ -51,11 +51,11 @@ fib_task :: fn(j: ^Job) -> never needs Task + Alloc + Out {
         scratch[2] = scratch[0] + scratch[1]
         scratch[0] = scratch[1]
         scratch[1] = scratch[2]
-        if i % 5 is 4 { yield_now() }
+        if i % 5 is 4 { Task.yield_now() }
     }
     j.result = scratch[0]
     print("job {} -> {}\n", j.id, j.result)
-    exit()
+    Task.exit()
 }
 
 main :: fn() needs Out + Alloc {
@@ -66,8 +66,8 @@ main :: fn() needs Out + Alloc {
     main_stack := make(u8, 32768) else trap("oom")
     defer free(main_stack)
     with &s on main_stack {
-        for p in each_ptr(jobs[..]) { spawn(fib_task, p) }
-        exit()
+        for p in each_ptr(jobs[..]) { Task.spawn(fib_task, p) }
+        Task.exit()
     }
     for m in s.stacks.items { free(m) }
     total: u64 = 0

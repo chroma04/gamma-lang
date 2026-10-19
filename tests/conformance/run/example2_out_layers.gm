@@ -5,34 +5,34 @@ Indenter :: struct {
 }
 
 handler Out for ^Indenter needs Out {
-    write_out(self, bytes) => {
+    write(self, bytes) => {
         start: usize = 0
         for i in 0..bytes.len {
             if self.at_start and bytes[i] is not '\n' {
-                Out.write_out(self.pad)
+                Out.write(self.pad)
                 self.at_start = false
             }
             if bytes[i] is '\n' {
-                Out.write_out(bytes[start..=i])
+                Out.write(bytes[start..=i])
                 start = i + 1
                 self.at_start = true
             }
         }
-        if start < bytes.len { Out.write_out(bytes[start..]) }
+        if start < bytes.len { Out.write(bytes[start..]) }
     }
 }
 
 Numberer :: struct { n: u32 = 0, at_start: bool = true }
 
 handler Out for ^Numberer needs Out {
-    write_out(self, bytes) => {
+    write(self, bytes) => {
         for i in 0..bytes.len {
             if self.at_start {
                 self.n += 1
                 print("{}| ", self.n)
                 self.at_start = false
             }
-            Out.write_out(bytes[i..i + 1])
+            Out.write(bytes[i..i + 1])
             if bytes[i] is '\n' { self.at_start = true }
         }
     }

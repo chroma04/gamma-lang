@@ -11,15 +11,15 @@ Choice :: effect {
 }
 
 inner :: fn(depth: u32) -> u32 needs Log + Fail {
-    defer log("inner defer")
-    log("inner start")
-    if depth is 0 { fail(42) }
+    defer Log.log("inner defer")
+    Log.log("inner start")
+    if depth is 0 { Fail.fail(42) }
     return inner(depth - 1) + 1
 }
 
 middle :: fn(depth: u32) -> u32 needs Log + Fail {
-    defer log("middle defer")
-    errdefer log("middle errdefer")
+    defer Log.log("middle defer")
+    errdefer Log.log("middle errdefer")
     return inner(depth) * 2
 }
 
@@ -32,12 +32,12 @@ run_nested :: fn() needs Out {
         inner_h :: handler Log {
             log(m) => {
                 quiet_count += 1
-                log(m)         // goes to the enclosing (outer) handler
+                Log.log(m)         // goes to the enclosing (outer) handler
             }
         }
         with inner_h {
-            log("hello")
-            log("world")
+            Log.log("hello")
+            Log.log("world")
         }
         print("forwarded {}\n", quiet_count)
     }
@@ -57,7 +57,7 @@ find_first :: fn(limit: u32) -> ?u32 needs Out {
     // `return` from inside a `with` inside a loop
     for i in 1..limit {
         r := with (handler Choice { pick(n) => n * 2 }) {
-            pick(i)
+            Choice.pick(i)
         }
         if r > 10 { return r }
     }
@@ -69,7 +69,7 @@ labelled :: fn() -> u32 needs Out {
     outer: for i in 0..5 {
         for j in 0..5 {
             with (handler Choice { pick(n) => { if n > 6 { break outer } else { n } } }) {
-                total += pick(u32(i) + u32(j))
+                total += Choice.pick(u32(i) + u32(j))
             }
         }
     }

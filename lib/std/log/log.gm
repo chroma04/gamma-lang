@@ -31,9 +31,9 @@ pub Log :: effect {
 
 /// Writes a record of `level`, formatted from `template` and `args` as `print` does.
 pub log :: fn(A: type, level: Level, template :: string, args: ..A) needs Log {
-    if begin(level) {
-        @write(fn(b) => write(b), template, ..args)
-        end()
+    if Log.begin(level) {
+        @write(fn(b) => Log.write(b), template, ..args)
+        Log.end()
     }
 }
 
@@ -68,12 +68,12 @@ pub ErrLog :: struct {
 handler Log for ^ErrLog needs Err {
     begin(self, level) => {
         if level < self.min { return false }
-        Err.write_err(name(level))
-        Err.write_err(" ")
+        Err.write(name(level))
+        Err.write(" ")
         return true
     }
-    write(self, bytes) => Err.write_err(bytes)
-    end(self) => Err.write_err("\n")
+    write(self, bytes) => Err.write(bytes)
+    end(self) => Err.write("\n")
 }
 
 /// Like `ErrLog`, but every line starts with the current UTC time from the `Clock` effect,
@@ -88,14 +88,14 @@ handler Log for ^StampedLog needs Err + Clock {
         now := time.from_unix(Clock.wall())
         now.nanosecond = 0
         buf: [time.RFC3339_LEN]u8 = ---
-        Err.write_err(time.format_rfc3339(now, buf[..]))
-        Err.write_err(" ")
-        Err.write_err(name(level))
-        Err.write_err(" ")
+        Err.write(time.format_rfc3339(now, buf[..]))
+        Err.write(" ")
+        Err.write(name(level))
+        Err.write(" ")
         return true
     }
-    write(self, bytes) => Err.write_err(bytes)
-    end(self) => Err.write_err("\n")
+    write(self, bytes) => Err.write(bytes)
+    end(self) => Err.write("\n")
 }
 
 /// A handler that appends records of level `min` and above to `list`, one line each, as

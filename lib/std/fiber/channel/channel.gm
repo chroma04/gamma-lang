@@ -50,7 +50,7 @@ pub deinit :: fn(T: type, c: ^Channel(T)) {
 
 /// Sends `x`, waiting while the channel is full. Returns `false` if the channel is closed.
 pub send :: fn(T: type, E: effects, c: ^Channel(T), x: T) -> bool needs fiber.Sched(E) {
-    while c.items.len() is c.capacity and not c.closed { fiber.park(&c.senders) }
+    while c.items.len() is c.capacity and not c.closed { fiber.Sched.park(&c.senders) }
     if c.closed { return false }
     c.items.push_back(x) else trap("a channel's buffer cannot grow")
     _ = c.receivers.wake()
@@ -60,7 +60,7 @@ pub send :: fn(T: type, E: effects, c: ^Channel(T), x: T) -> bool needs fiber.Sc
 /// Receives the oldest value, waiting while the channel is empty. Returns `null` once the
 /// channel is closed and drained.
 pub recv :: fn(T: type, E: effects, c: ^Channel(T)) -> ?T needs fiber.Sched(E) {
-    while c.items.is_empty() and not c.closed { fiber.park(&c.receivers) }
+    while c.items.is_empty() and not c.closed { fiber.Sched.park(&c.receivers) }
     x := c.items.pop_front() else return null
     _ = c.senders.wake()
     return x

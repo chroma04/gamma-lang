@@ -5,13 +5,13 @@ E :: union { Bad }
 
 g :: fn() -> u32 {
     with (handler Ask { ask(n) => { if n > 5 { return 99 }; n * 2 } }) { //~ ERROR it cannot `return`
-        return ask(7)
+        return Ask.ask(7)
     }
 }
 
 h :: fn(r: E!u32) -> E!u32 {
     with (handler Ask { ask(n) => try r }) { //~ ERROR it cannot `try`
-        return ask(1)
+        return Ask.ask(1)
     }
 }
 
@@ -19,7 +19,7 @@ k :: fn() -> u32 {
     total: u32 = 0
     outer: while true {
         with (handler Ask { ask(n) => { if n is 0 { break outer }; n } }) { //~ ERROR it cannot `break`
-            total += ask(0)
+            total += Ask.ask(0)
         }
     }
     return total

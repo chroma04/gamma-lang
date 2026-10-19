@@ -3,7 +3,7 @@
 Log :: effect { log: fn(msg: string) }
 Stop :: effect { stop: esc() -> never }
 
-needs_log :: fn() needs Log { log("x") }
+needs_log :: fn() needs Log { Log.log("x") }
 
 handled :: fn() {
     with (handler Log { log(m) => {} }) {
@@ -58,7 +58,7 @@ handler Note for ^Noter { note(self, msg) => { self.n += 1 } }
 Runner :: struct { n: u32 = 0 }
 handler Job for ^Runner needs Note {
     job(self, x) => {
-        note("job")
+        Note.note("job")
         x + 1
     }
 }
@@ -66,7 +66,7 @@ handler Job for ^Runner needs Note {
 order :: fn() -> u32 {
     a := Noter()
     b := Runner()
-    x := with &a, &b { job(1) }
-    y := with &b, &a { job(2) }         //~ ERROR performs the effect `Note`
+    x := with &a, &b { Job.job(1) }
+    y := with &b, &a { Job.job(2) }         //~ ERROR performs the effect `Note`
     return x + y
 }

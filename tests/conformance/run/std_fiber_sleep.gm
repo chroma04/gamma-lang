@@ -25,7 +25,7 @@ Shared :: struct {
 spin :: fn(s: ^Shared) needs fiber.Sched(Out + Clock) + Out + Clock {
     while not s.napper_up {
         s.rounds += 1
-        fiber.yield_now()
+        fiber.Sched.yield_now()
     }
     print("spinner done\n")
 }
@@ -52,7 +52,7 @@ main :: fn() -> AllocError!() needs Out + Alloc + Clock {
         fiber.spawn(nap, &a, sa[..])
         fiber.spawn(nap, &b, sb[..])
         fiber.spawn(nap, &c, sc[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     elapsed := Clock.now().since(t0).to_ms()
     print("at least the longest sleep: {}\n", elapsed >= 100)
@@ -62,7 +62,7 @@ main :: fn() -> AllocError!() needs Out + Alloc + Clock {
     with &s on main_stack[..] {
         fiber.spawn(spin, &shared, sa[..])
         fiber.spawn(napper, &shared, sb[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     print("the spinner ran while the napper slept: {}\n", shared.rounds > 0)
 }

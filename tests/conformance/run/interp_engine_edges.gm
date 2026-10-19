@@ -8,7 +8,7 @@ Stop :: effect { stop: esc(code: i32) -> never }
 deep :: fn(n: i32) needs Stop + Out {
     defer print("leave deep {}\n", n)
     errdefer print("unwind deep {}\n", n)
-    if n is 0 { stop(42) }
+    if n is 0 { Stop.stop(42) }
     deep(n - 1)
 }
 

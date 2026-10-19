@@ -64,13 +64,13 @@
 //! # Writing the scope yourself
 //!
 //! `pull` is `driver` and `with` combined. To `return` or `break` out of the consumer's code,
-//! install the driver yourself and call `finish()` at the end of the body:
+//! install the driver yourself and call `Pull.finish()` at the end of the body:
 //!
 //!     d := gen.driver(u32, Out)
 //!     defer d.close()
 //!     with &d on main_stack {
 //!         if x := ga.next() { return x }          // cancels the generators still suspended
-//!         gen.finish()
+//!         gen.Pull.finish()
 //!     }
 
 /// The state of a generator's producer.
@@ -138,7 +138,7 @@ pub next :: fn(T: type, E: effects, g: ^Generator(T, E)) -> ?T needs Pull(T, E) 
 }
 
 /// A scope with no generators yet, for use as `with &d on stack { … }` (see the module
-/// header). Call `d.close()` after the `with`, and `finish()` at the end of its body.
+/// header). Call `d.close()` after the `with`, and `Pull.finish()` at the end of its body.
 pub driver :: fn(T: type, E: effects) -> Driver(T, E) {
     return Driver(T, E)(consumer: null, head: null)
 }
@@ -161,7 +161,7 @@ pub pull :: fn(T: type, E: effects, R: type, stack: []u8, body: fn() -> R needs 
     defer d.close()
     return with &d on stack {
         r := body()
-        finish()
+        Pull.finish()
         r
     }
 }
@@ -189,8 +189,8 @@ unlink :: fn(T: type, E: effects, d: ^Driver(T, E), g: ^Generator(T, E)) {
 
 // What a producer's fiber runs: the iterator, then the end of the stream.
 entry :: fn(T: type, E: effects, g: ^Generator(T, E)) -> never needs Pull(T, E) + E {
-    for x in g.f(g.arg) { give(g, x) }
-    done(g)
+    for x in g.f(g.arg) { Pull.give(g, x) }
+    Pull.done(g)
 }
 
 handler(T: type, E: effects) Pull(T, E) for ^Driver(T, E) needs E {
