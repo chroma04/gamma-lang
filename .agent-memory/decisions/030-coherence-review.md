@@ -23,16 +23,10 @@ m.E.op only; methods: sema/methods.rs op_method + decls.rs check_method_candidat
 candidate per name per type). Renames: Out/Err.write, Fs.read/write, Net.close, Proc.write/read
 (close_dir, close_listener, close_in kept: op names unique per effect). Awkward: fiber.Sched.
 yield_now()/join() long; a bare call of an op named like a core fn (make) silently resolves
-to the core fn. Still open for the user:
-- Literal early-fallback list (§6.1) → compile errors: ergonomic cost (`x := 5; print("{}", x)`).
-- Drop caller-context stage of effect-set inference (§16.6; decisions/027 added it for
-  fiber channels: would bring back `send(Out + Clock, …)`).
-- Freestanding semantics (§3.6 `.Freestanding`): new feature (entry point, no ambient
-  defaults, trap hook).
-- Taste: `Signed` → name for negation; ns/us/ms/secs out of the universe; A.7 rule 3
-  (`x!(a)` parse depends on name resolution, P5).
-Impl notes: iterator-arg hoisting = sema/call.rs hoist_iterator_call/hoist_iter_value + FnCx::iter_pre,
-placed by bind_args (place_iter_pre) and generics.rs generic_call_packed; constants/globals/untyped
-literals stay in the literal (heuristic `iter_stable`); places stay places. cgen elementwise.rs and
-wide.rs deleted; runtime gm_w* gone; vector.rs has its own lane_loop. `is_oversized_int_name` gives
-"integer types are at most 128 bits wide". Length exprs: types.rs len_expr no operand sorting.
+to the core fn. Rest done after the user's "go ahead" (third PR): freestanding (§3.7.1; cgen generate_object,
+GM_FREESTANDING runtime, #trap_hook, tests/freestanding.rs with harness.c; wasm32-wasi counts as
+freestanding now — add a Target field if WASI should be hosted); early literal fallback conflicts
+reported at range bounds (infer.rs settled_at; `{}` format args don't settle, specs do); Signed→Neg;
+ns/us/ms/secs only in std/time. KEPT effect-set inference from caller context (same rule as op
+instantiation, local), only rewrote §16.6 prose. NOT changed: A.7 rule 3 (`x!(a)` resolved by name
+resolution) — a local fix needs new syntax for error-union types in expressions; low value.
