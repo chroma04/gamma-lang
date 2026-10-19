@@ -197,7 +197,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     show("squares of primes", fn() => taking(5, mapped(primes(), fn(p: u32) -> u64 => u64(p) * u64(p))))
 
     count := 0
-    for p in primes() { count += 1 }
+    for _ in primes() { count += 1 }
     print("{} primes below 100\n", count)
 
     // Build a tree from unsorted keys and walk it in order.

@@ -14,6 +14,7 @@
 // The grapheme class of a code point (`CLASS_RUNS`, generated in tables.gm). The rules
 // of UAX #29 use the Grapheme_Cluster_Break, Extended_Pictographic and
 // Indic_Conjunct_Break properties; each class is one combination of them.
+#allow("unused-declaration")
 CLASS_OTHER :: 0
 CLASS_CR :: 1
 CLASS_LF :: 2
