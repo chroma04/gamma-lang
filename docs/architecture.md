@@ -531,6 +531,7 @@ both use it. The files:
 | `func.rs` | functions: frames, blocks, statements, the exit ladders, handler specialization |
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
+| `outline.rs` | long runs of statements moved into helper functions that share the frame |
 | `arith.rs` | checked scalar operators |
 | `vector.rs` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.rs` | per-type equality, ordering and hashing |
@@ -597,6 +598,22 @@ checked operations takes minutes, 50,000 hours. A generated function of more tha
 2,000 temporaries, several times more than the largest functions of ordinary programs,
 is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optnone`)
 on those versions of Clang and means nothing elsewhere.
+
+A function that is long because it has many statements, rather than one long chain, is
+split instead (`outline.rs`). When a body has more than 1,500 expression nodes, every
+block of more than 400 has its statements dealt out in runs of up to 400 nodes, each
+moved into a helper `gm_cN_K` that the function calls where the run was. A helper takes
+the frame's address and defines `F` as `(*gm_Fp)`, so a statement's code is the same as
+inline; such a function keeps all its locals in the frame, and the helper also gets the
+other C variables statements read (`env`, `cx`, `inst`, `gm_out`, the backtrace record
+`B`, the node of an enclosing `with`, the parameters read in place). A jump out of a run
+(to a rung of the ladder, a loop's exit, the function's return) becomes `return k` with
+a number per target, and the caller's `switch` jumps there; `FnGen::jump` emits every
+jump that can leave a statement, so it alone decides. A statement bigger than a run
+stays in the function and its own blocks are split. Each C function is then small,
+and the C compiler's time grows linearly with the Gamma function's length: a `main` of
+10,000 assorted statements took 87 s to compile with gcc at `-O1` and now takes 4 s.
+Builds with `-g` keep functions whole, so that a debugger shows the frame as `F`.
 
 At the other end, optimized builds (every mode but Debug) declare a function of at most
 64 temporaries and labels `inline` unless it carries an `#inline` hint. gcc at `-O2`

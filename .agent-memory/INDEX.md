@@ -1,6 +1,7 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#53 merged; s28 third PR (rest of review) open (branch claude/coherence-review-wyd199)
+## State (2026-10-19) — PRs #1–#54 merged; s29 PR: statement-run outlining (branch claude/split-huge-functions-504t06)
+- s29: huge functions split into helper C functions (decisions/031, bugs-open #48 done).
 - s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
   vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
   all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
@@ -29,7 +30,7 @@
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
-   next P2: fuzz sema/differential, statement-run outlining (#48), perf, Windows, Emacs.
+   next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).
@@ -60,6 +61,7 @@
                   · 028 machine-applicable fixes (gamma fix, json diags, LSP quick fixes)
                   · 029 s27 wishes: admitted ([E]T, SIMD, Proc, zones, fiber sleep/generators) / rejected
                   · 030 s28 coherence review: applied + open questions for the user
+                  · 031 statement-run outlining (huge functions → helpers sharing F)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
