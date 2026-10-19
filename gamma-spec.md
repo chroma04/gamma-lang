@@ -413,6 +413,16 @@ The runtime installs the default handler for each ambient effect, calls `main`, 
 
 Command-line arguments and the environment are obtained through the `Env` effect.
 
+#### 3.7.1 Freestanding programs
+
+A target whose `target.os` is `.Freestanding` (§3.6) has no operating system: firmware, kernels, boot code. Everything that needs an operating system is absent, and the program supplies the rest itself through the same mechanisms a hosted program uses:
+
+- **No `main` and no ambient defaults.** The root module does not declare `main`. The program's entry points are its `#export`ed functions (§19.4), called by the startup code, interrupt table or host program it is linked with. An exported function's effect set is empty or `Sys`, so it installs every handler its body needs: an allocator over a static buffer (`std/fixed_buffer`), an `Out` handler that writes to a serial port with `@volatile_store`, a `Clock` handler that reads a timer register. The default handlers `heap_allocator()`, `system_io()` and `system_output()` (§21.1) do not exist there; naming one is a compile error.
+- **Traps call the program.** The program may declare one top-level function with the attribute `#trap_hook`, of type `fn(msg: string, loc: SourceLocation) -> never needs Sys`. A trap calls it with the reason and location (the location is unspecified in Fast builds) instead of writing to standard error and terminating the process (§18.5); it must not return, typically halting or resetting the machine. Without a hook, a trap executes the target's trap instruction. `#trap_hook` is a compile error on a hosted target.
+- **The build produces an object file** with the exported functions and the run-time support they use, to be linked by the target's toolchain; there is no executable. Fibers work as on hosted targets (their stacks are provided by the program, §14.1); Debug builds have no guard pages and no leak reports.
+
+Tests and benchmarks run on the host (§3.8), so a freestanding program's modules are tested there with test handlers in place of the hardware.
+
 ### 3.8 Tests
 
 ```
@@ -833,7 +843,7 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument (§21.6.1), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type: `x := 0; T :: @type_of(x); y: u8 = x` is an error, because `x` is already `i32`. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument (§21.6.1), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type, and the program is rejected, not reinterpreted, wherever the whole-body rule would have chosen differently: `x := 0; T :: @type_of(x); y: u8 = x` is an error because `x` is already `i32`, and so is `n := 0; print("{}", n); for i in 0..n { … }`, where the range bound would have made `n` a `usize`. The error names the place that fixed the type; annotating the variable (`n: usize = 0`) resolves it. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
@@ -1733,7 +1743,7 @@ Generic effects (`Yield(T)`) and effect sets mentioning type parameters (`needs 
 
 ### 12.9 Ambient effects
 
-The following effects are predeclared. `main` and tests may perform any of them; the runtime installs a default handler for each before calling `main`.
+The following effects are predeclared. `main` and tests may perform any of them; the runtime installs a default handler for each before calling `main`. A freestanding program has no defaults: it handles each effect it performs itself (§3.7.1).
 
 | Effect | Operations (summary; signatures in §21.7) | Default handler | Test handler |
 | --- | --- | --- | --- |
@@ -2165,7 +2175,7 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
-| `Signed(T)` | signed integer and float types (floats have a sign) | `Num`, plus unary `-` |
+| `Neg(T)` | signed integer and float types | `Num`, plus unary `-` |
 | `Float(T)` | float types | `Num`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
@@ -2231,7 +2241,10 @@ Sched :: effect(E: effects) {
 ```
 
 - In an effect set, `E` stands for the effects of `E`; after instantiation it is replaced by them (duplicates merge). `E` is not a type, an effect or a value: it may appear only as a term of an effect set or as the argument of another effect-set parameter (`Sched(E)`, `Scheduler(E)`).
-- An argument for an effect-set parameter is an effect set (§12.3) without `needs`: `Sched(Out + Clock)`, `fiber.scheduler(Out + Clock)`. It may be a single effect (`Sched(Out)`), a named effect set, or another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2). It is also inferable when it occurs in the arguments of an effect in the function's own effect set (`helper :: fn(E: effects) needs Sched(E)`). An inferable one is written by name or inferred: first from the effect sets of the other arguments' function types, from the arguments of an effect named once on each side (`Sched(E)` against `Sched(Out)`), then, for a single term `E`, as the argument's effects that the parameter type does not name; failing that, from the function's own effect set, matching an effect there (`Sched(E)`) against the one instantiation of that effect available at the call, as an operation call picks its instantiation (§12.1): `helper()` in a function that `needs Sched(Out + Clock)` is `helper(E: Out + Clock)`. One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched` of the empty set).
+- An argument for an effect-set parameter is an effect set (§12.3) without `needs`: `Sched(Out + Clock)`, `fiber.scheduler(Out + Clock)`. It may be a single effect (`Sched(Out)`), a named effect set, or another effect-set parameter. Like any compile-time parameter, a function's effect-set parameter is positional unless it is inferable (§16.2), and an inferable one may always be written by name. It is inferable in two cases, each with one rule:
+  - when the type of another parameter mentions it, it is inferred from that argument, as a type parameter is: from the effect set of the argument's function type (`f: ^fn() needs E` against an argument that `needs Out`), or from the arguments of an effect named once on each side (`Sched(E)` against `Sched(Out)`); a lone term `E` beside named effects takes the argument's effects that the parameter type does not name;
+  - when it occurs only in the arguments of an effect in the function's own effect set (`helper :: fn(E: effects) needs Sched(E)`), it is inferred the way an operation call picks its instantiation (§12.1): from the one instantiation of that effect available at the call. `helper()` in a function that `needs Sched(Out + Clock)` is `helper(E: Out + Clock)`. The rule is local: it reads only the caller's own effect set and enclosing `with`s, exactly as performing `Sched.join()` there does.
+  One that is neither given nor inferred, and one left out at the end of an effect's or type's arguments, is the empty set (`Sched` is `Sched` of the empty set).
 - The body is checked once, with `E` as an opaque member of the sets that mention it: `apply` may call `f` because its own set includes `E`. Since `E` might include any effect, a `with` may not handle anything around code that performs `E` (the next paragraph's rule, for effect sets).
 
 This is how a stored function pointer can be polymorphic in its effects without effect variables in the types of values: `std/fiber`'s `Sched(E)` lets tasks perform the effects `E`, which the scheduler's handler, `handler(E: effects) Sched(E) for ^Scheduler(E) needs E`, requires where it is installed (§14.6).
@@ -2391,7 +2404,7 @@ Everything else is defined. In particular, integer overflow, reading `---` stora
 
 ### 18.5 Traps
 
-A trap terminates the process immediately (Debug, Checked and Safe builds report the reason, and Debug and Checked builds the location, to standard error first). It does not unwind, run `defer` statements, or return to any handler. `trap(msg)` (§21.6) traps unconditionally in every build mode.
+A trap terminates the process immediately (Debug, Checked and Safe builds report the reason, and Debug and Checked builds the location, to standard error first); on a freestanding target it calls the program's `#trap_hook` instead (§3.7.1). It does not unwind, run `defer` statements, or return to any handler. `trap(msg)` (§21.6) traps unconditionally in every build mode.
 
 ### 18.6 What Checked mode does not check
 
@@ -2582,6 +2595,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#simd` | array type `[N]T` | a vector of `N` lanes | 5.6.2 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
+| `#trap_hook` | top-level function | called by every trap on a freestanding target | 3.7.1 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
 | `#callconv(.X)` | top-level function, foreign member, `^fn` type | calling convention: `.C` (default), `.SysV`, `.Win64` (x86-64 only); part of a `^fn` type; plain functions only, never second-class | 19.2 |
 | `#global` | binding | mutable static storage | 19.3 |
@@ -2640,7 +2654,7 @@ The universe holds the **effects** but not their **operations**, with one except
 | types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, `ns`, `us`, `ms`, `secs`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
 ### 21.2 Allocation
@@ -2848,7 +2862,7 @@ Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecifi
 Duration :: struct { pub ns: u64 }
 // methods: i.since(earlier) -> Duration (checked: not earlier than `earlier`), i.after(d) -> Instant,
 // d.plus(d2), d.minus(d2) (checked), d.to_ms() -> u64 (whole milliseconds);
-// constructors ns(n), us(n), ms(n), secs(n) -> Duration (n: u64; checked)
+// std/time constructs them: time.ns(n), time.us(n), time.ms(n), time.secs(n) -> Duration (n: u64; checked)
 SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
 
 Out   :: effect { write: fn(bytes: []const u8) }
@@ -3316,7 +3330,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 
 ### C.6 P5 — Every rule is local
 
-Generic code is ordinary code with compile-time parameters, **checked once** where it is written and monomorphized (§16.1). Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) that describe which built-in operators a body may use; `Signed` covers the float types because they have a sign and unary `-`.
+Generic code is ordinary code with compile-time parameters, **checked once** where it is written and monomorphized (§16.1). Constraints are a closed set (`Eq`, `Ord`, `Num`, `Int`, `Neg`, `Float`, `Plain`) that describe which built-in operators a body may use, and each is named for what it grants: `Neg` grants unary `-`, so it covers the signed integers and the floats.
 
 **Inference never depends on reading order or on positions** (§16.2). A compile-time parameter that another parameter's type mentions is inferred, or written by name; it is never bound by position, so a reader can tell which argument binds which parameter without counting. Function literals are matched after the other arguments, so writing them first or last does not change what a call means.
 
