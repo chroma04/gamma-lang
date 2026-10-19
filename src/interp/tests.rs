@@ -264,25 +264,6 @@ fn bitwise_ops() {
     assert_eq!(big_of(&v), (BigInt::one() << 130usize) - 1);
 }
 
-#[test]
-fn array_elementwise() {
-    let t = Ty::array(3, Ty::i32());
-    let a = array(vec![i32e(1), i32e(2), i32e(3)]);
-    let b = array(vec![i32e(10), i32e(20), i32e(30)]);
-    let sum = Tb::new().eval(&add(a.clone(), b.clone())).unwrap();
-    assert_eq!(sum.ty, t);
-    let vals: Vec<i32> = sum.bytes.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
-    assert_eq!(vals, vec![11, 22, 33]);
-    let neg = Tb::new().eval(&un(UnOp::Neg, a.clone())).unwrap();
-    let vals: Vec<i32> = neg.bytes.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
-    assert_eq!(vals, vec![-1, -2, -3]);
-    let big = array(vec![u8e(200), u8e(1)]);
-    let big2 = array(vec![u8e(100), u8e(1)]);
-    assert!(trap_msg(Tb::new().eval(&add(big.clone(), big2.clone()))).contains("overflow"));
-    let w = Tb::new().eval(&bin(ADDW, big, big2)).unwrap();
-    assert_eq!(w.bytes.to_vec(), vec![44, 2]);
-}
-
 // ---------------------------------------------------------------------------
 // Floats
 // ---------------------------------------------------------------------------

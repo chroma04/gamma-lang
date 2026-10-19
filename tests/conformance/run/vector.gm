@@ -1,4 +1,4 @@
-// Vectors `#simd [N]T` (§5.6.2): lane-wise arithmetic and comparisons, masks, reductions,
+// Vectors `#simd [N]T` (§5.6.2): lane-wise arithmetic, lane comparisons, masks, reductions,
 // shuffles, conversions, and loading from and storing to slices.
 F4 :: #simd [4]f32
 I4 :: #simd [4]i32
@@ -11,7 +11,7 @@ count_byte :: fn(s: []const u8, c: u8) -> usize {
     i: usize = 0
     needle := B16(fill: c)
     while i + 16 <= s.len {
-        n += (B16.load(s[i..]) is needle).count()
+        n += B16.load(s[i..]).lanes_eq(needle).count()
         i += 16
     }
     while i < s.len {
@@ -25,7 +25,7 @@ main :: fn() needs Out {
     a := F4(1, 2, 3, 4)
     b := F4(fill: 0.5)
     print("{} {} {}\n", a + b, a * b - b, dot(a, a))
-    m := a > F4(fill: 2.5)
+    m := a.lanes_gt(F4(fill: 2.5))
     print("{} {} {} {}\n", m, m.any(), m.all(), m.count())
     print("{}\n", m.select(a, b))
     x := I4(1, -2, 3, -4)

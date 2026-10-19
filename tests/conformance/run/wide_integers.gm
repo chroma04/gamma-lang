@@ -156,8 +156,8 @@ containers :: fn() needs Out {
     total: u200 = 0
     for x in arr { total += x }
     print("{} {}\n", arr, total)
-    print("{} {}\n", arr +% arr, arr - arr)
-    print("{}\n", -[2]i200(1, -(i200(1) << 190)))
+    print("{} {}\n", arr[2] +% arr[2], arr[1] - arr[1])
+    print("{}\n", -(-(i200(1) << 190)))
     o: ?u200 = 1 << 130
     n: ?u200 = null
     print("{} {}\n", o, n)

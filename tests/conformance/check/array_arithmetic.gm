@@ -1,12 +1,25 @@
 //! stage: check
-// Elementwise arithmetic is for arrays of numbers, without the `?` flavors (§7.4.6).
+// Arithmetic does not apply to arrays, enum-indexed arrays included; vectors and loops do.
 
-f :: fn(a: [3]i32, b: [3]bool, c: [2]i32) {
-    _ = a +? a          //~ ERROR `+?` requires integer operands, not `[3]i32`
-    _ = b + b           //~ ERROR `+` requires numeric operands, not `[3]bool`
-    _ = a % a           //~ ERROR `%` requires integer operands, not `[3]i32`
+Color :: union { Red, Green }
+
+f :: fn(a: [3]i32, b: [3]bool, c: [2]i32, d: [Color]f64) {
+    _ = a + a           //~ ERROR arithmetic does not apply to arrays; use a `#simd [N]T` vector
+    _ = a +% a          //~ ERROR arithmetic does not apply to arrays
+    _ = a * a           //~ ERROR arithmetic does not apply to arrays
+    _ = -a              //~ ERROR arithmetic does not apply to arrays
+    _ = b + b           //~ ERROR arithmetic does not apply to arrays
     _ = a + c           //~ ERROR have different types: `[3]i32` and `[2]i32`
-    _ = a + 1           //~ ERROR have different types: `[3]i32` and `{integer}`
+    _ = d - d           //~ ERROR arithmetic does not apply to arrays
+    _ = -d              //~ ERROR arithmetic does not apply to arrays
 }
 
-main :: fn() {}
+g :: fn(N :: usize, a: [N]f64) -> [N]f64 {
+    return a + a        //~ ERROR arithmetic does not apply to arrays
+}
+
+main :: fn() {
+    x := [2]u8(1, 2)
+    x += x              //~ ERROR arithmetic does not apply to arrays
+    x -|= x             //~ ERROR arithmetic does not apply to arrays
+}

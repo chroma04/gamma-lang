@@ -531,7 +531,7 @@ both use it. The files:
 | `func.rs` | functions: frames, blocks, statements, the exit ladders, handler specialization |
 | `expr.rs` | expressions, places, coercions, calls, effects, pattern matching |
 | `chain.rs` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
-| `arith.rs`, `elementwise.rs`, `wide.rs` | checked scalar operators, elementwise array arithmetic (§7.4.6), integers wider than 128 bits |
+| `arith.rs`, `wide.rs` | checked scalar operators, integers wider than 128 bits |
 | `vector.rs` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.rs` | per-type equality, ordering and hashing |
 | `fiber.rs` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |

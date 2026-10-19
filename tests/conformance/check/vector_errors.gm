@@ -10,6 +10,7 @@ Halves :: #simd [4]f16 //~ ERROR not `f16`
 Gen :: struct(T: type) { v: #simd [4]T } //~ ERROR a concrete lane type
 Bad :: #packed [4]u8 //~ ERROR only `#simd` can
 same :: fn(T: type, a, b: T) -> bool where Eq(T) => a is b
+before :: fn(T: type, a, b: T) -> bool where Ord(T) => a < b
 lib :: foreign "c" { f :: fn(v: F4) } //~ ERROR not a C-compatible parameter type
 
 main :: fn() {
@@ -19,22 +20,29 @@ main :: fn() {
     _ = i % i //~ ERROR `%` is not available on vectors
     _ = a + 1.0 //~ ERROR a scalar is not spread over the lanes
     _ = a and a //~ ERROR on the lanes of a mask use
-    _ = not (a < a) //~ ERROR complemented by `~m`
+    _ = not a.lanes_lt(a) //~ ERROR complemented by `~m`
     _ = a +? a //~ ERROR a lane cannot be `null`
     _ = a & a //~ ERROR applies to integer and `bool` lanes
-    if a < a { } //~ ERROR a mask is tested with `.all()` or `.any()`
-    _ = same(a, a) //~ ERROR does not satisfy `Eq(T)`
-    _ = @hash(a, 0) //~ ERROR `@hash` is defined only
+    if a.lanes_lt(a) { } //~ ERROR a mask is tested with `.all()` or `.any()`
+    _ = a < a //~ ERROR vectors are not ordered; compare lanes with `.lanes_lt(w)`
+    _ = a <= a //~ ERROR compare lanes with `.lanes_le(w)`
+    _ = a > a //~ ERROR compare lanes with `.lanes_gt(w)`
+    _ = a >= a //~ ERROR compare lanes with `.lanes_ge(w)`
+    _ = before(a, a) //~ ERROR does not satisfy `Ord(T)`
+    _ = a is i //~ ERROR cannot compare
+    _ = a.lanes_eq(i) //~ ERROR expected `#simd [4]f32`
+    _ = a.lanes_lt(a, a) //~ ERROR
+    _ = (a.lanes_eq(a)).lanes_lt(a.lanes_eq(a)) //~ ERROR needs numeric lanes
     _ = i.shuffle(4) //~ ERROR lane 4 does not exist
     k := @black_box(usize(1))
     _ = i.shuffle(k) //~ ERROR must be a compile-time constant
     _ = i.to(i64) //~ ERROR converts numeric lanes to `f32` or `f64`
     _ = #simd [4]i8(i) //~ ERROR does not convert to `i8` losslessly
-    _ = (a < a).select(i, a) //~ ERROR expected `#simd [4]i32`, found `#simd [4]f32`
+    _ = a.lanes_lt(a).select(i, a) //~ ERROR expected `#simd [4]i32`, found `#simd [4]f32`
     _ = a.sort() //~ ERROR vectors have no method `.sort`
     _ = F4(1, 2) //~ ERROR needs exactly 4 elements, but 2
-    _ = (a < a).reduce_sum() //~ ERROR needs numeric lanes
+    _ = a.lanes_lt(a).reduce_sum() //~ ERROR needs numeric lanes
     _ = a.all() //~ ERROR needs a mask
     _ = a << 1 //~ ERROR shifts integer lanes
-    _ = -(a < a) //~ ERROR does not apply to the lanes
+    _ = -a.lanes_lt(a) //~ ERROR does not apply to the lanes
 }

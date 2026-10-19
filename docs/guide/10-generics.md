@@ -365,7 +365,7 @@ dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
 use_dot :: fn(xs, ys: []const i32) -> i32 => dot(SAT_RING, xs, ys)
 ```
 
-The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. Arrays do have elementwise arithmetic for the common numeric case.
+The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. Vectors (`#simd [N]T`) are the one place where an operator works on many values, and the language, not user code, defines how.
 
 ## Summary
 

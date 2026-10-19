@@ -28,5 +28,5 @@ main :: fn() needs Out {
     print("\n")
     t := s
     t[.B] = 20
-    print("{} {}\n", s is t, s + t)
+    print("{} {}\n", s is t, t)
 }

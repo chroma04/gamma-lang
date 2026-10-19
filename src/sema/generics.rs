@@ -132,7 +132,7 @@ impl<'s> Sema<'s> {
             | TyKind::Float(_)
             | TyKind::ManyPtr { .. } => true,
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_ord(*e)),
-            // `<` on vectors compares lanes (§5.6.2).
+            // Vectors are not ordered: `.lanes_lt(w)` and its kin compare lanes (§5.6.2).
             TyKind::Array { kind: crate::types::ArrayKind::Simd, .. } => false,
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => {
                 self.has_ord(*elem)
@@ -153,8 +153,6 @@ impl<'s> Sema<'s> {
     fn has_eq_in(&self, t: Ty, seen: &mut Vec<Ty>) -> bool {
         match t.kind() {
             TyKind::Fn(_) | TyKind::Handler(_) | TyKind::Cont(_) | TyKind::Type => false,
-            // `is` on vectors compares lanes, giving a mask (§5.6.2).
-            TyKind::Array { kind: crate::types::ArrayKind::Simd, .. } => false,
             TyKind::Param(p) => self.param_has(*p, Constraint::Eq),
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_eq_in(*e, seen)),
             TyKind::Array { elem, .. }
