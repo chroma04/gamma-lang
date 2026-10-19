@@ -1103,9 +1103,9 @@ Indexing a `string` gives a `u8`.
 
 1. If `e` has (after at most one auto-dereference of `^S`/`^const S`) a struct or tuple type with a field `name` — including a field promoted by `using` — it is that field.
 2. If `e` is a slice, array, integer, float, pointer, union, optional, result, or range value and `name` is a builtin method of that type (§21.3), it is that method.
-3. Otherwise, `e.name(args)` is a **method call**: let `S` be `e`'s type with at most one pointer level removed, and `M` the module that declares `S` (for a generic instantiation, the module declaring the generic). If `M` has a top-level function `name` visible at the call site, the call means `name(e', args)`, where `e'` is `e` adjusted by the receiver rules below. Otherwise it is a compile error.
+3. Otherwise, `e.name(args)` is a **method call**: let `S` be `e`'s type with at most one pointer level removed, and `M` the module that declares `S` (for a generic instantiation, the module declaring the generic). The **method candidates** named `name` are the top-level function `name` of `M`, and each operation `name` of an effect declared in `M` whose first parameter has type `S`, `^S` or `^const S` (§12.1). If the candidate is visible at the call site, the call means calling it with `e'` first, where `e'` is `e` adjusted by the receiver rules below: `f.read(buf)` is `Fs.read(f, buf)`. Otherwise it is a compile error.
 
-A struct type may not have both a field and a method candidate with the same name: declaring a function `f` in `S`'s module whose first run-time parameter has type `S`, `^S` or `^const S` is a compile error if `S` has a field `f`.
+A type has at most one method candidate of each name, and a struct type may not have both a field and a method candidate with the same name: declaring a function or operation `f` in `S`'s module whose first run-time parameter has type `S`, `^S` or `^const S` is a compile error if `S` has a field `f` or already has a method candidate `f`. Finding a method is therefore a lookup, never a choice.
 
 **Receiver rules.** The receiver fills the function's first run-time parameter; compile-time parameters before it are inferred or, if not inferable, bound by the other arguments as in any call (§11.3, §16.2). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
 
@@ -1592,7 +1592,11 @@ op_decl    = ident ':' ( 'fn' | 'esc' | 'ctl' ) '(' [ param % ',' ] ')' [ '->' t
 
 An `effect` literal creates a nominal effect type. Its parameters, if any, are types (`effect(T: type)`) or effect sets (`effect(E: effects)`, §16.6); an effect is instantiated by applying it to arguments. Each **operation** has a name, a **kind** (`fn`, `esc` or `ctl`), parameters, and a result type (default `()`).
 
-Declaring an effect `E` in module `M` also declares each operation `op` as a top-level function of `M` named `op` (public if `E` is), with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and the effect set `needs E(…)`. Calling it **performs** the operation. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. It is also reachable as `E.op`, and through an instantiation or an alias of one as `E(T).op` or `Ev.op` (with `Ev :: E(T)`), which performs that instantiation without inference. A name clash between an operation and another top-level name of `M` is a compile error. Outside `M`, an operation is reached as `m.op` or `m.E.op` (with `m` the import of `M`); for the predeclared effects, whose operations the universe leaves out, as `E.op` (§21.1).
+Each operation `op` of an effect `E` is a function in `E`'s namespace, written `E.op`, with the operation's parameters (preceded by `E`'s parameters as inferable type parameters, §16.2), its result type, and the effect set `needs E(…)`. Calling it **performs** the operation. The call always names the effect, so it shows at the call which context it reaches into: `Log.log(.Warn, msg)`, `Clock.now()`, `Out.write(bytes)`; outside the declaring module `M`, `m.E.op` (with `m` the import of `M`). Operations are not top-level names of `M`, so operations of different effects may share a name (`Out.write` and `Err.write`), and none clashes with a function of `M`. The one exception is `yield` (§13.1), which every iterator performs: it is also in the universe scope (§21.1), so iterators write `yield(x)`.
+
+When `E` has parameters, `E.op(…)` infers them from the arguments. When exactly one instantiation of `E` is available at the call — in the enclosing function's effect set or installed by an enclosing `with` — and `E`'s parameters cannot be inferred from the arguments (for example, `yield(1)` with an untyped literal) or are inferred as an instantiation that is not available, that one instantiation is used and the arguments are coerced to its parameter types: in a function performing `Yield(string)`, `yield(buf)` with `buf: []u8` yields a `string`. Through an instantiation or an alias of one, `E(T).op` or `Ev.op` (with `Ev :: E(T)`) performs that instantiation without inference.
+
+An operation whose first parameter has a type `S` declared in `M` (or `^S`, `^const S`) is also called as a method of `S` (§7.10): with `f: File`, `f.read(buf)` is `Fs.read(f, buf)`. Operation names within one effect are distinct.
 
 ### 12.2 Operation kinds
 
@@ -1734,7 +1738,7 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | Effect | Operations (summary; signatures in §21.7) | Default handler | Test handler |
 | --- | --- | --- | --- |
 | `Alloc` | `current: fn() -> Allocator` | the system heap | leak-checking heap; a leak fails the test |
-| `Out`, `Err` | `write_out` / `write_err: fn(bytes: []const u8)` | stdout, stderr | captured to buffers |
+| `Out`, `Err` | `write: fn(bytes: []const u8)` | stdout, stderr | captured to buffers |
 | `In` | `read: fn(buf: []u8) -> IoError!usize` | stdin | empty input |
 | `Clock` | `now: fn() -> Instant`, `wall: fn() -> i64`, `sleep: fn(d: Duration)` | system clock | fake clock; `sleep` advances it |
 | `Rand` | `fill: fn(buf: []u8)` | OS-seeded generator | fixed seed |
@@ -2076,7 +2080,7 @@ AllocError :: union { OutOfMemory }
 An **`Allocator`** is a first-class handle. The **`Alloc`** effect supplies the *current* allocator. They serve different memory: **the effect for scoped memory, a value for owned memory.** Memory that dies inside the `with` that supplied the allocator comes from `Alloc`; a structure that outlives it captures an `Allocator` and frees through it, which is why `names.push(x)` does not need `Alloc`.
 
 - **`Allocator` is itself a handler for `Alloc`**: the core library declares `handler Alloc for Allocator { current(self) => self }` (legal because both are declared in the same core module, §12.6), so `with arena.allocator() { … }` makes an arena current.
-- The core functions `new`, `make` and `free` (§21.2) perform `Alloc` and use `current()`. They are for memory that dies inside the `with` that provided the allocator.
+- The core functions `new`, `make` and `free` (§21.2) perform `Alloc` and use `Alloc.current()`. They are for memory that dies inside the `with` that provided the allocator.
 - **Long-lived structures capture their allocator at construction** and use that stored handle for every later operation. A `List` created under the heap allocator keeps growing on the heap even when used inside an arena's `with`.
 
 ```
@@ -2628,7 +2632,7 @@ The core library is the part of the standard library that the language definitio
 
 These names are predeclared in every module, without import. The type names in the first row are reserved: no top-level declaration may use them, so in every module they denote the built-in types. Locals and parameters may not be named like any type visible where they are declared (§4.6): the reserved names above, `string`, `cstring`, `rune`, and every other type of the universe scope (`List`, `Duration`, `IoError`, …). Every other name may be hidden: a top-level declaration, a local binding or a parameter of the same name hides it for its scope (§4.6), and the rest of the program is unaffected, because the core library refers to its own names.
 
-The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation of a predeclared effect is reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write_out(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are also called as methods (`f.read_from(buf)`, §21.7). The universe also leaves out the types of `Fs`, `Net` and `Proc`, which the standard modules `std/fs`, `std/net` and `std/process` export (`fs.File`, `net.Socket`, `process.Child`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
+The universe holds the **effects** but not their **operations**, with one exception: `yield`, which every iterator performs. An operation is always reached through its effect (§12.1), so a call shows what it asks of the context: `Clock.now()`, `Alloc.current()`, `Env.args()`, `Fs.open(path, opts)`, `Out.write(bytes)`. Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are also called as methods (`f.read(buf)`, `sock.close()`, §21.7). The universe also leaves out the types of `Fs`, `Net` and `Proc`, which the standard modules `std/fs`, `std/net` and `std/process` export (`fs.File`, `net.Socket`, `process.Child`), and the functions that are methods of `Instant` and `Duration` (`i.since(t0)`). A program may therefore use any of these names for its own declarations without hiding anything.
 
 | Category | Names |
 | --- | --- |
@@ -2709,7 +2713,7 @@ nth        :: fn(T: type, it: fn() needs Yield(T), n: usize) -> ?T
 ```
 // core/list
 List   :: struct(T: type) { pub items: []T; cap: usize; alloc: Allocator }    // items.len is the length
-list   :: fn(T: type) -> List(T) needs Alloc                        // captures current()
+list   :: fn(T: type) -> List(T) needs Alloc                        // captures Alloc.current()
 push   :: fn(T: type, l: ^List(T), x: T) -> AllocError!()
 extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!()
 insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!()  // traps if i > len
@@ -2747,7 +2751,7 @@ clear    :: fn(m: ^HashMap(…))                                      // keeps t
 deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `Alloc.current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2766,7 +2770,7 @@ eprint :: fn(A: type, template :: string, args: ..A) needs Err
 - `expect(cond, msg)` performs `Test.fail` (§3.8) when `cond` is `false`, reporting `msg` (prefixed `expectation failed: ` unless it is the default) and its caller's location.
 - `expect_eq(actual, expected)`, unless `actual is expected` (§7.6; `T` needs `Eq`, and `expected` is checked against `actual`'s type), writes `expected: ` and `actual: ` lines with both values through `Test.note`, then performs `Test.fail` with `expectation failed: the values differ` and its own location.
 - `ok(x)` is the success value of `x`; if `x` is an error, it writes `error: ` and the error value through `Test.note` and performs `Test.fail` with its caller's location.
-- `print(t, args…)` is `@write(fn(b) => Out.write_out(b), t, args…)`, and `eprint` likewise with `Err.write_err`.
+- `print(t, args…)` is `@write(fn(b) => Out.write(b), t, args…)`, and `eprint` likewise with `Err.write`.
 
 #### 21.6.1 Formatting: `@write`
 
@@ -2847,8 +2851,8 @@ Duration :: struct { pub ns: u64 }
 // constructors ns(n), us(n), ms(n), secs(n) -> Duration (n: u64; checked)
 SourceLocation :: struct { pub file: string; pub line, column: u32; pub function: string }
 
-Out   :: effect { write_out: fn(bytes: []const u8) }
-Err   :: effect { write_err: fn(bytes: []const u8) }
+Out   :: effect { write: fn(bytes: []const u8) }
+Err   :: effect { write: fn(bytes: []const u8) }
 In    :: effect { read: fn(buf: []u8) -> IoError!usize }      // 0 at end of input
 Clock :: effect { now: fn() -> Instant; wall: fn() -> i64; sleep: fn(d: Duration) }
 Rand  :: effect { fill: fn(buf: []u8) }
@@ -2871,8 +2875,8 @@ SeekFrom :: union { Start, Current, End }
 Fs :: effect {
     open: fn(path: string, opts: OpenOptions) -> IoError!File
     close: fn(f: File)
-    read_from: fn(f: File, buf: []u8) -> IoError!usize          // 0 at the end of the file
-    write_to: fn(f: File, bytes: []const u8) -> IoError!usize   // may write fewer bytes
+    read: fn(f: File, buf: []u8) -> IoError!usize               // 0 at the end of the file
+    write: fn(f: File, bytes: []const u8) -> IoError!usize      // may write fewer bytes
     seek: fn(f: File, offset: i64, from: SeekFrom) -> IoError!u64
     stat: fn(path: string) -> IoError!FileInfo
     remove, make_dir, remove_dir: fn(path: string) -> IoError!()
@@ -2899,7 +2903,7 @@ Net :: effect {
     accept: fn(l: Listener) -> IoError!Socket
     send: fn(s: Socket, bytes: []const u8) -> IoError!usize       // may send fewer bytes
     recv: fn(s: Socket, buf: []u8) -> IoError!usize               // 0 once the peer has closed
-    close_socket: fn(s: Socket)
+    close: fn(s: Socket)
     close_listener: fn(l: Listener)
     shutdown: fn(s: Socket, how: Shutdown) -> IoError!()
     set_timeouts: fn(s: Socket, recv, send: ?Duration) -> IoError!()   // null: wait forever; a call that times out gives TimedOut
@@ -2922,17 +2926,17 @@ Chunk :: struct { pub from: Stream; pub len: usize }
 ExitStatus :: union { Exited: u32, Signaled: i32 }   // its exit code, or the signal that ended it
 Proc :: effect {
     spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // argv[0] without a separator is looked up in PATH
-    write_in: fn(c: Child, bytes: []const u8) -> IoError!usize  // to a piped stdin; may write fewer bytes
+    write: fn(c: Child, bytes: []const u8) -> IoError!usize     // to a piped stdin; may write fewer bytes
     close_in: fn(c: Child)                                       // the child sees the end of its input
-    read_out: fn(c: Child, buf: []u8) -> IoError!?Chunk          // from whichever piped output has data; null once all have ended
+    read: fn(c: Child, buf: []u8) -> IoError!?Chunk              // from whichever piped output has data; null once all have ended
     wait: fn(c: Child) -> IoError!ExitStatus                     // closes our ends of its pipes, waits, releases the child
     kill: fn(c: Child) -> IoError!()                             // ends it at once; it must still be waited for
 }
 ```
 
-`read_out` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
+`Proc.read` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
 
-Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read_from(buf)`), by §7.10 rule 3: an effect operation is a function of the module that declares the effect (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read(buf)`, `sock.close()`, `child.write(bytes)`), by §7.10 rule 3. Where one effect has an operation of the same job for two handle types, the second carries the type in its name (`close_dir`, `close_listener`), since operation names within an effect are distinct (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
 
 ---
 
@@ -3289,7 +3293,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 - **`Sys` marks the edge of the model.** Foreign calls, globals, volatile memory and threads all perform `Sys`, which cannot be handled; a function without it has no hidden state (§12.10). This is what makes **compile-time evaluation** an ordinary call of a function whose effect set is empty (§17), and **test handlers** sound (§12.9). It is not purity: such functions may still write through pointers they are given.
 - **Iteration is an effect.** `for` is a `with` that installs a handler for `Yield` (§13.2); ranges, slices and user iterators are one mechanism, and there is no iterator protocol. Cursors (§13.4) are ordinary methods that `while` uses; `for` knows only `Yield`.
 - **Testing is an effect.** A test fails by performing `Test.fail`, an `esc` operation, so a helper that checks something on a test's behalf says so in its signature (`needs Test`), and a failure unwinds the test, running its `defer`s (§3.8).
-- **Calls show the context they use.** The universe holds the predeclared effects but not their operations, except `yield` (§21.1): `Clock.now()`, `Alloc.current()`, `Fs.open(path, opts)` say at the call that they reach into the context, and names like `now`, `read` and `exit` stay free.
+- **Calls show the context they use.** An operation lives in its effect's namespace and is called through it (§12.1): `Clock.now()`, `Log.log(.Warn, msg)`, `Fs.open(path, opts)` say at the call that they reach into the context, names like `now`, `read` and `exit` stay free, and two effects can both have a `write`. Only `yield` is also a bare name, because every iterator performs it. Operations on a handle (`f.read(buf)`, `sock.close()`) are methods, found by the lookup that finds every method (§7.10).
 - **A clause never handles its own performs.** Clauses run in the context outside their handler (§12.5). This makes an iterator written as a loop over another iterator correct, and makes nested handlers for the same effect compose predictably.
 - **Exits are explicit control flow.** An `esc` clause leaves by `break` (the `with` is an expression, so this can carry a value), and the frames in between run their `defer`s (§12.7). There are no exceptions, unwinding tables or `setjmp`.
 - **Structured lifetime for fibers.** A `with … on` cannot complete while any fiber it created is suspended; an exit that crosses it cancels the remaining fibers first (§14.4). Continuations are first-class so schedulers can queue them, with one-shot use checked at run time where it cannot be checked statically. Fibers start from a function pointer and an argument, never from a second-class closure, since a fiber can outlive the frame that would have created the closure (§14.6).
@@ -3360,7 +3364,7 @@ The first four already exist, each with its cost and its code visible where it i
 | C-style variadic functions | P2, P4 | untyped and unchecked; rest parameters are typed tuples |
 | Implicit allocation for closures | P2 | second-class closures need none |
 | Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
-| Effect operations in the universe scope | P3 | a bare `now()` hides that it reaches into the context |
+| Effect operations as bare names (in the universe scope, or as top-level names of their module) | P3 | a bare `now()` or `log(msg)` hides that it reaches into the context, and operations of different effects could not share a name |
 | Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
 | Target-specific SIMD types and intrinsics | P1, P5 | their layouts and meanings differ by target; `#simd [N]T` has one layout and one meaning everywhere (§5.6.2), and anything beyond it is reached through foreign C or `@asm` (§19) |
 | Integer division of vector lanes | P2 | no target has the instruction, so `/` would hide a loop |
