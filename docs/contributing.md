@@ -225,6 +225,19 @@ type. `GAMMA_TEST_FILTER` and `BLESS=1` work as for the conformance tests:
 GAMMA_TEST_FILTER=wordfreq cargo test --test examples
 ```
 
+**Documentation examples.** The code blocks of the guides for C and Rust programmers
+(`docs/guide/for-c-programmers.md`, `docs/guide/for-rust-programmers.md`) are checked
+by `tests/doc_examples.rs`. A block tagged `gamma` is a whole program that must be
+formatted and must run on both back ends, printing what the `output` block after it
+shows; `gamma test` blocks must pass `gamma test`; `gamma error` blocks must be rejected
+with errors exactly on the lines marked `// error:`; `gamma fragment` blocks are not
+checked. The format is described in the header of `tests/doc_examples.rs`, and
+`GAMMA_TEST_FILTER` selects blocks by `<document>:<line>`:
+
+```sh
+GAMMA_TEST_FILTER=for-rust cargo test --test doc_examples
+```
+
 When adding a feature, add conformance tests that follow the specification
 section by section: valid programs that exercise each rule, and invalid programs
 that check each compile error the section requires.
