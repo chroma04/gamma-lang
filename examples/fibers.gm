@@ -10,6 +10,7 @@
 //!
 //! Run from the examples/ directory:  gamma run fibers.gm      (or: gamma test fibers.gm)
 
+time :: import "std/time"
 fiber :: import "std/fiber"
 chan :: import "std/fiber/channel"
 
@@ -67,9 +68,9 @@ pipeline :: fn(count: u32) -> AllocError!(total: u32, took: Duration) needs Out 
     defer a.deinit()
     b := try chan.channel(u32, 2)
     defer b.deinit()
-    gen := Stage(name: "generate", input: null, output: &a, count: count, delay: ms(5))
-    sq := Stage(name: "square", input: &a, output: &b, count: 0, delay: ms(10))
-    acc := Stage(name: "sum", input: &b, output: null, count: 0, delay: ms(2))
+    gen := Stage(name: "generate", input: null, output: &a, count: count, delay: time.ms(5))
+    sq := Stage(name: "square", input: &a, output: &b, count: 0, delay: time.ms(10))
+    acc := Stage(name: "sum", input: &b, output: null, count: 0, delay: time.ms(2))
 
     // Every task and the code under `with` needs a stack of its own.
     main_stack: [STACK]u8 = ---

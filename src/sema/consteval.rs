@@ -299,15 +299,21 @@ impl<'s> Sema<'s> {
         }
     }
 
+    /// The core library's `SourceLocation` type, if it declares one.
+    pub fn source_location_ty(&mut self) -> Option<Ty> {
+        let d = self.prelude.and_then(|p| {
+            self.modules[p.0 as usize].scope.get(&crate::symbol::Symbol::intern("SourceLocation")).copied()
+        })?;
+        match self.resolve_decl(d) {
+            super::DeclValue::Type(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
     /// A `SourceLocation` value (§21.7) for `span` in function `function`.
     pub fn source_location(&mut self, span: Span, function: crate::symbol::Symbol) -> Expr {
-        let ty = self
-            .prelude
-            .and_then(|p| {
-                self.modules[p.0 as usize].scope.get(&crate::symbol::Symbol::intern("SourceLocation")).copied()
-            })
-            .map(|d| self.resolve_decl(d));
-        let Some(super::DeclValue::Type(ty)) = ty else {
+        let ty = self.source_location_ty();
+        let Some(ty) = ty else {
             self.error(span, "the core library does not declare `SourceLocation`");
             return super::func::error_expr(span);
         };

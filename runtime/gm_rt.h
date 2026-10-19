@@ -13,6 +13,34 @@
 #ifndef GM_RT_H
 #define GM_RT_H
 
+#ifdef GM_FREESTANDING
+/* A freestanding target (spec 3.7.1): no operating system and no C library beyond the
+ * functions every freestanding toolchain provides (memcpy, memmove, memset, memcmp). The
+ * parts of the runtime that need an operating system are left out, and there is one thread
+ * of execution. */
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdarg.h>
+void *memcpy(void *, const void *, size_t);
+void *memmove(void *, const void *, size_t);
+void *memset(void *, int, size_t);
+int memcmp(const void *, const void *, size_t);
+#define strlen gm_strlen
+static inline size_t gm_strlen(const char *s) {
+    size_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+#define snprintf gm_snprintf
+static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
+#define GM_TLS
+/* The context switch is private to the object: only the program's exports are symbols. */
+#define GM_ASM_GLOBL ".local "
+#else
+#define GM_ASM_GLOBL ".globl "
+#define GM_TLS _Thread_local
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* pthread_getattr_np */
 #endif
@@ -71,6 +99,7 @@
 #include <sys/syscall.h>
 #endif
 #endif
+#endif /* GM_FREESTANDING */
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
  * GM_API_VAR: of the declarations of its variables here. */
@@ -256,7 +285,7 @@ typedef struct gm_bt {
     const char *file;
     uint32_t line, col;
 } gm_bt;
-GM_API_VAR _Thread_local gm_bt *gm_bt_top;
+GM_API_VAR GM_TLS gm_bt *gm_bt_top;
 
 /* Stops the program: flushes stdout, writes "trap: <msg>\n  at <file>:<line>:<col>\n" to
  * stderr (the second line only if file is not NULL), followed in Debug builds by the calls
@@ -493,7 +522,7 @@ enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT, GM_RESUME, GM_CANCEL 
 static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
 typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
 /* Each thread has its own exit in progress (§19.6). */
-GM_API_VAR _Thread_local gm_unwind gm_unw;
+GM_API_VAR GM_TLS gm_unwind gm_unw;
 
 /* Runs entry `f` of the program under context `cx` on a thread with a large stack and
  * returns its exit status. */
@@ -590,12 +619,17 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_NO_FRAME_PROBES 1
 #define GM_STACK_CHECK(p, n) ((void)(p))
 #else
+#ifdef GM_FREESTANDING
+/* No signal handler or exception port to report an overflow: the probes in each function
+   (against a fiber's limit; the bare machine's own stack has none) are all there is. */
+#define GM_NO_FRAME_PROBES 1
+#endif
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #endif
-GM_API_VAR _Thread_local gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
-GM_API_VAR _Thread_local uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
-GM_API_VAR _Thread_local uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
+GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
+GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
+GM_API_VAR GM_TLS uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
 /* Records the stack limit of the calling thread (at the start of `main` or of a thread). */
 GM_API void gm_thread_stack(void);
 GM_API _Noreturn void gm_stack_overflow(void);

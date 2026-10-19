@@ -74,11 +74,22 @@ pub struct Generated {
     pub opts: Options,
     /// The target it was generated for.
     pub target: crate::layout::Target,
+    /// The program is for a freestanding target (§3.7.1): the code is compiled with the
+    /// runtime into one object, and has no `main`.
+    pub freestanding: bool,
+    /// A freestanding program with a `#trap_hook`.
+    pub trap_hook: bool,
 }
 
 /// Translates `prog` (whose entry is `entry`) to C source.
 pub fn generate(prog: &Program, sources: &SourceMap, entry: FnId, opts: &Options) -> CResult<Generated> {
     generate_entries(prog, sources, &[entry], false, opts)
+}
+
+/// Translates a program for a freestanding target to C source: no `main`, and the program's
+/// exported functions as its entry points (§3.7.1).
+pub fn generate_object(prog: &Program, sources: &SourceMap, opts: &Options) -> CResult<Generated> {
+    generate_entries(prog, sources, &[], false, opts)
 }
 
 /// Translates `prog` to C source whose `main` runs one of `entries`, chosen by the
@@ -134,16 +145,24 @@ fn generate_entries(
         loc_files: Default::default(),
         stubs: HashMap::new(),
     };
+    let freestanding = prog.target.os == "Freestanding";
     for &entry in entries {
         g.queue(entry);
     }
     for (_, f) in &prog.exports {
         g.queue(*f);
     }
+    if let Some(h) = prog.trap_hook {
+        g.queue(h);
+    }
     g.drain()?;
     let (const_decls, const_init) = g.gen_consts()?;
-    let exports = g.gen_exports()?;
-    let main = g.gen_main(entries, select)?;
+    let mut exports = g.gen_exports()?;
+    if freestanding {
+        exports.insert_str(0, &g.gen_start());
+        exports.push_str(&g.gen_trap_hook()?);
+    }
+    let main = if freestanding { String::new() } else { g.gen_main(entries, select)? };
     let mut parts = units::Parts::default();
     let checks = format!("GM_API int gm_checks = {};\n", opts.checks as u8);
     parts.head.push_str(helpers::SUPPORT);
@@ -200,6 +219,15 @@ fn generate_entries(
             }
         }
     }
+    if freestanding && out.contains("gm_with_go(") && !matches!(prog.target.arch, "X86_64" | "Aarch64" | "S390x") {
+        return Err(Unsupported {
+            message: format!(
+                "fibers (`with … on`) need a context switch, which the runtime has only for x86-64, AArch64 and s390x; this freestanding target ({}) has none",
+                prog.target.arch
+            ),
+            span: Span::DUMMY,
+        });
+    }
     out.push_str(&exports);
     out.push_str(&main);
     parts.once.insert_str(0, &checks);
@@ -214,6 +242,8 @@ fn generate_entries(
         libs: g.libs.into_iter().collect(),
         opts: opts.clone(),
         target: prog.target.clone(),
+        freestanding,
+        trap_hook: freestanding && prog.trap_hook.is_some(),
     })
 }
 
@@ -513,7 +543,7 @@ impl<'a> Gen<'a> {
                 let _ = writeln!(decls, "extern uint8_t gm_g{}[] __asm__(GM_SYM(\"{}\"));", i, link);
                 continue;
             }
-            let tls = if gl.thread_local { "_Thread_local " } else { "" };
+            let tls = if gl.thread_local { "GM_TLS " } else { "" };
             let _ = writeln!(
                 decls,
                 "static {}uint8_t gm_g{}[{}] __attribute__((aligned({})));",
@@ -549,7 +579,7 @@ impl<'a> Gen<'a> {
             if gl.thread_local {
                 let _ = writeln!(
                     decls,
-                    "static _Thread_local uint8_t gm_gi{i};\nstatic void gm_ginit{i}(void);\nstatic inline uint8_t *gm_ga{i}(void) {{ if (!gm_gi{i}) {{ gm_gi{i} = 1; gm_ginit{i}(); }} return gm_g{i}; }}"
+                    "static GM_TLS uint8_t gm_gi{i};\nstatic void gm_ginit{i}(void);\nstatic inline uint8_t *gm_ga{i}(void) {{ if (!gm_gi{i}) {{ gm_gi{i} = 1; gm_ginit{i}(); }} return gm_g{i}; }}"
                 );
                 let _ = writeln!(self.bodies, "static void gm_ginit{i}(void) {{\n{tls_init}}}");
             }
@@ -581,17 +611,65 @@ impl<'a> Gen<'a> {
             }
             let call = format!("{}({})", self.addr_name(f), args.join(", "));
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+            let start = if self.ty.lay.target.os == "Freestanding" { "gm_start(); " } else { "" };
             let (r, body) = if def.ret.is_unit() {
-                ("void".to_string(), format!("{};", call))
+                ("void".to_string(), format!("{start}{};", call))
             } else {
                 let r = self.c_abi_type(def.ret, def.span)?;
                 let call = if self.ty.mirror(def.ret).is_some() { call } else { format!("({}){}", r, call) };
-                (r, format!("return {};", call))
+                (r, format!("{start}return {};", call))
             };
             let cc = conv_attr(def.callconv);
             let _ = writeln!(s, "{cc}{r} {cname}({params}) __asm__(GM_SYM(\"{sym}\"));");
             let _ = writeln!(s, "{cc}{r} {cname}({params}) {{ {body} }}");
         }
+        Ok(s)
+    }
+
+    /// `gm_start`, which every export of a freestanding program calls first: the program has
+    /// no `main` to prepare its constants and the build mode before the first call.
+    fn gen_start(&self) -> String {
+        format!(
+            "static void gm_start(void) {{\n    static int started;\n    if (started) return;\n    started = 1;\n    gm_debug = {};\n    gm_init_consts();\n}}\n",
+            self.opts.debug as u8
+        )
+    }
+
+    /// `gm_trap_hook_call`, which the runtime calls on a trap in a freestanding program with a
+    /// `#trap_hook` (§3.7.1): it builds the message and the `SourceLocation` and calls the hook.
+    fn gen_trap_hook(&mut self) -> CResult<String> {
+        let Some(hook) = self.prog.trap_hook else { return Ok(String::new()) };
+        let def = &self.prog.fns[hook.index()];
+        let loc_ty = def.locals[def.params[1].index()].ty;
+        let msg_ty = def.locals[def.params[0].index()].ty;
+        let p = self.ty.lay.target.ptr_bytes;
+        let (msg_c, loc_size, loc_align) = (self.ty.cty(msg_ty), self.ty.size(loc_ty), self.ty.align(loc_ty).max(1));
+        let offs = self.ty.offsets(loc_ty);
+        let loc_arg =
+            if self.ty.by_ref(loc_ty) { "loc".to_string() } else { format!("GM_LD({}, loc)", self.ty.cty(loc_ty)) };
+        let name = self.callee_name(hook);
+        let mut s = String::new();
+        s.push_str(
+            "static _Noreturn void gm_trap_hook_call(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {\n",
+        );
+        let _ = writeln!(s, "    {msg_c} m;\n    memset(&m, 0, sizeof m);");
+        let _ = writeln!(
+            s,
+            "    {{ const void *mp = msg; uintptr_t ml = len; memcpy((uint8_t *)&m, &mp, sizeof mp); memcpy((uint8_t *)&m + {p}, &ml, sizeof ml); }}"
+        );
+        let _ = writeln!(
+            s,
+            "    uint8_t loc[{}] __attribute__((aligned({loc_align})));\n    memset(loc, 0, sizeof loc);",
+            loc_size.max(1)
+        );
+        let _ = writeln!(
+            s,
+            "    if (file != NULL) {{ const void *fp = file; uintptr_t fl = strlen(file); memcpy(loc + {}, &fp, sizeof fp); memcpy(loc + {} + {p}, &fl, sizeof fl); }}",
+            offs[0], offs[0]
+        );
+        let _ =
+            writeln!(s, "    GM_ST(uint32_t, loc + {}, line);\n    GM_ST(uint32_t, loc + {}, col);", offs[1], offs[2]);
+        let _ = writeln!(s, "    {name}(m, {loc_arg});\n    __builtin_trap();\n}}");
         Ok(s)
     }
 
@@ -932,6 +1010,9 @@ fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
 /// A large Debug build is split into several units compiled in
 /// parallel (see [`units`]); unit `i` > 0 is written to `exe` with the extension `.i.c`.
 pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &Path) -> Result<Build, String> {
+    if generated.freestanding {
+        return compile_object(generated, toolchain, exe);
+    }
     let c_file = exe.with_extension("c");
     let opts = &generated.opts;
     let opt = match (opts.debug, opts.debug_info) {
@@ -1028,6 +1109,51 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
         return Err(e);
     }
     Ok(Build { c_file, c_files, exe: exe.to_path_buf() })
+}
+
+/// Compiles the generated C of a freestanding program (§3.7.1) and the runtime, as one
+/// translation unit, to the object file `obj` (the source is written next to it with the
+/// extension `.c`). The object holds the program's exported functions and the runtime support
+/// they use; it is linked by the target's own toolchain, and has no `main`.
+///
+/// The runtime is compiled with the program, never as a separate cached object: it is small
+/// without the operating system parts, and the hook of a trap is code of the program.
+fn compile_object(generated: &Generated, toolchain: &Toolchain, obj: &Path) -> Result<Build, String> {
+    let c_file = obj.with_extension("c");
+    let opts = &generated.opts;
+    let opt = match (opts.debug, opts.debug_info) {
+        (true, true) => "-O0",
+        (true, false) => "-O1",
+        (false, _) => "-O2",
+    };
+    let prelude =
+        format!("#define GM_FREESTANDING 1\n{}", if generated.trap_hook { "#define GM_TRAP_HOOK 1\n" } else { "" });
+    let mut code = format!("{prelude}{}\n{}\n{}", RT_H, RT_C, generated.code);
+    if opts.debug_info {
+        // The debugger finds the C file by this name, so it is absolute when possible.
+        let dir = c_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let abs =
+            crate::source::canonicalize(dir).map_or(c_file.clone(), |d| d.join(c_file.file_name().unwrap_or_default()));
+        code = debug::resolve_lines(&code, &abs.display().to_string());
+    }
+    std::fs::write(&c_file, code.as_bytes()).map_err(|e| format!("cannot write {}: {}", c_file.display(), e))?;
+    let mut flags: Vec<&str> = BASE_CFLAGS.to_vec();
+    flags.extend(["-ffreestanding", opt]);
+    flags.extend(opts.debug_info.then_some("-g"));
+    let out = toolchain
+        .command(&flags)
+        .arg("-c")
+        .arg("-o")
+        .arg(obj)
+        .arg(&c_file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
+    if !out.status.success() {
+        return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(Build { c_file: c_file.clone(), c_files: vec![c_file], exe: obj.to_path_buf() })
 }
 
 /// The libraries (and linking mode) a program for Windows needs: Winsock, the synchronization

@@ -1,5 +1,6 @@
 // std/net and the new `Net` operations over real loopback sockets: send_all, recv_exact,
 // shutdown, set_timeouts and peer.
+time :: import "std/time"
 net :: import "std/net"
 io :: import "std/io"
 
@@ -46,7 +47,7 @@ main :: fn() -> IoError!() needs Out + Net {
     // Timeouts: nothing arrives, so recv gives up.
     c2 := try Net.connect("127.0.0.1", port)
     s2 := try l.accept()
-    try s2.set_timeouts(ms(50), ms(50))
+    try s2.set_timeouts(time.ms(50), time.ms(50))
     if !e := s2.recv(buf[..]) { print("recv with a timeout: {} ({})\n", e, io.describe(e)) }
     // Data that arrives in time is received; the timeout can be removed again.
     try net.send_all(c2, "late")

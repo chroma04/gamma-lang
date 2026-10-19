@@ -82,7 +82,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | `Ord(T)` | `bool`, integers, floats, enums; tuples, arrays and slices of these | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
-| `Signed(T)` | signed integers and floats | `Num`, plus unary `-` |
+| `Neg(T)` | signed integers and floats | `Num`, plus unary `-` |
 | `Float(T)` | floats | `Num`, plus the float methods |
 | `Plain(T)` | plain-data types | `---` at `T`, and `.bits` to and from `T` |
 
@@ -371,7 +371,7 @@ The cost is one explicit argument. In exchange, every call tells you exactly whi
 
 - A generic function or type has `type` or `::` parameters; it is checked once and monomorphized.
 - Type arguments are inferred from value arguments, exactly; literals do not determine them. An inferable parameter is never positional: infer it, or write it by name (`largest(T: i32, xs)`).
-- Constraints (`Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain`) are a closed set; for anything else pass a function or a constant struct.
+- Constraints (`Eq`, `Ord`, `Num`, `Int`, `Neg`, `Float`, `Plain`) are a closed set; for anything else pass a function or a constant struct.
 - Generic types take compile-time parameters, including function pointers, which is how maps customize hashing.
 - There are no traits; the table above lists what to use instead.
 

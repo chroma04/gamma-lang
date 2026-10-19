@@ -18,7 +18,7 @@ pub enum Constraint {
     Ord,
     Num,
     Int,
-    Signed,
+    Neg,
     Float,
     Plain,
 }
@@ -30,7 +30,7 @@ impl Constraint {
             "Ord" => Constraint::Ord,
             "Num" => Constraint::Num,
             "Int" => Constraint::Int,
-            "Signed" => Constraint::Signed,
+            "Neg" => Constraint::Neg,
             "Float" => Constraint::Float,
             "Plain" => Constraint::Plain,
             _ => return None,
@@ -45,7 +45,7 @@ impl Constraint {
             Ord => &[Ord, Eq],
             Num => &[Num, Ord, Eq],
             Int => &[Int, Num, Ord, Eq, Plain],
-            Signed => &[Signed, Num, Ord, Eq, Plain],
+            Neg => &[Neg, Num, Ord, Eq, Plain],
             Float => &[Float, Num, Ord, Eq, Plain],
             Plain => &[Plain],
         }
@@ -68,13 +68,14 @@ const MAX_MONO_DEPTH: u32 = 256;
 impl<'s> Sema<'s> {
     pub(super) fn declare_constraint(&mut self, module: ModuleId, c: &ast::Constraint) {
         let Some(k) = Constraint::parse(c.name.name.as_str()) else {
-            self.error(
-                c.name.span,
-                format!(
-                    "unknown constraint `{}`; the constraints are Eq, Ord, Num, Int, Signed, Float and Plain",
-                    c.name.name
-                ),
+            let mut msg = format!(
+                "unknown constraint `{}`; the constraints are Eq, Ord, Num, Int, Neg, Float and Plain",
+                c.name.name
             );
+            if c.name.name.as_str() == "Signed" {
+                msg.push_str("; `Signed` is now `Neg`");
+            }
+            self.error(c.name.span, msg);
             return;
         };
         let t = self.resolve_type(module, &c.ty);
@@ -117,7 +118,7 @@ impl<'s> Sema<'s> {
             Constraint::Ord => self.has_ord(t),
             Constraint::Num => t.is_integer() || t.is_float(),
             Constraint::Int => t.is_integer(),
-            Constraint::Signed => t.is_signed_integer() || t.is_float(),
+            Constraint::Neg => t.is_signed_integer() || t.is_float(),
             Constraint::Float => t.is_float(),
             Constraint::Plain => self.is_plain(t),
         }
@@ -899,7 +900,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let explicit = sig.params.iter().enumerate().any(|(i, p)| inferable(i) && named.contains(&p.name));
         let mut binds: HashMap<ParamId, Ty> = HashMap::new();
         // Arguments whose types still contain untyped literals.
-        let mut literal_args: Vec<(Ty, Ty)> = vec![];
+        let mut literal_args: Vec<(Ty, Ty, Span)> = vec![];
         // Set when two arguments bind a type parameter differently (reported once).
         let mut conflict = false;
         let mut values: Vec<Option<Expr>> = vec![None; sig.params.len()];
@@ -1024,7 +1025,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let t = self.infer.resolve(v.ty);
                 if t.has_infer() {
-                    literal_args.push((p.ty, v.ty));
+                    literal_args.push((p.ty, v.ty, v.span));
                 }
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(p.ty, t, &mut b2);
@@ -1059,14 +1060,14 @@ impl<'a, 's> FnCx<'a, 's> {
         // A type parameter that only untyped literals determine takes their fallback
         // types (§16.2): `log("{}", 5)` makes it `i32`.
         if sig.generics.iter().any(|p| !binds.contains_key(p) && !self.sema.value_params.contains_key(p)) {
-            for (pty, aty) in std::mem::take(&mut literal_args) {
+            for (pty, aty, aspan) in std::mem::take(&mut literal_args) {
                 let free: Vec<ParamId> = sig.generics.iter().copied().filter(|p| !binds.contains_key(p)).collect();
                 let mut mentions = false;
                 pty.walk(&mut |x| mentions |= matches!(x.kind(), TyKind::Param(p) if free.contains(p)));
                 if !mentions {
                     continue;
                 }
-                let t = self.settle(aty);
+                let t = self.settle(aty, aspan);
                 let mut b2 = HashMap::new();
                 super::effects::match_params_pub(pty, t, &mut b2);
                 for (k, v2) in b2 {

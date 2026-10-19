@@ -395,6 +395,15 @@ pub parse_rfc3339 :: fn(s: string) -> ParseError!DateTime {
 // Durations
 // ---------------------------------------------------------------------------------
 
+/// `n` nanoseconds.
+pub ns :: core.ns
+/// `n` microseconds (checked: the result must fit in a `Duration`).
+pub us :: core.us
+/// `n` milliseconds (checked: the result must fit in a `Duration`).
+pub ms :: core.ms
+/// `n` seconds (checked: the result must fit in a `Duration`).
+pub secs :: core.secs
+
 /// The size of a buffer that always holds the output of `format_duration`.
 pub DURATION_LEN :: 32
 

@@ -215,6 +215,7 @@ impl<'s> Sema<'s> {
         let ItemKind::Binding(_) = &item.kind else { return DeclValue::Error };
         let mut fuel = None;
         let (mut global, mut thread_local, mut export, mut callconv) = (false, false, None, None);
+        let mut trap_hook = None;
         let mut hints = (tir::FnHints::default(), None);
         let mut align_attr = None;
         for attr in &item.attrs {
@@ -229,6 +230,12 @@ impl<'s> Sema<'s> {
                     }
                     _ => self.error(attr.span, "`#export` takes the symbol name: `#export(\"sym\")`"),
                 },
+                "trap_hook" => {
+                    if attr.args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.error(attr.span, "`#trap_hook` takes no arguments");
+                    }
+                    trap_hook = Some(attr.span);
+                }
                 "callconv" => {
                     if callconv.is_some() {
                         self.error(attr.span, "a function has one calling convention");
@@ -308,6 +315,13 @@ impl<'s> Sema<'s> {
                 }
                 DeclValue::Error => {}
                 _ => self.error(span, format!("`#{}` applies only to a function (§20.2)", attr)),
+            }
+        }
+        if let Some(span) = trap_hook {
+            match &v {
+                DeclValue::Fn(f) => self.trap_hook_fn(*f, span),
+                DeclValue::Error => {}
+                _ => self.error(span, "`#trap_hook` applies only to a function"),
             }
         }
         if let Some((sym, span)) = export {

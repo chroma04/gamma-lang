@@ -1,0 +1,26 @@
+//! stage: check
+// A later use that would have raised the fallback of a literal variable already
+// settled to another type is an error (§6.1).
+fmt_then_range :: fn() needs Out {
+    n := 0
+    print("{:x}\n", n)
+    for i in 0..n { //~ ERROR already fixed as `i32`
+    }
+}
+
+type_of_then_range :: fn() {
+    n := 0
+    T :: @type_of(n)
+    for i in 0..n { //~ ERROR already fixed as `i32`
+    }
+}
+
+// Range first: the variable is `usize` and formatting it is fine.
+range_then_fmt :: fn() needs Out {
+    n := 0
+    for i in 0..n {
+    }
+    print("{:x}\n", n)
+}
+
+main :: fn() {}

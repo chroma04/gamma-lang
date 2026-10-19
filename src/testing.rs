@@ -353,6 +353,9 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
         return ExitCode::from(2);
     };
     let (mut sess, toolchain) = new_session(opts);
+    if crate::refuse_freestanding(&sess, if kind == Kind::Bench { "bench" } else { "test" }) {
+        return ExitCode::FAILURE;
+    }
     let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
     // `--package=name`: the dependency's root module stands in for the input, and its own
     // dependencies resolve through this package's graph.

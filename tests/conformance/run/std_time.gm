@@ -269,6 +269,6 @@ main :: fn() needs Out {
     dur(86_400_000_000_000)
     dur(18_446_744_073_709_551_615)
     buf: [time.DURATION_LEN]u8 = ---
-    print("{}\n", time.format_duration(secs(90), buf[..]))
-    print("{}\n", time.format_duration(ms(1500).plus(us(250)), buf[..]))
+    print("{}\n", time.format_duration(time.secs(90), buf[..]))
+    print("{}\n", time.format_duration(time.ms(1500).plus(time.us(250)), buf[..]))
 }

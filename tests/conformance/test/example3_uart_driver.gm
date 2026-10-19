@@ -1,5 +1,7 @@
 //! stage: test
 // A UART driver written against a user-defined register-access effect: tests install a recording fake and a memory-backed device, and rely on the fake clock, leak checking and env/rand test handlers.
+time :: import "std/time"
+
 Mmio :: effect {
     read: fn(reg: usize) -> u32
     write: fn(reg: usize, value: u32)
@@ -21,7 +23,7 @@ wait_status :: fn(mask: u32, tries: u32) -> DriverError!() needs Mmio + Clock {
         s := Mmio.read(REG_STATUS)
         if s & STATUS_ERROR is not 0 { return !.Framing }
         if s & mask is mask { return () }
-        Clock.sleep(ms(1))
+        Clock.sleep(time.ms(1))
     }
     return !.Timeout
 }

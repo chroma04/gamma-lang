@@ -302,6 +302,33 @@ impl<'s> Sema<'s> {
         self.prog.exports.push((sym, f));
     }
 
+    /// `#trap_hook` on a function (§3.7.1): only on a freestanding target, at most one per
+    /// program, of type `fn(msg: string, loc: SourceLocation) -> never needs Sys`.
+    pub(super) fn trap_hook_fn(&mut self, f: FnId, span: Span) {
+        if self.target.os != "Freestanding" {
+            self.error(span, "`#trap_hook` applies only on a freestanding target (§3.7.1)");
+            return;
+        }
+        let sig: FnSig = self.sigs[&f].clone();
+        let loc = self.source_location_ty();
+        let params_ok = sig.params.len() == 2
+            && sig.params[0].ty == Ty::string()
+            && loc.is_some_and(|l| sig.params[1].ty == l)
+            && sig.generics.is_empty();
+        if !params_ok || !sig.ret.is_never() || !self.within_sys(&sig.effects) {
+            self.error(
+                span,
+                "a `#trap_hook` function must have the type `fn(msg: string, loc: SourceLocation) -> never needs Sys` (§3.7.1)",
+            );
+            return;
+        }
+        if self.prog.trap_hook.is_some_and(|h| h != f) {
+            self.error(span, "a program has at most one `#trap_hook` function (§3.7.1)");
+            return;
+        }
+        self.prog.trap_hook = Some(f);
+    }
+
     /// Whether `t` is C-compatible (§19.1). `in_struct` allows arrays (as struct fields).
     pub fn is_c_compatible(&self, t: Ty, in_struct: bool) -> bool {
         match t.kind() {

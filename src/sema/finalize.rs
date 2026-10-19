@@ -52,7 +52,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Gives the unresolved literal variables in `ty` their types now, for a construct that
     /// needs them while the body is checked (§6.1): a pending coercion of the variable
     /// decides it as at the end of inference, and otherwise it takes its fallback.
-    pub fn settle(&mut self, ty: Ty) -> Ty {
+    pub fn settle(&mut self, ty: Ty, at: Span) -> Ty {
         for p in &self.pending {
             let src = self.infer.resolve(p.source);
             if !src.is_infer() {
@@ -67,7 +67,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        self.infer.settle(ty)
+        self.infer.settle(ty, at)
     }
 
     /// Rewrites a nested function's body once inference is complete.
@@ -137,7 +137,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let ok = if let TyKind::Param(p) = t.kind() {
                     let p = *p;
                     (if int_only { self.sema.param_has(p, C::Int) } else { self.sema.param_has(p, C::Num) })
-                        && (!signed_only || self.sema.param_has(p, C::Signed))
+                        && (!signed_only || self.sema.param_has(p, C::Neg))
                 } else if int_only {
                     t.is_integer() && (!signed_only || t.is_signed_integer())
                 } else if signed_only {

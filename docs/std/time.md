@@ -107,6 +107,38 @@ RFC3339_LEN :: 30
 The size of a buffer that always holds the output of `format_rfc3339`:
 `YYYY-MM-DDTHH:MM:SS.fffffffffZ`.
 
+### `ns`
+
+```gamma
+ns :: core.ns
+```
+
+`n` nanoseconds.
+
+### `us`
+
+```gamma
+us :: core.us
+```
+
+`n` microseconds (checked: the result must fit in a `Duration`).
+
+### `ms`
+
+```gamma
+ms :: core.ms
+```
+
+`n` milliseconds (checked: the result must fit in a `Duration`).
+
+### `secs`
+
+```gamma
+secs :: core.secs
+```
+
+`n` seconds (checked: the result must fit in a `Duration`).
+
 ### `DURATION_LEN`
 
 ```gamma

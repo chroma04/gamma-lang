@@ -1,0 +1,8 @@
+//! stage: check
+// The duration constructors are `std/time`'s, not the universe's (§21.1, §21.7).
+time :: import "std/time"
+
+main :: fn() {
+    ok := time.ms(5)
+    bad := ms(5) //~ ERROR unknown name `ms`
+}

@@ -36,7 +36,8 @@ handlers, and tests run with the test handlers instead.
 | `Env` | `args()`, `var(name)`, `exit(code)` | process arguments and environment | no arguments or variables; `exit` ends the test, which passes only with code 0 |
 | `Alloc` | `current() -> Allocator` | the system heap | leak-checking heap |
 
-Durations are built with `ns(n)`, `us(n)`, `ms(n)` and `secs(n)`; `i.since(earlier)`,
+Durations are built with `time.ns(n)`, `time.us(n)`, `time.ms(n)` and `time.secs(n)` (from
+`std/time`); `i.since(earlier)`,
 `i.after(d)`, `d.plus(e)`, `d.minus(e)` and `d.to_ms()` work with them.
 
 ### Files: `Fs`

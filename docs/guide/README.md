@@ -23,7 +23,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [11. Compile time](11-compile-time.md) | Compile-time evaluation, constants, `when`, `target`, `@static_assert` |
 | [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `cancel`, a scheduler sketch |
 | [13. Safety](13-safety.md) | Build modes, checked operations, traps, tests and the `Test` effect, what is undefined behavior |
-| [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access |
+| [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access, freestanding programs |
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 | [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
 

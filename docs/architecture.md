@@ -541,6 +541,38 @@ both use it. The files:
 | `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
 | `debug.rs`, `views.rs`, `gdb_printers.py`, `lldb_formatters.py` | debug information for `-g` |
 
+### Freestanding targets
+
+A target whose `os` is `Freestanding` (`Target::os`, from a compiler that defines no
+operating system macro) makes a program with no `main`: sema rejects `main`, the default
+handler providers (`heap_allocator`, `system_io`, `system_output`, checked where names are
+used, `check_freestanding_use`) and `#trap_hook` anywhere else, and records the hook in
+`Program::trap_hook`. `cgen::generate_object` queues the exports and the hook instead of an
+entry, and `Gen::gen_start` (constants and the build mode, once, from every export wrapper),
+`Gen::gen_trap_hook` (`gm_trap_hook_call`, which builds the `string` and `SourceLocation`
+arguments and calls the hook) and the absence of `main` are what differ in the generated C.
+`cgen::compile` then calls `compile_object`: one translation unit of the runtime and the generated
+code, compiled with `-c -ffreestanding` into the object `gamma build` writes. There is no cached
+runtime object, because the hook is code of the program and without the operating system parts
+the runtime is small; there is no link step, so the packages' C sources and the `foreign` libraries
+are the linker's business.
+
+The runtime selects its freestanding variant with `GM_FREESTANDING`, defined by `compile_object`
+before `gm_rt.h` (and `GM_TRAP_HOOK` when the program has a hook). Then `gm_rt.h` includes only
+`<stdint.h>`, `<stddef.h>`, `<stdbool.h>` and `<stdarg.h>` and declares `memcpy`, `memmove`,
+`memset` and `memcmp`; `strlen`, `strcmp` and `snprintf` become the runtime's own
+(`gm_snprintf` understands the conversions the runtime and the generated code use, including an
+exact `%.*f` and `%.*e`); `GM_TLS`, which is `_Thread_local` elsewhere, is empty; and `gm_rt.c`
+leaves out the ambient effects, the system services, the system heap and its Debug records, and
+threads, and keeps the formatter, the fiber machinery (the assembly context switch has no operating
+system dependency, but it is `.local` there, and fiber records come from a static slab) and the
+traps. A trap calls `gm_trap_hook_call` once (a trap in the hook executes the trap instruction
+directly), or executes `__builtin_trap()`. Formatting buffers (`gm_buf`) take their memory from a
+static arena (`gm_scratch`) that is emptied whenever no buffer is live. The stubs for `gm_write_out`,
+`gm_args` and the like exist only so that the generated code for the ambient handlers, which
+never runs without a handler installed, compiles. `main.rs` refuses `run`, `test` and `bench` for
+such a target (`refuse_freestanding`) and `build` calls `build_object`.
+
 The generated code follows the interpreter exactly, and the conformance
 runner checks this: every `run` test also runs natively and must print the same
 output and exit with the same status.

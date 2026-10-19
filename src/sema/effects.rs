@@ -418,7 +418,7 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             // The handler declaration is chosen by the value's type now, so an untyped
             // literal's type is settled here (`x := 0; with &x`).
-            let t = self.settle(v.ty);
+            let t = self.settle(v.ty, h.span);
             match t.kind() {
                 TyKind::Handler(id) => {
                     if !self.pending_handlers.is_empty() {

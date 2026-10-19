@@ -589,7 +589,7 @@ pub struct Param {
 
 #[derive(Clone, Debug)]
 pub struct Constraint {
-    /// `Eq`, `Ord`, `Num`, `Int`, `Signed`, `Float`, `Plain` (validated later).
+    /// `Eq`, `Ord`, `Num`, `Int`, `Neg`, `Float`, `Plain` (validated later).
     pub name: Ident,
     pub ty: Expr,
     pub span: Span,

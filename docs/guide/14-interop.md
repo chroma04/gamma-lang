@@ -306,6 +306,56 @@ barrier :: fn() needs Sys => @asm("", (), (), "memory")
 
 It needs `Sys`, misusing it is undefined behavior, and it is never evaluated at compile time. The interpreter cannot run assembly, so `gamma run` compiles programs that use it. Use `when target.arch is …` to provide each architecture's version.
 
+## Freestanding programs
+
+Firmware, kernels and boot code run without an operating system. When the C compiler targets none (`clang --target=x86_64-unknown-none-elf`, or an `arm-none-eabi-gcc`-style cross compiler that defines no `__linux__`, `__APPLE__`, `_WIN32` or `__FreeBSD__`), `target.os` is `.Freestanding` and the program changes shape ([§3.7.1](../../gamma-spec.md)):
+
+- There is **no `main`** (declaring one is an error). The entry points are `#export`ed functions, called by the startup code, an interrupt table or the host program the object is linked with.
+- There are **no ambient defaults**. An exported function's effect set is empty or `Sys`, so it installs every handler its body needs: an allocator over a static buffer, an `Out` handler that writes to a serial port, a `Clock` handler that reads a timer register. The default handlers `heap_allocator()`, `system_io()` and `system_output()` do not exist; naming one is a compile error.
+- A **trap** calls the function marked `#trap_hook`, of type `fn(msg: string, loc: SourceLocation) -> never needs Sys` (an empty effect set also works). It must not return; it typically halts or resets the machine. Without a hook a trap executes the target's trap instruction (`ud2` on x86-64, `brk` on AArch64). `#trap_hook` is an error on a hosted target, and a program has at most one.
+- `gamma build` writes an **object file** (`<name>.o`, or the `-o` path) with the exported functions and the runtime support they use. It has no `main` and is linked by the target's own toolchain. `gamma run`, `test` and `bench` refuse a freestanding target, since there is nothing to run it on: tests run on the host, with test handlers standing in for the hardware, so leave `--target` out for them.
+
+```gamma
+fixed_buffer :: import "std/fixed_buffer"
+
+hw :: foreign "c" {
+    uart_putc :: fn(c: u8)
+    halt :: fn() -> never
+}
+
+#export("kernel_main")
+kernel_main :: fn() needs Sys {
+    // The program supplies what the operating system would have: output and memory.
+    uart :: handler Out {
+        write(bytes) => {
+            for b in bytes { hw.uart_putc(b) }
+        }
+    }
+    store: [4096]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with uart, fb.allocator() {
+        names := list(string)
+        _ = names.push("boot")
+        print("hello from {} ({} entries)\n", "the kernel", names.items.len)
+    }
+}
+
+#trap_hook
+on_trap :: fn(msg: string, loc: SourceLocation) -> never needs Sys {
+    // Report `msg` and `loc` on the serial port, then stop.
+    hw.halt()
+}
+```
+
+```text
+$ gamma build --target=x86_64-unknown-none-elf kernel.gm        # writes kernel.o
+$ nm -u kernel.o                                                 # memcpy, memset, uart_putc, halt
+```
+
+What the object needs from outside is what the program declares `foreign` and the functions every freestanding toolchain provides: `memcpy`, `memmove`, `memset` and `memcmp`. It may also call the compiler's support routines (`libgcc` or `compiler-rt`: `__udivti3` for 128-bit division, software floating point on a core without an FPU). The runtime inside it has no standard C library, no heap, no threads and no files. Formatted output (`print`, `{}`, `{:.2}`) is built into the object and borrows scratch space from a 16 KiB static arena (`-DGM_SCRATCH_SIZE=…` through `CFLAGS` changes the size); a `#thread_local` global is an ordinary global, since there is one thread. Fibers (`with … on`, [chapter 12](12-fibers.md)) work on x86-64, AArch64 and s390x, using stacks the program provides (the runtime keeps up to 32 fibers, `-DGM_MAX_FIBERS=…`); Debug builds have no guard pages, no leak reports and no record of which allocator owns a block.
+
+The object is compiled with the compiler's default code model, so pass the options your environment needs in `CFLAGS` (`-mno-red-zone` for a kernel that handles interrupts on the stack it runs on, `-mcmodel=kernel`, `-fPIE`, `-mgeneral-regs-only`, …). The build writes `<name>.c` next to the object, the C source that was compiled.
+
 ## Where the safety net ends
 
 Everything in this chapter that crosses into C or bypasses the checks puts a contract on you: violating a foreign function's contract, or the foreign function's own undefined behavior, is undefined behavior in your program. The structure of the language keeps that confined and visible: `Sys` appears in the signature of every function that reaches outside the model, C-compatible types are an explicit subset, and the checked world sits in between.
@@ -328,6 +378,7 @@ Everything in this chapter that crosses into C or bypasses the checks puts a con
 - `#packed`, `#align(n)`, `#bits(U)` and `#c_union` control layout; `x.bits(T)` reinterprets plain data.
 - `#global` is mutable static storage and costs `Sys`; atomics follow C11 and do not.
 - Volatile loads and stores are for hardware registers.
+- A freestanding target (`target.os` is `.Freestanding`) has no `main` and no default handlers; `gamma build` writes an object file of the `#export`ed functions, and `#trap_hook` takes over traps.
 
 You have now seen the whole language. The [specification](../../gamma-spec.md) is the place to look for exact rules, and its Appendix C explains the reasoning behind the design.
 
