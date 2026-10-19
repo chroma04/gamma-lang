@@ -2245,7 +2245,7 @@ This is how a stored function pointer can be polymorphic in its effects without 
 
 ### 16.8 Structural hashing
 
-`@hash(x, seed)` (§20.3) is defined for every type that satisfies `Eq`, and only those. It is derived from the structure of the type exactly as `is` is (§7.6): integers, `bool` and enums by value; floats by value with `-0.0` hashed as `0.0`; pointers by address; arrays, tuples and structs by their elements and fields in order (padding ignored); slices by length and content; unions by tag and payload; optionals and results by state and value. The guarantee is:
+`@hash(x, seed)` (§20.3) is defined for every type that satisfies `Eq`, and only those. It is derived from the structure of the type exactly as `is` is (§7.6): integers, `bool` and enums by value; floats by value with `-0.0` hashed as `0.0`; pointers by address; arrays, vectors, tuples and structs by their elements, lanes and fields in order (padding ignored); slices by length and content; unions by tag and payload; optionals and results by state and value. The guarantee is:
 
 > if `a is b`, then `@hash(a, s) is @hash(b, s)` for every seed `s`.
 

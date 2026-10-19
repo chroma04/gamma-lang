@@ -1195,7 +1195,7 @@ pub enum UnOp {
 }
 
 /// Binary operators on numbers. The operand type (`lhs.ty`) selects integer or float
-/// semantics; a vector applies the operator lane by lane (§7.4.7).
+/// semantics; a vector applies the operator lane by lane (§7.4.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
     Add(Flavor),

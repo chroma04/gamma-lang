@@ -99,7 +99,7 @@ impl<'s> Sema<'s> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
-    /// A binary operator whose left operand is the vector `lhs` (§7.4.7): every operator
+    /// A binary operator whose left operand is the vector `lhs` (§7.4.6): every operator
     /// works lane by lane; `is` compares whole vectors and is handled as for arrays.
     pub fn vector_binary(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
         use ast::BinOp as B;
@@ -216,7 +216,7 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
-    /// A unary operator on the vector `v` (§7.4.7).
+    /// A unary operator on the vector `v` (§7.4.6).
     pub fn vector_unary(&mut self, op: ast::UnOp, v: Expr, span: Span) -> Expr {
         let vt = self.infer.resolve(v.ty);
         let (_, lane) = vt.vector_parts().expect("a vector operand");
