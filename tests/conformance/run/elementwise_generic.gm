@@ -1,9 +1,0 @@
-// Elementwise arithmetic (§7.4.6) on arrays whose length is a compile-time parameter.
-add_vec :: fn(N :: usize, a, b: [N]f64) -> [N]f64 => a + b
-scale :: fn(N :: usize, T: type, a: [N]T, k: T) -> [N]T where Num(T) => a * [N]T(fill: k)
-main :: fn() needs Out {
-    x := [3]f64(1.0, 2.0, 3.0)
-    print("{}\n", add_vec(N: 3, x, x))
-    print("{}\n", scale(N: 2, T: i32, [2]i32(4, 5), 3))
-    print("{}\n", -x)
-}

@@ -84,3 +84,6 @@
   A.4/A.7, B tables, C.7); `needs not` foreign-only; `..E` splice removed; keyword list gains `needs`.
 - s20: §16.6 effect-set param in an effect of the fn's own set (`needs Sched(E)`) is
   inferable, from the one available instantiation at the call (decisions/027).
+- s28 coherence review (decisions/030): §1 first program + style rule + litmus; P2 wording; §5.2 ints ≤128;
+  §5.6.2/§7.4.6 vectors `is`→bool, lanes_* methods, no array arithmetic; §13.5 args once; §16.5 lengths
+  syntactic, `~`; A.3/A.5 `needs` grammar; §21.5 hash_map; §13.4, §15.2, §7.6 explanations; C.8 rows.

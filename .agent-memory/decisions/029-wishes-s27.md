@@ -19,8 +19,8 @@ Sources: todo.md "Nice", bugs-open #23 + dogfood papercuts, spec C.9.
 
 - SIMD `#simd [N]T` (user asked to reconsider; first rejected, then ADMITTED): an array
   kind (TyKind::Array kind: ArrayKind::Simd), so storage/index/print reuse arrays. Layout
-  N·size, align = size (fixed, P1 ok); not C-compatible. Every operator lane-wise (`is`
-  and `<` give `#simd [N]bool` masks; vectors are not Eq/Ord); no int `/ %` (no SIMD
+  N·size, align = size (fixed, P1 ok); not C-compatible. Every operator lane-wise (s28/decisions/030: `is`
+  gives bool, vectors Eq not Ord, no `<`; lane compares are lanes_eq/ne/lt/le/gt/ge methods); no int `/ %` (no SIMD
   instruction, P2); methods reduce_sum/min/max, all/any/count, select, min/max/abs,
   shuffle, store; `V.load(slice)`. Not a second way: arrays can't express masks/select/
   shuffles. C: vector extensions for unchecked ops, lane loops for checked ones.

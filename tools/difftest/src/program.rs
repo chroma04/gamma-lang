@@ -728,16 +728,6 @@ impl Gen {
                     return c;
                 }
             }
-            4 | 5 => {
-                let a = self.arr_expr(t, n, d1);
-                let b = self.arr_expr(t, n, d1);
-                let op = if self.rng.chance(self.trap_bias) {
-                    *self.rng.pick(&["+", "-", "*"])
-                } else {
-                    *self.rng.pick(&["+%", "-%", "*%", "+|"])
-                };
-                return format!("({a} {op} {b})");
-            }
             6 => {
                 let e = self.int_expr(t, d1);
                 return format!("[{n}]{}(fill: {e})", t.name());
@@ -1147,10 +1137,10 @@ impl Gen {
             98 if nested_ok => {
                 // Deferred statements run when the enclosing block ends, also on a trap.
                 let ty = self.rand_ty();
-                // A deferred statement cannot suspend.
-                let saved_co = std::mem::replace(&mut self.co, false);
+                // A deferred statement cannot exit or suspend (§8.8).
+                let saved = (std::mem::replace(&mut self.ev, false), std::mem::replace(&mut self.co, false));
                 let e = self.expr(&ty, 2);
-                self.co = saved_co;
+                (self.ev, self.co) = saved;
                 out.push_str(&format!("{ind}defer print(\"defer {{}}\\n\", {e})\n"));
             }
             99 if nested_ok => {

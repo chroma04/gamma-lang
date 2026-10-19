@@ -40,17 +40,17 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     print("{} {} {}\n", h >> 1, h <<% 14, h & I16x8(fill: 3))
     d := D2(0.5, -0.0)
     nan := D2(fill: 0.0) / D2(fill: 0.0)
-    print("{} {} {}\n", d.abs(), d.min(nan), nan is nan)
+    print("{} {} {}\n", d.abs(), d.min(nan), nan.lanes_eq(nan))
     print("{} {}\n", d.min(D2(fill: 0)), d.max(D2(fill: 0)))
     a := F4(1, 5, 3, 7)
     b := F4(4, 2, 3, 8)
-    print("{} {} {}\n", a < b, a <= b, a is b)
-    print("{} {} {}\n", a > b, a >= b, a is not b)
-    m := a < b
-    n := a >= b
+    print("{} {} {}\n", a.lanes_lt(b), a.lanes_le(b), a.lanes_eq(b))
+    print("{} {} {}\n", a.lanes_gt(b), a.lanes_ge(b), a.lanes_ne(b))
+    m := a.lanes_lt(b)
+    n := a.lanes_ge(b)
     print("{} {} {} {}\n", m & n, m | n, m ~ M4(fill: true), ~m)
     print("{} {}\n", (m | n).all(), (m & n).any())
-    print("{}\n", (a is b).select(m, ~m))
+    print("{}\n", a.lanes_eq(b).select(m, ~m))
     w := U64x2(1 << 40, 7)
     print("{} {}\n", w.reduce_max(), #simd [4]u32(U8x16(fill: 3).shuffle(0, 1, 2, 3)))
     print("{} {}\n", I4(1, 2, 3, 4).shuffle(0, 0), I4(1, 2, 3, 4).shuffle(3, 2, 1, 0, 3, 2, 1, 0))
@@ -58,7 +58,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     print("{}\n", I4(-1, 2, -3, 2147483647).to(f32))
     big := Big(fill: 2)
     big[63] = 5
-    print("{} {}\n", big.reduce_sum(), (big is Big(fill: 2)).count())
+    print("{} {}\n", big.reduce_sum(), big.lanes_eq(Big(fill: 2)).count())
     xs := [_]f32(1, 2, 3, 4, 5, 6, 7, 8)
     acc := F4(fill: 0)
     i: usize = 0

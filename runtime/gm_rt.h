@@ -112,8 +112,7 @@
 
 /* ---- byte order ------------------------------------------------------------
  *
- * Integers of up to 128 bits are stored as one number in the target's byte order; wider
- * ones as 64-bit words, least significant first, each in the target's byte order. Code
+ * Integers (of up to 128 bits) are stored as one number in the target's byte order. Code
  * that addresses the bytes of an integer goes through gm_ibp, which names the i-th least
  * significant byte, so it does not depend on the order. */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -126,7 +125,7 @@
 static inline uint8_t *gm_ibp(const void *p, size_t size, size_t i) {
     uint8_t *b = (uint8_t *)p;
     if (!GM_BIG_ENDIAN) return b + i;
-    return size <= 16 ? b + (size - 1 - i) : b + (i & ~(size_t)7) + 7 - (i & 7);
+    return b + (size - 1 - i);
 }
 
 /* The unsigned integer of `size` (at most 16) bytes at p. */
@@ -274,70 +273,10 @@ typedef struct { uint8_t *data; size_t len, cap; } gm_buf;
 GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len);
 GM_API void gm_buf_free(gm_buf *b);
 
-/* ---- integers wider than 128 bits ------------------------------------------------
- *
- * An integer of `bits` bits (any width of at least 1 bit works) occupies
- * GM_WBYTES(bits) bytes: two's complement in whole 64-bit words, least significant first,
- * each in the target's byte order, as the Gamma layout has it. The bits above `bits` are padding. Operands are read as if the
- * padding were the sign extension (`sgn`) or zero, and results are written that way, so
- * the routines accept any padding and always leave it normalized.
- *
- * `r` may be the same buffer as an operand, except in gm_wconv. Arithmetic routines store
- * the wrapped result and return whether the exact result overflowed the type. Shift amounts
- * must be less than `bits`. */
-#define GM_WBYTES(bits) ((((size_t)(bits) + 63) / 64) * 8)
-
-GM_API bool gm_wadd(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-GM_API bool gm_wsub(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-GM_API bool gm_wmul(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-GM_API bool gm_wneg(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
-/* Quotient into q and remainder into rm (either may be NULL), truncating toward zero.
- * Returns 0, 1 for a zero divisor, or 2 for MIN / -1 (the quotient overflows). */
-GM_API int gm_wdiv(uint8_t *q, uint8_t *rm, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-/* r = a ** n, wrapped; returns whether the exact power overflowed. */
-GM_API bool gm_wpow(uint8_t *r, const uint8_t *a, uint32_t n, uint32_t bits, bool sgn);
-GM_API void gm_wnot(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
-GM_API void gm_wand(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-GM_API void gm_wor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-GM_API void gm_wxor(uint8_t *r, const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);
-/* Left shift (wrapped; returns whether bits that matter were shifted out) and right shift
- * (arithmetic if `sgn`). */
-GM_API bool gm_wshl(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
-GM_API void gm_wshr(uint8_t *r, const uint8_t *a, uint32_t sh, uint32_t bits, bool sgn);
-/* A shift amount (an unsigned integer of `abits` bits), clamped to 2^64 - 1. */
-GM_API uint64_t gm_wshamt(const uint8_t *amt, uint32_t abits);
-/* Traps: "shift amount <amt> too large for <ty>". */
-GM_API _Noreturn void gm_trap_shift(const uint8_t *amt, uint32_t abits, const char *ty, const char *file,
-                                    uint32_t line, uint32_t col);
 /* Traps: "integer overflow in `pow` (<base>^<n>)", for an integer `base` of `bits` bits
- * (of the size of the integer type for up to 128 bits, and in words above). */
+ * stored in the size of its type. */
 GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, uint32_t n, const char *file,
                                   uint32_t line, uint32_t col);
-GM_API int gm_wcmp(const uint8_t *a, const uint8_t *b, uint32_t bits, bool sgn);  /* -1, 0 or 1 */
-GM_API int gm_wsign(const uint8_t *a, uint32_t bits, bool sgn);                   /* -1, 0 or 1 */
-GM_API void gm_wmin(uint8_t *r, uint32_t bits, bool sgn);
-GM_API void gm_wmax(uint8_t *r, uint32_t bits, bool sgn);
-/* Converts between any two integer types, given as storage sizes in bytes and widths; the
- * buffers must differ. The result is wrapped to the target. Returns bit 0: the value fits
- * the target, bit 1: the source is negative. */
-GM_API int gm_wconv(uint8_t *r, size_t rsize, uint32_t rbits, bool rsgn, const uint8_t *a, size_t asize,
-                    uint32_t abits, bool asgn);
-/* The value rounded to nearest (ties to even) to `mant` significant bits, as a double. */
-GM_API double gm_wtof(const uint8_t *a, uint32_t bits, bool sgn, unsigned mant);
-/* Stores the integral double x into r. Returns 0, 1 (x is below the type's range), 2 (above
- * it) or 3 (NaN); r is zero unless the result is 0. */
-GM_API int gm_wfromd(uint8_t *r, uint32_t bits, bool sgn, double x);
-GM_API uint32_t gm_wclz(const uint8_t *a, uint32_t bits);
-GM_API uint32_t gm_wctz(const uint8_t *a, uint32_t bits);
-GM_API uint32_t gm_wpopcount(const uint8_t *a, uint32_t bits);
-GM_API void gm_wbswap(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
-GM_API void gm_wbitreverse(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn);
-/* Rotates the bits of a left by k (taken modulo bits). */
-GM_API void gm_wrotl(uint8_t *r, const uint8_t *a, uint32_t bits, bool sgn, uint64_t k);
-/* Mixes the value into the FNV-1a state h as its minimal two's-complement little-endian bytes. */
-GM_API uint64_t gm_whash(uint64_t h, const uint8_t *a, uint32_t bits, bool sgn);
-/* Appends the decimal form. */
-GM_API void gm_wfmt(gm_buf *out, const uint8_t *a, uint32_t bits, bool sgn);
 
 /* ---- type descriptors (for formatting, spec §21.6.1) -------------------------- */
 

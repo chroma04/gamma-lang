@@ -2,7 +2,7 @@
 
 - Rule (§4.6, §21.1): no local binding (var, local const, param, pattern/loop binding, nested
   fn name) may share the name of a type visible there: predeclared types incl. every sized
-  int name (u1..u65535, i1..i65535 — so `i1`, `u2`, `i24` are unavailable as variable names),
+  int name (u1..u128, i1..i128 — so `i1`, `u2`, `i24` are unavailable as variable names; `u129`+ are plain names since s28),
   `string`/`cstring`/`rune`, top-level types/aliases/generic types, type params, local aliases.
   Other top-level/predeclared names (functions, constants, effect ops like `now`) may still
   be hidden. User suggested forbidding instead of implementing hiding-in-type-position.

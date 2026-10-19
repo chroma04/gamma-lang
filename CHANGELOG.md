@@ -9,9 +9,10 @@ Versions and what each kind of change means are described in
 ### Added
 
 - Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
-  `bool`) whose operators work lane by lane and compile to vector instructions. Lane-wise
-  comparisons give masks (`#simd [N]bool`) with `all`, `any`, `count` and `select`;
-  vectors have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`,
+  `bool`) whose operators work lane by lane and compile to vector instructions. `is`
+  compares whole vectors and gives `bool`; the methods `lanes_eq`, `lanes_ne`, `lanes_lt`,
+  `lanes_le`, `lanes_gt` and `lanes_ge` compare lane by lane and give masks
+  (`#simd [N]bool`) with `all`, `any`, `count` and `select`; vectors have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`,
   `shuffle`, `load` from and `store` to slices, and convert to and from the array of
   their lanes. Integer lanes keep the checks of the scalar operators.
 - The `Proc` ambient effect and `std/process`: start programs (`Proc.spawn`) with each
@@ -83,6 +84,20 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Arithmetic no longer applies to arrays: `a + b` and `-a` on `[N]T` are compile errors.
+  Use a `#simd [N]T` vector, whose operators are single instructions, or a loop.
+- Integer types are at most 128 bits wide (`u1` … `u128`, `i1` … `i128`); wider
+  arithmetic is a loop over words that an operator would hide.
+- An iterator argument (`collect(words(next_chunk()))`) evaluates its call's arguments
+  once, before the call that receives it, as `for` does; before, they were evaluated
+  again each time the function ran the iterator.
+- Computed array lengths are the same only when written the same way after constant
+  folding: `[A + B]T` and `[B + A]T` are now different types. They may use `~`
+  (exclusive or); the specification wrongly listed `^`.
+- The specification opens with a first program, the rule "words for logic, sigils for
+  shapes", the rules that best show the principles at work, and three questions every
+  new feature must answer. Its grammar now writes effect sets after `needs`, and it
+  explains why there are two allocation models and three ways to iterate.
 - A large Debug build compiles its C as several files in parallel (one per 96 KiB of
   generated functions, up to one per processor): the 16k-line C of `examples/calc`
   builds in 0.6–0.9 s instead of 1.4 s on four cores. The extra files sit next to

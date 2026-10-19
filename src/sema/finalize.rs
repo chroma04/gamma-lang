@@ -122,14 +122,13 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             Obligation::Numeric { ty, span, op, int_only, signed_only } => {
                 let shown = self.infer.resolve(ty);
-                let mut t = shown;
-                // `+ - * /` (not the `?` flavors) and negation apply to arrays of numbers,
-                // elementwise (§7.4.6).
-                let base = op.trim_end_matches(['%', '|']);
-                if matches!(base, "+" | "-" | "*" | "/") && (base.len() == op.len() || base != "/") {
-                    while let TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } = t.kind() {
-                        t = *elem;
-                    }
+                let t = shown;
+                if matches!(t.kind(), TyKind::Array { .. } | TyKind::ParamArray { .. }) {
+                    self.error(
+                        span,
+                        "arithmetic does not apply to arrays; use a `#simd [N]T` vector (§5.6.2) or a loop",
+                    );
+                    return;
                 }
                 if t.is_error() {
                     return;

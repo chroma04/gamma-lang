@@ -43,7 +43,7 @@ line two`
     print("{}\n", ml)
     h: f16 = 1.5
     print("{} {}\n", h, h * 2)
-    big: u256 = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF
+    big: u128 = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF
     print("{}\n", big)
     print("{} {} {}\n", 0b1010_1010, 0o777, 1_000_000)
     print("{} {}\n", u8(true), u8(false))

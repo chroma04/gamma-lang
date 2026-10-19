@@ -1,0 +1,5 @@
+//! stage: check
+// An integer literal suffix names a width of 1 to 128 bits (§5.2).
+main :: fn() {
+    x := 1u200 //~ ERROR widths are 1 to 128
+}

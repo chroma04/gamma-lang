@@ -32,7 +32,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let ld = format!("GM_LD({}, {})", c, a);
         // Padding bits of a narrow integer in memory are unspecified; ignore them.
         match self.int_info(t) {
-            Some(ii) if self.wide(t).is_none() => {
+            Some(ii) => {
                 let v = self.normalize(ii, &ld);
                 self.tmp(t, &v)
             }
@@ -163,9 +163,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// A C literal of integer type `t` with value `v` (floats accept integer literals too).
     pub fn int_lit(&mut self, t: Ty, v: &BigInt) -> String {
-        if let Some(w) = self.wide(t) {
-            return self.wide_lit(t, w, v);
-        }
         match self.g.ty.repr(t) {
             Repr::Float(f) => float_lit(f, v.to_string().parse::<f64>().unwrap_or(f64::NAN)),
             Repr::Int { signed, storage, .. } => {
@@ -334,14 +331,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             ExprKind::Unary { op, operand } if operand.ty.is_vector() => self.vector_unary(e, *op, operand),
             ExprKind::Binary { op, lhs, rhs } if lhs.ty.is_vector() => self.vector_binary(e, *op, lhs, rhs),
-            ExprKind::Unary { op, operand } if matches!(operand.ty.kind(), TyKind::Array { .. }) => {
-                self.elementwise(e, Err(*op), None, operand)
-            }
-            ExprKind::Binary { op, lhs, rhs }
-                if matches!(lhs.ty.kind(), TyKind::Array { .. }) && !matches!(e.ty.kind(), TyKind::Bool) =>
-            {
-                self.elementwise(e, Ok(*op), Some(lhs), rhs)
-            }
             ExprKind::Unary { op, operand } => self.unary(e, *op, operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(e, *op, lhs, rhs),
             ExprKind::Logic { is_and, lhs, rhs } => {
@@ -877,7 +866,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     n
                 });
                 let i = self.expr(index)?;
-                let i = self.usize_value(index.ty, &i);
+                let i = format!("(uintptr_t){i}");
                 let i = self.tmp(Ty::usize(), &i);
                 let loc = self.loc(e);
                 let check = |fg: &mut Self, len: &str| {
@@ -972,7 +961,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let lo_v = match lo {
             Some(x) => {
                 let v = self.expr(x)?;
-                let v = self.usize_value(x.ty, &v);
+                let v = format!("(uintptr_t){v}");
                 self.tmp(Ty::usize(), &v)
             }
             None => "(uintptr_t)0".into(),
@@ -980,7 +969,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let hi_v = match hi {
             Some(x) => {
                 let v = self.expr(x)?;
-                let v = self.usize_value(x.ty, &v);
+                let v = format!("(uintptr_t){v}");
                 let h = self.tmp(Ty::usize(), &v);
                 if inclusive {
                     self.line(&format!("{} += 1;", h));
@@ -1015,9 +1004,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let v = self.expr(x)?;
         let t = e.ty;
         Ok(match kind {
-            Coercion::IntWiden if self.wide(t).is_some() || self.wide(x.ty).is_some() => {
-                self.wide_convert(e, crate::tir::Builtin::Convert, x.ty, &v, t)?
-            }
             Coercion::IntWiden | Coercion::FloatWiden => {
                 let c = self.g.ty.cty(t);
                 self.tmp(t, &format!("({}){}", c, v))
@@ -1957,7 +1943,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let v = self.load(t, addr);
                 let (l, h) = (self.int_lit(t, lo), self.int_lit(t, hi));
                 let op = if *inclusive { ">" } else { ">=" };
-                let (below, above) = (self.int_cmp(t, &v, "<", &l), self.int_cmp(t, &v, op, &h));
+                let (below, above) = (format!("({v} < {l})"), format!("({v} {op} {h})"));
                 self.line(&format!("if ({below} || {above}) goto {fail};"));
             }
             PatKind::Null => {
@@ -2055,7 +2041,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let lo = self.load(lt, &format!("({ca} + {})", offs[0]));
                 let hi = self.load(lt, &format!("({ca} + {})", offs[1]));
                 let op = if incl { "<=" } else { "<" };
-                let (ge, below) = (self.int_cmp(lt, &x, ">=", &lo), self.int_cmp(lt, &x, op, &hi));
+                let (ge, below) = (format!("({x} >= {lo})"), format!("({x} {op} {hi})"));
                 self.line(&format!("{r} = {ge} && {below};"));
             }
             _ => return unsupported(container.span, "`in` on this type"),

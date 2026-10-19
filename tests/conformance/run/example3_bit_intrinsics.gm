@@ -1,4 +1,4 @@
-// Bit intrinsics on odd and wide integer widths (u3, u24, i24, u48, u200, u128): rotates, counts, bit reversal and wrapping arithmetic.
+// Bit intrinsics on odd integer widths (u3, u24, i24, u48, u100, u128): rotates, counts, bit reversal and wrapping arithmetic.
 main :: fn() needs Out {
     a: u24 = 0xABCDEF
     print("{} {}\n", a, @rotl(a, 4))
@@ -9,10 +9,10 @@ main :: fn() needs Out {
     print("{}\n", @bitreverse(b))
     c: i24 = -8_000_000
     print("{} {}\n", c -% 1_000_000, c >> 4)
-    d: u200 = 1
-    d = (d << 199) +% (d << 199)
+    d: u100 = 1
+    d = (d << 99) +% (d << 99)
     print("{}\n", d)
-    e: u200 = (u200(1) << 150) | 0xFF
+    e: u100 = (u100(1) << 50) | 0xFF
     print("{} {}\n", @popcount(e), @clz(e))
     f: u48 = 0x1234_5678_9ABC
     print("{} {}\n", f, @rotr(f, 8))

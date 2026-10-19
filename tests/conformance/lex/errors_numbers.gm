@@ -7,6 +7,8 @@
 0x1g //~ ERROR invalid suffix `g`
 1u0 //~ ERROR invalid integer width
 1u01 //~ ERROR invalid integer width
+1u129 //~ ERROR invalid integer width
+1u200 //~ ERROR widths are 1 to 128
 1u65536 //~ ERROR invalid integer width
 1u //~ ERROR invalid suffix `u`
 0o7f32 //~ ERROR invalid suffix `f32` for a binary or octal literal

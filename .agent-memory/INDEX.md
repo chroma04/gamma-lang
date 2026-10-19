@@ -1,9 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-17) — PRs #1–#50 merged; s27 PR #51 open (branch claude/language-library-wishes)
-- s14 (branch claude/jolly-dijkstra-kenzir): documentation sweep of guide, std docs, spec,
-  architecture/contributing, CLI help, source comments and this memory
-  (sessions/s14-2026-10-15-docsweep.md). Audit leftovers: roadmap/bugs-open.md #50–53.
+## State (2026-10-19) — PRs #1–#51 merged; s28 coherence-review PR open (branch claude/coherence-review-wyd199)
+- s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
+  vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
+  listed in decisions/030 (effect ops under their effect = biggest).
 - The whole spec is implemented in both back ends (interpreter = bytecode VM + tree-walker
   fallback; C back end, gcc and clang). Every run test runs on both and must match.
   Milestones: roadmap/milestones.md (all done; per-area gaps). Decisions: decisions/.
@@ -25,7 +25,7 @@
   s21 gcc inline, Emacs, difftest CI; s20 fiber channel, fuzz/difftest; s19 papercuts.
 
 ## Next steps
-1. Drive PR #51 (s27) to merge; then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s28 PR to merge; get the user's calls on decisions/030's open list. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -59,6 +59,7 @@
                   · 027 effect-set params inferred from the caller's Sched(E); fiber channel
                   · 028 machine-applicable fixes (gamma fix, json diags, LSP quick fixes)
                   · 029 s27 wishes: admitted ([E]T, SIMD, Proc, zones, fiber sleep/generators) / rejected
+                  · 030 s28 coherence review: applied + open questions for the user
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
@@ -67,7 +68,7 @@
                   · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
                   · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
                   · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md · s25-2026-10-17-units.md
-                  · s26-2026-10-17-bugs-lldb.md · s27-2026-10-17-wishes.md
+                  · s26-2026-10-17-bugs-lldb.md · s27-2026-10-17-wishes.md (s28: see decisions/030)
 - gotchas/        environment.md
 
 ## Conventions

@@ -516,10 +516,10 @@ fn int_suffix(s: &str) -> Result<IntSuffix, String> {
         && digits.bytes().all(|b| b.is_ascii_digit())
     {
         let width = match digits.parse::<u32>() {
-            Ok(w) if (1..=65535).contains(&w) && !digits.starts_with('0') => w,
+            Ok(w) if (1..=128).contains(&w) && !digits.starts_with('0') => w,
             _ => {
                 return Err(format!(
-                    "invalid integer width in suffix `{}`: widths are 1 to 65535 with no leading zero",
+                    "invalid integer width in suffix `{}`: widths are 1 to 128 with no leading zero",
                     s
                 ));
             }

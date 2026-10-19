@@ -241,10 +241,10 @@ fn integer_values() {
 #[test]
 fn integer_suffixes() {
     assert_eq!(
-        toks("1u8 2i32 3u1 4i65535 5usize 6isize 0xFFu16 0b1i2 0o7u64 1_0u8"),
-        "1u8 2i32 3u1 4i65535 5usize 6isize 255u16 1i2 7u64 10u8 EOF"
+        toks("1u8 2i32 3u1 4i128 5usize 6isize 0xFFu16 0b1i2 0o7u64 1_0u8"),
+        "1u8 2i32 3u1 4i128 5usize 6isize 255u16 1i2 7u64 10u8 EOF"
     );
-    for bad in ["1u0", "1u01", "1u65536", "1i99999999999", "1u"] {
+    for bad in ["1u0", "1u01", "1u129", "1u65536", "1i99999999999", "1u"] {
         let e = errs(bad);
         assert_eq!(e.len(), 1, "{}: {:?}", bad, e);
         assert!(e[0].contains("suffix"), "{}: {:?}", bad, e);
