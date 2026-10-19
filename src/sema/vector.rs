@@ -100,11 +100,11 @@ impl<'s> Sema<'s> {
 
 impl<'a, 's> FnCx<'a, 's> {
     /// A binary operator whose left operand is the vector `lhs` (§7.4.7): every operator
-    /// works lane by lane, and comparisons give a mask.
+    /// works lane by lane; `is` compares whole vectors and is handled as for arrays.
     pub fn vector_binary(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
         use ast::BinOp as B;
         let vt = self.infer.resolve(lhs.ty);
-        let (n, lane) = vt.vector_parts().expect("a vector operand");
+        let (_, lane) = vt.vector_parts().expect("a vector operand");
         match op {
             B::And | B::Or => {
                 self.expr(rhs, None);
@@ -156,25 +156,19 @@ impl<'a, 's> FnCx<'a, 's> {
             cx.error(span, format!("`{}` applies to {}, not to the lanes of `{}`", op.as_str(), what, vt));
             error_expr(span)
         };
-        let builtin =
-            |b: Builtin, ty: Ty, l: Expr, r: Expr| mk(ty, tir::ExprKind::Builtin { op: b, args: vec![l, r] }, span);
         let binary = |b: tir::BinOp, l: Expr, r: Expr| {
             mk(vt, tir::ExprKind::Binary { op: b, lhs: Box::new(l), rhs: Box::new(r) }, span)
         };
         match op {
-            B::Is => builtin(Builtin::LaneEq, mask_ty(n), lhs, r),
-            B::IsNot => builtin(Builtin::LaneNe, mask_ty(n), lhs, r),
             B::Lt | B::Le | B::Gt | B::Ge => {
-                if !numeric {
-                    return lane_err(self, "numeric lanes");
-                }
-                let b = match op {
-                    B::Lt => Builtin::LaneLt,
-                    B::Le => Builtin::LaneLe,
-                    B::Gt => Builtin::LaneGt,
-                    _ => Builtin::LaneGe,
+                let m = match op {
+                    B::Lt => "lanes_lt",
+                    B::Le => "lanes_le",
+                    B::Gt => "lanes_gt",
+                    _ => "lanes_ge",
                 };
-                builtin(b, mask_ty(n), lhs, r)
+                self.error(span, format!("vectors are not ordered; compare lanes with `.{}(w)` (§5.6.2)", m));
+                error_expr(span)
             }
             B::Add(f) | B::Sub(f) | B::Mul(f) => {
                 if !numeric {
@@ -266,6 +260,24 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => Builtin::ReduceMax,
                 };
                 b(op, lane, vec![recv])
+            }
+            "lanes_eq" | "lanes_ne" | "lanes_lt" | "lanes_le" | "lanes_gt" | "lanes_ge" => {
+                if !self.arity(args, 1, n, span) {
+                    return error_expr(span);
+                }
+                if !matches!(n, "lanes_eq" | "lanes_ne") && !numeric {
+                    return needs(self, "numeric lanes");
+                }
+                let y = self.value_arg(args, 0, vt, span);
+                let op = match n {
+                    "lanes_eq" => Builtin::LaneEq,
+                    "lanes_ne" => Builtin::LaneNe,
+                    "lanes_lt" => Builtin::LaneLt,
+                    "lanes_le" => Builtin::LaneLe,
+                    "lanes_gt" => Builtin::LaneGt,
+                    _ => Builtin::LaneGe,
+                };
+                b(op, mask_ty(len), vec![recv, y])
             }
             "all" | "any" | "count" => {
                 if !self.arity(args, 0, n, span) {
@@ -360,7 +372,8 @@ impl<'a, 's> FnCx<'a, 's> {
                     span,
                     format!(
                         "vectors have no method `.{}`; they have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, \
-                         `max`, `abs`, `to`, `shuffle` and `store`, and masks `all`, `any`, `count` and `select` (§21.3)",
+                         `max`, `abs`, `to`, `shuffle`, `store` and the comparisons `lanes_eq`, `lanes_ne`, `lanes_lt`, \
+                         `lanes_le`, `lanes_gt` and `lanes_ge`, and masks `all`, `any`, `count` and `select` (§21.3)",
                         n
                     ),
                 );

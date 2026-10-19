@@ -12,12 +12,11 @@ Gamma's data types will be familiar to a C programmer, with a few deliberate dif
 arrays_demo :: fn() needs Out {
     v := [_]i32(1, 2, 3)               // [_] lets the compiler count: [3]i32
     w := [_]i32(10, 20, 30)
-    sum := v + w                       // elementwise arithmetic: [11, 22, 33]
-    twice := v * [3]i32(fill: 2)       // no implicit broadcast; spell the fill out
+    sum := [3]i32(v[0] + w[0], v[1] + w[1], v[2] + w[2])   // arrays have no arithmetic: [11, 22, 33]
     zeros := [8]u8(fill: 0)
     copy := v                          // a copy, not an alias
     copy[0] = 99                       // v[0] is still 1
-    print("{} {} {}\n", sum, twice, zeros.len)
+    print("{} {}\n", sum, zeros.len)
     print("{}\n", copy is v)                // false: `is` compares arrays element by element
 }
 ```
@@ -41,13 +40,13 @@ vectors_demo :: fn() needs Out {
     a := F4(1, 2, 3, 4)
     b := F4(fill: 2.5)
     print("{}\n", a * b)                          // [2.5, 5, 7.5, 10]
-    big := a > b                                   // a mask: [false, false, true, true]
+    big := a.lanes_gt(b)                           // a mask: [false, false, true, true]
     print("{} {}\n", big.count(), big.select(a, b))   // 2 [2.5, 2.5, 3, 4]
     print("{}\n", (a * a).reduce_sum())           // 30
 }
 ```
 
-Comparisons, `is` included, give a mask `#simd [N]bool`, so a vector is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+Arrays have no arithmetic (`a + b` on arrays is an error): use a vector, or a loop. Comparing vectors works as for arrays: `a is b` is one `bool`, true when every pair of lanes is equal (so a `NaN` lane makes it false), and vectors can be hash map keys. Vectors are not ordered, so `<` is an error; the methods `.lanes_eq(w)`, `.lanes_ne(w)`, `.lanes_lt(w)`, `.lanes_le(w)`, `.lanes_gt(w)` and `.lanes_ge(w)` compare lane by lane and give a mask `#simd [N]bool`. A mask is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
 
 ## Slices
 

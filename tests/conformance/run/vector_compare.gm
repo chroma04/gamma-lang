@@ -1,0 +1,48 @@
+// Vector comparison (§5.6.2): `is` and `is not` compare whole vectors and give a `bool`
+// (a NaN lane makes `is` false); `.lanes_eq(w)` and its kin compare lane by lane and give a
+// mask. Vectors are `Eq`, hash like the array of their lanes, and work as map keys.
+F4 :: #simd [4]f32
+I4 :: #simd [4]i32
+B4 :: #simd [4]bool
+
+same :: fn(T: type, a, b: T) -> bool where Eq(T) => a is b
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    a := I4(1, 5, 3, 7)
+    b := I4(4, 2, 3, 8)
+    print("{} {} {} {}\n", a is a, a is b, a is not b, a is not a)
+    print("{} {}\n", a.lanes_eq(b), a.lanes_ne(b))
+    print("{} {}\n", a.lanes_lt(b), a.lanes_le(b))
+    print("{} {}\n", a.lanes_gt(b), a.lanes_ge(b))
+    if a is I4(1, 5, 3, 7) { print("equal\n") }
+    if a is not b { print("different\n") }
+    print("{} {}\n", a.lanes_lt(b).count(), a.lanes_eq(b).any())
+
+    // Floats compare per lane by IEEE equality.
+    x := F4(1, 2, 3, 4)
+    nan := F4(1, 2, 0.0 / 0.0, 4)
+    print("{} {} {}\n", x is x, nan is nan, nan is not nan)
+    print("{} {}\n", nan.lanes_eq(nan), nan.lanes_ne(nan))
+    print("{} {}\n", nan.lanes_lt(x), nan.lanes_ge(x))
+    print("{} {}\n", F4(0.0, 1, 2, 3) is F4(-0.0, 1, 2, 3), F4(0.0, 1, 2, 3).lanes_eq(F4(-0.0, 1, 2, 3)))
+
+    // Masks compare as `bool` lanes, and have `lanes_eq` and `lanes_ne` too.
+    m := a.lanes_lt(b)
+    n := a.lanes_ge(b)
+    print("{} {} {}\n", m is m, m is n, m is ~n)
+    print("{} {}\n", m.lanes_eq(n), m.lanes_ne(n))
+
+    // Generic code and hashing.
+    print("{} {}\n", same(a, a), same(nan, nan))
+    print("{} {}\n", @hash(a, 0) is @hash(I4(1, 5, 3, 7), 0), @hash(a, 0) is @hash(b, 0))
+    print("{}\n", @hash(F4(0.0, 1, 2, 3), 0) is @hash(F4(-0.0, 1, 2, 3), 0))
+    print("{}\n", @hash(a, 0) is @hash([4]i32(a), 0))
+
+    // A vector is a map key.
+    names := hash_map(I4, string)
+    defer names.deinit()
+    try names.put(a, "a")
+    try names.put(b, "b")
+    try names.put(I4(1, 5, 3, 7), "again")
+    print("{} {} {}\n", names.len(), names.get(a), names.get(I4(fill: 0)))
+}

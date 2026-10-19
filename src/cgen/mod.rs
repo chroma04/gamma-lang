@@ -13,7 +13,6 @@ mod constarg;
 mod csrc;
 pub use csrc::{CSource, Extras, Link, link_inputs, load_for_interpreter};
 pub mod debug;
-mod elementwise;
 mod expr;
 mod fiber;
 mod func;

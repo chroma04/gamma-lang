@@ -1,8 +1,8 @@
-// ODE integration with Euler and RK4 over [N]f64 state vectors using elementwise array arithmetic: convergence orders, pendulum and Kepler orbit energy.
+// ODE integration with Euler and RK4 over [N]f64 state vectors: convergence orders, pendulum and Kepler orbit energy.
 math :: import "std/math"
 fmt :: import "std/fmt"
 
-// Vector helpers. (Elementwise `+` on `[N]f64` is rejected inside a function generic in N, so these loop.)
+// Vector helpers: loops over the components.
 axpy :: fn(N :: usize, a: f64, x, y: [N]f64) -> [N]f64 {
     r: [N]f64 = ---
     for i in 0..N { r[i] = y[i] + a * x[i] }

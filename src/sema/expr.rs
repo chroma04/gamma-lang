@@ -679,10 +679,6 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.unify(a, b).is_err() {
             let (a, b) = (self.infer.resolve(a), self.infer.resolve(b));
             let mut d = Diagnostic::error(span, format!("{} have different types: `{}` and `{}`", what, a, b));
-            let is_array = |t: Ty| t.is_array();
-            if is_array(a) != is_array(b) && (is_array(a) || is_array(b)) {
-                d = d.with_note("arithmetic on arrays is elementwise, with no implicit broadcasting of scalars; use `[N]T(fill: x)` (§7.4.6)");
-            }
             // `a..b else c` is `(a..b) else c`: `else` binds more loosely than `..`.
             let wrapped = |t: Ty| matches!(t.kind(), TyKind::Optional(_) | TyKind::Result { .. });
             if what == "range bounds" && wrapped(a) != wrapped(b) {
@@ -734,7 +730,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Checks `lhs op rhs` given the already-checked left operand.
     pub fn binary_op(&mut self, op: ast::BinOp, lhs: Expr, rhs: &ast::Expr, span: Span) -> Expr {
         use ast::BinOp as B;
-        if self.infer.resolve(lhs.ty).is_vector() {
+        if self.infer.resolve(lhs.ty).is_vector() && !matches!(op, B::Is | B::IsNot) {
             return self.vector_binary(op, lhs, rhs, span);
         }
         match op {
