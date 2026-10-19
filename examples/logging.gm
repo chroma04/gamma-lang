@@ -30,24 +30,24 @@ Order :: struct {
 
 // Prices a batch. Bad orders are logged and skipped; a nonsense quantity aborts it.
 process :: fn(orders: []const Order) -> u64 needs Log + Abort {
-    defer log(.Debug, 0, "batch closed")
+    defer Log.log(.Debug, 0, "batch closed")
     total: u64 = 0
     for o in orders {
         if o.qty is 0 {
-            log(.Warn, o.id, "empty order skipped")
+            Log.log(.Warn, o.id, "empty order skipped")
             continue
         }
         if o.cents is 0 {
-            log(.Error, o.id, "missing price")
+            Log.log(.Error, o.id, "missing price")
             continue
         }
         if o.qty > 1000 {
-            log(.Error, o.id, "quantity out of range")
-            abort("suspicious order")
+            Log.log(.Error, o.id, "quantity out of range")
+            Abort.abort("suspicious order")
         }
-        log(.Debug, o.id, o.item)
+        Log.log(.Debug, o.id, o.item)
         total += u64(o.qty) * u64(o.cents)
-        log(.Info, o.id, "priced")
+        Log.log(.Info, o.id, "priced")
     }
     return total
 }
@@ -60,7 +60,7 @@ Stats :: struct {
 handler Log for ^Stats needs Log {
     log(self, level, order, msg) => {
         self.seen[level.tag()] += 1
-        log(level, order, msg)
+        Log.log(level, order, msg)
     }
 }
 
@@ -68,7 +68,7 @@ handler Log for ^Stats needs Log {
 run_batch :: fn(orders: []const Order) -> ?u64 needs Log {
     stop :: handler Abort {
         abort(reason) => {
-            log(.Error, 0, reason)
+            Log.log(.Error, 0, reason)
             break null
         }
     }

@@ -21,8 +21,8 @@ handler Fail for Bail needs Out {
 }
 
 step :: fn(n: i32) -> i32 needs Log + Fail {
-    log("step")
-    if n > 2 { fail("too big") }
+    Log.log("step")
+    if n > 2 { Fail.fail("too big") }
     return n * 10
 }
 

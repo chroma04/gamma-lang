@@ -46,8 +46,8 @@ worker :: fn(rounds: u32) -> u32 needs Gen + Log {
     total: u32 = 0
     for r in 0..rounds {
         f = advance(f, r + 2)
-        f = emit(f)
-        total = total +% log(make_chunk(r.trunc(u8)))
+        f = Gen.emit(f)
+        total = total +% Log.log(make_chunk(r.trunc(u8)))
     }
     return total + f.regs[0].trunc(u32) + f.pc
 }

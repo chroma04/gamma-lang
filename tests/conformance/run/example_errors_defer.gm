@@ -71,18 +71,18 @@ Trace :: effect {
 }
 
 step :: fn(name: string, fail: bool) -> StoreError!() needs Trace {
-    note(name)
-    defer note("  defer: leave step")
-    errdefer note("  errdefer: undo step")
+    Trace.note(name)
+    defer Trace.note("  defer: leave step")
+    errdefer Trace.note("  errdefer: undo step")
     if fail { return !.Full }
     return ()
 }
 
 transaction :: fn(fail_at: u32) -> StoreError!u32 needs Trace {
-    defer note("  defer: transaction closed")
-    errdefer note("  errdefer: rollback")
+    defer Trace.note("  defer: transaction closed")
+    errdefer Trace.note("  errdefer: rollback")
     for i in 0..3 {
-        defer note("  defer: end of iteration")
+        defer Trace.note("  defer: end of iteration")
         try step("step", i.trunc(u32) is fail_at)
     }
     return 3

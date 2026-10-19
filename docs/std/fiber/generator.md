@@ -68,13 +68,13 @@ returned, can be used anywhere: it starts afresh, or gives `null`.
 #### Writing the scope yourself
 
 `pull` is `driver` and `with` combined. To `return` or `break` out of the consumer's code,
-install the driver yourself and call `finish()` at the end of the body:
+install the driver yourself and call `Pull.finish()` at the end of the body:
 
     d := gen.driver(u32, Out)
     defer d.close()
     with &d on main_stack {
         if x := ga.next() { return x }          // cancels the generators still suspended
-        gen.finish()
+        gen.Pull.finish()
     }
 
 ## Structs
@@ -159,7 +159,7 @@ driver :: fn(T: type, E: effects) -> Driver(T, E)
 ```
 
 A scope with no generators yet, for use as `with &d on stack { … }` (see the module
-header). Call `d.close()` after the `with`, and `finish()` at the end of its body.
+header). Call `d.close()` after the `with`, and `Pull.finish()` at the end of its body.
 
 ### `close`
 

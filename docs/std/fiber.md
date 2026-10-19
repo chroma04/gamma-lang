@@ -5,13 +5,13 @@
 A cooperative round-robin scheduler for fibers (§14).
 
 Tasks are fibers that run one at a time on the thread that installed the scheduler and
-take turns when they call `yield_now`. The scheduler is a handler for the `Sched` effect:
+take turns when they call `Sched.yield_now`. The scheduler is a handler for the `Sched` effect:
 
     fiber :: import "std/fiber"
 
     worker :: fn(c: ^Counter) needs Sched {
         c.ticks += 1
-        fiber.yield_now()               // let the other tasks run
+        fiber.Sched.yield_now()               // let the other tasks run
         c.ticks += 1
     }
 
@@ -20,12 +20,12 @@ take turns when they call `yield_now`. The scheduler is a handler for the `Sched
     with &s on main_stack {
         fiber.spawn(Counter, worker, &a, stack_a)
         fiber.spawn(Counter, worker, &b, stack_b)
-        fiber.join()                    // returns once both tasks have exited
+        fiber.Sched.join()                    // returns once both tasks have exited
     }
 
 Every task needs a stack of its own (§14.1), and the code running under `with` needs one
 too. A task ends when its function returns; its `defer`s run then. The `with` cannot
-complete while a task is suspended, so end the body with `join()`. Only the code under
+complete while a task is suspended, so end the body with `Sched.join()`. Only the code under
 the `with` joins, not the tasks, and a task that never ends is a deadlock, which traps.
 A task's `arg` and `stack` must outlive the task.
 
@@ -37,7 +37,7 @@ the `with &s` needs `Out` and `Clock` itself.
 `Scheduler` keeps the allocator it was created with for its queue of ready tasks and its
 heap of sleeping tasks, and performs no `Alloc` afterwards.
 
-A task can wait for another without polling: `park(&w)` suspends it in a `Waiters`
+A task can wait for another without polling: `Sched.park(&w)` suspends it in a `Waiters`
 queue, and it does not run again until a task calls `wake(&w)`, which makes it ready.
 `std/fiber/channel` builds a bounded channel between tasks on them.
 

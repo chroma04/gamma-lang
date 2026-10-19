@@ -429,9 +429,12 @@ impl<'a, 's> Walker<'a, 's> {
     /// The operation `name` of effect `d`.
     pub fn operation_use(&mut self, d: DeclId, name: ast::Ident) {
         let module = self.sema.decls[d.0 as usize].module;
-        if let Some(od) = self.sema.modules[module.0 as usize].scope.get(&name.name).copied()
-            && self.sema.decls[od.0 as usize].op_of.is_some_and(|(e, _)| e == d)
-        {
+        let op = self.sema.modules[module.0 as usize]
+            .effect_ops
+            .get(&name.name)
+            .and_then(|v| v.iter().find(|&&(e, _)| e == d))
+            .map(|&(_, od)| od);
+        if let Some(od) = op {
             self.use_decl(name.span, od);
         }
     }

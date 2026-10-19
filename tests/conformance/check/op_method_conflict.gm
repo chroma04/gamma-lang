@@ -1,0 +1,18 @@
+//! stage: check
+// A type has at most one method candidate of each name (§7.10): two effects whose
+// operations `close` both take `Conn` first, and a function that does too.
+Conn :: struct { id: i32 }
+
+A :: effect { close: fn(c: Conn) }
+B :: effect { close: fn(c: ^Conn) }      //~ ERROR would have two methods named `close`
+
+C :: effect { shut: fn(c: Conn) }
+shut :: fn(c: Conn) {}                   //~ ERROR would have two methods named `shut`
+
+D :: effect { id: fn(c: Conn) }          //~ ERROR has a field `id`
+
+// Different first parameter types do not conflict.
+Other :: struct { n: i32 }
+E :: effect { close: fn(o: Other) }
+
+main :: fn() {}

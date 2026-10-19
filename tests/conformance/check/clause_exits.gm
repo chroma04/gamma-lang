@@ -5,20 +5,20 @@ Note :: effect { note: esc(n: i32) }
 Pause :: effect { pause: ctl() }
 Stop :: effect { stop: esc(c: i32) -> never }
 Mixed :: effect { info: fn(s: string); bail: esc() -> never }
-f :: fn() -> i32 needs Q => ask(5) + 1
-g :: fn() needs Pause { pause() }
-h :: fn() needs Stop { stop(1) }
+f :: fn() -> i32 needs Q => Q.ask(5) + 1
+g :: fn() needs Pause { Pause.pause() }
+h :: fn() needs Stop { Stop.stop(1) }
 deferring :: fn() needs Stop + Pause + Mixed {
-    defer stop(1) //~ ERROR a deferred statement may not perform `Stop`
-    defer pause() //~ ERROR a deferred statement may not perform `Pause`
+    defer Stop.stop(1) //~ ERROR a deferred statement may not perform `Stop`
+    defer Pause.pause() //~ ERROR a deferred statement may not perform `Pause`
     defer h() //~ ERROR a deferred statement may not perform `Stop`
-    defer info("fine: a `fn` operation")
+    defer Mixed.info("fine: a `fn` operation")
     defer { _ = with (handler Stop { stop(c) => break }) { h() } }
 }
 main :: fn() {
     for i in 0..2 {
         _ = with (handler Q { ask(n) => { if n > 3 { continue }; n } }) { f() } //~ ERROR `continue` finishes the clause with `()`, but the operation returns `i32`
-        with (handler Note { note(n) => { if n > 3 { continue } } }) { note(1) }
+        with (handler Note { note(n) => { if n > 3 { continue } } }) { Note.note(1) }
     }
     s: [65536]u8 = ---
     c := false

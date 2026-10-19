@@ -49,7 +49,7 @@ main :: fn() needs Out {
     print("{}\n", p.norm1(..(4,)))
     with (handler Log { log(level, msg) => print("[{}] {}\n", level, msg) }) {
         entry: (u8, string) = (3, "spread into an operation")
-        log(..entry)
+        Log.log(..entry)
     }
 
     // Generic calls infer from the spread values.

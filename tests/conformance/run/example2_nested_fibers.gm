@@ -5,8 +5,8 @@ Inner :: effect { inner: ctl(n: u32) }
 leaf :: fn() needs Outer + Inner + Out {
     defer print("leaf cleanup\n")
     for i in 1..=3 {
-        inner(i)                 // handled by the inner with (this fiber suspends, clause runs on mid's stack)
-        r := outer(i * 10)       // handled by the outer with: suspends mid's whole fiber, including this one
+        Inner.inner(i)                 // handled by the inner with (this fiber suspends, clause runs on mid's stack)
+        r := Outer.outer(i * 10)       // handled by the outer with: suspends mid's whole fiber, including this one
         print("  leaf got {}\n", r)
     }
 }

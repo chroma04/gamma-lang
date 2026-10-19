@@ -14,7 +14,7 @@ main :: fn() needs Out {
             break
         }
     }) on stack[..] {
-        emit(1)
+        Gen.emit(1)
         print("unreachable\n")
     }
     print("unreachable\n")

@@ -2,7 +2,7 @@
 //! through bounded channels, scheduled by `std/fiber`.
 //!
 //! Shows: `fiber.scheduler(Out + Clock)`, whose effect set says what tasks may perform
-//! besides `Sched`; `with &sched on stack { ... }`; `fiber.spawn` and `fiber.join`;
+//! besides `Sched`; `with &sched on stack { ... }`; `fiber.spawn` and `fiber.Sched.join`;
 //! `std/fiber/channel`, where a task waiting on a full or empty channel is parked until
 //! another task changes it; `Clock.sleep` and `Clock.now`; and a
 //! `test` that runs the same pipeline on the test runner's fake clock, where `sleep`
@@ -84,7 +84,7 @@ pipeline :: fn(count: u32) -> AllocError!(total: u32, took: Duration) needs Out 
         fiber.spawn(generate, &gen, s1[..])
         fiber.spawn(square, &sq, s2[..])
         fiber.spawn(sum, &acc, s3[..])
-        fiber.join()
+        fiber.Sched.join()
     }
     return (total: acc.total, took: Clock.now().since(start))
 }

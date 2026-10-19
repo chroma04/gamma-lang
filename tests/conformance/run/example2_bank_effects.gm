@@ -14,23 +14,23 @@ Tick :: effect {
 // ---- business logic: pure in terms of effects ----
 
 withdraw :: fn(id: u32, amount: i64) needs Storage {
-    bal := load(id) else abort("no such account")
-    if bal < amount { abort("insufficient funds") }
-    store(id, bal - amount)
+    bal := Storage.load(id) else Storage.abort("no such account")
+    if bal < amount { Storage.abort("insufficient funds") }
+    Storage.store(id, bal - amount)
 }
 
 deposit :: fn(id: u32, amount: i64) needs Storage {
-    bal := load(id) else abort("no such account")
-    store(id, bal + amount)
+    bal := Storage.load(id) else Storage.abort("no such account")
+    Storage.store(id, bal + amount)
 }
 
 // Transfer must be atomic: if the deposit aborts, the withdrawal is rolled back.
 transfer :: fn(from, to: u32, amount: i64) needs Storage + Tick + Out {
-    t0 := now()
-    original := load(from) else abort("no such account")
+    t0 := Tick.now()
+    original := Storage.load(from) else Storage.abort("no such account")
     errdefer {
-        store(from, original)
-        print("  rollback of {} at t={}\n", from, now() - t0)
+        Storage.store(from, original)
+        print("  rollback of {} at t={}\n", from, Tick.now() - t0)
     }
     withdraw(from, amount)
     deposit(to, amount)

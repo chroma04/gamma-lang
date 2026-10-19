@@ -16,7 +16,7 @@ slurp :: fn(path: string, buf: []u8) -> IoError!usize needs Fs {
     defer f.close()
     total: usize = 0
     while true {
-        n := try f.read_from(buf[total..])
+        n := try f.read(buf[total..])
         if n is 0 { break }
         total += n
     }
@@ -62,13 +62,13 @@ test "a full buffer is written out" {
     chunk: [1000]u8 = ---
     chunk[..].fill('a')
     with &out {
-        for _ in 0..4 { Out.write_out(chunk[..]) }
+        for _ in 0..4 { Out.write(chunk[..]) }
     }
     // 4000 bytes fit the 4096-byte buffer.
     expect(ok(size_of_file("big.txt")) is 0)
     more: [200]u8 = ---
     more[..].fill('b')
-    with &out { Out.write_out(more[..]) }
+    with &out { Out.write(more[..]) }
     // The 200 bytes would overflow it: the 4000 are written first, then they are buffered.
     expect(ok(size_of_file("big.txt")) is 4000)
     ok(out.flush())
@@ -85,9 +85,9 @@ test "a piece that exactly fills the buffer stays buffered" {
     out := io.file_out(f)
     chunk: [4096]u8 = ---
     chunk[..].fill('x')
-    with &out { Out.write_out(chunk[..]) }
+    with &out { Out.write(chunk[..]) }
     expect(ok(size_of_file("exact.txt")) is 0)
-    with &out { Out.write_out("y") }
+    with &out { Out.write("y") }
     expect(ok(size_of_file("exact.txt")) is 4096)
     ok(out.flush())
     expect(ok(size_of_file("exact.txt")) is 4097)
@@ -100,11 +100,11 @@ test "a piece larger than the buffer is written directly, after what precedes it
     huge: [10000]u8 = ---
     huge[..].fill('h')
     with &out {
-        Out.write_out("head:")
-        Out.write_out(huge[..])
+        Out.write("head:")
+        Out.write(huge[..])
     }
     expect(ok(size_of_file("huge.txt")) is 10005, "written without flush")
-    with &out { Out.write_out(":tail") }
+    with &out { Out.write(":tail") }
     expect(ok(size_of_file("huge.txt")) is 10005)
     ok(out.flush())
     expect(ok(size_of_file("huge.txt")) is 10010)
@@ -138,7 +138,7 @@ test "an error on a large piece is kept" {
     out := io.file_out(r)
     huge: [5000]u8 = ---
     huge[..].fill('q')
-    with &out { Out.write_out(huge[..]) }
+    with &out { Out.write(huge[..]) }
     expect(out.err is .Other(9))
     expect(out.flush() is !.Other(9))
     r.close()

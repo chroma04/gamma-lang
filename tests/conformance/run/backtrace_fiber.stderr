@@ -1,5 +1,5 @@
 trap: too big
   at tests/conformance/run/backtrace_fiber.gm:8:16 in check
   called from tests/conformance/run/backtrace_fiber.gm:18:35 in `ask` clause in main
-  called from tests/conformance/run/backtrace_fiber.gm:13:27 in produce
+  called from tests/conformance/run/backtrace_fiber.gm:13:31 in produce
   called from tests/conformance/run/backtrace_fiber.gm:25:13 in main

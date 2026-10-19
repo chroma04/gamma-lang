@@ -356,7 +356,7 @@ main :: fn() needs Out {
 
 ## Files, paths and standard input
 
-File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read_from(buf)`, `f.write_to(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
+File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read(buf)`, `f.write(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
 
 ```gamma
 fs :: import "std/fs"
@@ -462,7 +462,7 @@ main :: fn() -> process.RunError!() needs Out + Proc + Alloc {
 }
 ```
 
-For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `write_in` and ended with `close_in`; `read_out` waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `kill` ends it forcibly. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write_in` and `read_out`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
+For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `Proc.write` (`child.write(bytes)`) and ended with `Proc.close_in`; `Proc.read` (`child.read(buf)`) waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `kill` ends it forcibly. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write` and `read`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
 
 ## Time and randomness
 
@@ -628,7 +628,7 @@ counter 4000
 
 A thread starts with no handlers installed; `thread.defaults(body)` installs the usual ones for a thread that prints or allocates. `t.detach()` lets a thread run on its own: its resources are released when it ends. When `main` returns the process exits, and a detached thread still running is stopped where it is, without running its `defer`s, so wait for the ones whose work you need.
 
-`std/fiber` is a cooperative scheduler for [fibers](12-fibers.md): tasks that take turns on one thread by calling `fiber.yield_now()`. It is the scheduler sketched in chapter 12, ready to use. Tasks pass values through `std/fiber/channel`, a bounded channel like `thread.Channel` but without locks: a task that sends to a full channel or receives from an empty one is parked, and runs again once another task changes the channel.
+`std/fiber` is a cooperative scheduler for [fibers](12-fibers.md): tasks that take turns on one thread by calling `fiber.Sched.yield_now()`. It is the scheduler sketched in chapter 12, ready to use. Tasks pass values through `std/fiber/channel`, a bounded channel like `thread.Channel` but without locks: a task that sends to a full channel or receives from an empty one is parked, and runs again once another task changes the channel.
 
 ```gamma
 fiber :: import "std/fiber"

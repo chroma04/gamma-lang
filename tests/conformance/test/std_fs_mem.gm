@@ -168,7 +168,7 @@ test "write_atomic replaces the file and leaves no temporary" {
 
 test "truncate and sync" {
     f := ok(Fs.open("f", fs.OpenOptions(read: true, write: true, create: true)))
-    _ = ok(f.write_to("hello world"))
+    _ = ok(f.write("hello world"))
     ok(f.sync())
     ok(f.truncate(5))
     expect((ok(Fs.stat("f"))).size is 5)
@@ -176,7 +176,7 @@ test "truncate and sync" {
     expect((ok(Fs.stat("f"))).size is 8)
     _ = ok(f.seek(0, .Start))
     buf: [16]u8 = ---
-    n := ok(f.read_from(buf[..]))
+    n := ok(f.read(buf[..]))
     expect(n is 8)
     expect(buf[0..8] is "hello\0\0\0")
     ok(f.truncate(0))

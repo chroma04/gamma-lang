@@ -458,6 +458,67 @@ impl<'s> Sema<'s> {
         }
     }
 
+    /// Records the function or operation `name` of `module`, whose first run-time parameter
+    /// has type `first`, as a method candidate of that type if the type is declared in
+    /// `module`. A struct may not have both a field and a method candidate named alike
+    /// (§7.10).
+    pub(super) fn declare_method_candidate(&mut self, module: ModuleId, name: ast::Ident, first: Ty, is_op: bool) {
+        let s = match first.kind() {
+            TyKind::Ptr { pointee, .. } => *pointee,
+            _ => first,
+        };
+        let TyKind::Adt(adt, _) = s.kind() else { return };
+        if !self.adts.get(adt).is_some_and(|a| a.module == module) {
+            return;
+        }
+        if self.struct_fields(s).is_some_and(|fs| fs.iter().any(|f| f.name == name.name)) {
+            self.error(
+                name.span,
+                format!("`{}` has a field `{}`, so a method of that name could never be called (§7.10)", s, name.name),
+            );
+        }
+        self.method_candidates.push(super::MethodCandidate {
+            adt: adt.template(),
+            name: name.name,
+            span: name.span,
+            is_op,
+        });
+    }
+
+    /// Reports a type with two method candidates of one name (§7.10): a function and an
+    /// operation, or operations of two effects.
+    pub(super) fn check_method_candidates(&mut self) {
+        let mut seen: std::collections::HashMap<(crate::types::AdtId, Symbol), (Span, bool)> =
+            std::collections::HashMap::new();
+        let mut errors = vec![];
+        for c in std::mem::take(&mut self.method_candidates) {
+            match seen.entry((c.adt, c.name)) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert((c.span, c.is_op));
+                }
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    let (first, _) = *o.get();
+                    // Report at the later declaration.
+                    let (at, other) = if (c.span.file, c.span.lo) >= (first.file, first.lo) {
+                        (c.span, first)
+                    } else {
+                        (first, c.span)
+                    };
+                    errors.push((at, other, c.adt, c.name));
+                }
+            }
+        }
+        for (at, other, adt, name) in errors {
+            let ty = self.adts.get(&adt).map_or_else(|| "the type".to_string(), |a| format!("`{}`", a.name));
+            let d = Diagnostic::error(
+                at,
+                format!("{} would have two methods named `{}`: a method call must find exactly one (§7.10)", ty, name),
+            )
+            .with_label(other, "the other candidate");
+            self.emit(d);
+        }
+    }
+
     /// Resolves the signature of a top-level function and queues its body.
     pub(super) fn declare_fn(
         &mut self,
@@ -467,24 +528,8 @@ impl<'s> Sema<'s> {
         item: &Rc<ast::Item>,
     ) -> DeclValue {
         let Some(sig) = self.resolve_fn_sig(module, &lit.sig, true, &lit.where_) else { return DeclValue::Error };
-        // A struct may not have both a field and a method named alike (§7.10).
         if let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) {
-            let s = match first.ty.kind() {
-                TyKind::Ptr { pointee, .. } => *pointee,
-                _ => first.ty,
-            };
-            if let TyKind::Adt(adt, _) = s.kind()
-                && self.adts.get(adt).is_some_and(|a| a.module == module)
-                && self.struct_fields(s).is_some_and(|fs| fs.iter().any(|f| f.name == name.name))
-            {
-                self.error(
-                    name.span,
-                    format!(
-                        "`{}` has a field `{}`, so a method of that name could never be called (§7.10)",
-                        s, name.name
-                    ),
-                );
-            }
+            self.declare_method_candidate(module, name, first.ty, false);
         }
         let id = self.new_fn(name.name, name.span, sig, tir::FnKind::Named);
         self.pending_bodies.push(PendingBody { fn_id: id, module, item: item.clone() });
@@ -897,6 +942,9 @@ impl<'s> Sema<'s> {
                 }
             }
             let ret = op.ret.as_ref().map_or(Ty::unit(), |r| self.resolve_type(module, r));
+            if let Some(first) = params.first() {
+                self.declare_method_candidate(module, op.name, first.ty, true);
+            }
             ops.push(OpInfo { name: op.name.name, kind: op.kind, params, ret });
         }
         let n = self.type_params.len() - params.len();

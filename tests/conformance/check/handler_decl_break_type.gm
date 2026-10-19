@@ -15,7 +15,7 @@ handler Fail for Quit {
     }
 }
 step :: fn(n: i32) -> i32 needs Fail {
-    if n > 2 { fail("too big") }
+    if n > 2 { Fail.fail("too big") }
     return n * 10
 }
 main :: fn() {

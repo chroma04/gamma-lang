@@ -10,7 +10,7 @@ fib_gen :: fn(limit: i64) needs Emit {
     a: i64 = 0
     b: i64 = 1
     while a <= limit {
-        emit(a)
+        Emit.emit(a)
         t := a + b
         a = b
         b = t
@@ -49,7 +49,7 @@ filter_stage :: fn(limit: i64) needs Out2 {
     stack: [STACK]u8 = ---
     with (handler Emit {
         emit(x, k) => {
-            if x % 2 is 0 { pass(x * 10) }
+            if x % 2 is 0 { Out2.pass(x * 10) }
             resume k()
         }
     }) on stack[..] {
@@ -127,9 +127,9 @@ worker :: fn(id: u32) -> never needs Task + Out {
     steps := id + 1
     for i in 0..steps {
         print("  worker {} step {}/{}\n", id, i + 1, steps)
-        yield_now()
+        Task.yield_now()
     }
-    exit()
+    Task.exit()
 }
 
 run_scheduler :: fn() needs Out + Alloc {
@@ -137,11 +137,11 @@ run_scheduler :: fn() needs Out + Alloc {
     main_stack: [STACK]u8 = ---
     s := Sched(ready: list(cont(())), stacks: mem[..])
     with &s on main_stack[..] {
-        spawn(worker, 1)
-        spawn(worker, 2)
-        spawn(worker, 3)
+        Task.spawn(worker, 1)
+        Task.spawn(worker, 2)
+        Task.spawn(worker, 3)
         print("  main spawned 3 workers\n")
-        exit()
+        Task.exit()
     }
     print("  all done: {} stacks, {} switches, ready queue {}\n", s.used, s.switches, s.ready.items.len)
     s.ready.deinit()

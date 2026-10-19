@@ -1,0 +1,15 @@
+//! stage: check
+// An operation is a function in its effect's namespace, not a name of the module that
+// declares the effect (§12.1): a bare call names nothing, and the error says how to call it.
+Log :: effect {
+    log: fn(msg: string)
+    flush: fn()
+}
+
+work :: fn() needs Log {
+    Log.log("a")
+    log("b")                       //~ ERROR `log` is an operation of `Log`; call it as `Log.log(…)`
+    flush()                        //~ ERROR `flush` is an operation of `Log`; call it as `Log.flush(…)`
+}
+
+main :: fn() {}

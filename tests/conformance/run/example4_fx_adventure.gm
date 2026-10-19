@@ -125,16 +125,16 @@ visible :: fn(w: ^const World) -> bool => not ROOMS[w.here].dark or has_lamp(w)
 look :: fn(w: ^World) needs Say {
     r := ROOMS[w.here]
     if not visible(w) {
-        say("It is pitch dark. You can't see a thing.")
+        Say.say("It is pitch dark. You can't see a thing.")
         return
     }
-    say(r.desc)
+    Say.say(r.desc)
     for i in 0..N_ITEMS {
         if w.where_[i] is w.here {
             buf: [48]u8 = ---
             b := str.builder(buf[..])
             b.write("You see a {} here.", ITEM_NAMES[i])
-            say(b.str())
+            Say.say(b.str())
         }
     }
 }
@@ -156,7 +156,7 @@ take :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     if carried(w) >= w.capacity { return !.Full }
     w.where_[id] = HELD
     w.moves += 1
-    say("Taken.")
+    Say.say("Taken.")
 }
 
 drop :: fn(w: ^World, name: string) -> CmdError!() needs Say {
@@ -164,7 +164,7 @@ drop :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     if w.where_[id] is not HELD { return !.NotCarrying(name) }
     w.where_[id] = w.here
     w.moves += 1
-    say("Dropped.")
+    Say.say("Dropped.")
 }
 
 use :: fn(w: ^World, name: string) -> CmdError!() needs Say {
@@ -173,16 +173,16 @@ use :: fn(w: ^World, name: string) -> CmdError!() needs Say {
     if id is KEY and w.here is 2 {
         w.door_open = true
         w.moves += 1
-        say("The key turns with a groan and the iron door swings open.")
+        Say.say("The key turns with a groan and the iron door swings open.")
         return ()
     }
-    say("Nothing happens.")
+    Say.say("Nothing happens.")
 }
 
 inventory :: fn(w: ^const World) needs Say {
     n := carried(w)
     if n is 0 {
-        say("You carry nothing.")
+        Say.say("You carry nothing.")
         return
     }
     buf: [96]u8 = ---
@@ -194,7 +194,7 @@ inventory :: fn(w: ^const World) needs Say {
             b.push(ITEM_NAMES[i])
         }
     }
-    say(b.str())
+    Say.say(b.str())
 }
 
 direction :: fn(name: string) -> ?usize {
@@ -221,7 +221,7 @@ report :: fn(e: CmdError) needs Say {
             if verb is "go" { b.push("Go where?") } else { b.write("{} what?", verb) }
         }
     }
-    say(b.str())
+    Say.say(b.str())
 }
 
 // Runs one command line. Returns an error for the player to read; `leave` ends the session.
@@ -260,7 +260,7 @@ execute :: fn(w: ^World, line: string, scratch: []u8) -> CmdError!() needs Say +
             try use(w, noun)
         }
         "inventory", "i" => inventory(w)
-        "quit", "q" => leave(.Quit)
+        "quit", "q" => Quit.leave(.Quit)
         _ => return !.Unknown(verb)
     }
 }
@@ -285,18 +285,18 @@ play :: fn(r: ^io.Reader) -> IoError!Outcome needs Say + In {
     w := new_world()
     s := Session(history: [UNDO_DEPTH]World(fill: new_world()))
     scratch: [80]u8 = ---
-    say("Welcome to the little cabin. Type commands; `quit` leaves.")
+    Say.say("Welcome to the little cabin. Type commands; `quit` leaves.")
     look(&w)
     outcome := session: with (handler Quit { leave(why) => { break why } }) {
         while line := try r.next_line() {
             text := str.trim(line)
             if text is "undo" {
                 if s.depth is 0 {
-                    say("Nothing to undo.")
+                    Say.say("Nothing to undo.")
                 } else {
                     s.depth -= 1
                     w = s.history[s.depth]
-                    say("Undone.")
+                    Say.say("Undone.")
                     look(&w)
                 }
                 continue

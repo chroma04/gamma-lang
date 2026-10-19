@@ -38,7 +38,7 @@ handler Sink for ^Stdout needs Out {
 hex_digit :: fn(n: u8) -> u8 => if n < 10 { '0' + n } else { 'a' + (n - 10) }
 
 quote :: fn(s: string) needs Sink {
-    put("\"")
+    Sink.put("\"")
     start: usize = 0
     for i in 0..s.len {
         c := s[i]
@@ -51,61 +51,61 @@ quote :: fn(s: string) needs Sink {
             _ => ""
         }
         if escaped.len > 0 or c < 0x20 {
-            put(s[start..i])
+            Sink.put(s[start..i])
             if escaped.len > 0 {
-                put(escaped)
+                Sink.put(escaped)
             } else {
                 uni: [6]u8 = [_]u8('\\', 'u', '0', '0', hex_digit(c >> 4), hex_digit(c & 15))
-                put(uni[..])
+                Sink.put(uni[..])
             }
             start = i + 1
         }
     }
-    put(s[start..])
-    put("\"")
+    Sink.put(s[start..])
+    Sink.put("\"")
 }
 
 number :: fn(x: f64) needs Sink {
     buf: [400]u8 = ---
-    put(fmt.general(x, 12, buf[..]))
+    Sink.put(fmt.general(x, 12, buf[..]))
 }
 
 int :: fn(x: i64) needs Sink {
     buf: [fmt.INT_BUF]u8 = ---
-    put(fmt.dec(x, buf[..]))
+    Sink.put(fmt.dec(x, buf[..]))
 }
 
 /// Compact output: no whitespace at all.
 pub compact :: fn(v: ^const Value) needs Sink {
     match v^ {
-        .Null => put("null")
-        .Bool(b) => put(if b { "true" } else { "false" })
+        .Null => Sink.put("null")
+        .Bool(b) => Sink.put(if b { "true" } else { "false" })
         .Int(n) => int(n)
         .Num(x) => number(x)
         .Str(s) => quote(s)
         .Arr(xs) => {
-            put("[")
+            Sink.put("[")
             for i in 0..xs.items.len {
-                if i > 0 { put(",") }
+                if i > 0 { Sink.put(",") }
                 compact(&xs.items[i])
             }
-            put("]")
+            Sink.put("]")
         }
         .Obj(ms) => {
-            put("{")
+            Sink.put("{")
             for i in 0..ms.items.len {
-                if i > 0 { put(",") }
+                if i > 0 { Sink.put(",") }
                 quote(ms.items[i].key)
-                put(":")
+                Sink.put(":")
                 compact(&ms.items[i].val)
             }
-            put("}")
+            Sink.put("}")
         }
     }
 }
 
 indent :: fn(level: u32, width: u32) needs Sink {
-    for _ in 0..level * width { put(" ") }
+    for _ in 0..level * width { Sink.put(" ") }
 }
 
 /// Indented output; empty containers stay on one line.
@@ -117,33 +117,33 @@ pretty_at :: fn(v: ^const Value, level: u32, width: u32) needs Sink {
     match v^ {
         .Arr(xs) => {
             if xs.items.len is 0 {
-                put("[]")
+                Sink.put("[]")
                 return
             }
-            put("[\n")
+            Sink.put("[\n")
             for i in 0..xs.items.len {
                 indent(level + 1, width)
                 pretty_at(&xs.items[i], level + 1, width)
-                put(if i + 1 < xs.items.len { ",\n" } else { "\n" })
+                Sink.put(if i + 1 < xs.items.len { ",\n" } else { "\n" })
             }
             indent(level, width)
-            put("]")
+            Sink.put("]")
         }
         .Obj(ms) => {
             if ms.items.len is 0 {
-                put("{}")
+                Sink.put("{}")
                 return
             }
-            put("{\n")
+            Sink.put("{\n")
             for i in 0..ms.items.len {
                 indent(level + 1, width)
                 quote(ms.items[i].key)
-                put(": ")
+                Sink.put(": ")
                 pretty_at(&ms.items[i].val, level + 1, width)
-                put(if i + 1 < ms.items.len { ",\n" } else { "\n" })
+                Sink.put(if i + 1 < ms.items.len { ",\n" } else { "\n" })
             }
             indent(level, width)
-            put("}")
+            Sink.put("}")
         }
         _ => compact(v)
     }

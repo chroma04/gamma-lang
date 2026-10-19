@@ -214,7 +214,7 @@ first_pair :: fn(xs: []const i32, target: i32) -> i32 {
                 if a + b is target { break found a * b }
             }
         }
-        fail()
+        E.fail()
     }
 }
 ```

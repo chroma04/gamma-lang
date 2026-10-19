@@ -27,9 +27,9 @@ main :: fn() -> IoError!() needs Out + Net {
     print("client got: {}\n", buf[0..n])
 
     // Closing one end: the other sees the end of the stream.
-    Net.close_socket(client)
+    Net.close(client)
     print("after close: {}\n", try server.recv(buf[..]))
-    Net.close_socket(server)
+    Net.close(server)
     Net.close_listener(l)
 
     // Nobody listens on the port any more.

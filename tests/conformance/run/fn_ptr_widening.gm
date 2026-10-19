@@ -4,7 +4,7 @@ Log :: effect { log: fn(s: string) }
 
 twice :: fn(x: i32) -> i32 => x * 2
 shout :: fn(x: i32) -> i32 needs Log {
-    log("shout")
+    Log.log("shout")
     return x * 10
 }
 

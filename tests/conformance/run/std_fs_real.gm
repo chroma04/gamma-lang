@@ -116,7 +116,7 @@ scenario :: fn(root: string) -> IoError!() needs Out + Fs + Rand + Alloc {
 
     // truncate, sync
     h := try Fs.open(at(p[..], root, "top.txt"), fs.OpenOptions(read: true, write: true))
-    _ = try h.write_to("hello world")
+    _ = try h.write("hello world")
     try h.sync()
     try h.truncate(5)
     print("truncated to {}\n", (try Fs.stat(at(p[..], root, "top.txt"))).size)
@@ -124,7 +124,7 @@ scenario :: fn(root: string) -> IoError!() needs Out + Fs + Rand + Alloc {
     print("extended to {}\n", (try Fs.stat(at(p[..], root, "top.txt"))).size)
     _ = try h.seek(0, .Start)
     buf: [16]u8 = ---
-    got := try h.read_from(buf[..])
+    got := try h.read(buf[..])
     print("contents: {} then {} zero bytes\n", buf[0..5], got - 5)
     Fs.close(h)
     ro := try Fs.open(at(p[..], root, "top.txt"), fs.OpenOptions())

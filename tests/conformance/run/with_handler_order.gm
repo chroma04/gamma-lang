@@ -12,13 +12,13 @@ handler Log for ^Ind needs Out {
 Dry :: struct { n: u32 = 0 }
 handler Work for ^Dry needs Log {
     run(self, x) => {
-        note("run")
+        Log.note("run")
         x + 1
     }
 }
 main :: fn() needs Out {
     ind := Ind()
     dry := Dry()
-    with &ind, &dry { print("{}\n", run(1)) }
-    with (handler Log { note(m) => print("lit {}\n", m) }), &dry { print("{}\n", run(2)) }
+    with &ind, &dry { print("{}\n", Work.run(1)) }
+    with (handler Log { note(m) => print("lit {}\n", m) }), &dry { print("{}\n", Work.run(2)) }
 }

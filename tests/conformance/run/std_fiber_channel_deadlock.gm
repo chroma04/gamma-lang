@@ -18,6 +18,6 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     main_stack: [32768]u8 = ---
     with &s on main_stack[..] {
         fiber.spawn(wait, &c, stack[..])
-        fiber.join()
+        fiber.Sched.join()
     }
 }

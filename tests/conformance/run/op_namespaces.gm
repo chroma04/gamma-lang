@@ -1,0 +1,47 @@
+// Operations live in their effect's namespace (§12.1): two effects of one module may have
+// operations of the same name, and an operation may share its name with a function of the
+// module. Operations that take a type of the module first are also its methods (§7.10).
+Stdout :: effect { write: fn(s: string) }
+Stderr :: effect { write: fn(s: string) }
+
+Counter :: struct { n: i32 }
+
+Count :: effect {
+    bump: fn(c: ^Counter, by: i32) -> i32
+    total: fn(c: Counter) -> i32
+}
+
+// Functions named like operations of other effects.
+write :: fn(s: string) -> usize => s.len
+bump :: fn(n: i32) -> i32 => n + 1
+
+handler Count for ^Counter {
+    bump(self, c, by) => {
+        c.n += by
+        c.n
+    }
+    total(self, c) => c.n * 10
+}
+
+report :: fn() needs Stdout + Stderr {
+    Stdout.write("out")
+    Stderr.write("err")
+}
+
+main :: fn() needs Out {
+    n := 0
+    with (handler Stdout { write(s) => { n += 1; print("stdout: {}\n", s) } }) {
+        with (handler Stderr { write(s) => { n += 10; print("stderr: {}\n", s) } }) {
+            report()
+        }
+    }
+    print("{} {} {}\n", n, write("four"), bump(1))
+
+    c := Counter(n: 0)
+    with &c {
+        // The method form of `Count.bump(&c, 5)` and `Count.total(c)`.
+        print("{}\n", c.bump(5))
+        print("{}\n", Count.bump(&c, 1))
+        print("{}\n", c.total())
+    }
+}

@@ -4,7 +4,7 @@
 // type (§12.5).
 Fail :: effect { fail: esc(why: string) -> never }
 step :: fn(n: i32) -> u8 needs Fail {
-    if n > 2 { fail("too big") }
+    if n > 2 { Fail.fail("too big") }
     return 7
 }
 main :: fn() {

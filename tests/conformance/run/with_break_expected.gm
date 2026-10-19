@@ -2,7 +2,7 @@
 // arms of an `if` do (§12.7).
 Fail :: effect { fail: esc(why: string) }
 maybe :: fn(n: i32) -> i32 needs Fail {
-    if n < 0 { fail("neg") }
+    if n < 0 { Fail.fail("neg") }
     return n * 2
 }
 main :: fn() needs Out {

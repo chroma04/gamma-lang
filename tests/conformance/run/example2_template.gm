@@ -88,24 +88,24 @@ truthy :: fn(v: Value) -> bool => match v {
 render :: fn(nodes: []const Node) needs Emit + Scope + Fail {
     for n in nodes {
         match n {
-            .Text(t) => put(t)
+            .Text(t) => Emit.put(t)
             .Var(name) => {
-                v := lookup(name) else fail(.Unbound(name))
+                v := Scope.lookup(name) else Fail.fail(.Unbound(name))
                 match v {
-                    .Text(s) => put(s)
-                    .Flag(b) => put(if b { "yes" } else { "no" })
-                    .Items(_) => fail(.NotAList(name))
+                    .Text(s) => Emit.put(s)
+                    .Flag(b) => Emit.put(if b { "yes" } else { "no" })
+                    .Items(_) => Fail.fail(.NotAList(name))
                 }
             }
             .If(node) => {
-                v := lookup(node.cond) else fail(.Unbound(node.cond))
+                v := Scope.lookup(node.cond) else Fail.fail(.Unbound(node.cond))
                 if truthy(v) { render(node.body) }
             }
             .Each(node) => {
-                v := lookup(node.list) else fail(.Unbound(node.list))
+                v := Scope.lookup(node.list) else Fail.fail(.Unbound(node.list))
                 items := match v {
                     .Items(xs) => xs
-                    _ => fail(.NotAList(node.list))
+                    _ => Fail.fail(.NotAList(node.list))
                 }
                 for i, item in enumerate(items) {
                     layer :: handler Scope {
@@ -114,7 +114,7 @@ render :: fn(nodes: []const Node) needs Emit + Scope + Fail {
                         } else if name is "@first" {
                             Value.Flag(i is 0)
                         } else {
-                            lookup(name)
+                            Scope.lookup(name)
                         }
                     }
                     with layer { render(node.body) }

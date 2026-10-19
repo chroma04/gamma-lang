@@ -7,7 +7,7 @@ Sched :: effect(E: effects) {
 }
 
 helper :: fn(E: effects) needs Sched(E) {
-    pause()
+    Sched.pause()
 }
 
 twice :: fn(E: effects, n: u32) -> u32 needs Sched(E) {

@@ -4,8 +4,8 @@
 Gen :: effect { emit: ctl(x: i32) }
 
 gen :: fn() needs Gen {
-    emit(1)
-    emit(2)
+    Gen.emit(1)
+    Gen.emit(2)
 }
 
 run :: fn(stack: []u8) {

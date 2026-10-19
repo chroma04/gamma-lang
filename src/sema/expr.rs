@@ -330,15 +330,15 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("the builtin function `{}` can only be called", name));
         } else {
             let mut d = crate::diag::Diagnostic::error(span, format!("unknown name `{}`", name));
-            if let Some(hint) = self.sema.universe_hint(name) {
+            if let Some(effect) = self.sema.op_effect(module, name) {
+                d = crate::diag::Diagnostic::error(span, super::Sema::op_hint(effect, name, None)).with_fix(
+                    format!("write `{effect}.{name}`"),
+                    Span { hi: span.lo, ..span },
+                    format!("{effect}."),
+                );
+            } else if let Some(hint) = self.sema.universe_hint(name) {
                 d = d.with_note(hint);
-                if let Some(effect) = self.sema.op_effect(name) {
-                    d = d.with_fix(
-                        format!("write `{effect}.{name}`"),
-                        Span { hi: span.lo, ..span },
-                        format!("{effect}."),
-                    );
-                } else if let Some(edits) = self.sema.import_fix(module, name, span) {
+                if let Some(edits) = self.sema.import_fix(module, name, span) {
                     d = d.with_fix_edits(format!("write `{}`", edits.last().unwrap().text), edits);
                 }
             }

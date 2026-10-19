@@ -1,5 +1,5 @@
 // A formatted argument that comes out empty is not passed to the `Out` handler: every
-// `write_out` chunk has at least one byte, on both back ends.
+// `write` chunk has at least one byte, on both back ends.
 
 Recorder :: struct {
     lens: [16]usize,
@@ -7,7 +7,7 @@ Recorder :: struct {
 }
 
 handler Out for ^Recorder {
-    write_out(self, bytes) => {
+    write(self, bytes) => {
         if self.n < 16 {
             self.lens[self.n] = bytes.len
         }

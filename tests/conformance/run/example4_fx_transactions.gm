@@ -68,12 +68,12 @@ atomically :: fn(l: ^Ledger, label: string, body: fn() needs Store + Abort) -> O
 transfer :: fn(from, to: usize, amount: i64) needs Store + Abort + Out {
     defer print("    transfer {}->{}: leave\n", NAMES[from], NAMES[to])
     errdefer print("    transfer {}->{}: unwound\n", NAMES[from], NAMES[to])
-    bal := read(from)
-    write(from, bal - amount)
+    bal := Store.read(from)
+    Store.write(from, bal - amount)
     if bal < amount {
-        abort("insufficient funds")
+        Abort.abort("insufficient funds")
     }
-    write(to, read(to) + amount)
+    Store.write(to, Store.read(to) + amount)
 }
 
 show :: fn(l: ^Ledger) needs Out {
@@ -115,7 +115,7 @@ scenario_outer_abort :: fn(l: ^Ledger) needs Out {
     r := atomically(l, "outer", fn() {
         inner := atomically(l, "inner", fn() { transfer(3, 0, 5) })
         print("    inner gave {}\n", inner)
-        abort("changed my mind")
+        Abort.abort("changed my mind")
     })
     show(l)
     print("  outcome: {}\n", r)
@@ -127,10 +127,10 @@ scenario_audit :: fn(l: ^Ledger) needs Out {
     r := atomically(l, "audited", fn() {
         // The clauses perform Store themselves; those performs reach the handler installed by `atomically`.
         audit :: handler Store {
-            read(slot) => read(slot)
+            read(slot) => Store.read(slot)
             write(slot, v) => {
                 print("    audit: {} := {}\n", NAMES[slot], v)
-                write(slot, v)
+                Store.write(slot, v)
             }
         }
         with audit {

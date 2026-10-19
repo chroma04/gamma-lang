@@ -40,13 +40,13 @@ name_of :: fn(p: Product) -> string => match p {
 step :: fn(s: State, e: Event) -> State needs Log {
     return match s {
         .OutOfOrder(why) => {
-            log(.Alert, why)
+            Log.log(.Alert, why)
             s
         }
         .Idle => match e {
             .Insert(c) => State.Collecting(u32(u8(c)))
             .Select(_) => {
-                log(.Warn, "insert coins first")
+                Log.log(.Warn, "insert coins first")
                 s
             }
             .Kick => State.OutOfOrder("kicked while idle")
@@ -56,15 +56,15 @@ step :: fn(s: State, e: Event) -> State needs Log {
             .Insert(c) => State.Collecting(credit + u32(u8(c)))
             .Select(p) => {
                 if credit >= price(p) {
-                    log(.Info, name_of(p))
+                    Log.log(.Info, name_of(p))
                     State.Dispensing(item: p, change: credit - price(p))
                 } else {
-                    log(.Warn, "not enough credit")
+                    Log.log(.Warn, "not enough credit")
                     s
                 }
             }
             .Cancel => {
-                log(.Info, "refund")
+                Log.log(.Info, "refund")
                 State.Idle
             }
             .Kick => State.OutOfOrder("kicked with money inside")
@@ -74,7 +74,7 @@ step :: fn(s: State, e: Event) -> State needs Log {
             .Take => if change > 0 { State.Collecting(change) } else { State.Idle }
             .Kick => State.OutOfOrder("kicked while dispensing")
             _ => {
-                log(.Warn, "take your item first")
+                Log.log(.Warn, "take your item first")
                 s
             }
         }

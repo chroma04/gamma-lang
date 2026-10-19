@@ -510,9 +510,9 @@ pub enum HeapFn {
 /// Ids of the predeclared ambient effects, when the program uses them.
 #[derive(Debug, Default, Clone)]
 pub struct Ambient {
-    /// `Out { write_out: fn(bytes: []const u8) }`
+    /// `Out { write: fn(bytes: []const u8) }`
     pub out: Option<EffectId>,
-    /// `Err { write_err: fn(bytes: []const u8) }`
+    /// `Err { write: fn(bytes: []const u8) }`
     pub err: Option<EffectId>,
     /// `Env { args, var, exit }` (operation indices 0, 1, 2)
     pub env: Option<EffectId>,
@@ -1038,7 +1038,7 @@ pub enum ExprKind {
 pub enum WriteSink {
     /// Call a second-class function value `fn(bytes: []const u8)`.
     Fn(Box<Expr>),
-    /// Perform an operation taking `[]const u8` (e.g. `Out.write_out` for `print`).
+    /// Perform an operation taking `[]const u8` (e.g. `Out.write` for `print`).
     Perform { effect: EffectRef, op: u32 },
 }
 

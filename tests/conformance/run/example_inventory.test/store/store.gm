@@ -58,7 +58,7 @@ find_index :: fn(s: ^const Store, sku: u32) -> ?usize {
 
 pub register :: fn(s: ^Store, it: model.Item) -> Failure!() needs Alloc + Audit {
     if find_index(s, it.sku) is not null {
-        record(.Rejected(it.sku))
+        Audit.record(.Rejected(it.sku))
         return !.Stock(.Duplicate(it.sku))
     }
     try s.items.push(it)
@@ -68,24 +68,24 @@ pub register :: fn(s: ^Store, it: model.Item) -> Failure!() needs Alloc + Audit 
 pub receive :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() needs Audit {
     i := find_index(s, sku)
     if i is null {
-        record(.Rejected(sku))
+        Audit.record(.Rejected(sku))
         return !.Stock(.Unknown(sku))
     }
     model.add_stock(&s.items.items[i?], n)
-    record(.Added(n))
+    Audit.record(.Added(n))
     return ()
 }
 
 pub ship :: fn(s: ^Store, sku: u32, n: u32) -> Failure!() needs Audit {
     idx := find_index(s, sku)
     if idx is null {
-        record(.Rejected(sku))
+        Audit.record(.Rejected(sku))
         return !.Stock(.Unknown(sku))
     }
     r := model.remove_stock(&s.items.items[idx?], n)
-    if r is !_ { record(.Rejected(sku)) }
+    if r is !_ { Audit.record(.Rejected(sku)) }
     try r
-    record(.Removed(n))
+    Audit.record(.Removed(n))
     return ()
 }
 

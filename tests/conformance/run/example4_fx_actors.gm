@@ -98,7 +98,7 @@ source_body :: fn(p: ^Pipe) needs Sys + Log {
         post(&p.a, i)
     }
     shut(&p.a)
-    log("source done")
+    Log.log("source done")
 }
 
 square_body :: fn(p: ^Pipe) needs Sys + Log {
@@ -108,8 +108,8 @@ square_body :: fn(p: ^Pipe) needs Sys + Log {
         n += 1
     }
     shut(&p.b)
-    log("squarer done")
-    if n is 200 { log("saw all 200") }
+    Log.log("squarer done")
+    if n is 200 { Log.log("saw all 200") }
 }
 
 sum_body :: fn(p: ^Pipe) needs Sys + Log {
@@ -117,7 +117,7 @@ sum_body :: fn(p: ^Pipe) needs Sys + Log {
         p.sum += x
         p.count += 1
     }
-    log("summer done")
+    Log.log("summer done")
 }
 
 source_main :: fn(p: ^Pipe) needs Sys {
@@ -229,7 +229,7 @@ server_body :: fn(s: ^Server) needs Sys + Log {
             s.served += 1
         }
     }
-    log("server stopped")
+    Log.log("server stopped")
 }
 
 server_main :: fn(s: ^Server) needs Sys {

@@ -8,7 +8,7 @@ sh :: fn(script: string) -> [3]string => [_]string("sh", "-c", script)
 
 /// The next chunk of output, or null at the end (or on an error).
 next :: fn(c: process.Child, buf: []u8) -> ?process.Chunk needs Proc {
-    r := Proc.read_out(c, buf) else e => return null
+    r := Proc.read(c, buf) else e => return null
     return r
 }
 
@@ -48,8 +48,8 @@ main :: fn() needs Out + Proc + Alloc {
         print("spawn failed: {}\n", e)
         return
     }
-    n := Proc.write_in(c, "hello, ") else e => 0
-    m := Proc.write_in(c, "pipes\n") else e => 0
+    n := Proc.write(c, "hello, ") else e => 0
+    m := Proc.write(c, "pipes\n") else e => 0
     print("wrote {}\n", n + m)
     Proc.close_in(c)
     Proc.close_in(c)
@@ -66,7 +66,7 @@ main :: fn() needs Out + Proc + Alloc {
         print("spawn failed: {}\n", e)
         return
     }
-    w := Proc.write_in(t, "x") else e => {
+    w := Proc.write(t, "x") else e => {
         print("write to inherited stdin: {}\n", e)
         0
     }
@@ -104,7 +104,7 @@ main :: fn() needs Out + Proc + Alloc {
     for i in 0..big.len { big[i] = 65 }
     failed := false
     for _ in 0..100 {
-        _ = Proc.write_in(z, big[..]) else e => {
+        _ = Proc.write(z, big[..]) else e => {
             print("writing to a closed pipe: {}\n", e)
             failed = true
             break

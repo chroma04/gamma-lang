@@ -38,22 +38,22 @@ down :: fn(n: i32) needs Yield(i32) {
 }
 
 work :: fn(base: i32) -> i32 needs Log {
-    a := log("first", base)
-    b := log("second", a)
+    a := Log.log("first", base)
+    b := Log.log("second", a)
     return a + b
 }
 
 checked_sum :: fn(xs: []const i32) -> i32 needs Stop {
     total := 0
     for x in xs {
-        if x < 0 { stop(x) }
+        if x < 0 { Stop.stop(x) }
         total += x
     }
     return total
 }
 
 numbers :: fn(n: i32) needs Gen {
-    for i in 0..n { emit(i) }
+    for i in 0..n { Gen.emit(i) }
 }
 
 pairs :: fn(T: type, xs: []const T) needs Yield((T, T)) {

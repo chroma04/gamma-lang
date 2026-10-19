@@ -20,7 +20,7 @@ single :: fn(E: effects) {
 }
 
 noisy :: fn(x: i32) -> i32 needs Note {
-    note(x)
+    Note.note(x)
     return x
 }
 

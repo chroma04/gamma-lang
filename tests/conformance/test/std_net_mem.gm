@@ -34,7 +34,7 @@ test "send_all and recv_exact" {
 test "recv_exact reports a peer that closed early" {
     p := ok(connected())
     ok(net.send_all(p.client, "abc"))
-    Net.close_socket(p.client)
+    Net.close(p.client)
     buf: [5]u8 = ---
     expect(net.recv_exact(p.server, buf[..]) is !.UnexpectedEof)
     // A closed peer: sending fails.
@@ -76,7 +76,7 @@ test "shutdown of both sides" {
     expect(ok(p.server.recv(buf[..])) is 0)
     expect(ok(p.client.recv(buf[..])) is 0)
     expect(p.server.send("x") is !.BrokenPipe)
-    Net.close_socket(p.server)
+    Net.close(p.server)
     expect(p.server.shutdown(.Both) is !.Other(9))
 }
 
@@ -87,7 +87,7 @@ test "set_timeouts is accepted and nothing blocks" {
     ok(p.client.set_timeouts(null, null))
     buf: [4]u8 = ---
     expect(p.client.recv(buf[..]) is !.WouldBlock)
-    Net.close_socket(p.client)
+    Net.close(p.client)
     expect(p.client.set_timeouts(null, null) is !.Other(9))
 }
 
@@ -105,6 +105,6 @@ test "peer reports the address of the other end" {
     expect(m > 10)
     small: [4]u8 = ---
     expect(p.client.peer(small[..]) is !.InvalidInput)
-    Net.close_socket(p.server)
+    Net.close(p.server)
     expect(p.server.peer(buf[..]) is !.Other(9))
 }

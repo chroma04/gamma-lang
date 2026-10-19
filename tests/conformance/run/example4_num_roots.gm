@@ -14,14 +14,14 @@ newton :: fn(f: fn(f64) -> f64, df: fn(f64) -> f64, x0, tol: f64) -> f64 needs T
     x := x0
     for i in 0..50 {
         fx := f(x)
-        step(i, x, fx)
+        Trace.step(i, x, fx)
         if fx.abs() < tol { return x }
         d := df(x)
-        if d is 0.0 { diverged(i) }
+        if d is 0.0 { Diverged.diverged(i) }
         x = x - fx / d
-        if not x.is_finite() { diverged(i) }
+        if not x.is_finite() { Diverged.diverged(i) }
     }
-    diverged(50)
+    Diverged.diverged(50)
 }
 
 // Bisection; null if the endpoints do not bracket a root.

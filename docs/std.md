@@ -27,7 +27,7 @@ handlers, and tests run with the test handlers instead.
 
 | Effect | Operations | Default handler | Test handler |
 | --- | --- | --- | --- |
-| `Out`, `Err` | `write_out`, `write_err` | stdout, stderr | captured |
+| `Out`, `Err` | `write(bytes)` | stdout, stderr | captured |
 | `In` | `read(buf) -> IoError!usize` (0 at the end) | stdin | empty input |
 | `Clock` | `now() -> Instant`, `wall() -> i64`, `sleep(d)` | system clocks | fake clock; `sleep` advances it |
 | `Rand` | `fill(buf)` | the OS's generator | fixed seed |
@@ -42,13 +42,13 @@ Durations are built with `ns(n)`, `us(n)`, `ms(n)` and `secs(n)`; `i.since(earli
 ### Files: `Fs`
 
 ```gamma
-f := try open("notes.txt", OpenOptions(read: false, write: true, create: true, truncate: true))
-defer close(f)
-_ = try f.write_to("hello\n")
+f := try Fs.open("notes.txt", OpenOptions(read: false, write: true, create: true, truncate: true))
+defer f.close()
+_ = try f.write("hello\n")
 ```
 
-`open(path, options)` returns a `File`; `read_from`, `write_to` and `seek` are called
-as methods on it. `stat(path)` gives a `FileInfo` (`size`, `kind`, `modified`), where
+`Fs.open(path, options)` returns a `File`; `read`, `write`, `seek` and `close` are called
+as methods on it (`f.read(buf)` is `Fs.read(f, buf)`). `stat(path)` gives a `FileInfo` (`size`, `kind`, `modified`), where
 `kind` is a `FileKind`: `.File`, `.Dir`, `.Symlink` or `.Other`; `lstat(path)` is the
 same without following a final symbolic link. `remove`, `rename`, `make_dir` and
 `remove_dir` change the tree. `open_dir`, `next_entry` and `close_dir` list a
@@ -70,7 +70,7 @@ _ = try c.send("ping")
 n := try s.recv(buf[..])                 // 0 once the peer has closed
 ```
 
-`Net.close_socket` and `Net.close_listener` release the handles. Hosts are names or address
+`s.close()` (`Net.close`) and `Net.close_listener` release the handles. Hosts are names or address
 literals; a failed name lookup is `.Other(0)`. `s.shutdown(how)` closes one direction of
 a connection (`how` is a `Shutdown`: `.Read`, `.Write` or `.Both`); after `.Write` the
 peer's `recv` returns 0 once it has read everything, while the other direction keeps

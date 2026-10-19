@@ -11,7 +11,7 @@ Ask :: effect {
 numbers :: fn(n: i32) needs Gen {
     i := 0
     while i < n {
-        emit(i)
+        Gen.emit(i)
         i += 1
     }
 }
@@ -42,8 +42,8 @@ asking :: fn() -> i32 needs Out {
             resume k(next)
         }
     }) on stack[..] {
-        a := ask("first")
-        b := ask("second")
+        a := Ask.ask("first")
+        b := Ask.ask("second")
         a * 100 + b
     }
     return r
@@ -122,10 +122,10 @@ worker :: fn(n: i32) -> never needs Task + Out {
     i := 0
     while i < 3 {
         print("worker {} step {}\n", n, i)
-        yield_now()
+        Task.yield_now()
         i += 1
     }
-    exit()
+    Task.exit()
 }
 
 run_tasks :: fn() needs Out + Alloc {
@@ -133,10 +133,10 @@ run_tasks :: fn() needs Out + Alloc {
     s := Sched(ready: list(cont(())), stack_mem: stacks[..], used: 0, live: 1)
     main_stack: [32768]u8 = ---
     with &s on main_stack[..] {
-        spawn(worker, 1)
-        spawn(worker, 2)
+        Task.spawn(worker, 1)
+        Task.spawn(worker, 2)
         print("main spawned\n")
-        exit()
+        Task.exit()
     }
     print("all tasks done, {} stacks used\n", s.used)
     s.ready.deinit()
@@ -164,7 +164,7 @@ crossing :: fn() -> i32 needs Out {
             }
         }) on stack[..] {
             defer print("body unwound\n")
-            start(failing, 7)
+            Job.start(failing, 7)
             0
         }
     }
@@ -173,7 +173,7 @@ crossing :: fn() -> i32 needs Out {
 
 failing :: fn(n: i32) -> never needs Fail + Out {
     defer print("failing task unwound\n")
-    fail(n)
+    Fail.fail(n)
 }
 
 // Nested fibers: the inner body performs an operation of the outer `with`.
@@ -183,10 +183,10 @@ nested :: fn() -> i32 {
     total := 0
     with (handler Gen { emit(x, k) => { total += x; resume k() } }) on s1[..] {
         with (handler Ask { ask(p, k) => resume k(5) }) on s2[..] {
-            emit(ask("x"))
-            emit(ask("y") * 2)
+            Gen.emit(Ask.ask("x"))
+            Gen.emit(Ask.ask("y") * 2)
         }
-        emit(100)
+        Gen.emit(100)
     }
     return total
 }
@@ -211,7 +211,7 @@ echo :: fn() needs Out {
         }
     }) on stack[..] {
         each :: fn(f: fn(s: string) needs Lines) needs Lines {
-            while line := read_line() { f(line) }
+            while line := Lines.read_line() { f(line) }
         }
         n := 0
         each(fn(s: string) needs Lines {

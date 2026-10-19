@@ -8,7 +8,7 @@ handler Acc for ^Sum { add(self, x) => { self.t += x } }
 
 calc :: fn() -> usize {
     s := Sum(t: 0)
-    with &s { add(3); add(4) }
+    with &s { Acc.add(3); Acc.add(4) }
     return s.t
 }
 

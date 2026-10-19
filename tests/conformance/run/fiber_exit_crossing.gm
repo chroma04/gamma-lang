@@ -2,12 +2,12 @@
 // from a clause that performs an outer `esc` operation, and through a cancel (§14.4).
 Inner :: effect { inner: ctl(n: u32) }
 Abort :: effect { abort: esc(code: u32) -> never }
-body :: fn() needs Inner + Out { defer print("inner body cleanup\n"); inner(1) }
+body :: fn() needs Inner + Out { defer print("inner body cleanup\n"); Inner.inner(1) }
 first :: fn() needs Out {
     stack: [65536]u8 = ---
     code: u32 = 0
     with (handler Abort { abort(c) => { code = c; break } }) {
-        with (handler Inner { inner(n, k) => { abort(n + 40) } }) on stack[..] { body() }
+        with (handler Inner { inner(n, k) => { Abort.abort(n + 40) } }) on stack[..] { body() }
     }
     print("done {}\n", code)
 }
@@ -15,7 +15,7 @@ first :: fn() needs Out {
 Outer :: effect { outer: ctl() }
 work :: fn() needs Inner + Out {
     defer print("work cleanup\n")
-    inner(2)
+    Inner.inner(2)
     print("never\n")
 }
 second :: fn() needs Out {
@@ -23,7 +23,7 @@ second :: fn() needs Out {
     s2: [32768]u8 = ---
     with (handler Outer { outer(k) => { cancel k; break } }) on s1[..] {
         defer print("outer body cleanup\n")
-        with (handler Inner { inner(n, k2) => { outer(); resume k2() } }) on s2[..] { work() }
+        with (handler Inner { inner(n, k2) => { Outer.outer(); resume k2() } }) on s2[..] { work() }
     }
     print("done\n")
 }

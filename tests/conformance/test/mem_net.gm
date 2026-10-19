@@ -87,7 +87,7 @@ test "connecting to a port nobody listens on is refused" {
     expect(Net.connect("localhost", 6000) is !.ConnectionRefused)
     expect(Net.connect("localhost", 0) is !.ConnectionRefused)
     c := ok(Net.connect("localhost", 6001))
-    c.close_socket()
+    c.close()
     l.close_listener()
     expect(Net.connect("localhost", 6001) is !.ConnectionRefused)
 }
@@ -199,7 +199,7 @@ test "a closed peer reads as the end after the queued data" {
     c := ok(Net.connect("localhost", ok(l.local_port())))
     s := ok(l.accept())
     ok(say(c, "bye"))
-    c.close_socket()
+    c.close()
     buf: [8]u8 = ---
     expect(ok(s.recv(buf[0..2])) is 2)
     expect(ok(s.recv(buf[..])) is 1)
@@ -207,26 +207,26 @@ test "a closed peer reads as the end after the queued data" {
     expect(ok(s.recv(buf[..])) is 0)
     // Sending to a closed peer is a broken pipe.
     expect(s.send("anyone?") is !.BrokenPipe)
-    s.close_socket()
+    s.close()
 }
 
 test "closing a socket invalidates its handle" {
     l := ok(Net.listen("localhost", 0))
     c := ok(Net.connect("localhost", ok(l.local_port())))
     s := ok(l.accept())
-    c.close_socket()
+    c.close()
     buf: [4]u8 = ---
     expect(c.send("x") is !.Other(9))
     expect(c.recv(buf[..]) is !.Other(9))
     // Closing again is harmless, and the other end is unaffected.
-    c.close_socket()
+    c.close()
     expect(ok(s.recv(buf[..])) is 0)
     // A peer that closes while data is unread in its own queue loses it.
     l2 := ok(Net.listen("localhost", 0))
     c2 := ok(Net.connect("localhost", ok(l2.local_port())))
     s2 := ok(l2.accept())
     ok(say(c2, "lost"))
-    s2.close_socket()
+    s2.close()
     expect(c2.recv(buf[..]) is 0)
     expect(c2.send("x") is !.BrokenPipe)
 }
@@ -258,8 +258,8 @@ test "closed handles fail and closing twice is harmless" {
     c := ok(Net.connect("localhost", 7000))
     s := ok(l.accept())
     buf: [4]u8 = ---
-    c.close_socket()
-    c.close_socket()
+    c.close()
+    c.close()
     expect(c.send("x") is !.Other(9))
     expect(c.recv(buf[..]) is !.Other(9))
     l.close_listener()

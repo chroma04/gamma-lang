@@ -116,15 +116,15 @@ handler Task for ^Kernel needs Out {
 }
 
 worker :: fn(id: u32) -> never needs Task + Out {
-    defer print("  [t={}] worker {} cleanup\n", now(), id)
+    defer print("  [t={}] worker {} cleanup\n", Task.now(), id)
     period: u64 = 10 * u64(id)
     i: u32 = 0
     while i < 4 {
-        sleep(period)
-        print("  [t={}] worker {} tick {}\n", now(), id, i)
+        Task.sleep(period)
+        print("  [t={}] worker {} tick {}\n", Task.now(), id, i)
         i += 1
     }
-    done()
+    Task.done()
 }
 
 run :: fn(deadline: u64) needs Out {
@@ -132,10 +132,10 @@ run :: fn(deadline: u64) needs Out {
     main_stack: [STACK]u8 = ---
     print("deadline {}\n", deadline)
     with &k on main_stack[..] {
-        spawn(worker, 1)
-        spawn(worker, 2)
-        spawn(worker, 3)
-        done()
+        Task.spawn(worker, 1)
+        Task.spawn(worker, 2)
+        Task.spawn(worker, 3)
+        Task.done()
     }
     print("end: clock {}, cancelled {}, live {}\n", k.clock, k.cancelled, k.live)
 }

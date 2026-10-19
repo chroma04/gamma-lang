@@ -15,7 +15,7 @@ through_pointer :: fn(f: ^fn() -> i32) -> i32 {
 }
 
 logs :: fn() needs Log {
-    log(1)                           //~ ERROR the handler of `Log` performed here is not known statically
+    Log.log(1)                           //~ ERROR the handler of `Log` performed here is not known statically
 }
 
 libc :: foreign "c" {

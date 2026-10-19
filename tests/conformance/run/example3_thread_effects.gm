@@ -19,7 +19,7 @@ compute :: fn(job: ^Job) needs Log + Alloc {
     defer l.deinit()
     for v in gen(job.id + 10) {
         l.push(v) else return
-        if v % 7 is 0 { log(v) }
+        if v % 7 is 0 { Log.log(v) }
     }
     t: u64 = 0
     for v in l.items { t += u64(v) }

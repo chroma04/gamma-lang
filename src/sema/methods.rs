@@ -492,29 +492,10 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(Ty::optional(u), tir::ExprKind::Builtin { op: Builtin::FromTag, args: vec![x] }, span)
     }
 
-    /// A function `name` of the module that declares the receiver's type, whose first
-    /// run-time parameter takes the receiver (§7.10 rule 3).
-    fn module_method(&mut self, recv: Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
-        let rty = self.infer.resolve(recv.ty);
-        let s = match rty.kind() {
-            TyKind::Ptr { pointee, .. } => *pointee,
-            _ => rty,
-        };
-        let TyKind::Adt(id, _) = s.kind() else { return None };
-        let module = self.sema.adts.get(id)?.module;
-        let d = *self.sema.modules[module.0 as usize].scope.get(&name.name)?;
-        let f = match self.sema.resolve_decl(d) {
-            DeclValue::Fn(f) => f,
-            // An effect operation is a function too (§12.1).
-            DeclValue::Op(eff, op) => return self.op_method(recv, rty, eff, op, name, args, span),
-            _ => return None,
-        };
-        let sig = self.sema.sigs[&f].clone();
-        // The receiver fills the first run-time parameter (§7.10).
-        let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) else {
-            self.error(span, format!("`{}` takes no receiver", name.name));
-            return Some(error_expr(span));
-        };
+    /// The receiver `recv` (of type `rty`) adjusted to fill a first parameter of type
+    /// `param`: `&e` for `^T`, `e^` for `T` given a pointer (§7.10). Reports and gives
+    /// `Err` if it does not fit.
+    fn adjust_receiver(&mut self, recv: Expr, rty: Ty, param: Ty, name: ast::Ident, span: Span) -> Result<Expr, ()> {
         // Types match exactly, or (for generic methods) as instantiations of one generic type.
         let fits = |p: Ty, a: Ty| match (p.kind(), a.kind()) {
             _ if p == a => true,
@@ -522,8 +503,8 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => false,
         };
         // Receiver adjustments: `&e` for `^T`, `e^` for `T` given a pointer.
-        let recv = match (first.ty.kind(), rty.kind()) {
-            _ if fits(first.ty, rty) => recv,
+        let adjusted = match (param.kind(), rty.kind()) {
+            _ if fits(param, rty) => recv,
             (TyKind::Ptr { is_const, pointee }, _) if fits(*pointee, rty) => match self.place_mutability(&recv) {
                 Some(m) => {
                     if !m && !is_const {
@@ -537,7 +518,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         recv.span,
                         format!("`{}` modifies its receiver, which must be a variable, not a temporary", name.name),
                     );
-                    return Some(error_expr(span));
+                    return Err(());
                 }
             },
             (TyKind::Ptr { is_const: true, pointee }, TyKind::Ptr { pointee: p2, .. }) if fits(*pointee, *p2) => {
@@ -549,14 +530,63 @@ impl<'a, 's> FnCx<'a, 's> {
             {
                 recv
             }
-            (_, TyKind::Ptr { pointee, .. }) if fits(first.ty, *pointee) => {
+            (_, TyKind::Ptr { pointee, .. }) if fits(param, *pointee) => {
                 mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span)
             }
             _ => {
                 self.error(span, format!("`{}` cannot take a receiver of type `{}`", name.name, rty));
-                return Some(error_expr(span));
+                return Err(());
             }
         };
+        Ok(adjusted)
+    }
+
+    /// A function `name` of the module that declares the receiver's type, whose first
+    /// run-time parameter takes the receiver (§7.10 rule 3).
+    fn module_method(&mut self, recv: Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
+        let rty = self.infer.resolve(recv.ty);
+        let s = match rty.kind() {
+            TyKind::Ptr { pointee, .. } => *pointee,
+            _ => rty,
+        };
+        let TyKind::Adt(id, _) = s.kind() else { return None };
+        let module = self.sema.adts.get(id)?.module;
+        let f = match self.sema.modules[module.0 as usize].scope.get(&name.name).copied() {
+            Some(d) => match self.sema.resolve_decl(d) {
+                DeclValue::Fn(f) => {
+                    // A function whose first parameter is not the receiver's type leaves the
+                    // name to an operation that takes it (§7.10).
+                    let takes = |ty: Ty| {
+                        let t = match ty.kind() {
+                            TyKind::Ptr { pointee, .. } => *pointee,
+                            _ => ty,
+                        };
+                        match (t.kind(), s.kind()) {
+                            (TyKind::Adt(x, _), TyKind::Adt(y, _)) => x.template() == y.template(),
+                            _ => t == s,
+                        }
+                    };
+                    let first = self.sema.sigs[&f].params.iter().find(|p| p.generic.is_none()).map(|p| p.ty);
+                    if first.is_some_and(|t| !takes(t)) {
+                        match self.op_method(recv.clone(), rty, s, module, name, args, span) {
+                            Some(e) => return Some(e),
+                            None => f,
+                        }
+                    } else {
+                        f
+                    }
+                }
+                _ => return self.op_method(recv, rty, s, module, name, args, span),
+            },
+            None => return self.op_method(recv, rty, s, module, name, args, span),
+        };
+        let sig = self.sema.sigs[&f].clone();
+        // The receiver fills the first run-time parameter (§7.10).
+        let Some(first) = sig.params.iter().find(|p| p.generic.is_none()) else {
+            self.error(span, format!("`{}` takes no receiver", name.name));
+            return Some(error_expr(span));
+        };
+        let Ok(recv) = self.adjust_receiver(recv, rty, first.ty, name, span) else { return Some(error_expr(span)) };
         if !sig.generics.is_empty() {
             return Some(self.generic_call_with(f, Some(recv), args, span));
         }
@@ -571,46 +601,50 @@ impl<'a, 's> FnCx<'a, 's> {
 }
 
 impl<'a, 's> FnCx<'a, 's> {
-    /// `e.op(args)` where `op` is an operation of a non-generic effect whose first
-    /// parameter takes `e` (by value or as a pointer to it): a perform.
+    /// `e.op(args)` where `op` is an operation of a non-generic effect declared in `module`
+    /// whose first parameter takes `e` (by value or as a pointer to it): a perform.
     #[allow(clippy::too_many_arguments)]
     fn op_method(
         &mut self,
         recv: Expr,
         rty: Ty,
-        eff: crate::types::EffectId,
-        op: u32,
+        s: Ty,
+        module: super::ModuleId,
         name: ast::Ident,
         args: &[ast::Arg],
         span: Span,
     ) -> Option<Expr> {
-        let info = &self.sema.effects[&eff];
-        if !info.params.is_empty() {
-            return None;
+        let cands = self.sema.modules[module.0 as usize].effect_ops.get(&name.name)?.clone();
+        for (ed, od) in cands {
+            let Some((_, op)) = self.sema.decls[od.0 as usize].op_of else { continue };
+            let DeclValue::Effect(eff) = self.sema.resolve_decl(ed) else { continue };
+            let info = &self.sema.effects[&eff];
+            if !info.params.is_empty() || (self.module != module && !self.sema.decls[ed.0 as usize].item.is_pub) {
+                continue;
+            }
+            let o = info.ops[op as usize].clone();
+            let Some(first) = o.params.first() else { continue };
+            let fit = match first.ty.kind() {
+                TyKind::Ptr { pointee, .. } => *pointee == s,
+                _ => first.ty == s,
+            };
+            if !fit {
+                continue;
+            }
+            let Ok(recv) = self.adjust_receiver(recv, rty, first.ty, name, span) else { return Some(error_expr(span)) };
+            let mut vals = vec![recv];
+            let (rest, pre) = self.bind_args(&o.params[1..], module, args, span, "operation");
+            vals.extend(rest);
+            let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
+            self.performed.push((eref.clone(), span));
+            if o.kind == ast::OpKind::Fn {
+                self.fn_performs.push(span);
+            }
+            let call =
+                mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span);
+            return Some(self.finish_call(pre, call, true));
         }
-        let module = info.module;
-        let o = info.ops[op as usize].clone();
-        let first = o.params.first()?;
-        let recv = if first.ty == rty {
-            recv
-        } else if let TyKind::Ptr { pointee, .. } = rty.kind()
-            && *pointee == first.ty
-        {
-            mk(*pointee, tir::ExprKind::Deref(Box::new(recv)), span)
-        } else {
-            self.error(span, format!("`{}` cannot take a receiver of type `{}`", name.name, rty));
-            return Some(error_expr(span));
-        };
-        let mut vals = vec![recv];
-        let (rest, pre) = self.bind_args(&o.params[1..], module, args, span, "operation");
-        vals.extend(rest);
-        let eref = crate::types::EffectRef { effect: eff, args: Box::new([]) };
-        self.performed.push((eref.clone(), span));
-        if o.kind == ast::OpKind::Fn {
-            self.fn_performs.push(span);
-        }
-        let call = mk(o.ret, tir::ExprKind::Call { callee: Callee::Perform { effect: eref, op }, args: vals }, span);
-        Some(self.finish_call(pre, call, true))
+        None
     }
 }
 

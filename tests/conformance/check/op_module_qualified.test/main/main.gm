@@ -1,0 +1,13 @@
+//! stage: check
+// Outside the declaring module an operation is `m.E.op`; `m.op` names nothing (§12.1).
+logm :: import "../logm"
+
+good :: fn() needs logm.Log {
+    logm.Log.log("a")
+}
+
+bad :: fn() needs logm.Log {
+    logm.log("b")                  //~ ERROR `log` is an operation of `Log`; call it as `logm.Log.log(…)`
+}
+
+main :: fn() {}

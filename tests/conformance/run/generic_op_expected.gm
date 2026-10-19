@@ -3,12 +3,12 @@
 Events :: effect(E: type) { emit: fn(e: E) }
 Event :: union { Opened: (id: u32, owner: string), Closed: u32 }
 open_account :: fn(id: u32) needs Events(Event) {
-    emit(.Opened(id: id, owner: "ada"))
-    emit(.Closed(id))
+    Events.emit(.Opened(id: id, owner: "ada"))
+    Events.emit(.Closed(id))
 }
 Nums :: effect(T: type) { put: fn(x: T) }
 nums :: fn() needs Nums(u8) {
-    put(200)
+    Nums.put(200)
 }
 main :: fn() needs Out {
     n: u32 = 0

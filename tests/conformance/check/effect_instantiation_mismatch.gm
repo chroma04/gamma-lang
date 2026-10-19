@@ -12,7 +12,7 @@ handler(E: effects) Sched(E) for ^H(E) {
 }
 
 plain :: fn() needs Sched {
-    pause()
+    Sched.pause()
 }
 
 declared :: fn() needs Sched(Out) {

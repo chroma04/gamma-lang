@@ -31,14 +31,14 @@ pub HashMap :: struct(K, V: type,
 
 /// An empty map using `@hash` and `is`, and the current allocator.
 pub hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K) {
-    return HashMap(K, V)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
+    return HashMap(K, V)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: Alloc.current())
 }
 
 /// An empty map using the given hash and equality functions, and the current allocator.
 pub hash_map_with :: fn(K, V: type,
     hash :: ^fn(key: ^const K, seed: u64) -> u64,
     eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc {
-    return HashMap(K, V, hash, eq)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: current())
+    return HashMap(K, V, hash, eq)(slots: empty_slice(Slot(K, V)), count: 0, used: 0, seed: SEED, alloc: Alloc.current())
 }
 
 key_hash :: fn(K: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, k: ^const K, seed: u64) -> u64 {

@@ -6,5 +6,5 @@ main :: fn() needs Out {
     h :: handler Log { log(m) => { print("{}\n", m) } }
     t := (1, h) //~ ERROR cannot be a tuple element
     p := &h //~ ERROR cannot be the target of `&`
-    with h { log("ok") }
+    with h { Log.log("ok") }
 }

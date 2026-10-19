@@ -16,8 +16,8 @@ main :: fn() needs Out {
     ledger := audit.Ledger()
     with &ledger {
         while j := jobs.pop() {
-            audit.charge(j.id, j.cost)
-            if j.cost > 9 { audit.flag("expensive") }
+            audit.Audit.charge(j.id, j.cost)
+            if j.cost > 9 { audit.Audit.flag("expensive") }
         }
     }
     print("total {} flags {} entries {}\n", ledger.total, ledger.flags, ledger.entries)

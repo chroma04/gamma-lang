@@ -12,7 +12,7 @@ bad_sum :: fn(T: type, xs: []const T) -> u32 needs Yield(T) {
 distinct :: fn(T: type, x: T) needs Log(^const T) {
     p := &x
     with (handler Log(u32) { log(v) => {} }) {
-        log(p)                        // `^const T` is never `u32`
+        Log.log(p)                        // `^const T` is never `u32`
     }
 }
 

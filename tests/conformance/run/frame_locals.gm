@@ -31,7 +31,7 @@ mixed :: fn(n: u32) -> u32 needs Out {
     with sink {
         for v in pairs(n) {
             plain = plain * 3 + v
-            log(v)
+            Log.log(v)
         }
     }
     // A closure two levels down reaches `base` through both frames.

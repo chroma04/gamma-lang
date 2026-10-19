@@ -18,7 +18,7 @@ DriverError :: union { Timeout, Framing, Overrun: u32 }
 // Waits for `mask` to be set in the status register, polling with 1 ms sleeps.
 wait_status :: fn(mask: u32, tries: u32) -> DriverError!() needs Mmio + Clock {
     for _ in 0..tries {
-        s := read(REG_STATUS)
+        s := Mmio.read(REG_STATUS)
         if s & STATUS_ERROR is not 0 { return !.Framing }
         if s & mask is mask { return () }
         Clock.sleep(ms(1))
@@ -30,7 +30,7 @@ send :: fn(msg: string) -> DriverError!u32 needs Mmio + Clock {
     sent: u32 = 0
     for b in bytes(msg) {
         try wait_status(STATUS_TX_READY, 5)
-        write(REG_DATA, u32(b))
+        Mmio.write(REG_DATA, u32(b))
         sent += 1
     }
     return sent
@@ -40,7 +40,7 @@ recv_into :: fn(buf: []u8) -> DriverError!usize needs Mmio + Clock {
     n: usize = 0
     while n < buf.len {
         wait_status(STATUS_RX_AVAIL, 3) else { break }
-        buf[n] = (read(REG_DATA) & 0xFF).trunc(u8)
+        buf[n] = (Mmio.read(REG_DATA) & 0xFF).trunc(u8)
         n += 1
     }
     return n

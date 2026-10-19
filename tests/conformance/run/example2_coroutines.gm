@@ -7,7 +7,7 @@ fib :: fn(limit: i64) needs Gen + Out {
     a: i64 = 0
     b: i64 = 1
     while a < limit {
-        next(a)
+        Gen.next(a)
         t := a + b
         a = b
         b = t
@@ -17,8 +17,8 @@ fib :: fn(limit: i64) needs Gen + Out {
 risky :: fn(n: i64) needs Gen + Abort + Out {
     defer print("  risky cleanup\n")
     for i in 1..=n {
-        next(i * i)
-        if i is 3 { abort(40 + i.trunc(i32)) }
+        Gen.next(i * i)
+        if i is 3 { Abort.abort(40 + i.trunc(i32)) }
     }
 }
 

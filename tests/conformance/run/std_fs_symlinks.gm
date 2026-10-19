@@ -32,7 +32,7 @@ scenario :: fn(root: string) -> IoError!() needs Out + Fs + Sys {
     cb: [600]u8 = ---
     try Fs.make_dir(at(p[..], root, "a"))
     f := try Fs.open(at(p[..], root, "a/two.txt"), fs.OpenOptions(write: true, create: true))
-    _ = try f.write_to("22")
+    _ = try f.write("22")
     Fs.close(f)
 
     link := at(lb[..], root, "link")

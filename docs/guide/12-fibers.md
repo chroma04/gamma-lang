@@ -32,8 +32,8 @@ Ask :: effect {
 }
 
 quiz :: fn() -> u32 needs Ask {
-    a := ask("first number?")
-    b := ask("second number?")
+    a := Ask.ask("first number?")
+    b := Ask.ask("second number?")
     return a + b
 }
 
@@ -91,7 +91,7 @@ job :: fn() needs Budget + Out {
     step: u32 = 1
     while step <= 5 {
         print("job: step {}\n", step)
-        tick()
+        Budget.tick()
         step += 1
     }
     print("job: finished\n")
@@ -201,7 +201,7 @@ Counter :: struct { ticks: u32 = 0 }
 
 worker :: fn(c: ^Counter) needs Sched {
     c.ticks += 1
-    yield_now()                        // let the other task run
+    Sched.yield_now()                        // let the other task run
     c.ticks += 1
 }
 
@@ -212,7 +212,7 @@ run_two :: fn(main_stack, stack_a, stack_b: []u8) -> u32 {
     with &sched on main_stack {
         spawn_task(worker, &a, stack_a)       // library wrapper around `spawn` and `exit`
         spawn_task(worker, &b, stack_b)
-        join()
+        Sched.join()
     }
     return a.ticks + b.ticks                  // 4
 }
@@ -257,7 +257,7 @@ gen.pull(main_stack, fn() => merge(&a, &b))
 
 The consumer's code runs inside a scope that `gen.pull` installs on `main_stack`; each producer runs on the stack given to its generator. A producer is a function pointer taking one pointer argument (`^fn(arg: ^A) needs Yield(T) + E`) plus that argument, because a fiber is not a closure (see `@fiber` above). `E` is whatever else the producers perform, such as `Out`, which the code around `pull` must handle too. When the consumer is done, the producers that have not returned are cancelled and their `defer`s run, so it is fine to stop early, for example when two trees differ at their first leaf. A generator belongs to the `pull` that started it; using it after that `pull` ended, or in a nested one, traps.
 
-To `return` or `break` out of the consumer's code, write the scope yourself with `gen.driver`: `d := gen.driver(T, E)`, `defer d.close()`, then `with &d on stack { ...; gen.finish() }`. An exit that leaves the `with` cancels the producers.
+To `return` or `break` out of the consumer's code, write the scope yourself with `gen.driver`: `d := gen.driver(T, E)`, `defer d.close()`, then `with &d on stack { ...; gen.Pull.finish() }`. An exit that leaves the `with` cancels the producers.
 
 ## Sizing stacks and other notes
 

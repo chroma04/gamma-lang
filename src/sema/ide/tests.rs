@@ -341,7 +341,7 @@ largest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
 
 work :: fn() needs Log {
     Log.note("a")
-    note("b")
+    Log.note("b")
 }
 
 main :: fn() {
@@ -373,11 +373,11 @@ test "counts" {
 fn effects_and_handlers_resolve() {
     let f = analyze(EFFECTS);
     assert_eq!(f.errors(), Vec::<String>::new());
-    // A bare operation name, and one named through its effect.
+    // An operation named through its effect.
     let at = |needle: &str, delta: usize| {
         analyze(&EFFECTS.replacen(needle, &format!("{}${}", &needle[..delta], &needle[delta..]), 1))
     };
-    let g = at("    note(\"b\")", 8);
+    let g = at("    Log.note(\"b\")", 10);
     assert_eq!(g.definition(), Some(("note".to_string(), 3)));
     assert!(g.hover().starts_with("Log.note :: fn(msg: string)"), "{}", g.hover());
     assert_eq!(g.doc(), None);

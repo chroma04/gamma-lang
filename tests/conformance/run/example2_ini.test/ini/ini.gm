@@ -46,19 +46,19 @@ pub parse :: fn(text: string) -> AllocError!Doc needs Alloc + Warn {
         if line.len is 0 or line[0] is ';' or line[0] is '#' { continue }
         if line[0] is '[' {
             if line[line.len - 1] is not ']' {
-                warn(line_no, "unterminated section header")
+                Warn.warn(line_no, "unterminated section header")
                 continue
             }
             try doc.sections.push(Section(name: str.trim(line[1..line.len - 1]), entries: list(Entry)))
             continue
         }
         kv := str.split_once(line, "=") else {
-            warn(line_no, "expected key = value")
+            Warn.warn(line_no, "expected key = value")
             continue
         }
         key := str.trim(kv.before)
         if key.len is 0 {
-            warn(line_no, "empty key")
+            Warn.warn(line_no, "empty key")
             continue
         }
         cur := &doc.sections.items[doc.sections.items.len - 1]

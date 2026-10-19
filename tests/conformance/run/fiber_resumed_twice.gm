@@ -15,8 +15,8 @@ main :: fn() needs Out {
             resume k()
         }
     }) on stack[..] {
-        emit(1)
-        emit(2)
+        Gen.emit(1)
+        Gen.emit(2)
     }
     print("unreachable\n")
 }

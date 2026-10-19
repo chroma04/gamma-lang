@@ -7,7 +7,7 @@ Sched :: effect {
 }
 
 run :: fn() needs Sched {
-    exit()                       // this module's `Sched.exit`
+    Sched.exit()                       // this module's `Sched.exit`
 }
 
 stop :: fn() needs Env {
@@ -15,7 +15,7 @@ stop :: fn() needs Env {
 }
 
 clock :: fn() -> Instant needs Clock {
-    return now()                 //~ ERROR unknown name `now` //~ NOTE write `Clock.now(…)`
+    return now()                       //~ ERROR `now` is an operation of `Clock`; call it as `Clock.now(…)`
 }
 
 file_of :: fn(f: ?File) {}       //~ ERROR unknown type `File` //~ NOTE import it and write `fs.File`
