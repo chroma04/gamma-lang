@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // Compile time: CRC32 and Q15 sine tables, a Ring(T, N) generic with a value parameter, packed layouts pinned by static asserts, when on target.
 math :: import "std/math"
 

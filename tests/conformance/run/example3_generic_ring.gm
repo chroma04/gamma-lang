@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // Generic types with compile-time value parameters: Ring(T, N) with defaults, zero capacity, swapped generic pairs, @type_name.
 Ring :: struct(T: type, N: usize) {
     items: [N]T

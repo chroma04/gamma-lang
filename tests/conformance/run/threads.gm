@@ -1,3 +1,4 @@
+//! needs: threads
 // Threads (§19.6): std/thread, atomics and a mutex. Each worker adds to a shared atomic
 // counter and, under the mutex, to a plain one; both totals are exact.
 thread :: import "std/thread"

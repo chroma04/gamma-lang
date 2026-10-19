@@ -1,6 +1,6 @@
-requirement failed (line 18, in main)
-custom message (line 19, in main)
-9
+requirement failed (line 19, in main)
+custom message (line 20, in main)
+10
 true false false
 true
 i32 8

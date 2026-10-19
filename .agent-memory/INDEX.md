@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-19) — PRs #1–#58 merged (s29 PRs done)
+- s30 (branch claude/project-thread-34q66w, PR #60 open): wasm32-wasi target via C back end +
+  Asyncify fibers (decisions/034); CI job `wasi`.
 - s30 (branch claude/project-thread-3twojx, PR #59 open): `gamma lint`, 18 rules, levels,
   --fix (decisions/033).
 - s30 (PR #58 merged): docs/guide/for-c-programmers.md and for-rust-programmers.md; their
@@ -67,6 +69,7 @@
                   · 031 statement-run outlining (huge functions → helpers sharing F)
                   · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
                   · 033 gamma lint (rule sources, levels, --fix careful mode, follow-ups)
+                  · 034 wasm32-wasi target (runtime GM_WASI, Asyncify fibers, perf)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md

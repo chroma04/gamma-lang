@@ -24,12 +24,17 @@
 //!   for tests of features that exist on some targets only.
 //! - `//! endian: little` (or `big`) runs the test only when compiling for a target of
 //!   that byte order, for tests whose output shows the layout of values in memory.
-//! - `//! os: unix` (or `windows`) runs the test only when compiling for that kind of
-//!   operating system: `unix` is everything but Windows. It is for tests of what the other
-//!   kind lacks (POSIX-only C functions, the System V calling convention); keep such
-//!   tests few.
+//! - `//! os: unix` (or `windows`, `wasi`) runs the test only when compiling for that kind
+//!   of operating system: `unix` is everything but Windows and WASI. It is for tests of what
+//!   the other kinds lack (POSIX-only C functions, the System V calling convention, child
+//!   processes); keep such tests few.
+//! - `//! ptr_bits: 64` (or `32`) runs the test only when compiling for a target with
+//!   pointers of that size, for tests whose output shows the size of pointers and `usize`.
 //! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
-//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it.
+//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it. Likewise
+//!   `//! needs: threads` and `//! needs: sockets` when the target has no threads or
+//!   sockets (WASI, where they fail with `IoError.Unsupported`). Several requirements
+//!   may be given, separated by commas.
 //! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
 //!   tests of what the interpreter cannot do (such as calls through function pointers
 //!   re-typed to another signature).
@@ -109,6 +114,11 @@ struct Expectations {
     safe_skip: bool,
     /// The C lanes need `_Float16`.
     needs_f16: bool,
+    /// The C lanes need threads, or sockets.
+    needs_threads: bool,
+    needs_sockets: bool,
+    /// The only pointer size (in bits) the test applies to.
+    ptr_bits: Option<u32>,
     /// Run the test only through the C back end.
     native: bool,
     /// The options of `gamma lint`.
@@ -130,6 +140,9 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         os: None,
         safe_skip: false,
         needs_f16: false,
+        needs_threads: false,
+        needs_sockets: false,
+        ptr_bits: None,
         native: false,
         lint_args: vec![],
         diags: vec![],
@@ -168,7 +181,7 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.filter = Some(filter.trim().to_string());
             } else if let Some(os) = directive.strip_prefix("os:") {
                 match os.trim() {
-                    "unix" | "windows" => e.os = Some(os.trim().to_string()),
+                    "unix" | "windows" | "wasi" => e.os = Some(os.trim().to_string()),
                     other => return Err(format!("{}:{}: unknown os `{}`", path.display(), i + 1, other)),
                 }
             } else if let Some(endian) = directive.strip_prefix("endian:") {
@@ -176,9 +189,19 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(needs) = directive.strip_prefix("needs:") {
-                match needs.trim() {
-                    "f16" => e.needs_f16 = true,
-                    other => return Err(format!("{}:{}: unknown requirement `{}`", path.display(), i + 1, other)),
+                for need in needs.split(',') {
+                    match need.trim() {
+                        "f16" => e.needs_f16 = true,
+                        "threads" => e.needs_threads = true,
+                        "sockets" => e.needs_sockets = true,
+                        other => return Err(format!("{}:{}: unknown requirement `{}`", path.display(), i + 1, other)),
+                    }
+                }
+            } else if let Some(bits) = directive.strip_prefix("ptr_bits:") {
+                match bits.trim() {
+                    "32" => e.ptr_bits = Some(32),
+                    "64" => e.ptr_bits = Some(64),
+                    other => return Err(format!("{}:{}: unknown pointer size `{}`", path.display(), i + 1, other)),
                 }
             } else if let Some(safe) = directive.strip_prefix("safe:") {
                 if !safe.trim().starts_with("skip ") {
@@ -223,11 +246,11 @@ struct Reported {
     message: String,
 }
 
-/// Parses `path:line:col: severity: message` and `severity: message` lines.
-/// `files` are the test's files, to recognize the path prefix.
 /// Standard error with the standard library's directory, which differs between
-/// checkouts, written as `<std>` and the rest of such a path with `/` separators.
+/// checkouts, written as `<std>` and the rest of such a path with `/` separators, and
+/// without the report a WebAssembly runtime adds to a trap.
 fn normalize_stderr(stderr: &str) -> String {
+    let stderr = gamma::toolchain::strip_wasm_trap_report(stderr);
     let native = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std").display().to_string();
     // On Windows the path may be printed with either separator.
     let forward = native.replace('\\', "/");
@@ -249,6 +272,8 @@ fn normalize_stderr(stderr: &str) -> String {
     out
 }
 
+/// Parses `path:line:col: severity: message` and `severity: message` lines.
+/// `files` are the test's files, to recognize the path prefix.
 fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
     let mut out = vec![];
     for line in stderr.lines() {
@@ -316,13 +341,45 @@ fn target_arch() -> &'static str {
     })
 }
 
-/// The kind of operating system the tests compile for (`unix` or `windows`), as for [`target_arch`].
+/// The kind of operating system the tests compile for (`unix`, `windows` or `wasi`), as for
+/// [`target_arch`].
 fn target_os_kind() -> &'static str {
     static OS: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     OS.get_or_init(|| {
         let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
-        let windows = target.map_or(cfg!(windows), |t| t.os == "Windows");
-        if windows { "windows" } else { "unix" }
+        match target.map(|t| t.os) {
+            Ok("Windows") => "windows",
+            Ok("Wasi") => "wasi",
+            Ok(_) => "unix",
+            Err(_) => {
+                if cfg!(windows) {
+                    "windows"
+                } else {
+                    "unix"
+                }
+            }
+        }
+    })
+}
+
+/// A directory for the temporary files of WebAssembly modules, as a path relative to the
+/// package's root, where the tests run.
+fn wasi_tmp_dir() -> &'static str {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasi-tmp");
+        let _ = fs::create_dir_all(&tmp);
+        let rel = tmp.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&tmp);
+        rel.display().to_string().replace('\\', "/")
+    })
+}
+
+/// The pointer size in bits of the target the tests compile for, as for [`target_arch`].
+fn target_ptr_bits() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| {
+        let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
+        target.map_or(usize::BITS, |t| t.ptr_bits())
     })
 }
 
@@ -418,6 +475,11 @@ fn run_c(
         cmd.arg(format!("--filter={}", f));
     }
     cmd.arg(target);
+    if target_os_kind() == "wasi" {
+        // A WebAssembly module sees only the current directory (the package's root): its
+        // temporary files go below it.
+        cmd.env("TMPDIR", wasi_tmp_dir());
+    }
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -464,6 +526,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         return Ok(());
     }
     if exp.os.as_deref().is_some_and(|o| o != target_os_kind()) {
+        return Ok(());
+    }
+    if exp.ptr_bits.is_some_and(|b| b != target_ptr_bits()) {
         return Ok(());
     }
     if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {
@@ -598,7 +663,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let compiled = matches!(exp.stage, Stage::Run | Stage::Test)
         && !expects_errors
         && !bless
-        && !(exp.needs_f16 && !target_has_f16());
+        && !(exp.needs_f16 && !target_has_f16())
+        && !((exp.needs_threads || exp.needs_sockets) && target_os_kind() == "wasi");
     let golden = path.with_extension("stdout");
     if compiled
         && problems.is_empty()

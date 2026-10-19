@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // Conditional compilation, the target module, static assertions and locations (§3.6, §17.7, §20.3).
 when target.ptr_bits is 64 {
     WORD :: u64

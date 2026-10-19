@@ -1,3 +1,4 @@
+//! needs: threads
 // A worker pool: threads pull chunks of a range from an atomic cursor, count primes in
 // their chunk, and write results into per-chunk slots; a mutex-protected bank checks that
 // concurrent transfers preserve the total.

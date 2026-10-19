@@ -397,7 +397,7 @@ when target.os is .Linux {
 - `when` may appear at top level, among the fields of a `struct` body or the variants of a `union` body, and as a statement (§8.9).
 - A `when` condition may not depend on a type parameter of an enclosing generic (§16.7).
 
-The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, `.Other`), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
+The predeclared module `target` (no import needed) provides compile-time constants describing the compilation target: `target.os` (a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Wasi`, `.Freestanding`), `target.arch` (`.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, `.Other`), `target.endian` (`.Little`, `.Big`), `target.ptr_bits` (an untyped integer constant), and `target.mode` (`.Debug`, `.Checked`, `.Safe`, `.Fast`).
 
 ### 3.7 The entry point
 
@@ -422,6 +422,10 @@ A target whose `target.os` is `.Freestanding` (§3.6) has no operating system: f
 - **The build produces an object file** with the exported functions and the run-time support they use, to be linked by the target's toolchain; there is no executable. Fibers work as on hosted targets (their stacks are provided by the program, §14.1); Debug builds have no guard pages and no leak reports.
 
 Tests and benchmarks run on the host (§3.8), so a freestanding program's modules are tested there with test handlers in place of the hardware.
+
+#### 3.7.2 Hosts without some services
+
+A hosted target may lack some of the services that the ambient effects and the standard library reach. The program keeps its shape (it has `main`, and every ambient effect has its default handler), and an operation the system does not offer fails with `IoError.Unsupported` (§21.7). On WASI (`target.os` is `.Wasi`, a WebAssembly module run by a WASI runtime), there are no child processes, sockets or threads: every operation of `Proc` and `Net` fails that way, and so does starting a thread (`std/thread`). Files and directories are those the runtime grants the module. Everything else, fibers included, works as on other hosts.
 
 ### 3.8 Tests
 
@@ -2857,6 +2861,7 @@ IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
     BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused,
     TimedOut,                                   // a send or receive outlived its timeout
+    Unsupported,                                // the system does not offer the operation (§3.7.2)
     Other: i32                                  // OS error code
 }
 Instant  :: struct { pub ns: u64 }              // monotonic, since an unspecified epoch

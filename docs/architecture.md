@@ -727,6 +727,42 @@ linked `-static`):
   stored with `/` (`SourceMap::add`) so that diagnostics read the same on every system, and
   a crash status (an NT status such as `0xC0000005`) is reported as 134.
 
+**WASI.** For `wasm32-wasi` (`__wasi__`, `target.os` `.Wasi`) the runtime keeps its POSIX
+layer, as wasi-libc provides it, and replaces what WASI lacks (`GM_WASI` in
+`runtime/gm_rt.h`):
+
+- There are no threads: the runtime's lock does nothing, `gm_thread_spawn` fails with
+  `ENOTSUP` (which `gm_io_error`, like `ENOSYS`, maps to `IoError.Unsupported`), a futex
+  wait sleeps out its timeout, and thread-local storage is a plain global. The entry
+  function runs on the module's own stack, 64 MiB, placed first in memory
+  (`--stack-first`), whose bounds the linker's `__stack_low` / `__stack_high` give the
+  stack checks. `Net` and `Proc` operations fail with `ENOTSUP`. Random bytes come from
+  `getentropy`.
+- WebAssembly cannot switch stacks, so fiber switches use Binaryen's Asyncify. Every
+  context (the entry function's and each fiber's) is resumed by one driver,
+  `gm_wasi_drive`, at the bottom of the module's stack: `gm_rt_switch` records the
+  target, starts an unwind (Asyncify saves each frame's locals into a buffer at the low
+  end of the suspending context's own stack, below its frames) and returns to the driver,
+  which sets the stack pointer to the target's stack and calls its entry function with a
+  rewind started, which rebuilds its frames and returns from its own `gm_rt_switch`. The
+  cost of a switch is therefore proportional to the depth of both stacks. A buffer that
+  would reach the frames is reported as a stack overflow.
+- The C back end links without optimizing (Clang would otherwise run `wasm-opt` before
+  the transformation, and its inlining would move code into the functions Asyncify must
+  leave alone), then `cgen/wasi.rs` runs `wasm-opt --asyncify` and the build's
+  optimization level over the module. Only a module that imports from `asyncify` is
+  transformed; the generated `main` calls `gm_run_main_fibers`, the only function that
+  reaches the driver, only when the program uses `with ... on` (`gm_with_go`), so a
+  program without fibers keeps its size and speed.
+- Function "addresses" are table indices, so the tag that marks a plain function in a
+  function value is the top bit (`GM_PTR_TAG_BIT`) rather than bit 0.
+- WASI's `proc_exit` refuses statuses of 126 and above, so a trap reports and then
+  executes `unreachable` (`__builtin_trap`); Wasmtime then exits with 134 as a native
+  program would, and `gamma` drops the report Wasmtime adds (`toolchain::strip_wasm_trap_report`).
+  Modules are run with Wasmtime (`toolchain::WASI_RUNNER`), the current directory granted,
+  the environment inherited and the native stack for WebAssembly frames raised to 256 MiB
+  so that the program's own stack overflows first.
+
 `gamma test` uses the C back end for modules that need it (foreign functions,
 `@asm`; their output is then captured with the test's) or with `--backend=c`. `cgen::generate_tests` emits one program whose
 `main` runs the test entry selected by its first argument, exactly as the

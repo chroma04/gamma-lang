@@ -111,7 +111,11 @@ pub fn cached_program(
     (&toolchain.cc, &toolchain.cflags, &toolchain.ldflags, &version.stdout).hash(&mut h);
     (link.fingerprint(), &link.libs, &link.lib_dirs).hash(&mut h);
     let stem = format!("prog-{:016x}", h.finish());
-    let exe = dir.join(if generated.target.os == "Windows" { format!("{stem}.exe") } else { stem.clone() });
+    let exe = dir.join(match generated.target.os {
+        "Windows" => format!("{stem}.exe"),
+        "Wasi" => format!("{stem}.wasm"),
+        _ => stem.clone(),
+    });
     if exe.is_file() {
         // Mark it as recently used, so pruning keeps it.
         touch(&exe);

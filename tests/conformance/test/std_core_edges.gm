@@ -27,7 +27,7 @@ test "extend with a part of the list's own bytes" {
 }
 
 test "allocation sizes that overflow are out of memory" {
-    n: usize = 1 << 62
+    n: usize = 1 << (target.ptr_bits - 2)
     if s := make(u64, n) {
         free(s)
         expect(false, "make")

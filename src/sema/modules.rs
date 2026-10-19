@@ -536,7 +536,7 @@ impl<'s> Sema<'s> {
     fn load_target_module(&mut self, prelude: ModuleId) {
         let t = &self.target;
         let src = format!(
-            "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Freestanding }}\n\
+            "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Wasi, Freestanding }}\n\
              pub Arch :: union {{ X86_64, Aarch64, Riscv64, S390x, Wasm32, Other }}\n\
              pub Endian :: union {{ Little, Big }}\n\
              pub Mode :: union {{ Debug, Checked, Safe, Fast }}\n\

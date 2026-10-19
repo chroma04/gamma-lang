@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 Either :: union(L, R: type) {
     Left: L
     Right: R

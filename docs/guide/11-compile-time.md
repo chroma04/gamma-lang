@@ -171,7 +171,7 @@ The predeclared module `target` (no import needed) provides:
 
 | Name | Value |
 | --- | --- |
-| `target.os` | a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Freestanding`, ... |
+| `target.os` | a union: `.Linux`, `.MacOS`, `.Windows`, `.FreeBSD`, `.Wasi`, `.Freestanding` |
 | `target.arch` | `.X86_64`, `.Aarch64`, `.Riscv64`, `.S390x`, `.Wasm32`, ... |
 | `target.endian` | `.Little` or `.Big` |
 | `target.ptr_bits` | an untyped integer constant |

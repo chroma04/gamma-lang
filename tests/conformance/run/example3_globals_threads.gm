@@ -1,3 +1,4 @@
+//! needs: threads
 // #global and #thread_local storage: atomics on globals from threads, per-thread copies, thread.defaults, mutex try_lock.
 thread :: import "std/thread"
 

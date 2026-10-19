@@ -32,6 +32,7 @@ pub Env :: effect {
 pub IoError :: union {
     NotFound, PermissionDenied, AlreadyExists, WouldBlock, Interrupted,
     BrokenPipe, ConnectionReset, InvalidInput, UnexpectedEof, NoSpace, ConnectionRefused, TimedOut,
+    Unsupported,                                // the system does not offer the operation
     Other: i32                                  // OS error code
 }
 
@@ -217,7 +218,8 @@ io_result :: fn(n: i64) -> IoError!usize {
         8 => .UnexpectedEof
         9 => .NoSpace
         10 => .ConnectionRefused
-        _ => .TimedOut
+        11 => .TimedOut
+        _ => .Unsupported
     }
     return !e
 }
@@ -296,9 +298,11 @@ handler Fs for SystemIo {
         return Dir(handle: h.trunc(i64))
     }
     next_entry(self, d, buf) => {
-        n := try io_result(@fs_next_entry(d.handle, buf))
-        if n is 0 { return null }
-        return DirEntry(len: n & 0xffff_ffff, kind: kind_from((n >> 32).trunc(i64)))
+        // The length in the low 32 bits, the kind above them.
+        r := @fs_next_entry(d.handle, buf)
+        _ = try io_result(r)
+        if r is 0 { return null }
+        return DirEntry(len: (r & 0xffff_ffff).trunc(usize), kind: kind_from(r >> 32))
     }
     close_dir(self, d) => { _ = @fs_close_dir(d.handle) }
     truncate(self, f, size) => io_unit(@fs_truncate(f.handle, size))

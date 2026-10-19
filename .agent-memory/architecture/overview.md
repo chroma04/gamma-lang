@@ -41,6 +41,7 @@ src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, ele
                    gm_kN args), rtcache (cached runtime object + cached programs, 014),
                    units (Debug split into parallel C units: Generated.parts, s25),
                    outline (long statement runs → gm_cN_K helpers sharing F, decisions/031),
+                   wasi (WASI link flags + wasm-opt --asyncify step, import parser, decisions/034),
                    debug + views + gdb_printers.py + lldb_formatters.py (`-g`, 013; build writes gamma_lldb.py), csrc (C sources from gamma.toml)
 src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
                    build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli

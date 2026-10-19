@@ -8,7 +8,7 @@
 
 /* Definitions of the variables declared in gm_rt.h (gm_checks is the generated code's). */
 GM_API GM_TLS gm_bt *gm_bt_top;
-#ifdef GM_FREESTANDING
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
 /* One thread of execution: nothing to lock. */
 GM_API void gm_rt_acquire(void) {}
 GM_API void gm_rt_release(void) {}
@@ -326,6 +326,11 @@ GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *
     /* The status of a process terminated by `abort` (SIGABRT). */
 #ifdef _WIN32
     if (gm_overflowing) TerminateProcess(GetCurrentProcess(), 134);
+#endif
+#ifdef GM_WASI
+    /* WASI has no such status (runtimes refuse those above 125): end as `abort` does there,
+     * with WebAssembly's trap, which runtimes report (Wasmtime exits with 134). */
+    __builtin_trap();
 #endif
     exit(134);
 }
@@ -1834,6 +1839,7 @@ GM_API int64_t gm_io_error(int err) {
     case ENOSPC: return -10;
     case ECONNREFUSED: return -11;
     case ETIMEDOUT: return -12;
+    case ENOSYS: case ENOTSUP: return -13;
     default: return -1000 - (int64_t)err;
     }
 }
@@ -1866,6 +1872,17 @@ GM_API void gm_clock_sleep(uint64_t ns) {
     while (nanosleep(&t, &rest) != 0 && errno == EINTR) t = rest;
 }
 
+#ifdef GM_WASI
+GM_API void gm_rand_fill(void *vp, size_t n) {
+    uint8_t *p = (uint8_t *)vp;
+    while (n > 0) {
+        size_t k = n < 256 ? n : 256;   /* getentropy's limit per call */
+        if (getentropy(p, k) != 0) gm_trap("cannot read random bytes", NULL, 0, 0);
+        p += k;
+        n -= k;
+    }
+}
+#else
 GM_API void gm_rand_fill(void *vp, size_t n) {
     static int fd = -1;
     uint8_t *p = (uint8_t *)vp;
@@ -1882,6 +1899,7 @@ GM_API void gm_rand_fill(void *vp, size_t n) {
         n -= (size_t)r;
     }
 }
+#endif
 
 /* A NUL-terminated copy of a path (freed by the caller), or NULL if it contains a NUL. */
 static char *gm_path(const void *p, size_t n) {
@@ -2075,6 +2093,42 @@ GM_API int64_t gm_fs_cwd(void *p, size_t n) {
     return (int64_t)len;
 }
 
+#ifdef GM_WASI
+/* WASI offers no sockets to open and no processes to start: every operation of the Net and
+ * Proc effects fails with IoError.Unsupported. */
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    (void)host; (void)len; (void)port;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    (void)host; (void)len; (void)port;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_local_port(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_accept(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_close(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) { (void)h; (void)how; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    (void)h; (void)recv_ns; (void)send_ns;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)flags;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    (void)h; (void)data; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_proc_close_in(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) { (void)h; (void)buf; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_kill(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+#else
 /* Resolves host:port for a stream socket (passive: for listening). */
 static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
     char *h = gm_path(host, len);
@@ -2593,6 +2647,7 @@ GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_release();
     return r;
 }
+#endif /* GM_WASI */
 #else
 /* Windows: the system services on the Win32 API and Winsock 2. Paths and names cross the
  * boundary as UTF-8 and are converted to UTF-16 for the wide-character calls. Files are
@@ -3613,7 +3668,38 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
 #endif /* GM_FREESTANDING */
 
 #ifndef GM_FREESTANDING
-#ifndef _WIN32
+#ifdef GM_WASI
+/* ---- threads ---------------------------------------------------------------------------- */
+
+/* WASI has one thread, whose stack the linker sets up, as large as GM_MAIN_STACK_SIZE
+ * elsewhere. A program that switches fibers runs its entry under the fiber driver
+ * (gm_wasi_drive), which the context switch needs at the bottom of the stack. */
+static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx);
+
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) { return f(cx); }
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_wasi_drive(f, cx); }
+
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
+    (void)f; (void)arg;
+    return gm_io_error(ENOTSUP);
+}
+/* No thread can have been spawned, so there is none to join or detach. */
+GM_API int64_t gm_thread_join(int64_t h) { (void)h; return gm_io_error(EINVAL); }
+GM_API int64_t gm_thread_detach(int64_t h) { (void)h; return gm_io_error(EINVAL); }
+GM_API void gm_thread_yield(void) {}
+
+/* No other thread can change the word: a wait with a timeout sleeps it out, and one without
+ * returns at once (a spurious wake-up, which callers allow for). */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    if (timeout_ns > 0 && __atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) gm_clock_sleep((uint64_t)timeout_ns);
+    return 0;
+}
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    (void)addr; (void)n;
+    return 0;
+}
+GM_API uint32_t gm_cpu_count(void) { return 1; }
+#elif !defined(_WIN32)
 /* ---- threads ---------------------------------------------------------------------------- */
 
 /* `detached` and `finished` are guarded by gm_rt_lock: whichever of the thread's end and
@@ -3952,6 +4038,10 @@ GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
     else gm_write_out((const uint8_t *)p, n);
 }
 
+#ifndef GM_WASI
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_run_main(f, cx); }
+#endif
+
 #endif /* GM_FREESTANDING */
 
 /* ---- handler contexts and non-local exits ---------------------------------------------- */
@@ -4031,6 +4121,119 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
     c->uc.uc_stack.ss_size = len;
     c->uc.uc_link = NULL;
     makecontext(&c->uc, gm_filc_entry, 0);
+    return c;
+}
+#elif defined(GM_WASI)
+/* WebAssembly cannot switch stacks: its call stack is out of the program's reach. The
+ * compiler therefore runs Binaryen's Asyncify transformation over a WASI module that
+ * switches (one that calls the asyncify.* imports below), which makes every function that
+ * may be on the stack during a switch able to save its state and return ("unwind"), and
+ * to be called again and resume from that state ("rewind").
+ *
+ * A context is the C (shadow) stack of the program or of a fiber, which stays where it is
+ * in linear memory, plus the state Asyncify saves for its frames. gm_wasi_drive, at the
+ * bottom of the real call stack, runs one context at a time. gm_rt_switch saves the
+ * shadow stack pointer and starts an unwind, which returns through every frame of the
+ * running context to gm_wasi_drive. That then rewinds the context switched to by calling
+ * the function at its base again (the program's entry, or gm_fiber_entry), which returns
+ * into the gm_rt_switch call that suspended it; a new fiber's context is simply started.
+ *
+ * The saved state of a context goes onto its own stack, below the frames: the memory
+ * between the bottom of the stack and the stack pointer is unused while it is suspended.
+ * Functions that start or stop an unwind or a rewind are not transformed, so gm_rt_switch
+ * and gm_wasi_drive must not be inlined into other code, nor other code into them. */
+__attribute__((import_module("asyncify"), import_name("start_unwind"))) void gm_asyncify_start_unwind(void *data);
+__attribute__((import_module("asyncify"), import_name("stop_unwind"))) void gm_asyncify_stop_unwind(void);
+__attribute__((import_module("asyncify"), import_name("start_rewind"))) void gm_asyncify_start_rewind(void *data);
+__attribute__((import_module("asyncify"), import_name("stop_rewind"))) void gm_asyncify_stop_rewind(void);
+/* The bounds of the module's own stack, from the linker. */
+extern char __stack_low, __stack_high;
+
+typedef struct {
+    uintptr_t cur, end;   /* Asyncify's data: where its saved state goes; must come first */
+    uintptr_t sp;         /* the shadow stack pointer while it is suspended or before it starts */
+    uintptr_t low;        /* the bottom of its stack */
+    gm_fiber *fb;         /* the fiber it runs (NULL: the program's entry) */
+    int suspended;        /* unwound; it is continued by rewinding */
+} gm_wasi_ctx;
+
+static gm_wasi_ctx gm_wasi_main_ctx;
+static gm_wasi_ctx *gm_wasi_running, *gm_wasi_next;
+static void *gm_wasi_arg;
+static int gm_wasi_rewinding;
+
+__attribute__((noinline)) static uintptr_t gm_wasi_get_sp(void) {
+    uintptr_t sp;
+    __asm__ volatile("global.get __stack_pointer\n\tlocal.set %0" : "=r"(sp));
+    return sp;
+}
+
+__attribute__((noinline)) static void gm_wasi_set_sp(uintptr_t sp) {
+    __asm__ volatile("local.get %0\n\tglobal.set __stack_pointer" : : "r"(sp));
+}
+
+/* Called through pointers, so that the C compiler cannot inline them into gm_wasi_drive. */
+static void (*volatile gm_wasi_fiber_entry)(gm_fiber *) = gm_fiber_entry;
+static int (*volatile gm_wasi_entry)(gm_node *);
+
+__attribute__((noinline)) static void *gm_rt_switch(void **save, void *to, void *arg) {
+    if (gm_wasi_rewinding) {
+        /* The rewind of the context that called this has arrived back here. */
+        gm_wasi_rewinding = 0;
+        gm_asyncify_stop_rewind();
+        return gm_wasi_arg;
+    }
+    gm_wasi_ctx *me = gm_wasi_running;
+    *save = me;
+    me->sp = gm_wasi_get_sp();
+    me->cur = (me->low + 15) & ~(uintptr_t)15;
+    /* Room for Asyncify's state; it checks the end only when the unwind is over, so the
+     * driver checks it with the real end itself (see gm_wasi_drive). */
+    me->end = UINTPTR_MAX & ~(uintptr_t)15;
+    me->suspended = 1;
+    gm_wasi_next = (gm_wasi_ctx *)to;
+    gm_wasi_arg = arg;
+    gm_asyncify_start_unwind(me);
+    return NULL;
+}
+
+__attribute__((noinline)) static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx) {
+    uintptr_t base = gm_wasi_get_sp();
+    gm_wasi_entry = f;
+    gm_wasi_main_ctx.low = (uintptr_t)&__stack_low;
+    gm_wasi_main_ctx.sp = base;
+    gm_wasi_ctx *c = &gm_wasi_main_ctx;
+    for (;;) {
+        gm_wasi_running = c;
+        gm_wasi_set_sp(c->sp);
+        if (c->suspended) {
+            c->suspended = 0;
+            gm_wasi_rewinding = 1;
+            gm_asyncify_start_rewind(c);
+        }
+        int status = 0;
+        if (c->fb == NULL) status = gm_wasi_entry(cx);
+        else gm_wasi_fiber_entry(c->fb);
+        gm_wasi_set_sp(base);
+        if (gm_wasi_next == NULL) return status;   /* the entry returned */
+        /* The saved state must have stayed below the frames it describes. */
+        if (c->cur > c->sp) {
+            gm_asyncify_stop_unwind();
+            gm_stack_overflow();
+        }
+        gm_asyncify_stop_unwind();
+        c = gm_wasi_next;
+        gm_wasi_next = NULL;
+    }
+}
+
+/* A fiber's context sits at the top of its stack, and its frames start below it. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    gm_wasi_ctx *c = (gm_wasi_ctx *)((top - sizeof(gm_wasi_ctx)) & ~(uintptr_t)15);
+    memset(c, 0, sizeof *c);
+    c->low = top - len;
+    c->sp = (uintptr_t)c;
+    c->fb = fb;
     return c;
 }
 #elif defined(__x86_64__) && defined(_WIN32)
@@ -4411,6 +4614,14 @@ GM_API void gm_thread_stack(void) {
     size_t size = 0;
 #if defined(GM_FREESTANDING)
     /* The program's stack is its own; no limit is known. */
+#elif defined(GM_WASI)
+    /* The module's stack, as the linker laid it out (first in memory, so that running off its
+     * end is an out-of-bounds access). It may start at address 0. */
+    low = (uintptr_t)&__stack_low;
+    size = (size_t)(&__stack_high - &__stack_low);
+    gm_thread_stack_limit = size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
+    gm_stack_limit = gm_thread_stack_limit;
+    return;
 #elif defined(__APPLE__)
     pthread_t me = pthread_self();
     size = pthread_get_stacksize_np(me);
