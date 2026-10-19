@@ -6,6 +6,7 @@ use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod linting;
 mod testing;
 
 const USAGE: &str = "\
@@ -17,6 +18,9 @@ commands:
   check   type-check a program (a .gm file or a module directory)
   fix     check a program and apply the fixes its diagnostics suggest where there is only
           one, to the files of its package; prints the diagnostics left
+  lint    check a package (a .gm file or a directory, with all the modules of its package)
+          and warn about code that is probably a mistake or has a simpler form
+          (run `gamma help lint` for the options and `gamma lint --rules` for the rules)
   run     run a program; arguments after the file go to the program
   build   compile a program to a native executable (via the system C compiler); for a
           freestanding target (--target with a compiler that targets no operating system)
@@ -39,8 +43,9 @@ commands:
           (run `gamma help packages` for the options of the package commands)
   repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
-  help    print this message; `gamma help packages` and `gamma help doc` add the options of
-          the package commands and of `doc` (as does `--help` after a command)
+  help    print this message; `gamma help packages`, `gamma help doc` and `gamma help lint`
+          add the options of the package commands, of `doc` and of `lint` (as does `--help`
+          after a command)
   version print the compiler version
 
 options:
@@ -72,13 +77,15 @@ options:
                               with CC set, CC (given --target if it is clang). A compiler that
                               targets no operating system (`x86_64-unknown-none-elf`) makes a
                               freestanding program (spec 3.7.1): check and build only, and
-                              build writes an object file of its `#export`ed functions
+                              build writes an object file of its `#export`ed functions;
+                              `wasm32-wasi` builds a WebAssembly module (<name>.wasm)
   --quiet                     (repl) no banner and prompts, even on a terminal
   --offline                   (check, run, build, test, bench) never use the network: git
                               dependencies must be locked and already fetched
   --locked                    (check, run, build, test, bench) fail if gamma.lock is missing or
                               would change
-  -o <file>                   (build) the executable to write (default: the input's name);
+  -o <file>                   (build) the executable to write (default: the input's name,
+                              with .exe for Windows and .wasm for WASI);
                               for a freestanding target the object file (default: <name>.o)
   --profile=<name>            (check, run, build, test, bench) use the `[profile.<name>]` table of
                               gamma.toml over its `[build]` table (mode, debug-info, cflags,
@@ -101,7 +108,13 @@ environment:
   LDFLAGS   extra linker options (likewise)
   GAMMA_RUNNER
             a command that runs the executables of `run --backend=c` and `test`
-            (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments
+            (`qemu-s390x -L /usr/s390x-linux-gnu` for a cross build), with any arguments;
+            WebAssembly modules (--target=wasm32-wasi) run by default with
+            `wasmtime run --dir=. -S inherit-env -W max-wasm-stack=268435456`
+  WASI_SDK_PATH
+            a wasi-sdk whose clang and sysroot --target=wasm32-wasi uses when CC is unset
+  WASM_OPT  Binaryen's wasm-opt, which WASI modules that switch fibers need (default:
+            wasm-opt from PATH)
 ";
 
 struct Options {
@@ -151,6 +164,8 @@ struct Options {
     /// `cflags` / `ldflags` of gamma.toml, before those of the environment.
     manifest_cflags: Vec<String>,
     manifest_ldflags: Vec<String>,
+    /// `gamma lint`'s options.
+    lint: linting::LintOptions,
 }
 
 /// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
@@ -198,6 +213,7 @@ fn parse_args() -> Result<Options, String> {
         debug_info_given: false,
         manifest_cflags: vec![],
         manifest_ldflags: vec![],
+        lint: Default::default(),
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -265,6 +281,7 @@ fn parse_args() -> Result<Options, String> {
             }
             a if a.starts_with("--filter=") => opts.filter = Some(a["--filter=".len()..].to_string()),
             a if a.starts_with("--package=") => opts.package = Some(a["--package=".len()..].to_string()),
+            a if opts.command == "lint" && opts.lint.parse_arg(a)? => {}
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
             a => {
                 if opts.file.is_some() {
@@ -333,6 +350,9 @@ fn print_help(topic: &str) {
     if topic == "doc" {
         print!("\n{}", gamma::doc::USAGE);
     }
+    if topic == "lint" {
+        print!("\n{}", linting::USAGE);
+    }
 }
 
 fn compiler_main() -> ExitCode {
@@ -394,6 +414,7 @@ fn compiler_main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
         "fix" => fix(&opts),
+        "lint" => linting::run(&opts),
         "run" => run(&opts),
         "test" => testing::run(&opts, testing::Kind::Test),
         "bench" => testing::run(&opts, testing::Kind::Bench),
@@ -414,7 +435,7 @@ fn compiler_main() -> ExitCode {
 /// Applies the build settings of the package that holds the input (gamma.toml's `[build]`
 /// and the selected profile) under the command line: an option given there wins.
 fn apply_build_settings(opts: &mut Options) -> Result<(), String> {
-    if !matches!(opts.command.as_str(), "check" | "fix" | "run" | "build" | "test" | "bench") {
+    if !matches!(opts.command.as_str(), "check" | "fix" | "lint" | "run" | "build" | "test" | "bench") {
         return Ok(());
     }
     let Some(path) = opts.file.clone() else { return Ok(()) };
@@ -567,6 +588,20 @@ fn check(opts: &Options) -> ExitCode {
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
+/// The directory of the files that `gamma fix` may change and `gamma lint` reports on:
+/// the input's package, or outside a package, the input's directory; never the standard
+/// library or other packages.
+fn own_files(path: &std::path::Path) -> Result<PathBuf, String> {
+    match gamma::pkg::find_root(path) {
+        Some(root) => Ok(root),
+        None => match gamma::source::canonicalize(path) {
+            Ok(p) if p.is_dir() => Ok(p),
+            Ok(p) => Ok(p.parent().map(|d| d.to_path_buf()).unwrap_or(p)),
+            Err(e) => Err(format!("cannot read `{}`: {}", path.display(), e)),
+        },
+    }
+}
+
 /// `gamma fix`: checks the program and applies the fixes of its diagnostics, again until
 /// none is left to apply (a fix can let checking go further), then reports what is left.
 fn fix(opts: &Options) -> ExitCode {
@@ -574,18 +609,12 @@ fn fix(opts: &Options) -> ExitCode {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    // Only the files of the input's package (or, outside a package, of the input's
-    // directory) are changed: never the standard library or other packages.
-    let scope = match gamma::pkg::find_root(path) {
-        Some(root) => root,
-        None => match gamma::source::canonicalize(path) {
-            Ok(p) if p.is_dir() => p,
-            Ok(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),
-            Err(e) => {
-                eprintln!("gamma: cannot read `{}`: {}", path.display(), e);
-                return ExitCode::FAILURE;
-            }
-        },
+    let scope = match own_files(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("gamma: {}", e);
+            return ExitCode::FAILURE;
+        }
     };
     let std_root = gamma::source::canonical(&gamma::sema::std_root());
     let (mut fixes, mut files) = (0, std::collections::BTreeSet::new());
@@ -719,18 +748,23 @@ fn trap_report(sess: &Session, prog: &gamma::tir::Program, trap: &gamma::interp:
 }
 
 /// The file name of an executable called `stem`: it has the extension `.exe` when the
-/// toolchain builds for Windows (which cannot run a program without it).
+/// toolchain builds for Windows (which cannot run a program without it), and `.wasm` when
+/// it builds a WebAssembly module for WASI (which says how to run it).
 fn native_exe_name(stem: &str, toolchain: &Result<Toolchain, String>) -> String {
-    let windows = toolchain.as_ref().ok().and_then(|t| t.target().ok()).is_some_and(|t| t.os == "Windows");
-    if windows { format!("{stem}.exe") } else { stem.to_string() }
+    match toolchain.as_ref().ok().and_then(|t| t.target().ok()).map(|t| t.os) {
+        Some("Windows") => format!("{stem}.exe"),
+        Some("Wasi") => format!("{stem}.wasm"),
+        _ => stem.to_string(),
+    }
 }
 
 /// The command that runs the executable `exe`: behind the `GAMMA_RUNNER` command if
-/// that is set (a malformed value ends the process), and with `arg0` as the program's
-/// name if given and no runner is in the way.
+/// that is set (a malformed value ends the process), else behind a WebAssembly runtime for
+/// a `.wasm` module (see [`gamma::toolchain::runner_for`]), and with `arg0` as the
+/// program's name if given and no runner is in the way.
 #[cfg_attr(not(unix), allow(unused_variables, unused_mut))]
 fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std::process::Command {
-    let runner = gamma::toolchain::runner_from_env().unwrap_or_else(|e| {
+    let runner = gamma::toolchain::runner_for(exe).unwrap_or_else(|e| {
         eprintln!("gamma: {}", e);
         std::process::exit(2)
     });
@@ -754,6 +788,7 @@ fn runner_command(exe: &std::path::Path, arg0: Option<&std::path::Path>) -> std:
 /// The standard error of a failed native test as the interpreter reports it: a
 /// trap's message and location are in it, without the `trap: ` prefix.
 fn native_stderr(err: &str) -> String {
+    let err = gamma::toolchain::strip_wasm_trap_report(err);
     const PREFIX: &str = "trap: ";
     match err.rfind(PREFIX) {
         Some(i) if i == 0 || err.as_bytes()[i - 1] == b'\n' => {

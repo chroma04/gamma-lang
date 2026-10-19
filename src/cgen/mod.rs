@@ -24,6 +24,7 @@ mod types;
 mod units;
 mod vector;
 mod views;
+mod wasi;
 
 use crate::layout::Layouts;
 use crate::source::{SourceMap, Span};
@@ -231,6 +232,10 @@ fn generate_entries(
             span: Span::DUMMY,
         });
     }
+    // A program that switches fibers runs its entry under the runtime's fiber support
+    // (which, on WASI, is code that only such a program should carry).
+    let run_main = if out.contains("gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" };
+    let main = if main.is_empty() { main } else { format!("#define GM_RUN_MAIN {run_main}\n{main}") };
     out.push_str(&exports);
     out.push_str(&main);
     parts.once.insert_str(0, &checks);
@@ -688,7 +693,7 @@ impl<'a> Gen<'a> {
         let mut calls = String::new();
         for (i, &entry) in entries.iter().enumerate() {
             s.push_str(&self.gen_entry(entry, i)?);
-            let _ = writeln!(calls, "        case {i}: return gm_run_main(gm_entry{i}, cx);");
+            let _ = writeln!(calls, "        case {i}: return GM_RUN_MAIN(gm_entry{i}, cx);");
         }
         s.push_str("int main(int argc, char **argv) {\n");
         if select {
@@ -714,7 +719,7 @@ impl<'a> Gen<'a> {
         if select {
             let _ = writeln!(s, "    switch (which) {{\n{calls}        default: return 2;\n    }}");
         } else {
-            s.push_str("    return gm_run_main(gm_entry0, cx);\n");
+            s.push_str("    return GM_RUN_MAIN(gm_entry0, cx);\n");
         }
         s.push_str("}\n");
         Ok(s)
@@ -994,10 +999,11 @@ const BASE_CFLAGS: [&str; 6] =
     ["-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off"];
 
 /// The flags every build uses on `target`: [`BASE_CFLAGS`], and `-pthread` except on Windows,
-/// where the runtime uses the Win32 API and programs need no thread library.
+/// where the runtime uses the Win32 API and programs need no thread library, and on WASI,
+/// which has no threads.
 pub(crate) fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
     let mut flags = BASE_CFLAGS.to_vec();
-    if target.os != "Windows" {
+    if target.os != "Windows" && target.os != "Wasi" {
         flags.push("-pthread");
     }
     flags
@@ -1015,6 +1021,9 @@ pub(crate) fn base_cflags(target: &crate::layout::Target) -> Vec<&'static str> {
 /// (Fil-C, which compiles slowly) are compiled at `-O2` but link the cached runtime too.
 /// A large Debug build is split into several units compiled in
 /// parallel (see [`units`]); unit `i` > 0 is written to `exe` with the extension `.i.c`.
+///
+/// A WASI module is always compiled to objects first and linked without optimization
+/// options, and then goes through [`wasi::asyncify`].
 pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &Path) -> Result<Build, String> {
     if generated.freestanding {
         return compile_object(generated, toolchain, exe);
@@ -1069,8 +1078,9 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     let failed = |out: std::process::Output| {
         (!out.status.success()).then(|| format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)))
     };
+    let wasi = generated.target.os == "Wasi";
     // Several units are compiled to objects in parallel, then linked.
-    let inputs = if c_files.len() > 1 {
+    let inputs = if c_files.len() > 1 || wasi {
         let objects: Vec<PathBuf> = (0..c_files.len()).map(|i| exe.with_extension(format!("{i}.o"))).collect();
         let mut unit_flags = flags.clone();
         // A call to a function without a declaration would compile, wrongly, under C's
@@ -1096,8 +1106,11 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     } else {
         c_files.clone()
     };
+    let link_flags: Vec<&str> =
+        if wasi { flags.iter().copied().filter(|&f| f != opt).collect() } else { flags.clone() };
     let out = run(toolchain
-        .command(&flags)
+        .command(&link_flags)
+        .args(if wasi { wasi::link_flags() } else { vec![] })
         .arg("-o")
         .arg(exe)
         .args(&inputs)
@@ -1113,6 +1126,9 @@ pub fn compile(generated: &Generated, toolchain: &Toolchain, link: &Link, exe: &
     }
     if let Some(e) = failed(out?) {
         return Err(e);
+    }
+    if wasi {
+        wasi::asyncify(exe, opt, opts.debug_info)?;
     }
     Ok(Build { c_file, c_files, exe: exe.to_path_buf() })
 }

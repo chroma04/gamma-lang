@@ -16,6 +16,7 @@ pub mod ice;
 pub mod ide;
 pub mod interp;
 pub mod layout;
+pub mod lint;
 pub mod lsp;
 pub mod pkg;
 pub mod repl;

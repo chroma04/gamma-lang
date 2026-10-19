@@ -1,0 +1,34 @@
+// Unused parameters of named functions are reported; exempt cases are not.
+//! stage: lint
+
+pub add :: fn(a: u32, b: u32) -> u32 { //~ WARNING [unused-parameter]
+    return a
+}
+
+pub _ok :: fn(_x: u32, y: u32) -> u32 => y
+
+pub apply :: fn(f: fn(u32) -> u32, v: u32) -> u32 => f(v)
+
+ignores :: fn(n: u32) -> u32 => 1
+
+pub literal :: fn() -> u32 {
+    lit :: fn(n: u32) -> u32 => 4
+    return apply(lit, 2)
+}
+
+pub as_value :: fn() -> u32 => apply(ignores, 3)
+
+Ping :: effect { ping: fn(n: u32) }
+
+pub handled :: fn() {
+    h :: handler Ping {
+        ping(n) => {}
+    }
+    with h {
+        Ping.ping(1)
+    }
+}
+
+main :: fn() needs Out {
+    print("{}\n", add(1, 2))
+}

@@ -17,6 +17,31 @@ Versions and what each kind of change means are described in
   supports 64-bit Linux and macOS on x86-64 and AArch64, still uses the C compiler to build
   the runtime and to link, and does not emit debug information (`-g`) yet. See
   `docs/guide/native-backend.md`.
+- `gamma lint`: warnings, each naming its rule, about code that compiles but is probably
+  a mistake or has a simpler form: unused variables, parameters, imports, private
+  declarations and labels; comparisons of a value with itself; self-assignments;
+  constant `if` and `while` conditions; `defer` and `errdefer` that run at once or never;
+  identical and empty branches; comparisons with `true` and `false`; `if c { true } else
+  { false }`; `not not x`; `else { if … }`; unnecessary parentheses; and names not in the
+  usual case. `prefer-immutable`, off by default, finds `:=` variables that are never
+  assigned. `gamma lint --fix` applies the fixes the warnings carry, and undoes any after
+  which the program no longer compiles. Levels come from the `[lint]` table of
+  `gamma.toml`, from `--allow=`, `--warn=`, `--deny=` and `-D`, and from `#allow("rule")`
+  before a declaration (a new attribute). See `docs/lint.md`.
+
+- Guides for C and Rust programmers (`docs/guide/for-c-programmers.md`,
+  `docs/guide/for-rust-programmers.md`): how what you know maps onto Gamma, what changes
+  and why, with examples that the test suite compiles and runs on both back ends.
+- WebAssembly for WASI: `--target=wasm32-wasi` builds a `.wasm` module with clang and a
+  WASI sysroot (wasi-sdk through `WASI_SDK_PATH`, or the system's clang with wasi-libc),
+  which `gamma run` and `gamma test` run with Wasmtime (`GAMMA_RUNNER` replaces it).
+  Files, directories, clocks, random numbers, arguments and the environment work;
+  fibers work through Binaryen's Asyncify (`wasm-opt`, or `WASM_OPT`), applied only to
+  programs that use them. `target.os` is `.Wasi`. CI runs the conformance suite compiled
+  to WebAssembly.
+- `IoError.Unsupported`: the system does not offer the operation. On WASI, which has no
+  threads, processes or sockets, `thread.spawn` and every `Proc` and `Net` operation fail
+  with it (spec §3.7.2).
 - Vectors: `#simd [N]T` is an array of `N` lanes (fixed-width integers, `f32`, `f64` or
   `bool`) whose operators work lane by lane and compile to vector instructions. `is`
   compares whole vectors and gives `bool`; the methods `lanes_eq`, `lanes_ne`, `lanes_lt`,
@@ -93,6 +118,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- `Os` has a new case, `Wasi`, and `IoError` a new case, `Unsupported`: an exhaustive
+  `match` over either needs an arm for it.
 - Faster Safe builds: values that hold no pointer, or hold their pointers at fixed
   offsets, are copied word by word instead of through the Fil-C runtime; large
   parameters are read in place when every call passes a value nothing changes during the
@@ -191,6 +218,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A `::` binding whose initializer calls a nested function with an inferred return type
+  (`zero :: fn() { return 0 }`, then `z :: zero()`) no longer crashes the compiler.
+- Listing a directory no longer traps on targets with a 32-bit `usize`.
 - C back end: `print` and `@write` no longer pass empty pieces to their sink when a
   value formats to nothing (`print("{}", "")`), so a custom `Out` handler sees the same
   calls as on the interpreter. The spec now says that pieces are never empty.

@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 Point :: struct { x, y: i32 }
 
 require :: fn(ok: bool, msg: string = "requirement failed", loc: SourceLocation = @caller_location()) needs Out {

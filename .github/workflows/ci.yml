@@ -157,6 +157,33 @@ jobs:
           GAMMA_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
         run: cargo test --release --test conformance --test cranelift
 
+  wasi:
+    # WebAssembly for WASI: the suite runs compiled with clang for wasm32-wasi, transformed by
+    # Binaryen where it switches fibers, under Wasmtime.
+    name: WebAssembly (wasm32-wasi)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install clang's WebAssembly support, the WASI C library, Binaryen and Wasmtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen
+          curl -sSfL https://github.com/bytecodealliance/wasmtime/releases/download/v25.0.1/wasmtime-v25.0.1-x86_64-linux.tar.xz | tar xJ
+          echo "$PWD/wasmtime-v25.0.1-x86_64-linux" >> "$GITHUB_PATH"
+      - name: Tools
+        run: |
+          clang-18 --version | head -n 1
+          wasm-opt --version
+          wasmtime --version
+      - name: Conformance and WASI tests
+        env:
+          CC: clang-18 --target=wasm32-wasi
+          # Build scripts (libffi-sys) compile C for the host: keep them off the cross compiler.
+          CC_x86_64_unknown_linux_gnu: gcc
+        run: cargo test --release --test conformance --test wasi
+
   difftest:
     # Differential testing (tools/difftest): random well-typed programs must behave the same
     # on the interpreter and on the C back end compiled by gcc and by clang. The first batch

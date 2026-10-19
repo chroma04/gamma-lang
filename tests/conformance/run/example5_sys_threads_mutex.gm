@@ -1,3 +1,4 @@
+//! needs: threads
 // Threads sharing big structs under a Mutex (copied in and out by value), a producer and a consumer over a ring buffer of big records, and atomics on a #bits status word.
 thread :: import "std/thread"
 

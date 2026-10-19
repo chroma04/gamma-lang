@@ -1,3 +1,3 @@
 trap: memory allocated at tests/conformance/run/example3_wrong_allocator.gm:10:9 is freed at tests/conformance/run/example3_wrong_allocator.gm:14:5 through a different allocator
-  at <core>/prelude.gm:654:5
+  at <core>/prelude.gm:658:5
   called from tests/conformance/run/example3_wrong_allocator.gm:14:5 in main

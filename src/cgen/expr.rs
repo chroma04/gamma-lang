@@ -306,7 +306,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let name = self.g.addr_name(*f);
                 let plain = self.g.is_plain(*f);
                 // A plain function where hidden-convention code is expected is marked by
-                // setting the low bit of its address (see `call_indirect`).
+                // tagging its address (GM_PTR_TAG, see `call_indirect`).
                 let code = if plain && !self.ptr_type_plain(t) {
                     format!("GM_PTR_TAG({})", name)
                 } else {
@@ -1369,7 +1369,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Calls code pointer `code`. With `hidden`, the code uses the hidden convention
-    /// (env, cx, inst) unless its low bit marks a plain function; otherwise it is plain.
+    /// (env, cx, inst) unless its tag (GM_PTR_TAGGED) marks a plain function; otherwise it is plain.
     #[allow(clippy::too_many_arguments)]
     pub fn call_indirect(
         &mut self,
@@ -1410,7 +1410,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 _ => String::new(),
             };
             let hidden_call = format!("(({}){})({}{}, {}, NULL{})", fp, p, out, env, cx, args);
-            self.line(&format!("if ((uintptr_t){} & 1) {{", p));
+            self.line(&format!("if (GM_PTR_TAGGED({})) {{", p));
             self.indent += 1;
             emit_plain(self);
             self.indent -= 1;

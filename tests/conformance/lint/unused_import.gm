@@ -1,0 +1,9 @@
+// An import that nothing refers to is reported; a used import is not.
+//! stage: lint
+
+io :: import "std/io" //~ WARNING [unused-import]
+math :: import "std/math"
+
+main :: fn() needs Out {
+    print("{}\n", math.abs(-3))
+}

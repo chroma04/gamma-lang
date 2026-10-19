@@ -8,6 +8,10 @@ src/source.rs      SourceMap, FileId, Span{file,lo,hi}; source::canonicalize (ne
 src/diag.rs        Diagnostic{severity,message,span,labels,notes,fixes}, render(Human|Short|Json), to_json;
 src/fix.rs         gamma fix: plan(diags, editable) → non-overlapping edits per file; apply;
                    LONG_LINE/WINDOW show long source lines as a window
+src/lint/          gamma lint: mod.rs RULES/Level/Config/run (findings → diags, #allow spans,
+                   levels, fixes); syntax.rs AST-walk rules + fix sites. sema/lint.rs: TIR rules
+                   (Sema::decl_uses/local_uses from name resolution). src/linting.rs (binary):
+                   CLI + --fix loop with undo/careful mode. decisions/033
 src/symbol.rs      Symbol interner (global Mutex, leaked strs)
 src/driver.rs      Session{sources,diags,ids,mode,debug_info,target,packages,overlays}; load/lex/parse
 src/syntax/        token.rs; lexer/{mod,literal,tests}.rs (newline rules §2.8); ast.rs (types
@@ -37,8 +41,9 @@ src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, ele
                    gm_kN args), rtcache (cached runtime object + cached programs, 014),
                    units (Debug split into parallel C units: Generated.parts, s25),
                    outline (long statement runs → gm_cN_K helpers sharing F, decisions/031),
+                   wasi (WASI link flags + wasm-opt --asyncify step, import parser, decisions/034),
                    debug + views + gdb_printers.py + lldb_formatters.py (`-g`, 013; build writes gamma_lldb.py), csrc (C sources from gamma.toml)
-src/clif/          Cranelift back end (decisions/033): mod (Gen, reps, sigs, exports, link), func
+src/clif/          Cranelift back end (decisions/035): mod (Gen, reps, sigs, exports, link), func
                    (frames, ladder, thunks), expr, ops (operators, builtins, @asm), cabi (C ABI
                    classes), data; runtime/gm_clif.c glue linked with gm_rt.c.
 src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),

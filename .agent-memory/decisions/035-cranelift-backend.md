@@ -1,4 +1,4 @@
-# 033 Cranelift native back end (s30, thread "native back end", branch claude/project-thread-3wi9el)
+# 035 Cranelift native back end (s30, thread "native back end", branch claude/project-thread-3wi9el)
 
 User asked (via coordinator) for a native back end via Cranelift or LLVM for v0.1.0, behind a
 flag, passing as much conformance as feasible. Chose Cranelift (pure Rust, no system LLVM).

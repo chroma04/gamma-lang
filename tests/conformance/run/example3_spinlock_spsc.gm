@@ -1,3 +1,4 @@
+//! needs: threads
 // Threads and atomics: a CAS spin lock guarding a plain counter, an SPSC ring buffer with release/acquire, atomic max/or/xor.
 thread :: import "std/thread"
 

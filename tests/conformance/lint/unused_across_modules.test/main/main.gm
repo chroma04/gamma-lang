@@ -1,0 +1,9 @@
+// A private function unused in its module is reported even in a multi-module program.
+//! stage: lint
+util :: import "./util"
+
+private_here :: fn() -> u32 => 1 //~ WARNING [unused-declaration]
+
+main :: fn() needs Out {
+    print("{}\n", util.shared())
+}

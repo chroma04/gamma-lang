@@ -1,3 +1,4 @@
+//! needs: sockets
 // std/net and the new `Net` operations over real loopback sockets: send_all, recv_exact,
 // shutdown, set_timeouts and peer.
 time :: import "std/time"

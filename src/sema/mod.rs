@@ -27,6 +27,7 @@ mod handler_decl;
 mod ide;
 mod imports;
 mod infer;
+mod lint;
 mod matching;
 mod methods;
 mod modules;
@@ -54,6 +55,7 @@ pub use builtins::is_reserved_type_name;
 pub use decls::DeclValue;
 pub use ide::analyze_for_ide;
 pub use imports::std_root;
+pub use lint::{Finding, analyze_for_lint};
 pub use untyped::Untyped;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -207,6 +209,13 @@ pub struct Sema<'s> {
     pub decls: Vec<Decl>,
     /// Uses of `#deprecated` declarations already warned about.
     deprecated_uses: std::collections::HashSet<(DeclId, Span)>,
+    /// Declarations that some name was resolved to (in their own module's scope or as a
+    /// member of their module), for `gamma lint`'s unused declarations.
+    pub decl_uses: std::collections::HashSet<DeclId>,
+    /// Each use of a local variable by name: the spans of its declaration and of the use.
+    /// Unlike the typed program, it keeps the uses that checking evaluates away
+    /// (`a.len` of an array, `@type_of(x)`), for `gamma lint`'s unused locals.
+    pub local_uses: std::collections::HashSet<(Span, Span)>,
     /// `#inline` functions, checked for recursion once every body is known.
     pub inline_fns: Vec<(FnId, Span)>,
     /// Generic nested functions (§11.8), declared like top-level ones, by name.
@@ -376,6 +385,8 @@ impl<'s> Sema<'s> {
             modules: vec![],
             decls: vec![],
             deprecated_uses: std::collections::HashSet::new(),
+            decl_uses: std::collections::HashSet::new(),
+            local_uses: std::collections::HashSet::new(),
             inline_fns: vec![],
             nested_generic: HashMap::new(),
             prog: Program::default(),

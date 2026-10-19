@@ -1,3 +1,4 @@
+//! needs: sockets
 // The `Net` effect with its default handler, real TCP sockets on the loopback
 // interface (§12.9, §21.7). One program is both server and client: the connection
 // waits in the listener's backlog until `accept`.

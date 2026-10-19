@@ -1,0 +1,37 @@
+// Things that count as uses, or are exempt, for unused-variable.
+//! stage: lint
+
+Shape :: union {
+    A: u32
+    B: u32
+    C
+}
+
+take :: fn(n: u32) -> u32 => n
+
+apply :: fn(f: fn(u32) -> u32, v: u32) -> u32 => f(v)
+
+main :: fn() needs Out {
+    _ignored := 5
+    _ := take(1)
+    x := 3
+    t :: @type_of(x)
+    arr: [4]u8 = ---
+    n :: arr.len
+    print("{}\n", n)
+    captured := 10
+    add :: fn(v: u32) -> u32 => v + captured
+    print("{}\n", apply(add, 1))
+    s :: Shape.A(1)
+    match s {
+        .A(v), .B(v) => print("{}\n", take(v))
+        .C => print("c\n")
+    }
+    y := 7
+    when target.os is .Windows {
+        print("{}\n", y)
+    }
+    for _k in 0..2 {
+        print("tick\n")
+    }
+}

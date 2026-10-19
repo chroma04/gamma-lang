@@ -91,6 +91,7 @@ gamma run hello.gm         type-check the program and run it
 gamma build hello.gm       compile it to a native executable `hello` (-o picks the name)
 gamma check hello.gm       type-check without running
 gamma fix hello.gm         apply the fixes the compiler's errors suggest, where there is one
+gamma lint hello.gm        warn about code that is probably a mistake or has a simpler form
 gamma test hello.gm        run the `test` declarations (see Tests below)
 gamma bench hello.gm       run the `bench` declarations and report the time per run
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
@@ -106,7 +107,7 @@ gamma help                 print usage
 gamma version              print the compiler version
 ```
 
-A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short|json` chooses how diagnostics are printed (`json` is one object per line, with locations and suggested fixes, for tools); they go to standard error, and the tool exits with status 1 if there were errors. `gamma fix` applies the suggested fixes that leave no choice, such as `&&` → `and` or adding an effect a function performs to its `needs` clause, and repeats until none are left; editors get the same fixes as quick fixes from `gamma lsp`. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
+A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short|json` chooses how diagnostics are printed (`json` is one object per line, with locations and suggested fixes, for tools); they go to standard error, and the tool exits with status 1 if there were errors. `gamma fix` applies the suggested fixes that leave no choice, such as `&&` → `and` or adding an effect a function performs to its `needs` clause, and repeats until none are left; editors get the same fixes as quick fixes from `gamma lsp`. `gamma lint` goes further than the compiler: it warns about variables, parameters, imports and functions that nothing uses, comparisons whose result is known and code with a simpler form, and `gamma lint --fix` applies the fixes it suggests ([`gamma lint`](../lint.md) lists the rules). When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
 `gamma run` interprets the program, which starts at once and gives the most precise diagnostics, but runs it roughly 10 to 100 times slower than compiled code. For programs that do real work (megabytes of input, long loops, benchmarks), use `gamma run --backend=c`: the first run pays for a C compilation (around a second), and later runs of the same program reuse the executable, which is kept in the cache directory described below. `gamma run --backend=cranelift` compiles with [Cranelift](native-backend.md) instead, several times faster, for code that runs somewhat slower. The back ends give the same output.
 
@@ -200,7 +201,7 @@ CC="clang --target=aarch64-linux-gnu --sysroot=/path/to/sysroot" gamma build hel
 CC=aarch64-linux-gnu-gcc LDFLAGS=-static gamma build hello.gm
 ```
 
-`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one) and threads (POSIX threads, or the Win32 API on Windows; `--target=x86_64-w64-mingw32` with a MinGW-w64 cross compiler builds Windows executables from any host). Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
+`gamma check` and `gamma run` follow the same target, so `CC=… gamma check` checks the target-specific branches of `when`. The C back end needs a target with `__int128` (in practice, a 64-bit one, or WebAssembly: see [below](#webassembly-wasi)) and threads (POSIX threads, or the Win32 API on Windows; `--target=x86_64-w64-mingw32` with a MinGW-w64 cross compiler builds Windows executables from any host). Little- and big-endian targets both work (`s390x` is tested); `f16` also needs a C compiler with `_Float16`, which GCC lacks for s390x.
 
 **`--target=<triple>`** (accepted by `check`, `run`, `test` and `build`) names the machine to compile for and picks the compiler for it:
 
@@ -222,6 +223,27 @@ GAMMA_RUNNER="qemu-s390x -L /usr/s390x-linux-gnu" LDFLAGS=-static \
 ```
 
 The program is then named by its path in `argv[0]` rather than by the source file.
+
+### WebAssembly (WASI)
+
+`--target=wasm32-wasi` compiles a program to a WebAssembly module for [WASI](https://wasi.dev), which runtimes such as [Wasmtime](https://wasmtime.dev) run on any operating system:
+
+```text
+gamma build --target=wasm32-wasi hello.gm      # writes hello.wasm
+wasmtime run hello.wasm
+```
+
+It needs three tools:
+
+- **clang** with the WebAssembly target and a **WASI sysroot** (the C library for WASI). [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) has both: with `CC` unset and `WASI_SDK_PATH` naming an unpacked wasi-sdk, `gamma` uses its clang and sysroot. On Debian and Ubuntu, `apt install clang lld wasi-libc libclang-rt-dev-wasm32` (the last one versioned, such as `libclang-rt-18-dev-wasm32`) makes the system's clang work as well.
+- **Binaryen's `wasm-opt`**, for programs that use fibers (below); `WASM_OPT` names it if it is not on `PATH`.
+- A **WASI runtime** to run the modules. `gamma run --backend=c` and `gamma test` start them with `wasmtime run --dir=. -S inherit-env`, which lets the program see the current directory (and everything below it) and the environment variables; `GAMMA_RUNNER` replaces that command.
+
+`target.os` is `.Wasi` and `target.arch` is `.Wasm32`, with 32-bit pointers (so `usize` and `c_long` are 32 bits wide). The program has `main` and every ambient effect as usual. Standard input and output, files and directories, clocks, random numbers, arguments and the environment work. WASI has no threads, child processes or sockets, so every operation of `Proc` and `Net` fails with `IoError.Unsupported`, and so does `thread.spawn` (spec §3.7.2). A program sees only the directories the runtime grants it (Wasmtime's `--dir`); paths are those of the runtime's view, and relative paths start at the current directory when it is granted as `.`.
+
+Fibers work as everywhere else. WebAssembly cannot switch stacks itself, so a module whose program uses fibers goes through Binaryen's [Asyncify](https://github.com/WebAssembly/binaryen/blob/main/src/passes/Asyncify.cpp) transformation after linking: `wasm-opt --asyncify` rewrites every function that may be running when a fiber switches so that it can save its locals and return, and be resumed later. The module grows (often by half) and runs slower around fiber code; a program without fibers is not transformed. When a fiber suspends, its saved state goes onto its own stack below its frames, so a fiber needs somewhat more stack on WASI than elsewhere; running out is reported as a stack overflow. A switch also takes time in proportion to the depth of the stacks involved (Asyncify unwinds the frames of the suspending fiber and rewinds those of the resumed one, including the frames below the scheduler's `with`), so a program that switches often should run its scheduler near the top of the stack, as `main` itself usually does.
+
+The program's own stack is 64 MiB, as on other systems, and stack overflows are caught in Debug and Checked builds. Wasmtime limits the native stack its WebAssembly frames use to much less, so deep recursion would end in Wasmtime's own "call stack exhausted" first; the command `gamma` runs passes `-W max-wasm-stack=268435456`, and you should pass it too when you start a deeply recursive module with `wasmtime` yourself. A trap ends the module with Wasmtime's exit status for a trap (134 on Unix), after the program's own report. Safe builds (Fil-C) are not available for WASI.
 
 ## Source files
 

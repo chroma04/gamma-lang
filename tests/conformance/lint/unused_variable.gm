@@ -1,0 +1,35 @@
+// Unused locals, write-only locals, unused pattern bindings and loop variables.
+//! stage: lint
+
+Shape :: union {
+    Circle: f32
+    Square: f32
+    Empty
+}
+
+Fail :: union { Bad, Worse }
+
+risky :: fn(n: u32) -> Fail!u32 {
+    if n is 0 { return !.Bad }
+    return n
+}
+
+main :: fn() needs Out {
+    unused := 5 //~ WARNING [unused-variable]
+    written := 1 //~ WARNING [unused-variable]
+    written = 2
+    s :: Shape.Circle(1.0)
+    match s {
+        .Circle(r) => print("circle\n") //~ WARNING [unused-variable]
+        .Square(w) => print("{}\n", w)
+        .Empty => print("empty\n")
+    }
+    for i in 0..3 { //~ WARNING [unused-variable]
+        print("loop\n")
+    }
+    if v := risky(1) {
+        print("{}\n", v)
+    } else e => { //~ WARNING [unused-variable]
+        print("failed\n")
+    }
+}

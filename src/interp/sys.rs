@@ -81,6 +81,7 @@ pub fn error_code(e: &std::io::Error) -> i64 {
         K::StorageFull => IoErrorKind::NoSpace,
         K::ConnectionRefused => IoErrorKind::ConnectionRefused,
         K::TimedOut => IoErrorKind::TimedOut,
+        K::Unsupported => IoErrorKind::Unsupported,
         _ => IoErrorKind::Other(e.raw_os_error().unwrap_or(0)),
     };
     io_error_code(kind)

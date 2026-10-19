@@ -64,6 +64,8 @@ impl Target {
                 "Windows"
             } else if cfg!(target_os = "freebsd") {
                 "FreeBSD"
+            } else if cfg!(target_os = "wasi") {
+                "Wasi"
             } else {
                 "Freestanding"
             },

@@ -1,3 +1,4 @@
+//! needs: threads
 // Busy-wait threads without yielding: an atomic_swap spin lock and an acquire flag wait must make progress in both back ends.
 thread :: import "std/thread"
 

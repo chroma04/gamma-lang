@@ -1,3 +1,4 @@
+//! needs: threads
 // `#global #thread_local` storage is per thread (§19.3, §19.6); a plain `#global` is
 // shared.
 thread :: import "std/thread"

@@ -1,2 +1,2 @@
 trap: stack overflow: `big` needs a frame of 1000000000264 bytes
-  at tests/conformance/run/huge_frame_call.gm:14:22 in main
+  at tests/conformance/run/huge_frame_call.gm:15:22 in main

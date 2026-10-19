@@ -45,6 +45,18 @@ checks that formatting keeps the tokens and is idempotent for every `.gm` file i
 otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
 reformatted, since some pin columns in their expected output.
 
+## Lint rules
+
+`gamma lint` ([`lint.md`](lint.md)) is kept clean on `lib/std` and `examples/`:
+`tests/lint.rs` fails if either has a warning. To add a rule, give it an entry in
+`RULES` (`src/lint/mod.rs`) with its default level and a one-line summary, then
+report it from the AST walk (`src/lint/syntax.rs`) if the syntax tree is enough, or
+as a `Finding` from `src/sema/lint.rs` if it needs types or name resolution. Attach a
+fix only when it cannot change what the program does; `gamma lint --fix` undoes a
+fix that stops the program compiling, but not one that changes its behavior. Add a
+conformance test for it under `tests/conformance/lint/`, with the cases it must not
+report, and a row to the tables of `docs/lint.md`.
+
 ## API documentation
 
 `gamma doc` (`src/doc/`) writes Markdown or HTML documentation for the `pub`
@@ -241,6 +253,19 @@ type. `GAMMA_TEST_FILTER` and `BLESS=1` work as for the conformance tests:
 
 ```sh
 GAMMA_TEST_FILTER=wordfreq cargo test --test examples
+```
+
+**Documentation examples.** The code blocks of the guides for C and Rust programmers
+(`docs/guide/for-c-programmers.md`, `docs/guide/for-rust-programmers.md`) are checked
+by `tests/doc_examples.rs`. A block tagged `gamma` is a whole program that must be
+formatted and must run on both back ends, printing what the `output` block after it
+shows; `gamma test` blocks must pass `gamma test`; `gamma error` blocks must be rejected
+with errors exactly on the lines marked `// error:`; `gamma fragment` blocks are not
+checked. The format is described in the header of `tests/doc_examples.rs`, and
+`GAMMA_TEST_FILTER` selects blocks by `<document>:<line>`:
+
+```sh
+GAMMA_TEST_FILTER=for-rust cargo test --test doc_examples
 ```
 
 When adding a feature, add conformance tests that follow the specification

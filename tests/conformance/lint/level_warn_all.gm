@@ -1,0 +1,8 @@
+// `--warn=all` also turns on the rules that are off by default.
+//! stage: lint
+//! lint: --warn=all
+
+main :: fn() needs Out {
+    x := 5 //~ WARNING [prefer-immutable]
+    print("{}\n", x)
+}

@@ -95,9 +95,20 @@ impl Toolchain {
     /// (`--target=s390x-linux-gnu`), from the environment.
     pub fn for_target(triple: &str) -> Result<Toolchain, String> {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        // For WASI without `CC`, the clang of a wasi-sdk named by `WASI_SDK_PATH`, with
+        // its sysroot.
+        let cc = var("CC").or_else(|| {
+            let sdk = var("WASI_SDK_PATH").filter(|_| triple.starts_with("wasm32-wasi"))?;
+            let sdk = sdk.trim_end_matches(['/', '\\']);
+            Some(format!(
+                "{} {}",
+                quote_word(&format!("{sdk}/bin/clang")),
+                quote_word(&format!("--sysroot={sdk}/share/wasi-sysroot"))
+            ))
+        });
         Toolchain::for_triple(
             triple,
-            var("CC").as_deref(),
+            cc.as_deref(),
             var("CFLAGS").as_deref(),
             var("LDFLAGS").as_deref(),
             &program_on_path,
@@ -249,6 +260,35 @@ pub fn runner_from_env() -> Result<Vec<String>, String> {
     }
 }
 
+/// The command prefix that runs the executable `exe`: `GAMMA_RUNNER` if it is set;
+/// otherwise, for a WebAssembly module (`.wasm`, built for WASI), Wasmtime with the
+/// current directory and the environment passed on ([`WASI_RUNNER`]); otherwise none.
+pub fn runner_for(exe: &std::path::Path) -> Result<Vec<String>, String> {
+    let runner = runner_from_env()?;
+    if runner.is_empty() && exe.extension().is_some_and(|e| e == "wasm") {
+        return Ok(WASI_RUNNER.iter().map(|w| w.to_string()).collect());
+    }
+    Ok(runner)
+}
+
+/// How a WASI module is run when `GAMMA_RUNNER` does not say: by Wasmtime, which gives it the
+/// current directory (and everything below it) and the environment variables. Its stack for
+/// WebAssembly frames is made large enough that the program's own stack (whose overflow
+/// the program reports) runs out first.
+pub const WASI_RUNNER: [&str; 7] =
+    ["wasmtime", "run", "--dir=.", "-S", "inherit-env", "-W", "max-wasm-stack=268435456"];
+
+/// `stderr` of a WebAssembly module run by Wasmtime without the report Wasmtime adds when
+/// the module traps, which follows the program's own report of the trap (the module traps
+/// to end itself, as WASI offers no exit status for that).
+pub fn strip_wasm_trap_report(stderr: &str) -> &str {
+    const START: &str = "Error: failed to run main module";
+    match stderr.find(START) {
+        Some(i) if i == 0 || stderr.as_bytes()[i - 1] == b'\n' => &stderr[..i],
+        _ => stderr,
+    }
+}
+
 /// Checks that the compiler whose predefined macros are `macros` produces code for
 /// the target triple `triple`. The error completes the sentence "the C compiler … ".
 pub fn check_triple(triple: &str, macros: &str) -> Result<(), String> {
@@ -293,6 +333,8 @@ pub fn check_triple(triple: &str, macros: &str) -> Result<(), String> {
         Some(("freebsd", "__FreeBSD__"))
     } else if rest.iter().any(|c| c.starts_with("windows") || *c == "mingw32") {
         Some(("windows", "_WIN32"))
+    } else if rest.iter().any(|c| c.starts_with("wasi")) {
+        Some(("WASI", "__wasi__"))
     } else {
         None
     };
@@ -350,6 +392,8 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
         "Windows"
     } else if has("__FreeBSD__") {
         "FreeBSD"
+    } else if has("__wasi__") {
+        "Wasi"
     } else {
         "Freestanding"
     };
@@ -364,6 +408,11 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
         filc: has("__FILC__"),
         f16: has("__FLT16_MANT_DIG__"),
     })
+}
+
+/// `w` quoted so that [`split_words`] gives it back as one word.
+fn quote_word(w: &str) -> String {
+    format!("\"{}\"", w.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Splits `s` into words as a shell would, without expansions: at unquoted
@@ -429,6 +478,9 @@ mod tests {
         assert_eq!(w(r#""say \"hi\"""#), [r#"say "hi""#]);
         assert!(split_words("'open").is_err());
         assert!(split_words("x\\").is_err());
+        for raw in [r"C:\wasi sdk\bin\clang", r#"/opt/"odd"/clang"#, "plain"] {
+            assert_eq!(w(&format!("{} -v", quote_word(raw))), [raw, "-v"]);
+        }
     }
 
     #[test]
@@ -483,7 +535,7 @@ mod tests {
         let r = t(&["__SIZEOF_POINTER__ 8", "__riscv 1", "__riscv_xlen 64", "__linux__ 1"]).unwrap();
         assert_eq!((r.arch, r.os), ("Riscv64", "Linux"));
         let w = t(&["__SIZEOF_POINTER__ 4", "__wasm32__ 1", "__wasi__ 1"]).unwrap();
-        assert_eq!((w.ptr_bytes, w.arch, w.os), (4, "Wasm32", "Freestanding"));
+        assert_eq!((w.ptr_bytes, w.arch, w.os), (4, "Wasm32", "Wasi"));
         assert!(target_from_macros(&defs(&["__SIZEOF_POINTER__ 4", "__i386__ 1"])).unwrap_err().contains("__int128"));
         assert!(target_from_macros(&defs(&["__x86_64__ 1"])).is_err());
     }

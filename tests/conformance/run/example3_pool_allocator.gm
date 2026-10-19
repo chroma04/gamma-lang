@@ -1,3 +1,4 @@
+//! ptr_bits: 64
 // A pool allocator written against AllocVtable, installed with `with`; errdefer cleans up a partly built list when the pool runs dry.
 fixed_buffer :: import "std/fixed_buffer"
 

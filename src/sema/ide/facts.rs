@@ -31,7 +31,7 @@ pub(super) struct Facts {
 
 impl<'s> Sema<'s> {
     /// The generic function that `f` instantiates, or `f`.
-    pub(super) fn generic_of(&self, f: FnId) -> FnId {
+    pub(crate) fn generic_of(&self, f: FnId) -> FnId {
         self.instance_of.get(&f).map_or(f, |(g, _)| *g)
     }
 

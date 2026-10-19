@@ -3,9 +3,10 @@
 //! Runs every `.gm` file under `tests/conformance/` through the `gamma` binary
 //! and checks the result against expectations written in the file itself:
 //!
-//! - `//! stage: lex|parse|check|run|test` (at the top of the file) selects
+//! - `//! stage: lex|parse|check|run|test|lint` (at the top of the file) selects
 //!   how far the compiler goes; `test` runs the file's `test` declarations with
-//!   `gamma test`. The default is `run`.
+//!   `gamma test`, and `lint` runs `gamma lint`. The default is `run`.
+//! - `//! lint: <options>` passes options to `gamma lint` (`--warn=prefer-immutable`).
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
 //! - `//! stderr` also compares the standard error of a `run` or `test` test
@@ -23,12 +24,17 @@
 //!   for tests of features that exist on some targets only.
 //! - `//! endian: little` (or `big`) runs the test only when compiling for a target of
 //!   that byte order, for tests whose output shows the layout of values in memory.
-//! - `//! os: unix` (or `windows`) runs the test only when compiling for that kind of
-//!   operating system: `unix` is everything but Windows. It is for tests of what the other
-//!   kind lacks (POSIX-only C functions, the System V calling convention); keep such
-//!   tests few.
+//! - `//! os: unix` (or `windows`, `wasi`) runs the test only when compiling for that kind
+//!   of operating system: `unix` is everything but Windows and WASI. It is for tests of what
+//!   the other kinds lack (POSIX-only C functions, the System V calling convention, child
+//!   processes); keep such tests few.
+//! - `//! ptr_bits: 64` (or `32`) runs the test only when compiling for a target with
+//!   pointers of that size, for tests whose output shows the size of pointers and `usize`.
 //! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
-//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it.
+//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it. Likewise
+//!   `//! needs: threads` and `//! needs: sockets` when the target has no threads or
+//!   sockets (WASI, where they fail with `IoError.Unsupported`). Several requirements
+//!   may be given, separated by commas.
 //! - `//! native: reason` runs a `run` or `test` test only through the C back end, for
 //!   tests of what the interpreter cannot do (such as calls through function pointers
 //!   re-typed to another signature).
@@ -41,7 +47,8 @@
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
 //!   One line may carry several annotations (`//~ ERROR a //~ NOTE b`).
-//!   Every reported error or warning must be expected this way. `//~ NOTE text`
+//!   Every reported error or warning must be expected this way. The message of a lint
+//!   warning starts with its rule in brackets: `//~ WARNING [unused-variable] never used`. `//~ NOTE text`
 //!   expects a note of some diagnostic on that line: a secondary location (such as
 //!   a call in a compile-time call stack) or an explanation attached to a diagnostic
 //!   reported there; notes that no annotation names are allowed.
@@ -89,6 +96,7 @@ enum Stage {
     Check,
     Run,
     Test,
+    Lint,
 }
 
 struct Expectations {
@@ -111,10 +119,17 @@ struct Expectations {
     safe_skip: bool,
     /// The C lanes need `_Float16`.
     needs_f16: bool,
+    /// The C lanes need threads, or sockets.
+    needs_threads: bool,
+    needs_sockets: bool,
+    /// The only pointer size (in bits) the test applies to.
+    ptr_bits: Option<u32>,
     /// Run the test only through the C back end.
     native: bool,
     /// Leave the test out of the Cranelift lane.
     cranelift_skip: bool,
+    /// The options of `gamma lint`.
+    lint_args: Vec<String>,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -132,8 +147,12 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         os: None,
         safe_skip: false,
         needs_f16: false,
+        needs_threads: false,
+        needs_sockets: false,
+        ptr_bits: None,
         native: false,
         cranelift_skip: false,
+        lint_args: vec![],
         diags: vec![],
     };
     for path in files {
@@ -155,8 +174,11 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     "check" => Stage::Check,
                     "run" => Stage::Run,
                     "test" => Stage::Test,
+                    "lint" => Stage::Lint,
                     other => return Err(format!("{}: unknown stage `{}`", path.display(), other)),
                 };
+            } else if let Some(args) = directive.strip_prefix("lint:") {
+                e.lint_args.extend(args.split_whitespace().map(str::to_string));
             } else if directive == "dump" {
                 e.dump = true;
             } else if directive == "stderr" {
@@ -167,7 +189,7 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                 e.filter = Some(filter.trim().to_string());
             } else if let Some(os) = directive.strip_prefix("os:") {
                 match os.trim() {
-                    "unix" | "windows" => e.os = Some(os.trim().to_string()),
+                    "unix" | "windows" | "wasi" => e.os = Some(os.trim().to_string()),
                     other => return Err(format!("{}:{}: unknown os `{}`", path.display(), i + 1, other)),
                 }
             } else if let Some(endian) = directive.strip_prefix("endian:") {
@@ -175,9 +197,19 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
             } else if let Some(arch) = directive.strip_prefix("arch:") {
                 e.arch = Some(arch.trim().to_string());
             } else if let Some(needs) = directive.strip_prefix("needs:") {
-                match needs.trim() {
-                    "f16" => e.needs_f16 = true,
-                    other => return Err(format!("{}:{}: unknown requirement `{}`", path.display(), i + 1, other)),
+                for need in needs.split(',') {
+                    match need.trim() {
+                        "f16" => e.needs_f16 = true,
+                        "threads" => e.needs_threads = true,
+                        "sockets" => e.needs_sockets = true,
+                        other => return Err(format!("{}:{}: unknown requirement `{}`", path.display(), i + 1, other)),
+                    }
+                }
+            } else if let Some(bits) = directive.strip_prefix("ptr_bits:") {
+                match bits.trim() {
+                    "32" => e.ptr_bits = Some(32),
+                    "64" => e.ptr_bits = Some(64),
+                    other => return Err(format!("{}:{}: unknown pointer size `{}`", path.display(), i + 1, other)),
                 }
             } else if let Some(safe) = directive.strip_prefix("safe:") {
                 if !safe.trim().starts_with("skip ") {
@@ -227,11 +259,11 @@ struct Reported {
     message: String,
 }
 
-/// Parses `path:line:col: severity: message` and `severity: message` lines.
-/// `files` are the test's files, to recognize the path prefix.
 /// Standard error with the standard library's directory, which differs between
-/// checkouts, written as `<std>` and the rest of such a path with `/` separators.
+/// checkouts, written as `<std>` and the rest of such a path with `/` separators, and
+/// without the report a WebAssembly runtime adds to a trap.
 fn normalize_stderr(stderr: &str) -> String {
+    let stderr = gamma::toolchain::strip_wasm_trap_report(stderr);
     let native = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib").join("std").display().to_string();
     // On Windows the path may be printed with either separator.
     let forward = native.replace('\\', "/");
@@ -253,6 +285,8 @@ fn normalize_stderr(stderr: &str) -> String {
     out
 }
 
+/// Parses `path:line:col: severity: message` and `severity: message` lines.
+/// `files` are the test's files, to recognize the path prefix.
 fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
     let mut out = vec![];
     for line in stderr.lines() {
@@ -274,13 +308,13 @@ fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
         let _col = parts.next();
         let tail = parts.next().unwrap_or("").trim_start();
         let (sev, msg) = tail.split_once(": ").unwrap_or((tail, ""));
+        // A lint's rule follows the severity: `warning[unused-variable]: …`.
+        let (sev, message) = match sev.split_once('[') {
+            Some((s, rule)) => (s, format!("[{}] {}", rule.trim_end_matches(']'), msg)),
+            None => (sev, msg.to_string()),
+        };
         if sev == "error" || sev == "warning" || sev == "note" {
-            out.push(Reported {
-                file: Some(file.clone()),
-                line: line_no,
-                severity: sev.to_string(),
-                message: msg.to_string(),
-            });
+            out.push(Reported { file: Some(file.clone()), line: line_no, severity: sev.to_string(), message });
         }
     }
     out
@@ -320,13 +354,45 @@ fn target_arch() -> &'static str {
     })
 }
 
-/// The kind of operating system the tests compile for (`unix` or `windows`), as for [`target_arch`].
+/// The kind of operating system the tests compile for (`unix`, `windows` or `wasi`), as for
+/// [`target_arch`].
 fn target_os_kind() -> &'static str {
     static OS: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     OS.get_or_init(|| {
         let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
-        let windows = target.map_or(cfg!(windows), |t| t.os == "Windows");
-        if windows { "windows" } else { "unix" }
+        match target.map(|t| t.os) {
+            Ok("Windows") => "windows",
+            Ok("Wasi") => "wasi",
+            Ok(_) => "unix",
+            Err(_) => {
+                if cfg!(windows) {
+                    "windows"
+                } else {
+                    "unix"
+                }
+            }
+        }
+    })
+}
+
+/// A directory for the temporary files of WebAssembly modules, as a path relative to the
+/// package's root, where the tests run.
+fn wasi_tmp_dir() -> &'static str {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasi-tmp");
+        let _ = fs::create_dir_all(&tmp);
+        let rel = tmp.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&tmp);
+        rel.display().to_string().replace('\\', "/")
+    })
+}
+
+/// The pointer size in bits of the target the tests compile for, as for [`target_arch`].
+fn target_ptr_bits() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| {
+        let target = gamma::toolchain::Toolchain::from_env().and_then(|t| t.target());
+        target.map_or(usize::BITS, |t| t.ptr_bits())
     })
 }
 
@@ -463,6 +529,11 @@ fn run_native(
         cmd.arg(format!("--filter={}", f));
     }
     cmd.arg(target);
+    if target_os_kind() == "wasi" {
+        // A WebAssembly module sees only the current directory (the package's root): its
+        // temporary files go below it.
+        cmd.env("TMPDIR", wasi_tmp_dir());
+    }
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
     let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -511,6 +582,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if exp.os.as_deref().is_some_and(|o| o != target_os_kind()) {
         return Ok(());
     }
+    if exp.ptr_bits.is_some_and(|b| b != target_ptr_bits()) {
+        return Ok(());
+    }
     if exp.arch.as_deref().is_some_and(|a| a != target_arch()) {
         return Ok(());
     }
@@ -523,9 +597,13 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         Stage::Check => "check",
         Stage::Run => "run",
         Stage::Test => "test",
+        Stage::Lint => "lint",
     };
     let mut cmd = gamma();
     cmd.arg(command).arg("--diag-format=short");
+    if exp.stage == Stage::Lint {
+        cmd.args(&exp.lint_args);
+    }
     if exp.dump {
         cmd.arg("--dump");
     }
@@ -639,7 +717,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     let compiled = matches!(exp.stage, Stage::Run | Stage::Test)
         && !expects_errors
         && !bless
-        && !(exp.needs_f16 && !target_has_f16());
+        && !(exp.needs_f16 && !target_has_f16())
+        && !((exp.needs_threads || exp.needs_sockets) && target_os_kind() == "wasi");
     let golden = path.with_extension("stdout");
     if compiled
         && problems.is_empty()

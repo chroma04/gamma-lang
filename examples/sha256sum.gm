@@ -70,7 +70,7 @@ sum_files :: fn(names: []const string) -> bool needs Fs + In + Out + Err {
 
 // `sha256sum --check LIST`: returns true if every listed file matches.
 check_list :: fn(list_name: string) -> bool needs Fs + Alloc + Out + Err {
-    text := fs.read_all(list_name) else e => {
+    text := fs.read_all(list_name) else {
         eprint("sha256sum: {}: could not read the list\n", list_name)
         return false
     }
@@ -85,7 +85,7 @@ check_list :: fn(list_name: string) -> bool needs Fs + Alloc + Out + Err {
             ok = false
             continue
         }
-        d := digest_file(parts.after) else e => {
+        d := digest_file(parts.after) else {
             print("{}: FAILED open or read\n", parts.after)
             ok = false
             continue

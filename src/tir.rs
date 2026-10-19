@@ -332,6 +332,7 @@ pub enum IoErrorKind {
     NoSpace,
     ConnectionRefused,
     TimedOut,
+    Unsupported,
     Other(i32),
 }
 
@@ -350,7 +351,8 @@ impl IoErrorKind {
             IoErrorKind::NoSpace => 9,
             IoErrorKind::ConnectionRefused => 10,
             IoErrorKind::TimedOut => 11,
-            IoErrorKind::Other(_) => 12,
+            IoErrorKind::Unsupported => 12,
+            IoErrorKind::Other(_) => 13,
         }
     }
 }

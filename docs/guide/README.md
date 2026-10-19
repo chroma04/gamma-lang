@@ -28,12 +28,20 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
 | [The Cranelift back end](native-backend.md) | `--backend=cranelift`: when to use it, where it runs, C interoperability, what it does not do yet |
 
+### Coming from another language
+
+| Guide | What it covers |
+| --- | --- |
+| [Gamma for C programmers](for-c-programmers.md) | C constructs and their Gamma counterparts, what changes and why, and the C habits that are compile errors |
+| [Gamma for Rust programmers](for-rust-programmers.md) | What carries over from Rust, memory without ownership, generics without traits, effects, and the Rust habits that do not carry over |
+
 ## Conventions used in this guide
 
 - Code blocks are tagged `gamma`. A line comment starting with `// error:` marks code that the specification says is a compile error; it is shown so you recognize the mistake.
 - `...` inside a code block stands for elided code and is not Gamma syntax.
 - Section references such as "§10.6" refer to the [specification](../../gamma-spec.md). Appendix C of the specification explains the design reasoning in more depth.
 - [Editor support](../editors.md) describes syntax highlighting and the language server for common editors.
+- [`gamma lint`](../lint.md) lists the lint rules and how to configure them.
 - Boxes titled **Common mistake** describe C habits that Gamma turns into compile errors.
 - Where an example needs a helper that the language does not define (for instance a queue type for a scheduler), the text says so and calls it "a function you would write" or similar. The core library is exactly what [§21](../../gamma-spec.md#21-the-core-library) defines; the earlier chapters use nothing else from the library (except `std/c` in chapter 14), and [chapter 16](16-standard-library.md) tours the rest.
 

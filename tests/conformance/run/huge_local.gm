@@ -1,5 +1,6 @@
 //! exit: 134
 //! stderr
+//! ptr_bits: 64
 // A local too large for any stack is a stack overflow trap, not a crash.
 main :: fn() needs Out {
     x: [1000000000000]u8 = ---

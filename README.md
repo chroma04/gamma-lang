@@ -43,6 +43,8 @@ early exit, coroutines, testing.
 
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
+  Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
+  or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
@@ -61,7 +63,7 @@ interpreter (the default for `gamma run` and `gamma test`), a C code generator
 | Lexer and parser (spec §2, Appendix A) | implemented; `gamma fmt` formats code |
 | Semantic analysis | the whole language: effects, handlers and fibers, generics with compile-time and effect-set parameters, compile-time evaluation and `when`, modules, packages, tests, and C interop |
 | Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
-| Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x) |
+| Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x); WebAssembly for WASI (`--target=wasm32-wasi`, run with Wasmtime) |
 | Native code generation (via Cranelift) | the whole language, with C structs by value, variadic calls and `@asm`; builds several times faster than through C, code runs somewhat slower; 64-bit Linux and macOS on x86_64 and arm64 (see [`docs/guide/native-backend.md`](docs/guide/native-backend.md)) |
 | Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 30 modules (see [`docs/std/`](docs/std/index.md)): `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/hash` (with `crc32` and `sha256`), `std/json`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset, ordered_map), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread` (with `wait_group`), `std/c` |
@@ -123,6 +125,7 @@ gamma build file.gm -o prog  # compile to a native executable via the system C c
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
 gamma fix file.gm            # apply the fixes the compiler suggests (`&&` → `and`, `_ = f()`, …)
+gamma lint hello             # warn about unused code, suspicious comparisons and simpler forms (--fix applies fixes)
 gamma test --filter=parse file.gm  # only the tests whose name contains `parse`
 gamma test --all --jobs=4 --coverage hello  # every module's tests, 4 at a time, with a line coverage table
 gamma bench hello            # run the `bench` declarations and report the time per run
