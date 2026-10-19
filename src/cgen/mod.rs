@@ -135,6 +135,7 @@ fn generate_entries(
         exits: HashMap::new(),
         pure_memo: HashMap::new(),
         early_memo: HashMap::new(),
+        steady: None,
         captured: None,
         site_consts: vec![],
         handler_tables: String::new(),
@@ -279,6 +280,9 @@ pub struct Gen<'a> {
     /// Memo of `is_pure` (`None` while being computed).
     pure_memo: HashMap<FnId, Option<bool>>,
     early_memo: HashMap<FnId, Vec<bool>>,
+    /// Per function, the parameters whose caller's value no call site lets change (see
+    /// `borrow`); computed once for the whole program.
+    steady: Option<Vec<Vec<bool>>>,
     /// The locals that function literals or handler clauses reach through their
     /// environment, by function (computed on first use, see `Gen::frame_locals`).
     captured: Option<std::collections::HashSet<(FnId, crate::tir::LocalId)>>,

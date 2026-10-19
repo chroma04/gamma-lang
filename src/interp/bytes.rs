@@ -78,6 +78,7 @@ impl From<Vec<u8>> for Bytes {
 
 impl Deref for Bytes {
     type Target = [u8];
+    #[inline]
     fn deref(&self) -> &[u8] {
         match self {
             Bytes::Inline(n, a) => &a[..*n as usize],

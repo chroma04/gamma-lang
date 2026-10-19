@@ -1150,16 +1150,8 @@ impl Gen<'_> {
         if all {
             return vec![true; def.locals.len()];
         }
-        let prog = self.prog;
-        let captured = self.captured.get_or_insert_with(|| {
-            let mut set = std::collections::HashSet::new();
-            for (i, d) in prog.fns.iter().enumerate() {
-                if let Some(b) = &d.body {
-                    collect_upvars(prog, FnId(i as u32), b, &mut set);
-                }
-            }
-            set
-        });
+        self.captured();
+        let captured = self.captured.as_ref().unwrap();
         let ty = &self.ty;
         let filc = self.prog.target.filc;
         def.locals
@@ -1169,6 +1161,22 @@ impl Gen<'_> {
                 (!filc && ty.size(l.ty) > MAX_C_LOCAL) || captured.contains(&(f, crate::tir::LocalId(i as u32)))
             })
             .collect()
+    }
+}
+
+impl Gen<'_> {
+    /// The locals that function literals or handler clauses capture, by owner.
+    pub fn captured(&mut self) -> &std::collections::HashSet<(FnId, crate::tir::LocalId)> {
+        let prog = self.prog;
+        self.captured.get_or_insert_with(|| {
+            let mut set = std::collections::HashSet::new();
+            for (i, d) in prog.fns.iter().enumerate() {
+                if let Some(b) = &d.body {
+                    collect_upvars(prog, FnId(i as u32), b, &mut set);
+                }
+            }
+            set
+        })
     }
 }
 

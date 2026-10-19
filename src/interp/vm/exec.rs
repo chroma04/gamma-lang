@@ -101,14 +101,19 @@ fn copy_words(dst: &mut [u64], d: usize, src: &[u64], s: usize, n: usize) {
 /// Writes the value of `size` bytes whose first bytes are `b` (zeros after them) at `r`.
 #[inline]
 fn put_bytes(regs: &mut [u64], r: Reg, size: u32, b: &[u8]) {
-    let r = r as usize;
     if size == 8
         && let Some(w) = b.first_chunk::<8>()
     {
         // A pointer or a 64-bit number: the common case of a handler value or argument.
-        regs[r] = u64::from_le_bytes(*w);
+        regs[r as usize] = u64::from_le_bytes(*w);
         return;
     }
+    put_bytes_slow(regs, r, size, b)
+}
+
+#[inline(never)]
+fn put_bytes_slow(regs: &mut [u64], r: Reg, size: u32, b: &[u8]) {
+    let r = r as usize;
     let n = (size as usize).min(b.len());
     for i in 0..words(size) as usize {
         let lo = i * 8;
@@ -466,10 +471,12 @@ impl<'a> Machine<'a> {
         st.code = code;
         st.id = id;
         st.func = fid;
+        // A pooled activation holds no frame data and the empty context (`vm_finish`), so
+        // there is nothing to drop.
         if extra.is_some() {
-            st.extra = extra;
+            std::mem::forget(std::mem::replace(&mut st.extra, extra));
         }
-        st.cx = cx;
+        std::mem::forget(std::mem::replace(&mut st.cx, cx));
         let n = c.nregs as usize;
         let regs = &mut st.regs;
         regs.clear();
@@ -1281,6 +1288,7 @@ impl<'a> Machine<'a> {
                     finish!(Ok(Exit::Ret(src)))
                 }
                 Op::EndSeg => finish!(Ok(Exit::Seg)),
+                Op::LdUpvar { .. } | Op::AddrUpvar { .. } => tri!(at!(), self.vm_upvar(st, code, *op, at!())),
                 _ => tri!(at!(), self.vm_slow::<LE>(st, code, *op, at!())),
             }
         }
@@ -1464,6 +1472,39 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// Reading an upvar or taking its address: kept out of `vm_slow`, whose many cases make
+    /// every call of it dear, since closures and handler clauses do this all the time.
+    #[inline(never)]
+    fn vm_upvar(&mut self, st: &mut St<'a>, code: &Code<'a>, op: Op, at: u32) -> R<()> {
+        let span = code.spans[at as usize];
+        match op {
+            Op::LdUpvar { dst, levels, local, ty } => {
+                let fr = self.vm_upvar_frame(st, span, levels)?;
+                let ti = self.ti(ty);
+                let (size, align) = (ti.size, ti.align);
+                // A word in memory, as `Load` reads it.
+                if size <= 8 && size > 0 {
+                    let a = match fr.locals.borrow().get(local.index()) {
+                        Some(Slot::Mem(a)) => Some(*a),
+                        _ => None,
+                    };
+                    if let Some(w) = a.and_then(|a| self.mem.try_read_word(a, size, align)) {
+                        st.regs[dst as usize] = w;
+                        return Ok(());
+                    }
+                }
+                let v = self.read_local(span, &fr, local, ty)?;
+                write_value(st, Arg::Data { reg: dst, size: size as u32 }, v, span)?;
+            }
+            Op::AddrUpvar { dst, levels, local, ty } => {
+                let fr = self.vm_upvar_frame(st, span, levels)?;
+                st.regs[dst as usize] = self.vm_local_addr(span, &fr, local, ty)?;
+            }
+            _ => unreachable!("not an upvar instruction"),
+        }
+        Ok(())
+    }
+
     /// The instructions that are not worth a place in the dispatch loop.
     #[inline(never)]
     fn vm_slow<const LE: bool>(&mut self, st: &mut St<'a>, code: &Code<'a>, op: Op, at: u32) -> R<()> {
@@ -1525,17 +1566,6 @@ impl<'a> Machine<'a> {
                 let fr = self.vm_frame(st);
                 st.regs[dst as usize] = self.vm_local_addr(span, &fr, local, ty)?;
             }
-            Op::LdUpvar { dst, levels, local, ty } => {
-                let fr = self.vm_frame(st);
-                let fr = self.vm_up(span, &fr, levels)?;
-                let v = self.read_local(span, &fr, local, ty)?;
-                write_value(st, Arg::Data { reg: dst, size: self.ti(ty).size as u32 }, v, span)?;
-            }
-            Op::AddrUpvar { dst, levels, local, ty } => {
-                let fr = self.vm_frame(st);
-                let fr = self.vm_up(span, &fr, levels)?;
-                st.regs[dst as usize] = self.vm_local_addr(span, &fr, local, ty)?;
-            }
             Op::LdLocalVal { dst, local } => {
                 let fr = self.vm_frame(st);
                 let v = match fr.locals.borrow().get(local.index()) {
@@ -1553,8 +1583,7 @@ impl<'a> Machine<'a> {
                 self.bind_local(span, &fr, local, None, v)?;
             }
             Op::LdUpvarVal { dst, levels, local } => {
-                let fr = self.vm_frame(st);
-                let fr = self.vm_up(span, &fr, levels)?;
+                let fr = self.vm_upvar_frame(st, span, levels)?;
                 let v = match fr.locals.borrow().get(local.index()) {
                     Some(Slot::Val(v)) => Some((**v).clone()),
                     _ => None,
@@ -1907,6 +1936,21 @@ impl<'a> Machine<'a> {
             _ => return self.trap(span, format!("internal error: instruction {:?} out of place", op)),
         }
         Ok(())
+    }
+
+    /// The frame `levels` (at least 1) up from the running activation's, which holds an
+    /// upvar. The first is the environment the activation was entered with, so a closure
+    /// or clause that only uses upvars needs no frame of its own.
+    fn vm_upvar_frame(&mut self, st: &mut St<'a>, span: Span, levels: u32) -> R<Rc<Frame>> {
+        if st.fr.is_none()
+            && levels > 0
+            && let Some(env) = st.extra.as_ref().and_then(|x| x.env.as_ref())
+        {
+            let env = env.clone();
+            return self.vm_up(span, &env, levels - 1);
+        }
+        let fr = self.vm_frame(st);
+        self.vm_up(span, &fr, levels)
     }
 
     fn vm_up(&self, span: Span, fr: &Rc<Frame>, levels: u32) -> R<Rc<Frame>> {

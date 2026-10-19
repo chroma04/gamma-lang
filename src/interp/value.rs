@@ -113,19 +113,29 @@ impl Ctx {
     }
 
     /// The innermost entry handling `effect`.
+    #[inline(always)]
     pub fn find(&self, effect: &EffectRef) -> Option<&Rc<CtxNode>> {
         let mut cur = self.0.as_ref();
         while let Some(n) = cur {
             // Compare the effect first: most effects have no arguments, and comparing two
             // empty argument lists is a call.
-            if n.effect.effect == effect.effect
-                && (n.effect.args.is_empty() && effect.args.is_empty() || n.effect.args == effect.args)
-            {
+            if n.effect.effect == effect.effect && same_args(&n.effect.args, &effect.args) {
                 return Some(n);
             }
             cur = n.parent.0.as_ref();
         }
         None
+    }
+}
+
+/// Whether two effects' argument lists are equal: compared inline when they have at most
+/// one argument, the common case.
+#[inline(always)]
+fn same_args(a: &[crate::types::GenericArg], b: &[crate::types::GenericArg]) -> bool {
+    match (a, b) {
+        ([], []) => true,
+        ([x], [y]) => x == y,
+        _ => a == b,
     }
 }
 

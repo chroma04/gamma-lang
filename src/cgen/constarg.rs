@@ -33,6 +33,14 @@ impl Gen<'_> {
         Some(format!("((uint8_t *)gm_k{})", i))
     }
 
+    /// Whether `e` is built from literals only, so that `const_arg` passes it from static
+    /// storage.
+    pub fn is_const_arg(&mut self, e: &Expr) -> bool {
+        let size = self.ty.size(e.ty) as usize;
+        let mut v = ConstValue { ty: e.ty, bytes: vec![0; size], relocs: vec![] };
+        self.const_into(e, 0, &mut v)
+    }
+
     /// Writes the value of `e` at `off` in `v`; false if `e` is not built from literals.
     fn const_into(&mut self, e: &Expr, off: usize, v: &mut ConstValue) -> bool {
         let size = self.ty.size(e.ty) as usize;

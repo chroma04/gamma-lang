@@ -528,8 +528,12 @@ GM_API_VAR GM_TLS gm_unwind gm_unw;
  * returns its exit status. */
 GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
 
-/* The innermost handler of effect `eff` in context `cx`, or NULL. */
-GM_API gm_node *gm_find(gm_node *cx, uint32_t eff);
+/* The innermost handler of effect `eff` in context `cx`, or NULL. The innermost node, most
+ * often the one, is looked at inline: a call is dear, under Fil-C especially. */
+GM_API gm_node *gm_find_outer(gm_node *cx, uint32_t eff);
+static inline gm_node *gm_find(gm_node *cx, uint32_t eff) {
+    return cx == NULL || cx->eff == eff ? cx : gm_find_outer(cx->next, eff);
+}
 /* Whether errdefers run as the current exit leaves a block of frame `fr` (§8.8). */
 GM_API bool gm_errdefer_runs(gm_frame *fr);
 

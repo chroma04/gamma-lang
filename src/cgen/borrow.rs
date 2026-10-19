@@ -7,22 +7,152 @@
 //! nothing can write the caller's value while the callee runs. The second holds
 //! when the callee is *pure* here: it has no effects, writes only its own locals,
 //! and calls only pure functions, so nothing else runs during the call.
+//!
+//! It also holds when every call passes a value that nothing writes during the
+//! call (`steady_params`): a constant from static storage (see `constarg`), a
+//! local of the caller that it never writes after its initialization, never
+//! takes the address of and does not share with a function literal, or a
+//! temporary. This needs every call to be visible, so a function whose address is
+//! taken, or that is a handler clause, exported or a closure, is left out. Such a
+//! parameter is typically a `SourceLocation` that `@caller_location()` fills in
+//! and that is handed down from `new` to the functions it calls.
 
 use super::Gen;
-use crate::tir::{Block, Builtin, Callee, Expr, ExprKind, FnId, FnKind, LocalId, Stmt};
+use crate::tir::{Block, Builtin, Callee, Expr, ExprKind, FnId, FnKind, LocalId, StaticData, Stmt};
 
 impl<'a> Gen<'a> {
     /// For each parameter of `f`: whether it is used in place of a copy.
     pub fn borrowed_params(&mut self, f: FnId) -> Vec<bool> {
         let def = &self.prog.fns[f.index()];
         let candidates: Vec<bool> = def.params.iter().map(|p| self.ty.by_ref(def.locals[p.index()].ty)).collect();
-        if !candidates.contains(&true) || !self.is_pure(f) {
+        if !candidates.contains(&true) {
             return vec![false; def.params.len()];
+        }
+        if !self.is_pure(f) {
+            return self.steady_params(f).to_vec();
         }
         let Some(body) = &def.body else { return vec![false; def.params.len()] };
         let mut touched = vec![];
         mutated_locals(body, &mut touched);
         def.params.iter().zip(candidates).map(|(p, c)| c && !touched.contains(p)).collect()
+    }
+
+    /// For each parameter of `f`: whether it is passed by address, `f` never writes it,
+    /// takes its address or shares it with a function literal, and every call of `f`
+    /// passes a value that nothing can write during the call (see the module docs).
+    fn steady_params(&mut self, f: FnId) -> &[bool] {
+        if self.steady.is_none() {
+            let s = self.compute_steady();
+            self.steady = Some(s);
+        }
+        &self.steady.as_ref().unwrap()[f.index()]
+    }
+
+    fn compute_steady(&mut self) -> Vec<Vec<bool>> {
+        let prog = self.prog;
+        // Functions called other than by a direct call.
+        let mut escaping = vec![false; prog.fns.len()];
+        for d in &prog.fns {
+            if let Some(b) = &d.body {
+                fn_refs(b, &mut escaping);
+            }
+        }
+        for c in &prog.consts {
+            fn_refs(&c.init, &mut escaping);
+            for r in c.value.iter().flat_map(|v| &v.relocs) {
+                if let StaticData::Fn(g) = r.target {
+                    escaping[g.index()] = true;
+                }
+            }
+        }
+        for g in &prog.globals {
+            if let Some(i) = &g.init {
+                fn_refs(i, &mut escaping);
+            }
+            for r in g.value.iter().flat_map(|v| &v.relocs) {
+                if let StaticData::Fn(g) = r.target {
+                    escaping[g.index()] = true;
+                }
+            }
+        }
+        for (_, g) in &prog.exports {
+            escaping[g.index()] = true;
+        }
+        if let Some(g) = prog.trap_hook {
+            escaping[g.index()] = true;
+        }
+        // Debug information shows parameters in the frame, so they are copied there.
+        let debug_info = self.opts.debug_info;
+        let mut written: Vec<Vec<LocalId>> = Vec::with_capacity(prog.fns.len());
+        for d in &prog.fns {
+            let mut w = vec![];
+            if let Some(b) = &d.body {
+                mutated_locals(b, &mut w);
+            }
+            written.push(w);
+        }
+        let captured = self.captured().clone();
+        let mut steady: Vec<Vec<bool>> = prog
+            .fns
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let f = FnId(i as u32);
+                let eligible = !debug_info
+                    && matches!(d.kind, FnKind::Named)
+                    && d.parent.is_none()
+                    && d.body.is_some()
+                    && !escaping[i];
+                d.params
+                    .iter()
+                    .map(|p| {
+                        eligible
+                            && self.ty.by_ref(d.locals[p.index()].ty)
+                            && !written[i].contains(p)
+                            && !captured.contains(&(f, *p))
+                    })
+                    .collect()
+            })
+            .collect();
+        // Every call must pass a value that stays as it is during the call.
+        for (i, d) in prog.fns.iter().enumerate() {
+            let Some(b) = &d.body else { continue };
+            let caller = FnId(i as u32);
+            let mut calls = vec![];
+            direct_calls(b, &mut calls);
+            for (g, args) in calls {
+                for (k, a) in args.iter().enumerate() {
+                    if steady[g.index()].get(k).copied().unwrap_or(false)
+                        && !self.steady_arg(caller, a, &written[i], &captured)
+                    {
+                        steady[g.index()][k] = false;
+                    }
+                }
+            }
+        }
+        steady
+    }
+
+    /// Whether argument `a` of a call in `caller` is a value that nothing can write while
+    /// the callee runs.
+    fn steady_arg(
+        &mut self,
+        caller: FnId,
+        a: &Expr,
+        written: &[LocalId],
+        captured: &std::collections::HashSet<(FnId, LocalId)>,
+    ) -> bool {
+        match &a.kind {
+            // Built in a temporary of the call.
+            ExprKind::Aggregate(_) | ExprKind::Array(_) | ExprKind::Call { .. } => true,
+            _ => match root_local(a) {
+                // A by-address parameter of the caller is either its own copy or, when
+                // read in place, a value that is steady itself (or the caller is pure,
+                // and so is the callee, which then reads it in place regardless).
+                Some(l) => !written.contains(&l) && !captured.contains(&(caller, l)),
+                None => self.is_const_arg(a),
+            },
+        }
     }
 
     /// For each parameter of `f`: whether it is used in place and also appears inside an
@@ -182,6 +312,22 @@ fn mutated_in_block(b: &Block, out: &mut Vec<LocalId>) {
         }
     }
     b.for_each_child(&mut |x| mutated_locals(x, out));
+}
+
+/// Marks the functions that `e` refers to other than as the callee of a direct call.
+fn fn_refs(e: &Expr, out: &mut [bool]) {
+    if let ExprKind::FnRef(f) | ExprKind::Closure(f) = &e.kind {
+        out[f.index()] = true;
+    }
+    e.for_each_child(&mut |x| fn_refs(x, out));
+}
+
+/// Collects the direct calls in `e` with their arguments.
+fn direct_calls<'e>(e: &'e Expr, out: &mut Vec<(FnId, &'e [Expr])>) {
+    if let ExprKind::Call { callee: Callee::Fn(f), args, .. } = &e.kind {
+        out.push((*f, args));
+    }
+    e.for_each_child(&mut |x| direct_calls(x, out));
 }
 
 /// Collects the locals read inside the construction of an aggregate or array in `e`.

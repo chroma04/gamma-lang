@@ -28,7 +28,7 @@ pub struct Types<'a> {
     pub prog: &'a Program,
     pub lay: &'a Layouts<'a>,
     /// Blob typedefs needed: (size, align).
-    blobs: BTreeSet<(u64, u64)>,
+    blobs: BTreeSet<(u64, u64, BlobKind)>,
     desc_ids: HashMap<Ty, usize>,
     desc_fwd: String,
     desc_parts: String,
@@ -143,9 +143,23 @@ impl<'a> Types<'a> {
                     return n;
                 }
                 let (s, a) = (self.size(t), self.align(t).max(1));
-                self.blobs.insert((s, a));
-                blob_name(s, a)
+                let k = self.blob_kind(t, s, a);
+                let name = blob_name(s, a, &k);
+                self.blobs.insert((s, a, k));
+                name
             }
+        }
+    }
+
+    /// The C representation of a blob of type `t`, of size `s` and alignment `a`.
+    fn blob_kind(&self, t: Ty, s: u64, a: u64) -> BlobKind {
+        let pb = self.lay.target.ptr_bytes;
+        if !self.lay.target.filc || a < pb || s < pb || !s.is_multiple_of(pb) {
+            BlobKind::Bytes
+        } else if !self.lay.may_hold_pointers(t) {
+            BlobKind::Words
+        } else {
+            self.lay.pointer_words(t).map_or(BlobKind::Pointers, BlobKind::Lanes)
         }
     }
 
@@ -417,20 +431,34 @@ impl<'a> Types<'a> {
     pub fn blob_typedefs(&self) -> String {
         let mut out = String::new();
         let pb = self.lay.target.ptr_bytes;
-        for (s, a) in &self.blobs {
-            let name = blob_name(*s, *a);
-            if self.lay.target.filc && *a >= pb && *s >= pb && s % pb == 0 {
-                let _ = writeln!(
+        for (s, a, k) in &self.blobs {
+            let (s, a) = (*s, *a);
+            let name = blob_name(s, a, k);
+            let _ = match k {
+                BlobKind::Bytes => writeln!(out, "typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};", a, s, name),
+                BlobKind::Pointers => writeln!(
                     out,
                     "typedef union {{ _Alignas({}) uint8_t b[{}]; void *gm_lanes[{}]; }} {};",
                     a,
                     s,
                     s / pb,
                     name
-                );
-            } else {
-                let _ = writeln!(out, "typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};", a, s, name);
-            }
+                ),
+                BlobKind::Words => {
+                    writeln!(out, "typedef struct {{ _Alignas({}) uintptr_t gm_w[{}]; }} {};", a, s / pb, name)
+                }
+                BlobKind::Lanes(ptrs) => {
+                    let members: Vec<String> = ptrs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let align = if i == 0 { format!("_Alignas({}) ", a) } else { String::new() };
+                            format!("{}{} l{};", align, if *p { "void *" } else { "uintptr_t" }, i)
+                        })
+                        .collect();
+                    writeln!(out, "typedef struct {{ {} }} {};", members.join(" "), name)
+                }
+            };
         }
         out.push_str(&self.typed_defs);
         out
@@ -637,8 +665,35 @@ pub fn int_cty(signed: bool, storage: u64) -> &'static str {
     }
 }
 
-pub fn blob_name(size: u64, align: u64) -> String {
-    format!("gm_b{}_{}", size, align)
+pub fn blob_name(size: u64, align: u64, kind: &BlobKind) -> String {
+    match kind {
+        BlobKind::Words => format!("gm_w{}_{}", size, align),
+        BlobKind::Lanes(ptrs) => {
+            let lanes: String = ptrs.iter().map(|p| if *p { 'p' } else { 'w' }).collect();
+            format!("gm_l{}_{}_{}", size, align, lanes)
+        }
+        _ => format!("gm_b{}_{}", size, align),
+    }
+}
+
+/// What a blob is made of in C. Under Fil-C a blob is copied fastest as a struct of
+/// pointer-sized members, which a copy moves one by one, with no call into the runtime:
+/// - a value that holds no pointer is a struct of words (`Words`), and the memory it
+///   lands in needs no capabilities;
+/// - a value whose pointers are always in the same words, such as a struct of pointers
+///   and numbers, is a struct of those words typed as pointers or as numbers (`Lanes`),
+///   so that a copy keeps the capabilities of its pointers;
+/// - any other value that may hold a pointer, such as a union whose variants hold a
+///   pointer and a number in the same word, is a union of its bytes with pointer-sized
+///   lanes (`Pointers`). A struct of pointers would not do: where the same word is also
+///   read as a number, the optimizer turns the pointer into a number and back, which
+///   drops its capability.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BlobKind {
+    Bytes,
+    Pointers,
+    Words,
+    Lanes(Vec<bool>),
 }
 
 /// A C string literal for a `_Static_assert` message. Such a literal is unevaluated, so

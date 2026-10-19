@@ -84,6 +84,15 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Faster Safe builds: values that hold no pointer, or hold their pointers at fixed
+  offsets, are copied word by word instead of through the Fil-C runtime; large
+  parameters are read in place when every call passes a value nothing changes during the
+  call (such as the `SourceLocation` of `new` and `destroy`), in every build mode; and
+  the innermost handler of an effect is found without a call. A loop of `new` and
+  `destroy` runs about 45% fewer instructions in a Safe build.
+- Faster `gamma run` for iterators and closures: a handler clause or function literal
+  reads and writes the variables it captures without making a frame of its own, which
+  takes about a quarter off a `for` over an iterator.
 - Programs for a freestanding target (no operating system: firmware, kernels) build to
   an object file whose entry points are the program's `#export`ed functions. There is
   no `main` and no default handler: the program installs its own, such as an allocator
