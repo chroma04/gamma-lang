@@ -903,6 +903,8 @@ impl<'a, 's> FnCx<'a, 's> {
         // Set when two arguments bind a type parameter differently (reported once).
         let mut conflict = false;
         let mut values: Vec<Option<Expr>> = vec![None; sig.params.len()];
+        // The statements that evaluate the call arguments of iterator arguments (§13.5).
+        let mut iter_pre: Vec<(usize, Vec<tir::Stmt>)> = vec![];
         let mut sources: Vec<(usize, &ast::Expr)> =
             positional.iter().enumerate().map(|(k, e)| (targets[k], *e)).collect();
         for a in args {
@@ -923,6 +925,7 @@ impl<'a, 's> FnCx<'a, 's> {
             None if matches!(e.kind, ast::ExprKind::Fn(_)) => 2,
             None => 1,
         };
+        let source_order: Vec<usize> = sources.iter().map(|(i, _)| *i).collect();
         sources.sort_by_key(|(i, e)| rank(*i, e));
         // The receiver binds first, so that the arguments are checked against what it fixes.
         let receiver = match (recv_index, receiver) {
@@ -1001,6 +1004,9 @@ impl<'a, 's> FnCx<'a, 's> {
                     continue;
                 }
                 let lit = self.iterator_arg(e, expect);
+                if !self.iter_pre.is_empty() {
+                    iter_pre.push((*i, std::mem::take(&mut self.iter_pre)));
+                }
                 let e = lit.as_ref().unwrap_or(e);
                 self.temp_ref_arg = super::call::is_const_ref_arg(e, p.ty);
                 let v = self.expr(e, (!unbound || partial).then_some(expect));
@@ -1227,7 +1233,20 @@ impl<'a, 's> FnCx<'a, 's> {
         // Named arguments out of parameter order are evaluated in the order written
         // (§11.3), into temporaries.
         let mut pre = vec![];
-        if written.windows(2).any(|w| w[0] > w[1]) {
+        if !iter_pre.is_empty() {
+            // An iterator's call arguments are evaluated at its place among the arguments.
+            let mut written = written;
+            written.sort_by_key(|i| source_order.iter().position(|k| k == i));
+            for i in written {
+                match iter_pre.iter().position(|(k, _)| *k == i) {
+                    Some(n) => pre.append(&mut iter_pre.remove(n).1),
+                    None => {
+                        let v = std::mem::replace(&mut out[slot[i]], e_unit(span));
+                        out[slot[i]] = self.bind_temp(v, &mut pre);
+                    }
+                }
+            }
+        } else if written.windows(2).any(|w| w[0] > w[1]) {
             for i in written {
                 let v = std::mem::replace(&mut out[slot[i]], e_unit(span));
                 out[slot[i]] = self.bind_temp(v, &mut pre);

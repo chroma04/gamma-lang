@@ -34,9 +34,9 @@ sum :: fn(N :: usize, xs: [N]u8) -> usize {
     return s
 }
 
-// `[A + B]` and `[B + A]` are the same type; `sum` infers `N` from a computed length.
+// `sum` infers `N` from a computed length.
 swapped :: fn(A, B :: usize, x: [A]u8, y: [B]u8) -> usize {
-    t: [B + A]u8 = concat(x, y)
+    t: [A + B]u8 = concat(x, y)
     return sum(t)
 }
 

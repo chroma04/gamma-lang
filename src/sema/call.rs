@@ -308,6 +308,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let has_spread = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
         let spreading = reordered || has_spread;
         let mut stmts = vec![];
+        // The parameters given an argument so far, in the order written.
+        let mut written: Vec<usize> = vec![];
         // Named arguments given explicitly (a spread supplying one later is an error).
         let mut explicit = vec![false; params.len()];
         // Positional arguments bind, in order, the parameters that no named argument names
@@ -346,6 +348,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     if spreading {
                         v = self.bind_temp(v, &mut stmts);
                     }
+                    self.place_iter_pre(&mut bound, &mut written, next_positional, &mut stmts);
                     bound[next_positional] = Some(v);
                     next_positional += 1;
                 }
@@ -364,6 +367,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     if spreading {
                         v = self.bind_temp(v, &mut stmts);
                     }
+                    self.place_iter_pre(&mut bound, &mut written, i, &mut stmts);
                     bound[i] = Some(v);
                 }
                 ArgKind::Spread(e) => {
@@ -497,15 +501,172 @@ impl<'a, 's> FnCx<'a, 's> {
         if !matches!(inner.kind, ExprKind::Call { .. }) {
             return None;
         }
+        // The callee's arguments and receiver are evaluated here, once; the literal only
+        // makes the call (§13.5).
+        let call = self.hoist_iterator_call(inner);
         let sig = ast::FnSig { params: vec![], variadic: false, ret: None, effects: None, span: e.span };
-        let lit = ast::FnLit { sig, where_: vec![], body: ast::FnBody::Expr(inner.clone()), span: e.span };
+        let lit = ast::FnLit { sig, where_: vec![], body: ast::FnBody::Expr(call), span: e.span };
         self.iterator_args.push(e.span);
         Some(ast::Expr { id: e.id, kind: ExprKind::Fn(Box::new(lit)), span: e.span })
     }
 
+    /// After the argument for parameter `i` was checked: if it is an iterator whose call
+    /// arguments are evaluated first (§13.5), the arguments written before it are evaluated
+    /// into temporaries, then those statements are added to `stmts`; this keeps the
+    /// left-to-right order.
+    fn place_iter_pre(
+        &mut self,
+        bound: &mut [Option<Expr>],
+        written: &mut Vec<usize>,
+        i: usize,
+        stmts: &mut Vec<Stmt>,
+    ) {
+        if !self.iter_pre.is_empty() {
+            for &j in written.iter() {
+                if let Some(v) = bound[j].take() {
+                    bound[j] = Some(self.bind_temp(v, stmts));
+                }
+            }
+            stmts.append(&mut self.iter_pre);
+        }
+        written.push(i);
+    }
+
+    /// `f(a1, …, an)` rewritten so that `a1 … an` and a method call's receiver are
+    /// evaluated now, into hidden locals (statements in `iter_pre`), leaving a call
+    /// of those locals for the iterator literal to make each time it runs.
+    fn hoist_iterator_call(&mut self, call: &ast::Expr) -> ast::Expr {
+        let ExprKind::Call { callee, args, trailing_comma } = &call.kind else { return call.clone() };
+        let callee = match &callee.kind {
+            ExprKind::Field { base, name } if !self.denotes_type(base) => {
+                let base = self.hoist_iter_value(base, true);
+                ast::Expr {
+                    id: callee.id,
+                    kind: ExprKind::Field { base: Box::new(base), name: *name },
+                    span: callee.span,
+                }
+            }
+            _ => (**callee).clone(),
+        };
+        let args = args
+            .iter()
+            .map(|a| {
+                let kind = match &a.kind {
+                    ast::ArgKind::Positional(e) => ast::ArgKind::Positional(self.hoist_iter_value(e, false)),
+                    ast::ArgKind::Named(n, e) => ast::ArgKind::Named(*n, self.hoist_iter_value(e, false)),
+                    ast::ArgKind::Spread(e) => ast::ArgKind::Spread(e.clone()),
+                };
+                ast::Arg { kind, span: a.span }
+            })
+            .collect();
+        ast::Expr {
+            id: call.id,
+            kind: ExprKind::Call { callee: Box::new(callee), args, trailing_comma: *trailing_comma },
+            span: call.span,
+        }
+    }
+
+    /// Whether `e` is a constant expression or names a global: evaluating it again is
+    /// unobservable, and it may depend on the type expected where it is written.
+    fn iter_stable(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::Uninit
+            | ExprKind::Underscore
+            | ExprKind::DotIdent(_) => true,
+            ExprKind::Ident(id) => self.lookup_local(id.name).is_none(),
+            ExprKind::Paren(x) => self.iter_stable(x),
+            ExprKind::Field { base, .. } => self.iter_stable(base),
+            ExprKind::Unary { op, operand } => {
+                matches!(op, ast::UnOp::Neg | ast::UnOp::BitNot | ast::UnOp::Not) && self.iter_stable(operand)
+            }
+            ExprKind::Binary { lhs, rhs, .. } => self.iter_stable(lhs) && self.iter_stable(rhs),
+            // `.V(args)`: a union value built from its context.
+            ExprKind::Call { callee, args, .. } => {
+                matches!(callee.kind, ExprKind::DotIdent(_))
+                    && args.iter().all(|a| match &a.kind {
+                        ast::ArgKind::Positional(x) | ast::ArgKind::Named(_, x) => self.iter_stable(x),
+                        ast::ArgKind::Spread(_) => false,
+                    })
+            }
+            _ => self.denotes_type(e),
+        }
+    }
+
+    /// The expression that stands for `e` in the literal made for an iterator argument:
+    /// `e` is evaluated now. A place (`receiver`, or an array, which would otherwise be
+    /// copied) stays a place, with the pointers and indexes in it evaluated now; any other
+    /// value goes into a hidden local.
+    fn hoist_iter_value(&mut self, e: &ast::Expr, receiver: bool) -> ast::Expr {
+        let synth = |kind: ExprKind| ast::Expr { id: ast::NodeId(u32::MAX), kind, span: e.span };
+        if self.iter_stable(e) {
+            return e.clone();
+        }
+        let place = match &e.kind {
+            ExprKind::Paren(x) => return self.hoist_iter_value(x, receiver),
+            ExprKind::Ident(_) => Some(e.clone()),
+            ExprKind::Field { base, name } => {
+                let base = self.hoist_iter_value(base, true);
+                Some(synth(ExprKind::Field { base: Box::new(base), name: *name }))
+            }
+            ExprKind::TupleField { base, index, index_span } => {
+                let base = self.hoist_iter_value(base, true);
+                Some(synth(ExprKind::TupleField { base: Box::new(base), index: *index, index_span: *index_span }))
+            }
+            ExprKind::Index { base, index } => {
+                let base = self.hoist_iter_value(base, true);
+                let index = self.hoist_iter_value(index, false);
+                Some(synth(ExprKind::Index { base: Box::new(base), index: Box::new(index) }))
+            }
+            ExprKind::Deref(x) => {
+                let x = self.hoist_iter_value(x, false);
+                Some(synth(ExprKind::Deref(Box::new(x))))
+            }
+            ExprKind::Unary { op: ast::UnOp::AddrOf, operand } => {
+                let operand = self.hoist_iter_value(operand, true);
+                return synth(ExprKind::Unary { op: ast::UnOp::AddrOf, operand: Box::new(operand) });
+            }
+            _ => None,
+        };
+        let expr = place.as_ref().unwrap_or(e);
+        let mark = self.performed.len();
+        let mut v = self.expr(expr, None);
+        // An iterator passed on (`filtered(fib(), f)`): not a value; its own arguments are
+        // evaluated now too, and the call stays where it is.
+        if let ExprKind::Call { .. } = &expr.kind
+            && self.iterator_calls.contains(&expr.span)
+        {
+            self.performed.truncate(mark);
+            return self.hoist_iterator_call(expr);
+        }
+        let ty = self.infer.resolve(v.ty);
+        let keep_place = place.is_some() && (receiver || matches!(ty.kind(), TyKind::Array { .. }));
+        // A second-class function cannot be stored, and an untyped constant takes its type
+        // from the parameter it is passed for: both are evaluated where they are used.
+        if ty.is_error() || ty.has_infer() || matches!(ty.kind(), TyKind::Fn(_)) || keep_place {
+            return expr.clone();
+        }
+        let mut pre = std::mem::take(&mut self.iter_pre);
+        self.lift_temps(&mut v, &mut pre);
+        let name = crate::symbol::Symbol::intern(&format!("<iter{}>", self.locals.len()));
+        let local = self.new_local(name, ty, true, e.span);
+        pre.push(Stmt::Let { local, init: Some(v) });
+        self.iter_pre = pre;
+        self.declare(name, LocalBinding::Var(local), e.span);
+        synth(ExprKind::Ident(ast::Ident { name, span: e.span }))
+    }
+
     pub(super) fn arg_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
         if let Some(lit) = self.iterator_arg(e, ty) {
-            return self.arg_value(&lit, ty);
+            // Checking the literal's own call must not place the statements made above.
+            let pre = std::mem::take(&mut self.iter_pre);
+            let v = self.arg_value(&lit, ty);
+            self.iter_pre = pre;
+            return v;
         }
         if let ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {

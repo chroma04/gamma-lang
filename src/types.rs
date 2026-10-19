@@ -229,12 +229,8 @@ impl LenOp {
             LenOp::Shr => ">>",
             LenOp::And => "&",
             LenOp::Or => "|",
-            LenOp::Xor => "^",
+            LenOp::Xor => "~",
         }
-    }
-
-    fn commutative(self) -> bool {
-        matches!(self, LenOp::Add | LenOp::Mul | LenOp::And | LenOp::Or | LenOp::Xor)
     }
 }
 
@@ -458,8 +454,8 @@ impl Ty {
     }
 
     /// The array length `lhs op rhs` (§16.5): a `usize` value when both operands
-    /// are values (an error type where the operation traps), else a `LenExpr` with
-    /// the operands of a commutative operator in a canonical order.
+    /// are values (an error type where the operation traps), else a `LenExpr`
+    /// keeping the operands as written (no reordering).
     pub fn len_expr(op: LenOp, lhs: Ty, rhs: Ty) -> Ty {
         match (lhs.kind(), rhs.kind()) {
             (TyKind::Error, _) | (_, TyKind::Error) => Ty::error(),
@@ -470,7 +466,6 @@ impl Ty {
                 },
                 _ => Ty::error(),
             },
-            _ if op.commutative() && rhs < lhs => Ty::intern(TyKind::LenExpr { op, lhs: rhs, rhs: lhs }),
             _ => Ty::intern(TyKind::LenExpr { op, lhs, rhs }),
         }
     }
