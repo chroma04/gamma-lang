@@ -477,6 +477,7 @@ impl<'s> Sema<'s> {
 
     /// Warns about a use at `span` of declaration `d` if it is `#deprecated("msg")` (§20.2).
     pub fn check_deprecated(&mut self, d: DeclId, span: Span) {
+        self.check_freestanding_use(d, span);
         let decl = &self.decls[d.0 as usize];
         let Some(attr) = decl.item.attrs.iter().find(|a| a.name.name.as_str() == "deprecated") else { return };
         if decl.op_of.is_some() || !self.deprecated_uses.insert((d, span)) {
@@ -489,6 +490,27 @@ impl<'s> Sema<'s> {
         let w = Diagnostic::warning(span, format!("`{}` is deprecated{}", decl.name.name, msg))
             .with_label(decl.name.span, "declared here");
         self.emit(w);
+    }
+
+    /// On a freestanding target (§3.7.1), naming one of the core library's default handler
+    /// providers in a program's own code is an error: there is no operating system behind them.
+    fn check_freestanding_use(&mut self, d: DeclId, span: Span) {
+        if self.target.os != "Freestanding" || span == Span::DUMMY {
+            return;
+        }
+        let decl = &self.decls[d.0 as usize];
+        let name = decl.name.name;
+        if !self.modules[decl.module.0 as usize].is_prelude
+            || !matches!(name.as_str(), "heap_allocator" | "system_io" | "system_output")
+        {
+            return;
+        }
+        let path = self.sess.sources.file(span.file).path.clone();
+        let std = crate::source::canonicalize(&imports::std_root()).unwrap_or_else(|_| imports::std_root());
+        if path.starts_with("<core>") || path.starts_with(imports::std_root()) || path.starts_with(std) {
+            return;
+        }
+        self.error(span, format!("`{name}` does not exist on a freestanding target (§3.7.1)"));
     }
 
     /// Resolves every declaration of the root module (and, transitively, what
@@ -546,6 +568,8 @@ impl<'s> Sema<'s> {
         self.ensure_handlers_declared();
         if self.tests_enabled {
             self.check_tests(root);
+        } else if self.target.os == "Freestanding" {
+            self.forbid_main(root);
         } else {
             self.find_main(root);
         }
@@ -561,6 +585,17 @@ impl<'s> Sema<'s> {
     pub fn drain_bodies(&mut self) {
         while let Some(p) = self.pending_bodies.pop() {
             self.check_fn_body(p.fn_id, p.module, &p.item);
+        }
+    }
+
+    /// A freestanding program has no `main` (§3.7.1): its entry points are its exports.
+    fn forbid_main(&mut self, root: ModuleId) {
+        if let Some(&id) = self.modules[root.0 as usize].scope.get(&Symbol::intern("main")) {
+            let span = self.decls[id.0 as usize].name.span;
+            self.error(
+                span,
+                "a program for a freestanding target does not declare `main`; its entry points are its `#export`ed functions (§3.7.1)",
+            );
         }
     }
 

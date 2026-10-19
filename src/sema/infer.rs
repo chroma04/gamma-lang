@@ -31,6 +31,8 @@ struct Var {
     /// The conversion `T(x)` that gave the variable its type, if one did (§6.5), for
     /// diagnostics about literals far from it.
     fixed_by: Option<crate::source::Span>,
+    /// The construct that gave the variable its fallback type early (see `settle`).
+    settled_at: Option<crate::source::Span>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,7 @@ impl InferTable {
             fallback: Fallback::I32,
             resolved: None,
             fixed_by: None,
+            settled_at: None,
         });
         Ty::infer(v)
     }
@@ -131,11 +134,28 @@ impl InferTable {
     }
 
     /// Raises the fallback of an unresolved variable (e.g. for range bounds).
-    pub fn set_fallback(&mut self, ty: Ty, fallback: Fallback) {
-        if let TyKind::Infer(v) = self.shallow(ty).kind() {
-            let r = self.root(v.0) as usize;
+    ///
+    /// If the variable was already given a different type early, returns that type and
+    /// the span of the construct that settled it: the raised fallback disagrees with it.
+    pub fn set_fallback(&mut self, ty: Ty, fallback: Fallback) -> Option<(Ty, crate::source::Span)> {
+        let TyKind::Infer(v) = ty.kind() else {
+            if let TyKind::Infer(v) = self.shallow(ty).kind() {
+                let r = self.root(v.0) as usize;
+                self.vars[r].fallback = self.vars[r].fallback.max(fallback);
+            }
+            return None;
+        };
+        let r = self.root(v.0) as usize;
+        if let (Some(t), Some(at)) = (self.vars[r].resolved, self.vars[r].settled_at) {
+            if fallback == Fallback::Usize && t != Ty::usize() && t.is_integer() {
+                return Some((t, at));
+            }
+            return None;
+        }
+        if self.vars[r].resolved.is_none() {
             self.vars[r].fallback = self.vars[r].fallback.max(fallback);
         }
+        None
     }
 
     fn compatible(&self, var: &Var, ty: Ty) -> bool {
@@ -236,7 +256,7 @@ impl InferTable {
     }
 
     /// Gives the unresolved variables in `ty` their fallback types now (§6.1).
-    pub fn settle(&mut self, ty: Ty) -> Ty {
+    pub fn settle(&mut self, ty: Ty, at: crate::source::Span) -> Ty {
         let t = self.resolve(ty);
         let mut vars = vec![];
         t.walk(&mut |x| {
@@ -255,6 +275,7 @@ impl InferTable {
                     (VarKind::Int, Fallback::I32) => Ty::i32(),
                 };
                 self.vars[r].resolved = Some(fixed);
+                self.vars[r].settled_at = Some(at);
             }
         }
         self.resolve(ty)

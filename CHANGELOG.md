@@ -84,6 +84,17 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- Programs for a freestanding target (no operating system: firmware, kernels) build to
+  an object file whose entry points are the program's `#export`ed functions. There is
+  no `main` and no default handler: the program installs its own, such as an allocator
+  over a static buffer or an `Out` that writes to a serial port. A function marked
+  `#trap_hook` receives every trap's message and location.
+- A literal's type that a construct had to fix early (`@type_of`, a format spec such as
+  `{:x}`, a `with` handler value) is an error, not a silent choice, when a later use
+  would have given it another type (`n := 0; print("{:x}", n); for i in 0..n {}`).
+- The constraint `Signed` is now `Neg`, named for what it grants (unary `-`).
+- `ns`, `us`, `ms` and `secs` moved from the universe to `std/time`: `time.ms(5)`.
+- The specification states effect-set parameter inference as two local rules.
 - Effect operations live in their effect's namespace and are always called through it:
   `Log.log(.Warn, msg)` inside the module that declares `Log`, `log.Log.log(…)` outside
   it (`yield` stays a bare name). Operations are no longer top-level names of their

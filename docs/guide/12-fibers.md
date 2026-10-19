@@ -228,7 +228,7 @@ In this sketch a task can perform only `Sched`, because the type of `spawn`'s en
 
 ```gamma
 nap :: fn(j: ^Job) needs fiber.Sched(Clock) + Clock + Out {
-    fiber.sleep(ms(j.millis))       // `E` is taken from the caller's Sched(Clock)
+    fiber.sleep(time.ms(j.millis))  // `E` is taken from the caller's Sched(Clock)
     print("{} is up\n", j.name)
 }
 

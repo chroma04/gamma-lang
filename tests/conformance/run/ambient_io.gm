@@ -1,5 +1,7 @@
 // The ambient `In`, `Clock` and `Rand` effects with their default handlers (§12.9, §21.7).
 
+time :: import "std/time"
+
 count_lines :: fn() -> IoError!(lines: usize, bytes: usize) needs In {
     buf: [7]u8 = ---                 // small, so lines span several reads
     lines: usize = 0
@@ -22,11 +24,11 @@ main :: fn() -> IoError!() needs Out + In + Clock + Rand {
     small: [4]u8 = ---
     print("eof again: {}\n", try In.read(small[..]))
 
-    Clock.sleep(ms(5))
+    Clock.sleep(time.ms(5))
     elapsed := Clock.now().since(t0)
     print("slept at least 5 ms: {}\n", elapsed.to_ms() >= 5)
-    print("later: {}\n", t0.after(secs(1)).ns - t0.ns)
-    print("durations: {} {} {}\n", us(3).ns, ms(2).plus(ns(7)).ns, secs(2).minus(ms(500)).to_ms())
+    print("later: {}\n", t0.after(time.secs(1)).ns - t0.ns)
+    print("durations: {} {} {}\n", time.us(3).ns, time.ms(2).plus(time.ns(7)).ns, time.secs(2).minus(time.ms(500)).to_ms())
     print("wall clock after 2020: {}\n", Clock.wall() > 1_577_836_800_000_000_000)
 
     a: [32]u8 = ---

@@ -18,7 +18,9 @@ commands:
   fix     check a program and apply the fixes its diagnostics suggest where there is only
           one, to the files of its package; prints the diagnostics left
   run     run a program; arguments after the file go to the program
-  build   compile a program to a native executable (via the system C compiler)
+  build   compile a program to a native executable (via the system C compiler); for a
+          freestanding target (--target with a compiler that targets no operating system)
+          an object file of its `#export`ed functions, to link with the code that starts them
   test    run the `test` declarations of a module and of the modules of its package
           that it imports (natively if it needs C)
   bench   run the `bench` declarations the same way and report the time per run
@@ -63,13 +65,17 @@ options:
   --target=<triple>           (check, run --backend=c, test, bench, build) compile for the machine
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;
-                              with CC set, CC (given --target if it is clang)
+                              with CC set, CC (given --target if it is clang). A compiler that
+                              targets no operating system (`x86_64-unknown-none-elf`) makes a
+                              freestanding program (spec 3.7.1): check and build only, and
+                              build writes an object file of its `#export`ed functions
   --quiet                     (repl) no banner and prompts, even on a terminal
   --offline                   (check, run, build, test, bench) never use the network: git
                               dependencies must be locked and already fetched
   --locked                    (check, run, build, test, bench) fail if gamma.lock is missing or
                               would change
-  -o <file>                   (build) the executable to write (default: the input's name)
+  -o <file>                   (build) the executable to write (default: the input's name);
+                              for a freestanding target the object file (default: <name>.o)
   --profile=<name>            (check, run, build, test, bench) use the `[profile.<name>]` table of
                               gamma.toml over its `[build]` table (mode, debug-info, cflags,
                               ldflags, c-sources, include-dirs, libs, lib-dirs); options on
@@ -491,6 +497,21 @@ fn new_session(opts: &Options) -> (Session, Result<Toolchain, String>) {
     (sess, toolchain)
 }
 
+/// Reports that `command` cannot run a program for a freestanding target (§3.7.1), which has
+/// no operating system to run it on: it is built to an object file and linked with the code
+/// that starts it. Returns whether the session's target is freestanding.
+fn refuse_freestanding(sess: &Session, command: &str) -> bool {
+    if sess.target.os != "Freestanding" {
+        return false;
+    }
+    eprintln!(
+        "gamma: `gamma {command}` cannot run a program for a freestanding target (the C compiler targets no operating system); \
+         build it with `gamma build`, which writes an object file to link into the firmware or kernel. \
+         Tests and benchmarks run on the host: leave out --target (and unset CC) for them"
+    );
+    true
+}
+
 /// Fetches the git dependencies of the package that contains `input` (see `gamma::pkg`)
 /// and tells the session where they are. Returns the C sources and libraries that the
 /// packages add to a native build, or reports the error and returns `None`.
@@ -606,6 +627,9 @@ fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     };
     let (mut sess, toolchain) = new_session(opts);
+    if refuse_freestanding(&sess, "run") {
+        return ExitCode::FAILURE;
+    }
     let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
@@ -793,9 +817,20 @@ fn build(opts: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let Some(extras) = prepare_packages(opts, &mut sess, path) else { return ExitCode::FAILURE };
+    let freestanding = sess.target.os == "Freestanding";
+    if freestanding && !extras.is_empty() {
+        eprintln!(
+            "gamma: a program for a freestanding target builds to an object file only, so the C sources and libraries \
+             of its packages are not linked in; link them with the object yourself"
+        );
+        return ExitCode::FAILURE;
+    }
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
+    if freestanding {
+        return build_object(&sess, &prog, &toolchain, path, opts);
+    }
     // An output name without an extension gets `.exe` on Windows, as the C compiler would
     // add it there anyway.
     let exe = match &opts.output {
@@ -813,6 +848,37 @@ fn build(opts: &Options) -> ExitCode {
     // A build with debug information comes with the lldb data formatters.
     let built =
         built.and_then(|()| if sess.debug_info { gamma::cgen::debug::write_lldb_formatters(&exe) } else { Ok(()) });
+    match built {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `gamma build` for a freestanding target (§3.7.1): the object file `<name>.o` (or `-o`)
+/// with the program's exported functions and the runtime support they use.
+fn build_object(
+    sess: &Session,
+    prog: &gamma::tir::Program,
+    toolchain: &Result<Toolchain, String>,
+    path: &std::path::Path,
+    opts: &Options,
+) -> ExitCode {
+    let obj = opts.output.clone().unwrap_or_else(|| {
+        PathBuf::from(format!("{}.o", path.file_stem().map_or("main".into(), |s| s.to_string_lossy().into_owned())))
+    });
+    let built = toolchain.as_ref().map_err(|e| format!("gamma: {e}")).and_then(|t| {
+        if prog.exports.is_empty() {
+            return Err(
+                "gamma: the program exports no function (`#export(\"symbol\")`, §19.4), so its object file would have no entry point"
+                    .to_string(),
+            );
+        }
+        let out = gamma::cgen::generate_object(prog, &sess.sources, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
+        gamma::cgen::compile(&out, t, &gamma::cgen::Link::default(), &obj).map(|_| ())
+    });
     match built {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {

@@ -1,6 +1,7 @@
 //! stage: test
 // Tests run with an in-memory file system as the handler of `Fs` (§12.9): every test
 // starts with an empty one, and nothing it creates is visible to the next test.
+time :: import "std/time"
 fs :: import "std/fs"
 
 WRITE :: fs.OpenOptions(read: false, write: true, create: true, truncate: true)
@@ -69,11 +70,11 @@ test "the root is an empty directory" {
 }
 
 test "modified is the fake clock at the last write" {
-    Clock.sleep(secs(5))
+    Clock.sleep(time.secs(5))
     ok(put("a", "x"))
     t0 := Clock.wall()
     expect((ok(Fs.stat("a"))).modified is t0)
-    Clock.sleep(secs(2))
+    Clock.sleep(time.secs(2))
     expect((ok(Fs.stat("a"))).modified is t0)
     f := ok(Fs.open("a", fs.OpenOptions(read: false, write: true)))
     _ = ok(f.write("y"))
@@ -488,7 +489,7 @@ test "large writes and reads" {
 
 test "other effects still work next to the file system" {
     ok(put("f", "x"))
-    Clock.sleep(ms(1))
+    Clock.sleep(time.ms(1))
     expect(Clock.now().ns is 1_000_000)
     l := list(u8)
     defer l.deinit()

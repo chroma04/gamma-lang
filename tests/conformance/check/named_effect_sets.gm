@@ -1,5 +1,7 @@
 //! stage: check
 // Named effect sets (§12.3).
+time :: import "std/time"
+
 Io :: Out + Alloc
 
 f :: fn(E: effects) {
@@ -16,7 +18,7 @@ k2 :: fn() {
 k :: fn() needs Io {
     x := Io                                 //~ ERROR expected a value, found the effect set `Io`
     _ = x
-    Clock.sleep(ms(1))                      //~ ERROR which the function does not declare
+    Clock.sleep(time.ms(1))                      //~ ERROR which the function does not declare
 }
 
 main :: fn() {}

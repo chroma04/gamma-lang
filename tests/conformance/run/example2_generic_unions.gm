@@ -8,7 +8,7 @@ Expr :: union(T: type) {
     Neg: ^const Expr(T)
 }
 
-eval :: fn(T: type, e: ^const Expr(T)) -> T where Signed(T) => match e^ {
+eval :: fn(T: type, e: ^const Expr(T)) -> T where Neg(T) => match e^ {
     .Lit(v) => v
     .Add(l, r) => eval(l) + eval(r)
     .Mul(l, r) => eval(l) * eval(r)

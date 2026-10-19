@@ -1,4 +1,5 @@
 // std/thread: Channel edge cases, blocking hand-offs and Condvar.wait_timeout.
+time :: import "std/time"
 thread :: import "std/thread"
 
 Fail :: union { Io: IoError, Mem: AllocError }
@@ -67,7 +68,7 @@ main :: fn() -> Fail!() needs Out + Sys + Alloc {
     t := try thread.spawn(notify, &s)
     s.m.lock()
     ok := true
-    while not s.ready and ok { ok = s.cv.wait_timeout(&s.m, secs(30)) }
+    while not s.ready and ok { ok = s.cv.wait_timeout(&s.m, time.secs(30)) }
     print("signaled: {} ready: {}\n", ok, s.ready)
     s.m.unlock()
     t.join()

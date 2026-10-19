@@ -273,7 +273,7 @@ impl<'s> Sema<'s> {
             let body = cx.clause_body(body, p.kind, p.ret);
             // The types of untyped literals given to `break` are known now.
             let breaks = cx.sema.decl_clause_breaks.remove(&p.fn_id).unwrap_or_default();
-            let breaks = breaks.into_iter().map(|(t, s)| (cx.settle(t), s)).collect();
+            let breaks = breaks.into_iter().map(|(t, s)| (cx.settle(t, s), s)).collect();
             cx.sema.decl_clause_breaks.insert(p.fn_id, breaks);
             let (body, locals) = cx.finish(body);
             let def = &mut self.prog.fns[p.fn_id.index()];

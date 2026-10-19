@@ -1,6 +1,7 @@
 //! stage: test
 // std/net and the new `Net` operations (shutdown, set_timeouts, peer) under the in-memory
 // network.
+time :: import "std/time"
 net :: import "std/net"
 
 // A connected pair: the client end and the accepted server end.
@@ -82,8 +83,8 @@ test "shutdown of both sides" {
 
 test "set_timeouts is accepted and nothing blocks" {
     p := ok(connected())
-    ok(p.client.set_timeouts(ms(50), null))
-    ok(p.client.set_timeouts(null, secs(1)))
+    ok(p.client.set_timeouts(time.ms(50), null))
+    ok(p.client.set_timeouts(null, time.secs(1)))
     ok(p.client.set_timeouts(null, null))
     buf: [4]u8 = ---
     expect(p.client.recv(buf[..]) is !.WouldBlock)

@@ -8,7 +8,7 @@ Every example here is a whole program. Save one as `tour.gm` and run it with `ga
 
 ## Two tiers
 
-- The **core library** is in every module without an import: the ambient effects (`Out`, `Alloc`, `Fs`, ...), allocation (`new`, `make`, `free`, ...), the iterators of [chapter 8](08-iteration.md), `List` and `HashMap`, `print`, `assert` and `expect`, durations (`ms(10)`), and the builtin methods of numbers, slices and strings. The language definition needs these.
+- The **core library** is in every module without an import: the ambient effects (`Out`, `Alloc`, `Fs`, ...), allocation (`new`, `make`, `free`, ...), the iterators of [chapter 8](08-iteration.md), `List` and `HashMap`, `print`, `assert` and `expect`, the `Duration` and `Instant` types, and the builtin methods of numbers, slices and strings. The language definition needs these.
 - The **standard modules** are imported by path: `str :: import "std/str"`. Each has one subject and costs nothing in programs that do not import it. They are written in Gamma, so a program that imports `std/str` or `std/json` gets the same behavior in the interpreter and in compiled code.
 
 Anything beyond that (HTTP, TLS, compression, databases, image formats, ciphers) belongs in [packages](15-packages.md); §22.4 lists what the standard library leaves out and why.
@@ -466,14 +466,14 @@ For more control use the operations themselves: `Proc.spawn` gives a `Child`; wi
 
 ## Time and randomness
 
-Durations and instants are core; `Clock` is the effect that supplies them (a test handler gives a fake clock, so `sleep` costs nothing). `std/time` adds the calendar, in UTC, with RFC 3339 text:
+Durations and instants are core, and `std/time` builds them (`time.ms(10)`); `Clock` is the effect that supplies them (a test handler gives a fake clock, so `sleep` costs nothing). `std/time` adds the calendar, in UTC, with RFC 3339 text:
 
 ```gamma
 time :: import "std/time"
 
 main :: fn() -> time.ParseError!() needs Out + Clock {
     started := Clock.now()
-    Clock.sleep(ms(5))
+    Clock.sleep(time.ms(5))
     took := Clock.now().since(started)
     print("slept at least 5 ms: {}\n", took.to_ms() >= 5)
 
@@ -485,7 +485,7 @@ main :: fn() -> time.ParseError!() needs Out + Clock {
     db: [10]u8 = ---
     print("{}\n", time.format_date(time.add_months(d, 1), db[..]))   // clamps to the month's end
     dur: [time.DURATION_LEN]u8 = ---
-    print("{}\n", time.format_duration(secs(3725) .plus(ms(500)), dur[..]))
+    print("{}\n", time.format_duration(time.secs(3725) .plus(time.ms(500)), dur[..]))
     r := try time.parse_rfc3339("2024-05-17T11:30:00+02:00")          // converted to UTC
     print("{}\n", time.format_rfc3339(r, buf[..]))
 }

@@ -2,10 +2,12 @@
 // Tests run with the test handlers of `In`, `Clock` and `Rand` (§12.9): empty input,
 // a fake clock that `sleep` advances, and random bytes from a fixed seed.
 
+time :: import "std/time"
+
 wait_and_measure :: fn() -> Duration needs Clock {
     t0 := Clock.now()
-    Clock.sleep(secs(3))
-    Clock.sleep(ms(250))
+    Clock.sleep(time.secs(3))
+    Clock.sleep(time.ms(250))
     return Clock.now().since(t0)
 }
 

@@ -18,7 +18,7 @@ Ratio :: struct(T: type) {
 Invalid :: union { ZeroDenominator, Overflow }
 
 // Builds the canonical form of n/d.
-make_ratio :: fn(T: type, n, d: T) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+make_ratio :: fn(T: type, n, d: T) -> Invalid!Ratio(T) where Int(T), Neg(T) {
     if d is 0 { return !.ZeroDenominator }
     g := gcd(n.abs(), d.abs())
     nn := n / g
@@ -32,7 +32,7 @@ make_ratio :: fn(T: type, n, d: T) -> Invalid!Ratio(T) where Int(T), Signed(T) {
 
 whole :: fn(T: type, n: T) -> Ratio(T) where Int(T) => Ratio(T)(num: n, den: 1)
 
-add :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+add :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Neg(T) {
     g := gcd(a.den, b.den)
     // a/b + c/d = (a*(d/g) + c*(b/g)) / (b/g*d)
     left := a.num *? (b.den / g) else return !.Overflow
@@ -42,7 +42,7 @@ add :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
     return try make_ratio(n, d)
 }
 
-mul :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+mul :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Neg(T) {
     // cross-cancel first to postpone overflow
     g1 := gcd(a.num.abs(), b.den)
     g2 := gcd(b.num.abs(), a.den)
@@ -51,14 +51,14 @@ mul :: fn(T: type, a, b: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
     return try make_ratio(n, d)
 }
 
-recip :: fn(T: type, a: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Signed(T) {
+recip :: fn(T: type, a: Ratio(T)) -> Invalid!Ratio(T) where Int(T), Neg(T) {
     return try make_ratio(a.den, a.num)
 }
 
-neg :: fn(T: type, a: Ratio(T)) -> Ratio(T) where Signed(T) => Ratio(T)(num: -a.num, den: a.den)
+neg :: fn(T: type, a: Ratio(T)) -> Ratio(T) where Neg(T) => Ratio(T)(num: -a.num, den: a.den)
 
 // Compares by cross-multiplying in 128 bits, which cannot overflow for 64-bit parts.
-less :: fn(T: type, a, b: Ratio(T)) -> bool where Int(T), Signed(T) {
+less :: fn(T: type, a, b: Ratio(T)) -> bool where Int(T), Neg(T) {
     return a.num.trunc(i128) * b.den.trunc(i128) < b.num.trunc(i128) * a.den.trunc(i128)
 }
 
