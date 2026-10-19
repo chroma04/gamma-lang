@@ -108,6 +108,13 @@ pub struct FnGen<'g, 'a> {
     pub borrowed: Vec<bool>,
     /// For each local: whether it lives in the frame struct (`Gen::frame_locals`).
     pub in_frame: Vec<bool>,
+    /// The temporaries and labels of the C function being generated (`fresh` numbers
+    /// them across the helpers of the Gamma function, for unique names).
+    pub names: u32,
+    /// Set when long runs of statements go into helpers (see `outline`).
+    pub split_runs: bool,
+    /// The helpers being generated, innermost last.
+    pub runs: Vec<super::outline::Run>,
 }
 
 /// Generates function `f` into `g`, or its clone specialized by `spec`.
@@ -214,6 +221,7 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     }
     let borrowed = g.borrowed_params(f);
     let in_frame = g.frame_locals(f);
+    let split_runs = !g.opts.debug_info && super::outline::long_body(def);
     let sig = format!(
         "static __attribute__((aligned(4))) {}{}{} {}({})",
         hint_attrs(def.hints),
@@ -259,6 +267,9 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
         temp_bytes: 0,
         borrowed,
         in_frame,
+        names: 0,
+        split_runs,
+        runs: vec![],
     };
     let _ = writeln!(fg.out, "{} {{", sig);
     fg.src_line(def.span);
@@ -353,17 +364,29 @@ fn gen_body<'a>(g: &mut Gen<'a>, f: FnId, def: &'a FnDef, body: &'a Expr, spec: 
     if !fg.g.opts.debug && fg.counter <= SMALL_FN_NAMES && def.hints.inline.is_none() {
         out = out.replacen("static __attribute__", "static inline __attribute__", 1);
     }
-    if fg.counter > HUGE_FN_NAMES {
+    if fg.names > HUGE_FN_NAMES {
         out = out.replacen("static __attribute__", "static GM_HUGE_FN __attribute__", 1);
     }
     // `optnone` conflicts with `always_inline` (an `#inline` hint, which such a function
     // will hardly carry).
     let header = out.split('\n').next().unwrap_or("");
-    if fg.counter > LONG_FN_NAMES && header.starts_with("static ") && !header.contains("always_inline") {
+    if fg.names > LONG_FN_NAMES && header.starts_with("static ") && !header.contains("always_inline") {
         out.insert_str("static ".len(), "GM_LONG_FN ");
     }
     g.bodies.push_str(&out);
     Ok(())
+}
+
+/// The attributes (each with a trailing space) for a C function with `names` temporaries
+/// and labels: `GM_HUGE_FN` and `GM_LONG_FN` for the very long ones.
+pub fn size_attrs(names: u32) -> &'static str {
+    if names > HUGE_FN_NAMES {
+        "GM_HUGE_FN GM_LONG_FN "
+    } else if names > LONG_FN_NAMES {
+        "GM_LONG_FN "
+    } else {
+        ""
+    }
 }
 
 /// The C attributes (each with a trailing space) for a function's hints (§11.10).
@@ -474,6 +497,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// A fresh number for temporaries and labels.
     pub fn fresh(&mut self) -> u32 {
         self.counter += 1;
+        self.names += 1;
         self.counter
     }
 
@@ -594,30 +618,31 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// Runs pending defers outwards, stopping at the exit's target (see the module docs):
     /// jumps to the rung of the ladder for the current position.
     pub fn ladder(&mut self) {
-        let target = self.ladder_target();
-        self.line(&format!("goto {};", target));
+        let (target, scope) = self.ladder_target();
+        self.jump(&target, scope);
     }
 
-    /// The C label of the rung of the ladder for the current position, marked as used.
-    fn ladder_target(&mut self) -> String {
-        for s in self.scopes.iter_mut().rev() {
+    /// The C label of the rung of the ladder for the current position, marked as used,
+    /// and the index of its scope (`None` for the function's last rung).
+    fn ladder_target(&mut self) -> (String, Option<usize>) {
+        for (i, s) in self.scopes.iter_mut().enumerate().rev() {
             match s {
                 Scope::Block { defers, .. } if defers.is_empty() => {}
                 Scope::Block { id, defers, used } => {
                     *used = (*used).max(defers.len());
-                    return format!("gm_ld{}_{}", id, defers.len());
+                    return (format!("gm_ld{}_{}", id, defers.len()), Some(i));
                 }
                 Scope::Loop { id, used, .. } | Scope::With { id, used, .. } => {
                     *used = true;
-                    return format!("gm_ll{}", id);
+                    return (format!("gm_ll{}", id), Some(i));
                 }
             }
         }
         if self.outlined {
-            return "gm_fprop".into();
+            return ("gm_fprop".into(), None);
         }
         self.lad_used = true;
-        "gm_lad".into()
+        ("gm_lad".into(), None)
     }
 
     /// A new block scope.
@@ -686,6 +711,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// when it runs during a non-local exit: the exit in progress is set aside while
     /// it runs, so the calls it makes return normally.
     fn defer_body(&mut self, guard: Option<&str>, body: &'a Expr, unwinding: bool) {
+        self.without_runs(|fg| fg.defer_body_inner(guard, body, unwinding));
+    }
+
+    fn defer_body_inner(&mut self, guard: Option<&str>, body: &'a Expr, unwinding: bool) {
         let saved_scopes = std::mem::take(&mut self.scopes);
         let saved_check = std::mem::replace(&mut self.no_check, true);
         match guard {
@@ -754,15 +783,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
         if crosses {
             return false;
         }
-        let scopes = std::mem::take(&mut self.scopes);
-        let dest = match target.map(|i| &scopes[i]) {
+        let dest = match target.map(|i| &self.scopes[i]) {
             None => "gm_fret".to_string(),
             Some(Scope::Loop { brk, cont, .. }) => if kind == "GM_BREAK" { brk } else { cont }.clone(),
             Some(Scope::With { end, .. }) => end.clone(),
             Some(Scope::Block { .. }) => unreachable!(),
         };
-        self.scopes = scopes;
-        self.line(&format!("goto {};", dest));
+        self.jump(&dest, target);
         true
     }
 
@@ -986,22 +1013,23 @@ impl<'g, 'a> FnGen<'g, 'a> {
         Ok(())
     }
 
-    /// The statements of block `b`.
+    /// The statements of block `b` (see `stmt_list`).
     fn stmts(&mut self, b: &'a Block) -> CResult<()> {
-        // Each statement's temporaries are in a C block of their own, so the C compiler
-        // can reuse their stack space for the next statement's.
-        for s in &b.stmts {
-            if let Some(span) = stmt_span(s) {
-                self.src_line(span);
-            }
-            self.line("{");
-            self.indent += 1;
-            let r = self.stmt(s);
-            self.indent -= 1;
-            self.line("}");
-            r?;
+        self.stmt_list(&b.stmts)
+    }
+
+    /// Statement `s` in a C block of its own, so the C compiler can reuse the stack space
+    /// of its temporaries for the next statement's.
+    pub fn stmt_block(&mut self, s: &'a Stmt) -> CResult<()> {
+        if let Some(span) = stmt_span(s) {
+            self.src_line(span);
         }
-        Ok(())
+        self.line("{");
+        self.indent += 1;
+        let r = self.stmt(s);
+        self.indent -= 1;
+        self.line("}");
+        r
     }
 
     fn stmt(&mut self, s: &'a Stmt) -> CResult<()> {
@@ -1112,12 +1140,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Stmt::Defer { is_err, body } => {
                 // Check that it translates; its code is emitted where it runs.
                 let saved = std::mem::take(&mut self.out);
-                let r = {
-                    let saved_scopes = std::mem::take(&mut self.scopes);
-                    let r = self.expr(body);
-                    self.scopes = saved_scopes;
+                let saved_split = std::mem::replace(&mut self.split_runs, false);
+                let r = self.without_runs(|fg| {
+                    let saved_scopes = std::mem::take(&mut fg.scopes);
+                    let r = fg.expr(body);
+                    fg.scopes = saved_scopes;
                     r
-                };
+                });
+                self.split_runs = saved_split;
                 self.out = saved;
                 r?;
                 if let Some(Scope::Block { defers, .. }) = self.scopes.last_mut() {
@@ -1134,7 +1164,8 @@ impl Gen<'_> {
     /// C local of its own. A local must be in the frame when a function literal or
     /// handler clause reaches it through `env` (an `Upvar`), and every local is when
     /// the body of a `with … on`, moved into a function of its own, reaches the frame
-    /// through a pointer. Debug builds and `-g` keep them all in the frame: the dead
+    /// through a pointer, as does a long body split into helpers (see `outline`). Debug
+    /// builds and `-g` keep them all in the frame: the dead
     /// frame is filled with 0xDD (§18.3) and debuggers show the locals as its fields.
     ///
     /// Locals larger than [`MAX_C_LOCAL`] stay in the frame too. They gain nothing
@@ -1146,7 +1177,10 @@ impl Gen<'_> {
     /// outside the frame: it escapes to the heap on its own instead of with the frame.
     pub fn frame_locals(&mut self, f: FnId) -> Vec<bool> {
         let def = &self.prog.fns[f.index()];
-        let all = self.opts.debug || self.opts.debug_info || def.body.as_ref().is_some_and(has_fiber_with);
+        let all = self.opts.debug
+            || self.opts.debug_info
+            || def.body.as_ref().is_some_and(has_fiber_with)
+            || super::outline::long_body(def);
         if all {
             return vec![true; def.locals.len()];
         }
