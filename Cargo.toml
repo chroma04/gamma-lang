@@ -12,6 +12,10 @@ keywords = ["compiler", "interpreter", "programming-language", "gamma"]
 categories = ["compilers", "development-tools"]
 
 [dependencies]
+cranelift-codegen = { version = "0.135", default-features = false, features = ["std", "x86", "arm64"] }
+cranelift-frontend = "0.135"
+cranelift-module = "0.135"
+cranelift-object = "0.135"
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 libc = "0.2.190"
 libffi = "5.2.0"

@@ -4,6 +4,7 @@
 //! See `docs/architecture.md` for an overview of the pipeline.
 
 pub mod cgen;
+pub mod clif;
 pub mod coverage;
 pub mod diag;
 pub mod doc;

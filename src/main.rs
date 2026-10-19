@@ -53,7 +53,11 @@ options:
                               how to print diagnostics (default: human); json prints one
                               object per line, with locations and fixes
   --dump                      (parse) print the syntax tree
-  --backend=interp|c          (run, test, bench) use the interpreter (default) or compile via C
+  --backend=interp|c|cranelift
+                              (run, test, bench, build) use the interpreter (default for run and
+                              test), compile via C (the default for build and bench), or
+                              generate native code directly with Cranelift (64-bit Linux and
+                              macOS; see docs/guide/native-backend.md)
   --filter=<text>             (test, bench) run only the tests whose name or module path
                               contains <text>
   --all                       (test, bench) also run those of the modules of the package
@@ -120,8 +124,10 @@ struct Options {
     program_args: Vec<String>,
     format: DiagFormat,
     dump: bool,
-    /// `--backend=c`: run through the C back end.
+    /// `--backend=c` or `--backend=cranelift`: run natively.
     c_backend: bool,
+    /// `--backend=cranelift`: generate native code with Cranelift rather than through C.
+    cranelift: bool,
     /// `-o`: the output of `build`.
     output: Option<PathBuf>,
     /// `--mode=…`: the build mode.
@@ -187,6 +193,7 @@ fn parse_args() -> Result<Options, String> {
         dump: false,
         // Benchmarks are about speed: compiled, without checks, unless asked otherwise.
         c_backend: bench,
+        cranelift: false,
         output: None,
         mode: if bench { gamma::interp::Mode::Fast } else { gamma::interp::Mode::Debug },
         debug_info: false,
@@ -231,10 +238,11 @@ fn parse_args() -> Result<Options, String> {
                 opts.jobs = parse_jobs(&n)?;
             }
             a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
-            "--backend=c" => opts.c_backend = true,
-            "--backend=interp" => opts.c_backend = false,
+            "--backend=c" => (opts.c_backend, opts.cranelift) = (true, false),
+            "--backend=cranelift" => (opts.c_backend, opts.cranelift) = (true, true),
+            "--backend=interp" => (opts.c_backend, opts.cranelift) = (false, false),
             a if a.starts_with("--backend=") => {
-                return Err(invalid_value("--backend", &a["--backend=".len()..], "c or interp"));
+                return Err(invalid_value("--backend", &a["--backend=".len()..], "c, cranelift or interp"));
             }
             "-o" => opts.output = Some(PathBuf::from(args.next().ok_or_else(|| "`-o` needs a file name".to_string())?)),
             "-g" => {
@@ -799,7 +807,7 @@ fn c_options(sess: &Session) -> gamma::cgen::Options {
     }
 }
 
-/// The message for a construct the C back end cannot translate.
+/// The message for a construct the native back end cannot translate.
 fn cgen_error(sess: &Session, u: gamma::cgen::Unsupported) -> String {
     match location(sess, u.span) {
         Some(at) => format!("{}: error: {}", at, u.message),
@@ -807,16 +815,23 @@ fn cgen_error(sess: &Session, u: gamma::cgen::Unsupported) -> String {
     }
 }
 
-/// Translates the program to C and compiles it to `exe`.
+/// Translates the program to C (or with `cranelift` to machine code) and compiles it to
+/// `exe`.
 fn compile_native(
     sess: &Session,
     prog: &gamma::tir::Program,
     toolchain: &Result<Toolchain, String>,
     link: &gamma::cgen::Link,
     exe: &std::path::Path,
+    cranelift: bool,
 ) -> Result<(), String> {
     let toolchain = toolchain.as_ref().map_err(|e| format!("gamma: {}", e))?;
     let Some(entry) = prog.main else { return Err("the program has no `main` function".into()) };
+    if cranelift {
+        let out = gamma::clif::generate(prog, &sess.sources, &[entry], false, &c_options(sess))
+            .map_err(|u| cgen_error(sess, u))?;
+        return gamma::clif::compile(&out, toolchain, link, exe);
+    }
     let out = gamma::cgen::generate(prog, &sess.sources, entry, &c_options(sess)).map_err(|u| cgen_error(sess, u))?;
     gamma::cgen::compile(&out, toolchain, link, exe).map(|_| ())
 }
@@ -878,8 +893,8 @@ fn build(opts: &Options) -> ExitCode {
             PathBuf::from(native_exe_name(&stem, &toolchain))
         }
     };
-    let built =
-        native_link(&sess, &toolchain, &extras).and_then(|link| compile_native(&sess, &prog, &toolchain, &link, &exe));
+    let built = native_link(&sess, &toolchain, &extras)
+        .and_then(|link| compile_native(&sess, &prog, &toolchain, &link, &exe, opts.cranelift));
     // A build with debug information comes with the lldb data formatters.
     let built =
         built.and_then(|()| if sess.debug_info { gamma::cgen::debug::write_lldb_formatters(&exe) } else { Ok(()) });
@@ -958,7 +973,7 @@ fn run_native(
         }
     };
     // The executable comes from the cache when the same program was built before.
-    let cached = match cached_native(sess, prog, toolchain, &link) {
+    let cached = match if opts.cranelift { Ok(None) } else { cached_native(sess, prog, toolchain, &link) } {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -976,7 +991,7 @@ fn run_native(
         (Some(exe), _) => (exe.clone(), Ok(())),
         (None, Some(dir)) => {
             let exe = dir.join(native_exe_name("prog", toolchain));
-            let r = compile_native(sess, prog, toolchain, &link, &exe);
+            let r = compile_native(sess, prog, toolchain, &link, &exe, opts.cranelift);
             (exe, r)
         }
         (None, None) => unreachable!(),

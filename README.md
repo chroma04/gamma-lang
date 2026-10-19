@@ -54,9 +54,9 @@ early exit, coroutines, testing.
 ## Status
 
 This repository contains the reference implementation, written in Rust. The whole
-specification is implemented, on two back ends that must agree on every test: an
-interpreter (the default for `gamma run` and `gamma test`) and a C code generator
-(`gamma build`, `--backend=c`).
+specification is implemented, on three back ends that must agree on every test: an
+interpreter (the default for `gamma run` and `gamma test`), a C code generator
+(`gamma build`, `--backend=c`) and a Cranelift code generator (`--backend=cranelift`).
 
 | Component | Status |
 | --- | --- |
@@ -64,6 +64,7 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 | Semantic analysis | the whole language: effects, handlers and fibers, generics with compile-time and effect-set parameters, compile-time evaluation and `when`, modules, packages, tests, and C interop |
 | Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
 | Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x); WebAssembly for WASI (`--target=wasm32-wasi`, run with Wasmtime) |
+| Native code generation (via Cranelift) | the whole language, with C structs by value, variadic calls and `@asm`; builds several times faster than through C, code runs somewhat slower; 64-bit Linux and macOS on x86_64 and arm64 (see [`docs/guide/native-backend.md`](docs/guide/native-backend.md)) |
 | Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, `HashMap`, files, network) and 30 modules (see [`docs/std/`](docs/std/index.md)): `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/hash` (with `crc32` and `sha256`), `std/json`, `std/math`, `std/random`, `std/time`, `std/path`, `std/cli`, `std/log`, `std/net`, `std/collections` (deque, heap, bitset, ordered_map), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread` (with `wait_group`), `std/c` |
 | Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
@@ -75,8 +76,11 @@ interpreter (the default for `gamma run` and `gamma test`) and a C code generato
 starts at once, and it is the quickest way to iterate. Use `--backend=c` (or `gamma build`)
 when the program's speed matters (compute-heavy code often runs 10 to 30 times faster), when
 it uses inline assembly, when you want to debug it with gdb or lldb (`-g`), or to check it
-under `--mode=safe`. Both back ends give the same output; a program that differs between
-them is a bug.
+under `--mode=safe`. `--backend=cranelift` generates machine code without the C compiler's
+optimizer: it builds several times faster than `--backend=c` and the program runs
+somewhat slower, which suits the edit-and-run loop of a program too slow to interpret
+([details](docs/guide/native-backend.md)). All back ends give the same output; a program
+that differs between them is a bug.
 
 ## Installing
 
@@ -116,6 +120,7 @@ gamma new hello              # create a package: gamma.toml, main.gm with a test
 gamma run hello              # type-check and run a program (a file or a module directory)
 gamma test hello             # run the `test` declarations of a module and its imports
 gamma run --backend=c file.gm  # compile through C and run
+gamma run --backend=cranelift file.gm  # compile with Cranelift and run
 gamma build file.gm -o prog  # compile to a native executable via the system C compiler
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only

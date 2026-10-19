@@ -135,6 +135,28 @@ jobs:
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
 
+  aarch64:
+    # The native back ends on AArch64 Linux, under an emulator. The macOS runners cover
+    # Apple's variant of the AArch64 calling convention; this job covers the standard one.
+    name: AArch64 Linux, emulated (C and Cranelift back ends)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the cross toolchain and the emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
+      - name: Conformance and Cranelift tests for aarch64
+        env:
+          CC: aarch64-linux-gnu-gcc
+          CFLAGS: -static
+          CC_x86_64_unknown_linux_gnu: gcc
+          CFLAGS_x86_64_unknown_linux_gnu: ""
+          GAMMA_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+        run: cargo test --release --test conformance --test cranelift
+
   wasi:
     # WebAssembly for WASI: the suite runs compiled with clang for wasm32-wasi, transformed by
     # Binaryen where it switches fibers, under Wasmtime.

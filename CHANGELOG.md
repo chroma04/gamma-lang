@@ -8,6 +8,15 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- The Cranelift back end: `--backend=cranelift` on `gamma run`, `build`, `test` and
+  `bench` generates machine code directly with Cranelift instead of going through C. It
+  compiles the whole language, passes the whole conformance suite, and builds several
+  times faster than the C back end, for code that runs somewhat slower. Foreign calls and
+  `#export` follow the platform's C calling convention, including structs passed and
+  returned by value and variadic functions; `@asm` is compiled by the C compiler. It
+  supports 64-bit Linux and macOS on x86-64 and AArch64, still uses the C compiler to build
+  the runtime and to link, and does not emit debug information (`-g`) yet. See
+  `docs/guide/native-backend.md`.
 - `gamma lint`: warnings, each naming its rule, about code that compiles but is probably
   a mistake or has a simpler form: unused variables, parameters, imports, private
   declarations and labels; comparisons of a value with itself; self-assignments;

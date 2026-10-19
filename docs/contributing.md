@@ -90,7 +90,7 @@ There are two kinds of tests.
 `gamma test` and `gamma bench` (`testing_cli.rs`), build settings in `gamma.toml`
 (`build_profiles.rs`), the internal compiler error report (`ice.rs`), the C runtime
 (`runtime.rs`), how native builds link the runtime (`native_build.rs`), debug
-information (`debug_info.rs`), the C toolchain variables and cross compilation
+information (`debug_info.rs`), the Cranelift back end (`cranelift.rs`), the C toolchain variables and cross compilation
 (`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
 installed release (`install_layout.rs`), very long expressions
 (`long_expressions.rs`), functions with thousands of statements (`long_functions.rs`) and the programs in `examples/` (`examples.rs`, below). The
@@ -122,6 +122,7 @@ main :: fn() {
 | `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`); `safe` tests run only through the C back end and need Fil-C, and are skipped without it |
 | `//! native: <reason>` | run a `run` or `test` test only through the C back end, for what the interpreter cannot do |
 | `//! filter: text` | run a `test` test with `gamma test --filter=text` |
+| `//! cranelift: skip <reason>` | leave the test out of the Cranelift lane (below) |
 | `//! safe: skip <reason>` | leave the test out of the Safe lane (below), because its behavior differs in Safe builds by design |
 | `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
@@ -161,6 +162,23 @@ needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
 `GAMMA_TEST_DEBUG_INFO=1` to build every such program with `-g` (worth doing after
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
+
+**Cranelift lane.** The same tests also run through `--backend=cranelift` when the C
+toolchain targets 64-bit Linux or macOS on x86-64 or AArch64 and its programs can run
+(built for the host, or through `GAMMA_RUNNER`), with the same expectations; set
+`GAMMA_TEST_CRANELIFT=0` to skip the lane. CI runs it on Linux and macOS, and on AArch64
+Linux under QEMU, which is also how to run it locally for the other architecture:
+
+```sh
+CC=aarch64-linux-gnu-gcc CFLAGS=-static CC_x86_64_unknown_linux_gnu=gcc \
+  GAMMA_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
+  cargo test --test conformance --test cranelift
+```
+
+(`CC_x86_64_unknown_linux_gnu` keeps the build scripts of dependencies on the host's
+compiler.) `tests/cranelift.rs` checks the back end's C calling conventions against code
+the C compiler compiles. `GAMMA_DUMP_CLIF=1` makes the compiler print the Cranelift IR of
+every function it generates, the first thing to look at when the lane fails.
 
 To debug the interpreter's bytecode VM (see `docs/architecture.md`):
 
